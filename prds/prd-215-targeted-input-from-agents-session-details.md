@@ -1,0 +1,570 @@
+---
+title: "PRD-215: Send Input to a Selected Background Session from its Details View"
+status: Proposed
+version: 1.0.0
+date: 2026-10-02
+repository: jymchng/agenthicc
+related_prds:
+  - PRD-141  # Background sessions and manager TUI
+  - PRD-143  # Busy-session message policy
+  - PRD-150  # Client-neutral session service
+  - PRD-201  # Context-aware mentions
+  - PRD-206  # agents manager identity and detail view
+  - PRD-209  # agents manager responsiveness
+tags:
+  - agents-manager
+  - input
+  - background-sessions
+  - tui
+  - ipc
+---
+
+# PRD-215 — Send Input to a Selected Background Session from its Details View
+
+## 1. Executive summary
+
+Add an input action to the detailed page of `agenthicc agents`. While inspecting
+a selected session, pressing `i` opens an editable composer. The composer must
+provide the same text-editing and registered-trigger capabilities as the
+regular session input: ordinary and multiline text, bracketed/condensed paste,
+paste expansion and deletion, cursor editing, history where applicable,
+`@`-mentions, slash commands, skills, and other registered input triggers.
+Submitting sends the composed input to the exact selected session, as if the
+user had attached to that session and entered the text there.
+
+This is not merely a second text box and not an attach shortcut. The `agents`
+manager is a separate process from the selected background worker. Input must
+cross that process boundary, reach the live session owner, and enter the same
+session-side message/command path used for ordinary attached input. The
+manager must not execute a selected session's slash command in its own process,
+resolve a mention against its own workspace, create a second session, or
+silently cancel/attach the worker.
+
+## 2. Current-source findings
+
+### 2.1 The details page has no general composer action
+
+`BackgroundManager._render_details()` currently presents `Esc`, `Enter`, and
+`[`/`]` detail-navigation controls. The detail key path handles attach,
+scroll, and leaving details; it does not open a general text composer. The
+manager's help text mentions `i input`, but the corresponding current key
+handler is narrower than that hint suggests.
+
+### 2.2 Existing `i` is only an ask-user response hook
+
+In `BackgroundManager.handle_key()`, `i` is handled only when the selected
+session is `WAITING_INPUT`. It invokes an optional `input_provider` and then
+calls `BackgroundManagerService.provide_input_async()`. The normal
+`agenthicc agents` entry point does not provide a general interactive composer
+callback. The supervisor's `provide_input()` accepts a value only while the
+session is waiting for a pending input request; it cannot submit a new user
+turn while a worker is running.
+
+Thus, the current `i` action is an answer-to-pending-question mechanism, not
+general conversation input. Replacing it outright would risk regressing the
+existing ask-user response contract.
+
+### 2.3 The regular input panel is session-owned
+
+The regular TUI constructs `UnifiedInputSession` with the selected session's
+`AppState`, `CommandBus`, trigger registry, `ModeManager`, overlay host,
+workspace, configuration, and history. Its capability pipeline implements
+paste handling, cursor and multiline editing, trigger pickers, history,
+submission, and cleanup. Submission emits a `SendMessageCommand`; the owning
+`TUISession.handle_send()` then applies the target session's busy policy,
+command routing, workflow continuation behavior, and turn queue.
+
+The `agents` manager has none of those target-session-owned objects. Copying a
+small subset of the editor or resolving target-specific triggers in the
+manager would create a second, behaviorally divergent input implementation.
+
+### 2.4 Current session-service submission is not sufficient by itself
+
+`SessionService.submit_message` appends a `turn_queued` event and can start work
+only when that service instance has a turn handler registered. Current source
+does not register the live background worker's normal session handler through
+this API. A separate manager-side `SessionService` can therefore record a
+command without causing the independent worker process to execute it. Likewise,
+calling `BackgroundSupervisor.provide_input()` only fills an outstanding
+ask-user request. The implementation needs an explicit, owner-process-bound
+delivery mechanism and a worker-side consumer.
+
+### 2.5 Attach changes ownership; this feature must not
+
+The existing detail-page `Enter` action returns an attach result. The CLI then
+uses `attach_background_session()` and `BackgroundSupervisor.attach_foreground()`
+to hand off from the background worker and open the normal foreground TUI.
+That remains a valid existing action, but it is not equivalent to submitting
+input while leaving the background session running. Pressing `i` must not
+perform that handoff.
+
+## 3. User problem and primary journey
+
+An operator opens `agenthicc agents`, selects a live session, and presses
+`Enter` to inspect its details. The session is progressing in another worker.
+The operator wants to supply a correction, answer, or follow-up without
+stopping the worker or taking over its terminal.
+
+Today the detail view cannot do this. The operator must attach, switch
+execution ownership, or use a restricted pending-question input path. This is
+especially inconvenient when the desired input contains pasted text, a file
+mention, a slash command, or several lines.
+
+### User story
+
+> As an operator inspecting a background session, I can press `i`, compose
+> input using the regular session input features, and submit it to that exact
+> session without attaching, restarting, or interrupting its worker.
+
+## 4. Goals
+
+1. Enable general input from the `agents` session-details view.
+2. Preserve parity with the canonical input editor and all currently registered
+   input triggers.
+3. Deliver input to the selected session's live owner process and route it
+   through the target session's existing message and command semantics.
+4. Preserve message ordering, idempotency, transcript/journal behavior, workflow
+   state, and the selected session's identity across the manager/worker boundary.
+5. Keep the manager responsive while input is composed, submitted, accepted, or
+   rejected.
+6. Preserve the existing attach action and pending ask-user answer behavior.
+7. Make delivery state visible so users can distinguish accepted, queued,
+   delivered, rejected, and still-pending input.
+
+## 5. Non-goals
+
+- Replacing or redesigning the normal TUI input panel.
+- Automatically attaching to or taking ownership of a background session.
+- Broadcasting one input to multiple selected or marked sessions.
+- Allowing typed input to approve/reject a pending approval implicitly.
+- Executing a target session's slash command in the `agents` manager process.
+- Making terminal sessions live again without an explicit attach/resume action.
+- Exposing the session's secrets, provider credentials, or private state to the
+  manager in order to render a composer.
+- Adding a general remote-control/network service; the initial feature remains
+  local and uses Agenthicc's existing session ownership and IPC boundaries.
+
+## 6. Interaction and keyboard contract
+
+### 6.1 Opening the composer
+
+- On a session-details page, lowercase or uppercase `i` opens the input panel
+  bound to the detail page's immutable `session_id`.
+- Opening the composer is available only when the session state can accept or
+  durably queue input. Unsupported states show a concise reason and retain the
+  details view.
+- The session ID is captured when the composer opens. Refresh, sorting,
+  pagination, selection changes, or row reuse must never retarget a draft.
+- The table/list `i` behavior, if any, remains unchanged. This PRD adds the
+  action to the details page and does not overload `Enter`.
+
+### 6.2 Editing and modal controls
+
+The composer reuses the canonical input capability/editor implementation and
+supports all currently registered input triggers rather than a hard-coded
+subset. At minimum, that includes:
+
+- ordinary character entry, cursor movement, Home/End, deletion, clear, and
+  multiline insertion;
+- bracketed paste and Ctrl+V paste expansion, including condensed-paste
+  editing and cancellation behavior;
+- trigger-picker navigation and insertion for file mentions, commands, skills,
+  and any other registered trigger;
+- command/mention completion data and validation derived from the target
+  session's workspace/configuration/registries, not the manager's unrelated
+  context;
+- history behavior consistent with the regular input mode, with any history
+  additions written to the selected session's history only after accepted
+  submission.
+
+The composer is a modal subview. `Esc` returns to details without attaching,
+cancelling the worker, or silently submitting. An unsubmitted draft remains
+available if the user reopens the composer during the same manager visit; a
+visible clear/cancel action can discard it. The target worker is never
+interrupted by an editor key. Explicit manager actions such as `c` remain
+outside the modal and retain their existing behavior.
+
+### 6.3 Submission and feedback
+
+- `Enter` submits through the normal submission semantics; `Ctrl+Enter`/`Ctrl+J`
+  inserts a newline as it does in the regular composer.
+- Empty/whitespace-only input is not sent.
+- The composer clears only after the target accepts the input. On a definite
+  rejection it keeps the draft and displays an actionable, bounded error.
+- After acceptance, show a target-specific receipt/status such as `Queued for
+  <session-id>` or `Delivered to <session-id>`. Do not claim delivery merely
+  because a manager-side event was appended.
+- The user can return to the detail page immediately; delivery and worker
+  processing continue asynchronously.
+
+## 7. Session-state behavior
+
+The exact enum mapping is an implementation detail, but externally visible
+behavior must be explicit and consistent:
+
+| Target condition | Required behavior |
+|---|---|
+| Live worker starting or running | Accept a bounded, durable message into that session's ordered inbox; wake the owner when possible. |
+| Worker waiting for an explicit `ask_user` response | Preserve the existing answer contract. A normal text submission may satisfy the outstanding request only when it is explicitly identified as its answer; it must not create a duplicate turn. |
+| Worker waiting for approval | Do not treat composer text as approval/rejection. Keep it queued for normal target-session dispatch or explain why it cannot yet be consumed. Existing approval controls remain authoritative. |
+| Recoverable paused session with no live input consumer | Do not claim immediate delivery. Either reject and retain the draft or report that a queued message will be available only after explicit resume; choose one policy and test it. Never silently resume or spawn a worker from `i`. |
+| Completed, failed, cancelled, archived, deleted, or orphaned session without a live owner | Reject live delivery with a clear status and keep the draft. Offer the existing attach/resume route where appropriate; do not start work implicitly. |
+
+If the implementation supports queueing before the worker is ready, a message
+accepted in `starting` state must remain durable and be processed once the
+worker has claimed the session. If the worker exits before consuming an
+accepted message, the message remains visibly pending/recoverable; it must not
+be dropped or silently replayed twice.
+
+## 8. Functional requirements
+
+### FR-1 — Details-page `i` action
+
+In a valid session-details view, `i` opens a composer overlay/subview without
+changing the selected session, attaching it, or changing worker ownership. The
+details view shows a clear key hint. Existing Enter-to-attach, scroll, exit,
+approval, cancellation, and list navigation behavior remains intact.
+
+### FR-2 — Canonical editor parity
+
+The new view MUST reuse `UnifiedInputSession`'s editor/capability pipeline, or
+extract a shared controller used by both that session and `agents`. It MUST NOT
+implement a second buffer, paste model, trigger dispatcher, or keyboard
+capability list. Session-specific submit and rendering adapters may differ.
+Parity tests must cover every registered capability and trigger relevant to
+the active editor mode.
+
+### FR-3 — Target-bound input context
+
+The composer is bound to the exact target session ID and uses the target
+session's effective workspace, mode/policy, configuration, command/skill
+registry, and mention context for completion and execution. A target context
+that cannot be obtained or is stale must fail closed; the manager's own cwd or
+session registries must not be substituted silently.
+
+### FR-4 — Owner-process delivery
+
+Submission crosses the process boundary through an explicit background-session
+input contract. The background worker that owns the live session is the
+authority that accepts and dispatches the command. A manager-side durable event
+append by itself is not delivery. Use existing local ownership and storage
+primitives, adding a bounded per-session inbox/IPC mechanism if required. Do
+not introduce a second agent runtime.
+
+### FR-5 — Canonical target message routing
+
+After receipt, ordinary text is passed into the target session's shared message
+router, equivalent to the normal `TUISession.handle_send()` path. The target
+runtime, not the manager, handles:
+
+- busy/streaming queue policy;
+- slash-command and skill routing;
+- workflow continuation and recovery rules;
+- mention resolution and tool execution;
+- appending the user message to the correct conversation journal;
+- session-service/event projections and resulting turn activity.
+
+Inputs must not restart a workflow from its initial phase, create a new
+conversation/session ID, or bypass mode, capability, workspace, approval, or
+subagent policy.
+
+### FR-6 — Queueing, ordering, and idempotency
+
+Accepted messages have stable message/command IDs and are processed in FIFO
+order for the target session. Repeated delivery of the same command ID is
+idempotent. Enforce bounded queue depth and payload size; report backpressure
+without losing the draft. The worker must not execute concurrent user turns
+unless the existing session runtime explicitly supports that behavior.
+
+For messages received while the worker is in an LLM/tool turn, follow the
+target session's established busy policy. At minimum, ordinary follow-up text
+must queue and run at a safe turn boundary; control/interrupt behavior is only
+available through the existing explicit control keys/commands. Slash commands
+must be evaluated using their declared busy policy by the target runtime.
+
+### FR-7 — Pending question and approval semantics
+
+The current ask-user answer mechanism remains supported. The implementation
+must distinguish answering a pending question from queuing a new user turn and
+must not deliver one submission to both paths. A pending approval cannot be
+approved or rejected by arbitrary composer text. Preserve existing `y`/`n` or
+approval-overlay semantics.
+
+### FR-8 — Honest operation status
+
+Represent at least accepted/queued, delivered-to-owner, processing, completed,
+and rejected/failed states or equivalent user-visible receipts. Errors are
+redacted and bounded. The UI must distinguish durable acceptance from actual
+turn start/completion and show a stable message ID for diagnosis without
+printing the submitted text into manager logs.
+
+### FR-9 — Responsiveness and cancellation
+
+Input typing and modal navigation remain on the UI loop and do not block on
+filesystem scans, process operations, session-store locks, or worker response.
+Enqueue/delivery work uses the existing bounded async service boundary or an
+equivalent bounded adapter. Closing the modal cancels only its local draft UI;
+it does not retract an already accepted message or terminate the worker.
+
+### FR-10 — Transcript and persistence integrity
+
+An accepted message is added to the selected session's conversation/journal
+exactly once with the correct source/client and turn identity. Do not duplicate
+the message by both importing an inbox record and appending a separate
+`turn_queued` path. Persist enough inbox/receipt state to recover accepted but
+unconsumed inputs after manager or worker restart.
+
+### FR-11 — Stable target identity and ownership
+
+Every command is addressed by session ID plus current owner/attempt identity,
+not row number, page offset, title, or mutable selection index. A stale worker
+attempt must not consume a newer attempt's message. A no-longer-owned or
+terminal session returns an explicit failure. The feature cannot steal the
+session lease or alter the single-owner invariant.
+
+### FR-12 — Non-interactive compatibility
+
+The existing non-interactive `agenthicc agents` listing and JSON projections
+remain unchanged. The composer is available only in the interactive manager.
+The existing `agenthicc jobs input`/question-answering behavior and public
+`agenthicc attach <session-id>` behavior remain backward compatible.
+
+## 9. Proposed architecture and data flow
+
+The manager owns the editor surface; the selected live worker owns message
+interpretation and execution. A shared input controller prevents the editor
+from forking, and a target-bound inbox bridges processes.
+
+```text
+agents manager (foreground process)
+  │
+  ├─ detail page captures target session_id + owner attempt
+  ├─ i opens shared input controller in target context
+  ├─ paste / @mention / slash / skill picker uses target workspace registries
+  └─ Enter → SendMessageCommand(text, command_id, target_session_id)
+             │
+             ▼
+     bounded BackgroundManagerService adapter
+             │
+             ▼
+     supervisor-owned local command inbox / IPC
+       (durable acceptance, dedupe, FIFO, owner fence)
+             │
+             ▼
+     target background worker drains inbox
+             │
+             ├─ resolve ask_user answer when one is pending
+             └─ otherwise use shared session message router
+                    │
+                    ├─ busy policy / queue
+                    ├─ slash command / skill route
+                    ├─ mention and workspace policy
+                    └─ session transcript + workflow + agent turn
+             │
+             ▼
+     receipt/event projection → manager status and session details
+```
+
+### 9.1 Shared input surface
+
+Refactor `UnifiedInputSession` only as needed to allow an alternate
+session-bound submit adapter and a manager-owned renderer/overlay host. The
+normal TUI remains the canonical capability owner. The manager must not create
+a dummy `TUISession` or `CommandBus` whose handlers belong to the wrong
+conversation. Inputs retain the target mode/policy; cycling mode from the
+manager input, if exposed, must either update the target session through its
+normal mode command or be unavailable with an explanatory hint.
+
+### 9.2 Worker-owned command inbox
+
+Add a narrow typed input envelope, conceptually:
+
+```text
+message_id
+session_id
+owner_attempt
+client_id = "agents-manager"
+text
+accepted_at
+delivery_state
+```
+
+The concrete storage may be an append-only inbox in the existing background
+store or another local IPC primitive, but it must provide atomic enqueue,
+bounded payloads, idempotent acceptance, FIFO consumption, owner/attempt
+fencing, and restart recovery. Keep it separate from ask-user `input_value`;
+the two protocols have different semantics.
+
+The worker must monitor its inbox while it owns the session, including while a
+workflow is running. An implementation that checks only before or after the
+whole `execute_workflow()` call does not satisfy live input. It may dispatch
+messages at safe turn/phase boundaries according to the session queue contract,
+but must expose the pending/queued state and must not reset the workflow.
+
+### 9.3 Shared target-side message routing
+
+Extract or expose the smallest session-owned dispatch operation needed by
+both `TUISession.handle_send()` and the background worker. Preserve behavior
+for natural-language messages, registered commands/skills, workflow
+continuations, and current busy policies. Avoid duplicating parsing logic in
+the manager or maintaining separate TUI and headless command registries.
+
+## 10. Failure handling and security
+
+- If the target becomes terminal, loses its owner, or changes attempt between
+  composer opening and submission, reject the send and retain the draft.
+- If enqueue succeeds but the worker is temporarily unavailable, report
+  `queued/pending`, not `delivered`; retain the item for recovery.
+- If the command inbox is full, reject before clearing the editor.
+- If the worker acknowledges a command but crashes before recording dispatch,
+  recovery uses the stable ID to avoid duplicate execution.
+- If the owner lease changes, the old owner cannot consume or acknowledge
+  messages for the new attempt.
+- Error and diagnostic output is redacted. The submitted message is stored in
+  the target session's normal journal as expected, but must not be copied into
+  generic manager logs or operation telemetry.
+- The worker validates session ID, attempt, payload size, text type, and
+  capability/mode policy before dispatch. User input does not grant additional
+  tools, permissions, network access, or workspace paths.
+- Mention completions and resolution are scoped to the target workspace and
+  existing `WorkspaceScope`/`WorkspaceAccessPolicy`.
+- Slash commands execute under the target's command registry, session owner,
+  and policy—not under manager process privileges.
+
+## 11. Acceptance criteria
+
+1. Opening a session's details and pressing `i` displays an input panel with a
+   visible target identity; it does not attach or stop the background worker.
+2. `Esc` returns to details, retains an unsubmitted draft for the manager visit,
+   and has no cancellation effect on the target worker.
+3. The composer supports all normal registered input capabilities, including
+   multiline text, ordinary typing, cursor editing, paste/expand/delete, and
+   trigger pickers; tests demonstrate the same core controller is used by both
+   the regular TUI and this view.
+4. `@` completion searches the selected session workspace even when the
+   manager process cwd differs. A submitted mention is resolved by the target
+   session's policy.
+5. Slash commands, skills, and other registered triggers are executed by the
+   target session's normal router. The manager's own command handlers are not
+   invoked for the submitted text.
+6. Sending while a worker is running reaches that worker without changing its
+   PID, session ID, owner lease, workflow run ID, or current checkpoint. The
+   message is processed once at a safe session boundary under existing busy
+   policy.
+7. Messages sent in quick succession preserve FIFO ordering and are not
+   duplicated by retries, repeated Enter events, or worker recovery.
+8. A pending ask-user response is resolved once by the existing response path;
+   the same text is not also queued as a new turn. Pending approval remains
+   unresolved unless the user uses the established approval action.
+9. Sending to terminal/unowned/deleted sessions produces a bounded actionable
+   error, keeps the draft, and never silently launches a worker.
+10. A status/attempt change after opening the composer cannot redirect the
+    message to another list row or session.
+11. Enqueue/delivery does not freeze navigation or rendering under a slow
+    worker, full queue, or session-store contention.
+12. Accepted-but-unconsumed messages survive a manager restart and are either
+    consumed once by the valid owner or explicitly shown as pending/rejected;
+    they are never silently lost.
+13. Existing Enter-to-attach, list view, ask-user response, `jobs input`,
+    cancellation/approval keys, JSON listing, and non-interactive output remain
+    compatible.
+14. No message is accepted merely because a durable projection event exists;
+    the manager shows a delivery claim only when the target owner acknowledges
+    it.
+
+## 12. Verification plan
+
+### Unit tests
+
+- Detail-view key handling opens input only for the captured selected session;
+  modal keys do not fall through to manager cancel/archive/attach actions.
+- Shared editor tests verify exact parity for every capability and registered
+  trigger, including condensed paste cursor boundaries, backspace, Esc, and
+  Ctrl+J/Enter behavior.
+- Target context tests assert mention cwd, mode/policy, and command registry
+  are sourced from the target, not manager cwd/session.
+- Inbox envelope validation covers empty/oversized text, malformed IDs,
+  unknown session, stale owner/attempt, and queue capacity.
+- FIFO, idempotency-key replay, acknowledge/consume transitions, and stale
+  attempt fencing are tested without a real provider.
+- State-specific tests cover running, starting, waiting-input, waiting-
+  approval, paused, and terminal sessions.
+- Failure tests verify a failed submission retains the draft and does not
+  clear it until acceptance.
+
+### Integration tests
+
+- Start a real background worker with a deterministic fake provider; submit
+  from a separate manager-side service instance and verify the owning worker
+  receives the message through its shared session dispatcher.
+- Verify a message arriving during a busy turn queues, then appears exactly
+  once in target conversation history and starts only after the configured
+  safe boundary.
+- Verify ask-user answer and generic turn delivery are mutually exclusive.
+- Verify registered `/` command and `@` mention are interpreted in the target
+  workspace/config context.
+- Crash/restart the manager and worker at acceptance/dispatch/ack boundaries;
+  verify pending receipts, idempotent recovery, and owner lease safety.
+- Inject slow IPC/store operations and assert manager service calls remain
+  bounded and asynchronous.
+
+### End-to-end tests
+
+- With a scripted terminal, navigate list → details → `i`, type ordinary and
+  multiline input, submit, and remain in `agents` details while the session
+  records and processes the message.
+- Paste a condensed large block, edit/delete it with standard paste keys, and
+  verify the exact submitted payload reaches the selected session.
+- Use `@` and slash/skill pickers while manager cwd differs from the target
+  workspace; assert target-side routing and resolution.
+- Send to two sessions in succession while projections reorder; each command
+  must remain pinned to the session whose details opened its composer.
+- Exercise a running workflow and verify the incoming message does not restart
+  its first phase, alter its checkpoint, or change its session ID.
+- Exercise pending question, pending approval, worker exit, full queue, and
+  stale owner states; verify correct feedback and no implicit attach/restart.
+- Keep existing detail attach E2E coverage passing unchanged.
+
+## 13. Implementation sequence
+
+1. **Input contract audit:** map every `UnifiedInputSession` capability,
+   registered trigger, render dependency, and `TUISession.handle_send()` side
+   effect. Define a typed target input/receipt protocol.
+2. **Shared editor adapter:** extract only the UI/input pieces needed to bind
+   the existing editor to an alternate target-bound submit function; retain
+   normal TUI behavior and tests.
+3. **Worker inbox:** implement bounded durable enqueue, idempotency, owner and
+   attempt fences, wake-up/consumption, and recovery receipts.
+4. **Target dispatcher:** share message routing between TUI and background
+   execution. Add safe-boundary handling for live workflow/agent turns and
+   preserve ask-user/approval semantics.
+5. **Manager composer:** add `i` detail mode, target context, async submit,
+   status rendering, draft preservation, and responsive modal key handling.
+6. **Compatibility and lifecycle:** verify process restart, cancellation,
+   worker completion, retry, and attach coexist without ownership races.
+7. **Documentation and release:** document key behavior and supported session
+   states; update the PRD index and tests/gates for touched surfaces.
+
+## 14. Operational requirements
+
+- The manager remains responsive with a slow or unreachable worker.
+- Inbox storage and user-visible receipt state are bounded and observable.
+- The worker uses an event-driven wakeup where available; any polling fallback
+  has bounded cadence and shutdown behavior.
+- No new listener is bound to a public network interface. Local IPC must retain
+  session ownership and authorization checks.
+- Accepted text is retained according to the selected session's existing
+  transcript/journal retention policy; generic manager logs contain IDs and
+  states, not text contents.
+- Existing session/workflow durable checkpoints remain the source of workflow
+  recovery. Inbox processing must not create a parallel checkpoint format.
+
+## 15. Definition of done
+
+The feature is complete when a user can open a live session's details, compose
+input with the same editor features used by the regular TUI, submit to that
+exact live session without attaching, and observe that the worker processed
+the input once through its own normal routing/policy path. Delivery must be
+durable across process boundaries, recoverable at crash boundaries, and
+compatible with existing attach, question, approval, and workflow-resume
+behavior. Unit, integration, and end-to-end evidence must cover those claims.

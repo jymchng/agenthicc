@@ -17,6 +17,7 @@ from pathlib import Path
 from collections.abc import Awaitable, Callable, Sequence
 from typing import TypedDict
 from .deletion import DeleteFailure, DeleteResult
+from .input_inbox import BackgroundInput, BackgroundInputInbox
 from .model import (
     ACTIVE_STATUSES,
     BackgroundSession,
@@ -556,7 +557,14 @@ class BackgroundSupervisor:
             )
         return current
 
-    def provide_input(self, session_id: str, value: str) -> BackgroundSession:
+    def provide_input(
+        self,
+        session_id: str,
+        value: str,
+        *,
+        expected_attempt: int | None = None,
+        expected_lease_token: str | None = None,
+    ) -> BackgroundSession:
         """Deliver explicit user input to a session paused at ``waiting_input``."""
 
         if not isinstance(value, str) or not value.strip():
@@ -567,8 +575,29 @@ class BackgroundSupervisor:
         return self.store.update(
             session_id,
             expected_status=SessionStatus.WAITING_INPUT,
+            expected_attempt=expected_attempt,
+            expected_lease_token=expected_lease_token,
             input_value=value[:8_000],
             latest_activity="Input received",
+        )
+
+    def enqueue_input(
+        self,
+        session_id: str,
+        text: str,
+        *,
+        owner_attempt: int,
+        lease_token: str,
+        message_id: str,
+    ) -> BackgroundInput:
+        """Accept one durable message for the exact live worker attempt."""
+
+        return BackgroundInputInbox(self.store).enqueue(
+            session_id,
+            text,
+            owner_attempt=owner_attempt,
+            lease_token=lease_token,
+            message_id=message_id,
         )
 
     def cancel(self, session_id: str) -> BackgroundSession:

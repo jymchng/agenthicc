@@ -160,8 +160,30 @@ only the workspace directory name, not its full path. Press Enter on a row to
 open a dedicated details page; it shows the workspace directory name, lifecycle
 timestamps, workflow and phase history, provider/model, recent activity, and
 failure information. Press Enter again there to attach that exact session.
-Press Esc to return to the table. `[ ]` scrolls the detail fields when they do
-not fit in the terminal.
+Press Esc to return to the table. The detail frame stays sized to its visible
+fields so its navigation/action hints remain on-screen. Use `↑`/`↓` or `j`/`k`,
+`PageUp`/`PageDown`, `Home`/`End`, or `[`/`]` to scroll without changing the
+selected session; the view does not dump the session's complete tool history.
+
+Press `i` on a live session's detail page to open a target-pinned composer.
+It uses the normal `UnifiedInputSession` editing and trigger pipeline, with
+mentions rooted at the target workspace and command/skill suggestions built
+from that session's launch configuration and project. Submitting ordinary text
+does not attach, restart, or change the worker lease. The manager durably queues
+it for the exact owner attempt; the worker consumes it at an agent-safe
+boundary, or runs it as a follow-up turn if it arrived after the previous turn's
+last tool boundary. A worker that finishes first leaves a visible rejection
+receipt with a resend instruction rather than silently dropping the text.
+The detail page's `Latest input` field shows the newest receipt (`queued`,
+`delivered`, `processed`, or `not delivered`) and a short message ID, never the
+message body. The same message ID fences retries and duplicate Enter events.
+
+Target-side non-interactive commands and skills use the worker's command and
+skill registries; a command is never evaluated by the manager's own session.
+Commands that require a foreground overlay, and `/workflow` recovery controls,
+must be run after attaching so their session-owned UI/checkpoint semantics are
+preserved. A text entry sent while the worker is running is not an approval:
+use the existing `y`/`n` controls for approval requests.
 
 The manager paints a loading viewport immediately, then loads a page through a
 bounded background service. Navigation and lifecycle operations do not wait
@@ -188,8 +210,12 @@ Useful keys:
 | `PageUp`/`PageDown` | Move one session page |
 | `Enter` | Open the selected session's detailed page |
 | `Enter` (details page) | Attach that exact session in the normal foreground TUI, loading its transcript |
+| `i` (details page) | Open the composer for that exact live session; accepted input continues asynchronously |
 | `Esc` (details page) | Return to the session table |
-| `[`/`]` (details page) | Scroll the detail fields |
+| `↑`/`↓`, `j`/`k` (details page) | Scroll one detail row without changing the selected session |
+| `PageUp`/`PageDown` (details page) | Scroll one detail viewport |
+| `Home`/`End` (details page) | Scroll to the first/last detail row |
+| `[`/`]` (details page) | Scroll six detail rows |
 | `r` | Refresh |
 | `c` | Cancel the selected worker |
 | `a` | Archive a terminal session |
@@ -251,6 +277,13 @@ JSON status removes the original intent and lease token and applies the same
 secret-pattern redaction used by session inspection. A missing or invalid
 transition is reported as a failed control operation; workers are never
 implicitly relaunched after a process restart.
+
+Target input receipts live at `~/.agenthicc/background/input-inbox/<id>.jsonl`,
+separate from background lifecycle logs. The inbox stores the submitted text
+because the live worker needs to deliver it, so those files are sensitive just
+like the target transcript and must not be copied into generic logs or shared
+support bundles. Receipts contain the message ID, owner attempt, state, and a
+bounded error; raw lease tokens are not persisted.
 
 ## Configuration
 

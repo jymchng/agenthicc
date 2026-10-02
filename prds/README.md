@@ -82,6 +82,8 @@ against the current source before implementing them.
 - [PRD-211 — Keep resumed session status and activity attempt-consistent](prd-211-session-attempt-status-and-activity-consistency.md)
 - [PRD-212 — Make detached goal mode authoritative before execution](prd-212-authoritative-mode-before-detached-goal-execution.md)
 - [PRD-213 — Select the resumed workflow as the active workflow](prd-213-select-resumed-workflow-as-active.md)
+- [PRD-214 — Reliable Subagent Findings and File-Backed Handoff](prd-214-reliable-subagent-findings-handoff.md)
+- [PRD-215 — Send Input to a Selected Background Session from its Details View](prd-215-targeted-input-from-agents-session-details.md)
 
 PRD-138 is the current cross-cutting roadmap for documentation truth,
 packaging, state boundaries, security, workflow correctness, persistence,
@@ -420,6 +422,20 @@ the next ordinary turn; unsuccessful or ambiguous attempts preserve the prior
 selection. Evidence is recorded in
 [`prd-213-select-resumed-workflow-as-active.md`](prd-213-select-resumed-workflow-as-active.md),
 with unit, integration, and end-to-end coverage.
+
+PRD-214 specifies a reliable subagent result contract after an observed
+exploration run returned tool-call inventories instead of findings. The
+current pool can substitute `Executed tool call(s): ...` for an empty worker
+response and mark it successful; the PRD requires report-backed completion,
+session-scoped Markdown findings artifacts, parent-readable references, and
+an explicit incomplete state. It complements PRD-180's general artifact
+delivery design while preserving explorer read-only access to project files.
+
+PRD-215 proposes a target-bound composer on the `agenthicc agents` details
+page. It requires parity with the canonical TUI input editor and an owner-side
+cross-process delivery path; the current `i`/`provide_input` behavior only
+answers a pending ask-user request and does not submit a general turn to a live
+background worker.
 
 ## Existing PRDs
 

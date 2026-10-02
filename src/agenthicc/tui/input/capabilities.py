@@ -268,6 +268,25 @@ class SubmitCapability:
         from agenthicc.tui.runtime.commands import SendMessageCommand  # noqa: PLC0415
 
         text = session._buf.text.strip()
+        try:
+            clear_after_acceptance = object.__getattribute__(session, "_clear_after_acceptance")
+        except AttributeError:
+            clear_after_acceptance = False
+        if clear_after_acceptance and text:
+            result = await session._bus.dispatch_async(SendMessageCommand(text=text))
+            try:
+                accepted = object.__getattribute__(result, "ok")
+            except AttributeError:
+                accepted = True
+            if accepted is False:
+                return _CONSUMED
+            session._buf.clear()
+            session._paste.condensed = False
+            session._ctrl_c_count = 0
+            session._push()
+            if self._commit_history:
+                session._hist.commit(text)
+            return _CONSUMED
         session._buf.clear()
         session._paste.condensed = False
         session._ctrl_c_count = 0

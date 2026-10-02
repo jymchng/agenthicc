@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Awaitable, Callable
 
 from .deletion import DeleteResult
+from .input_inbox import BackgroundInput
 from .model import BackgroundSession
 from .store import BackgroundPage, BackgroundStore
 from .supervisor import BackgroundSupervisor
@@ -80,10 +81,15 @@ class BackgroundManagerService:
             raise TypeError("background store returned an invalid page")
         return value
 
-    async def run_blocking(self, function: Callable[..., object], *args: object) -> object:
+    async def run_blocking(
+        self,
+        function: Callable[..., object],
+        *args: object,
+        **kwargs: object,
+    ) -> object:
         """Run an injected compatibility callback on the bounded adapter."""
 
-        return await self._run_blocking(function, *args)
+        return await self._run_blocking(function, *args, **kwargs)
 
     async def maintain_async(self, *, force: bool = False) -> list[BackgroundSession]:
         del force  # cadence and single-flight ownership belong to the manager.
@@ -136,6 +142,35 @@ class BackgroundManagerService:
 
     async def provide_input_async(self, session_id: str, value: str) -> ManagerOperationResult:
         return await self._invoke(session_id, self.supervisor.provide_input, session_id, value)
+
+    async def enqueue_input_async(
+        self,
+        session_id: str,
+        text: str,
+        *,
+        owner_attempt: int,
+        lease_token: str,
+        message_id: str,
+    ) -> ManagerOperationResult:
+        result = await self._invoke(
+            session_id,
+            self.supervisor.enqueue_input,
+            session_id,
+            text,
+            owner_attempt=owner_attempt,
+            lease_token=lease_token,
+            message_id=message_id,
+        )
+        if result.ok and not isinstance(result.value, BackgroundInput):
+            return ManagerOperationResult(
+                operation_id=result.operation_id,
+                target_id=session_id,
+                phase="failed",
+                ok=False,
+                category="invalid_receipt",
+                message="Background input service returned an invalid receipt",
+            )
+        return result
 
     async def pin_async(self, session_id: str, pinned: bool) -> ManagerOperationResult:
         operation_id = uuid.uuid4().hex

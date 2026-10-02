@@ -45,6 +45,15 @@ class _Processor:
 class _Conversation:
     def __init__(self) -> None:
         self.cli_flags = None
+        self.events: list[tuple[str, dict[str, object], str | None]] = []
+
+    def append_event(
+        self,
+        kind: str,
+        payload: dict[str, object],
+        event_id: str | None = None,
+    ) -> None:
+        self.events.append((kind, payload, event_id))
 
 
 class _AppState:
@@ -55,6 +64,8 @@ class _AppState:
 
 class _Session:
     def __init__(self) -> None:
+        from agenthicc.commands import build_builtin_registry
+
         self.session_id = "worker-session"
         self.processor = _Processor()
         self.app_state = _AppState()
@@ -66,6 +77,9 @@ class _Session:
         )
         self.session_memory = object()
         self.skills = {}
+        self.cmd_registry = build_builtin_registry()
+        self.workflow_registry = object()
+        self.terminal_manager = None
         self.mention_cache = object()
         self.project_plugins = SimpleNamespace(all_tools=[])
         self.mcp_registry = None
@@ -121,6 +135,199 @@ async def test_worker_uses_canonical_direct_turn_and_finalizes(monkeypatch, tmp_
     assert completed.status is SessionStatus.COMPLETED
     assert completed.mode_name == "Yolo"
     assert completed.requested_mode_name == "Yolo"
+
+
+@pytest.mark.asyncio
+async def test_worker_binds_live_input_to_shared_agent_turn_boundary(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from agenthicc.background.input_inbox import BackgroundInputInbox
+    from agenthicc.runners.agent_turn_context import AgentTurnContext
+
+    store = BackgroundStore(tmp_path / "background")
+    _queued(tmp_path, store)
+    fake_session = _Session()
+
+    async def build(*args: object, **kwargs: object) -> _Session:
+        return fake_session
+
+    async def direct(session: object, request: WorkerRequest) -> None:
+        current = store.get(request.session_id)
+        inbox = BackgroundInputInbox(store)
+        inbox.enqueue(
+            request.session_id,
+            "continue with the next workflow step",
+            owner_attempt=current.attempt,
+            lease_token=current.lease_token,
+            message_id="manager-command-1",
+        )
+        context = AgentTurnContext(
+            text=request.intent,
+            runner=object(),  # type: ignore[arg-type]
+            processor=object(),  # type: ignore[arg-type]
+        )
+        assert context.next_queued_message is not None
+        assert context.next_queued_message() == "continue with the next workflow step"
+        assert fake_session.app_state.conversation.events == [
+            (
+                "user_message",
+                {
+                    "text": "continue with the next workflow step",
+                    "source": "agents-manager",
+                },
+                "manager-command-1",
+            )
+        ]
+
+    async def close(*args: object, **kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr("agenthicc.runners.tui_session._build_session_context", build)
+    monkeypatch.setattr("agenthicc.background.worker._run_direct_turn", direct)
+    monkeypatch.setattr("agenthicc.runners.headless._close_headless_session", close)
+    request = WorkerRequest(
+        session_id="worker-session",
+        workflow_name="",
+        intent="do deterministic work",
+        cwd=str(tmp_path),
+        config_path=None,
+        set_overrides=(),
+        dangerously_skip_permissions=False,
+    )
+
+    assert await run_worker(request, store) == 0
+    receipt = BackgroundInputInbox(store).receipts(request.session_id)[0]
+    assert receipt.state == "completed"
+    assert store.get(request.session_id).status is SessionStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_worker_drains_input_arriving_after_last_agent_safe_boundary(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from agenthicc.background.input_inbox import BackgroundInputInbox
+
+    store = BackgroundStore(tmp_path / "background")
+    _queued(tmp_path, store)
+    fake_session = _Session()
+    observed_intents: list[str] = []
+
+    async def build(*args: object, **kwargs: object) -> _Session:
+        return fake_session
+
+    async def direct(session: object, request: WorkerRequest) -> None:
+        observed_intents.append(request.intent)
+        if len(observed_intents) == 1:
+            current = store.get(request.session_id)
+            BackgroundInputInbox(store).enqueue(
+                request.session_id,
+                "arrived just after the final tool boundary",
+                owner_attempt=current.attempt,
+                lease_token=current.lease_token,
+                message_id="late-manager-command",
+            )
+
+    async def close(*args: object, **kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr("agenthicc.runners.tui_session._build_session_context", build)
+    monkeypatch.setattr("agenthicc.background.worker._run_direct_turn", direct)
+    monkeypatch.setattr("agenthicc.runners.headless._close_headless_session", close)
+    request = WorkerRequest(
+        session_id="worker-session",
+        workflow_name="",
+        intent="do deterministic work",
+        cwd=str(tmp_path),
+        config_path=None,
+        set_overrides=(),
+        dangerously_skip_permissions=False,
+    )
+
+    assert await run_worker(request, store) == 0
+    assert observed_intents == [
+        "do deterministic work",
+        "arrived just after the final tool boundary",
+    ]
+    receipt = BackgroundInputInbox(store).receipts(request.session_id)[0]
+    assert receipt.state == "completed"
+    assert fake_session.app_state.conversation.events[0][2] == "late-manager-command"
+
+
+@pytest.mark.asyncio
+async def test_late_manager_input_resumes_workflow_checkpoint_instead_of_direct_turn(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from agenthicc.background.input_inbox import BackgroundInputInbox
+
+    store = BackgroundStore(tmp_path / "background")
+    artifact = tmp_path / "sessions" / "worker-session"
+    artifact.mkdir(parents=True)
+    store.create(
+        BackgroundSession.create(
+            "worker-session",
+            title="Workflow worker",
+            cwd=str(tmp_path),
+            workflow_name="demo",
+            intent="start the workflow",
+            artifact_dir=str(artifact),
+        )
+    )
+    fake_session = _Session()
+    workflow_calls: list[tuple[str, dict[str, object]]] = []
+    resume_selections = iter((None, "saved-workflow-run"))
+
+    async def build(*args: object, **kwargs: object) -> _Session:
+        return fake_session
+
+    def select(*args: object, **kwargs: object) -> str | None:
+        return next(resume_selections)
+
+    async def execute(
+        session: object,
+        workflow_name: str,
+        intent: str,
+        **kwargs: object,
+    ) -> object:
+        workflow_calls.append((intent, kwargs))
+        if len(workflow_calls) == 1:
+            current = store.get("worker-session")
+            BackgroundInputInbox(store).enqueue(
+                "worker-session",
+                "continue from the saved phase",
+                owner_attempt=current.attempt,
+                lease_token=current.lease_token,
+                message_id="late-workflow-input",
+            )
+        return SimpleNamespace(status="complete", error=None)
+
+    async def direct(*args: object, **kwargs: object) -> None:
+        raise AssertionError("workflow continuation must not become a direct turn")
+
+    async def close(*args: object, **kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr("agenthicc.runners.tui_session._build_session_context", build)
+    monkeypatch.setattr("agenthicc.runners.headless._select_headless_workflow_resume", select)
+    monkeypatch.setattr("agenthicc.runners.headless.execute_workflow", execute)
+    monkeypatch.setattr("agenthicc.background.worker._run_direct_turn", direct)
+    monkeypatch.setattr("agenthicc.runners.headless._close_headless_session", close)
+    request = WorkerRequest(
+        session_id="worker-session",
+        workflow_name="demo",
+        intent="start the workflow",
+        cwd=str(tmp_path),
+        config_path=None,
+        set_overrides=(),
+        dangerously_skip_permissions=False,
+    )
+
+    assert await run_worker(request, store) == 0
+    assert workflow_calls == [
+        ("start the workflow", {}),
+        ("continue from the saved phase", {"resume_run_id": "saved-workflow-run"}),
+    ]
+    receipt = BackgroundInputInbox(store).receipts(request.session_id)[0]
+    assert receipt.state == "completed"
 
 
 @pytest.mark.asyncio

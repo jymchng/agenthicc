@@ -29,6 +29,9 @@ from agenthicc.background.settings import BackgroundManagerSettings
 
 if TYPE_CHECKING:
     from rich.console import Console, RenderableType
+    from agenthicc.tui.conversation_store import AppState
+    from agenthicc.tui.input.unified_session import UnifiedInputSession
+    from agenthicc.tui.workspace.overlay import OverlayHost
 
 
 @dataclass(frozen=True)
@@ -189,9 +192,25 @@ class BackgroundManager:
         self._activity_last_active: float | None = None
         self._activity_checked_at = 0.0
         self._activity_text: dict[str, str | None] = {}
+        self._input_receipt_text: dict[str, str | None] = {}
+        self._input_receipt_fingerprint: dict[str, tuple[int, int, int, int]] = {}
         self._dirty_causes: set[str] = {"projection_changed", "layout_changed"}
         self._notice = ""
         self._input_executor: ThreadPoolExecutor | None = None
+        self._composer_target: BackgroundSession | None = None
+        self._composer_open = False
+        self._composer_state: AppState | None = None
+        self._composer_input: UnifiedInputSession | None = None
+        self._composer_overlay: OverlayHost | None = None
+        self._composer_history: dict[str, list[str]] = {}
+        self._input_history: dict[str, list[str]] = {}
+        self._composer_task: asyncio.Task[object] | None = None
+        self._composer_build_task: asyncio.Task[None] | None = None
+        self._composer_building = False
+        self._composer_pending_keys: list[tuple[object, str]] = []
+        self._composer_submitting = False
+        self._composer_submitted = False
+        self._composer_receipt = ""
         self._last_maintenance_async = 0.0
         self._maintenance_retry_at = 0.0
         self._maintenance_failure_count = 0
@@ -798,19 +817,79 @@ class BackgroundManager:
 
     async def _load_activity(self, session: BackgroundSession, generation: int) -> None:
         try:
-            value = await self._service.run_blocking(self._activity_lines, session)
+            value = await self._service.run_blocking(self._load_detail_projection, session)
             if (
                 generation != self._activity_generation
                 or session.session_id != self._selected_session_id
             ):
                 return
-            lines = value if isinstance(value, list) else []
+            lines: list[str] = []
+            receipt: str | None = None
+            history: list[str] = []
+            if (
+                isinstance(value, tuple)
+                and len(value) == 3
+                and isinstance(value[0], list)
+                and (value[1] is None or isinstance(value[1], str))
+                and isinstance(value[2], list)
+            ):
+                lines = [line for line in value[0] if isinstance(line, str)]
+                receipt = value[1]
+                history = [entry for entry in value[2] if isinstance(entry, str)]
             self._activity_text[session.session_id] = lines[0] if lines else None
+            self._input_receipt_text[session.session_id] = receipt
+            self._input_history[session.session_id] = history
             self._mark_dirty("activity_changed")
         except asyncio.CancelledError:
             raise
         except Exception:
             return
+
+    def _load_detail_projection(
+        self, session: BackgroundSession
+    ) -> tuple[list[str], str | None, list[str]]:
+        """Read bounded activity, input receipt, and session input history."""
+        from agenthicc.background.input_inbox import BackgroundInputInbox  # noqa: PLC0415
+        from agenthicc.tui.runtime.session_export import _Redactor  # noqa: PLC0415
+        from agenthicc.tui.runtime.session_log import load_user_message_history  # noqa: PLC0415
+
+        activity = self._activity_lines(session)
+        history = self._input_history.get(session.session_id)
+        if history is None:
+            history = load_user_message_history(session.session_id, last_turns=20)
+            self._input_history[session.session_id] = history
+        inbox = BackgroundInputInbox(self.store)
+        receipt_fingerprint = (*inbox.fingerprint(session.session_id), session.attempt)
+        if (
+            self._input_receipt_fingerprint.get(session.session_id) == receipt_fingerprint
+            and session.session_id in self._input_receipt_text
+        ):
+            return activity, self._input_receipt_text[session.session_id], history
+        try:
+            receipts = inbox.receipts(session.session_id)
+        except (OSError, ValueError):
+            return activity, None, history
+        if not receipts:
+            self._input_receipt_text[session.session_id] = None
+            self._input_receipt_fingerprint[session.session_id] = receipt_fingerprint
+            return activity, None, history
+        receipt = receipts[-1]
+        labels = {
+            "accepted": "queued",
+            "claimed": "processing",
+            "delivered": "delivered",
+            "completed": "processed",
+            "failed": "failed",
+            "rejected": "not delivered",
+        }
+        state = labels.get(receipt.state, "pending")
+        detail = f"{state} · {receipt.message_id[:12]}"
+        if receipt.error:
+            safe_error = _Redactor().value(receipt.error, "message")
+            detail += f" · {str(safe_error)[:120]}"
+        self._input_receipt_text[session.session_id] = detail
+        self._input_receipt_fingerprint[session.session_id] = receipt_fingerprint
+        return activity, detail, history
 
     def set_query(self, query: str) -> None:
         self.query = query.strip()
@@ -1062,6 +1141,7 @@ class BackgroundManager:
             self.activity_offset,
             self._activity_cache.get(selected.session_id) if selected is not None else None,
             self._activity_text.get(selected.session_id) if selected is not None else None,
+            self._input_receipt_text.get(selected.session_id) if selected is not None else None,
             self._projection_generation,
             self._projection_stale,
             self._projection_error,
@@ -1070,6 +1150,18 @@ class BackgroundManager:
             else 0,
             tuple(sorted(self._operation_state.items())),
             self._notice,
+            self._composer_open,
+            self._composer_target.session_id if self._composer_target is not None else None,
+            self._composer_target.attempt if self._composer_target is not None else None,
+            self._composer_building,
+            len(self._composer_pending_keys),
+            tuple(self._composer_state.input.buf()) if self._composer_state is not None else (),
+            self._composer_state.input.cursor() if self._composer_state is not None else 0,
+            self._composer_state.input.paste_condensed()
+            if self._composer_state is not None
+            else False,
+            self._composer_receipt,
+            self._composer_submitting,
         )
 
     @staticmethod
@@ -1139,6 +1231,9 @@ class BackgroundManager:
                 ("Attempt / retries", f"{session.attempt} / {session.retry_count}"),
                 ("Latest activity", " ".join(activity.split()) or "—"),
             ]
+            input_receipt = self._input_receipt_text.get(session.session_id)
+            if input_receipt:
+                rows.append(("Latest input", input_receipt))
             if session.heartbeat_stale:
                 rows.append(("Heartbeat", "Delayed; worker identity is being reconciled"))
             if session.error and session.status in {SessionStatus.FAILED, SessionStatus.CANCELLED}:
@@ -1179,7 +1274,13 @@ class BackgroundManager:
             elif session.status == SessionStatus.WAITING_INPUT:
                 rows.append(("Pending action", "Waiting for user input"))
 
-        max_visible = max(1, budget.height - (5 if not budget.compact else 2))
+        # Keep the detail panel content-driven instead of stretching a fixed
+        # frame to the terminal height. A full-height Rich Panel leaves the
+        # page's attach/scroll help below the live viewport (the remaining
+        # detail fields can then look unreachable even though the offset moves).
+        # Bound the rows first, then let the frame wrap just that viewport so
+        # the page heading and controls always have their own visible rows.
+        max_visible = max(1, budget.height - 5)
         max_scroll = max(0, len(rows) - max_visible)
         self._detail_scroll = min(self._detail_scroll, max_scroll)
         visible = rows[self._detail_scroll : self._detail_scroll + max_visible]
@@ -1198,20 +1299,22 @@ class BackgroundManager:
             return Group(
                 Text("Session details", style="bold cyan"),
                 body,
-                Text("Esc back · Enter attach · [ ] scroll", style="dim"),
+                Text(
+                    "Esc back · Enter attach · i input · ↑↓/PgUp/PgDn scroll",
+                    style="dim",
+                ),
             )
 
         panel = Panel(
             body,
             title="Session Details" if session is not None else "Session Details · unavailable",
-            height=max(3, budget.height - 2),
             padding=(0, 1),
             expand=True,
         )
         first = self._detail_scroll + 1 if rows else 0
         last = min(len(rows), self._detail_scroll + len(visible))
         footer_label = (
-            "Esc back · Enter attach · [ ] scroll · q quit"
+            "Esc · Enter attach · i input · ↑↓ PgUp/PgDn [ ] Home/End"
             if session is not None
             else "Esc back · r refresh · q quit"
         )
@@ -1225,6 +1328,371 @@ class BackgroundManager:
             ),
             panel,
             footer,
+        )
+
+    def _build_target_input_editor(self, target: BackgroundSession) -> None:
+        """Create the canonical editor with registries scoped to *target*."""
+        from agenthicc.commands.builtins import build_builtin_registry  # noqa: PLC0415
+        from agenthicc.commands.plugin_loader import discover_command_plugins  # noqa: PLC0415
+        from agenthicc.config import load_config  # noqa: PLC0415
+        from agenthicc.skills.loader import discover_skills  # noqa: PLC0415
+        from agenthicc.tui.conversation_store import AppState  # noqa: PLC0415
+        from agenthicc.tui.input.unified_session import UnifiedInputSession  # noqa: PLC0415
+        from agenthicc.tui.runtime.commands import CommandBus, SendMessageCommand  # noqa: PLC0415
+        from agenthicc.tui.runtime.mode_manager import ModeManager  # noqa: PLC0415
+        from agenthicc.tui.trigger import TriggerManager  # noqa: PLC0415
+        from agenthicc.tui.triggers.at_mention import AtMentionTrigger  # noqa: PLC0415
+        from agenthicc.tui.triggers.slash_command import (  # noqa: PLC0415
+            SkillTrigger,
+            SlashCommandTrigger,
+        )
+        from agenthicc.tui.workspace.overlay import OverlayHost  # noqa: PLC0415
+        from agenthicc.workflows.registry import build_workflow_registry  # noqa: PLC0415
+
+        target_root = Path(target.cwd).expanduser().resolve()
+        project_agent_dir = target_root / ".agenthicc"
+        user_agent_dir = Path.home() / ".agenthicc"
+        config_path: str | None = None
+        set_overrides: list[str] = []
+        set_secret_overrides: list[str] = []
+        try:
+            request_path = Path(self.supervisor._request_path(target.session_id))
+            request_value = json.loads(request_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            request_value = {}
+        if isinstance(request_value, dict):
+            raw_config_path = request_value.get("config_path")
+            config_path = raw_config_path if isinstance(raw_config_path, str) else None
+            for key, destination in (
+                ("set_overrides", set_overrides),
+                ("set_secret_overrides", set_secret_overrides),
+            ):
+                raw_values = request_value.get(key, ())
+                if isinstance(raw_values, (list, tuple)):
+                    destination.extend(item for item in raw_values if isinstance(item, str))
+
+        project_config = project_agent_dir / "agenthicc.toml"
+        cfg = load_config(
+            project_path=project_config if project_config.is_file() else None,
+            config_path=config_path,
+            cli_overrides=set_overrides,
+            cli_secret_overrides=set_secret_overrides,
+        )
+        commands = build_builtin_registry()
+        for command in discover_command_plugins(
+            project_dir=project_agent_dir,
+            user_dir=user_agent_dir,
+        ).all_commands:
+            commands.register(command)
+        skills = discover_skills(project_dir=project_agent_dir, user_dir=user_agent_dir)
+        from agenthicc.runners.tui_session import _build_skill_command  # noqa: PLC0415
+
+        for slug, skill in skills.items():
+            command = _build_skill_command(slug, skill)
+            if commands.get(command.name) is None:
+                commands.register(command)
+        workflows = build_workflow_registry(
+            project_dir=project_agent_dir,
+            user_dir=user_agent_dir,
+            load_external=True,
+        )
+        triggers = TriggerManager()
+        triggers.register(AtMentionTrigger())
+        triggers.register(SlashCommandTrigger(commands, workflows))
+        triggers.register(SkillTrigger(commands))
+
+        state = AppState()
+        state.conversation.session_id.set(target.session_id)
+        modes = ModeManager(app_state=state, default_name=target.mode_name or "Safe")
+        overlay = OverlayHost(state)
+        overlay.set_redraw_callback(lambda: self._mark_dirty("composer_overlay"))
+        bus = CommandBus()
+        target_key = (target.session_id, target.attempt)
+        history_key = f"{target.session_id}:{target.attempt}"
+        history = self._composer_history.get(history_key)
+        if history is None:
+            history = list(self._input_history.get(target.session_id, []))
+            self._composer_history[history_key] = history
+
+        async def submit(command: SendMessageCommand) -> ManagerOperationResult:
+            return await self._submit_target_input(target, target_key, command)
+
+        bus.register(SendMessageCommand, submit)
+        editor = UnifiedInputSession(
+            app_state=state,
+            command_bus=bus,
+            trigger_registry=triggers,
+            mode_manager=modes,
+            overlay_host=overlay,
+            cwd=target_root,
+            cfg=cfg,
+            history=history,
+            busy=True,
+            clear_after_acceptance=True,
+        )
+        # Mode changes must be applied by the target owner. Until the target
+        # context exposes a live mode command, keep the shift-tab capability
+        # out of this manager-local editor rather than mutating a local-only
+        # copy of the worker's mode.
+        from agenthicc.tui.input.capabilities import IDLE_CAPABILITIES, ModeCycleCapability
+
+        editor._capabilities = [
+            capability
+            for capability in IDLE_CAPABILITIES
+            if not isinstance(capability, ModeCycleCapability)
+        ]
+        self._composer_target = target
+        self._composer_state = state
+        self._composer_input = editor
+        self._composer_overlay = overlay
+        self._composer_receipt = ""
+
+    async def _submit_target_input(
+        self,
+        target: BackgroundSession,
+        target_key: tuple[str, int],
+        command: object,
+    ) -> ManagerOperationResult:
+        """Submit only to the immutable detail target captured by the editor."""
+        from agenthicc.tui.runtime.commands import SendMessageCommand  # noqa: PLC0415
+
+        if not isinstance(command, SendMessageCommand):
+            return ManagerOperationResult(
+                "", target.session_id, "failed", False, message="Invalid input"
+            )
+        current = await self._service.run_blocking(
+            self.store.get,
+            target_key[0],
+            include_deleted=True,
+        )
+        if not isinstance(current, BackgroundSession):
+            return ManagerOperationResult(
+                "", target.session_id, "failed", False, message="Target session is unavailable"
+            )
+        if current.attempt != target.attempt or current.lease_token != target.lease_token:
+            return ManagerOperationResult(
+                "",
+                target.session_id,
+                "failed",
+                False,
+                category="stale_owner",
+                message="Session owner changed; reopen details and retry",
+            )
+        self._composer_submitting = True
+        self._composer_submitted = False
+        self._mark_dirty("composer_submitting")
+        try:
+            if current.status == SessionStatus.WAITING_INPUT:
+                result = await self._service.run_blocking(
+                    self.supervisor.provide_input,
+                    current.session_id,
+                    command.text,
+                    expected_attempt=target.attempt,
+                    expected_lease_token=target.lease_token,
+                )
+                if not isinstance(result, BackgroundSession):
+                    return ManagerOperationResult(
+                        "",
+                        target.session_id,
+                        "failed",
+                        False,
+                        message="Question response was not accepted",
+                    )
+                self._composer_receipt = f"Answer submitted for {target.session_id[:12]}"
+                accepted = ManagerOperationResult(
+                    command.command_id, target.session_id, "accepted", True, value=result
+                )
+            else:
+                accepted = await self._service.enqueue_input_async(
+                    target.session_id,
+                    command.text,
+                    owner_attempt=target.attempt,
+                    lease_token=target.lease_token,
+                    message_id=command.command_id,
+                )
+                if accepted.ok:
+                    self._composer_receipt = (
+                        f"Queued for {target.session_id[:12]} · {command.command_id[:12]}"
+                    )
+            self._composer_submitted = accepted.ok
+            if not accepted.ok:
+                self._notice = accepted.message or "Input was rejected; draft retained"
+            else:
+                self._notice = self._composer_receipt
+            return accepted
+        finally:
+            self._composer_submitting = False
+            self._mark_dirty("composer_submission_finished")
+
+    def _open_input_composer(self, target: BackgroundSession) -> None:
+        if (
+            target.status
+            not in {
+                SessionStatus.STARTING,
+                SessionStatus.RUNNING,
+                SessionStatus.WAITING_APPROVAL,
+                SessionStatus.WAITING_INPUT,
+            }
+            or target.worker_pid is None
+            or not target.lease_token
+        ):
+            self._notice = (
+                f"Input unavailable while session is {target.status.value}; "
+                "attach or resume it explicitly"
+            )
+            self._mark_dirty("composer_rejected")
+            return
+        same_target = (
+            self._composer_target is not None
+            and self._composer_target.session_id == target.session_id
+            and self._composer_target.attempt == target.attempt
+            and self._composer_target.lease_token == target.lease_token
+            and self._composer_input is not None
+        )
+        if not same_target:
+            self._composer_target = target
+            if self._async_mode:
+                self._composer_building = True
+                self._composer_receipt = "Preparing target-scoped commands and mentions…"
+                try:
+                    loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    self._composer_building = False
+                    self._build_target_input_editor(target)
+                else:
+                    task = loop.create_task(
+                        self._build_input_composer_async(target),
+                        name=f"agenthicc-background-input-context-{target.session_id}",
+                    )
+                    self._composer_build_task = task
+                    task.add_done_callback(_consume_task_result)
+            else:
+                try:
+                    self._build_target_input_editor(target)
+                except Exception as exc:  # noqa: BLE001
+                    self._notice = (
+                        f"Target input context unavailable: {type(exc).__name__}: {exc}"
+                    )[:240]
+                    self._mark_dirty("composer_context_failed")
+                    return
+        self._composer_open = True
+        self._notice = ""
+        self._mark_dirty("composer_opened")
+
+    async def _build_input_composer_async(self, target: BackgroundSession) -> None:
+        """Prepare the target's plugin/config context off the UI event loop."""
+        try:
+            await self._service.run_blocking(self._build_target_input_editor, target)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            self._notice = (f"Target input context unavailable: {type(exc).__name__}: {exc}")[:240]
+            self._composer_receipt = "Target context unavailable; draft keys retained"
+            self._composer_open = False
+            self._mark_dirty("composer_context_failed")
+            return
+        finally:
+            self._composer_building = False
+        editor = self._composer_input
+        if editor is not None:
+            from agenthicc.tui.cbreak_reader import Key  # noqa: PLC0415
+            from agenthicc.tui.input.capabilities import _EXIT  # noqa: PLC0415
+
+            pending, self._composer_pending_keys = self._composer_pending_keys, []
+            for key, char in pending:
+                if not isinstance(key, Key):
+                    continue
+                result = await editor._dispatch(key, char)
+                if result is _EXIT or self._composer_submitted:
+                    self._close_input_composer()
+                    break
+        self._mark_dirty("composer_context_ready")
+
+    def _close_input_composer(self) -> None:
+        self._composer_open = False
+        if self._composer_overlay is not None and self._composer_overlay.active:
+            self._composer_overlay.hide()
+        self._mark_dirty("composer_closed")
+
+    def _dispatch_composer_key(self, key: object, ch: str) -> None:
+        if self._composer_input is None:
+            if self._composer_building:
+                if len(self._composer_pending_keys) < 1_024:
+                    self._composer_pending_keys.append((key, ch))
+                else:
+                    self._composer_receipt = "Input context is still loading; key queue is full"
+                    self._mark_dirty("composer_key_queue_full")
+            return
+        from agenthicc.tui.cbreak_reader import Key
+
+        if not isinstance(key, Key):
+            return
+
+        async def dispatch() -> object:
+            editor = self._composer_input
+            if editor is None:
+                return None
+            result = await editor._dispatch(key, ch)
+            from agenthicc.tui.input.capabilities import _EXIT  # noqa: PLC0415
+
+            if result is _EXIT:
+                self._close_input_composer()
+            if self._composer_submitted:
+                self._close_input_composer()
+            self._mark_dirty("composer_key")
+            return result
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            asyncio.run(dispatch())
+        else:
+            existing = self._composer_task
+            if existing is not None and not existing.done():
+                return
+            task = loop.create_task(dispatch(), name="agenthicc-background-input-key")
+            self._composer_task = task
+            task.add_done_callback(_consume_task_result)
+
+    def _render_input_composer(self, budget: ViewportBudget) -> RenderableType:
+        from rich.console import Group  # noqa: PLC0415
+        from rich.panel import Panel  # noqa: PLC0415
+        from rich.text import Text  # noqa: PLC0415
+        from agenthicc.tui.workspace.components import ComposerComponent  # noqa: PLC0415
+
+        target = self._composer_target
+        state = self._composer_state
+        overlay = self._composer_overlay
+        editor = self._composer_input
+        target_id = target.session_id if target is not None else "unknown"
+        content: list[RenderableType] = []
+        if overlay is not None and overlay.active:
+            rendered_overlay = overlay.render()
+            if rendered_overlay is not None:
+                content.append(rendered_overlay)
+        if state is not None:
+            content.append(ComposerComponent(state).render())
+        elif self._composer_building:
+            content.append(Text("Loading target-scoped input context…", style="yellow"))
+        if self._composer_submitting:
+            content.append(Text("Submitting to session owner…", style="yellow"))
+        elif self._composer_receipt:
+            content.append(Text(self._composer_receipt, style="green"))
+        if editor is not None and editor._mode.name == "IDLE":
+            content.append(Text("Ctrl+J newline · Esc back · Enter send", style="dim"))
+        content.append(Text("Shift+Tab mode switching is unavailable from agents", style="dim"))
+        return Group(
+            Text(
+                f"Background Session · {self._workspace_name(target.cwd) if target else ''}",
+                style="bold cyan",
+            ),
+            Panel(
+                Group(*content),
+                title=f"Send input · target {target_id}",
+                height=max(5, budget.height - 2),
+                padding=(0, 1),
+                expand=True,
+            ),
         )
 
     def render(self, *, all_sessions: bool = False) -> RenderableType:
@@ -1304,7 +1772,11 @@ class BackgroundManager:
                 (item for item in detail_records if item.session_id == self._detail_session_id),
                 None,
             )
-            rendered_detail = self._render_detail_page(detail_session, budget)
+            rendered_detail = (
+                self._render_input_composer(budget)
+                if self._composer_open
+                else self._render_detail_page(detail_session, budget)
+            )
             self._last_render_key, self._last_renderable = key, rendered_detail
             self._dirty_causes.clear()
             self._record_metric("frame_rendered", time.monotonic() - frame_started)
@@ -1712,6 +2184,54 @@ class BackgroundManager:
             if value == "CHAR" and ch:
                 self.filter_buffer += ch
             return None
+        if self._composer_open:
+            if value == "ESC" and not (
+                self._composer_overlay is not None and self._composer_overlay.active
+            ):
+                self._close_input_composer()
+                return None
+            if self._composer_submitting:
+                return None
+            self._dispatch_composer_key(key, ch)
+            return None
+        # Detail navigation is a separate viewport. Consume vertical keys
+        # here, before the list-selection handlers below, so scrolling cannot
+        # close details or silently move the selected target.
+        if self._detail_session_id is not None:
+            scroll_step = max(1, self.viewport_budget.height - 8)
+            if value == "HOME":
+                self._detail_scroll = 0
+                self._request_render("detail_scrolled")
+                return None
+            if value == "END":
+                # Rendering clamps this sentinel to the last valid viewport.
+                self._detail_scroll += 1_000_000
+                self._request_render("detail_scrolled")
+                return None
+            if value == "UP" or (value == "CHAR" and ch.lower() == "k"):
+                self._detail_scroll = max(0, self._detail_scroll - 1)
+                self._request_render("detail_scrolled")
+                return None
+            if value == "DOWN" or (value == "CHAR" and ch.lower() == "j"):
+                self._detail_scroll += 1
+                self._request_render("detail_scrolled")
+                return None
+            if value in {"PAGE_UP", "PAGEUP"}:
+                self._detail_scroll = max(0, self._detail_scroll - scroll_step)
+                self._request_render("detail_scrolled")
+                return None
+            if value in {"PAGE_DOWN", "PAGEDOWN"}:
+                self._detail_scroll += scroll_step
+                self._request_render("detail_scrolled")
+                return None
+            if ch == "[":
+                self._detail_scroll = max(0, self._detail_scroll - 6)
+                self._request_render("detail_scrolled")
+                return None
+            if ch == "]":
+                self._detail_scroll += 6
+                self._request_render("detail_scrolled")
+                return None
         if value in {"UP", "CHAR"} and (value == "UP" or ch.lower() == "k"):
             if not self._async_mode:
                 self.refresh()
@@ -1753,6 +2273,18 @@ class BackgroundManager:
                 self._mark_dirty("operation_changed")
                 self._start_async_delete(ids)
             return None
+        if self._detail_session_id is not None and ch.lower() == "i":
+            records = self._visible_sessions if self._async_mode else self._sessions
+            target = next(
+                (item for item in records if item.session_id == self._detail_session_id),
+                None,
+            )
+            if target is None:
+                self._notice = "Session details are stale; refresh and reopen the session"
+                self._mark_dirty("composer_target_missing")
+            else:
+                self._open_input_composer(target)
+            return None
         if value == "ENTER":
             # Enter is deliberately two-step: first inspect the selected
             # record, then attach from its detail page. Reconcile before both
@@ -1780,14 +2312,6 @@ class BackgroundManager:
                 self.refresh()
             self._move_selection(max(0, self.selected - self.page_size))
             self.activity_offset = 0
-            return None
-        if ch == "[" and self._detail_session_id is not None:
-            self._detail_scroll = max(0, self._detail_scroll - 6)
-            self._request_render("detail_scrolled")
-            return None
-        if ch == "]" and self._detail_session_id is not None:
-            self._detail_scroll += 6
-            self._request_render("detail_scrolled")
             return None
         if ch == "[":
             self.activity_offset += 6
@@ -2093,6 +2617,7 @@ class BackgroundManager:
                     self._refresh_task,
                     self._maintenance_task,
                     self._activity_task,
+                    self._composer_build_task,
                     self._deletion_task,
                     *self._operation_tasks.values(),
                     maintenance_driver,

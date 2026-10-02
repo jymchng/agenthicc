@@ -10,6 +10,7 @@ import argparse
 import asyncio
 import contextvars
 import json
+import logging
 import math
 import os
 import sys
@@ -17,7 +18,7 @@ import time
 import uuid
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Mapping, TypedDict
+from typing import TYPE_CHECKING, Mapping, TypedDict, cast
 
 from agenthicc.background.model import (
     BackgroundSession,
@@ -28,12 +29,15 @@ from agenthicc.background.store import BackgroundStore, InvalidSessionTransition
 from agenthicc.cli.context import CLIContext, CLIFlags
 from agenthicc.config import DEFAULT_QUESTION_TIMEOUT_S
 
+logger = logging.getLogger(__name__)
+
 
 WORKER_FINALIZATION_TIMEOUT_S = 30.0
 """Maximum time allowed for owned headless resources to close."""
 
 if TYPE_CHECKING:
     from agenthicc.background.terminals import TerminalManager
+    from agenthicc.runners.session_context import SessionContext
     from agenthicc.runners.session_lease import SessionOwnerLease
 
 
@@ -843,6 +847,110 @@ async def _run_direct_turn(session: object, request: WorkerRequest) -> None:
     )
 
 
+def _dispatch_background_command(
+    session: SessionContext,
+    text: str,
+    *,
+    message_id: str,
+) -> tuple[str, str | None]:
+    """Dispatch one slash/skill command in its owning session context.
+
+    The manager process never executes commands. The worker uses its own
+    command and skill registries and runtime state. Commands that require an
+    interactive overlay or the TUI's workflow-control surface fail explicitly
+    instead of being sent to the LLM as ordinary prose.
+
+    Returns ``(error, skill_body)``; an empty error means the command was
+    handled. Captured command output is projected into the target transcript.
+    """
+    from io import StringIO  # noqa: PLC0415
+
+    from rich.console import Console  # noqa: PLC0415
+
+    from agenthicc.commands import CommandContext, CommandDispatcher  # noqa: PLC0415
+
+    normalized = text.strip()
+    token = normalized.split(None, 1)[0] if normalized else ""
+    if token == "/workflow":
+        return (
+            "/workflow requires the foreground session UI; attach to preserve its recovery controls.",
+            None,
+        )
+    registry = session.cmd_registry
+    command = registry.get(token)
+    if command is None:
+        if token.startswith("$"):
+            return ("", None)  # Unknown $text is ordinary user text in the TUI.
+        return (f"Unknown command {token!r}; the command was not sent to the model.", None)
+    if command.is_skill != token.startswith("$"):
+        return (f"Command namespace mismatch for {token!r}.", None)
+    if command.menu_factory is not None:
+        return (f"{token} opens an interactive menu; attach to the session to use it.", None)
+
+    output = StringIO()
+    console = Console(file=output, force_terminal=False, color_system=None, width=120)
+    skill_bodies: list[str] = []
+    context = CommandContext(
+        text=normalized,
+        args=" ".join(normalized.split()[1:]),
+        model=session.model_label,
+        console=console,
+        config=session.cfg,
+        session_id=session.session_id,
+        skills=session.skills,
+        command_registry=registry,
+        workflow_registry=session.workflow_registry,
+        mode_manager=session.mode_manager,
+        terminal_manager=session.terminal_manager,
+        set_pending_skill=skill_bodies.append,
+    )
+    try:
+        handled = CommandDispatcher(registry).dispatch(normalized, context)
+    except Exception as exc:  # noqa: BLE001
+        from agenthicc.tui.runtime.session_export import _Redactor  # noqa: PLC0415
+
+        safe_error = _Redactor().value(f"{type(exc).__name__}: {exc}", "message")
+        return (f"{token} failed: {str(safe_error)[:200]}", None)
+    if not handled:
+        return (f"{token} could not be handled by the owning session.", None)
+    rendered = output.getvalue().strip()
+    if rendered:
+        from agenthicc.tui.runtime.session_export import _Redactor  # noqa: PLC0415
+
+        safe_output = str(_Redactor().value(rendered, "message"))[:8_000]
+        session.app_state.conversation.append_event(
+            "assistant_message",
+            {"text": safe_output, "source": "agents-manager-command"},
+            event_id=f"background-command-output:{message_id}",
+        )
+    return ("", skill_bodies[-1] if skill_bodies else None)
+
+
+async def _compact_background_session(session: SessionContext) -> None:
+    """Run the same bounded compactor used by the owning TUI session."""
+    from agenthicc.memory.compactor import compact_memory  # noqa: PLC0415
+
+    memory = session.session_memory
+    if not memory._messages:
+        raise ValueError("There is no session memory to compact")
+    transport = cast("object", object.__getattribute__(session.agent_runner, "_transport"))
+    if transport is None:
+        raise RuntimeError("No provider transport is available for compaction")
+    execution = session.cfg.execution
+    await compact_memory(
+        memory,
+        transport,
+        model=execution.effective_model(),
+        conv_store=session.app_state.conversation,
+        max_input_tokens=execution.effective_context_window(),
+        usage_ledger=session.usage_ledger,
+        session_id=session.session_id,
+        run_id=f"compaction:{session.session_id}:{uuid.uuid4().hex[:12]}",
+        max_completion_tokens=execution.max_completion_tokens,
+        request_options=execution.request_options,
+    )
+
+
 async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
     """Claim, execute, and finalize one background session."""
 
@@ -856,6 +964,9 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
     heartbeat_task: asyncio.Task[None] | None = None
     terminal_token: contextvars.Token[TerminalManager | None] | None = None
     heartbeat_stop = asyncio.Event()
+    input_inbox: object | None = None
+    delivered_input_ids: set[str] = set()
+    completed_command_ids: set[str] = set()
     original_cwd = os.getcwd()
     try:
         os.chdir(request.cwd)
@@ -889,6 +1000,11 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
         )
         from agenthicc.runners.tui_session import _build_session_context  # noqa: PLC0415
         from agenthicc.runners.session_lease import SessionOpenCoordinator  # noqa: PLC0415
+        from agenthicc.background.input_inbox import BackgroundInputInbox  # noqa: PLC0415
+        from agenthicc.runners.agent_turn_context import (  # noqa: PLC0415
+            QueuedMessageSource,
+            bind_queued_message_source,
+        )
 
         ctx = CLIContext(
             resume_id=request.session_id,
@@ -968,6 +1084,283 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
         processor_task = asyncio.create_task(session.processor.run(), name="background-processor")
         await asyncio.sleep(0)
 
+        input_inbox = BackgroundInputInbox(store)
+
+        def _record_input_delivery(item: object, *, starts_turn: bool) -> None:
+            message_id = str(_request_attribute(item, "message_id", ""))
+            text = str(_request_attribute(item, "text", ""))
+            if not message_id:
+                return
+            delivered_input_ids.add(message_id)
+            session.app_state.conversation.append_event(
+                "user_message",
+                {"text": text, "source": "agents-manager"},
+                event_id=message_id,
+            )
+            try:
+                store.heartbeat(
+                    request.session_id,
+                    lease_token=lease,
+                    attempt=claimed_attempt,
+                    activity=f"Input delivered · {message_id[:12]}",
+                )
+            except (AttributeError, InvalidSessionTransition, KeyError):
+                pass
+            service = _request_attribute(session, "session_service")
+            publish = _request_attribute(service, "publish")
+            if starts_turn and callable(publish):
+
+                async def _publish_input_event() -> None:
+                    try:
+                        await publish(
+                            request.session_id,
+                            source="agents-manager",
+                            kind="turn_queued",
+                            payload={"text": text, "client_id": "agents-manager"},
+                            turn_id=message_id,
+                        )
+                    except Exception:  # noqa: BLE001
+                        logger.debug("could not publish background input event", exc_info=True)
+
+                asyncio.get_running_loop().create_task(_publish_input_event())
+
+        def _claim_session_input() -> str | None:
+            pending = input_inbox.peek_next(
+                request.session_id,
+                owner_attempt=claimed_attempt or 0,
+                lease_token=lease,
+            )
+            if pending is None:
+                return None
+            if pending.text.startswith(("/", "$")):
+                from agenthicc.commands.busy_policy import classify_busy_command  # noqa: PLC0415
+
+                registry = session.cmd_registry
+                decision = classify_busy_command(pending.text, registry)
+                if decision.policy.value == "queue":
+                    return None
+                if decision.policy.value == "reject":
+                    item = input_inbox.claim_next(
+                        request.session_id,
+                        owner_attempt=claimed_attempt or 0,
+                        lease_token=lease,
+                    )
+                    if item is None:
+                        return None
+                    input_inbox.reject(
+                        request.session_id,
+                        item.message_id,
+                        owner_attempt=claimed_attempt or 0,
+                        lease_token=lease,
+                        reason="This command is not allowed while the worker is busy.",
+                    )
+                    session.app_state.conversation.append_event(
+                        "user_message",
+                        {"text": item.text, "source": "agents-manager"},
+                        event_id=item.message_id,
+                    )
+                    session.app_state.conversation.append_event(
+                        "assistant_message",
+                        {
+                            "text": "This command is not allowed while the worker is busy.",
+                            "source": "agents-manager-command",
+                        },
+                        event_id=f"background-command-error:{item.message_id}",
+                    )
+                    return None
+            item = input_inbox.claim_next(
+                request.session_id,
+                owner_attempt=claimed_attempt or 0,
+                lease_token=lease,
+            )
+            if item is None:
+                return None
+            if item.text.startswith(("/", "$")):
+                _record_input_delivery(item, starts_turn=False)
+                error, skill_body = _dispatch_background_command(
+                    session,
+                    item.text,
+                    message_id=item.message_id,
+                )
+                if skill_body is not None:
+                    error = "Skill execution waits for the current turn to finish."
+                if error:
+                    input_inbox.reject(
+                        request.session_id,
+                        item.message_id,
+                        owner_attempt=claimed_attempt or 0,
+                        lease_token=lease,
+                        reason=error,
+                    )
+                    delivered_input_ids.discard(item.message_id)
+                    session.app_state.conversation.append_event(
+                        "assistant_message",
+                        {"text": error, "source": "agents-manager-command"},
+                        event_id=f"background-command-error:{item.message_id}",
+                    )
+                    return None
+                if skill_body is None:
+                    completed_command_ids.add(item.message_id)
+                return None
+            # Provider memory receives the same text immediately after this
+            # callback returns, at the runner's safe tool boundary.
+            _record_input_delivery(item, starts_turn=True)
+            return item.text
+
+        async def _drain_idle_inputs() -> None:
+            """Route messages left after the last active turn boundary."""
+            from dataclasses import replace as dataclass_replace  # noqa: PLC0415
+
+            while True:
+                pending = input_inbox.peek_next(
+                    request.session_id,
+                    owner_attempt=claimed_attempt or 0,
+                    lease_token=lease,
+                )
+                if pending is None:
+                    return
+                item = input_inbox.claim_next(
+                    request.session_id,
+                    owner_attempt=claimed_attempt or 0,
+                    lease_token=lease,
+                )
+                if item is None:
+                    return
+                token = item.text.split(None, 1)[0] if item.text.strip() else ""
+                registry = session.cmd_registry
+                is_registered_skill = bool(
+                    token.startswith("$")
+                    and registry is not None
+                    and registry.get(token) is not None
+                )
+                if item.text.startswith("/") or is_registered_skill:
+                    _record_input_delivery(item, starts_turn=False)
+                    if token == "/compact":
+                        try:
+                            await _compact_background_session(session)
+                        except Exception as exc:  # noqa: BLE001
+                            from agenthicc.tui.runtime.session_export import _Redactor  # noqa: PLC0415
+
+                            error = str(
+                                _Redactor().value(f"{type(exc).__name__}: {exc}", "message")
+                            )[:200]
+                            input_inbox.reject(
+                                request.session_id,
+                                item.message_id,
+                                owner_attempt=claimed_attempt or 0,
+                                lease_token=lease,
+                                reason=f"/compact failed: {error}",
+                            )
+                            delivered_input_ids.discard(item.message_id)
+                            session.app_state.conversation.append_event(
+                                "assistant_message",
+                                {
+                                    "text": f"/compact failed: {error}",
+                                    "source": "agents-manager-command",
+                                },
+                                event_id=f"background-command-error:{item.message_id}",
+                            )
+                        else:
+                            completed_command_ids.add(item.message_id)
+                            session.app_state.conversation.append_event(
+                                "assistant_message",
+                                {
+                                    "text": "Session memory compacted.",
+                                    "source": "agents-manager-command",
+                                },
+                                event_id=f"background-command-output:{item.message_id}",
+                            )
+                        continue
+                    error, skill_body = _dispatch_background_command(
+                        session,
+                        item.text,
+                        message_id=item.message_id,
+                    )
+                    if error:
+                        input_inbox.reject(
+                            request.session_id,
+                            item.message_id,
+                            owner_attempt=claimed_attempt or 0,
+                            lease_token=lease,
+                            reason=error,
+                        )
+                        delivered_input_ids.discard(item.message_id)
+                        session.app_state.conversation.append_event(
+                            "assistant_message",
+                            {"text": error, "source": "agents-manager-command"},
+                            event_id=f"background-command-error:{item.message_id}",
+                        )
+                        continue
+                    if skill_body is None:
+                        completed_command_ids.add(item.message_id)
+                    if skill_body is not None:
+                        await _run_direct_turn(
+                            session,
+                            dataclass_replace(request, intent=skill_body),
+                        )
+                    continue
+                _record_input_delivery(item, starts_turn=True)
+                workflow_name = request.workflow_name
+                try:
+                    resume_run_id = (
+                        _select_headless_workflow_resume(session, workflow_name)
+                        if workflow_name
+                        else None
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    from agenthicc.tui.runtime.session_export import _Redactor  # noqa: PLC0415
+
+                    reason = str(_Redactor().value(f"{type(exc).__name__}: {exc}", "message"))[:200]
+                    delivered_input_ids.discard(item.message_id)
+                    input_inbox.reject(
+                        request.session_id,
+                        item.message_id,
+                        owner_attempt=claimed_attempt or 0,
+                        lease_token=lease,
+                        reason=f"Workflow continuation was not safe: {reason}",
+                    )
+                    session.app_state.conversation.append_event(
+                        "assistant_message",
+                        {
+                            "text": f"Workflow continuation was not safe: {reason}",
+                            "source": "agents-manager-command",
+                        },
+                        event_id=f"background-workflow-input-error:{item.message_id}",
+                    )
+                    continue
+                if workflow_name and resume_run_id is not None:
+                    # Match TUISession's ordinary-text continuation behavior:
+                    # a late message resumes the durable workflow checkpoint
+                    # instead of starting an unrelated direct turn or a new
+                    # workflow from its first phase.
+                    result = await execute_workflow(
+                        session,
+                        workflow_name,
+                        item.text,
+                        resume_run_id=resume_run_id,
+                    )
+                    if result.status != "complete":
+                        delivered_input_ids.discard(item.message_id)
+                        input_inbox.reject(
+                            request.session_id,
+                            item.message_id,
+                            owner_attempt=claimed_attempt or 0,
+                            lease_token=lease,
+                            reason=(
+                                result.error or f"Workflow continuation ended with {result.status}"
+                            ),
+                        )
+                        continue
+                    completed_command_ids.add(item.message_id)
+                    continue
+                await _run_direct_turn(
+                    session,
+                    dataclass_replace(request, intent=item.text),
+                )
+                completed_command_ids.add(item.message_id)
+
+        queued_source = QueuedMessageSource(claim=_claim_session_input)
+
         async def _execute() -> _WorkerOutcome:
             current = store.get(request.session_id, include_deleted=True)
             if (
@@ -1034,10 +1427,13 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
                 exit_code=0,
             )
 
-        if request.wall_timeout_s > 0:
-            outcome = await asyncio.wait_for(_execute(), request.wall_timeout_s)
-        else:
-            outcome = await _execute()
+        with bind_queued_message_source(queued_source):
+            if request.wall_timeout_s > 0:
+                outcome = await asyncio.wait_for(_execute(), request.wall_timeout_s)
+            else:
+                outcome = await _execute()
+            if outcome.status is SessionStatus.COMPLETED:
+                await _drain_idle_inputs()
         return outcome.exit_code
     except asyncio.CancelledError:
         # Ordinary background jobs retain the historical cancellation
@@ -1069,6 +1465,26 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
         return 1
     finally:
         cleanup_error = ""
+        if input_inbox is not None and claimed_attempt is not None:
+            settle_attempt = _request_attribute(input_inbox, "settle_attempt")
+            if callable(settle_attempt):
+                try:
+                    settle_attempt(
+                        request.session_id,
+                        owner_attempt=claimed_attempt,
+                        lease_token=lease,
+                        delivered_ids=delivered_input_ids,
+                        completed_ids=completed_command_ids,
+                        succeeded=(
+                            outcome is not None and outcome.status is SessionStatus.COMPLETED
+                        ),
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.warning(
+                        "could not settle background input receipts for %s",
+                        request.session_id,
+                        exc_info=True,
+                    )
         if terminal_token is not None:
             from agenthicc.background.terminals import reset_current_terminal_manager  # noqa: PLC0415
 

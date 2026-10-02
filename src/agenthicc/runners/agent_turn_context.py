@@ -7,9 +7,44 @@ reads from this context; call sites construct it and pass it to the runner.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, NotRequired, TypedDict
+
+
+@dataclass(frozen=True)
+class QueuedMessageSource:
+    """Session-owned source for input accepted during an agent turn.
+
+    ``claim`` yields one FIFO message at a safe tool boundary.
+    """
+
+    claim: Callable[[], str | None]
+
+
+_queued_message_source: ContextVar[QueuedMessageSource | None] = ContextVar(
+    "agenthicc_queued_message_source", default=None
+)
+
+
+@contextmanager
+def bind_queued_message_source(source: QueuedMessageSource) -> Iterator[None]:
+    """Bind a session-owned input source to turns in the current task scope."""
+
+    token = _queued_message_source.set(source)
+    try:
+        yield
+    finally:
+        _queued_message_source.reset(token)
+
+
+def current_queued_message_source() -> QueuedMessageSource | None:
+    """Return the input source bound to the current context, if any."""
+
+    return _queued_message_source.get()
+
 
 if TYPE_CHECKING:
     from lauren_ai import IdempotencyLedger
@@ -145,3 +180,12 @@ class AgentTurnContext:
 
     #: Session-scoped browser manager used to reset per-turn browser quotas.
     browser_manager: object | None = None
+
+    def __post_init__(self) -> None:
+        """Inherit an explicitly bound session input source when not overridden."""
+
+        source = current_queued_message_source()
+        if source is None:
+            return
+        if self.next_queued_message is None:
+            object.__setattr__(self, "next_queued_message", source.claim)

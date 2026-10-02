@@ -63,6 +63,8 @@ class UnifiedInputSession:
         cwd: Path | None = None,
         cfg: AgenthiccConfig | None = None,
         history: list[str] | None = None,
+        busy: bool = False,
+        clear_after_acceptance: bool = False,
     ) -> None:
         self._state: AppState = app_state
         self._bus: CommandBus = command_bus
@@ -71,12 +73,17 @@ class UnifiedInputSession:
         self._overlay: OverlayHost | None = overlay_host
         self._cwd: Path = cwd or Path(".")
         self._cfg: AgenthiccConfig | None = cfg
+        self._busy = busy
+        self._clear_after_acceptance = clear_after_acceptance
 
         self._mode: InputMode = InputMode.IDLE
         self._capabilities: list[Capability] = IDLE_CAPABILITIES  # switched by set_mode()
         self._buf: InputBuffer = InputBuffer()
         self._paste: PasteState = PasteState()
-        self._hist: HistoryNavigator = HistoryNavigator(history or [])
+        # Keep the caller-owned history list: manager-bound editors use one
+        # list per target session so accepted submissions remain navigable
+        # when the composer is closed and reopened.
+        self._hist: HistoryNavigator = HistoryNavigator(history if history is not None else [])
         self._ctrl_c_count: int = 0
 
     # ── lifecycle ─────────────────────────────────────────────────────────────
@@ -234,6 +241,34 @@ class UnifiedInputSession:
                 import asyncio  # noqa: PLC0415
 
                 text = "".join(result.buffer).strip()
+                if self._clear_after_acceptance:
+                    # Target-bound composers may reject asynchronously (for
+                    # example if the worker lease changed while a picker was
+                    # open). Keep the selected trigger text editable until
+                    # the owning session confirms acceptance.
+                    self._buf.set(list(text))
+                    self._paste.condensed = False
+                    self._push()
+
+                    async def submit_after_target_acceptance() -> None:
+                        try:
+                            accepted = await self._bus.dispatch_async(SendMessageCommand(text=text))
+                        except Exception:  # noqa: BLE001
+                            return
+                        try:
+                            accepted_result = object.__getattribute__(accepted, "ok")
+                        except AttributeError:
+                            accepted_result = True
+                        if accepted_result is False:
+                            return
+                        self._buf.clear()
+                        self._paste.condensed = False
+                        self._ctrl_c_count = 0
+                        self._push()
+                        self._hist.commit(text)
+
+                    asyncio.get_event_loop().create_task(submit_after_target_acceptance())
+                    return
                 self._prepare_submission()  # single source of truth for cleanup
                 asyncio.get_event_loop().create_task(
                     self._bus.dispatch_async(SendMessageCommand(text=text))
@@ -243,7 +278,7 @@ class UnifiedInputSession:
             initial_buf=initial,
             registry=self._registry,
             cwd=self._cwd,
-            busy=self._mode is InputMode.STREAMING,
+            busy=self._mode is InputMode.STREAMING or self._busy,
             paste_state=self._paste,
             on_complete=on_complete,
         )
