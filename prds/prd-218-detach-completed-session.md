@@ -146,8 +146,11 @@ It must not mutate the record directly around the store's transition rules.
 
 The handoff must persist the complete background request and transition the
 same session record to the correct pending/starting attempt before releasing
-foreground ownership. Launch may occur only after the foreground session has
-stopped writing and released its owner lease.
+foreground ownership. For the completed-attempt case, the foreground is idle;
+release its owner lease before the prepared worker claims the same session.
+When a foreground agent task is still live, retain the existing active-turn
+handoff/cancellation behavior and mark the request as work-bearing rather than
+resume-only, so the new turn is not silently dropped.
 
 If the process stops between preparation, lease release, and process launch,
 the same request and session must remain recoverable through existing
@@ -188,6 +191,11 @@ not replay the completed intent as a new turn. If the runtime cannot determine
 whether work remains safely, fail without releasing ownership and provide a
 specific, recoverable diagnostic rather than emitting the prepared-completed
 error.
+
+The request is `resume_existing_only` when there is no live foreground agent
+task. If a task is active, the request remains eligible to run its current
+intent after the established foreground cancellation handoff; an explicit
+`False` must override the default inferred from the prior completed attempt.
 
 ### 6.5 Preserve goal-run identity
 
@@ -379,8 +387,11 @@ valid checkpoint or finish without a model request when no checkpoint exists.
 
 Verification:
 
-- `uv run pytest tests/ -q` — 4,110 passed, 16 skipped.
-- Focused background-session tests — 98 passed.
+- `uv run pytest tests/ -q` — 4,110 passed, 16 skipped; one unrelated
+  provider-profile CLI test exceeded its 60-second timeout during the full
+  run, then passed when rerun alone.
+- Focused background-session tests — 100 passed, including the process-level
+  completed-session detach regression.
 - Focused mypy for the three changed runtime modules — passed.
 - `uv run ruff check src/ tests/ scripts/` — passed.
 - `uv run mkdocs build --strict` — passed.

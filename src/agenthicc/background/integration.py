@@ -99,28 +99,48 @@ def _handoff(session: object) -> bool:
                 resume_existing_only=resume_existing_only,
             )
         except TypeError as exc:
-            # Keep compatibility with embedders that supplied the pre-204
-            # supervisor seam in tests or plugins. Such a supervisor has
-            # already launched the request, so it cannot use the two-stage
-            # owner-safe handoff below.
-            if "start" not in str(exc):
+            if "resume_existing_only" in str(exc):
+                # Preserve the two-stage owner handoff for embedders that
+                # support prepared starts but predate the resume-only option.
+                record = supervisor.handoff(
+                    session_id=ctx.session_id,
+                    intent=intent,
+                    workflow_name=workflow_name,
+                    cwd=str(Path.cwd()),
+                    config_path=None,
+                    set_overrides=tuple(vars(ctx).get("cfg_overrides", ())),
+                    set_secret_overrides=tuple(vars(ctx).get("cfg_secret_overrides", ())),
+                    dangerously_skip_permissions=bool(
+                        vars(flags).get("dangerously_skip_permissions", False)
+                        if (flags := vars(ctx.app_state).get("cli_flags")) is not None
+                        else False
+                    ),
+                    run_id=goal_run_id,
+                    start=False,
+                )
+            elif "start" in str(exc):
+                # Keep compatibility with embedders that supplied the pre-204
+                # supervisor seam in tests or plugins. Such a supervisor has
+                # already launched the request, so it cannot use the two-stage
+                # owner-safe handoff below.
+                prepared = False
+                record = supervisor.handoff(
+                    session_id=ctx.session_id,
+                    intent=intent,
+                    workflow_name=workflow_name,
+                    cwd=str(Path.cwd()),
+                    config_path=None,
+                    set_overrides=tuple(vars(ctx).get("cfg_overrides", ())),
+                    set_secret_overrides=tuple(vars(ctx).get("cfg_secret_overrides", ())),
+                    dangerously_skip_permissions=bool(
+                        vars(flags).get("dangerously_skip_permissions", False)
+                        if (flags := vars(ctx.app_state).get("cli_flags")) is not None
+                        else False
+                    ),
+                    run_id=goal_run_id,
+                )
+            else:
                 raise
-            prepared = False
-            record = supervisor.handoff(
-                session_id=ctx.session_id,
-                intent=intent,
-                workflow_name=workflow_name,
-                cwd=str(Path.cwd()),
-                config_path=None,
-                set_overrides=tuple(vars(ctx).get("cfg_overrides", ())),
-                set_secret_overrides=tuple(vars(ctx).get("cfg_secret_overrides", ())),
-                dangerously_skip_permissions=bool(
-                    vars(flags).get("dangerously_skip_permissions", False)
-                    if (flags := vars(ctx.app_state).get("cli_flags")) is not None
-                    else False
-                ),
-                run_id=goal_run_id,
-            )
         if isinstance(task, asyncio.Task) and not task.done():
             task.cancel()
         if prepared:

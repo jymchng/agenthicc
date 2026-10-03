@@ -758,8 +758,10 @@ def test_foreground_handoff_extracts_latest_user_request_and_handles_missing_req
     assert "Cannot background" in capsys.readouterr().out
 
 
-def test_foreground_detach_reactivates_completed_goal_session(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+@pytest.mark.parametrize("active_task", [False, True])
+@pytest.mark.asyncio
+async def test_foreground_detach_reactivates_completed_goal_session(
+    active_task: bool, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     from agenthicc.background.integration import _handoff
     from agenthicc.background.settings import BackgroundSettings
@@ -799,11 +801,12 @@ def test_foreground_detach_reactivates_completed_goal_session(
         owner_lease=SimpleNamespace(release=lambda: released.append(True)),
     )
     input_session = SimpleNamespace()
+    task = asyncio.create_task(asyncio.Event().wait()) if active_task else None
     foreground = SimpleNamespace(
         _ctx=ctx,
         _workflow_override="",
         _input_session=input_session,
-        _agent_task=None,
+        _agent_task=task,
     )
 
     assert _handoff(foreground) is True
@@ -821,7 +824,10 @@ def test_foreground_detach_reactivates_completed_goal_session(
     assert request["session_id"] == completed.session_id
     assert request["workflow_name"] == "goal_flow"
     assert request["run_id"] == "existing-goal-run"
-    assert request["resume_existing_only"] is True
+    assert request["resume_existing_only"] is not active_task
+    if task is not None:
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
 
 
 @pytest.mark.asyncio

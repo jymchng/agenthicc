@@ -336,7 +336,7 @@ class BackgroundSupervisor:
         run_id: str = "",
         start: bool = True,
         mode_name: str | None = None,
-        resume_existing_only: bool = False,
+        resume_existing_only: bool | None = None,
     ) -> BackgroundSession:
         """Detach an existing foreground session into one tracked worker."""
 
@@ -360,6 +360,7 @@ class BackgroundSupervisor:
             self.store.create(existing)
         elif existing.status in ACTIVE_STATUSES:
             raise InvalidSessionTransition("Session is already managed by a background worker")
+        was_completed = existing.status is SessionStatus.COMPLETED
         effective_mode_name = self._mode_name_for_resume(session_id, mode_name)
         request = BackgroundRequest(
             session_id=session_id,
@@ -374,7 +375,9 @@ class BackgroundSupervisor:
             wall_timeout_s=self.wall_timeout_s,
             max_activity_bytes=self.max_activity_bytes,
             mode_name=effective_mode_name,
-            resume_existing_only=resume_existing_only,
+            resume_existing_only=(
+                was_completed if resume_existing_only is None else resume_existing_only
+            ),
         )
         if existing.status == SessionStatus.FAILED:
             existing = self.store.transition(
