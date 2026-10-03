@@ -97,6 +97,56 @@ def test_input_reactivation_preserves_prior_attempt_and_resets_live_metadata(
     assert claimed.attempt_history[-1].status is SessionStatus.COMPLETED
 
 
+def test_handoff_reactivates_completed_session_without_replacing_identity(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    store = BackgroundStore(tmp_path / "background")
+    completed = _session(tmp_path, "completed-handoff").evolve(
+        status=SessionStatus.COMPLETED,
+        attempt=3,
+        run_id="existing-goal-run",
+        completed_at=200.0,
+        error=None,
+        latest_activity="Workflow complete",
+    )
+    store.create(completed)
+    supervisor = BackgroundSupervisor(store, artifact_root=tmp_path / "sessions")
+    monkeypatch.setattr(
+        "agenthicc.background.supervisor.subprocess.Popen",
+        lambda *args, **kwargs: SimpleNamespace(pid=4321),
+    )
+
+    prepared = supervisor.handoff(
+        session_id=completed.session_id,
+        intent="historical goal text",
+        workflow_name="goal_flow",
+        cwd=str(tmp_path),
+        run_id="",
+        start=False,
+        resume_existing_only=True,
+    )
+
+    assert prepared.session_id == completed.session_id
+    assert prepared.status is SessionStatus.STARTING
+    assert prepared.attempt == 3
+    assert prepared.resume_marker == "resume:4"
+    assert prepared.run_id == "existing-goal-run"
+    assert prepared.attempt_history[-1].attempt == 3
+    assert prepared.attempt_history[-1].status is SessionStatus.COMPLETED
+    request = BackgroundRequest.from_mapping(
+        json.loads((store.root / "requests" / f"{completed.session_id}.json").read_text())
+    )
+    assert request.session_id == completed.session_id
+    assert request.run_id == "existing-goal-run"
+    assert request.workflow_name == "goal_flow"
+    assert request.resume_existing_only is True
+
+    started = supervisor.start(completed.session_id)
+    assert started.session_id == completed.session_id
+    assert started.status is SessionStatus.STARTING
+    assert started.attempt == 3  # claim, not preparation, advances the attempt
+
+
 def test_background_settings_validate_files_and_cli_overrides(tmp_path: Path) -> None:
     config = tmp_path / "agenthicc.toml"
     config.write_text(

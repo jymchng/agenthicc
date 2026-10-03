@@ -1376,6 +1376,125 @@ async def test_worker_uses_headless_workflow_result(monkeypatch, tmp_path: Path)
 
 
 @pytest.mark.asyncio
+async def test_resume_only_worker_does_not_replay_completed_goal_without_checkpoint(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    store = BackgroundStore(tmp_path / "background")
+    artifact = tmp_path / "sessions" / "worker-session"
+    artifact.mkdir(parents=True)
+    store.create(
+        BackgroundSession.create(
+            "worker-session",
+            title="Completed goal",
+            cwd=str(tmp_path),
+            workflow_name="goal_flow",
+            intent="do not replay this completed goal",
+            artifact_dir=str(artifact),
+        )
+    )
+    fake_session = _Session()
+    executed: list[str] = []
+
+    async def build(*args: object, **kwargs: object) -> _Session:
+        return fake_session
+
+    async def should_not_execute(*args: object, **kwargs: object) -> object:
+        executed.append("called")
+        raise AssertionError("resume-only handoff must not start a fresh workflow")
+
+    async def close(*args: object, **kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr("agenthicc.runners.tui_session._build_session_context", build)
+    monkeypatch.setattr("agenthicc.runners.headless.execute_workflow", should_not_execute)
+    monkeypatch.setattr("agenthicc.background.worker._run_direct_turn", should_not_execute)
+    monkeypatch.setattr(
+        "agenthicc.runners.headless._select_headless_workflow_resume", lambda *_: None
+    )
+    monkeypatch.setattr("agenthicc.runners.headless._close_headless_session", close)
+
+    request = WorkerRequest(
+        session_id="worker-session",
+        workflow_name="goal_flow",
+        intent="do not replay this completed goal",
+        cwd=str(tmp_path),
+        config_path=None,
+        set_overrides=(),
+        dangerously_skip_permissions=False,
+        mode_name="Yolo",
+        resume_existing_only=True,
+    )
+    assert await run_worker(request, store) == 0
+    completed = store.get("worker-session")
+    assert completed.status is SessionStatus.COMPLETED
+    assert completed.latest_activity == "No resumable workflow work"
+    assert completed.worker_exit_reason == "no_resumable_work"
+    assert executed == []
+
+
+@pytest.mark.asyncio
+async def test_resume_only_worker_continues_the_existing_goal_checkpoint(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    store = BackgroundStore(tmp_path / "background")
+    artifact = tmp_path / "sessions" / "worker-session"
+    artifact.mkdir(parents=True)
+    store.create(
+        BackgroundSession.create(
+            "worker-session",
+            title="Recover goal",
+            cwd=str(tmp_path),
+            workflow_name="goal_flow",
+            intent="historical session intent",
+            artifact_dir=str(artifact),
+        )
+    )
+    fake_session = _Session()
+    observed: list[tuple[str, str, str | None]] = []
+
+    async def build(*args: object, **kwargs: object) -> _Session:
+        return fake_session
+
+    async def execute(
+        _session: object,
+        workflow_name: str,
+        intent: str,
+        *,
+        resume_run_id: str | None = None,
+    ) -> object:
+        observed.append((workflow_name, intent, resume_run_id))
+        return SimpleNamespace(status="complete", error=None, phases=("implement",))
+
+    async def close(*args: object, **kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr("agenthicc.runners.tui_session._build_session_context", build)
+    monkeypatch.setattr("agenthicc.runners.headless.execute_workflow", execute)
+    monkeypatch.setattr(
+        "agenthicc.runners.headless._select_headless_workflow_resume",
+        lambda _session, _workflow: "saved-later-phase-run",
+    )
+    monkeypatch.setattr("agenthicc.runners.headless._close_headless_session", close)
+
+    request = WorkerRequest(
+        session_id="worker-session",
+        workflow_name="goal_flow",
+        intent="historical session intent is not a new prompt",
+        cwd=str(tmp_path),
+        config_path=None,
+        set_overrides=(),
+        dangerously_skip_permissions=False,
+        mode_name="Yolo",
+        resume_existing_only=True,
+    )
+    assert await run_worker(request, store) == 0
+    completed = store.get("worker-session")
+    assert completed.status is SessionStatus.COMPLETED
+    assert completed.phase_history == ("implement",)
+    assert observed == [("goal_flow", request.intent, "saved-later-phase-run")]
+
+
+@pytest.mark.asyncio
 async def test_worker_persists_workflow_phase_history(monkeypatch, tmp_path: Path) -> None:
     """A background workflow leaves phase metadata in the durable registry."""
 

@@ -86,6 +86,7 @@ against the current source before implementing them.
 - [PRD-215 — Send Input to a Selected Background Session from its Details View](prd-215-targeted-input-from-agents-session-details.md)
 - [PRD-216 — Send New Input to Completed Background Sessions](prd-216-input-to-completed-background-sessions.md)
 - [PRD-217 — Forward Agents Session Input Without Interpretation](prd-217-opaque-agents-session-input-forwarding.md)
+- [PRD-218 — Detach a foreground session after a completed background attempt](prd-218-detach-completed-session.md)
 
 PRD-138 is the current cross-cutting roadmap for documentation truth,
 packaging, state boundaries, security, workflow correctness, persistence,
@@ -454,6 +455,11 @@ agents details composer. The exact submitted payload reaches the selected
 session's target input router; recovery does not inject a continuation turn or
 infer workflow intent. Unit, integration, and details-view regression tests
 cover live, recoverable, and completed sessions.
+
+PRD-218 fixes foreground `/detach` when the prior background attempt is
+completed. It reactivates the same session for eligible work, preserves the
+conversation and goal-run identity, resumes only a recoverable workflow when
+the foreground is idle, and avoids replaying a completed goal.
 
 ## Existing PRDs
 

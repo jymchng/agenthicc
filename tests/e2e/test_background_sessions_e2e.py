@@ -76,6 +76,57 @@ def test_owned_worker_process_persists_completion(tmp_path: Path, monkeypatch) -
     assert BackgroundStore(store.root).get(session.session_id).status is SessionStatus.COMPLETED
 
 
+def test_completed_session_detach_starts_same_session_without_replaying_intent(
+    tmp_path: Path,
+) -> None:
+    """A terminal prior attempt is reactivated as the same resumable session."""
+    store = BackgroundStore(tmp_path / "background")
+    artifact = tmp_path / "sessions" / "completed-session"
+    artifact.mkdir(parents=True)
+    completed = BackgroundSession.create(
+        "completed-session",
+        title="Completed session",
+        cwd=str(tmp_path),
+        workflow_name="",
+        intent="historical intent must not be replayed",
+        artifact_dir=str(artifact),
+        run_id="existing-run",
+    ).evolve(status=SessionStatus.COMPLETED, attempt=2, completed_at=time.time())
+    store.create(completed)
+    supervisor = BackgroundSupervisor(store, artifact_root=tmp_path / "sessions")
+
+    prepared = supervisor.handoff(
+        session_id=completed.session_id,
+        intent=completed.intent,
+        cwd=str(tmp_path),
+        run_id="",
+        start=False,
+        resume_existing_only=True,
+    )
+    assert prepared.status is SessionStatus.STARTING
+    assert prepared.session_id == completed.session_id
+    assert prepared.run_id == "existing-run"
+    assert prepared.resume_marker == "resume:3"
+
+    started = supervisor.start(completed.session_id)
+    assert started.session_id == completed.session_id
+    _wait_for_status(store, completed.session_id, SessionStatus.COMPLETED)
+
+    final = store.get(completed.session_id)
+    assert final.attempt == 3
+    assert final.status is SessionStatus.COMPLETED
+    assert final.latest_activity == "No resumable work"
+    assert final.worker_exit_reason == "no_resumable_work"
+    assert final.run_id == "existing-run"
+    assert [attempt.attempt for attempt in final.attempt_history] == [2, 3]
+    assert all(attempt.status is SessionStatus.COMPLETED for attempt in final.attempt_history)
+    request = json.loads(
+        (store.root / "requests" / f"{completed.session_id}.json").read_text(encoding="utf-8")
+    )
+    assert request["resume_existing_only"] is True
+    assert request["intent"] == completed.intent
+
+
 def test_foreground_takeover_stops_owned_worker_before_resume(tmp_path: Path, monkeypatch) -> None:
     """The manager handoff releases the worker before a resumed TUI can start."""
 

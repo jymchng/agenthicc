@@ -11,6 +11,7 @@ import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from .model import ACTIVE_STATUSES
 from .settings import background_enabled, load_background_settings
 from .supervisor import BackgroundSupervisor
 from .store import BackgroundStore
@@ -76,6 +77,8 @@ def _handoff(session: object) -> bool:
     )
     try:
         goal_run_id = str(vars(ctx).get("goal_run_id", "") or "")
+        task = vars(session).get("_agent_task")
+        resume_existing_only = not (isinstance(task, asyncio.Task) and not task.done())
         prepared = True
         try:
             record = supervisor.handoff(
@@ -93,6 +96,7 @@ def _handoff(session: object) -> bool:
                 ),
                 run_id=goal_run_id,
                 start=False,
+                resume_existing_only=resume_existing_only,
             )
         except TypeError as exc:
             # Keep compatibility with embedders that supplied the pre-204
@@ -117,7 +121,6 @@ def _handoff(session: object) -> bool:
                 ),
                 run_id=goal_run_id,
             )
-        task = vars(session).get("_agent_task")
         if isinstance(task, asyncio.Task) and not task.done():
             task.cancel()
         if prepared:
@@ -133,7 +136,7 @@ def _handoff(session: object) -> bool:
             if owner_lease is not None:
                 owner_lease.release()
             record = supervisor.start(record.session_id)
-        if goal_run_id:
+        if goal_run_id and record.status in ACTIVE_STATUSES:
             from agenthicc.runs import RunStore  # noqa: PLC0415
             from agenthicc.runs.model import GoalRunStatus  # noqa: PLC0415
 

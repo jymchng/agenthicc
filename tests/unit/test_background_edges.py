@@ -91,10 +91,12 @@ def test_worker_request_validation_and_json_loading(tmp_path: Path) -> None:
             "set_overrides": ["execution.model=x", 3],
             "wall_timeout_s": 2,
             "max_activity_bytes": 100,
+            "resume_existing_only": True,
         }
     )
     assert request.set_overrides == ("execution.model=x",)
     assert request.wall_timeout_s == 2.0
+    assert request.resume_existing_only is True
     path = tmp_path / "request.json"
     path.write_text(json.dumps(request.__dict__), encoding="utf-8")
     assert _load_request(path).session_id == "s"
@@ -754,6 +756,72 @@ def test_foreground_handoff_extracts_latest_user_request_and_handles_missing_req
     )
     _handoff(empty)
     assert "Cannot background" in capsys.readouterr().out
+
+
+def test_foreground_detach_reactivates_completed_goal_session(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from agenthicc.background.integration import _handoff
+    from agenthicc.background.settings import BackgroundSettings
+
+    store_root = tmp_path / "background"
+    store = BackgroundStore(store_root)
+    completed = _record(tmp_path, "completed-goal-session").evolve(
+        status=SessionStatus.COMPLETED,
+        attempt=2,
+        run_id="existing-goal-run",
+        completed_at=time.time(),
+    )
+    store.create(completed)
+    monkeypatch.setattr(
+        "agenthicc.background.integration.load_background_settings",
+        lambda **kwargs: BackgroundSettings(store_path=str(store_root)),
+    )
+    monkeypatch.setattr(
+        "agenthicc.background.supervisor.subprocess.Popen",
+        lambda *args, **kwargs: SimpleNamespace(pid=9876),
+    )
+
+    user_event = SimpleNamespace(kind="user_message", payload={"text": "historical goal"})
+    released: list[bool] = []
+    ctx = SimpleNamespace(
+        session_id=completed.session_id,
+        app_state=SimpleNamespace(
+            conversation=SimpleNamespace(
+                turns=lambda: [SimpleNamespace(events=[user_event])],
+                notify_transient=lambda _text: None,
+            ),
+            active_mode=lambda: SimpleNamespace(default_workflow="goal_flow"),
+            cli_flags=SimpleNamespace(dangerously_skip_permissions=False),
+        ),
+        cfg=SimpleNamespace(background=None),
+        console=SimpleNamespace(print=lambda _text: None),
+        owner_lease=SimpleNamespace(release=lambda: released.append(True)),
+    )
+    input_session = SimpleNamespace()
+    foreground = SimpleNamespace(
+        _ctx=ctx,
+        _workflow_override="",
+        _input_session=input_session,
+        _agent_task=None,
+    )
+
+    assert _handoff(foreground) is True
+    reactivated = store.get(completed.session_id)
+    assert reactivated.status is SessionStatus.STARTING
+    assert reactivated.session_id == completed.session_id
+    assert reactivated.run_id == "existing-goal-run"
+    assert reactivated.resume_marker == "resume:3"
+    assert reactivated.attempt_history[-1].status is SessionStatus.COMPLETED
+    assert released == [True]
+    assert input_session._background_exit_requested is True
+    request = json.loads(
+        (store_root / "requests" / f"{completed.session_id}.json").read_text(encoding="utf-8")
+    )
+    assert request["session_id"] == completed.session_id
+    assert request["workflow_name"] == "goal_flow"
+    assert request["run_id"] == "existing-goal-run"
+    assert request["resume_existing_only"] is True
 
 
 @pytest.mark.asyncio

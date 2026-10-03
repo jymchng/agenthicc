@@ -51,8 +51,10 @@ The path through the runtime is:
    record, acquires session ownership, rebuilds session context using the same
    session ID, and starts the event processor. If a recoverable workflow is
    present, it resumes that workflow; otherwise it runs the saved intent as a
-   direct turn. Progress and terminal status are written to the background
-   store.
+   direct turn. For an idle handoff, the request is resume-only: the worker
+   resumes a valid checkpoint if present and otherwise exits without replaying
+   the historical intent or making a model request. Progress and terminal
+   status are written to the background store.
 7. **The foreground input loop exits.** The TUI shows a transient
    `Backgrounded session …` notice and signals its input loop to exit. During
    TUI shutdown, it awaits the foreground agent task while closing its other
@@ -79,6 +81,13 @@ can take the cancellation path without emitting the same workflow failure.
 
 For a goal-backed session, `/detach` is the explicit foreground-to-background
 handoff. It does not copy the conversation or create a second workflow run.
+`completed` describes the previous background attempt, not permanent closure
+of the session. Detaching a session with a completed prior attempt reuses the
+same session ID and starts a new attempt when recovery work exists. If the
+foreground agent is idle, the worker only resumes an existing recoverable
+workflow checkpoint; it does not replay the last user message or restart a
+completed `goal_flow` from its first phase. If there is no recoverable work,
+the short-lived worker exits without making a model request.
 Inspect the product-level run with:
 
 ```bash

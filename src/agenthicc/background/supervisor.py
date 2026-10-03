@@ -71,6 +71,7 @@ class BackgroundRequest:
     run_id: str = ""
     detached_goal: bool = False
     mode_name: str | None = None
+    resume_existing_only: bool = False
 
     @classmethod
     def from_mapping(cls, value: object) -> "BackgroundRequest":
@@ -117,6 +118,7 @@ class BackgroundRequest:
             run_id=str(value.get("run_id", "")),
             detached_goal=bool(value.get("detached_goal", False)),
             mode_name=raw_mode_name[:128] if isinstance(raw_mode_name, str) else None,
+            resume_existing_only=value.get("resume_existing_only") is True,
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -135,6 +137,7 @@ class BackgroundRequest:
             "run_id": self.run_id,
             "detached_goal": self.detached_goal,
             "mode_name": self.mode_name[:128] if isinstance(self.mode_name, str) else None,
+            "resume_existing_only": self.resume_existing_only,
         }
 
 
@@ -333,6 +336,7 @@ class BackgroundSupervisor:
         run_id: str = "",
         start: bool = True,
         mode_name: str | None = None,
+        resume_existing_only: bool = False,
     ) -> BackgroundSession:
         """Detach an existing foreground session into one tracked worker."""
 
@@ -356,6 +360,7 @@ class BackgroundSupervisor:
             self.store.create(existing)
         elif existing.status in ACTIVE_STATUSES:
             raise InvalidSessionTransition("Session is already managed by a background worker")
+        effective_mode_name = self._mode_name_for_resume(session_id, mode_name)
         request = BackgroundRequest(
             session_id=session_id,
             workflow_name=workflow_name or existing.workflow_name,
@@ -365,10 +370,11 @@ class BackgroundSupervisor:
             set_overrides=set_overrides,
             dangerously_skip_permissions=dangerously_skip_permissions,
             set_secret_overrides=set_secret_overrides,
-            run_id=run_id,
+            run_id=run_id or existing.run_id,
             wall_timeout_s=self.wall_timeout_s,
             max_activity_bytes=self.max_activity_bytes,
-            mode_name=mode_name,
+            mode_name=effective_mode_name,
+            resume_existing_only=resume_existing_only,
         )
         if existing.status == SessionStatus.FAILED:
             existing = self.store.transition(
@@ -387,11 +393,27 @@ class BackgroundSupervisor:
                 SessionStatus.STARTING,
                 resume_marker=f"resume:{existing.attempt + 1}",
             )
+        elif existing.status is SessionStatus.COMPLETED:
+            existing = self.store.transition(
+                session_id,
+                SessionStatus.STARTING,
+                expected_status=SessionStatus.COMPLETED,
+                expected_attempt=existing.attempt,
+                resume_marker=f"resume:{existing.attempt + 1}",
+                completed_at=None,
+                error=None,
+                failure_category="",
+                exit_reason="",
+                worker_exit_reason="",
+                worker_exit_code=None,
+                worker_finished_at=None,
+                latest_activity="Foreground session handoff prepared",
+            )
         existing = self.store.update(
             session_id,
             expected_status=existing.status,
             expected_attempt=existing.attempt,
-            requested_mode_name=mode_name,
+            requested_mode_name=effective_mode_name,
             mode_name="",
             mode_application_status="pending",
             mode_application_attempt=existing.attempt + 1,

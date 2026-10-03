@@ -58,6 +58,7 @@ class WorkerRequest:
     detached_goal: bool = False
     run_id: str = ""
     mode_name: str | None = None
+    resume_existing_only: bool = False
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, object]) -> "WorkerRequest":
@@ -112,6 +113,7 @@ class WorkerRequest:
             detached_goal=bool(value.get("detached_goal", False)),
             run_id=str(value.get("run_id", "")),
             mode_name=raw_mode_name[:128] if isinstance(raw_mode_name, str) else None,
+            resume_existing_only=value.get("resume_existing_only") is True,
         )
 
 
@@ -1760,6 +1762,14 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
             if active_workflow_name:
                 resume_run_id = _select_headless_workflow_resume(session, active_workflow_name)
                 if resume_run_id is None:
+                    if request.resume_existing_only:
+                        return _WorkerOutcome(
+                            status=SessionStatus.COMPLETED,
+                            error=None,
+                            activity="No resumable workflow work",
+                            exit_reason="no_resumable_work",
+                            exit_code=0,
+                        )
                     result = await execute_workflow(session, active_workflow_name, request.intent)
                 else:
                     result = await execute_workflow(
@@ -1797,6 +1807,14 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
                         else "irrecoverable_error"
                     ),
                     exit_code=0 if completed else 1,
+                )
+            if request.resume_existing_only:
+                return _WorkerOutcome(
+                    status=SessionStatus.COMPLETED,
+                    error=None,
+                    activity="No resumable work",
+                    exit_reason="no_resumable_work",
+                    exit_code=0,
                 )
             await _run_direct_turn(session, request)
             await session.processor.drain()
