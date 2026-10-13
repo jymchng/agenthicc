@@ -32,6 +32,50 @@ class ModeApplicationStatus(str, Enum):
     FAILED = "failed"
 
 
+class QueuePriority(str, Enum):
+    """Small stable priority vocabulary for background admission."""
+
+    URGENT = "urgent"
+    NORMAL = "normal"
+    LOW = "low"
+
+
+class QueueDispatchState(str, Enum):
+    """Durable scheduler state, separate from the worker lifecycle status."""
+
+    LEGACY = "legacy"
+    PENDING = "pending"
+    CLAIMED = "claimed"
+    LAUNCHED = "launched"
+    STARTED = "started"
+    CANCELLED = "cancelled"
+    FAILED = "failed"
+
+
+def _queue_priority(value: object, default: QueuePriority = QueuePriority.NORMAL) -> QueuePriority:
+    if isinstance(value, QueuePriority):
+        return value
+    if isinstance(value, str):
+        try:
+            return QueuePriority(value)
+        except ValueError:
+            pass
+    return default
+
+
+def _queue_dispatch_state(
+    value: object, default: QueueDispatchState = QueueDispatchState.LEGACY
+) -> QueueDispatchState:
+    if isinstance(value, QueueDispatchState):
+        return value
+    if isinstance(value, str):
+        try:
+            return QueueDispatchState(value)
+        except ValueError:
+            pass
+    return default
+
+
 def _mode_application_status(
     value: object, default: ModeApplicationStatus
 ) -> ModeApplicationStatus:
@@ -73,12 +117,19 @@ _TRANSITIONS: dict[SessionStatus, frozenset[SessionStatus]] = {
         {
             SessionStatus.STARTING,
             SessionStatus.CANCELLING,
+            SessionStatus.CANCELLED,
             SessionStatus.ORPHANED,
             SessionStatus.FAILED,
         }
     ),
     SessionStatus.STARTING: frozenset(
-        {SessionStatus.RUNNING, SessionStatus.CANCELLING, SessionStatus.ORPHANED}
+        {
+            SessionStatus.QUEUED,
+            SessionStatus.RUNNING,
+            SessionStatus.CANCELLING,
+            SessionStatus.ORPHANED,
+            SessionStatus.FAILED,
+        }
     ),
     SessionStatus.RUNNING: frozenset(
         {
@@ -94,7 +145,13 @@ _TRANSITIONS: dict[SessionStatus, frozenset[SessionStatus]] = {
     SessionStatus.WAITING_APPROVAL: frozenset({SessionStatus.RUNNING, SessionStatus.CANCELLING}),
     SessionStatus.WAITING_INPUT: frozenset({SessionStatus.RUNNING, SessionStatus.CANCELLING}),
     SessionStatus.RETRYING: frozenset(
-        {SessionStatus.STARTING, SessionStatus.CANCELLING, SessionStatus.ORPHANED}
+        {
+            SessionStatus.QUEUED,
+            SessionStatus.STARTING,
+            SessionStatus.CANCELLING,
+            SessionStatus.ORPHANED,
+            SessionStatus.FAILED,
+        }
     ),
     SessionStatus.CANCELLING: frozenset({SessionStatus.CANCELLED, SessionStatus.ORPHANED}),
     SessionStatus.COMPLETED: frozenset({SessionStatus.STARTING, SessionStatus.ARCHIVED}),
@@ -248,6 +305,39 @@ class BackgroundAttempt:
 
 
 @dataclass(frozen=True)
+class PriorityChange:
+    """One durable priority audit entry for a background session."""
+
+    previous: QueuePriority
+    current: QueuePriority
+    changed_at: float
+    changed_by: str = "local-user"
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, object]) -> "PriorityChange":
+        changed_at = value.get("changed_at")
+        changed_by = value.get("changed_by")
+        return cls(
+            previous=_queue_priority(value.get("previous")),
+            current=_queue_priority(value.get("current")),
+            changed_at=(
+                float(changed_at)
+                if isinstance(changed_at, (int, float)) and not isinstance(changed_at, bool)
+                else 0.0
+            ),
+            changed_by=changed_by[:128] if isinstance(changed_by, str) else "local-user",
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "previous": self.previous.value,
+            "current": self.current.value,
+            "changed_at": self.changed_at,
+            "changed_by": self.changed_by,
+        }
+
+
+@dataclass(frozen=True)
 class BackgroundSession:
     """One durable background execution and its recoverable metadata."""
 
@@ -329,6 +419,16 @@ class BackgroundSession:
     mode_application_status: ModeApplicationStatus = ModeApplicationStatus.PENDING
     mode_application_attempt: int = 0
     mode_application_error: str = ""
+    # PRD-225 queue fields are appended to preserve positional construction
+    # and to let old event logs replay with the legacy dispatch behavior.
+    priority: QueuePriority = QueuePriority.NORMAL
+    idempotency_key: str = ""
+    owner_id: str = ""
+    requested_profile_name: str = ""
+    dispatch_state: QueueDispatchState = QueueDispatchState.LEGACY
+    dispatch_token: str = ""
+    dispatch_claimed_at: float | None = None
+    priority_history: tuple[PriorityChange, ...] = ()
 
     @classmethod
     def create(
@@ -350,6 +450,11 @@ class BackgroundSession:
         run_id: str = "",
         detached_goal: bool = False,
         requested_mode_name: str | None = None,
+        priority: QueuePriority | str = QueuePriority.NORMAL,
+        idempotency_key: str = "",
+        owner_id: str = "",
+        requested_profile_name: str = "",
+        dispatch_state: QueueDispatchState | str = QueueDispatchState.LEGACY,
     ) -> "BackgroundSession":
         timestamp = time.time() if now is None else now
         return cls(
@@ -375,6 +480,11 @@ class BackgroundSession:
                 requested_mode_name[:128] if isinstance(requested_mode_name, str) else None
             ),
             mode_application_status=ModeApplicationStatus.PENDING,
+            priority=_queue_priority(priority),
+            idempotency_key=idempotency_key[:256],
+            owner_id=owner_id[:256],
+            requested_profile_name=requested_profile_name[:128],
+            dispatch_state=_queue_dispatch_state(dispatch_state),
         )
 
     def evolve(self, **changes: object) -> "BackgroundSession":
@@ -456,6 +566,15 @@ class BackgroundSession:
                 elif isinstance(item, Mapping):
                     history_items.append(BackgroundAttempt.from_mapping(item))
         history = tuple(history_items[-ATTEMPT_HISTORY_LIMIT:])
+        raw_priority_history = changes.get("priority_history", self.priority_history)
+        priority_history_items: list[PriorityChange] = []
+        if isinstance(raw_priority_history, (list, tuple)):
+            for item in raw_priority_history:
+                if isinstance(item, PriorityChange):
+                    priority_history_items.append(item)
+                elif isinstance(item, Mapping):
+                    priority_history_items.append(PriorityChange.from_mapping(item))
+        priority_history = tuple(priority_history_items[-32:])
 
         return BackgroundSession(
             session_id=self.session_id,
@@ -530,6 +649,18 @@ class BackgroundSession:
             mode_application_error=_bounded_str(
                 "mode_application_error", self.mode_application_error, 1_024
             ),
+            priority=_queue_priority(changes.get("priority", self.priority), self.priority),
+            idempotency_key=_bounded_str("idempotency_key", self.idempotency_key, 256),
+            owner_id=_bounded_str("owner_id", self.owner_id, 256),
+            requested_profile_name=_bounded_str(
+                "requested_profile_name", self.requested_profile_name, 128
+            ),
+            dispatch_state=_queue_dispatch_state(
+                changes.get("dispatch_state", self.dispatch_state), self.dispatch_state
+            ),
+            dispatch_token=_bounded_str("dispatch_token", self.dispatch_token, 128),
+            dispatch_claimed_at=_clearable_float("dispatch_claimed_at", self.dispatch_claimed_at),
+            priority_history=priority_history,
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -596,6 +727,14 @@ class BackgroundSession:
             "mode_application_status": self.mode_application_status.value,
             "mode_application_attempt": self.mode_application_attempt,
             "mode_application_error": self.mode_application_error,
+            "priority": self.priority.value,
+            "idempotency_key": self.idempotency_key,
+            "owner_id": self.owner_id,
+            "requested_profile_name": self.requested_profile_name,
+            "dispatch_state": self.dispatch_state.value,
+            "dispatch_token": self.dispatch_token,
+            "dispatch_claimed_at": self.dispatch_claimed_at,
+            "priority_history": [item.to_dict() for item in self.priority_history],
         }
 
     @classmethod
@@ -659,6 +798,20 @@ class BackgroundSession:
             if mode_status is ModeApplicationStatus.APPLIED
             else 0
         )
+        raw_priority_history = value.get("priority_history", ())
+        priority_history = (
+            tuple(
+                PriorityChange.from_mapping(item)
+                for item in raw_priority_history[-32:]
+                if isinstance(item, Mapping)
+            )
+            if isinstance(raw_priority_history, (list, tuple))
+            else ()
+        )
+        raw_idempotency_key = value.get("idempotency_key", "")
+        raw_owner_id = value.get("owner_id", "")
+        raw_profile_name = value.get("requested_profile_name", "")
+        raw_dispatch_token = value.get("dispatch_token", "")
 
         return cls(
             session_id=session_id,
@@ -730,4 +883,16 @@ class BackgroundSession:
             mode_application_error=raw_mode_error[:1_024]
             if isinstance(raw_mode_error, str)
             else "",
+            priority=_queue_priority(value.get("priority")),
+            idempotency_key=raw_idempotency_key[:256]
+            if isinstance(raw_idempotency_key, str)
+            else "",
+            owner_id=raw_owner_id[:256] if isinstance(raw_owner_id, str) else "",
+            requested_profile_name=raw_profile_name[:128]
+            if isinstance(raw_profile_name, str)
+            else "",
+            dispatch_state=_queue_dispatch_state(value.get("dispatch_state")),
+            dispatch_token=raw_dispatch_token[:128] if isinstance(raw_dispatch_token, str) else "",
+            dispatch_claimed_at=_float_or_none(value.get("dispatch_claimed_at")),
+            priority_history=priority_history,
         )

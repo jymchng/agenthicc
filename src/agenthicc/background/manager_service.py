@@ -81,6 +81,21 @@ class BackgroundManagerService:
             raise TypeError("background store returned an invalid page")
         return value
 
+    async def queue_positions_async(self) -> dict[str, int]:
+        """Read advisory queue positions off the TUI event loop."""
+
+        try:
+            value = await self._run_blocking(self.supervisor.queue_positions)
+        except AttributeError:
+            # Compatibility for supervisors injected by older embedders.
+            return {}
+        if not isinstance(value, dict) or not all(
+            isinstance(key, str) and isinstance(position, int) and not isinstance(position, bool)
+            for key, position in value.items()
+        ):
+            raise TypeError("background supervisor returned invalid queue positions")
+        return value
+
     async def run_blocking(
         self,
         function: Callable[..., object],

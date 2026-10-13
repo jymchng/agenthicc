@@ -6,6 +6,7 @@ import json as json_module
 from pathlib import Path
 
 from agenthicc.background import (
+    BackgroundSession,
     BackgroundStore,
     BackgroundSupervisor,
     BackgroundSettings,
@@ -25,6 +26,8 @@ def _jobs_group() -> None: ...
 
 
 def _config(ctx: CLIContext) -> object:
+    if ctx.config is not None:
+        return ctx.config
     from agenthicc.config import load_config  # noqa: PLC0415
 
     return load_config(
@@ -56,27 +59,46 @@ def _store_and_supervisor(
         wall_timeout_s=settings.wall_timeout_s,
         max_activity_bytes=settings.max_activity_bytes,
         trash_retention_days=settings.trash_retention_days,
+        queue_enabled=settings.queue_enabled,
+        max_queue_length=settings.max_queue_length,
+        max_workers_per_user=settings.max_workers_per_user,
+        priority_aging_interval_s=settings.priority_aging_interval_s,
+        dispatch_lease_s=settings.dispatch_lease_s,
     )
     return store, supervisor
 
 
 def _background_settings(ctx: CLIContext) -> BackgroundSettings:
-    cfg = _config(ctx)
+    config = _config(ctx)
     return load_background_settings(
         config_path=ctx.config_path,
         overrides=ctx.set_overrides,
-        config=getattr(cfg, "background", None),
+        config=vars(config).get("background"),
     )
 
 
-def _public_session(session: object) -> dict[str, object]:
+def _public_session(
+    session: BackgroundSession,
+    *,
+    queue_position: int | None = None,
+) -> dict[str, object]:
     from agenthicc.tui.runtime.session_export import _Redactor  # noqa: PLC0415
 
-    raw = getattr(session, "to_dict")()
+    raw = session.to_dict()
     if isinstance(raw, dict):
         result = dict(raw)
         result.pop("intent", None)
         result.pop("lease_token", None)
+        result.pop("dispatch_token", None)
+        result.pop("dispatch_claimed_at", None)
+        result.pop("idempotency_key", None)
+        result.pop("owner_id", None)
+        result["queue_position"] = queue_position
+        result["queue_position_advisory"] = (
+            "position may change as capacity and priorities change"
+            if queue_position is not None
+            else None
+        )
         redactor = _Redactor()
         result.pop("input_value", None)
         for key in (
@@ -110,6 +132,23 @@ def _public_session(session: object) -> dict[str, object]:
             result["attempt_history"] = sanitized_history
         return result
     return {}
+
+
+def _queue_positions(supervisor: BackgroundSupervisor) -> dict[str, int]:
+    try:
+        value = supervisor.queue_positions()
+    except AttributeError:
+        # Compatibility for a supervisor injected by an older extension.
+        return {}
+    except (OSError, RuntimeError, ValueError):
+        return {}
+    if not isinstance(value, dict):
+        return {}
+    return {
+        key: position
+        for key, position in value.items()
+        if isinstance(key, str) and isinstance(position, int) and not isinstance(position, bool)
+    }
 
 
 async def _open_manager(ctx: CLIContext) -> None:
@@ -273,8 +312,12 @@ async def agents(
         return
 
     if json:
-        store, _supervisor = _store_and_supervisor(ctx)
-        session_payload = [_public_session(item) for item in store.list()]
+        store, supervisor = _store_and_supervisor(ctx)
+        positions = _queue_positions(supervisor)
+        session_payload = [
+            _public_session(item, queue_position=positions.get(item.session_id))
+            for item in store.list()
+        ]
         print(json_module.dumps(session_payload, indent=2, sort_keys=True))
         return
 
@@ -295,6 +338,9 @@ async def run(
     workflow: str = "",
     intent: str = "",
     title: str = "",
+    priority: str = "normal",
+    idempotency_key: str = "",
+    json: bool = False,
 ) -> None:
     """Run one request; ``--background`` returns after accepting a worker."""
 
@@ -313,11 +359,26 @@ async def run(
             dangerously_skip_permissions=ctx.flags.dangerously_skip_permissions,
             set_secret_overrides=ctx.set_secret_overrides,
             mode_name=ctx.mode_name,
+            priority=priority,
+            idempotency_key=idempotency_key,
         )
     except (RuntimeError, ValueError) as exc:
         print(f"Unable to start background session: {exc}")
         raise SystemExit(1) from exc
-    print(f"Background session {session.session_id} accepted ({session.status.value}).")
+    position = _queue_positions(supervisor).get(session.session_id)
+    payload = _public_session(session, queue_position=position)
+    if json:
+        print(json_module.dumps(payload, indent=2, sort_keys=True))
+    elif position is not None:
+        print(
+            f"Background session {session.session_id} accepted and queued "
+            f"(advisory position {position})."
+        )
+    else:
+        print(
+            f"Background session {session.session_id} accepted; "
+            f"worker state is {session.status.value}."
+        )
 
 
 @command("jobs", "list", help="List background sessions")
@@ -329,9 +390,12 @@ def jobs_list(
 ) -> None:
     """List current, archived, or recoverable-trash sessions."""
 
-    store, _supervisor = _store_and_supervisor(ctx)
+    store, supervisor = _store_and_supervisor(ctx)
     sessions = store.list(include_archived=all, include_deleted=trash)
-    payload = [_public_session(item) for item in sessions]
+    positions = _queue_positions(supervisor)
+    payload = [
+        _public_session(item, queue_position=positions.get(item.session_id)) for item in sessions
+    ]
     if json:
         print(json_module.dumps(payload, indent=2, sort_keys=True))
         return
@@ -343,7 +407,13 @@ def jobs_list(
             f"{str(item.get('session_id', ''))[:16]}  "
             f"{str(item.get('status', 'unknown')):16}  "
             f"{str(item.get('title', ''))[:48]}  "
-            f"{item.get('workflow_name') or 'direct'}"
+            f"{item.get('workflow_name') or 'direct'}  "
+            f"priority={item.get('priority', 'normal')}  "
+            + (
+                f"queue=#{item['queue_position']} (advisory)"
+                if item.get("queue_position") is not None
+                else ""
+            )
         )
 
 
@@ -351,9 +421,12 @@ def jobs_list(
 def jobs_status(ctx: CLIContext, session_id: str, json: bool = False) -> None:
     """Show redacted status for SESSION_ID."""
 
-    store, _supervisor = _store_and_supervisor(ctx)
+    store, supervisor = _store_and_supervisor(ctx)
     try:
-        payload = _public_session(store.get(session_id, include_deleted=True))
+        payload = _public_session(
+            store.get(session_id, include_deleted=True),
+            queue_position=_queue_positions(supervisor).get(session_id),
+        )
     except KeyError:
         payload = {"session_id": session_id, "status": "not_found"}
     if json:
@@ -361,6 +434,10 @@ def jobs_status(ctx: CLIContext, session_id: str, json: bool = False) -> None:
     else:
         print(f"Session: {payload.get('session_id', session_id)}")
         print(f"State: {payload.get('status', 'not_found')}")
+        print(f"Priority: {payload.get('priority', 'normal')}")
+        if payload.get("queue_position") is not None:
+            print(f"Queue position: {payload['queue_position']} (advisory)")
+        print(f"Dispatch: {payload.get('dispatch_state', 'legacy')}")
         print(f"Title: {payload.get('title', '')}")
         mode_application = payload.get("mode_application_status", "pending")
         if mode_application == "applied" and payload.get("mode_name"):
@@ -436,6 +513,19 @@ def jobs_resume(ctx: CLIContext, session_id: str) -> None:
 @command("jobs", "retry", help="Retry a failed background session")
 def jobs_retry(ctx: CLIContext, session_id: str) -> None:
     _mutate(ctx, session_id, "retry")
+
+
+@command("jobs", "priority", help="Change a background session's scheduling priority")
+def jobs_priority(ctx: CLIContext, session_id: str, priority: str) -> None:
+    """Set priority to urgent, normal, or low and record an audit event."""
+
+    _store, supervisor = _store_and_supervisor(ctx)
+    try:
+        session = supervisor.set_priority(session_id, priority)
+    except (KeyError, RuntimeError, ValueError) as exc:
+        print(f"Unable to change priority for {session_id}: {exc}")
+        raise SystemExit(1) from exc
+    print(f"priority: {session.session_id} → {session.priority.value}")
 
 
 @command("jobs", "approve", help="Approve a waiting background session")

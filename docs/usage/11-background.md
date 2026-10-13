@@ -20,6 +20,7 @@ runtime.
 ```bash
 agenthicc jobs list                # list background sessions
 agenthicc jobs status <id>         # show one session
+agenthicc jobs priority <id> urgent # set urgent, normal, or low priority
 agenthicc jobs cancel <id>         # cancel a session
 agenthicc jobs resume <id>         # resume a session
 agenthicc jobs retry <id>          # retry a failed session
@@ -33,6 +34,13 @@ agenthicc jobs delete <id>         # move to recoverable trash
 agenthicc jobs restore <id>        # restore a deleted session
 agenthicc jobs purge               # permanently remove expired trash
 ```
+
+New requests use `normal` priority unless overridden. To request a specific
+priority on admission, use `agenthicc run --background --priority low --intent
+"..."` or `agenthicc --priority low --goal "..." --detach`. Durable queueing
+is opt-in with `[background].queue_enabled = true`; otherwise a full worker
+pool continues to return the existing capacity error. Queue positions shown in
+JSON and the `agents` manager are advisory.
 
 Useful flags: `jobs list --all --json --trash` and `jobs status --json`.
 

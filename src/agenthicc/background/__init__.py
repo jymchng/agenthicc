@@ -11,13 +11,16 @@ from .model import (
     BackgroundAttempt,
     BackgroundSession,
     ModeApplicationStatus,
+    PriorityChange,
+    QueueDispatchState,
+    QueuePriority,
     SessionStatus,
     legal_transition,
 )
 from .deletion import DeleteFailure, DeleteResult
 from .store import BackgroundPage, BackgroundStore, InvalidSessionTransition, SessionNotFound
 from .manager_service import BackgroundManagerService, ManagerOperationResult
-from .supervisor import BackgroundSupervisor
+from .supervisor import BackgroundSupervisor, QueueFullError
 from .settings import (
     BackgroundManagerSettings,
     BackgroundSettings,
@@ -41,6 +44,9 @@ __all__ = [
     "BackgroundAttempt",
     "BackgroundSession",
     "ModeApplicationStatus",
+    "PriorityChange",
+    "QueueDispatchState",
+    "QueuePriority",
     "BackgroundPage",
     "BackgroundManagerService",
     "DeleteFailure",
@@ -48,6 +54,7 @@ __all__ = [
     "ManagerOperationResult",
     "BackgroundStore",
     "BackgroundSupervisor",
+    "QueueFullError",
     "BackgroundInputService",
     "BackgroundSettings",
     "BackgroundManagerSettings",

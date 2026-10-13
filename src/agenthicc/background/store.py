@@ -20,6 +20,9 @@ from .model import (
     BackgroundAttempt,
     BackgroundSession,
     ModeApplicationStatus,
+    PriorityChange,
+    QueueDispatchState,
+    QueuePriority,
     SessionStatus,
     legal_transition,
 )
@@ -379,6 +382,26 @@ class BackgroundStore:
             )
             if update_order and current.status != SessionStatus.DELETED:
                 self._remove_ordered(current)
+            records[session_id] = updated
+        elif event_type == "priority_changed":
+            previous_priority = payload.get("previous")
+            current_priority = payload.get("current")
+            changed_at = event.get("timestamp")
+            changed_by = payload.get("changed_by")
+            if not isinstance(previous_priority, str) or not isinstance(current_priority, str):
+                return max_sequence
+            change = PriorityChange.from_mapping(
+                {
+                    "previous": previous_priority,
+                    "current": current_priority,
+                    "changed_at": changed_at,
+                    "changed_by": changed_by,
+                }
+            )
+            updated = current.evolve(
+                priority=change.current,
+                priority_history=(*current.priority_history, change)[-32:],
+            )
             records[session_id] = updated
         return max_sequence
 
@@ -1126,8 +1149,52 @@ class BackgroundStore:
             **changes,
         )
 
-    def claim(self, session_id: str, *, pid: int, lease_token: str) -> BackgroundSession:
+    def change_priority(
+        self,
+        session_id: str,
+        priority: QueuePriority,
+        *,
+        changed_by: str = "local-user",
+    ) -> BackgroundSession:
+        """Persist an explicit priority change as an auditable event."""
+
+        if not isinstance(priority, QueuePriority):
+            raise ValueError("priority must be a QueuePriority")
+        with self._lock():
+            current = self.get(session_id, include_deleted=True)
+            if current.status not in ACTIVE_STATUSES:
+                raise InvalidSessionTransition(
+                    f"Cannot change priority of {current.status.value} session"
+                )
+            if current.priority is priority:
+                return current
+            self._append(
+                "priority_changed",
+                {
+                    "session_id": session_id,
+                    "previous": current.priority.value,
+                    "current": priority.value,
+                    "changed_by": changed_by[:128],
+                },
+            )
+            return self.get(session_id, include_deleted=True)
+
+    def claim(
+        self,
+        session_id: str,
+        *,
+        pid: int,
+        lease_token: str,
+        dispatch_token: str | None = None,
+    ) -> BackgroundSession:
         current = self.get(session_id)
+        if current.dispatch_state is QueueDispatchState.PENDING and not dispatch_token:
+            raise InvalidSessionTransition("Queued session has not been claimed by the scheduler")
+        if current.dispatch_state is QueueDispatchState.CLAIMED:
+            if not dispatch_token or dispatch_token != current.dispatch_token:
+                raise InvalidSessionTransition("Background dispatch lease is stale")
+        elif dispatch_token is not None and dispatch_token != current.dispatch_token:
+            raise InvalidSessionTransition("Background dispatch lease is stale")
         if current.status == SessionStatus.QUEUED:
             current = self.transition(session_id, SessionStatus.STARTING)
         elif current.status == SessionStatus.RETRYING:
@@ -1163,6 +1230,9 @@ class BackgroundStore:
             mode_application_error="",
             latest_activity="Worker started",
             last_active=now,
+            dispatch_state=(
+                QueueDispatchState.STARTED if dispatch_token is not None else current.dispatch_state
+            ),
         )
 
     def heartbeat(

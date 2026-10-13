@@ -62,6 +62,7 @@ The primary entry point is `agenthicc.__main__:main`.
 | `TerminalManager` / `TerminalStore` | `agenthicc.background.terminals` | Owned process groups, bounded output, handles, wait, stop, and local recovery |
 | `TerminalState` / `TerminalRecord` | `agenthicc.background.terminals` | Durable background-terminal lifecycle and redacted result metadata |
 | `BackgroundPage` / `BackgroundManagerService` / `ManagerOperationResult` | `agenthicc.background` | Bounded page projections and structured asynchronous manager operations |
+| `QueuePriority` / `QueueDispatchState` / `PriorityChange` / `QueueFullError` | `agenthicc.background` | Durable bounded background admission, priority audit, scheduler state, and queue-capacity rejection |
 | `BackgroundManagerSettings` | `agenthicc.background` | Validated latency, activity-tail, frame, and operation-concurrency limits for `agenthicc agents` |
 | `CommandOutcome` / `CommandState` / `CommandKind` | `agenthicc.tools.exec` | Canonical command states, deadlines, cancellation, and service lifecycle |
 | `ToolSandbox` / `WorkspaceView` | `agenthicc.tools` | Timeout, resource, network, and real-path boundaries |

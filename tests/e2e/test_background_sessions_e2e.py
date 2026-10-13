@@ -233,6 +233,65 @@ def test_cli_manager_alias_and_background_acceptance(tmp_path: Path) -> None:
     assert json.loads(status.stdout)["session_id"] == session_id
 
 
+def test_jobs_cli_projects_durable_queue_state_across_processes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    env = dict(os.environ)
+    env["HOME"] = str(tmp_path)
+    env["PYTHONPATH"] = str(Path(__file__).parents[2] / "src")
+    (tmp_path / ".agenthicc.toml").write_text(
+        "[background]\n"
+        "queue_enabled = true\n"
+        "max_workers = 1\n"
+        "max_workers_per_project = 1\n"
+        "max_queue_length = 4\n",
+        encoding="utf-8",
+    )
+    launches: list[object] = []
+
+    def popen(*args: object, **kwargs: object) -> object:
+        launches.append((args, kwargs))
+        return type("Process", (), {"pid": 70_000 + len(launches)})()
+
+    with monkeypatch.context() as scoped_patch:
+        scoped_patch.setattr("agenthicc.background.supervisor.subprocess.Popen", popen)
+        store = BackgroundStore()
+        supervisor = BackgroundSupervisor(
+            store,
+            max_workers=1,
+            max_workers_per_project=1,
+            queue_enabled=True,
+            max_queue_length=4,
+        )
+        supervisor.submit(intent="active request", cwd=str(tmp_path / "project"))
+        queued = supervisor.submit(
+            intent="durable queued request",
+            cwd=str(tmp_path / "project"),
+        )
+    assert queued.status is SessionStatus.QUEUED
+    assert len(launches) == 1
+
+    listed = subprocess.run(
+        [sys.executable, "-m", "agenthicc", "jobs", "list", "--json"],
+        cwd=tmp_path,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert listed.returncode == 0, listed.stderr
+    payload = json.loads(listed.stdout)
+    queued_item = next(item for item in payload if item["session_id"] == queued.session_id)
+    assert queued_item["status"] == "queued"
+    assert queued_item["dispatch_state"] == "pending"
+    assert queued_item["queue_position"] == 1
+    assert queued_item["queue_position_advisory"]
+
+
 def test_detached_goal_yolo_mode_is_visible_and_attested_across_cli_projections(
     tmp_path: Path,
 ) -> None:

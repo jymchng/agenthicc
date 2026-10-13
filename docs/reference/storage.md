@@ -27,6 +27,11 @@ other per-session artifact lives **inside** it.
 | `<id>/workflows/<run>/.claim` | `WorkflowCheckpointStore` | Atomic live-owner lease metadata (PID/host/owner/process-start identity only) | Prevent duplicate resume; reclaim only provably dead local claims |
 | `~/.agenthicc/session-service/index.json` | `SessionEventStore` | Bounded redacted metadata projection: id, project root, lifecycle, timestamps, sequence, capabilities, and file fingerprint | Atomic rebuild from authoritative service JSONL files; never used as event truth |
 | `~/.agenthicc/session-service/index.lock` | `SessionEventStore` | Short cross-process index merge lock | OS advisory lock; never held for session or turn lifetime |
+| `~/.agenthicc/background/events.jsonl` | `BackgroundStore` | Authoritative append-only session lifecycle, queue admission, dispatch, and priority-audit events | Replay to rebuild background session state; queue-pending records survive restart |
+| `~/.agenthicc/background/projection-v1.json` | `BackgroundStore` | Rebuildable session projection cache | Rebuilt from `events.jsonl` when missing or stale |
+| `~/.agenthicc/background/queue-scheduler-v1.json` | `BackgroundSupervisor` | Last-dispatched project cursor for round-robin fairness | Advisory scheduler cursor; loss does not lose accepted queue records |
+| `~/.agenthicc/background/queue-scheduler.lock` | `BackgroundSupervisor` | Cross-process admission/dispatch critical section | OS advisory lock; protects slot reservation and prevents duplicate effective dispatch |
+| `~/.agenthicc/background/requests/<session-id>.json` | `BackgroundSupervisor` | Private worker launch envelope, including dispatch token and execution request | Replayed only when an accepted queued record is dispatched; request files are sensitive |
 | `index.lock` | `SessionOpenCoordinator` | Short session-index read/modify/write critical section | OS advisory lock; never held for a turn or TUI lifetime |
 | `~/.agenthicc/sessions/<id>/cassette/` | testing/recording services | LLM and approval fixtures | Deterministic replay |
 
@@ -595,7 +600,9 @@ Background execution adds a local registry at `~/.agenthicc/background/`
 | `events.jsonl` | `background.BackgroundStore` | Authoritative ordered create/update/delete lifecycle events | Full rebuild when the derived projection is missing or incompatible; same-inode appends replay only the complete tail |
 | `projection-v1.json` | `background.BackgroundStore` | Versioned derived session projection, ordering indexes, and event offset/sequence | Atomically replaced and fsync'd; rejected on schema/inode mismatch, truncation, invalid offset, or same-size mtime mismatch; safely rebuilt from `events.jsonl` |
 | `registry.lock` | `BackgroundStore` | Cross-process advisory lock | Recreated automatically |
-| `requests/<id>.json` | `BackgroundSupervisor` | Mode-600 worker launch request | Read once by the owned worker |
+| `queue-scheduler-v1.json` | `BackgroundSupervisor` | Last-dispatched project cursor for round-robin fairness | Advisory state; accepted queue records remain in the event log |
+| `queue-scheduler.lock` | `BackgroundSupervisor` | Cross-process queue admission/dispatch lock | Serializes slot reservations and prevents duplicate effective dispatch |
+| `requests/<id>.json` | `BackgroundSupervisor` | Mode-600 worker launch request, including the dispatch token | Read by the owned worker; pending requests are recovered after restart |
 | `trash/<id>-<nonce>/` | `BackgroundStore` | Exact deleted artifacts plus `manifest.json` | `agenthicc jobs restore <id>` |
 
 The background registry is a rebuildable index, not a second conversation or

@@ -87,18 +87,31 @@ class BackgroundSettings:
     terminal_cancel_grace_s: float = 5.0
     terminal_retention_days: int = 30
     manager: BackgroundManagerSettings = BackgroundManagerSettings()
+    # PRD-225 is opt-in while the durable scheduler receives broader rollout.
+    queue_enabled: bool = False
+    max_queue_length: int = 100
+    max_workers_per_user: int | None = None
+    priority_aging_interval_s: float = 900.0
+    dispatch_lease_s: float = 30.0
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, object]) -> "BackgroundSettings":
         """Build settings and reject unsafe or ambiguous values."""
 
-        def positive_int(name: str, default: int, *, allow_zero: bool = False) -> int:
+        def positive_int(
+            name: str,
+            default: int,
+            *,
+            allow_zero: bool = False,
+            maximum: int = 100_000_000,
+        ) -> int:
             value = raw.get(name, default)
             if isinstance(value, bool) or not isinstance(value, int):
                 raise ValueError(f"background.{name} must be an integer")
-            if value < 0 or (value == 0 and not allow_zero):
+            if value < 0 or (value == 0 and not allow_zero) or value > maximum:
                 raise ValueError(
-                    f"background.{name} must be {'non-negative' if allow_zero else 'positive'}"
+                    f"background.{name} must be {'non-negative' if allow_zero else 'positive'} "
+                    f"and no greater than {maximum}"
                 )
             return value
 
@@ -120,14 +133,38 @@ class BackgroundSettings:
         terminals_enabled = raw.get("terminals_enabled", True)
         if not isinstance(terminals_enabled, bool):
             raise ValueError("background.terminals_enabled must be a boolean")
+        queue_enabled = raw.get("queue_enabled", False)
+        if not isinstance(queue_enabled, bool):
+            raise ValueError("background.queue_enabled must be a boolean")
+        max_workers_per_user_raw = raw.get("max_workers_per_user")
+        if max_workers_per_user_raw is None:
+            max_workers_per_user = None
+        elif (
+            isinstance(max_workers_per_user_raw, bool)
+            or not isinstance(max_workers_per_user_raw, int)
+            or not 1 <= max_workers_per_user_raw <= 1_024
+        ):
+            raise ValueError(
+                "background.max_workers_per_user must be an integer between 1 and 1024"
+            )
+        else:
+            max_workers_per_user = max_workers_per_user_raw
         manager_raw = raw.get("manager", {})
         if not isinstance(manager_raw, Mapping):
             raise ValueError("background.manager must be a table")
+        priority_aging_interval_s = nonnegative_float("priority_aging_interval_s", 900.0)
+        if not 1.0 <= priority_aging_interval_s <= 2_678_400.0:
+            raise ValueError(
+                "background.priority_aging_interval_s must be between 1 and 2678400 seconds"
+            )
+        dispatch_lease_s = nonnegative_float("dispatch_lease_s", 30.0)
+        if not 0.1 <= dispatch_lease_s <= 3_600.0:
+            raise ValueError("background.dispatch_lease_s must be between 0.1 and 3600 seconds")
         return cls(
             enabled=enabled,
             store_path=store_path,
-            max_workers=positive_int("max_workers", 4),
-            max_workers_per_project=positive_int("max_workers_per_project", 4),
+            max_workers=positive_int("max_workers", 4, maximum=1_024),
+            max_workers_per_project=positive_int("max_workers_per_project", 4, maximum=1_024),
             cancel_grace_s=nonnegative_float("cancel_grace_s", 5.0),
             stale_after_s=nonnegative_float("stale_after_s", 30.0),
             wall_timeout_s=nonnegative_float("wall_timeout_s", 0.0),
@@ -141,6 +178,11 @@ class BackgroundSettings:
             terminal_cancel_grace_s=nonnegative_float("terminal_cancel_grace_s", 5.0),
             terminal_retention_days=positive_int("terminal_retention_days", 30, allow_zero=True),
             manager=BackgroundManagerSettings.from_mapping(manager_raw),
+            queue_enabled=queue_enabled,
+            max_queue_length=positive_int("max_queue_length", 100, maximum=100_000),
+            max_workers_per_user=max_workers_per_user,
+            priority_aging_interval_s=priority_aging_interval_s,
+            dispatch_lease_s=dispatch_lease_s,
         )
 
 

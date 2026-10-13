@@ -6,9 +6,11 @@ import asyncio
 import dataclasses
 import uuid
 from collections.abc import Sequence
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from agenthicc.background import BackgroundStore, BackgroundSupervisor
+from agenthicc.background.settings import load_background_settings
 from agenthicc.tools.base import ToolLike
 from agenthicc.worktrees.coordinator import ParallelCoordinator
 from agenthicc.worktrees.store import ManifestStore
@@ -63,17 +65,27 @@ class ParallelCodePlanRunner(BaseWorkflowRunner):
                 )
             except (OSError, ValueError):
                 goal_run_id = ""
-        return ParallelCoordinator(
+        repository = (
             self._cfg.workspace_scope.primary_root
             if self._cfg.workspace_scope is not None
-            else ".",
+            else Path.cwd()
+        )
+        settings = load_background_settings(cwd=Path(repository))
+        root = Path(settings.store_path).expanduser() if settings.store_path else None
+        return ParallelCoordinator(
+            repository,
             parent_session_id=self._cfg.conversation_id or ctx.run_id,
             run_id=goal_run_id,
             store=ManifestStore(),
             supervisor=BackgroundSupervisor(
-                BackgroundStore(),
-                max_workers=self._cfg.cfg.execution.max_parallel_tasks,
-                max_workers_per_project=self._cfg.cfg.execution.max_parallel_tasks,
+                BackgroundStore(root),
+                max_workers=settings.max_workers,
+                max_workers_per_project=settings.max_workers_per_project,
+                max_workers_per_user=settings.max_workers_per_user,
+                queue_enabled=settings.queue_enabled,
+                max_queue_length=settings.max_queue_length,
+                priority_aging_interval_s=settings.priority_aging_interval_s,
+                dispatch_lease_s=settings.dispatch_lease_s,
             ),
             max_parallel_tasks=self._cfg.cfg.execution.max_parallel_tasks,
         )

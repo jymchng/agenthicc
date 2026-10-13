@@ -60,11 +60,21 @@ def make_spawn_worker_agents_tool(
     if supervisor is None:
         from agenthicc.background import BackgroundStore as _BackgroundStore  # noqa: PLC0415
         from agenthicc.background import BackgroundSupervisor as _BackgroundSupervisor  # noqa: PLC0415
+        from agenthicc.background.settings import (  # noqa: PLC0415
+            load_background_settings,
+        )
 
+        settings = load_background_settings(cwd=Path(repository))
+        background_root = Path(settings.store_path).expanduser() if settings.store_path else None
         supervisor = _BackgroundSupervisor(
-            _BackgroundStore(),
-            max_workers=effective_limit,
-            max_workers_per_project=effective_limit,
+            _BackgroundStore(background_root),
+            max_workers=settings.max_workers,
+            max_workers_per_project=settings.max_workers_per_project,
+            max_workers_per_user=settings.max_workers_per_user,
+            queue_enabled=settings.queue_enabled,
+            max_queue_length=settings.max_queue_length,
+            priority_aging_interval_s=settings.priority_aging_interval_s,
+            dispatch_lease_s=settings.dispatch_lease_s,
         )
 
     @tool_control

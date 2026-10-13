@@ -13,7 +13,9 @@ uv run agenthicc run --background --intent "Review the authentication flow"
 uv run agenthicc run --background --workflow code_plan --intent "Plan the next release"
 ```
 
-The command returns the stable session ID as soon as the worker is accepted.
+The command returns the stable session ID as soon as the request is durably
+accepted. With queueing enabled, acceptance may mean `queued`, not that a
+worker process has started.
 Inside an active TUI session, `/bg`, `/background`, and `/detach` are
 equivalent. They preserve the current session ID and durable journal, then
 return to the shell after starting a background worker. Both commands appear
@@ -95,6 +97,41 @@ agenthicc runs
 agenthicc agents --run RUN_ID
 agenthicc attach SESSION_ID
 ```
+
+## Durable queue and priorities
+
+Queueing is opt-in during rollout. Set `background.queue_enabled = true` to
+accept work while all configured worker slots are occupied. Accepted requests
+are recorded in the existing `events.jsonl` background log before the CLI
+reports success. The scheduler applies global, per-project, and optional
+per-user limits, and rotates fairly among eligible projects. Priorities are
+`urgent`, `normal` (the default), and `low`; aging lets older lower-priority
+requests overtake a stream of newer high-priority work. The reported queue
+position is advisory and can change as capacity or priority changes.
+
+```bash
+agenthicc run --background --priority urgent --intent "Fix the release blocker"
+agenthicc --priority low --goal "Update generated API docs" --detach
+agenthicc jobs priority SESSION_ID normal
+agenthicc jobs list --json
+agenthicc jobs status SESSION_ID
+```
+
+An optional `--idempotency-key KEY` on `agenthicc run --background` makes a
+repeat submission by the same local user return the existing request. Reusing
+the key for different intent, workspace, workflow, mode, or profile is rejected.
+Changing priority with `jobs priority` writes a bounded audit event; it never
+restarts a running worker.
+
+Cancelling a request whose dispatch state is still `pending` changes its
+durable status without creating a child process or acquiring a session lease.
+Once dispatch is reserved, cancellation uses the normal worker lifecycle.
+When a worker finalizes, it asks the scheduler to fill the freed slot. On
+restart, pending records are recovered and dispatched under a cross-process
+scheduler lock; terminal records are never resubmitted. A crash after the
+scheduler reservation is fenced by a durable dispatch token and the worker's
+existing session claim, so duplicate child launches cannot both execute the
+accepted request.
 
 The lower-level `jobs`/`agents` manager remains available for ordinary
 background sessions that do not belong to a goal run.
@@ -350,8 +387,10 @@ to the interactive viewport; it never hides or removes a durable session.
 
 JSON status removes the original intent and lease token and applies the same
 secret-pattern redaction used by session inspection. A missing or invalid
-transition is reported as a failed control operation; workers are never
-implicitly relaunched after a process restart.
+transition is reported as a failed control operation. On restart, durable
+pending queue records are eligible for dispatch; an interrupted running attempt
+is reconciled as orphaned and requires explicit resume/retry. Terminal records
+are never resubmitted automatically.
 
 Target input receipts live at `~/.agenthicc/background/input-inbox/<id>.jsonl`,
 separate from background lifecycle logs. The inbox stores the submitted text
@@ -370,6 +409,11 @@ The optional `[background]` section may be placed in the project or global
 enabled = true
 max_workers = 4
 max_workers_per_project = 4
+queue_enabled = false       # opt in to durable queued admission
+max_queue_length = 100
+max_workers_per_user = 4    # optional; omit for no per-user cap
+priority_aging_interval_s = 900.0
+dispatch_lease_s = 30.0
 cancel_grace_s = 5.0
 stale_after_s = 30.0
 wall_timeout_s = 0.0       # 0 means no wall-clock timeout
@@ -393,8 +437,9 @@ max_in_flight_operations = 4
 metrics = false
 ```
 
-Defaults are conservative. Invalid values fail closed before a worker is
-created. `--set background.max_workers=1` is supported for one invocation, and
+Queueing remains disabled by default until explicitly enabled. Other defaults
+are conservative. Invalid or out-of-range values fail closed before a worker
+is created. `--set background.max_workers=1` is supported for one invocation, and
 `AGENTHICC_DISABLE_BACKGROUND=1` is an emergency local disable switch.
 Manager settings are independently validated and bounded; they control only
 refresh, display, and concurrency cadence, not locking, ownership, or durable
@@ -457,8 +502,10 @@ not paginated and continues to return the complete owned-record projection.
 Terminal records are persisted below `~/.agenthicc/background/terminals/` (or
 the configured `store_path`), with mode-600 JSONL events. Commands, labels,
 and captured output are bounded and common credential-shaped values are
-redacted. Active records found after a manager restart become `orphaned`
-diagnostics rather than being reported as successful or silently relaunched.
+redacted. Active worker records found after a manager restart become
+`orphaned` diagnostics rather than being reported as successful or silently
+relaunched. Queue-pending session records are the exception: their accepted
+request is recovered by the background scheduler, not treated as a dead worker.
 
 ## Verification
 

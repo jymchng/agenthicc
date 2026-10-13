@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from dataclasses import replace
 from pathlib import Path
 from typing import Protocol
 
 from agenthicc.background.model import BackgroundSession
+from agenthicc.background.supervisor import BackgroundSupervisor
 
 from .manager import IntegrationResult, WorktreeManager
 from .model import (
@@ -187,6 +189,7 @@ class ParallelCoordinator:
             worktrees=[record, *manifest.worktrees],
         )
         self.store.save(manifest)
+        queued_dispatch = False
         if self.supervisor is not None:
             try:
                 session = self.supervisor.submit(
@@ -222,8 +225,9 @@ class ParallelCoordinator:
                 )
                 raise CoordinatorError(error) from exc
             worker_session_id = session.session_id
+            queued_dispatch = session.dispatch_state.value == "pending"
         running_task = task.evolve(
-            status=TaskStatus.RUNNING,
+            status=TaskStatus.QUEUED if queued_dispatch else TaskStatus.RUNNING,
             worker_session_id=worker_session_id,
             worktree_id=record.worktree_id,
         )
@@ -242,10 +246,96 @@ class ParallelCoordinator:
         if not task.worktree_id:
             raise CoordinatorError(f"task has no worktree: {task_id}")
         record = manifest.worktree(task.worktree_id)
+        worker_session_status = ""
+        worker_session_error = ""
+        if task.worker_session_id and isinstance(self.supervisor, BackgroundSupervisor):
+            try:
+                session = self.supervisor.store.get(
+                    task.worker_session_id,
+                    include_deleted=True,
+                )
+            except (KeyError, OSError, RuntimeError, TypeError, ValueError):
+                session = None
+            if isinstance(session, BackgroundSession):
+                dispatch_state = session.dispatch_state.value
+                session_status = session.status.value
+                worker_session_status = session_status
+                worker_session_error = session.error or ""
+                if dispatch_state == "pending":
+                    result = WorkerResult(
+                        task_id=task.task_id,
+                        worker_session_id=task.worker_session_id,
+                        worktree_id=record.worktree_id,
+                        base_commit=record.base_commit,
+                        head_commit=record.base_commit,
+                        status="queued",
+                    )
+                    self.store.save(
+                        manifest.evolve(
+                            tasks=[
+                                task.evolve(status=TaskStatus.QUEUED, result=result)
+                                if item.task_id == task_id
+                                else item
+                                for item in manifest.tasks
+                            ]
+                        )
+                    )
+                    return result
+                if session_status in {
+                    "starting",
+                    "running",
+                    "waiting_approval",
+                    "waiting_input",
+                    "retrying",
+                    "cancelling",
+                }:
+                    result = WorkerResult(
+                        task_id=task.task_id,
+                        worker_session_id=task.worker_session_id,
+                        worktree_id=record.worktree_id,
+                        base_commit=record.base_commit,
+                        head_commit=record.base_commit,
+                        status="running",
+                    )
+                    self.store.save(
+                        manifest.evolve(
+                            tasks=[
+                                task.evolve(status=TaskStatus.RUNNING, result=result)
+                                if item.task_id == task_id
+                                else item
+                                for item in manifest.tasks
+                            ]
+                        )
+                    )
+                    return result
         result = self.manager.complete(record, worker_session_id=task.worker_session_id)
         from .model import TaskStatus, WorktreeStatus  # noqa: PLC0415
 
-        status = TaskStatus.COMPLETED if result.status == "complete" else task.status
+        if result.status == "complete":
+            status = TaskStatus.COMPLETED
+        elif worker_session_status in {"failed", "orphaned"}:
+            status = TaskStatus.FAILED
+            result = replace(
+                result,
+                status="worker_failed",
+                error=worker_session_error or "Worker session failed",
+            )
+        elif worker_session_status == "cancelled":
+            status = TaskStatus.CANCELLED
+            result = replace(
+                result,
+                status="worker_cancelled",
+                error=worker_session_error or "Worker was cancelled",
+            )
+        elif worker_session_status == "completed":
+            status = TaskStatus.FAILED
+            result = replace(
+                result,
+                status="incomplete",
+                error="Worker completed without a clean committed result",
+            )
+        else:
+            status = task.status
         self.store.save(
             manifest.evolve(
                 tasks=[

@@ -118,13 +118,28 @@ def make_collect_tools(
         manifest = coordinator.manifest(orchestration_id)
         results: list[dict[str, object]] = []
         for task in manifest.tasks:
-            if task.status in {TaskStatus.RUNNING, TaskStatus.COMPLETED, TaskStatus.CONFLICT}:
+            if task.status in {
+                TaskStatus.QUEUED,
+                TaskStatus.RUNNING,
+                TaskStatus.COMPLETED,
+                TaskStatus.CONFLICT,
+            }:
                 try:
                     result = coordinator.inspect_task(orchestration_id, task.task_id)
                 except (CoordinatorError, OSError, RuntimeError) as exc:
                     return _failure(str(exc), f"Worker {task.task_id} is not ready; retry later.")
                 results.append(result.to_dict())
         refreshed = coordinator.manifest(orchestration_id)
+        failed = [
+            task.task_id
+            for task in refreshed.tasks
+            if task.status in {TaskStatus.FAILED, TaskStatus.CANCELLED}
+        ]
+        if failed:
+            return _failure(
+                f"Worker tasks need attention: {', '.join(failed)}",
+                "Inspect the failed worker sessions and explicitly retry or revise the task plan.",
+            )
         pending = [
             task.task_id
             for task in refreshed.tasks

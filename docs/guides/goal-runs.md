@@ -27,6 +27,7 @@ accepted the main session:
 ```bash
 uv run agenthicc --goal "Implement OAuth and its tests" --detach
 uv run agenthicc --mode Yolo --goal "Implement OAuth and its tests" --detach
+uv run agenthicc --priority urgent --goal "Fix the release blocker" --detach
 ```
 
 The command's success means that durable execution was accepted; it does not
@@ -36,6 +37,12 @@ bounded machine-readable startup response:
 ```bash
 uv run agenthicc --json --goal "Implement OAuth" --detach
 ```
+
+When `[background].queue_enabled = true`, an accepted goal may have status
+`queued` while it waits for global, project, or user worker capacity. Set its
+admission priority with `--priority urgent|normal|low`; priority aging prevents
+older low-priority requests from waiting indefinitely. Queue positions are
+advisory and may change before dispatch.
 
 An explicit `--mode MODE` is persisted as `requested_mode_name` in the
 background session before the worker launches. Until the normal production

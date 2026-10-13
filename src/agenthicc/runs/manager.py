@@ -50,6 +50,7 @@ class _Supervisor(Protocol):
         run_id: str = "",
         detached_goal: bool = False,
         mode_name: str | None = None,
+        priority: str = "normal",
     ) -> BackgroundSession: ...
 
     def cancel(self, session_id: str) -> BackgroundSession: ...
@@ -151,6 +152,7 @@ class GoalRunManager:
         set_secret_overrides: tuple[str, ...] = (),
         dangerously_skip_permissions: bool = False,
         mode_name: str | None = None,
+        priority: str = "normal",
     ) -> GoalRun:
         run = self.create(
             goal,
@@ -174,6 +176,7 @@ class GoalRunManager:
                 role="main",
                 detached_goal=True,
                 mode_name=mode_name,
+                priority=priority,
             )
         except Exception as exc:
             self.store.update(
@@ -195,7 +198,11 @@ class GoalRunManager:
         updated = self.store.update(
             run.run_id,
             status={
-                "queued": GoalRunStatus.RUNNING,
+                "queued": (
+                    GoalRunStatus.QUEUED
+                    if session.dispatch_state.value == "pending"
+                    else GoalRunStatus.RUNNING
+                ),
                 # The supervisor returns STARTING while the child process is
                 # crossing the launch boundary. Preserve the historical
                 # product-level contract that an accepted detached run is
@@ -208,7 +215,11 @@ class GoalRunManager:
                 "cancelled": GoalRunStatus.CANCELLED,
                 "orphaned": GoalRunStatus.LOST,
             }.get(session.status.value, GoalRunStatus.NEEDS_ATTENTION),
-            started_at=session.started_at or session.created_at,
+            started_at=(
+                None
+                if session.dispatch_state.value == "pending"
+                else session.started_at or session.created_at
+            ),
             main_session_id=session.session_id,
             main_agent_id=session.session_id,
             worker_pid=session.worker_pid,
@@ -267,7 +278,11 @@ class GoalRunManager:
             if item.parent_session_id == run.main_session_id or item.run_id == run_id
         ]
         mapping = {
-            "queued": GoalRunStatus.STARTING,
+            "queued": (
+                GoalRunStatus.QUEUED
+                if session.dispatch_state.value == "pending"
+                else GoalRunStatus.STARTING
+            ),
             "starting": GoalRunStatus.STARTING,
             "running": GoalRunStatus.RUNNING,
             "retrying": GoalRunStatus.STARTING,

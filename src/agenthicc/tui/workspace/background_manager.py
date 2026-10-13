@@ -151,6 +151,7 @@ class BackgroundManager:
         self.filter_buffer = ""
         self.last_refresh = 0.0
         self._sessions: list[BackgroundSession] = []
+        self._queue_positions: dict[str, int] = {}
         self._seen_activity: dict[str, float] = {}
         self.activity_offset = 0
         self._activity_cache: dict[str, tuple[tuple[int, int, int, int, str], str | None]] = {}
@@ -488,6 +489,11 @@ class BackgroundManager:
                 query=self.query,
                 status=self.status_filter,
             )
+            try:
+                positions = self.supervisor.queue_positions()
+                self._queue_positions = positions if isinstance(positions, dict) else {}
+            except (AttributeError, OSError, RuntimeError, ValueError):
+                self._queue_positions = {}
             self._total_count = len(self._sessions)
             self._visible_sessions = list(self._sessions)
             self._page_start = 0
@@ -572,6 +578,19 @@ class BackgroundManager:
             self._refresh_retry_at = 0.0
             self._projection_error = ""
             self._record_metric("projection_ready", time.monotonic() - started)
+            # Queue positions are advisory decoration. Publish the session
+            # page first so keyboard input is never gated on a second store
+            # read or scheduler lock acquisition.
+            try:
+                positions = await self._service.queue_positions_async()
+            except Exception:  # noqa: BLE001
+                positions = {}
+            if (
+                generation == self._refresh_request_generation
+                and positions != self._queue_positions
+            ):
+                self._queue_positions = positions
+                self._mark_dirty("queue_positions_changed")
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001
@@ -590,9 +609,15 @@ class BackgroundManager:
                 self._refresh_pending = False
                 self._request_async_refresh("coalesced")
 
-    def _apply_async_page(self, result: BackgroundPage) -> None:
+    def _apply_async_page(
+        self,
+        result: BackgroundPage,
+        *,
+        queue_positions: dict[str, int] | None = None,
+    ) -> None:
         old_signature = (
             tuple(self._session_render_signature(item) for item in self._visible_sessions),
+            tuple(sorted(self._queue_positions.items())),
             self._total_count,
             self._projection_generation,
             self._projection_stale,
@@ -600,6 +625,8 @@ class BackgroundManager:
         previous_id = self._selected_session_id
         previous_index = self._selected_index
         self._visible_sessions = list(result.sessions)
+        if queue_positions is not None:
+            self._queue_positions = queue_positions
         self._total_count = result.total
         self._page_start = (result.page - 1) * result.page_size
         self._projection_generation = result.generation
@@ -638,6 +665,7 @@ class BackgroundManager:
             self._notice = ""
         new_signature = (
             tuple(self._session_render_signature(item) for item in self._visible_sessions),
+            tuple(sorted(self._queue_positions.items())),
             self._total_count,
             self._projection_generation,
             self._projection_stale,
@@ -662,6 +690,8 @@ class BackgroundManager:
             session.attempt,
             session.heartbeat_stale,
             session.pinned,
+            session.priority,
+            session.dispatch_state,
         )
 
     async def refresh_page_async(self, *, force: bool = False) -> None:
@@ -1117,6 +1147,9 @@ class BackgroundManager:
                 item.mode_application_status,
                 item.mode_application_attempt,
                 item.mode_application_error,
+                item.priority.value,
+                item.dispatch_state.value,
+                self._queue_positions.get(item.session_id),
             )
             for item in visible
         )
@@ -1230,6 +1263,16 @@ class BackgroundManager:
                 ("Attempt / retries", f"{session.attempt} / {session.retry_count}"),
                 ("Latest activity", " ".join(activity.split()) or "—"),
             ]
+            if session.dispatch_state.value != "legacy" or session.priority.value != "normal":
+                rows.extend(
+                    [
+                        ("Priority", session.priority.value),
+                        ("Dispatch", session.dispatch_state.value),
+                    ]
+                )
+            queue_position = self._queue_positions.get(session.session_id)
+            if queue_position is not None:
+                rows.append(("Queue position", f"{queue_position} · advisory"))
             input_receipt = self._input_receipt_text.get(session.session_id)
             if input_receipt:
                 rows.append(("Latest input", input_receipt))
@@ -1887,9 +1930,15 @@ class BackgroundManager:
             else:
                 activity = session.latest_activity[:80]
             workspace = self._workspace_name(session.cwd)
+            queue_position = self._queue_positions.get(session.session_id)
+            state_label = session.status.value
+            if session.dispatch_state.value == "pending":
+                state_label = (
+                    f"queued #{queue_position}" if queue_position is not None else "queued"
+                )
             table.add_row(
                 marker,
-                f"[{self._status_style(session.status)}]{session.status.value}[/]",
+                f"[{self._status_style(session.status)}]{state_label}[/]",
                 title[:50],
                 session.workflow_name or "direct",
                 workspace,
@@ -1915,6 +1964,15 @@ class BackgroundManager:
                     + time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(selected.last_active)),
                 ]
             )
+            if selected.dispatch_state.value != "legacy":
+                queue_position = self._queue_positions.get(selected.session_id)
+                state_line = (
+                    f"[bold]Priority[/bold] {selected.priority.value}  "
+                    f"[bold]Dispatch[/bold] {selected.dispatch_state.value}"
+                )
+                if queue_position is not None:
+                    state_line += f"  [bold]Queue[/bold] #{queue_position} (advisory)"
+                detail_lines.append(state_line)
             if selected.phase_history:
                 history = " → ".join(selected.phase_history[-4:])
                 detail_lines[-1] += f" · History {history[: max(8, budget.width - 56)]}"
@@ -2517,6 +2575,7 @@ class BackgroundManager:
         initial = self.render()
         read_future: asyncio.Future[tuple[object, str]] | None = None
         read_finished = threading.Event()
+        deferred_navigation: list[tuple[object, str]] = []
         self._request_async_refresh("manager_open", force=True)
         # Do not race cold projection construction with stale-worker recovery:
         # both consult the same durable index, and the manager should get its
@@ -2543,12 +2602,55 @@ class BackgroundManager:
                     last_maintenance_request = time.monotonic()
                     while True:
                         done, _ = await asyncio.wait({read_future}, timeout=self.refresh_s)
+                        if self._projection_ready and deferred_navigation:
+                            for deferred_key, deferred_char in deferred_navigation:
+                                self.handle_key(deferred_key, deferred_char)
+                            deferred_navigation.clear()
                         if read_future in done:
                             key, ch = read_future.result()
+                            key_value = _key_value(key)
+                            is_quit_input = (
+                                key_value in {"ESC", "CTRL_C"} or ch == "\x03" or ch.lower() == "q"
+                            )
+                            is_navigation = key_value in {
+                                "UP",
+                                "DOWN",
+                                "PAGE_UP",
+                                "PAGEUP",
+                                "PAGE_DOWN",
+                                "PAGEDOWN",
+                                "HOME",
+                                "END",
+                            } or (key_value == "CHAR" and ch.lower() in {"j", "k"})
+                            already_processed = False
+                            if not self._projection_ready and is_navigation:
+                                # Keep navigation responsive during a cold
+                                # projection. Apply it once against the empty
+                                # view for immediate feedback, then replay it
+                                # after rows arrive so it still affects the
+                                # actual session selection.
+                                self.handle_key(key, ch)
+                                deferred_navigation.append((key, ch))
+                                already_processed = True
+                            elif not self._projection_ready and not is_quit_input:
+                                pending_refresh = self._refresh_task
+                                while (
+                                    not self._projection_ready
+                                    and pending_refresh is not None
+                                    and not pending_refresh.done()
+                                ):
+                                    await asyncio.wait({pending_refresh}, timeout=0.01)
+                                if self._projection_ready and deferred_navigation:
+                                    for deferred_key, deferred_char in deferred_navigation:
+                                        self.handle_key(deferred_key, deferred_char)
+                                    deferred_navigation.clear()
+                            if self._projection_ready:
+                                live.update(self.render())
+                                live.refresh()
                             key_received_at = time.monotonic()
                             self._last_key_received_at = key_received_at
                             self._record_metric("key_received")
-                            result = self.handle_key(key, ch)
+                            result = None if already_processed else self.handle_key(key, ch)
                             self._poll_async_delete()
                             if result is not None:
                                 if result.action == "attach" and result.session_id:

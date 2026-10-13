@@ -244,6 +244,8 @@ class TestProjectInit:
         assert all(
             not line.strip() or line.lstrip().startswith("#") for line in template.splitlines()
         )
+        assert "# max_workers = 4" in template
+        assert "# max_workers_per_project = 4" in template
         for option in (
             "turn_timeout_s",
             "prompt_cache",
@@ -255,6 +257,11 @@ class TestProjectInit:
             "request_options",
             "mcp_servers",
             "workflows",
+            "queue_enabled",
+            "max_queue_length",
+            "priority_aging_interval_s",
+            "dispatch_lease_s",
+            "max_workers_per_user",
         ):
             assert option in template
 

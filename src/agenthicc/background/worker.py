@@ -35,6 +35,7 @@ logger = logging.getLogger(__name__)
 WORKER_FINALIZATION_TIMEOUT_S = 30.0
 """Maximum time allowed for owned headless resources to close."""
 
+
 if TYPE_CHECKING:
     from agenthicc.background.terminals import TerminalManager
     from agenthicc.runners.workflow_recovery import WorkflowRecoveryRecord
@@ -59,6 +60,7 @@ class WorkerRequest:
     run_id: str = ""
     mode_name: str | None = None
     resume_existing_only: bool = False
+    dispatch_token: str = ""
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, object]) -> "WorkerRequest":
@@ -98,6 +100,7 @@ class WorkerRequest:
         raw_mode_name = value.get("mode_name")
         if raw_mode_name is not None and not isinstance(raw_mode_name, str):
             raise ValueError("background request mode_name must be a string or null")
+        raw_dispatch_token = value.get("dispatch_token", "")
         return cls(
             session_id=session_id,
             workflow_name=str(value.get("workflow_name", "")),
@@ -114,6 +117,7 @@ class WorkerRequest:
             run_id=str(value.get("run_id", "")),
             mode_name=raw_mode_name[:128] if isinstance(raw_mode_name, str) else None,
             resume_existing_only=value.get("resume_existing_only") is True,
+            dispatch_token=raw_dispatch_token[:128] if isinstance(raw_dispatch_token, str) else "",
         )
 
 
@@ -1320,7 +1324,12 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
     original_cwd = os.getcwd()
     try:
         os.chdir(request.cwd)
-        claimed_session = store.claim(request.session_id, pid=os.getpid(), lease_token=lease)
+        claimed_session = store.claim(
+            request.session_id,
+            pid=os.getpid(),
+            lease_token=lease,
+            dispatch_token=request.dispatch_token or None,
+        )
         if claimed_session.status != SessionStatus.RUNNING:
             raise RuntimeError(f"Worker could not claim session: {claimed_session.status.value}")
         claimed = True
@@ -1944,6 +1953,35 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
             os.chdir(original_cwd)
         except OSError:  # pragma: no cover - only an unrecoverable cwd teardown
             pass
+        try:
+            from agenthicc.background.settings import (  # noqa: PLC0415
+                load_background_settings,
+            )
+            from agenthicc.background.supervisor import BackgroundSupervisor  # noqa: PLC0415
+
+            settings = load_background_settings(
+                config_path=request.config_path,
+                overrides=request.set_overrides,
+                cwd=Path(request.cwd),
+            )
+            BackgroundSupervisor(
+                store,
+                max_workers=settings.max_workers,
+                max_workers_per_project=settings.max_workers_per_project,
+                max_workers_per_user=settings.max_workers_per_user,
+                queue_enabled=settings.queue_enabled,
+                max_queue_length=settings.max_queue_length,
+                priority_aging_interval_s=settings.priority_aging_interval_s,
+                dispatch_lease_s=settings.dispatch_lease_s,
+            ).dispatch_pending()
+        except Exception:  # noqa: BLE001
+            # The durable queue remains authoritative; a manager refresh or
+            # the next accepted request retries dispatch after a failure.
+            logger.warning(
+                "could not dispatch the next queued background request after %s",
+                request.session_id,
+                exc_info=True,
+            )
 
 
 def _parser() -> argparse.ArgumentParser:

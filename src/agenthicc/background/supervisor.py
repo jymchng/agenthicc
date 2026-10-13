@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import errno
 import json
+import logging
+import math
 import os
 import signal
 import subprocess
@@ -22,8 +24,19 @@ from .model import (
     ACTIVE_STATUSES,
     BackgroundSession,
     ModeApplicationStatus,
+    QueueDispatchState,
+    QueuePriority,
     SessionStatus,
 )
+from .queue import (
+    current_owner_id,
+    fair_queue_order,
+    is_pending_queue_record,
+    occupies_worker_slot,
+    parse_priority,
+    queue_position_map,
+)
+from agenthicc.runners.process_lease import InterProcessLock, atomic_replace
 from .store import (
     BackgroundStore,
     InvalidSessionTransition,
@@ -32,6 +45,11 @@ from .store import (
 )
 
 _MAX_ASK_USER_INPUT_CHARS = 8_000
+logger = logging.getLogger(__name__)
+
+
+class QueueFullError(RuntimeError):
+    """Admission was rejected because the durable pending queue is bounded."""
 
 
 class _CancellationMetadata(TypedDict, total=False):
@@ -44,6 +62,15 @@ class _CancellationMetadata(TypedDict, total=False):
     exit_reason: str
     worker_finalization_attempts: int
     lease_token: str
+
+
+class _LaunchMetadata(TypedDict, total=False):
+    """Typed projection fields written after a child process is spawned."""
+
+    worker_pid: int
+    worker_started_at: float
+    latest_activity: str
+    dispatch_state: QueueDispatchState
 
 
 class _WorkerProcessState(str, Enum):
@@ -72,6 +99,11 @@ class BackgroundRequest:
     detached_goal: bool = False
     mode_name: str | None = None
     resume_existing_only: bool = False
+    dispatch_token: str = ""
+    priority: QueuePriority = QueuePriority.NORMAL
+    idempotency_key: str = ""
+    owner_id: str = ""
+    requested_profile_name: str = ""
 
     @classmethod
     def from_mapping(cls, value: object) -> "BackgroundRequest":
@@ -87,6 +119,13 @@ class BackgroundRequest:
         raw_mode_name = value.get("mode_name")
         if raw_mode_name is not None and not isinstance(raw_mode_name, str):
             raise ValueError("background request mode_name must be a string or null")
+        raw_priority = value.get("priority", QueuePriority.NORMAL.value)
+        try:
+            priority = parse_priority(
+                raw_priority if isinstance(raw_priority, str) else QueuePriority.NORMAL
+            )
+        except ValueError as exc:
+            raise ValueError("background request priority is invalid") from exc
         return cls(
             session_id=str(value["session_id"]),
             workflow_name=str(value.get("workflow_name", "")),
@@ -119,6 +158,27 @@ class BackgroundRequest:
             detached_goal=bool(value.get("detached_goal", False)),
             mode_name=raw_mode_name[:128] if isinstance(raw_mode_name, str) else None,
             resume_existing_only=value.get("resume_existing_only") is True,
+            dispatch_token=(
+                value.get("dispatch_token", "")[:128]
+                if isinstance(value.get("dispatch_token", ""), str)
+                else ""
+            ),
+            priority=priority,
+            idempotency_key=(
+                value.get("idempotency_key", "")[:256]
+                if isinstance(value.get("idempotency_key", ""), str)
+                else ""
+            ),
+            owner_id=(
+                value.get("owner_id", "")[:256]
+                if isinstance(value.get("owner_id", ""), str)
+                else ""
+            ),
+            requested_profile_name=(
+                value.get("requested_profile_name", "")[:128]
+                if isinstance(value.get("requested_profile_name", ""), str)
+                else ""
+            ),
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -138,6 +198,11 @@ class BackgroundRequest:
             "detached_goal": self.detached_goal,
             "mode_name": self.mode_name[:128] if isinstance(self.mode_name, str) else None,
             "resume_existing_only": self.resume_existing_only,
+            "dispatch_token": self.dispatch_token,
+            "priority": self.priority.value,
+            "idempotency_key": self.idempotency_key,
+            "owner_id": self.owner_id,
+            "requested_profile_name": self.requested_profile_name,
         }
 
 
@@ -155,14 +220,60 @@ class BackgroundSupervisor:
         max_activity_bytes: int = 64_000,
         artifact_root: Path | None = None,
         trash_retention_days: int = 30,
+        queue_enabled: bool = False,
+        max_queue_length: int = 100,
+        max_workers_per_user: int | None = None,
+        priority_aging_interval_s: float = 900.0,
+        dispatch_lease_s: float = 30.0,
     ) -> None:
-        if max_workers < 1:
-            raise ValueError("max_workers must be at least 1")
+        if (
+            isinstance(max_workers, bool)
+            or not isinstance(max_workers, int)
+            or not 1 <= max_workers <= 1_024
+        ):
+            raise ValueError("max_workers must be an integer between 1 and 1024")
         self.store = store or BackgroundStore()
         self.max_workers = max_workers
-        if max_workers_per_project < 1:
-            raise ValueError("max_workers_per_project must be at least 1")
+        if (
+            isinstance(max_workers_per_project, bool)
+            or not isinstance(max_workers_per_project, int)
+            or not 1 <= max_workers_per_project <= 1_024
+        ):
+            raise ValueError("max_workers_per_project must be an integer between 1 and 1024")
         self.max_workers_per_project = max_workers_per_project
+        if not isinstance(queue_enabled, bool):
+            raise ValueError("queue_enabled must be a boolean")
+        if (
+            isinstance(max_queue_length, bool)
+            or not isinstance(max_queue_length, int)
+            or not 1 <= max_queue_length <= 100_000
+        ):
+            raise ValueError("max_queue_length must be an integer between 1 and 100000")
+        if max_workers_per_user is not None and (
+            isinstance(max_workers_per_user, bool)
+            or not isinstance(max_workers_per_user, int)
+            or not 1 <= max_workers_per_user <= 1_024
+        ):
+            raise ValueError("max_workers_per_user must be an integer between 1 and 1024")
+        if (
+            isinstance(priority_aging_interval_s, bool)
+            or not isinstance(priority_aging_interval_s, (int, float))
+            or not math.isfinite(float(priority_aging_interval_s))
+            or not 1.0 <= priority_aging_interval_s <= 2_678_400.0
+        ):
+            raise ValueError("priority_aging_interval_s must be between 1 and 2678400")
+        if (
+            isinstance(dispatch_lease_s, bool)
+            or not isinstance(dispatch_lease_s, (int, float))
+            or not math.isfinite(float(dispatch_lease_s))
+            or not 0.1 <= dispatch_lease_s <= 3_600.0
+        ):
+            raise ValueError("dispatch_lease_s must be between 0.1 and 3600")
+        self.queue_enabled = queue_enabled
+        self.max_queue_length = max_queue_length
+        self.max_workers_per_user = max_workers_per_user
+        self.priority_aging_interval_s = priority_aging_interval_s
+        self.dispatch_lease_s = dispatch_lease_s
         self.cancel_grace_s = max(0.1, cancel_grace_s)
         self.wall_timeout_s = max(0.0, wall_timeout_s)
         self.max_activity_bytes = max(1, max_activity_bytes)
@@ -171,6 +282,49 @@ class BackgroundSupervisor:
         self.trash_retention_days = trash_retention_days
         self.artifact_root = (artifact_root or Path.home() / ".agenthicc" / "sessions").expanduser()
         self._recovery_cursor = ""
+
+    @property
+    def _scheduler_state_path(self) -> Path:
+        return self.store.root / "queue-scheduler-v1.json"
+
+    def _scheduler_state(self) -> dict[str, object]:
+        try:
+            value = json.loads(self._scheduler_state_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return value if isinstance(value, dict) else {}
+
+    def _write_scheduler_state(self, *, last_project: str) -> None:
+        payload = json.dumps(
+            {"schema_version": 1, "last_project": last_project},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        atomic_replace(self._scheduler_state_path, payload, prefix=".queue-state-")
+
+    def _scheduler_lock(self) -> InterProcessLock:
+        return InterProcessLock(self.store.root / "queue-scheduler.lock")
+
+    def _worker_slots(self, sessions: Sequence[BackgroundSession]) -> int:
+        return sum(occupies_worker_slot(item) for item in sessions)
+
+    def _has_capacity(
+        self,
+        sessions: Sequence[BackgroundSession],
+        *,
+        project: str,
+        owner_id: str,
+    ) -> bool:
+        occupying = [item for item in sessions if occupies_worker_slot(item)]
+        if len(occupying) >= self.max_workers:
+            return False
+        if sum(item.cwd == project for item in occupying) >= self.max_workers_per_project:
+            return False
+        if self.max_workers_per_user is not None:
+            owned = sum(item.owner_id in {"", owner_id} for item in occupying)
+            if owned >= self.max_workers_per_user:
+                return False
+        return True
 
     def _active_count(self, cwd: str | None = None) -> int:
         return sum(
@@ -230,8 +384,11 @@ class BackgroundSupervisor:
                 SessionStatus.FAILED,
                 error=f"Worker launch failed: {type(exc).__name__}: {exc}",
                 latest_activity="Worker launch failed",
+                dispatch_state=(
+                    QueueDispatchState.FAILED if request.dispatch_token else session.dispatch_state
+                ),
                 worker_exit_reason="launch_failed",
-                exit_reason="Worker launch failed",
+                exit_reason="launch_failed",
                 worker_exit_code=1,
                 worker_finished_at=time.time(),
             )
@@ -242,13 +399,268 @@ class BackgroundSupervisor:
         # Never overwrite a terminal result with stale launch metadata.
         current = self.store.get(session.session_id, include_deleted=True)
         if current.status in ACTIVE_STATUSES:
-            return self.store.update(
-                session.session_id,
-                worker_pid=process.pid,
-                worker_started_at=time.time(),
-                latest_activity="Worker queued",
-            )
+            changes: _LaunchMetadata = {
+                "worker_pid": process.pid,
+                "worker_started_at": time.time(),
+                "latest_activity": "Worker process launched",
+            }
+            if current.dispatch_state is QueueDispatchState.CLAIMED:
+                changes["dispatch_state"] = QueueDispatchState.LAUNCHED
+            try:
+                return self.store.update(
+                    session.session_id,
+                    expected_status=current.status,
+                    expected_attempt=current.attempt,
+                    **changes,
+                )
+            except InvalidSessionTransition:
+                # The child may claim or finish between Popen and this
+                # projection update. Its newer lifecycle state is canonical.
+                return self.store.get(session.session_id, include_deleted=True)
         return current
+
+    def _load_request(self, session_id: str) -> BackgroundRequest:
+        try:
+            raw = json.loads(self._request_path(session_id).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"cannot load queued request {session_id}: {exc}") from exc
+        request = BackgroundRequest.from_mapping(raw)
+        if request.session_id != session_id:
+            raise RuntimeError("queued request session ID does not match its record")
+        return request
+
+    def _queued_records(self) -> list[BackgroundSession]:
+        return [
+            item
+            for item in self.store.list(include_archived=False)
+            if is_pending_queue_record(item)
+        ]
+
+    def _scheduler_last_project(self) -> str:
+        value = self._scheduler_state().get("last_project", "")
+        return value if isinstance(value, str) else ""
+
+    def _start_claimed_reservations(self, *, now: float) -> list[BackgroundSession]:
+        """Recover a claimed dispatch lease after a crash around subprocess start."""
+
+        changed: list[BackgroundSession] = []
+        for session in self.store.list(include_archived=False):
+            if (
+                session.status is not SessionStatus.STARTING
+                or session.dispatch_state is not QueueDispatchState.CLAIMED
+            ):
+                continue
+            if session.worker_pid is not None:
+                process_state = self._worker_process_state(session)
+                if process_state in {_WorkerProcessState.LIVE, _WorkerProcessState.UNKNOWN}:
+                    continue
+                try:
+                    session = self.store.update(
+                        session.session_id,
+                        expected_status=SessionStatus.STARTING,
+                        expected_attempt=session.attempt,
+                        worker_pid=None,
+                        worker_started_at=None,
+                    )
+                except InvalidSessionTransition:
+                    continue
+            elif (
+                session.dispatch_claimed_at is None
+                or now - session.dispatch_claimed_at < self.dispatch_lease_s
+            ):
+                continue
+            try:
+                request = self._load_request(session.session_id)
+                if not session.dispatch_token or request.dispatch_token != session.dispatch_token:
+                    raise RuntimeError("queued request dispatch token does not match its lease")
+            except (OSError, RuntimeError, ValueError) as exc:
+                try:
+                    changed.append(
+                        self.store.transition(
+                            session.session_id,
+                            SessionStatus.ORPHANED,
+                            expected_status=SessionStatus.STARTING,
+                            expected_attempt=session.attempt,
+                            error=f"Queued worker recovery failed: {type(exc).__name__}: {exc}",
+                            latest_activity="Queued worker needs recovery",
+                        )
+                    )
+                except InvalidSessionTransition:
+                    pass
+                continue
+            try:
+                changed.append(self._launch(request, session))
+            except OSError as exc:
+                try:
+                    changed.append(
+                        self.store.transition(
+                            session.session_id,
+                            SessionStatus.FAILED,
+                            expected_status=SessionStatus.STARTING,
+                            expected_attempt=session.attempt,
+                            dispatch_state=QueueDispatchState.FAILED,
+                            error=f"Worker launch failed: {type(exc).__name__}: {exc}",
+                            latest_activity="Worker launch failed",
+                            worker_exit_reason="launch_failed",
+                            exit_reason="launch_failed",
+                            worker_exit_code=1,
+                            worker_finished_at=now,
+                        )
+                    )
+                except InvalidSessionTransition:
+                    pass
+        return changed
+
+    def _dispatch_pending_locked(self, *, now: float | None = None) -> list[BackgroundSession]:
+        """Dispatch eligible durable requests while the cross-process lock is held."""
+
+        timestamp = time.time() if now is None else now
+        changed = self._start_claimed_reservations(now=timestamp)
+        last_project = self._scheduler_last_project()
+        while True:
+            sessions = self.store.list(include_archived=False)
+            running = [item for item in sessions if occupies_worker_slot(item)]
+            if len(running) >= self.max_workers:
+                break
+            ordered = fair_queue_order(
+                sessions,
+                now=timestamp,
+                aging_interval_s=self.priority_aging_interval_s,
+                last_project=last_project,
+            )
+            selected: BackgroundSession | None = None
+            for candidate in ordered:
+                if (
+                    sum(item.cwd == candidate.cwd for item in running)
+                    >= self.max_workers_per_project
+                ):
+                    continue
+                if self.max_workers_per_user is not None:
+                    user_count = sum(item.owner_id in {"", candidate.owner_id} for item in running)
+                    if user_count >= self.max_workers_per_user:
+                        continue
+                selected = candidate
+                break
+            if selected is None:
+                break
+
+            dispatch_token = uuid.uuid4().hex
+            try:
+                request = replace(
+                    self._load_request(selected.session_id), dispatch_token=dispatch_token
+                )
+                # Persist the child input first. A crash before the following
+                # CAS leaves an unreferenced request that can be overwritten.
+                self._write_request(request)
+                reserved = self.store.transition(
+                    selected.session_id,
+                    SessionStatus.STARTING,
+                    expected_status=SessionStatus.QUEUED,
+                    expected_attempt=selected.attempt,
+                    dispatch_state=QueueDispatchState.CLAIMED,
+                    dispatch_token=dispatch_token,
+                    dispatch_claimed_at=timestamp,
+                    latest_activity="Queued · starting worker",
+                )
+            except InvalidSessionTransition:
+                continue
+            except (OSError, RuntimeError, ValueError) as exc:
+                try:
+                    changed.append(
+                        self.store.transition(
+                            selected.session_id,
+                            SessionStatus.FAILED,
+                            expected_status=SessionStatus.QUEUED,
+                            expected_attempt=selected.attempt,
+                            dispatch_state=QueueDispatchState.FAILED,
+                            error=(
+                                f"Queued worker could not be prepared: {type(exc).__name__}: {exc}"
+                            ),
+                            latest_activity="Queued request could not be started",
+                            worker_exit_reason="queued_request_invalid",
+                            exit_reason="queued_request_invalid",
+                            worker_exit_code=1,
+                            worker_finished_at=timestamp,
+                        )
+                    )
+                except InvalidSessionTransition:
+                    pass
+                continue
+
+            last_project = reserved.cwd
+            try:
+                self._write_scheduler_state(last_project=last_project)
+            except OSError:
+                logger.warning("could not persist background queue fairness cursor", exc_info=True)
+            try:
+                changed.append(self._launch(request, reserved))
+            except OSError as exc:
+                try:
+                    changed.append(
+                        self.store.transition(
+                            reserved.session_id,
+                            SessionStatus.FAILED,
+                            expected_status=SessionStatus.STARTING,
+                            expected_attempt=reserved.attempt,
+                            dispatch_state=QueueDispatchState.FAILED,
+                            error=f"Worker launch failed: {type(exc).__name__}: {exc}",
+                            latest_activity="Worker launch failed",
+                            worker_exit_reason="launch_failed",
+                            exit_reason="launch_failed",
+                            worker_exit_code=1,
+                            worker_finished_at=timestamp,
+                        )
+                    )
+                except InvalidSessionTransition:
+                    pass
+        return changed
+
+    def dispatch_pending(self, *, now: float | None = None) -> list[BackgroundSession]:
+        """Dispatch pending work under a process-safe scheduler lease."""
+
+        with self._scheduler_lock():
+            return self._dispatch_pending_locked(now=now)
+
+    def queue_positions(self, *, now: float | None = None) -> dict[str, int]:
+        """Return current advisory positions for the user-visible pending queue."""
+
+        timestamp = time.time() if now is None else now
+        with self._scheduler_lock():
+            return queue_position_map(
+                self.store.list(include_archived=False),
+                now=timestamp,
+                aging_interval_s=self.priority_aging_interval_s,
+                last_project=self._scheduler_last_project(),
+            )
+
+    def _existing_idempotent_request(
+        self,
+        *,
+        key: str,
+        owner_id: str,
+        project: str,
+        intent: str,
+        workflow_name: str,
+        mode_name: str | None,
+        profile_name: str,
+    ) -> BackgroundSession | None:
+        if not key:
+            return None
+        for existing in self.store.list(include_archived=True):
+            if existing.idempotency_key != key or existing.owner_id != owner_id:
+                continue
+            if (
+                existing.cwd != project
+                or existing.intent != intent
+                or existing.workflow_name != workflow_name
+                or existing.requested_mode_name != mode_name
+                or existing.requested_profile_name != profile_name
+            ):
+                raise ValueError(
+                    "idempotency key was already used for a different background request"
+                )
+            return existing
+        return None
 
     def submit(
         self,
@@ -271,55 +683,138 @@ class BackgroundSupervisor:
         run_id: str = "",
         detached_goal: bool = False,
         mode_name: str | None = None,
+        priority: QueuePriority | str = QueuePriority.NORMAL,
+        idempotency_key: str = "",
+        requested_profile_name: str = "",
     ) -> BackgroundSession:
-        """Create and launch a new background session."""
+        """Durably accept a background request, then launch or queue it."""
 
         cleaned_intent = intent.strip()
         if not cleaned_intent:
             raise ValueError("Background intent must not be empty")
-        if self._active_count() >= self.max_workers:
-            raise RuntimeError(f"Background worker limit reached ({self.max_workers})")
         sid = session_id or uuid.uuid4().hex
         project = str(Path(cwd or os.getcwd()).resolve())
-        if self._active_count(project) >= self.max_workers_per_project:
-            raise RuntimeError(
-                f"Background worker limit reached for project ({self.max_workers_per_project})"
+        normalized_priority = parse_priority(priority)
+        if not isinstance(idempotency_key, str) or len(idempotency_key) > 256:
+            raise ValueError("idempotency_key must be a string of at most 256 characters")
+        idempotency_key = idempotency_key.strip()
+        if not isinstance(requested_profile_name, str) or len(requested_profile_name) > 128:
+            raise ValueError("requested_profile_name must be a string of at most 128 characters")
+        owner_id = current_owner_id()
+        profile_name = requested_profile_name
+        if not profile_name:
+            for override in reversed(set_overrides):
+                key, separator, value = override.partition("=")
+                if separator and key.strip() == "execution.profile":
+                    profile_name = value.strip().strip("\"'")[:128]
+                    break
+
+        with self._scheduler_lock():
+            self._dispatch_pending_locked()
+            existing = self._existing_idempotent_request(
+                key=idempotency_key,
+                owner_id=owner_id,
+                project=project,
+                intent=cleaned_intent,
+                workflow_name=workflow_name,
+                mode_name=mode_name,
+                profile_name=profile_name,
             )
-        request = BackgroundRequest(
-            session_id=sid,
-            workflow_name=workflow_name,
-            intent=cleaned_intent,
-            cwd=project,
-            config_path=config_path,
-            set_overrides=set_overrides,
-            dangerously_skip_permissions=dangerously_skip_permissions,
-            set_secret_overrides=set_secret_overrides,
-            wall_timeout_s=self.wall_timeout_s,
-            max_activity_bytes=self.max_activity_bytes,
-            source="cli",
-            run_id=run_id,
-            detached_goal=detached_goal,
-            mode_name=mode_name,
-        )
-        session = BackgroundSession.create(
-            sid,
-            title=title or cleaned_intent[:80],
-            cwd=project,
-            workflow_name=workflow_name,
-            intent=cleaned_intent,
-            artifact_dir=str(self.artifact_root / sid),
-            parent_session_id=parent_session_id,
-            run_id=run_id,
-            role=role,
-            task_id=task_id,
-            worktree_id=worktree_id,
-            branch=branch,
-            base_commit=base_commit,
-            detached_goal=detached_goal,
-            requested_mode_name=mode_name,
-        )
-        self.store.create(session)
-        return self._launch(request, session)
+            if existing is not None:
+                return existing
+            try:
+                self.store.get(sid, include_deleted=True)
+            except SessionNotFound:
+                pass
+            else:
+                raise ValueError(f"Background session already exists: {sid}")
+
+            current_sessions = self.store.list(include_archived=False)
+            has_capacity = self._has_capacity(
+                current_sessions,
+                project=project,
+                owner_id=owner_id,
+            )
+            if not self.queue_enabled and not has_capacity:
+                if self._worker_slots(current_sessions) >= self.max_workers:
+                    raise RuntimeError(f"Background worker limit reached ({self.max_workers})")
+                raise RuntimeError(
+                    f"Background worker limit reached for project ({self.max_workers_per_project})"
+                )
+            queued_count = sum(is_pending_queue_record(item) for item in current_sessions)
+            queue_full = self.queue_enabled and queued_count >= self.max_queue_length
+            if queue_full:
+                raise QueueFullError(
+                    f"Background queue is full ({self.max_queue_length} pending requests)"
+                )
+
+            request = BackgroundRequest(
+                session_id=sid,
+                workflow_name=workflow_name,
+                intent=cleaned_intent,
+                cwd=project,
+                config_path=config_path,
+                set_overrides=set_overrides,
+                dangerously_skip_permissions=dangerously_skip_permissions,
+                set_secret_overrides=set_secret_overrides,
+                wall_timeout_s=self.wall_timeout_s,
+                max_activity_bytes=self.max_activity_bytes,
+                source="cli",
+                run_id=run_id,
+                detached_goal=detached_goal,
+                mode_name=mode_name,
+                priority=normalized_priority,
+                idempotency_key=idempotency_key,
+                owner_id=owner_id,
+                requested_profile_name=profile_name,
+            )
+            dispatch_state = (
+                QueueDispatchState.PENDING
+                if self.queue_enabled and not queue_full
+                else QueueDispatchState.LEGACY
+            )
+            session = BackgroundSession.create(
+                sid,
+                title=title or cleaned_intent[:80],
+                cwd=project,
+                workflow_name=workflow_name,
+                intent=cleaned_intent,
+                artifact_dir=str(self.artifact_root / sid),
+                parent_session_id=parent_session_id,
+                run_id=run_id,
+                role=role,
+                task_id=task_id,
+                worktree_id=worktree_id,
+                branch=branch,
+                base_commit=base_commit,
+                detached_goal=detached_goal,
+                requested_mode_name=mode_name,
+                priority=normalized_priority,
+                idempotency_key=idempotency_key,
+                owner_id=owner_id,
+                requested_profile_name=profile_name,
+                dispatch_state=dispatch_state,
+            )
+            if self.queue_enabled and not queue_full:
+                session = session.evolve(latest_activity="Queued · waiting for worker capacity")
+            # Write the recoverable launch envelope before publishing the
+            # accepted session event; no caller receives acceptance without
+            # both durable records being committed.
+            self._write_request(request)
+            self.store.create(session)
+            if self.queue_enabled and not queue_full:
+                try:
+                    self._dispatch_pending_locked()
+                except Exception:  # noqa: BLE001
+                    # Admission is already durable. Do not turn a committed
+                    # queue receipt into a misleading submission failure.
+                    logger.warning(
+                        "background request %s was accepted but dispatch did not complete",
+                        sid,
+                        exc_info=True,
+                    )
+                return self.store.get(sid, include_deleted=True)
+            return self._launch(request, session)
 
     def handoff(
         self,
@@ -378,6 +873,10 @@ class BackgroundSupervisor:
             resume_existing_only=(
                 was_completed if resume_existing_only is None else resume_existing_only
             ),
+            priority=existing.priority,
+            idempotency_key=existing.idempotency_key,
+            owner_id=existing.owner_id or current_owner_id(),
+            requested_profile_name=existing.requested_profile_name,
         )
         if existing.status == SessionStatus.FAILED:
             existing = self.store.transition(
@@ -428,6 +927,9 @@ class BackgroundSupervisor:
             # has completed, eliminating a foreground/background write race.
             self._write_request(request)
             return existing
+        if self.queue_enabled:
+            self._write_request(request)
+            return self.start(session_id)
         return self._launch(request, existing)
 
     def start(self, session_id: str) -> BackgroundSession:
@@ -444,7 +946,58 @@ class BackgroundSupervisor:
         session = self.store.get(session_id, include_deleted=True)
         if session.status not in ACTIVE_STATUSES:
             raise InvalidSessionTransition(f"Cannot start prepared {session.status.value} session")
-        return self._launch(request, session)
+        if is_pending_queue_record(session):
+            self.dispatch_pending()
+            return self.store.get(session_id, include_deleted=True)
+        if not self.queue_enabled:
+            return self._launch(request, session)
+        with self._scheduler_lock():
+            session = self.store.get(session_id, include_deleted=True)
+            sessions = [
+                item
+                for item in self.store.list(include_archived=False)
+                if item.session_id != session_id
+            ]
+            if not self._has_capacity(
+                sessions,
+                project=session.cwd,
+                owner_id=session.owner_id or current_owner_id(),
+            ):
+                queued_count = sum(is_pending_queue_record(item) for item in sessions)
+                if queued_count >= self.max_queue_length:
+                    # The handoff is not accepted into the bounded queue. Keep
+                    # its durable transcript and make the rejection explicit,
+                    # so a later retry can be submitted without pretending a
+                    # worker was started or silently exceeding queue bounds.
+                    self.store.transition(
+                        session_id,
+                        SessionStatus.FAILED,
+                        expected_status=session.status,
+                        expected_attempt=session.attempt,
+                        dispatch_state=QueueDispatchState.FAILED,
+                        error=(
+                            f"Background queue is full ({self.max_queue_length} pending requests)"
+                        ),
+                        latest_activity="Background handoff rejected · queue full",
+                        worker_exit_reason="queue_full",
+                        exit_reason="queue_full",
+                        worker_exit_code=1,
+                        worker_finished_at=time.time(),
+                    )
+                    raise QueueFullError(
+                        f"Background queue is full ({self.max_queue_length} pending requests)"
+                    )
+                queued = self.store.transition(
+                    session_id,
+                    SessionStatus.QUEUED,
+                    expected_status=session.status,
+                    expected_attempt=session.attempt,
+                    dispatch_state=QueueDispatchState.PENDING,
+                    owner_id=session.owner_id or current_owner_id(),
+                    latest_activity="Queued · waiting for worker capacity",
+                )
+                return queued
+            return self._launch(request, session)
 
     def _mode_name_for_resume(self, session_id: str, explicit_mode_name: str | None) -> str | None:
         """Preserve a requested mode only until canonical session state exists."""
@@ -808,12 +1361,13 @@ class BackgroundSupervisor:
             raise InvalidSessionTransition(
                 f"Cannot start an input-driven attempt from {current.status.value}"
             )
-        if self._active_count() >= self.max_workers:
-            raise RuntimeError(f"Background worker limit reached ({self.max_workers})")
-        if self._active_count(current.cwd) >= self.max_workers_per_project:
-            raise RuntimeError(
-                f"Background worker limit reached for project ({self.max_workers_per_project})"
-            )
+        if not self.queue_enabled:
+            if self._active_count() >= self.max_workers:
+                raise RuntimeError(f"Background worker limit reached ({self.max_workers})")
+            if self._active_count(current.cwd) >= self.max_workers_per_project:
+                raise RuntimeError(
+                    f"Background worker limit reached for project ({self.max_workers_per_project})"
+                )
 
         request = self._input_reactivation_request(current)
         # Write the complete worker request before changing the lifecycle
@@ -846,6 +1400,8 @@ class BackgroundSupervisor:
             exit_reason="",
             latest_activity="Starting worker for accepted input",
         )
+        if self.queue_enabled:
+            return self.start(current.session_id)
         return self._launch(request, starting)
 
     def _defer_and_resume(
@@ -962,6 +1518,21 @@ class BackgroundSupervisor:
             raise
 
     def cancel(self, session_id: str) -> BackgroundSession:
+        with self._scheduler_lock():
+            queued = self.store.get(session_id, include_deleted=True)
+            if is_pending_queue_record(queued):
+                # A pending record has no child process, model call, or worker
+                # lease. Cancel it directly while holding the dispatcher lock
+                # so it cannot launch concurrently with this transition.
+                return self.store.transition(
+                    session_id,
+                    SessionStatus.CANCELLED,
+                    expected_status=SessionStatus.QUEUED,
+                    expected_attempt=queued.attempt,
+                    dispatch_state=QueueDispatchState.CANCELLED,
+                    cancellation_reason="user cancelled before worker start",
+                    latest_activity="Cancelled while queued; worker was not started",
+                )
         session = self.store.get(session_id)
         if session.status in {SessionStatus.CANCELLED, SessionStatus.ARCHIVED}:
             return session
@@ -1006,6 +1577,27 @@ class BackgroundSupervisor:
                 )
             return cancelled
         return current
+
+    def set_priority(
+        self,
+        session_id: str,
+        priority: QueuePriority | str,
+        *,
+        changed_by: str = "local-user",
+    ) -> BackgroundSession:
+        """Explicitly reprioritize a queued or running job and audit the change."""
+
+        normalized = parse_priority(priority)
+        with self._scheduler_lock():
+            updated = self.store.change_priority(
+                session_id,
+                normalized,
+                changed_by=changed_by,
+            )
+            if is_pending_queue_record(updated):
+                self._dispatch_pending_locked()
+                return self.store.get(session_id, include_deleted=True)
+            return updated
 
     def _alive(self, pid: int) -> bool:
         try:
@@ -1323,6 +1915,18 @@ class BackgroundSupervisor:
         for session in sessions:
             if session.status not in ACTIVE_STATUSES:
                 continue
+            if is_pending_queue_record(session):
+                # A durable queue reservation has no worker identity yet; it
+                # is not a dead process and must remain eligible for dispatch.
+                continue
+            if (
+                session.status is SessionStatus.STARTING
+                and session.dispatch_state is QueueDispatchState.CLAIMED
+                and session.worker_pid is None
+            ):
+                # The scheduler lease, not heartbeat age, owns recovery of
+                # the narrow reservation-before-Popen crash window.
+                continue
             heartbeat_expired = bool(
                 session.last_active and now - session.last_active > stale_after_s
             )
@@ -1463,6 +2067,7 @@ class BackgroundSupervisor:
         sessions = self.store.list(include_archived=True)
         changed = self._recover_stale_records(sessions, stale_after_s)
         changed.extend(self._recover_pending_input_records(sessions))
+        changed.extend(self.dispatch_pending())
         return list({item.session_id: item for item in changed}.values())
 
     def recover_stale_batch(
@@ -1477,6 +2082,7 @@ class BackgroundSupervisor:
         )
         changed = self._recover_stale_records(sessions, stale_after_s)
         changed.extend(self._recover_pending_input_records(sessions))
+        changed.extend(self.dispatch_pending())
         return list({item.session_id: item for item in changed}.values())
 
     def purge_expired_trash(self) -> list[str]:

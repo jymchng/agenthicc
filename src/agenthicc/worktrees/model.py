@@ -31,6 +31,7 @@ class WorktreeStatus(str, Enum):
 class TaskStatus(str, Enum):
     PENDING = "pending"
     DISPATCHING = "dispatching"
+    QUEUED = "queued"
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"

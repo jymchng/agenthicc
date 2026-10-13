@@ -39,6 +39,7 @@ class CLIContext:
     workflow_name: str | None = None
     mode_name: str | None = None
     goal: str | None = None
+    goal_priority: str = "normal"
     detach: bool = False
     json_output: bool = False
     # The validated snapshot used while parsing this invocation.  Normal

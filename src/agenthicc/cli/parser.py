@@ -29,6 +29,13 @@ def _add_global_flags(parser: argparse.ArgumentParser) -> None:
         help="Return after a --goal run is durably accepted by the background supervisor.",
     )
     parser.add_argument(
+        "--priority",
+        choices=("urgent", "normal", "low"),
+        default="normal",
+        dest="goal_priority",
+        help="Queue priority for a detached --goal run (default: normal).",
+    )
+    parser.add_argument(
         "--json",
         dest="json_output",
         action="store_true",
@@ -201,6 +208,7 @@ def _build_ctx(
     config: object | None = None,
 ) -> CLIContext:
     typed_config = cast("AgenthiccConfig | None", config)
+    goal_priority = vars(ns).get("goal_priority", "normal")
     flags = CLIFlags(
         dangerously_skip_permissions=getattr(ns, "dangerously_skip_permissions", False),
     )
@@ -216,6 +224,7 @@ def _build_ctx(
         workflow_name=getattr(ns, "workflow_name", None),
         mode_name=getattr(ns, "mode_name", None),
         goal=vars(ns).get("goal"),
+        goal_priority=goal_priority if isinstance(goal_priority, str) else "normal",
         detach=bool(vars(ns).get("detach", False)),
         json_output=bool(vars(ns).get("json_output", False)),
         config=typed_config,

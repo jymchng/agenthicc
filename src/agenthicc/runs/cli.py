@@ -42,6 +42,11 @@ def _manager(ctx: CLIContext) -> GoalRunManager:
         wall_timeout_s=settings.wall_timeout_s,
         max_activity_bytes=settings.max_activity_bytes,
         trash_retention_days=settings.trash_retention_days,
+        queue_enabled=settings.queue_enabled,
+        max_queue_length=settings.max_queue_length,
+        max_workers_per_user=settings.max_workers_per_user,
+        priority_aging_interval_s=settings.priority_aging_interval_s,
+        dispatch_lease_s=settings.dispatch_lease_s,
     )
     return GoalRunManager(
         store=RunStore(),
@@ -114,6 +119,7 @@ def run_goal_cli(ctx: CLIContext) -> None:
                 set_secret_overrides=ctx.set_secret_overrides,
                 dangerously_skip_permissions=ctx.flags.dangerously_skip_permissions,
                 mode_name=ctx.mode_name,
+                priority=ctx.goal_priority,
             )
             _json_or_text(run, json_output=ctx.json_output, detached=True)
             return

@@ -13,6 +13,7 @@ class GoalRunStatus(str, Enum):
     """Coarse product-level status derived from session/workflow evidence."""
 
     CREATED = "created"
+    QUEUED = "queued"
     STARTING = "starting"
     PLANNING = "planning"
     RUNNING = "running"

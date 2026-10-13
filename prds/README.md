@@ -87,6 +87,58 @@ against the current source before implementing them.
 - [PRD-216 — Send New Input to Completed Background Sessions](prd-216-input-to-completed-background-sessions.md)
 - [PRD-217 — Forward Agents Session Input Without Interpretation](prd-217-opaque-agents-session-input-forwarding.md)
 - [PRD-218 — Detach a foreground session after a completed background attempt](prd-218-detach-completed-session.md)
+- [PRD-219 — Drive and observe per-session progression in `agenthicc agents`](prd-219-per-session-progression-in-agents.md)
+- [PRD-220 — Server-Side Agent Execution API](prd-220-server-side-agent-execution-api.md)
+- [PRD-221 — Remote TUI Attach and Reconnect](prd-221-remote-tui-attach-and-reconnect.md)
+- [PRD-222 — Scoped Server Authentication and Authorization](prd-222-scoped-server-authentication-and-authorization.md)
+- [PRD-223 — Agenthicc Server Process Supervisor and Deployment](prd-223-server-process-supervisor-and-deployment.md)
+- [PRD-224 — Versioned Server API Schema and Client SDK](prd-224-versioned-server-api-and-client-sdk.md)
+- [PRD-225 — Durable Background Queue and Fair Scheduling](prd-225-durable-background-queue-and-fair-scheduling.md)
+- [PRD-226 — Background Run Notifications and Webhook Delivery](prd-226-background-run-notifications-and-webhooks.md)
+- [PRD-227 — Unified Background Approval and Input Inbox](prd-227-background-approval-and-input-inbox.md)
+- [PRD-228 — Repository-Scoped Scheduled Workflow Automations](prd-228-repository-scheduled-workflow-automations.md)
+- [PRD-229 — Reproducible Worktree Environments and Actions](prd-229-reproducible-worktree-environments-and-actions.md)
+- [PRD-230 — Pluggable Remote Worker Execution Backends](prd-230-remote-worker-execution-backends.md)
+- [PRD-231 — Reviewed Worktree-to-Pull-Request Handoff](prd-231-reviewed-worktree-to-pull-request-handoff.md)
+- [PRD-232 — Durable Agent-Team Task Graph and Communication](prd-232-durable-agent-team-coordination.md)
+- [PRD-233 — Declarative Agent Profiles and Per-Agent Policy](prd-233-declarative-agent-profiles-and-policy.md)
+- [PRD-234 — Deterministic Session Lifecycle Hooks](prd-234-deterministic-session-lifecycle-hooks.md)
+- [PRD-235 — Project-Scoped Language Server Integration](prd-235-project-scoped-language-server-integration.md)
+- [PRD-236 — Private Incremental Repository Index](prd-236-private-incremental-repository-index.md)
+- [PRD-237 — Provider Routing, Budgets, and Fallback Policies](prd-237-provider-routing-budgets-and-fallback.md)
+- [PRD-238 — Reversible Turn Checkpoints and Session Branches](prd-238-reversible-turn-checkpoints-and-session-branches.md)
+- [PRD-239 — Trusted Extension Bundles and Catalog](prd-239-trusted-extension-bundles-and-catalog.md)
+
+### PRD-220–239 — OpenCode, Claude Code, and Codex feature study
+
+These 20 **proposed** PRDs turn an evidence-based comparison of the three
+products into Agenthicc-specific implementation scopes. They do not claim the
+features are implemented. OpenCode's server/client architecture and
+permission-aware tools, Claude Code's lifecycle hooks, schedules, remote/cloud
+work, and Codex's app-server, isolated worktrees, reusable environment setup,
+and cloud workers informed the proposals. The designs retain Agenthicc's
+kernel/session-service ownership, durable background store, checkpoint and
+lease rules, worktree manager, and capability gates instead of copying another
+product's runtime.
+
+| Product | Official patterns reviewed | Agenthicc PRDs informed |
+|---|---|---|
+| OpenCode | [Headless server/OpenAPI and client architecture](https://docs.opencode.ai/docs/server/); [agent profiles and scoped permissions](https://docs.opencode.ai/docs/agents/); [tool/LSP surface](https://docs.opencode.ai/docs/tools/) | 220–224, 233, 235–236 |
+| Claude Code | [Lifecycle hooks](https://code.claude.com/docs/en/hooks-guide); [subagents](https://code.claude.com/docs/en/sub-agents); [scheduled tasks](https://code.claude.com/docs/en/scheduled-tasks); [checkpointing](https://code.claude.com/docs/en/checkpointing); [remote control](https://code.claude.com/docs/en/remote-control) and [cloud work](https://code.claude.com/docs/en/claude-code-on-the-web) | 226–228, 230, 232, 234, 238 |
+| Codex | [App-server protocol](https://learn.chatgpt.com/docs/app-server); [worktrees](https://learn.chatgpt.com/docs/environments/git-worktrees); [local environment setup/actions](https://learn.chatgpt.com/docs/environments/local-environment); [cloud environments](https://learn.chatgpt.com/docs/environments/cloud-environments); [plugins](https://learn.chatgpt.com/docs/plugins) | 221, 223–231, 239 |
+
+The inspiration is a product-pattern comparison, not a request to clone
+provider-specific account systems or cloud infrastructure. The proposals keep
+local-first execution, explicit trust, and Agenthicc's existing session and
+workflow state authoritative.
+
+The recommended dependency order is PRD-220/222 for authenticated execution;
+PRD-223/224 for operating and consuming that service; PRD-225–229 for durable
+background scheduling, operator attention, and reproducible workspaces; then
+PRD-230/231 for remote worker and review handoff. PRD-232–239 add team
+coordination, agent configuration, safe automation, code intelligence,
+routing, recoverability, and extension distribution. Individual PRDs specify
+their prerequisites and acceptance tests.
 
 PRD-138 is the current cross-cutting roadmap for documentation truth,
 packaging, state boundaries, security, workflow correctness, persistence,
@@ -96,6 +148,13 @@ PRD-205 is implemented by the existing background worker/supervisor and goal
 run projections: detached starts retain the child PID, persist idempotent
 terminal exit metadata/events, and return only after finalization. Attached
 `--goal` runs deliberately do not install that lifecycle finalizer.
+
+PRD-219 documents why `agenthicc agents` can appear passive: background workers
+execute finite attempts, the manager has no per-session Resume/Retry actions
+despite CLI equivalents, goal-run worker rows are not individually selectable,
+and heartbeat activity is currently easier to see than meaningful phase
+progress. It proposes explicit, checkpoint-safe per-session controls and
+separate liveness/progress telemetry without automatic prompt injection.
 
 PRD-139 is the product-expansion roadmap layered on top of PRD-138. It compares
 the current repository with OpenCode-inspired product surfaces and defines the

@@ -12,9 +12,11 @@ from agenthicc.background import (
     BackgroundSession,
     BackgroundStore,
     BackgroundSupervisor,
+    QueueDispatchState,
     SessionStatus,
 )
 from agenthicc.background.worker import BackgroundApprovalService, WorkerRequest, run_worker
+from agenthicc.background.settings import BackgroundSettings
 
 pytestmark = pytest.mark.integration
 
@@ -140,6 +142,72 @@ async def test_worker_uses_canonical_direct_turn_and_finalizes(monkeypatch, tmp_
     assert completed.status is SessionStatus.COMPLETED
     assert completed.mode_name == "Yolo"
     assert completed.requested_mode_name == "Yolo"
+
+
+@pytest.mark.asyncio
+async def test_worker_finalization_dispatches_next_durable_queue_item(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    launches: list[object] = []
+
+    def popen(*args: object, **kwargs: object) -> SimpleNamespace:
+        launches.append((args, kwargs))
+        return SimpleNamespace(pid=60_000 + len(launches))
+
+    monkeypatch.setattr("agenthicc.background.supervisor.subprocess.Popen", popen)
+    store = BackgroundStore(tmp_path / "background")
+    supervisor = BackgroundSupervisor(
+        store,
+        max_workers=1,
+        max_workers_per_project=1,
+        queue_enabled=True,
+    )
+    first = supervisor.submit(intent="first worker", cwd=str(tmp_path))
+    second = supervisor.submit(intent="queued worker", cwd=str(tmp_path))
+    assert second.status is SessionStatus.QUEUED
+    assert second.dispatch_state is QueueDispatchState.PENDING
+    assert len(launches) == 1
+
+    fake_session = _Session()
+
+    async def build(*_args: object, **_kwargs: object) -> _Session:
+        return fake_session
+
+    async def direct(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    async def close(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr("agenthicc.runners.tui_session._build_session_context", build)
+    monkeypatch.setattr("agenthicc.background.worker._run_direct_turn", direct)
+    monkeypatch.setattr("agenthicc.runners.headless._close_headless_session", close)
+    monkeypatch.setattr(
+        "agenthicc.background.settings.load_background_settings",
+        lambda **_kwargs: BackgroundSettings(
+            queue_enabled=True,
+            max_workers=1,
+            max_workers_per_project=1,
+        ),
+    )
+    request = WorkerRequest(
+        session_id=first.session_id,
+        workflow_name="",
+        intent="first worker",
+        cwd=str(tmp_path),
+        config_path=None,
+        set_overrides=(),
+        dangerously_skip_permissions=False,
+        dispatch_token=first.dispatch_token,
+    )
+
+    assert await run_worker(request, store) == 0
+    assert store.get(first.session_id).status is SessionStatus.COMPLETED
+    started = store.get(second.session_id)
+    assert started.status is SessionStatus.STARTING
+    assert started.dispatch_state is QueueDispatchState.LAUNCHED
+    assert len(launches) == 2
 
 
 @pytest.mark.asyncio

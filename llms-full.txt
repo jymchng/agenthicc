@@ -2829,8 +2829,26 @@ class BackgroundSession
 ```
 
 Fields: `session_id`, `title`, `cwd`, `workflow_name`, `intent`, `status`,
-`created_at`, `started_at`, `last_active`, `state_changed_at`, … (62 fields
-total).
+`created_at`, `started_at`, `last_active`, `state_changed_at`, … (70 fields
+total). Queue metadata records priority, idempotency/owner identity, requested
+profile, scheduler dispatch state, and a bounded priority-change audit history.
+
+### QueuePriority and QueueDispatchState
+
+`QueuePriority` has the values `URGENT`, `NORMAL`, and `LOW`. `QueueDispatchState`
+tracks the scheduler lifecycle independently of `SessionStatus`: `LEGACY`,
+`PENDING`, `CLAIMED`, `LAUNCHED`, `STARTED`, `CANCELLED`, and `FAILED`.
+Pending means durably accepted but not yet assigned a worker slot.
+
+### PriorityChange
+
+```python
+@dataclass(frozen=True)
+class PriorityChange
+```
+
+One durable audit entry recording a session's previous and new priority, time,
+and bounded actor label.
 
 The mode fields distinguish requested invocation state from the canonical
 effective mode. `requested_mode_name` is persisted when the background record
@@ -2926,6 +2944,20 @@ class BackgroundSupervisor
 ```
 
 Own worker processes and expose idempotent lifecycle operations.
+When `queue_enabled` is true, it admits bounded durable requests, applies
+priority aging and per-project round-robin scheduling, and uses a process-safe
+reservation token before launching workers. `queue_positions()` reports
+advisory one-based positions; `dispatch_pending()` recovers and starts eligible
+accepted requests.
+
+### QueueFullError
+
+```python
+class QueueFullError(RuntimeError)
+```
+
+Raised when a background request cannot be accepted because the configured
+pending queue is full.
 
 ### BackgroundInputService
 
@@ -2944,7 +2976,9 @@ class BackgroundSettings
 
 Fields: `enabled`, `store_path`, `max_workers`, `max_workers_per_project`,
 `cancel_grace_s`, `stale_after_s`, `wall_timeout_s`, `max_activity_bytes`,
-`trash_retention_days`, `terminals_enabled`, … (16 fields total).
+`trash_retention_days`, `terminals_enabled`, … (22 fields total). Queue settings
+include the opt-in `queue_enabled` flag, `max_queue_length`, optional
+`max_workers_per_user`, `priority_aging_interval_s`, and `dispatch_lease_s`.
 
 ### BackgroundManagerSettings
 
