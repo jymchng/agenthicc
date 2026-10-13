@@ -12,7 +12,7 @@ from bisect import bisect_left, bisect_right
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Iterable, Iterator, List, Mapping
+from typing import TYPE_CHECKING, Callable, Iterable, Iterator, List, Mapping
 
 from .model import (
     ACTIVE_STATUSES,
@@ -26,6 +26,10 @@ from .model import (
     SessionStatus,
     legal_transition,
 )
+
+if TYPE_CHECKING:
+    from .notifications import BackgroundNotificationCoordinator
+    from .settings import BackgroundNotificationSettings
 
 
 class SessionNotFound(KeyError):
@@ -110,6 +114,7 @@ class BackgroundStore:
         self._ordered_keys: list[tuple[bool, float, str]] = []
         self._ordered_ids: list[str] = []
         self._session_ids: list[str] = []
+        self._notification_coordinator: BackgroundNotificationCoordinator | None = None
 
     @property
     def projection_schema_version(self) -> int:
@@ -231,6 +236,46 @@ class BackgroundStore:
                         yield {str(key): item for key, item in raw.items()}
         except OSError:
             return
+
+    def iter_events(self) -> Iterator[dict[str, object]]:
+        """Iterate authoritative events for durable sidecar reconciliation."""
+
+        return self._iter_events()
+
+    def configure_notifications(
+        self,
+        settings: BackgroundNotificationSettings,
+        *,
+        dispatcher_launcher: Callable[[Path], object] | None = None,
+    ) -> BackgroundNotificationCoordinator | None:
+        """Attach the optional notification outbox and recover journal gaps.
+
+        The settings argument is intentionally typed at runtime in the
+        notifications module to avoid coupling lifecycle persistence to
+        desktop or HTTP delivery implementations.
+        """
+
+        from .settings import BackgroundNotificationSettings  # noqa: PLC0415
+
+        if not isinstance(settings, BackgroundNotificationSettings):
+            raise TypeError("settings must be BackgroundNotificationSettings")
+        if not settings.enabled and not (self.root / "notifications" / "outbox.sqlite3").exists():
+            self._notification_coordinator = None
+            return None
+        existing = self._notification_coordinator
+        if existing is not None and existing.settings == settings:
+            existing.reconcile(self)
+            return existing
+        from .notifications import BackgroundNotificationCoordinator  # noqa: PLC0415
+
+        coordinator = BackgroundNotificationCoordinator(
+            self.root,
+            settings,
+            dispatcher_launcher=dispatcher_launcher,
+        )
+        self._notification_coordinator = coordinator
+        coordinator.reconcile(self)
+        return coordinator
 
     def _read_events(self) -> list[dict[str, object]]:
         """Return a complete event list for compatibility and focused tests."""
@@ -897,6 +942,8 @@ class BackgroundStore:
         expected_delete_operation_id: object | None = None,
         **changes: object,
     ) -> BackgroundSession:
+        notification_descriptor: Mapping[str, object] | None = None
+        coordinator = self._notification_coordinator
         with self._lock():
             current = self.get(session_id, include_deleted=True)
             if expected_status is not None and current.status != expected_status:
@@ -953,11 +1000,41 @@ class BackgroundStore:
             updated = current.evolve(**changes)
             serialized_changes = updated.to_dict()
             serialized_changes.pop("session_id", None)
-            self._append(
-                "updated",
-                {"session_id": session_id, "changes": serialized_changes},
-            )
-            return updated
+            event_payload: dict[str, object] = {
+                "session_id": session_id,
+                "changes": serialized_changes,
+            }
+            if current.status is not updated.status:
+                event_payload["previous_status"] = current.status.value
+                event_payload["current_status"] = updated.status.value
+                if coordinator is not None:
+                    try:
+                        candidate = coordinator.describe_transition(current, updated)
+                        if isinstance(candidate, Mapping):
+                            notification_descriptor = dict(candidate)
+                            event_payload["notification"] = notification_descriptor
+                    except Exception as exc:  # noqa: BLE001
+                        # Notification policy may not break a durable session
+                        # lifecycle update. The source event still commits.
+                        import logging  # noqa: PLC0415
+
+                        logging.getLogger(__name__).warning(
+                            "notification descriptor omitted (%s)", type(exc).__name__
+                        )
+            self._append("updated", event_payload)
+        if notification_descriptor is not None:
+            if coordinator is not None:
+                try:
+                    coordinator.enqueue_and_dispatch(notification_descriptor)
+                except Exception as exc:  # noqa: BLE001
+                    # The redacted descriptor is already journaled and will
+                    # be re-enqueued on the next coordinator startup.
+                    import logging  # noqa: PLC0415
+
+                    logging.getLogger(__name__).warning(
+                        "notification enqueue deferred (%s)", type(exc).__name__
+                    )
+        return updated
 
     def record_mode_application(
         self,

@@ -14,6 +14,11 @@ Project config always wins over user-global config, mirroring the Git
 `~/.gitconfig` / `.git/config` layering model. Scalars are overwritten, lists
 are replaced, and tables are merged recursively.
 
+Security-sensitive background notification settings are an exception:
+project config cannot register webhook targets or authorize private-address
+delivery. Configure those in user-global config or select a trusted file with
+`--config`; webhook signing keys use `AGENTHICC_WEBHOOK_*` environment names.
+
 `--config PATH` selects an explicit file instead of searching.
 
 ### Files searched, in order

@@ -846,6 +846,25 @@ async def _build_session_context_impl(
         overrides=tuple(cli_overrides or ()),
         cwd=Path.cwd(),
     )
+    # Reconcile a durable notification outbox even when this invocation is
+    # not opening the agents manager; this recovers delivery after a restart.
+    try:
+        from agenthicc.background.store import BackgroundStore  # noqa: PLC0415
+
+        notification_root = (
+            Path(background_settings.store_path).expanduser()
+            if background_settings.store_path
+            else None
+        )
+        BackgroundStore(notification_root).configure_notifications(
+            background_settings.notifications
+        )
+    except Exception as exc:  # noqa: BLE001
+        import logging  # noqa: PLC0415
+
+        logging.getLogger(__name__).warning(
+            "background notification recovery unavailable (%s)", type(exc).__name__
+        )
     terminal_root = (
         Path(background_settings.store_path).expanduser() / "terminals"
         if background_settings.store_path

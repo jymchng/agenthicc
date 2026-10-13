@@ -111,9 +111,9 @@ against the current source before implementing them.
 
 ### PRD-220–239 — OpenCode, Claude Code, and Codex feature study
 
-These 20 **proposed** PRDs turn an evidence-based comparison of the three
-products into Agenthicc-specific implementation scopes. They do not claim the
-features are implemented. OpenCode's server/client architecture and
+These 20 PRDs originated as proposals from an evidence-based comparison of the
+three products and define Agenthicc-specific implementation scopes. Their
+current status is recorded in each document's metadata. OpenCode's server/client architecture and
 permission-aware tools, Claude Code's lifecycle hooks, schedules, remote/cloud
 work, and Codex's app-server, isolated worktrees, reusable environment setup,
 and cloud workers informed the proposals. The designs retain Agenthicc's
@@ -139,6 +139,12 @@ PRD-230/231 for remote worker and review handoff. PRD-232–239 add team
 coordination, agent configuration, safe automation, code intelligence,
 routing, recoverability, and extension distribution. Individual PRDs specify
 their prerequisites and acceptance tests.
+
+PRD-226 is implemented: lifecycle transitions are journaled with redacted
+descriptors, delivered through a durable SQLite outbox with signed HTTPS
+webhooks and optional local notices, and inspectable through
+`agenthicc jobs notifications`. See its implementation evidence and tests in
+[PRD-226](prd-226-background-run-notifications-and-webhooks.md).
 
 PRD-138 is the current cross-cutting roadmap for documentation truth,
 packaging, state boundaries, security, workflow correctness, persistence,

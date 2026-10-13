@@ -1308,6 +1308,25 @@ async def _compact_background_session(session: SessionContext) -> None:
 async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
     """Claim, execute, and finalize one background session."""
 
+    from agenthicc.background.settings import (  # noqa: PLC0415
+        BackgroundSettings,
+        load_background_settings,
+    )
+
+    try:
+        background_settings = load_background_settings(
+            config_path=request.config_path,
+            overrides=request.set_overrides,
+            cwd=Path(request.cwd),
+        )
+        store.configure_notifications(background_settings.notifications)
+    except Exception as exc:  # noqa: BLE001
+        # Notifications are strictly non-critical to worker execution. Config
+        # validation is repeated by session construction and will still fail
+        # the run if the underlying background configuration is invalid.
+        logger.warning("background notifications unavailable (%s)", type(exc).__name__)
+        background_settings = BackgroundSettings()
+
     lease = uuid.uuid4().hex
     session = None
     claimed = False
@@ -1954,25 +1973,18 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
         except OSError:  # pragma: no cover - only an unrecoverable cwd teardown
             pass
         try:
-            from agenthicc.background.settings import (  # noqa: PLC0415
-                load_background_settings,
-            )
             from agenthicc.background.supervisor import BackgroundSupervisor  # noqa: PLC0415
 
-            settings = load_background_settings(
-                config_path=request.config_path,
-                overrides=request.set_overrides,
-                cwd=Path(request.cwd),
-            )
             BackgroundSupervisor(
                 store,
-                max_workers=settings.max_workers,
-                max_workers_per_project=settings.max_workers_per_project,
-                max_workers_per_user=settings.max_workers_per_user,
-                queue_enabled=settings.queue_enabled,
-                max_queue_length=settings.max_queue_length,
-                priority_aging_interval_s=settings.priority_aging_interval_s,
-                dispatch_lease_s=settings.dispatch_lease_s,
+                max_workers=background_settings.max_workers,
+                max_workers_per_project=background_settings.max_workers_per_project,
+                max_workers_per_user=background_settings.max_workers_per_user,
+                queue_enabled=background_settings.queue_enabled,
+                max_queue_length=background_settings.max_queue_length,
+                priority_aging_interval_s=background_settings.priority_aging_interval_s,
+                dispatch_lease_s=background_settings.dispatch_lease_s,
+                notification_settings=background_settings.notifications,
             ).dispatch_pending()
         except Exception:  # noqa: BLE001
             # The durable queue remains authoritative; a manager refresh or

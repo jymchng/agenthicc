@@ -29,6 +29,7 @@ agenthicc jobs reject <id>         # reject a waiting session
 agenthicc jobs input <id>          # provide input to a waiting session
 agenthicc jobs rename <id>         # rename a session
 agenthicc jobs labels <id>         # set comma-separated labels
+agenthicc jobs notifications       # inspect notification delivery receipts
 agenthicc jobs archive <id>        # archive a session
 agenthicc jobs delete <id>         # move to recoverable trash
 agenthicc jobs restore <id>        # restore a deleted session
@@ -80,6 +81,20 @@ The store holds only the **rebuildable lifecycle index**. Kernel events,
 conversation events, workflow phase state, approvals, and memory stay under
 their existing owners, so a lost index is recoverable — and `purge`/`delete`
 do not erase the underlying history.
+
+Background notifications are opt-in and disabled by default. Configure
+desktop notices or HTTPS webhooks in the `[background.notifications]` section;
+see the [background-session guide](../guides/background-sessions.md#background-notifications-and-webhooks)
+for the signed payload format, secret setup, private-network policy, and
+delivery/recovery behavior. Inspect delivery receipts with:
+
+```bash
+agenthicc jobs notifications --status failed --json
+```
+
+Receipt output contains event/session IDs, destination names, attempt counts,
+result categories, and retry times. It deliberately omits payloads, webhook
+URLs, and secret references.
 
 ## Next
 

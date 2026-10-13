@@ -33,7 +33,7 @@ New here? Start with the [quickstart](docs/guides/quickstart.md), browse the [gl
 | **Extension registries** | Tools, agents, skills, modes, commands, and MCP servers |
 | **Memory** | Session, project, and global memory with durable conversation journaling |
 | **Context budgeting** | Model-aware compaction, transport retries, and tool-result replay for interrupted/resumed turns |
-| **Background sessions** | Detached long-running work with `/bg`, resume, retry, and cancellation |
+| **Background sessions** | Detached work with durable resume/retry/cancellation, opt-in local notices, and signed webhook notifications |
 | **Session service** | HTTP/SSE attachment transport for programmatic session access |
 
 ### Built-in workflows
@@ -182,7 +182,7 @@ most-used ones:
 | `workflows` | `list`, `run` | List registered workflows and run one against an intent |
 | `sessions` | `list`, `show`, `inspect`, `export` | Browse and export local session records |
 | `session` | `create`, `list`, `show`, `events`, `send`, `control`, `export`, `serve` | Drive the client-neutral session projection |
-| `jobs` | `list`, `status`, `resume`, `retry`, `cancel`, `approve`, `reject`, `input`, `rename`, `archive`, `restore`, `delete`, `purge`, `labels` | Manage background sessions |
+| `jobs` | `list`, `status`, `resume`, `retry`, `cancel`, `approve`, `reject`, `input`, `notifications`, `rename`, `archive`, `restore`, `delete`, `purge`, `labels` | Manage background sessions and inspect notification receipts |
 | `mcp` | `list`, `get`, `add`, `remove`, `connect`, `disconnect`, `refresh`, `auth`, `logout`, `doctor` | Configure and diagnose MCP servers |
 | `config` | `init`, `show`, `validate`, `profiles` | Inspect and validate configuration |
 | `skills` | `add` | Install a skill |
@@ -396,6 +396,11 @@ diagnostics, never credentials, headers, prompts, or raw request bodies.
 ## Background sessions
 
 Long-running work can be detached from an active session with `/bg` or `/background`. Run `agenthicc agents` (or `agenthicc jobs`) to open the background-session manager, where you can inspect, follow, resume, retry, cancel, and safely delete sessions. Its interactive table shows at most ten sessions per page and hides deleted sessions. On a session's details page, `i` sends input to its live worker or queues it before recovering a stale session in the background; workflow recovery resumes a saved checkpoint and never attaches to the foreground. `Ctrl+X` immediately deletes the selected or marked sessions to recoverable trash; deletion remains responsive while worker cleanup completes. Restore deleted sessions with `agenthicc jobs restore SESSION_ID`. See the [background sessions guide](./docs/guides/background-sessions.md) for workflow support, approvals, input requests, retention, and privacy details.
+
+Background notifications are opt-in. The `agenthicc jobs notifications` command
+shows durable delivery attempts and retry status without printing webhook
+payloads, URLs, or secrets. See the [notification configuration guide](./docs/guides/background-sessions.md#background-notifications-and-webhooks)
+for endpoint trust, HMAC signatures, and SSRF controls.
 
 Execution tools remain foreground by default. Pass `background=true` to `run_bash` or `run_command` to receive an owned `term-...` handle, then call `wait_terminal` when the result is needed. While a wait is active, `/ps`, `/stop`, and `Esc` remain responsive; `/stop` stops all owned background terminals, while `Esc` stops the terminal currently being awaited. Terminal handles and bounded output are local-only and scoped to the originating session.
 

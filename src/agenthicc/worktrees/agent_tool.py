@@ -75,6 +75,7 @@ def make_spawn_worker_agents_tool(
             max_queue_length=settings.max_queue_length,
             priority_aging_interval_s=settings.priority_aging_interval_s,
             dispatch_lease_s=settings.dispatch_lease_s,
+            notification_settings=settings.notifications,
         )
 
     @tool_control

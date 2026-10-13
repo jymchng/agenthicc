@@ -21,6 +21,15 @@ Tables merge recursively. Scalars and lists in a higher-priority layer replace
 the lower value. Config files may use `extends` for explicit parent files;
 cycles are rejected.
 
+Background notification security is a deliberate exception to ordinary
+project-over-global precedence: project files may enable local notices, but
+webhook destinations are accepted only from user-global configuration or an
+explicitly selected `--config` file. Only that trusted source can enable
+private/loopback webhook addresses. Webhook signing secrets are referenced by
+`AGENTHICC_WEBHOOK_*` environment-variable names, a namespace separate from
+provider and session-service credentials. See the [background notification
+guide](background-sessions.md#background-notifications-and-webhooks).
+
 Inspect the result with:
 
 ```bash

@@ -64,6 +64,7 @@ def _store_and_supervisor(
         max_workers_per_user=settings.max_workers_per_user,
         priority_aging_interval_s=settings.priority_aging_interval_s,
         dispatch_lease_s=settings.dispatch_lease_s,
+        notification_settings=settings.notifications,
     )
     return store, supervisor
 
@@ -561,6 +562,41 @@ def jobs_input(ctx: CLIContext, session_id: str, value: str) -> None:
         print(f"Unable to provide input to {session_id}: {exc}")
         raise SystemExit(1) from exc
     print(f"input: {session.session_id} → {session.status.value}")
+
+
+@command("jobs", "notifications", help="Inspect background notification delivery status")
+def jobs_notifications(
+    ctx: CLIContext,
+    session_id: str = "",
+    status: str = "",
+    limit: int = 100,
+    json: bool = False,
+) -> None:
+    """Show safe delivery receipts without payloads, targets, or secret values."""
+
+    from agenthicc.background.notifications import BackgroundNotificationOutbox  # noqa: PLC0415
+
+    if status and status not in {"pending", "sending", "delivered", "failed"}:
+        raise SystemExit("status must be pending, sending, delivered, or failed")
+    store, _supervisor = _store_and_supervisor(ctx)
+    outbox = BackgroundNotificationOutbox(store.root)
+    rows = outbox.list_deliveries(limit=limit, status=status, session_id=session_id)
+    if json:
+        print(json_module.dumps(rows, indent=2, sort_keys=True))
+        return
+    if not rows:
+        print("No background notification deliveries.")
+        return
+    for row in rows:
+        next_attempt = row.get("next_attempt_at")
+        retry_text = f" next={next_attempt:.0f}" if isinstance(next_attempt, (int, float)) else ""
+        print(
+            f"{str(row.get('event_id', ''))[:16]}  "
+            f"{str(row.get('destination_name', ''))[:24]:24}  "
+            f"{str(row.get('status', 'unknown')):10}  "
+            f"attempt={row.get('attempts', 0)}/{row.get('max_attempts', 0)}  "
+            f"result={row.get('last_result_category') or '—'}{retry_text}"
+        )
 
 
 @command("jobs", "rename", help="Rename a background session")

@@ -1,7 +1,7 @@
 ---
 title: "PRD-226: Background Run Notifications and Webhook Delivery"
-status: Proposed
-version: 0.1.0
+status: Implemented
+version: 1.0.0
 date: 2026-10-13
 repository: jymchng/agenthicc
 priority: P2
@@ -78,3 +78,36 @@ Use a local mock HTTP server, fake clock, forced process restart, malformed
 responses, rate limits, redirect chains, DNS-policy tests, and payload-redaction
 goldens. Ship disabled by default. Server deployments require PRD-222 auth and
 PRD-223 lifecycle; use a separate webhook secret scope from API client tokens.
+
+## 7. Implementation evidence
+
+Implemented in the background lifecycle boundary and its durable notification
+outbox:
+
+- `src/agenthicc/background/notifications.py` builds static redacted event
+  payloads, persists idempotent SQLite delivery records, signs HTTPS requests,
+  enforces per-send DNS/IP policy, blocks redirects, retries bounded transient
+  failures, and projects safe delivery receipts.
+- `src/agenthicc/background/settings.py` validates the opt-in settings and
+  restricts webhook signing-key references to `AGENTHICC_WEBHOOK_*`. Webhook
+  destinations are loaded only from user-global or explicitly selected
+  configuration; project files cannot configure egress or grant private
+  network access.
+- `src/agenthicc/background/store.py` journals the descriptor with the status
+  transition before outbox enqueue, then reconciles journaled descriptors on
+  restart. Notification setup, enqueue, or delivery failures do not change the
+  background session result.
+- `src/agenthicc/cli/commands/background.py` adds
+  `agenthicc jobs notifications`, a redacted receipt view.
+- User documentation: `docs/guides/background-sessions.md`,
+  `docs/guides/configuration.md`, `docs/usage/02-configuration.md`,
+  `docs/usage/11-background.md`, `docs/reference/storage.md`, and `README.md`.
+
+Verification includes unit tests for settings, redaction, idempotency, leases,
+retry classifications, HMAC headers, and DNS policy; integration tests for
+store-to-outbox transitions, restart/retry recovery, safe CLI receipts, and a
+real local HTTPS server that verifies the signed request, rejects redirect
+following, and returns a malformed body without affecting delivery; and a
+Linux process-level test that delivers a local notification through the real
+detached sender. The focused test command is
+`uv run pytest tests/unit/test_background_notifications.py tests/integration/test_background_notifications_integration.py tests/e2e/test_background_notifications_e2e.py -q`.

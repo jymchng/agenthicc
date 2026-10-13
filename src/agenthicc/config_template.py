@@ -293,6 +293,32 @@ def build_commented_config_template() -> str:
     _field(lines, "max_in_flight_operations", 4)
     _field(lines, "metrics", False)
 
+    _section(lines, "background.notifications")
+    _field(lines, "local_enabled", False)
+    _field(lines, "local_backend", "auto")
+    _comment(
+        lines,
+        "Private-network destinations require allow_private_network=true in user-global config.",
+    )
+    _field(lines, "allow_private_network", False)
+    _field(lines, "request_timeout_s", 5.0)
+    _field(lines, "max_attempts", 5)
+    _field(lines, "retry_base_delay_s", 1.0)
+    _field(lines, "retry_max_delay_s", 300.0)
+    _field(lines, "retry_rate_limits", False)
+    _comment(
+        lines,
+        "Webhook targets are accepted only from user-global config or an explicitly selected --config file.",
+    )
+    _comment(lines, "[[background.notifications.webhooks]]")
+    _comment(lines, 'name = "build-alerts"')
+    _comment(lines, 'url = "https://hooks.example.invalid/agenthicc"')
+    _comment(lines, 'secret_env = "AGENTHICC_WEBHOOK_SECRET"')
+    _comment(
+        lines,
+        'events = ["completed", "failed", "waiting_approval", "waiting_input", "recovery_required"]',
+    )
+
     _section(lines, "hooks")
     _comment(lines, '"intent.pre_validate" = ["module:function"]')
 

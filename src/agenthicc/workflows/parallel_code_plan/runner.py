@@ -86,6 +86,7 @@ class ParallelCodePlanRunner(BaseWorkflowRunner):
                 max_queue_length=settings.max_queue_length,
                 priority_aging_interval_s=settings.priority_aging_interval_s,
                 dispatch_lease_s=settings.dispatch_lease_s,
+                notification_settings=settings.notifications,
             ),
             max_parallel_tasks=self._cfg.cfg.execution.max_parallel_tasks,
         )

@@ -79,6 +79,7 @@ def _handoff(session: object) -> bool:
         max_workers_per_user=settings.max_workers_per_user,
         priority_aging_interval_s=settings.priority_aging_interval_s,
         dispatch_lease_s=settings.dispatch_lease_s,
+        notification_settings=settings.notifications,
     )
     try:
         goal_run_id = str(vars(ctx).get("goal_run_id", "") or "")

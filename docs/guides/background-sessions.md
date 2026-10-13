@@ -446,6 +446,57 @@ refresh, display, and concurrency cadence, not locking, ownership, or durable
 event recording. Set `metrics = true` to collect redacted timing aggregates
 while diagnosing latency.
 
+### Background notifications and webhooks
+
+Notifications are disabled by default. Configure operator-owned webhook
+destinations in `~/.agenthicc/agenthicc.toml` (or pass an explicitly selected
+trusted file with `--config`); project configuration may enable local notices,
+but cannot register webhook targets or grant access to private network
+addresses. Webhook secrets must use a dedicated environment-variable name
+beginning with `AGENTHICC_WEBHOOK_`, separate from provider and session-service
+credentials:
+
+```toml
+[background.notifications]
+local_enabled = true
+local_backend = "auto" # auto | desktop | terminal
+request_timeout_s = 5.0
+max_attempts = 5
+retry_base_delay_s = 1.0
+retry_max_delay_s = 300.0
+retry_rate_limits = false
+
+[[background.notifications.webhooks]]
+name = "build-alerts"
+url = "https://hooks.example.test/agenthicc" # HTTPS; no query or credentials
+secret_env = "AGENTHICC_WEBHOOK_BUILD_ALERTS"
+events = ["completed", "failed", "waiting_approval", "waiting_input", "recovery_required"]
+```
+
+Set the secret outside the TOML file, for example
+`export AGENTHICC_WEBHOOK_BUILD_ALERTS='…'`. The signature is HMAC-SHA256 over
+`<timestamp>.<exact compact JSON body>` and is sent in
+`X-Agenthicc-Signature: sha256=…`; the timestamp and event ID are separate
+headers. Receivers should reject stale timestamps and deduplicate event IDs.
+Payloads contain only the session/run IDs, workspace directory name, resulting
+state, event time, and a fixed redacted summary—not the prompt, title, provider,
+tool data, exception text, or absolute workspace path.
+
+Private, loopback, and link-local webhook addresses are rejected by default.
+To allow them, an operator must set `allow_private_network = true` in the
+user-global notification configuration (or in the explicitly selected trusted
+`--config` file). A project-local file or `--set` cannot grant this permission.
+DNS is resolved and checked on every delivery, and redirects are never followed.
+
+The append-only background journal records the redacted event descriptor
+before the SQLite outbox is updated; startup reconciliation repairs a crash
+between those writes. The sender runs separately from the job worker, retries
+only bounded transient failures, and cannot change the job's lifecycle state.
+Use `agenthicc jobs notifications [--status pending|sending|delivered|failed]
+[--session-id ID] [--json]` to inspect receipts. The command omits webhook
+URLs, secret references, and payloads. Headless environments without a local
+notification service quietly record `local_notifier_unavailable`.
+
 The background registry is an append-only, fsync'd JSONL event stream. It is a
 derived lifecycle index; the canonical conversation, workflow, kernel, and
 approval journals remain owned by their existing runtime components. A missing

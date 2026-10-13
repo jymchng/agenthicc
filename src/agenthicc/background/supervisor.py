@@ -17,7 +17,7 @@ from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
 from collections.abc import Awaitable, Callable, Sequence
-from typing import TypedDict
+from typing import TYPE_CHECKING, TypedDict
 from .deletion import DeleteFailure, DeleteResult
 from .input_inbox import BackgroundInput, BackgroundInputInbox
 from .model import (
@@ -46,6 +46,9 @@ from .store import (
 
 _MAX_ASK_USER_INPUT_CHARS = 8_000
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from .settings import BackgroundNotificationSettings
 
 
 class QueueFullError(RuntimeError):
@@ -225,6 +228,7 @@ class BackgroundSupervisor:
         max_workers_per_user: int | None = None,
         priority_aging_interval_s: float = 900.0,
         dispatch_lease_s: float = 30.0,
+        notification_settings: BackgroundNotificationSettings | None = None,
     ) -> None:
         if (
             isinstance(max_workers, bool)
@@ -233,6 +237,13 @@ class BackgroundSupervisor:
         ):
             raise ValueError("max_workers must be an integer between 1 and 1024")
         self.store = store or BackgroundStore()
+        if notification_settings is not None:
+            try:
+                self.store.configure_notifications(notification_settings)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "background notification service unavailable (%s)", type(exc).__name__
+                )
         self.max_workers = max_workers
         if (
             isinstance(max_workers_per_project, bool)
