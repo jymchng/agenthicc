@@ -1155,6 +1155,8 @@ class BackgroundSupervisor:
         *,
         expected_attempt: int | None = None,
         expected_lease_token: str | None = None,
+        expected_version: int | None = None,
+        idempotency_key: str | None = None,
     ) -> BackgroundSession:
         """Deliver explicit user input to a session paused at ``waiting_input``."""
 
@@ -1165,6 +1167,21 @@ class BackgroundSupervisor:
         session = self.store.get(session_id)
         if session.status != SessionStatus.WAITING_INPUT:
             raise InvalidSessionTransition("Session is not waiting for input")
+        if session.input_item_id:
+            from agenthicc.background.inbox import (  # noqa: PLC0415
+                BackgroundInteractionInbox,
+                response_from_text,
+            )
+
+            inbox = BackgroundInteractionInbox(self.store)
+            item = inbox.get(session.input_item_id)
+            inbox.respond(
+                item.item_id,
+                response_from_text(item, value),
+                expected_version=expected_version if expected_version is not None else item.version,
+                idempotency_key=idempotency_key or uuid.uuid4().hex,
+            )
+            return self.store.get(session_id)
         return self.store.update(
             session_id,
             expected_status=SessionStatus.WAITING_INPUT,
@@ -1743,12 +1760,34 @@ class BackgroundSupervisor:
     def restore_archive(self, session_id: str) -> BackgroundSession:
         return self.store.restore_archive(session_id)
 
-    def approve(self, session_id: str, allowed: bool) -> BackgroundSession:
+    def approve(
+        self,
+        session_id: str,
+        allowed: bool,
+        *,
+        expected_version: int | None = None,
+        idempotency_key: str | None = None,
+    ) -> BackgroundSession:
         """Resolve a persisted approval request without bypassing policy."""
 
         session = self.store.get(session_id)
         if session.status != SessionStatus.WAITING_APPROVAL:
             raise InvalidSessionTransition("Session is not waiting for approval")
+        if session.approval_item_id:
+            from agenthicc.background.inbox import BackgroundInteractionInbox  # noqa: PLC0415
+
+            inbox = BackgroundInteractionInbox(self.store)
+            item = inbox.get(session.approval_item_id)
+            response: dict[str, object] = {"allowed": allowed}
+            if allowed and item.target.get("workspace_access"):
+                response["scope_grant"] = "target_once"
+            inbox.respond(
+                item.item_id,
+                response,
+                expected_version=expected_version if expected_version is not None else item.version,
+                idempotency_key=idempotency_key or uuid.uuid4().hex,
+            )
+            return self.store.get(session_id)
         return self.store.update(
             session_id,
             expected_status=SessionStatus.WAITING_APPROVAL,

@@ -101,7 +101,7 @@ epilog (`src/agenthicc/cli/parser.py:160-162`) are:
 |---|---|---|
 | auth | `auth login`, `auth logout`, `auth whoami` | `src/agenthicc/cli/commands/auth.py:11,21,30` |
 | background | `agents`, `jobs`, `run` | `src/agenthicc/cli/commands/background.py:117,124,131` |
-| jobs | `list`, `status`, `cancel`, `resume`, `retry`, `approve`, `reject`, `input`, `rename`, `labels`, `purge`, `archive`, `delete`, `restore` | `src/agenthicc/cli/commands/background.py:162-328` |
+| jobs | `list`, `status`, `cancel`, `resume`, `retry`, `approve`, `reject`, `input`, `inbox list/answer/approve/reject/expire`, `rename`, `labels`, `purge`, `archive`, `delete`, `restore` | `src/agenthicc/cli/commands/background.py` |
 | config | `config show`, `config validate`, `config profiles`, `config init` | `src/agenthicc/cli/commands/config.py:41,62,82,108` |
 | init | `init` | `src/agenthicc/cli/commands/init.py:12` |
 | mcp | `add`, `list`, `get`, `remove`, `connect`, `disconnect`, `refresh`, `doctor`, `auth`, `logout` | `src/agenthicc/cli/commands/mcp.py:20-252` |

@@ -846,6 +846,22 @@ async def _build_session_context_impl(
         overrides=tuple(cli_overrides or ()),
         cwd=Path.cwd(),
     )
+    from agenthicc.background.inbox import BackgroundInteractionInbox  # noqa: PLC0415
+    from agenthicc.background.store import BackgroundStore  # noqa: PLC0415
+
+    background_root = (
+        Path(background_settings.store_path).expanduser()
+        if background_settings.store_path
+        else None
+    )
+    session_service.set_background_inbox(
+        BackgroundInteractionInbox(
+            BackgroundStore(
+                background_root,
+                projection_batch_size=background_settings.manager.projection_batch_size,
+            )
+        )
+    )
     # Reconcile a durable notification outbox even when this invocation is
     # not opening the agents manager; this recovers delivery after a restart.
     try:
@@ -2194,6 +2210,9 @@ class TUISession:
             list_workflow_runs=self._list_workflow_runs,
             resume_workflow=self._resume_workflow_from_overlay,
             loop_manager=vars(self).get("_loop_manager"),
+            background_inbox=getattr(
+                getattr(ctx, "session_service", None), "background_inbox", None
+            ),
         )
         return bool(self._cmd_dispatcher.dispatch(text, context))
 

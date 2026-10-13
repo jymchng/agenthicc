@@ -49,14 +49,27 @@ class EventDurability(StrEnum):
 class SessionError(RuntimeError):
     """Structured service error with a stable machine-readable code."""
 
-    def __init__(self, code: str, message: str, *, status: int = 400) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        status: int = 400,
+        details: Mapping[str, object] | None = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
         self.status = status
+        self.details = dict(details or {})
 
     def to_dict(self) -> dict[str, object]:
-        return {"code": self.code, "message": self.message, "status": self.status}
+        return {
+            "code": self.code,
+            "message": self.message,
+            "status": self.status,
+            **({"details": dict(self.details)} if self.details else {}),
+        }
 
 
 @dataclass(frozen=True)

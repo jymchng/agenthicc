@@ -64,6 +64,7 @@ The primary entry point is `agenthicc.__main__:main`.
 | `BackgroundPage` / `BackgroundManagerService` / `ManagerOperationResult` | `agenthicc.background` | Bounded page projections and structured asynchronous manager operations |
 | `QueuePriority` / `QueueDispatchState` / `PriorityChange` / `QueueFullError` | `agenthicc.background` | Durable bounded background admission, priority audit, scheduler state, and queue-capacity rejection |
 | `BackgroundManagerSettings` | `agenthicc.background` | Validated latency, activity-tail, frame, and operation-concurrency limits for `agenthicc agents` |
+| `BackgroundInboxItem` / `BackgroundInteractionInbox` / `InboxConflict` | `agenthicc.background` | Durable exact-operation approval/question/input inbox with versioned CAS, idempotency, and safe stale-state reporting |
 | `CommandOutcome` / `CommandState` / `CommandKind` | `agenthicc.tools.exec` | Canonical command states, deadlines, cancellation, and service lifecycle |
 | `ToolSandbox` / `WorkspaceView` | `agenthicc.tools` | Timeout, resource, network, and real-path boundaries |
 | `WorkspaceScope` / `WorkspaceAccessPolicy` | `agenthicc.tools.workspace_access` | Session-wide canonical roots and Safe/Plan/Yolo path authorization |

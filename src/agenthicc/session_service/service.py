@@ -120,10 +120,12 @@ class SessionService:
         *,
         store: SessionEventStore | None = None,
         store_root: str | Path | None = None,
+        background_inbox: object | None = None,
         default_capabilities: frozenset[str] | None = None,
         max_subscription_queue: int = 256,
     ) -> None:
         self.store = store or SessionEventStore(store_root)
+        self.background_inbox = background_inbox
         self.default_capabilities = (
             default_capabilities
             if default_capabilities is not None
@@ -539,6 +541,167 @@ class SessionService:
                 if target is None or snapshot.project_root == target:
                     snapshots.append(self._project_snapshot(snapshot, caps))
         return sorted(snapshots, key=lambda item: item.updated_at, reverse=True)
+
+    def set_background_inbox(self, inbox: object) -> None:
+        """Attach the durable background-interaction inbox to this service."""
+
+        self.background_inbox = inbox
+
+    @staticmethod
+    def _project_inbox_item(
+        item: Mapping[str, object], capabilities: frozenset[str]
+    ) -> dict[str, object]:
+        view = dict(item)
+        if "workspace" in capabilities or "admin" in capabilities:
+            return view
+        view["project_root"] = "<workspace>"
+        view["workspace"] = "<workspace>"
+        target = view.get("target")
+        if isinstance(target, Mapping):
+            projected_target = dict(target)
+            accesses = projected_target.get("workspace_access")
+            if isinstance(accesses, list):
+                projected_target["workspace_access"] = [
+                    {"canonical": "<workspace>", "operation": entry.get("operation", "")}
+                    if isinstance(entry, Mapping)
+                    else {}
+                    for entry in accesses
+                ]
+            view["target"] = projected_target
+        return view
+
+    async def inbox_items(
+        self,
+        *,
+        project_root: str | Path | None = None,
+        item_type: str | None = None,
+        older_than_s: float | None = None,
+        status: str | None = None,
+        limit: int = 100,
+        capabilities: frozenset[str] | None = None,
+    ) -> list[dict[str, object]]:
+        """List durable operator interactions under the caller's read scope."""
+
+        from agenthicc.background.inbox import BackgroundInteractionInbox  # noqa: PLC0415
+
+        caps = capabilities if capabilities is not None else self.default_capabilities
+        self._require(caps, "read")
+        inbox = self.background_inbox
+        if not isinstance(inbox, BackgroundInteractionInbox):
+            raise SessionError(
+                "unavailable", "background interaction inbox is not configured", status=503
+            )
+        try:
+            await asyncio.to_thread(inbox.reconcile)
+            items = await asyncio.to_thread(
+                inbox.list_items,
+                project_root=project_root,
+                item_type=item_type,
+                older_than_s=older_than_s,
+                status=status,
+                limit=limit,
+            )
+        except (TypeError, ValueError) as exc:
+            raise SessionError("invalid_request", str(exc), status=400) from exc
+        result: list[dict[str, object]] = []
+        for item in items:
+            result.append(self._project_inbox_item(item.to_dict(), caps))
+        return result
+
+    async def respond_to_inbox(
+        self,
+        item_id: str,
+        response: Mapping[str, object],
+        *,
+        expected_version: int,
+        idempotency_key: str,
+        capabilities: frozenset[str] | None = None,
+    ) -> dict[str, object]:
+        """Commit one exact inbox response or return its current conflict view."""
+
+        from agenthicc.background.inbox import (  # noqa: PLC0415
+            BackgroundInteractionInbox,
+            InboxConflict,
+        )
+
+        caps = capabilities if capabilities is not None else self.default_capabilities
+        self._require(caps, "control")
+        inbox = self.background_inbox
+        if not isinstance(inbox, BackgroundInteractionInbox):
+            raise SessionError(
+                "unavailable", "background interaction inbox is not configured", status=503
+            )
+        try:
+            item, replay = await asyncio.to_thread(
+                inbox.respond,
+                item_id,
+                response,
+                expected_version=expected_version,
+                idempotency_key=idempotency_key,
+            )
+        except KeyError as exc:
+            raise SessionError("not_found", f"inbox item not found: {item_id}", status=404) from exc
+        except InboxConflict as exc:
+            current = (
+                self._project_inbox_item(exc.current.to_dict(), caps)
+                if exc.current is not None
+                else {}
+            )
+            raise SessionError(
+                "conflict", str(exc), status=409, details={"current": current}
+            ) from exc
+        except (TypeError, ValueError) as exc:
+            raise SessionError("invalid_request", str(exc), status=400) from exc
+        return {
+            "item": self._project_inbox_item(item.to_dict(), caps),
+            "idempotent_replay": replay,
+        }
+
+    async def expire_inbox_item(
+        self,
+        item_id: str,
+        *,
+        expected_version: int,
+        idempotency_key: str,
+        reason: str = "expired by operator",
+        capabilities: frozenset[str] | None = None,
+    ) -> dict[str, object]:
+        """Expire one exact pending item with control-scope enforcement."""
+
+        from agenthicc.background.inbox import (  # noqa: PLC0415
+            BackgroundInteractionInbox,
+            InboxConflict,
+        )
+
+        caps = capabilities if capabilities is not None else self.default_capabilities
+        self._require(caps, "control")
+        inbox = self.background_inbox
+        if not isinstance(inbox, BackgroundInteractionInbox):
+            raise SessionError(
+                "unavailable", "background interaction inbox is not configured", status=503
+            )
+        try:
+            item = await asyncio.to_thread(
+                inbox.expire,
+                item_id,
+                expected_version=expected_version,
+                idempotency_key=idempotency_key,
+                reason=reason,
+            )
+        except KeyError as exc:
+            raise SessionError("not_found", f"inbox item not found: {item_id}", status=404) from exc
+        except InboxConflict as exc:
+            current = (
+                self._project_inbox_item(exc.current.to_dict(), caps)
+                if exc.current is not None
+                else {}
+            )
+            raise SessionError(
+                "conflict", str(exc), status=409, details={"current": current}
+            ) from exc
+        except (TypeError, ValueError) as exc:
+            raise SessionError("invalid_request", str(exc), status=400) from exc
+        return self._project_inbox_item(item.to_dict(), caps)
 
     async def events(
         self,

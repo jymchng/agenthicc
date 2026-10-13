@@ -1,6 +1,6 @@
 ---
 title: "PRD-227: Unified Background Approval and Input Inbox"
-status: Proposed
+status: Implemented
 version: 0.1.0
 date: 2026-10-13
 repository: jymchng/agenthicc
@@ -75,3 +75,20 @@ altering user text, or approving a tool because a notification was clicked.
 Add service/CLI/TUI parity tests, exact-input regression tests, answer race and
 restart tests, timeout tests, and cross-scope authorization tests. Builds on
 PRD-141/150 and PRD-217; remote access must follow PRD-222.
+
+## 7. Implementation and verification
+
+Implemented in `agenthicc.background.inbox` with a private SQLite inbox, exact
+session-attempt/request identity, versioned compare-and-set responses,
+idempotency receipts, and reconciliation against the authoritative background
+session store. The TUI `/inbox`, `agenthicc jobs inbox` CLI commands, and
+authenticated `/v1/inbox` session-service endpoints use that same store.
+Ordinary session-detail input continues through the separate opaque input
+inbox and is not parsed or converted by this feature.
+
+Verification includes unit tests for ordering, target/answer shape validation,
+privacy, expiry, stale/deleted attempts, concurrent responses, restart reads,
+and worker delivery/timeouts; integration tests cover service capabilities,
+redaction, HTTP bearer authentication, and conflict responses. The target suite
+is `tests/unit/test_background_interaction_inbox_prd227.py` and
+`tests/integration/test_background_inbox_prd227.py`.

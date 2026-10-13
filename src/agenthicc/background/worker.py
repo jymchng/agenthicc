@@ -18,7 +18,7 @@ import time
 import uuid
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Mapping, TypedDict, cast
+from typing import TYPE_CHECKING, Literal, Mapping, TypedDict, cast
 
 from agenthicc.background.model import (
     BackgroundSession,
@@ -538,6 +538,7 @@ class BackgroundApprovalService:
         session_id: str,
         question_timeout_s: float = DEFAULT_QUESTION_TIMEOUT_S,
         conversation_store: object | None = None,
+        inbox: object | None = None,
     ) -> None:
         if (
             isinstance(question_timeout_s, bool)
@@ -550,6 +551,213 @@ class BackgroundApprovalService:
         self.session_id = session_id
         self.question_timeout_s = float(question_timeout_s)
         self.conversation_store = conversation_store
+        if inbox is None:
+            from agenthicc.background.inbox import BackgroundInteractionInbox  # noqa: PLC0415
+
+            inbox = BackgroundInteractionInbox(store)
+        self.inbox = inbox
+
+    @staticmethod
+    def _approval_target(req: object) -> dict[str, object]:
+        workspace = _request_attribute(req, "workspace_access", ())
+        accesses: list[dict[str, str]] = []
+        if isinstance(workspace, (list, tuple)):
+            for item in workspace[:32]:
+                canonical = _request_attribute(item, "canonical", "")
+                operation = _request_attribute(item, "operation", "")
+                display = _request_attribute(item, "display", "")
+                if isinstance(canonical, str) and isinstance(operation, str):
+                    accesses.append(
+                        {
+                            "canonical": canonical[:2_048],
+                            "operation": operation[:80],
+                            "display": display[:500] if isinstance(display, str) else "",
+                        }
+                    )
+        capabilities = _request_attribute(req, "capabilities", ())
+        safe_capabilities = (
+            sorted(item[:128] for item in capabilities if isinstance(item, str))
+            if isinstance(capabilities, (set, frozenset, tuple, list))
+            else []
+        )
+        tool_name = _request_attribute(req, "tool_name", "approval request")
+        tool_use_id = _request_attribute(req, "tool_use_id", "")
+        mode_options = _request_attribute(req, "mode_options", ())
+        tool_input = _request_attribute(req, "tool_input", {})
+        from agenthicc.tui.runtime.session_export import _Redactor  # noqa: PLC0415
+
+        safe_input = _Redactor().value(tool_input, "tool_input")
+        if not isinstance(safe_input, dict):
+            safe_input = {}
+        return {
+            "tool_name": tool_name[:160] if isinstance(tool_name, str) else "approval request",
+            "approval_id": tool_use_id[:256] if isinstance(tool_use_id, str) else "",
+            "request_kind": str(_request_attribute(req, "kind", "tool"))[:40],
+            "capabilities": safe_capabilities,
+            "workspace_access": accesses,
+            "mode_options": [item[:80] for item in mode_options if isinstance(item, str)]
+            if isinstance(mode_options, (list, tuple))
+            else [],
+            "tool_input": safe_input,
+        }
+
+    @staticmethod
+    def _question_target(req: object) -> tuple[str, dict[str, object]]:
+        tool_input = _request_attribute(req, "tool_input", {})
+        raw_questions = tool_input.get("questions") if isinstance(tool_input, dict) else None
+        questions: list[dict[str, object]] = []
+        if isinstance(raw_questions, list):
+            for question in raw_questions[:32]:
+                if not isinstance(question, dict):
+                    continue
+                identifier = question.get("id")
+                if not isinstance(identifier, str) or not identifier:
+                    continue
+                options = question.get("options", [])
+                questions.append(
+                    {
+                        "id": identifier[:128],
+                        "text": str(question.get("text", ""))[:4_000],
+                        "options": [str(option)[:1_000] for option in options[:64]]
+                        if isinstance(options, list)
+                        else [],
+                    }
+                )
+        if questions:
+            request_id = str(
+                _request_attribute(req, "request_id", "")
+                or _request_attribute(req, "tool_use_id", "")
+                or uuid.uuid4().hex
+            )
+            return request_id, {
+                "tool_name": str(_request_attribute(req, "tool_name", "ask_user"))[:160],
+                "question_ids": [item["id"] for item in questions],
+                "questions": questions,
+            }
+        request_id = str(
+            _request_attribute(req, "request_id", "")
+            or _request_attribute(req, "tool_use_id", "")
+            or uuid.uuid4().hex
+        )
+        return request_id, {
+            "tool_name": str(_request_attribute(req, "tool_name", "input requested"))[:160],
+            "question_ids": [],
+            "questions": [],
+        }
+
+    async def _wait_for_inbox_item(
+        self,
+        *,
+        req: object,
+        kind: Literal["approval", "question", "input"],
+        request_id: str,
+        target: dict[str, object],
+        timeout_s: float | None,
+    ) -> tuple[object | None, str]:
+        from agenthicc.background.inbox import BackgroundInteractionInbox  # noqa: PLC0415
+
+        inbox = self.inbox
+        if not isinstance(inbox, BackgroundInteractionInbox):
+            raise TypeError("background approval service requires an interaction inbox")
+        current = self.store.get(self.session_id)
+        expires_at = time.time() + timeout_s if timeout_s is not None else None
+        item = inbox.register(
+            session_id=self.session_id,
+            attempt=current.attempt,
+            request_id=request_id,
+            kind=kind,
+            target=target,
+            expires_at=expires_at,
+        )
+        waiting_status = (
+            SessionStatus.WAITING_APPROVAL if kind == "approval" else SessionStatus.WAITING_INPUT
+        )
+        current = self.store.transition(
+            self.session_id,
+            waiting_status,
+            expected_status=SessionStatus.RUNNING,
+            approval_request=(
+                str(target.get("tool_name", "approval request")) if kind == "approval" else ""
+            ),
+            approval_decision=None,
+            approval_item_id=item.item_id if kind == "approval" else "",
+            input_request=(
+                str(target.get("tool_name", "input requested")) if kind != "approval" else ""
+            ),
+            input_value=None,
+            input_item_id=item.item_id if kind != "approval" else "",
+            latest_activity=f"Waiting for {'approval' if kind == 'approval' else 'input'}: {target.get('tool_name', '')}",
+        )
+        try:
+            inbox.activate(item.item_id)
+        except Exception:
+            inbox.set_terminal(item.item_id, "failed", "could not publish inbox request")
+            raise
+        deadline = expires_at
+        answer = await inbox.wait_for_answer(item.item_id, deadline=deadline)
+        if answer is not None:
+            response = inbox.answer_response(answer)
+            try:
+                self.store.transition(
+                    self.session_id,
+                    SessionStatus.RUNNING,
+                    expected_status=waiting_status,
+                    expected_attempt=current.attempt,
+                    expected_lease_token=current.lease_token,
+                    approval_request="",
+                    approval_decision=None,
+                    approval_item_id="",
+                    input_request="",
+                    input_value=None,
+                    input_item_id="",
+                    latest_activity=(
+                        "Approval resolved" if kind == "approval" else "Input accepted"
+                    ),
+                )
+            except InvalidSessionTransition:
+                inbox.set_terminal(item.item_id, "stale", "session changed before delivery")
+                return None, "stale"
+            inbox.mark_delivered(item.item_id)
+            return response, "answered"
+        latest_item = inbox.get(item.item_id)
+        try:
+            current = self.store.get(self.session_id, include_deleted=True)
+        except KeyError:
+            return None, "stale"
+        if current.status in {
+            SessionStatus.CANCELLING,
+            SessionStatus.CANCELLED,
+            SessionStatus.DELETED,
+        }:
+            inbox.set_terminal(item.item_id, "stale", "session was cancelled or deleted")
+            return None, "cancelled"
+        if current.status is waiting_status and current.attempt == item.attempt:
+            try:
+                self.store.transition(
+                    self.session_id,
+                    SessionStatus.RUNNING,
+                    expected_status=waiting_status,
+                    expected_attempt=item.attempt,
+                    expected_lease_token=current.lease_token,
+                    approval_request="",
+                    approval_decision=None,
+                    approval_item_id="",
+                    input_request="",
+                    input_value=None,
+                    input_item_id="",
+                    latest_activity=(
+                        "Approval expired"
+                        if kind == "approval"
+                        else "Input timed out; agent fallback required"
+                    ),
+                )
+            except InvalidSessionTransition:
+                pass
+        if latest_item.status == "accepted":
+            # Accepted responses remain durable across interruption. The next
+            # worker will consume only if the exact attempt/item still owns it.
+            return None, "accepted"
+        return None, latest_item.status
 
     def _emit_question_event(
         self,
@@ -591,60 +799,55 @@ class BackgroundApprovalService:
         if getattr(req, "kind", "tool") == "questions":
             return await self.request_input(req)
 
-        description = str(getattr(req, "tool_name", "approval request"))[:120]
+        request_id = str(
+            _request_attribute(req, "request_id", "")
+            or _request_attribute(req, "tool_use_id", "")
+            or uuid.uuid4().hex
+        )
+        target = self._approval_target(req)
         try:
-            current = self.store.get(self.session_id)
-            self.store.transition(
-                self.session_id,
-                SessionStatus.WAITING_APPROVAL,
-                expected_status=current.status,
-                approval_request=description,
-                approval_decision=None,
-                latest_activity=f"Waiting for approval: {description}",
+            value, outcome = await self._wait_for_inbox_item(
+                req=req,
+                kind="approval",
+                request_id=request_id,
+                target=target,
+                timeout_s=None,
             )
-        except (KeyError, InvalidSessionTransition):
+        except KeyError:
+            return ApprovalResponse(allowed=False, message="background session was removed")
+        except (InvalidSessionTransition, ValueError):
             return ApprovalResponse(allowed=False, message="background session is no longer active")
-        while True:
-            await asyncio.sleep(0.2)
-            try:
-                current = self.store.get(self.session_id, include_deleted=True)
-            except KeyError:
-                return ApprovalResponse(allowed=False, message="background session was removed")
-            if current.status in {
-                SessionStatus.CANCELLING,
-                SessionStatus.CANCELLED,
-                SessionStatus.DELETED,
-            }:
-                return ApprovalResponse(allowed=False, message="background session was cancelled")
-            if current.approval_decision is None:
-                continue
-            allowed = current.approval_decision
-            try:
-                self.store.transition(
-                    self.session_id,
-                    SessionStatus.RUNNING,
-                    expected_status=SessionStatus.WAITING_APPROVAL,
-                    approval_request="",
-                    approval_decision=None,
-                    latest_activity="Approval granted" if allowed else "Approval denied",
-                )
-            except InvalidSessionTransition:
-                return ApprovalResponse(allowed=False, message="approval state changed")
-            return ApprovalResponse(allowed=allowed)
+        if isinstance(value, dict):
+            return ApprovalResponse(
+                allowed=value.get("allowed") is True,
+                remember=value.get("remember") is True,
+                remember_all=value.get("remember_all") is True,
+                message=value.get("message", "") if isinstance(value.get("message"), str) else "",
+                mode=value.get("mode") if isinstance(value.get("mode"), str) else None,
+                scope_grant=value.get("scope_grant")
+                if isinstance(value.get("scope_grant"), str)
+                else None,
+                outcome=str(value.get("outcome", outcome)),
+                request_id=request_id,
+            )
+        return ApprovalResponse(
+            allowed=False,
+            message="approval state changed" if outcome == "stale" else f"approval {outcome}",
+            outcome=outcome,
+            request_id=request_id,
+        )
 
     async def request_input(self, req: object) -> object:
         """Wait for explicit input to a workflow ``ask_user`` request."""
 
         from agenthicc.tools.approval import ApprovalResponse  # noqa: PLC0415
 
-        description = str(getattr(req, "tool_name", "input requested"))[:120]
         try:
             timeout_s = object.__getattribute__(req, "timeout_s")
         except AttributeError:
             timeout_s = None
         if not isinstance(timeout_s, (int, float)) or isinstance(timeout_s, bool) or timeout_s <= 0:
             timeout_s = self.question_timeout_s
-        deadline = asyncio.get_running_loop().time() + float(timeout_s)
         deadline_wall = time.time() + float(timeout_s)
         request_id = str(
             _request_attribute(req, "request_id", "")
@@ -661,17 +864,38 @@ class BackgroundApprovalService:
             object.__setattr__(req, "deadline_at", deadline_wall)
         except (AttributeError, TypeError):
             pass
+        request_id, target = self._question_target(req)
+        self._emit_question_event(
+            "question_wait_started",
+            req,
+            outcome="pending",
+            timeout_s=float(timeout_s),
+            deadline_at=deadline_wall,
+        )
         try:
-            current = self.store.get(self.session_id)
-            self.store.transition(
-                self.session_id,
-                SessionStatus.WAITING_INPUT,
-                expected_status=current.status,
-                input_request=description,
-                input_value=None,
-                latest_activity=f"Waiting for input: {description}",
+            value, outcome = await self._wait_for_inbox_item(
+                req=req,
+                kind="question" if target.get("question_ids") else "input",
+                request_id=request_id,
+                target=target,
+                timeout_s=float(timeout_s),
             )
-        except (KeyError, InvalidSessionTransition):
+        except KeyError:
+            self._emit_question_event(
+                "question_wait_failed",
+                req,
+                outcome="failed",
+                timeout_s=float(timeout_s),
+                deadline_at=deadline_wall,
+            )
+            return ApprovalResponse(
+                allowed=False,
+                message="background session was removed",
+                outcome="failed",
+                request_id=request_id,
+                timeout_s=float(timeout_s),
+            )
+        except (InvalidSessionTransition, ValueError):
             self._emit_question_event(
                 "question_wait_failed",
                 req,
@@ -686,104 +910,7 @@ class BackgroundApprovalService:
                 request_id=request_id,
                 timeout_s=float(timeout_s),
             )
-        self._emit_question_event(
-            "question_wait_started",
-            req,
-            outcome="pending",
-            timeout_s=float(timeout_s),
-            deadline_at=deadline_wall,
-        )
-        while True:
-            remaining = deadline - asyncio.get_running_loop().time()
-            if remaining <= 0:
-                try:
-                    self.store.transition(
-                        self.session_id,
-                        SessionStatus.RUNNING,
-                        expected_status=SessionStatus.WAITING_INPUT,
-                        input_request="",
-                        input_value=None,
-                        latest_activity="Input timed out; agent fallback required",
-                    )
-                except InvalidSessionTransition:
-                    pass
-                self._emit_question_event(
-                    "question_timed_out",
-                    req,
-                    outcome="timed_out",
-                    timeout_s=float(timeout_s),
-                    deadline_at=deadline_wall,
-                )
-                return ApprovalResponse(
-                    allowed=False,
-                    message=(
-                        "The user did not answer before the configured deadline. "
-                        "Choose the safest reasonable option, state the assumption, "
-                        "and do not ask the same question again solely because it timed out."
-                    ),
-                    outcome="timed_out",
-                    timed_out=True,
-                    decision_required=True,
-                    request_id=str(_request_attribute(req, "request_id", "") or ""),
-                    timeout_s=float(timeout_s),
-                )
-            await asyncio.sleep(min(0.2, remaining))
-            try:
-                current = self.store.get(self.session_id, include_deleted=True)
-            except KeyError:
-                return ApprovalResponse(
-                    allowed=False,
-                    message="background session was removed",
-                    outcome="failed",
-                    request_id=request_id,
-                    timeout_s=float(timeout_s),
-                )
-            if current.status in {
-                SessionStatus.CANCELLING,
-                SessionStatus.CANCELLED,
-                SessionStatus.DELETED,
-            }:
-                self._emit_question_event(
-                    "question_cancelled",
-                    req,
-                    outcome="cancelled",
-                    timeout_s=float(timeout_s),
-                    deadline_at=deadline_wall,
-                )
-                return ApprovalResponse(
-                    allowed=False,
-                    message="background session was cancelled",
-                    outcome="cancelled",
-                    request_id=request_id,
-                    timeout_s=float(timeout_s),
-                )
-            if current.input_value is None:
-                continue
-            answer = current.input_value
-            try:
-                self.store.transition(
-                    self.session_id,
-                    SessionStatus.RUNNING,
-                    expected_status=SessionStatus.WAITING_INPUT,
-                    input_request="",
-                    input_value=None,
-                    latest_activity="Input accepted",
-                )
-            except InvalidSessionTransition:
-                self._emit_question_event(
-                    "question_wait_failed",
-                    req,
-                    outcome="failed",
-                    timeout_s=float(timeout_s),
-                    deadline_at=deadline_wall,
-                )
-                return ApprovalResponse(
-                    allowed=False,
-                    message="input state changed",
-                    outcome="failed",
-                    request_id=request_id,
-                    timeout_s=float(timeout_s),
-                )
+        if isinstance(value, dict):
             self._emit_question_event(
                 "question_answered",
                 req,
@@ -792,14 +919,75 @@ class BackgroundApprovalService:
                 deadline_at=deadline_wall,
             )
             return ApprovalResponse(
-                allowed=True,
-                message=answer,
-                outcome="answered",
+                allowed=value.get("allowed") is True,
+                message=value.get("message", "") if isinstance(value.get("message"), str) else "",
+                outcome=str(value.get("outcome", "answered")),
                 request_id=request_id,
                 timeout_s=float(timeout_s),
             )
+        if outcome == "expired":
+            self._emit_question_event(
+                "question_timed_out",
+                req,
+                outcome="timed_out",
+                timeout_s=float(timeout_s),
+                deadline_at=deadline_wall,
+            )
+            return ApprovalResponse(
+                allowed=False,
+                message=(
+                    "The user did not answer before the configured deadline. "
+                    "Choose the safest reasonable option, state the assumption, "
+                    "and do not ask the same question again solely because it timed out."
+                ),
+                outcome="timed_out",
+                timed_out=True,
+                decision_required=True,
+                request_id=request_id,
+                timeout_s=float(timeout_s),
+            )
+        if outcome == "cancelled":
+            self._emit_question_event(
+                "question_cancelled",
+                req,
+                outcome="cancelled",
+                timeout_s=float(timeout_s),
+                deadline_at=deadline_wall,
+            )
+        return ApprovalResponse(
+            allowed=False,
+            message=(
+                "background session was removed"
+                if outcome == "stale"
+                else f"background input {outcome}"
+            ),
+            outcome="cancelled" if outcome == "cancelled" else "failed",
+            request_id=request_id,
+            timeout_s=float(timeout_s),
+        )
 
     def respond(self, allowed: bool, **kwargs: object) -> None:
+        current = self.store.get(self.session_id)
+        if current.approval_item_id:
+            from agenthicc.background.inbox import BackgroundInteractionInbox  # noqa: PLC0415
+
+            inbox = self.inbox
+            if not isinstance(inbox, BackgroundInteractionInbox):
+                raise TypeError("background approval service requires an interaction inbox")
+            item = inbox.get(current.approval_item_id)
+            response: dict[str, object] = {"allowed": allowed}
+            for key in ("remember", "remember_all", "scope_grant", "message", "mode"):
+                if key in kwargs and kwargs[key] is not None:
+                    response[key] = kwargs[key]
+            if allowed and item.target.get("workspace_access") and "scope_grant" not in response:
+                response["scope_grant"] = "target_once"
+            inbox.respond(
+                item.item_id,
+                response,
+                expected_version=item.version,
+                idempotency_key=uuid.uuid4().hex,
+            )
+            return
         self.store.update(self.session_id, approval_decision=allowed)
 
     def provide_input(self, value: str) -> None:
@@ -812,6 +1000,23 @@ class BackgroundApprovalService:
         current = self.store.get(self.session_id)
         if current.status != SessionStatus.WAITING_INPUT:
             raise InvalidSessionTransition("Session is not waiting for input")
+        if current.input_item_id:
+            from agenthicc.background.inbox import (  # noqa: PLC0415
+                BackgroundInteractionInbox,
+                response_from_text,
+            )
+
+            inbox = self.inbox
+            if not isinstance(inbox, BackgroundInteractionInbox):
+                raise TypeError("background input service requires an interaction inbox")
+            item = inbox.get(current.input_item_id)
+            inbox.respond(
+                item.item_id,
+                response_from_text(item, value),
+                expected_version=item.version,
+                idempotency_key=uuid.uuid4().hex,
+            )
+            return
         self.store.update(self.session_id, input_value=value)
 
     def reset_turn_memory(self) -> None:

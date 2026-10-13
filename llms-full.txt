@@ -2833,6 +2833,37 @@ Fields: `session_id`, `title`, `cwd`, `workflow_name`, `intent`, `status`,
 total). Queue metadata records priority, idempotency/owner identity, requested
 profile, scheduler dispatch state, and a bounded priority-change audit history.
 
+### BackgroundInboxItem
+
+```python
+@dataclass(frozen=True)
+class BackgroundInboxItem
+```
+
+Safe operator-facing metadata for one exact background approval, question, or
+input request. Its public serialization omits accepted response content.
+
+### BackgroundInteractionInbox
+
+```python
+class BackgroundInteractionInbox
+```
+
+Durable SQLite-backed operator inbox. Persists a request before publishing it
+to the background session, validates exact session/attempt/request identity,
+and uses expected-version compare-and-set plus idempotency keys for responses.
+Accepted answers are private; stale and expired state is reconciled against
+the background session store.
+
+### InboxConflict
+
+```python
+class InboxConflict
+```
+
+Raised when a response or expiry operation loses its version race or targets a
+stale request. `current` contains the current safe inbox item when available.
+
 ### QueuePriority and QueueDispatchState
 
 `QueuePriority` has the values `URGENT`, `NORMAL`, and `LOW`. `QueueDispatchState`

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shlex
 from typing import TYPE_CHECKING
 
 from .command import BusyPolicy, Command, CommandContext, CommandHandler, UsageSnapshot
@@ -130,6 +131,88 @@ def _cmd_loops(ctx: CommandContext) -> bool:
         ctx.console.print(table)
     except ImportError:
         ctx.console.print("No scheduled loop jobs.", markup=False)
+    return True
+
+
+def _cmd_inbox(ctx: CommandContext) -> bool:
+    """Open or print the durable background interaction inbox."""
+
+    from agenthicc.background.inbox import (  # noqa: PLC0415
+        BackgroundInboxItem,
+        BackgroundInteractionInbox,
+    )
+
+    inbox = ctx.background_inbox
+    if not isinstance(inbox, BackgroundInteractionInbox):
+        ctx.console.print("Background interaction inbox is unavailable.", markup=False)
+        return True
+    inbox.reconcile()
+    project_root: str | None = None
+    item_type: str | None = None
+    older_than_s: float | None = None
+    status: str | None = None
+    try:
+        for token in shlex.split(ctx.args):
+            key, separator, value = token.partition("=")
+            if not separator or not value:
+                raise ValueError("filters use type=..., project=..., older-than=..., status=...")
+            if key == "type":
+                item_type = value
+            elif key == "project":
+                project_root = value
+            elif key == "older-than":
+                older_than_s = float(value)
+            elif key == "status":
+                status = value
+            else:
+                raise ValueError(f"unknown inbox filter: {key}")
+    except ValueError as exc:
+        ctx.console.print(f"/inbox: {exc}", markup=False)
+        return True
+
+    def loader() -> tuple[BackgroundInboxItem, ...]:
+        return inbox.list_items(
+            project_root=project_root,
+            item_type=item_type,
+            older_than_s=older_than_s,
+            status=status,
+        )
+
+    if ctx.set_pending_menu is not None:
+        from agenthicc.tui.workspace.overlays.background_inbox import (  # noqa: PLC0415
+            BackgroundInboxOverlay,
+        )
+
+        ctx.set_pending_menu(
+            BackgroundInboxOverlay(
+                inbox,
+                ctx.close_overlay if ctx.close_overlay is not None else (lambda: None),
+                loader=loader,
+            )
+        )
+        return True
+    items = loader()
+    if not items:
+        ctx.console.print(
+            "No pending background approvals, questions, or input requests.", markup=False
+        )
+        return True
+    from rich.table import Table  # noqa: PLC0415
+
+    table = Table(title="Background Inbox")
+    for column in ("ID", "Type", "Status", "Version", "Workspace", "Session", "Target"):
+        table.add_column(column, no_wrap=column != "Target")
+    for item in items:
+        table.add_row(
+            item.item_id,
+            item.kind,
+            item.status,
+            str(item.version),
+            item.workspace,
+            item.session_id,
+            str(item.target.get("tool_name", item.kind)),
+        )
+    ctx.console.print(table)
     return True
 
 
@@ -1045,6 +1128,14 @@ BUILTIN_COMMANDS: list[Command] = [
         group="Built-in",
         busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
         handler=_cmd_loops,
+    ),
+    Command(
+        name="/inbox",
+        description="Review and answer background approvals and questions",
+        argument_hint="[type=approval|question|input] [project=PATH] [older-than=SECONDS] [status=STATUS]",
+        group="Built-in",
+        busy_policy=BusyPolicy.IMMEDIATE_CONTROL,
+        handler=_cmd_inbox,
     ),
     Command(
         name="/clear",

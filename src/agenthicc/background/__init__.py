@@ -18,6 +18,7 @@ from .model import (
     legal_transition,
 )
 from .deletion import DeleteFailure, DeleteResult
+from .inbox import BackgroundInboxItem, BackgroundInteractionInbox, InboxConflict
 from .store import BackgroundPage, BackgroundStore, InvalidSessionTransition, SessionNotFound
 from .manager_service import BackgroundManagerService, ManagerOperationResult
 from .supervisor import BackgroundSupervisor, QueueFullError
@@ -49,6 +50,9 @@ __all__ = [
     "QueuePriority",
     "BackgroundPage",
     "BackgroundManagerService",
+    "BackgroundInboxItem",
+    "BackgroundInteractionInbox",
+    "InboxConflict",
     "DeleteFailure",
     "DeleteResult",
     "ManagerOperationResult",

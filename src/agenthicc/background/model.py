@@ -429,6 +429,10 @@ class BackgroundSession:
     dispatch_token: str = ""
     dispatch_claimed_at: float | None = None
     priority_history: tuple[PriorityChange, ...] = ()
+    # PRD-227 inbox identities are appended to preserve positional construction
+    # of the public dataclass and legacy event records.
+    approval_item_id: str = ""
+    input_item_id: str = ""
 
     @classmethod
     def create(
@@ -601,8 +605,10 @@ class BackgroundSession:
             resume_marker=_str("resume_marker", self.resume_marker),
             approval_request=_str("approval_request", self.approval_request),
             approval_decision=_optional_bool("approval_decision", self.approval_decision),
+            approval_item_id=_str("approval_item_id", self.approval_item_id),
             input_request=_str("input_request", self.input_request),
             input_value=_optional_str("input_value", self.input_value),
+            input_item_id=_str("input_item_id", self.input_item_id),
             worker_pid=_optional_int("worker_pid", self.worker_pid),
             detached_goal=_bool("detached_goal", self.detached_goal),
             worker_started_at=_clearable_float("worker_started_at", self.worker_started_at),
@@ -689,8 +695,10 @@ class BackgroundSession:
             "resume_marker": self.resume_marker,
             "approval_request": self.approval_request,
             "approval_decision": self.approval_decision,
+            "approval_item_id": self.approval_item_id,
             "input_request": self.input_request,
             "input_value": self.input_value,
+            "input_item_id": self.input_item_id,
             "worker_pid": self.worker_pid,
             "detached_goal": self.detached_goal,
             "worker_started_at": self.worker_started_at,
@@ -838,8 +846,10 @@ class BackgroundSession:
             resume_marker=str(value.get("resume_marker", "")),
             approval_request=str(value.get("approval_request", "")),
             approval_decision=_optional_bool(value.get("approval_decision")),
+            approval_item_id=str(value.get("approval_item_id", "")),
             input_request=str(value.get("input_request", "")),
             input_value=_optional_str(value.get("input_value")),
+            input_item_id=str(value.get("input_item_id", "")),
             # ``pid`` was used by early run projections; accept it when
             # replaying a legacy background record, while emitting the typed
             # ``worker_pid`` field for new records.

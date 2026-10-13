@@ -115,6 +115,7 @@ class CommandContext:
     list_workflow_runs: "Callable[[], list[WorkflowRecoveryRecord]] | None" = None
     resume_workflow: "Callable[[str], bool] | None" = None
     loop_manager: "LoopManager | None" = None
+    background_inbox: object | None = None
 
 
 # A handler takes a CommandContext and returns True if it handled the command.

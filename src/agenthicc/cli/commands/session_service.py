@@ -10,11 +10,11 @@ from typing import Any, Coroutine, TypeVar
 from agenthicc.cli.context import CLIContext
 from agenthicc.cli.registry import command, group
 from agenthicc.session_service import (
-    LocalSessionServer,
     SessionCommand,
     SessionError,
     SessionService,
 )
+from agenthicc.session_service.transport import LocalSessionServer
 
 
 @group("session", help="Inspect, control, and attach to client-neutral sessions")
@@ -211,7 +211,22 @@ async def session_serve(
 ) -> None:
     """Run the local attachment transport until interrupted."""
 
-    service = _service()
+    from agenthicc.background.inbox import BackgroundInteractionInbox  # noqa: PLC0415
+    from agenthicc.background.settings import load_background_settings  # noqa: PLC0415
+    from agenthicc.background.store import BackgroundStore  # noqa: PLC0415
+
+    settings = load_background_settings(
+        config_path=getattr(ctx, "config_path", None),
+        overrides=tuple(getattr(ctx, "set_overrides", ())),
+        config=(
+            vars(ctx.config).get("background") if getattr(ctx, "config", None) is not None else None
+        ),
+    )
+    root = Path(settings.store_path).expanduser() if settings.store_path else None
+    inbox = BackgroundInteractionInbox(
+        BackgroundStore(root, projection_batch_size=settings.manager.projection_batch_size)
+    )
+    service = SessionService(background_inbox=inbox)
     server = LocalSessionServer(
         service,
         host=host,

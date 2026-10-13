@@ -25,6 +25,10 @@ install_tui_handoff()
 def _jobs_group() -> None: ...
 
 
+@group("jobs", "inbox", help="List and resolve background approvals and questions")
+def _jobs_inbox_group() -> None: ...
+
+
 def _config(ctx: CLIContext) -> object:
     if ctx.config is not None:
         return ctx.config
@@ -562,6 +566,206 @@ def jobs_input(ctx: CLIContext, session_id: str, value: str) -> None:
         print(f"Unable to provide input to {session_id}: {exc}")
         raise SystemExit(1) from exc
     print(f"input: {session.session_id} → {session.status.value}")
+
+
+@command("jobs", "inbox", "list", help="List pending background approvals and questions")
+def jobs_inbox_list(
+    ctx: CLIContext,
+    project: str = "",
+    type: str = "",
+    older_than_s: float = -1.0,
+    status: str = "",
+    limit: int = 100,
+    json: bool = False,
+) -> None:
+    """List durable inbox metadata without exposing submitted answers."""
+
+    from agenthicc.background.inbox import BackgroundInteractionInbox  # noqa: PLC0415
+
+    store, _supervisor = _store_and_supervisor(ctx)
+    inbox = BackgroundInteractionInbox(store)
+    inbox.reconcile()
+    items = inbox.list_items(
+        project_root=project or None,
+        item_type=type or None,
+        older_than_s=older_than_s if older_than_s >= 0 else None,
+        status=status or None,
+        limit=limit,
+    )
+    if json:
+        print(json_module.dumps([item.to_dict() for item in items], indent=2, sort_keys=True))
+        return
+    if not items:
+        print("No pending background inbox items.")
+        return
+    for item in items:
+        target = item.target
+        description = target.get("tool_name", item.kind)
+        print(
+            f"{item.item_id}  {item.kind:8}  {item.status:9}  "
+            f"version={item.version}  {item.workspace}  "
+            f"session={item.session_id} attempt={item.attempt}  {description}"
+        )
+
+
+def _parse_inbox_version(value: str) -> int:
+    try:
+        version = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("VERSION must be a positive integer") from exc
+    if version < 1:
+        raise ValueError("VERSION must be a positive integer")
+    return version
+
+
+@command("jobs", "inbox", "answer", help="Answer a pending question or input request")
+def jobs_inbox_answer(
+    ctx: CLIContext,
+    item_id: str,
+    response: str,
+    expected_version: str,
+    idempotency_key: str,
+) -> None:
+    """Answer exact inbox item; multi-question response must be a JSON object."""
+
+    from agenthicc.background.inbox import (  # noqa: PLC0415
+        BackgroundInteractionInbox,
+        response_from_text,
+    )
+
+    store, _supervisor = _store_and_supervisor(ctx)
+    inbox = BackgroundInteractionInbox(store)
+    try:
+        item = inbox.get(item_id)
+        if item.kind == "approval":
+            raise ValueError("approval items must use the explicit approve or reject command")
+        accepted, replay = inbox.respond(
+            item_id,
+            response_from_text(item, response),
+            expected_version=_parse_inbox_version(expected_version),
+            idempotency_key=idempotency_key,
+        )
+    except (KeyError, RuntimeError, ValueError) as exc:
+        print(f"Unable to answer inbox item {item_id}: {exc}")
+        raise SystemExit(1) from exc
+    print(f"answer: {accepted.item_id} → {accepted.status} (version {accepted.version})")
+    if replay:
+        print("idempotent replay")
+
+
+def _resolve_inbox_approval(
+    ctx: CLIContext,
+    item_id: str,
+    allowed: bool,
+    expected_version: str,
+    idempotency_key: str,
+    *,
+    message: str = "",
+    mode: str = "",
+    remember: bool = False,
+    remember_all: bool = False,
+    scope_grant: str = "",
+) -> None:
+    from agenthicc.background.inbox import BackgroundInteractionInbox  # noqa: PLC0415
+
+    store, _supervisor = _store_and_supervisor(ctx)
+    inbox = BackgroundInteractionInbox(store)
+    try:
+        item = inbox.get(item_id)
+        response: dict[str, object] = {"allowed": allowed}
+        if message:
+            response["message"] = message
+        if mode:
+            response["mode"] = mode
+        if remember:
+            response["remember"] = True
+        if remember_all:
+            response["remember_all"] = True
+        if scope_grant:
+            response["scope_grant"] = scope_grant
+        elif allowed and item.target.get("workspace_access"):
+            response["scope_grant"] = "target_once"
+        updated, replay = inbox.respond(
+            item_id,
+            response,
+            expected_version=_parse_inbox_version(expected_version),
+            idempotency_key=idempotency_key,
+        )
+    except (KeyError, RuntimeError, ValueError) as exc:
+        print(f"Unable to resolve inbox item {item_id}: {exc}")
+        raise SystemExit(1) from exc
+    print(f"{'approve' if allowed else 'reject'}: {updated.item_id} → {updated.status}")
+    if replay:
+        print("idempotent replay")
+
+
+@command("jobs", "inbox", "approve", help="Approve the exact pending tool request")
+def jobs_inbox_approve(
+    ctx: CLIContext,
+    item_id: str,
+    expected_version: str,
+    idempotency_key: str,
+    message: str = "",
+    mode: str = "",
+    remember: bool = False,
+    remember_all: bool = False,
+    scope_grant: str = "",
+) -> None:
+    _resolve_inbox_approval(
+        ctx,
+        item_id,
+        True,
+        expected_version,
+        idempotency_key,
+        message=message,
+        mode=mode,
+        remember=remember,
+        remember_all=remember_all,
+        scope_grant=scope_grant,
+    )
+
+
+@command("jobs", "inbox", "reject", help="Reject the exact pending tool request")
+def jobs_inbox_reject(
+    ctx: CLIContext,
+    item_id: str,
+    expected_version: str,
+    idempotency_key: str,
+    message: str = "",
+) -> None:
+    _resolve_inbox_approval(
+        ctx,
+        item_id,
+        False,
+        expected_version,
+        idempotency_key,
+        message=message,
+    )
+
+
+@command("jobs", "inbox", "expire", help="Expire an exact pending interaction")
+def jobs_inbox_expire(
+    ctx: CLIContext,
+    item_id: str,
+    expected_version: str,
+    idempotency_key: str,
+    reason: str = "expired by operator",
+) -> None:
+    from agenthicc.background.inbox import BackgroundInteractionInbox  # noqa: PLC0415
+
+    store, _supervisor = _store_and_supervisor(ctx)
+    inbox = BackgroundInteractionInbox(store)
+    try:
+        updated = inbox.expire(
+            item_id,
+            expected_version=_parse_inbox_version(expected_version),
+            idempotency_key=idempotency_key,
+            reason=reason,
+        )
+    except (KeyError, RuntimeError, ValueError) as exc:
+        print(f"Unable to expire inbox item {item_id}: {exc}")
+        raise SystemExit(1) from exc
+    print(f"expire: {updated.item_id} → {updated.status}")
 
 
 @command("jobs", "notifications", help="Inspect background notification delivery status")

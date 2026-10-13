@@ -12,6 +12,7 @@ runtime.
 | `/bg` (or `/background`) | Move the current task into the background |
 | `/bg list` | List running background sessions |
 | `/bg <n>` | Re-attach and replay buffered output |
+| `/inbox` | Review pending background approvals, questions, and input requests |
 
 ## From the CLI
 
@@ -27,6 +28,11 @@ agenthicc jobs retry <id>          # retry a failed session
 agenthicc jobs approve <id>        # approve a waiting session
 agenthicc jobs reject <id>         # reject a waiting session
 agenthicc jobs input <id>          # provide input to a waiting session
+agenthicc jobs inbox list --json   # list pending typed interactions and versions
+agenthicc jobs inbox answer ITEM_ID TEXT VERSION KEY
+agenthicc jobs inbox approve ITEM_ID VERSION KEY
+agenthicc jobs inbox reject ITEM_ID VERSION KEY
+agenthicc jobs inbox expire ITEM_ID VERSION KEY
 agenthicc jobs rename <id>         # rename a session
 agenthicc jobs labels <id>         # set comma-separated labels
 agenthicc jobs notifications       # inspect notification delivery receipts
@@ -44,6 +50,13 @@ pool continues to return the existing capacity error. Queue positions shown in
 JSON and the `agents` manager are advisory.
 
 Useful flags: `jobs list --all --json --trash` and `jobs status --json`.
+
+For one inbox covering approvals, questions, and explicit input prompts, use
+`/inbox` in the TUI or `agenthicc jobs inbox list`. Each write is tied to the
+listed item ID and version; use a fresh idempotency key for each intended
+response. Multi-question `ask_user` answers are JSON objects keyed by question
+ID. This inbox does not intercept or transform ordinary messages sent from a
+session's details view.
 
 ```bash
 agenthicc jobs list --json

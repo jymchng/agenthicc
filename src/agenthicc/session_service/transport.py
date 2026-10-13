@@ -53,6 +53,9 @@ class LocalSessionServer:
         app.router.add_get("/v1/sessions/{session_id}/events", self._events)
         app.router.add_get("/v1/sessions/{session_id}/stream", self._stream)
         app.router.add_post("/v1/sessions/{session_id}/commands", self._command)
+        app.router.add_get("/v1/inbox", self._inbox_list)
+        app.router.add_post("/v1/inbox/{item_id}/respond", self._inbox_respond)
+        app.router.add_post("/v1/inbox/{item_id}/expire", self._inbox_expire)
         app.router.add_options("/{tail:.*}", self._options)
         return app
 
@@ -205,6 +208,92 @@ class LocalSessionServer:
             )
             result = await self.service.submit(command)
             return self._response(request, result.to_dict())
+        except SessionError as exc:
+            return self._response(request, {"ok": False, "error": exc.to_dict()}, status=exc.status)
+        except (ValueError, json.JSONDecodeError) as exc:
+            return self._response(
+                request,
+                {"ok": False, "error": {"code": "invalid_request", "message": str(exc)}},
+                status=400,
+            )
+
+    async def _inbox_list(self, request: web.Request) -> web.Response:
+        try:
+            raw_age = request.query.get("older_than_s", "")
+            older_than_s = float(raw_age) if raw_age else None
+            raw_limit = request.query.get("limit", "100")
+            limit = int(raw_limit)
+            items = await self.service.inbox_items(
+                project_root=request.query.get("project") or None,
+                item_type=request.query.get("type") or None,
+                older_than_s=older_than_s,
+                status=request.query.get("status") or None,
+                limit=limit,
+                capabilities=self._capabilities(request),
+            )
+            return self._response(request, {"ok": True, "items": items})
+        except (ValueError, SessionError) as exc:
+            error = (
+                exc.to_dict()
+                if isinstance(exc, SessionError)
+                else {"code": "invalid_request", "message": str(exc)}
+            )
+            status = exc.status if isinstance(exc, SessionError) else 400
+            return self._response(request, {"ok": False, "error": error}, status=status)
+
+    async def _inbox_respond(self, request: web.Request) -> web.Response:
+        try:
+            data = await request.json()
+            if not isinstance(data, Mapping):
+                raise SessionError("invalid_request", "request body must be an object")
+            response = data.get("response")
+            expected_version = data.get("expected_version")
+            key = data.get("idempotency_key") or request.headers.get("Idempotency-Key", "")
+            if not isinstance(response, Mapping):
+                raise SessionError("invalid_request", "response must be an object")
+            if not isinstance(expected_version, int) or isinstance(expected_version, bool):
+                raise SessionError("invalid_request", "expected_version must be an integer")
+            if not isinstance(key, str) or not key:
+                raise SessionError("invalid_request", "idempotency_key is required")
+            result = await self.service.respond_to_inbox(
+                request.match_info["item_id"],
+                response,
+                expected_version=expected_version,
+                idempotency_key=key,
+                capabilities=self._capabilities(request),
+            )
+            return self._response(request, {"ok": True, **result})
+        except SessionError as exc:
+            return self._response(request, {"ok": False, "error": exc.to_dict()}, status=exc.status)
+        except (ValueError, json.JSONDecodeError) as exc:
+            return self._response(
+                request,
+                {"ok": False, "error": {"code": "invalid_request", "message": str(exc)}},
+                status=400,
+            )
+
+    async def _inbox_expire(self, request: web.Request) -> web.Response:
+        try:
+            data = await request.json()
+            if not isinstance(data, Mapping):
+                raise SessionError("invalid_request", "request body must be an object")
+            expected_version = data.get("expected_version")
+            key = data.get("idempotency_key") or request.headers.get("Idempotency-Key", "")
+            reason = data.get("reason", "expired by operator")
+            if not isinstance(expected_version, int) or isinstance(expected_version, bool):
+                raise SessionError("invalid_request", "expected_version must be an integer")
+            if not isinstance(key, str) or not key:
+                raise SessionError("invalid_request", "idempotency_key is required")
+            if not isinstance(reason, str):
+                raise SessionError("invalid_request", "reason must be a string")
+            item = await self.service.expire_inbox_item(
+                request.match_info["item_id"],
+                expected_version=expected_version,
+                idempotency_key=key,
+                reason=reason,
+                capabilities=self._capabilities(request),
+            )
+            return self._response(request, {"ok": True, "item": item})
         except SessionError as exc:
             return self._response(request, {"ok": False, "error": exc.to_dict()}, status=exc.status)
         except (ValueError, json.JSONDecodeError) as exc:

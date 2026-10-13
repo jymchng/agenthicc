@@ -98,6 +98,56 @@ agenthicc agents --run RUN_ID
 agenthicc attach SESSION_ID
 ```
 
+## Background interaction inbox
+
+Pending background tool approvals, `ask_user` questions, and explicit input
+requests are available from `/inbox` in the TUI and through `agenthicc jobs
+inbox` in scripts. These are typed responses to an exact pending operation;
+they are separate from arbitrary text submitted to a session from the
+`agenthicc agents` details view. Session-detail input is still forwarded
+unchanged and is never reinterpreted as an approval or workflow command.
+
+```text
+/inbox
+/inbox type=question older-than=60
+/inbox project=/path/to/project status=pending
+```
+
+The TUI lists the oldest pending requests first. Select a question/input item
+and press Enter to type an answer; one-question answers are sent as exact text,
+including whitespace and pasted newlines. For multiple questions, submit a JSON
+object keyed by the displayed question IDs. For approvals, `a` approves with
+the least broad available scope, `n` rejects, and `x` expires the request. Plan
+reviews can be approved with the displayed mode choices. A version conflict or
+stale/deleted session is shown without delivering the response elsewhere.
+
+First list CLI items to get the current version, then use it and a
+caller-generated idempotency key for each write:
+
+```bash
+agenthicc jobs inbox list --json
+agenthicc jobs inbox answer ITEM_ID 'answer text' VERSION request-uuid
+agenthicc jobs inbox answer ITEM_ID '{"runtime":"Python"}' VERSION request-uuid
+agenthicc jobs inbox approve ITEM_ID VERSION request-uuid
+agenthicc jobs inbox reject ITEM_ID VERSION request-uuid --message 'Not approved'
+agenthicc jobs inbox expire ITEM_ID VERSION request-uuid
+```
+
+The JSON answer form is required only for multiple question IDs. Approval
+commands accept optional `--message`, `--mode`, `--remember`, `--remember-all`,
+and `--scope-grant`; workspace access defaults to `target_once`. Accepted
+answers are stored privately and omitted from item projections. Compare-and-set
+versions ensure only one concurrent operator wins. Question expiry uses the
+existing `[tools].question_timeout_s` setting; approvals can be explicitly
+rejected or expired by an operator.
+
+The authenticated session service exposes `GET /v1/inbox`,
+`POST /v1/inbox/{item_id}/respond`, and `POST /v1/inbox/{item_id}/expire`.
+Read capability is required to list; control capability is required to
+respond/expire. Writes require `expected_version` and `idempotency_key` (or an
+`Idempotency-Key` header); a stale version returns HTTP 409 with the current
+redacted item projection.
+
 ## Durable queue and priorities
 
 Queueing is opt-in during rollout. Set `background.queue_enabled = true` to
@@ -608,16 +658,16 @@ PYTHONPATH=src python -m agenthicc jobs --help
 usage: agenthicc jobs [-h] <subcommand> ...
 ```
 
-Accepted subcommands are `list`, `status`, `cancel`, `resume`, `retry`,
-`approve`, `reject`, `input`, `rename`, `labels`, `purge`, `archive`, `delete`,
-and `restore`.
+Accepted subcommands include `list`, `status`, `cancel`, `resume`, `retry`,
+`approve`, `reject`, `input`, `inbox`, `rename`, `labels`, `purge`, `archive`,
+`delete`, and `restore`.
 
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| A job is stuck and no prompt is visible | It is parked on an approval | `agenthicc jobs status JOB --json` shows the pending approval; then `jobs approve` or `jobs reject` |
-| A job needs an answer, not an approval | It is waiting on input | Use `agenthicc jobs input JOB ...` to supply it |
+| A job is stuck and no prompt is visible | It is parked on a typed approval/question | Use `/inbox` or `agenthicc jobs inbox list`; answer by exact item ID/version |
+| A job needs an answer, not an approval | It is waiting on an input request | Use `/inbox` or `agenthicc jobs inbox answer`; `jobs input` remains for compatibility |
 | A cancelled job cannot be found | Cancelled work may have moved to the trash | `agenthicc jobs list --trash` lists recoverable sessions; `jobs restore` brings one back |
 | A job list is cluttered with old entries | They have not been archived or purged | `jobs archive JOB` to keep it out of the default list, `jobs purge` to remove it deliberately |
 | `agenthicc agents` behaves like `agenthicc jobs` | They are the same manager | Expected: both are registered entry points to the background-session manager, and `jobs <subcommand>` is the scriptable form |

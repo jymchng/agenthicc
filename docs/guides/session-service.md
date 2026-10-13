@@ -70,6 +70,34 @@ returns a typed `backpressure` error so the client can reconnect from its
 cursor. Compaction is explicit and produces a typed replay gap rather than
 silently returning an incomplete history.
 
+### Background interaction inbox
+
+The local HTTP service also exposes the durable background interaction inbox:
+
+| Endpoint | Capability | Purpose |
+|---|---|---|
+| `GET /v1/inbox?project=PATH&type=question&older_than_s=SECONDS&status=pending&limit=100` | `read` | List oldest-first item metadata; answer bodies are never projected |
+| `POST /v1/inbox/{item_id}/respond` | `control` | Submit a typed response with a version and idempotency key |
+| `POST /v1/inbox/{item_id}/expire` | `control` | Expire one exact pending item |
+
+Respond JSON has this shape:
+
+```json
+{
+  "expected_version": 2,
+  "idempotency_key": "client-generated-unique-key",
+  "response": {"answers": {"runtime": "Python"}}
+}
+```
+
+For an approval, `response` is an approval decision object (for example
+`{"allowed": true, "scope_grant": "target_once"}`); for a question it
+contains the exact question-ID-to-answer mapping. A stale operation or version
+returns HTTP 409 and a current redacted item under `error.details.current`.
+Response receipts never contain the submitted answer. Successful and conflict
+projections both hide workspace paths unless the caller has `workspace` or
+`admin` capability. Non-loopback access uses the normal bearer authentication.
+
 ## A runnable round trip
 
 The client-neutral CLI path is read-only until you actually submit a message,

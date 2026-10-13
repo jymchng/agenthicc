@@ -29,6 +29,7 @@ other per-session artifact lives **inside** it.
 | `~/.agenthicc/session-service/index.lock` | `SessionEventStore` | Short cross-process index merge lock | OS advisory lock; never held for session or turn lifetime |
 | `~/.agenthicc/background/events.jsonl` | `BackgroundStore` | Authoritative append-only session lifecycle, queue admission, dispatch, and priority-audit events | Replay to rebuild background session state; queue-pending records survive restart |
 | `~/.agenthicc/background/notifications/outbox.sqlite3` | `BackgroundNotificationOutbox` | Redacted notification payloads, configured destination snapshots, idempotency keys, delivery attempts, leases, and retry state | Reconcile event descriptors from `events.jsonl`; due deliveries resume after restart |
+| `~/.agenthicc/background/operator-inbox.sqlite3` | `BackgroundInteractionInbox` | Exact pending approval/question/input metadata, CAS versions, idempotency receipts, and private accepted responses | Reconcile publication and stale/expired state against the owning background-session attempt; answers are omitted from public projections |
 | `~/.agenthicc/background/projection-v1.json` | `BackgroundStore` | Rebuildable session projection cache | Rebuilt from `events.jsonl` when missing or stale |
 | `~/.agenthicc/background/queue-scheduler-v1.json` | `BackgroundSupervisor` | Last-dispatched project cursor for round-robin fairness | Advisory scheduler cursor; loss does not lose accepted queue records |
 | `~/.agenthicc/background/queue-scheduler.lock` | `BackgroundSupervisor` | Cross-process admission/dispatch critical section | OS advisory lock; protects slot reservation and prevents duplicate effective dispatch |
@@ -75,6 +76,7 @@ grep -rn 'Path.home() / ".agenthicc"' src/agenthicc --include=*.py
 | `~/.agenthicc/session-service/` | `src/agenthicc/session_service/store.py:56` |
 | `~/.agenthicc/background/` | `src/agenthicc/background/store.py:25-26` |
 | `~/.agenthicc/background/notifications/outbox.sqlite3` | `src/agenthicc/background/notifications.py` |
+| `~/.agenthicc/background/operator-inbox.sqlite3` | `src/agenthicc/background/inbox.py` |
 | `~/.agenthicc/background/input-inbox/<session-id>.jsonl` and `.lock` | `background.input_inbox.BackgroundInputInbox` | Owner-attempt-fenced live input, deferred stale-session recovery input, and delivery receipts | Append-only, fsynced, deduplicated FIFO; deferred items are rebound to the next worker lease only after that worker claims the same session; submitted text is sensitive and separate from lifecycle logs |
 | `~/.agenthicc/background/terminals/` | `src/agenthicc/background/terminals.py:349` |
 | `~/.agenthicc/cassettes` (default `--record-cassette`) | `src/agenthicc/cli/parser.py:61` |

@@ -105,6 +105,11 @@ help string the command registers.
 | `jobs approve SESSION_ID` | Approve a waiting background session |
 | `jobs reject SESSION_ID` | Reject a waiting background session |
 | `jobs input SESSION_ID VALUE` | Provide input to a waiting background session |
+| `jobs inbox list [--project PATH] [--type TYPE] [--older-than-s SECONDS] [--status STATUS] [--json]` | List exact background approvals/questions/input requests and their versions |
+| `jobs inbox answer ITEM_ID RESPONSE VERSION IDEMPOTENCY_KEY` | Answer an exact question/input request; multiple answers use a JSON map |
+| `jobs inbox approve ITEM_ID VERSION IDEMPOTENCY_KEY [options]` | Approve the exact tool request |
+| `jobs inbox reject ITEM_ID VERSION IDEMPOTENCY_KEY [--message TEXT]` | Reject the exact tool request |
+| `jobs inbox expire ITEM_ID VERSION IDEMPOTENCY_KEY` | Expire one exact pending interaction |
 | `jobs rename SESSION_ID TITLE` | Rename a background session |
 | `jobs labels SESSION_ID [--labels TEXT]` | Set comma-separated labels on a background session |
 | `jobs archive SESSION_ID` | Archive a background session |

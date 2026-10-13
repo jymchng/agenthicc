@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Awaitable, Callable
 
 from .deletion import DeleteResult
+from .inbox import BackgroundInboxItem, BackgroundInteractionInbox
 from .input_inbox import BackgroundInput
 from .model import BackgroundSession
 from .store import BackgroundPage, BackgroundStore
@@ -58,6 +59,7 @@ class BackgroundManagerService:
             raise ValueError("max_workers must be at least 1")
         self.store = store
         self.supervisor = supervisor
+        self.inbox = BackgroundInteractionInbox(store)
         self._executor = ThreadPoolExecutor(
             max_workers=max_workers,
             thread_name_prefix="agenthicc-background-manager",
@@ -157,6 +159,48 @@ class BackgroundManagerService:
 
     async def provide_input_async(self, session_id: str, value: str) -> ManagerOperationResult:
         return await self._invoke(session_id, self.supervisor.provide_input, session_id, value)
+
+    async def inbox_list_async(self, **kwargs: object) -> tuple[BackgroundInboxItem, ...]:
+        value = await self._run_blocking(self.inbox.list_items, **kwargs)
+        if not isinstance(value, tuple) or not all(
+            isinstance(item, BackgroundInboxItem) for item in value
+        ):
+            raise TypeError("background inbox returned an invalid item list")
+        return value
+
+    async def inbox_respond_async(
+        self,
+        item_id: str,
+        response: dict[str, object],
+        *,
+        expected_version: int,
+        idempotency_key: str,
+    ) -> ManagerOperationResult:
+        return await self._invoke(
+            item_id,
+            self.inbox.respond,
+            item_id,
+            response,
+            expected_version=expected_version,
+            idempotency_key=idempotency_key,
+        )
+
+    async def inbox_expire_async(
+        self,
+        item_id: str,
+        *,
+        expected_version: int,
+        idempotency_key: str,
+        reason: str = "expired by operator",
+    ) -> ManagerOperationResult:
+        return await self._invoke(
+            item_id,
+            self.inbox.expire,
+            item_id,
+            expected_version=expected_version,
+            idempotency_key=idempotency_key,
+            reason=reason,
+        )
 
     async def enqueue_input_async(
         self,
