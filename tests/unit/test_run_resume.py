@@ -313,7 +313,13 @@ class TestRunCoordinatorCycle:
 
 
 @pytest.mark.asyncio
-async def test_failed_turn_marker_retains_prior_context(tmp_path) -> None:
+@pytest.mark.parametrize(
+    ("resume_turn_id", "expected_marker"),
+    [(None, "turn_failed"), ("failed-turn", "turn_recovery_started")],
+)
+async def test_failed_turn_marker_retains_prior_context(
+    tmp_path, resume_turn_id: str | None, expected_marker: str
+) -> None:
     """A handled provider failure closes the turn without a destructive reset."""
     from lauren_ai._exceptions import TransientTransportError
 
@@ -343,6 +349,7 @@ async def test_failed_turn_marker_retains_prior_context(tmp_path) -> None:
         processor=MagicMock(),
         session_memory=memory,
         conversation_id="session-1",
+        resume_turn_id=resume_turn_id,
         conv_store=MagicMock(),
         exec_cfg=ExecutionConfig(),  # type: ignore[arg-type]
     )
@@ -365,9 +372,24 @@ async def test_failed_turn_marker_retains_prior_context(tmp_path) -> None:
         {"role": "assistant", "content": "completed step"},
     ]
     entries = [json.loads(line) for line in journal.path.read_text().splitlines() if line.strip()]
-    assert entries[-1]["kind"] == "turn_failed"
+    assert entries[-1]["kind"] == expected_marker
     assert entries[-1]["turn_id"] == "failed-turn"
-    assert fold_resume_state(journal.path) is None
+    incomplete = fold_resume_state(journal.path)
+    if resume_turn_id is None:
+        assert incomplete is None
+    else:
+        assert incomplete is not None
+        assert incomplete.turn_id == resume_turn_id
+        assert incomplete.user_message == "continue"
+    error_events = [
+        call.args[1]
+        for call in ctx.conv_store.append_event.call_args_list
+        if call.args and call.args[0] == "error"
+    ]
+    assert error_events
+    assert error_events[-1]["http_status"] == 503
+    assert error_events[-1]["turn_id"] == "failed-turn"
+    assert "late provider failure" not in repr(error_events[-1])
     journal.close()
 
 

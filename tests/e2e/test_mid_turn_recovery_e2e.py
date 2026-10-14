@@ -15,7 +15,11 @@ from pathlib import Path
 import pytest
 
 from agenthicc.memory.journal import fold_resume_state
+from agenthicc.memory.journal import ConversationJournal
+from agenthicc.runners.durable_ledger import DurableIdempotencyLedger
+from agenthicc.runners.run_coordinator import RunCoordinator
 from agenthicc.runners.session_conversation import SessionConversation
+from lauren_ai import ToolResult
 
 pytestmark = pytest.mark.e2e
 
@@ -113,3 +117,44 @@ def test_failed_turn_survives_restart_and_follow_up_message(tmp_path: Path) -> N
         assert entries[-1]["kind"] == "append"
     finally:
         reopened.close()
+
+
+def test_failed_resume_remains_recoverable_with_same_turn_and_tool_ledger(
+    tmp_path: Path,
+) -> None:
+    journal_path = tmp_path / "resume-journal.jsonl"
+    first = ConversationJournal(journal_path)
+    first.turn_started("turn-stable", "finish the original request", base_count=0)
+    first_ledger = DurableIdempotencyLedger(first, "turn-stable")
+    first_ledger.record(
+        "write_file",
+        {"path": "output.txt"},
+        ToolResult(tool_use_id="tool-once", content="created", is_error=False),
+    )
+    # AgentTurnRunner records this non-terminal marker if a resume attempt
+    # fails, preserving the original logical turn for a later worker attempt.
+    first.turn_recovery_started("turn-stable")
+    first.close()
+
+    reopened = ConversationJournal(journal_path)
+    incomplete = RunCoordinator.detect_incomplete_turn(reopened)
+    assert incomplete is not None
+    plan = RunCoordinator.build_resume_plan(reopened, incomplete)
+    assert plan.turn_id == "turn-stable"
+    assert plan.user_message == "finish the original request"
+    replayed = plan.ledger.lookup("write_file", {"path": "output.txt"})
+    assert replayed is not None
+    assert replayed.tool_use_id == "tool-once"
+    assert replayed.content == "created"
+
+    # A second failed attempt leaves the same work resumable after another
+    # close/reopen cycle; the old side effect is still replayed, not rerun.
+    reopened.turn_recovery_started("turn-stable")
+    reopened.close()
+    after_retry = ConversationJournal(journal_path)
+    retry_state = RunCoordinator.detect_incomplete_turn(after_retry)
+    assert retry_state is not None
+    assert retry_state.turn_id == "turn-stable"
+    retry_plan = RunCoordinator.build_resume_plan(after_retry, retry_state)
+    assert retry_plan.ledger.lookup("write_file", {"path": "output.txt"}) is not None
+    after_retry.close()

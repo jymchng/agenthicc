@@ -27,6 +27,9 @@ class QueuedMessageSource:
 _queued_message_source: ContextVar[QueuedMessageSource | None] = ContextVar(
     "agenthicc_queued_message_source", default=None
 )
+_provider_diagnostic_context: ContextVar[dict[str, str | int] | None] = ContextVar(
+    "agenthicc_provider_diagnostic_context", default=None
+)
 
 
 @contextmanager
@@ -44,6 +47,28 @@ def current_queued_message_source() -> QueuedMessageSource | None:
     """Return the input source bound to the current context, if any."""
 
     return _queued_message_source.get()
+
+
+@contextmanager
+def bind_provider_diagnostic_context(
+    context: dict[str, str | int],
+) -> Iterator[None]:
+    """Bind bounded session/input correlation fields to provider failures.
+
+    The mapping is intentionally mutable so a queued message source can update
+    the active phase and message ID at the exact point it delivers that input.
+    Callers must only store non-secret identifiers and small enum-like values.
+    """
+    token = _provider_diagnostic_context.set(context)
+    try:
+        yield
+    finally:
+        _provider_diagnostic_context.reset(token)
+
+
+def current_provider_diagnostic_context() -> dict[str, str | int] | None:
+    """Return the current turn's bounded provider diagnostic context."""
+    return _provider_diagnostic_context.get()
 
 
 if TYPE_CHECKING:
@@ -95,6 +120,7 @@ class AgentTurnOptions(TypedDict):
     excluded_capabilities: NotRequired[frozenset[str]]
     allowed_tool_names: NotRequired[frozenset[str] | None]
     workspace_access: NotRequired["WorkspaceAccessPolicy | None"]
+    provider_diagnostic_context: NotRequired[dict[str, str | int] | None]
 
 
 @dataclass(frozen=True)
@@ -181,11 +207,15 @@ class AgentTurnContext:
     #: Session-scoped browser manager used to reset per-turn browser quotas.
     browser_manager: object | None = None
 
+    #: Redacted session/attempt/input correlation for provider error events.
+    provider_diagnostic_context: dict[str, str | int] | None = None
+
     def __post_init__(self) -> None:
         """Inherit an explicitly bound session input source when not overridden."""
 
         source = current_queued_message_source()
-        if source is None:
-            return
-        if self.next_queued_message is None:
+        if source is not None and self.next_queued_message is None:
             object.__setattr__(self, "next_queued_message", source.claim)
+        diagnostic_context = current_provider_diagnostic_context()
+        if self.provider_diagnostic_context is None and diagnostic_context is not None:
+            object.__setattr__(self, "provider_diagnostic_context", diagnostic_context)

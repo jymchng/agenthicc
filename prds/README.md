@@ -108,6 +108,7 @@ against the current source before implementing them.
 - [PRD-237 — Provider Routing, Budgets, and Fallback Policies](prd-237-provider-routing-budgets-and-fallback.md)
 - [PRD-238 — Reversible Turn Checkpoints and Session Branches](prd-238-reversible-turn-checkpoints-and-session-branches.md)
 - [PRD-239 — Trusted Extension Bundles and Catalog](prd-239-trusted-extension-bundles-and-catalog.md)
+- [PRD-240 — Reliable Agents-Page Input: Provider Identity and Turn Recovery](prd-240-consistent-agent-input-session-recovery.md)
 
 ### PRD-220–239 — OpenCode, Claude Code, and Codex feature study
 
@@ -520,6 +521,17 @@ agents details composer. The exact submitted payload reaches the selected
 session's target input router; recovery does not inject a continuation turn or
 infer workflow intent. Unit, integration, and details-view regression tests
 cover live, recoverable, and completed sessions.
+
+PRD-240 is implemented: the official OpenCode Go endpoint automatically binds
+`x-opencode-session` to Agenthicc's stable conversation ID, while custom
+gateways retain PRD-187's opt-in header behavior. Its structured
+`MissingSessionID` response fails without consuming the irrecoverable-provider
+retry budget. The background worker also replays a pending interrupted direct
+turn with its original turn ID and idempotency ledger before delivering
+deferred input. These are separate fixes—the reported missing-header response
+is not evidence of malformed assistant/tool history. Provider diagnostics are
+bounded and redacted; implementation and verification details are recorded in
+[PRD-240](prd-240-consistent-agent-input-session-recovery.md).
 
 PRD-218 fixes foreground `/detach` when the prior background attempt is
 completed. It reactivates the same session for eligible work, preserves the

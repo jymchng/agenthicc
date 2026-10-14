@@ -294,6 +294,15 @@ when capacity is available. This does not resume a workflow: slash commands,
 including `/workflow ...`, are forwarded unchanged and handled by the target's
 normal command router.
 
+There is one direct-turn recovery case that precedes new input: if the journal
+contains an interrupted direct turn, the worker first re-drives that original
+message with its original turn ID and durable tool-idempotency ledger. The new
+inbox message remains pending until the recovered turn reaches a safe input
+boundary; if recovery fails first, the message stays recoverable for a later
+attempt. This is not automatic workflow recovery. An active or recoverable
+workflow checkpoint takes precedence and must be handled explicitly; the worker
+does not run a direct-turn recovery and a workflow recovery concurrently.
+
 The detail page's `Latest input` field shows the newest receipt (`queued`,
 `waiting for recovery`, `delivered`, `processed`, or `not delivered`) and a
 short message ID, never the message body. The same message ID fences retries

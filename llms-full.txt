@@ -4510,8 +4510,10 @@ llm = build_llm_config(cfg.execution)
 
 When a profile or execution settings value configures `session_header`, the
 builder attaches the supplied stable `conversation_id` as that HTTP header.
-For example, OpenCode Go uses `session_header = "x-opencode-session"`; omit
-the binding to preserve legacy provider behavior.
+The official OpenCode Go endpoint automatically selects
+`x-opencode-session` and binds the stable Agenthicc conversation ID; custom
+gateways retain the opt-in behavior, and omitting their binding preserves
+legacy provider behavior.
 
 The builder passes profile `default_headers`, `default_query`,
 `client_options`, sampling (`temperature`, `top_p`, and

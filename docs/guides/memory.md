@@ -80,6 +80,13 @@ keeps the current projection rather than rolling back to the turn start; the
 durable idempotency ledger protects already-completed tools. In both cases the
 logical user message is sent exactly once per retry attempt.
 
+When a provider failure occurs during a re-drive of an already interrupted
+turn, the journal writes the non-terminal `turn_recovery_started` marker
+instead of `turn_failed`. The original turn ID and seeded tool ledger therefore
+remain discoverable if the re-drive fails again; a fresh turn is not started
+against that partial conversation. A successful re-drive writes the normal
+completion marker.
+
 An explicit turn interruption preserves the valid assistant/tool exchanges
 that completed before cancellation. If the interrupted tail contains an
 unanswered tool call, it is healed with the provider's interruption result and

@@ -26,7 +26,6 @@ def test_new_and_resumed_session_keep_one_provider_identity(tmp_path, monkeypatc
             model = "kimi-k3"
             base_url = "https://opencode.ai/zen/go/v1"
             api_key_env = "OPENCODE_API_KEY"
-            session_header = "x-opencode-session"
             """
         ),
         encoding="utf-8",

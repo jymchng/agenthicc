@@ -914,6 +914,7 @@ async def _build_session_context_impl(
         force_terminal=not headless,
         quiet=headless,
     )
+    llm_config_error: str | None = None
     try:
         # Resolve the selected profile immediately before constructing the
         # transport.  This keeps secrets out of durable session/workflow state
@@ -925,6 +926,7 @@ async def _build_session_context_impl(
         # x-opencode-session) are stable across every turn and retry.
         llm_cfg = build_llm_config(cfg.execution, conversation_id=session_id)
     except ValueError as exc:
+        llm_config_error = str(exc)
         console.print(
             f"[red]LLM config error: {exc}[/red]\n"
             "[dim]Set ANTHROPIC_API_KEY or OPENAI_API_KEY, or --set execution.provider=...[/dim]",
@@ -1365,6 +1367,7 @@ async def _build_session_context_impl(
         cfg=cfg,
         session_id=session_id,
         model_label=model_label,
+        llm_config_error=llm_config_error,
         config_path=config_path,
         mcp_manager=mcp_manager,
         console=console,

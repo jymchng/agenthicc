@@ -40,7 +40,10 @@ if TYPE_CHECKING:
     from agenthicc.background.terminals import TerminalManager
     from agenthicc.runners.workflow_recovery import WorkflowRecoveryRecord
     from agenthicc.runners.session_context import SessionContext
+    from agenthicc.runners.session_conversation import SessionConversation
     from agenthicc.runners.session_lease import SessionOwnerLease
+    from agenthicc.runners.run_coordinator import ResumePlan
+    from agenthicc.workflows.registry import WorkflowRegistry
 
 
 @dataclass(frozen=True)
@@ -1037,13 +1040,21 @@ def _load_request(path: Path) -> WorkerRequest:
     return WorkerRequest.from_mapping(raw)
 
 
-async def _run_direct_turn(session: object, request: WorkerRequest) -> None:
+async def _run_direct_turn(
+    session: object,
+    request: WorkerRequest,
+    *,
+    resume_plan: "ResumePlan | None" = None,
+) -> None:
     """Run a direct turn through the canonical agent-turn runner."""
 
     from agenthicc.runners.agent_turn import _run_agent_turn  # noqa: PLC0415
 
     agent_runner = getattr(session, "agent_runner", None)
     if agent_runner is None:
+        config_error = _request_attribute(session, "llm_config_error", None)
+        if isinstance(config_error, str) and config_error:
+            raise RuntimeError(f"LLM configuration error: {config_error}")
         raise RuntimeError("No LLM configured for background session")
     app_state = getattr(session, "app_state")
     cfg = getattr(session, "cfg")
@@ -1069,7 +1080,130 @@ async def _run_direct_turn(session: object, request: WorkerRequest) -> None:
         memory_router=getattr(session, "memory_router"),
         semantic_index=getattr(session, "semantic_index"),
         browser_manager=getattr(session, "browser_manager", None),
+        resume_turn_id=resume_plan.turn_id if resume_plan is not None else None,
+        resume_ledger=resume_plan.ledger if resume_plan is not None else None,
     )
+
+
+def _direct_resume_workflow_conflict(session: object) -> str | None:
+    """Return a fail-closed diagnostic when workflow recovery owns the session."""
+    processor = _request_attribute(session, "processor", None)
+    get_state = _request_attribute(processor, "get_state", None)
+    if callable(get_state):
+        try:
+            state = get_state()
+            workflows = _request_attribute(state, "workflows", {})
+            from agenthicc.kernel.state import NodeStatus  # noqa: PLC0415
+
+            if isinstance(workflows, Mapping):
+                if any(
+                    bool(_request_attribute(workflow, "name", ""))
+                    and _request_attribute(workflow, "status")
+                    not in {NodeStatus.complete, NodeStatus.failed}
+                    for workflow in workflows.values()
+                ):
+                    return (
+                        "Direct-turn recovery is blocked by an in-progress workflow; "
+                        "resume or reset the workflow explicitly before sending new input."
+                    )
+        except Exception as exc:  # noqa: BLE001 — do not run both recovery paths
+            return (
+                "Cannot inspect active workflow state before direct-turn recovery: "
+                f"{type(exc).__name__}"
+            )
+
+    conversation = _request_attribute(session, "session_conversation", None)
+    if conversation is None:
+        return None
+    from agenthicc.runners.workflow_recovery import (  # noqa: PLC0415
+        WorkflowRecoveryCoordinator,
+    )
+
+    config = _request_attribute(session, "cfg", None)
+    execution = _request_attribute(config, "execution", None)
+    profile = _request_attribute(execution, "profile", "")
+    registry = _request_attribute(session, "workflow_registry", None)
+    workspace_scope = _request_attribute(session, "workspace_scope", None)
+    workspace_root = _request_attribute(workspace_scope, "primary_root", "")
+    try:
+        records = WorkflowRecoveryCoordinator(
+            str(_request_attribute(session, "session_id", ""))
+        ).inspect(
+            workflow_registry=cast("WorkflowRegistry | None", registry),
+            conversation=cast("SessionConversation | None", conversation),
+            provider_profile=str(profile or ""),
+            workspace_root=str(workspace_root or ""),
+        )
+    except Exception as exc:  # noqa: BLE001 — preserve the pending input
+        return f"Cannot inspect workflow recovery records: {type(exc).__name__}"
+    if records:
+        run_ids = ", ".join(record.run_id for record in records[:4])
+        suffix = " …" if len(records) > 4 else ""
+        return (
+            "Direct-turn recovery is blocked because workflow recovery records "
+            f"need explicit handling ({run_ids}{suffix}); use /workflow resume or reset."
+        )
+    return None
+
+
+def _safe_provider_failure_message(
+    session: object,
+    exc: BaseException,
+    *,
+    request: WorkerRequest,
+    attempt: int,
+    diagnostic_context: Mapping[str, str | int] | None,
+) -> str | None:
+    """Project HTTP provider errors into bounded, payload-free status text."""
+    from agenthicc.runners.agent_turn import (  # noqa: PLC0415
+        _http_status_code,
+        _missing_opencode_session_diagnostic,
+        _provider_error_identifiers,
+        _safe_provider_identifier,
+    )
+
+    status = _http_status_code(exc)
+    if status is None:
+        return None
+    config = _request_attribute(session, "cfg", None)
+    execution = _request_attribute(config, "execution", None)
+    provider = _safe_provider_identifier(_request_attribute(execution, "provider", ""))
+    model = _safe_provider_identifier(_request_attribute(execution, "model", ""))
+    profile = _safe_provider_identifier(_request_attribute(execution, "profile", "")) or "default"
+    parts = [f"HTTP {status}", f"session={request.session_id}", f"attempt={attempt}"]
+    if provider:
+        parts.append(f"provider={provider}")
+    if model:
+        parts.append(f"model={model}")
+    parts.append(f"profile={profile}")
+    identifiers = _provider_error_identifiers(exc)
+    for key, label in (
+        ("provider_error_type", "type"),
+        ("provider_error_code", "code"),
+        ("provider_request_id", "request_id"),
+    ):
+        value = identifiers.get(key)
+        if value:
+            parts.append(f"{label}={value}")
+    if diagnostic_context is not None:
+        for key, label in (
+            ("phase", "phase"),
+            ("interrupted_turn_id", "interrupted_turn"),
+            ("input_message_id", "input"),
+        ):
+            context_value = diagnostic_context.get(key)
+            if (
+                isinstance(context_value, (str, int))
+                and not isinstance(context_value, bool)
+                and context_value
+            ):
+                safe_value = _safe_provider_identifier(context_value)
+                if safe_value:
+                    parts.append(f"{label}={safe_value}")
+    diagnostic = _missing_opencode_session_diagnostic(exc)
+    if diagnostic is not None:
+        return f"Provider session identity is missing: {diagnostic} ({'; '.join(parts)})"
+    return f"Provider request failed ({'; '.join(parts)})"
 
 
 def _dispatch_background_command(
@@ -1545,6 +1679,7 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
     input_inbox: object | None = None
     delivered_input_ids: set[str] = set()
     completed_command_ids: set[str] = set()
+    provider_diagnostic_context: dict[str, str | int] | None = None
     original_cwd = os.getcwd()
     try:
         os.chdir(request.cwd)
@@ -1586,7 +1721,9 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
         from agenthicc.background.input_inbox import BackgroundInputInbox  # noqa: PLC0415
         from agenthicc.runners.agent_turn_context import (  # noqa: PLC0415
             QueuedMessageSource,
+            bind_provider_diagnostic_context,
             bind_queued_message_source,
+            current_provider_diagnostic_context,
         )
 
         ctx = CLIContext(
@@ -1753,6 +1890,10 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
             )
             if item is None:
                 return None
+            diagnostic_context = current_provider_diagnostic_context()
+            if diagnostic_context is not None:
+                diagnostic_context["phase"] = "processing_input"
+                diagnostic_context["input_message_id"] = item.message_id
             if item.text.startswith(("/", "$")):
                 _record_input_delivery(item, starts_turn=False)
                 session_waiting_for_next_input = True
@@ -1910,6 +2051,10 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
                         completed_command_ids.add(item.message_id)
                         session_waiting_for_next_input = True
                     if skill_body is not None:
+                        diagnostic_context = current_provider_diagnostic_context()
+                        if diagnostic_context is not None:
+                            diagnostic_context["phase"] = "processing_input"
+                            diagnostic_context["input_message_id"] = item.message_id
                         await _run_direct_turn(
                             session,
                             dataclass_replace(request, intent=skill_body),
@@ -1920,6 +2065,10 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
                 # text is always a normal turn in this target session; do not
                 # infer workflow continuation or inspect/select checkpoints.
                 _record_input_delivery(item, starts_turn=True)
+                diagnostic_context = current_provider_diagnostic_context()
+                if diagnostic_context is not None:
+                    diagnostic_context["phase"] = "processing_input"
+                    diagnostic_context["input_message_id"] = item.message_id
                 await _run_direct_turn(
                     session,
                     dataclass_replace(request, intent=item.text),
@@ -1928,6 +2077,11 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
                 completed_command_ids.add(item.message_id)
 
         queued_source = QueuedMessageSource(claim=_claim_session_input)
+        provider_diagnostic_context = {
+            "session_id": request.session_id,
+            "background_attempt": claimed_attempt or 0,
+            "phase": "background_turn",
+        }
 
         async def _execute() -> _WorkerOutcome:
             current = store.get(request.session_id, include_deleted=True)
@@ -1948,6 +2102,55 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
                 for item in input_inbox.receipts(request.session_id)
                 if item.state == "accepted" and item.deferred
             )
+            pending_resume = _request_attribute(session, "pending_resume", None)
+            if pending_resume is not None:
+                conflict = _direct_resume_workflow_conflict(session)
+                if conflict:
+                    return _WorkerOutcome(
+                        status=SessionStatus.FAILED,
+                        error=conflict,
+                        activity="Direct-turn recovery needs workflow attention",
+                        exit_reason="workflow_recovery_conflict",
+                        failure_category="workflow_recovery_conflict",
+                        exit_code=1,
+                    )
+                provider_diagnostic_context["phase"] = "recovering_prior_turn"
+                provider_diagnostic_context["interrupted_turn_id"] = str(
+                    _request_attribute(pending_resume, "turn_id", "")
+                )
+                if deferred_inputs:
+                    # Correlate any provider failure during recovery to the
+                    # first accepted message without consuming or disclosing it.
+                    provider_diagnostic_context["input_message_id"] = deferred_inputs[0].message_id
+                from dataclasses import replace as dataclass_replace  # noqa: PLC0415
+
+                recovery_request = dataclass_replace(
+                    request,
+                    intent=str(_request_attribute(pending_resume, "user_message", "")),
+                )
+                await _run_direct_turn(
+                    session,
+                    recovery_request,
+                    resume_plan=cast("ResumePlan", pending_resume),
+                )
+                await session.processor.drain()
+                if deferred_inputs:
+                    # The outer post-turn drain delivers anything the resumed
+                    # runner did not consume at one of its safe boundaries.
+                    return _WorkerOutcome(
+                        status=SessionStatus.COMPLETED,
+                        error=None,
+                        activity="Interrupted turn recovered; queued input pending delivery",
+                        exit_reason="turn_recovered",
+                        exit_code=0,
+                    )
+                return _WorkerOutcome(
+                    status=SessionStatus.COMPLETED,
+                    error=None,
+                    activity="Interrupted turn recovered",
+                    exit_reason="turn_recovered",
+                    exit_code=0,
+                )
             if deferred_inputs:
                 # A user submitted against a stale/recoverable session. Forward
                 # accepted text as target-session turns before considering the
@@ -2060,7 +2263,10 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
                 exit_code=0,
             )
 
-        with bind_queued_message_source(queued_source):
+        with (
+            bind_queued_message_source(queued_source),
+            bind_provider_diagnostic_context(provider_diagnostic_context),
+        ):
             if request.wall_timeout_s > 0:
                 outcome = await asyncio.wait_for(_execute(), request.wall_timeout_s)
             else:
@@ -2107,9 +2313,20 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
         )
         raise
     except Exception as exc:  # noqa: BLE001
+        safe_provider_error = (
+            _safe_provider_failure_message(
+                session,
+                exc,
+                request=request,
+                attempt=claimed_attempt or 0,
+                diagnostic_context=provider_diagnostic_context,
+            )
+            if session is not None
+            else None
+        )
         outcome = _WorkerOutcome(
             status=SessionStatus.FAILED,
-            error=f"{type(exc).__name__}: {exc}",
+            error=safe_provider_error or f"{type(exc).__name__}: {exc}",
             activity="Worker failed",
             exit_reason="irrecoverable_error",
             failure_category="irrecoverable_error",

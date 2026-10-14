@@ -40,6 +40,7 @@ if TYPE_CHECKING:
     from agenthicc.tools.workspace_access import WorkspaceScope, WorkspaceAccessPolicy
     from agenthicc.runners.session_lease import SessionOwnerLease
     from agenthicc.runners.startup import StartupCoordinator
+    from agenthicc.runners.run_coordinator import ResumePlan
     from asyncio import Task
 
 
@@ -82,6 +83,7 @@ class SessionContext:
 
     # ── ui ────────────────────────────────────────────────────────────────────
     console: "Console"
+    llm_config_error: str | None = None
     config_path: str | None = None
 
     # PRD-172: compatibility alias points at the one session-scoped manager;
@@ -97,7 +99,7 @@ class SessionContext:
     # ── run resumption (PRD-129 Phase 3) ──────────────────────────────────────
     #: A plan to re-drive a turn the prior session left incomplete (crash
     #: mid-turn).  ``None`` on a clean start.
-    pending_resume: "object | None" = None
+    pending_resume: "ResumePlan | None" = None
 
     # ── extension lifecycle ──────────────────────────────────────────────────
     #: Canonical names loaded from normal slash-command plugin files.  Kept

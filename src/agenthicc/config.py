@@ -555,6 +555,53 @@ def _header_collision(headers: Mapping[str, object], header_name: str) -> str | 
     return next((name for name in headers if name.casefold() == lowered), None)
 
 
+def _is_official_opencode_go_endpoint(base_url: str) -> bool:
+    """Whether *base_url* targets OpenCode Go's official API path.
+
+    Match the exact vendor host and API path. Do not infer this requirement
+    from profile names or apply it to lookalike/custom gateway hosts.
+    """
+    if not base_url:
+        return False
+    try:
+        parsed = urlsplit(base_url)
+    except ValueError:
+        return False
+    path = parsed.path.rstrip("/").casefold()
+    return (
+        parsed.scheme.casefold() == "https"
+        and (parsed.hostname or "").casefold() == "opencode.ai"
+        and (path == "/zen/go" or path.startswith("/zen/go/"))
+    )
+
+
+def _effective_opencode_go_session_header(
+    *,
+    base_url: str,
+    session_header: str,
+    profile_name: str = "",
+) -> str:
+    """Bind official OpenCode Go to Agenthicc's stable conversation identity.
+
+    The official service requires ``x-opencode-session``. Agenthicc already
+    owns the stable conversation ID, so requiring users to repeat the header
+    name in configuration would make a valid session fail unnecessarily.
+    Custom endpoints retain their explicit opt-in behavior.
+    """
+    if not _is_official_opencode_go_endpoint(base_url):
+        return session_header
+    if not session_header or session_header.casefold() == "x-opencode-session":
+        return "x-opencode-session"
+    config_key = (
+        f"providers.{profile_name}.session_header" if profile_name else "execution.session_header"
+    )
+    raise ValueError(
+        "OpenCode Go requires x-opencode-session to carry the Agenthicc conversation ID; "
+        f"{config_key} is set to {session_header!r}. Remove that override or set it to "
+        '"x-opencode-session".'
+    )
+
+
 def _validate_base_url(value: str, *, path: str = "base_url") -> str:
     url = value.strip()
     if not url:
@@ -2683,6 +2730,11 @@ def build_llm_config(
         )
     )
     session_header = resolved.session_header if resolved else execution.session_header
+    session_header = _effective_opencode_go_session_header(
+        base_url=base_url or "",
+        session_header=session_header,
+        profile_name=resolved.name if resolved is not None else "",
+    )
     default_headers = _attach_session_header(
         default_headers,
         header_name=session_header,

@@ -146,6 +146,147 @@ def _http_status_code(exc: BaseException) -> int | None:
     return None
 
 
+def _exception_chain(exc: BaseException) -> tuple[BaseException, ...]:
+    """Return the short, identity-deduplicated provider exception chain."""
+    chain: list[BaseException] = []
+    pending: list[BaseException | None] = [exc]
+    seen: set[int] = set()
+    while pending and len(chain) < 8:
+        candidate = pending.pop(0)
+        if candidate is None or id(candidate) in seen:
+            continue
+        seen.add(id(candidate))
+        chain.append(candidate)
+        pending.extend(
+            (
+                candidate.__cause__,
+                candidate.__context__,
+            )
+        )
+    return tuple(chain)
+
+
+def _safe_provider_identifier(value: object) -> str | None:
+    """Bound provider metadata to a small non-secret identifier alphabet."""
+    if not isinstance(value, (str, int)) or isinstance(value, bool):
+        return None
+    text = re.sub(r"[^A-Za-z0-9_.:-]", "", str(value))[:128]
+    return text or None
+
+
+def _provider_attribute(value: object | None, name: str) -> object | None:
+    """Read optional SDK exception metadata through the typed attribute adapter."""
+    return _optional_attribute(value, name, None)
+
+
+def _provider_error_identifiers(exc: BaseException) -> dict[str, str]:
+    """Extract bounded type/code/request IDs without serializing response bodies."""
+    chain = _exception_chain(exc)
+    error_type: str | None = None
+    error_code: str | None = None
+    request_id: str | None = None
+    for candidate in chain:
+        if error_type is None:
+            for name in ("error_type", "type"):
+                error_type = _safe_provider_identifier(_provider_attribute(candidate, name))
+                if error_type:
+                    break
+        if error_code is None:
+            error_code = _safe_provider_identifier(_provider_attribute(candidate, "code"))
+        if request_id is None:
+            for name in ("request_id", "requestId", "x_request_id"):
+                request_id = _safe_provider_identifier(_provider_attribute(candidate, name))
+                if request_id:
+                    break
+        response = _provider_attribute(candidate, "response")
+        headers = _provider_attribute(response, "headers")
+        if request_id is None and isinstance(headers, Mapping):
+            request_id = _safe_provider_identifier(
+                headers.get("x-request-id") or headers.get("request-id")
+            )
+
+    raw = " ".join(f"{type(item).__name__} {item}" for item in chain)
+    if error_type is None:
+        types = re.findall(r"[\"'](?:error_type|type)[\"']\s*:\s*[\"']([^\"']+)", raw)
+        error_type = next(
+            (
+                identifier
+                for value in reversed(types)
+                if (identifier := _safe_provider_identifier(value))
+                and identifier.casefold() != "error"
+            ),
+            None,
+        )
+    if error_code is None:
+        match = re.search(r"[\"']code[\"']\s*:\s*[\"']([^\"']+)", raw)
+        if match:
+            error_code = _safe_provider_identifier(match.group(1))
+    if request_id is None:
+        match = re.search(
+            r"(?:x-request-id|request[_-]?id)[\"']?\s*[:=]\s*[\"']?([A-Za-z0-9_.:-]+)",
+            raw,
+            re.IGNORECASE,
+        )
+        if match:
+            request_id = _safe_provider_identifier(match.group(1))
+
+    result: dict[str, str] = {}
+    if error_type:
+        result["provider_error_type"] = error_type
+    if error_code:
+        result["provider_error_code"] = error_code
+    if request_id:
+        result["provider_request_id"] = request_id
+    return result
+
+
+def _provider_failure_metadata(
+    exc: BaseException,
+    ctx: AgentTurnContext,
+    *,
+    provider: str,
+    model: str,
+    turn_id: str,
+) -> dict[str, str | int]:
+    """Build a bounded error projection without retaining provider payloads.
+
+    Provider messages often embed request fragments, user content, or secrets.
+    Persist only identifiers and fixed execution-state fields; never exception
+    text, headers, prompts, or serialized request/response bodies.
+    """
+    metadata: dict[str, str | int] = {
+        "provider": _safe_provider_identifier(provider) or "unknown",
+        "model": _safe_provider_identifier(model) or "unknown",
+        "session_id": _safe_provider_identifier(ctx.conversation_id) or "unknown",
+        "turn_id": _safe_provider_identifier(turn_id or ctx.resume_turn_id or "") or "unknown",
+        "exception_type": _safe_provider_identifier(type(exc).__name__) or "unknown",
+        "phase": "agent_turn",
+    }
+    profile = _safe_provider_identifier(_provider_attribute(ctx.exec_cfg, "profile"))
+    metadata["profile"] = profile or "default"
+    status = _http_status_code(exc)
+    if status is not None:
+        metadata["http_status"] = status
+    metadata.update(_provider_error_identifiers(exc))
+
+    context = ctx.provider_diagnostic_context or {}
+    allowed_context_fields = {
+        "background_attempt",
+        "interrupted_turn_id",
+        "input_message_id",
+        "phase",
+    }
+    for key in allowed_context_fields:
+        value = context.get(key)
+        if isinstance(value, int) and not isinstance(value, bool):
+            metadata[key] = max(0, value)
+        elif isinstance(value, str):
+            safe_value = _safe_provider_identifier(value)
+            if safe_value:
+                metadata[key] = safe_value
+    return metadata
+
+
 def _network_retry_reason(exc: BaseException) -> str:
     """Return a short user-facing category for a transient provider error."""
     status = _http_status_code(exc)
@@ -186,15 +327,17 @@ def _network_retry_detail(exc: BaseException) -> str:
 
 
 def _missing_opencode_session_diagnostic(exc: BaseException) -> str | None:
-    """Return an actionable diagnostic for OpenCode Go's 400 response."""
+    """Return a bounded diagnostic when OpenCode Go rejects session identity."""
     status = _http_status_code(exc)
-    raw = str(exc).casefold()
-    if status != 400 or "x-opencode-session" not in raw or "missing" not in raw:
+    raw = " ".join(f"{type(item).__name__} {item}" for item in _exception_chain(exc)).casefold()
+    structured_type = "missingsessionid" in raw.replace("_", "").replace("-", "")
+    missing_header = "x-opencode-session" in raw and "missing" in raw
+    if status != 400 or not (structured_type or missing_header):
         return None
     return (
-        "The provider requires x-opencode-session. Configure "
-        '[execution].session_header = "x-opencode-session" or '
-        "providers.<profile>.session_header and restart the session."
+        "OpenCode Go reported a missing x-opencode-session even though Agenthicc binds that "
+        "header to the stable conversation ID. Check that the configured provider endpoint "
+        "and any proxy preserve the header."
     )
 
 
@@ -317,7 +460,11 @@ def _is_irrecoverable_provider_error(exc: BaseException) -> bool:
     invariants and compaction failures.
     """
     status = _http_status_code(exc)
-    return status is not None and 400 <= status < 500 and status != 429
+    if status is None or not 400 <= status < 500 or status == 429:
+        return False
+    # PRD-240: a missing required conversation header is deterministic. Retrying
+    # the identical request cannot fix configuration and only delays diagnosis.
+    return _missing_opencode_session_diagnostic(exc) is None
 
 
 def _is_context_overflow_error(exc: BaseException) -> bool:
@@ -2162,25 +2309,39 @@ class AgentTurnRunner:
                 # Emit one well-formatted error event with the exception class name.
                 # Do NOT call fail_turn/close_turn here — the finally block handles
                 # state cleanup idempotently, preventing the double-fail bug.
-                error_event_id = f"agent-turn-error:{self._intent_id}"
+                error_event_id: str | None = f"agent-turn-error:{self._intent_id}"
                 try:
                     setattr(exc, "_agenthicc_error_event_id", error_event_id)
                 except Exception:  # noqa: BLE001 - third-party exceptions may be slotted
                     error_event_id = None
                 missing_session_diagnostic = _missing_opencode_session_diagnostic(exc)
+                metadata = _provider_failure_metadata(
+                    exc,
+                    ctx,
+                    provider=self._provider_label(),
+                    model=self._model_id,
+                    turn_id=self._intent_id,
+                )
                 if missing_session_diagnostic is not None:
                     ctx.conv_store.append_event(
                         "error",
                         {
                             "message": "Provider session identity is missing",
                             "detail": missing_session_diagnostic,
+                            **metadata,
                         },
                         event_id=error_event_id,
                     )
                 else:
+                    status = metadata.get("http_status")
+                    message = (
+                        f"Provider request failed (HTTP {status})"
+                        if isinstance(status, int)
+                        else f"Agent turn failed ({metadata['exception_type']})"
+                    )
                     ctx.conv_store.append_event(
                         "error",
-                        {"message": f"{type(exc).__name__}: {exc}"},
+                        {"message": message, **metadata},
                         event_id=error_event_id,
                     )
             # Every exception that survives the provider-step retry policy must
@@ -2214,6 +2375,12 @@ class AgentTurnRunner:
                         _journal.turn_completed(self._intent_id)
                     elif turn_cancelled:
                         _journal.turn_aborted(self._intent_id, reason="cancelled")
+                    elif ctx.resume_turn_id is not None:
+                        # A failed re-drive must remain discoverable with its
+                        # original turn ID and durable tool ledger. Closing it
+                        # with turn_failed would make a later worker start a
+                        # fresh turn against the same partial conversation.
+                        _journal.turn_recovery_started(self._intent_id)
                     else:
                         fail = getattr(_journal, "turn_failed", None)
                         if callable(fail):
@@ -2459,6 +2626,7 @@ async def _run_agent_turn(
     usage_ledger: UsageLedger | None = None,
     browser_manager: object | None = None,
     workspace_access: "WorkspaceAccessPolicy | None" = None,
+    provider_diagnostic_context: dict[str, str | int] | None = None,
 ) -> None:
     """Thin shim — constructs AgentTurnContext and delegates to AgentTurnRunner.
 
@@ -2502,5 +2670,6 @@ async def _run_agent_turn(
         next_queued_message=next_queued_message,
         usage_ledger=usage_ledger,
         browser_manager=browser_manager,
+        provider_diagnostic_context=provider_diagnostic_context,
     )
     await AgentTurnRunner(ctx).run()

@@ -198,7 +198,9 @@ is bounded and older journals containing only append/reset and legacy turn
 markers remain readable. Workflow rehydration writes the non-terminal
 `turn_recovery_started` marker while it is being handed off; only a completed
 resume may write `turn_recovered`, so a crash during recovery cannot hide the
-open turn.
+open turn. A direct-turn re-drive that fails again also writes
+`turn_recovery_started` instead of terminal `turn_failed`, preserving the same
+turn ID and tool records for the next `RunCoordinator` plan.
 
 ### Subagent result records
 

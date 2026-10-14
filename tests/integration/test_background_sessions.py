@@ -15,7 +15,13 @@ from agenthicc.background import (
     QueueDispatchState,
     SessionStatus,
 )
-from agenthicc.background.worker import BackgroundApprovalService, WorkerRequest, run_worker
+from agenthicc.background.worker import (
+    BackgroundApprovalService,
+    WorkerRequest,
+    _direct_resume_workflow_conflict,
+    _run_direct_turn,
+    run_worker,
+)
 from agenthicc.background.settings import BackgroundSettings
 
 pytestmark = pytest.mark.integration
@@ -145,6 +151,58 @@ async def test_worker_uses_canonical_direct_turn_and_finalizes(monkeypatch, tmp_
 
 
 @pytest.mark.asyncio
+async def test_direct_turn_adapter_forwards_resume_identity_and_ledger(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    fake_session = _Session()
+    plan = SimpleNamespace(turn_id="turn-stable", ledger=object())
+    captured: dict[str, object] = {}
+
+    async def capture(*args: object, **kwargs: object) -> None:
+        captured.update(kwargs)
+
+    monkeypatch.setattr("agenthicc.runners.agent_turn._run_agent_turn", capture)
+    request = WorkerRequest(
+        session_id="worker-session",
+        workflow_name="",
+        intent="original interrupted request",
+        cwd=str(tmp_path),
+        config_path=None,
+        set_overrides=(),
+        dangerously_skip_permissions=False,
+    )
+
+    await _run_direct_turn(fake_session, request, resume_plan=plan)  # type: ignore[arg-type]
+
+    assert captured["resume_turn_id"] == "turn-stable"
+    assert captured["resume_ledger"] is plan.ledger
+
+
+@pytest.mark.asyncio
+async def test_direct_turn_surfaces_local_provider_configuration_failure(
+    tmp_path: Path,
+) -> None:
+    fake_session = _Session()
+    fake_session.agent_runner = None
+    fake_session.llm_config_error = (
+        "OpenCode Go requires x-opencode-session; set "
+        'providers.opencode_go.session_header = "x-opencode-session"'
+    )
+    request = WorkerRequest(
+        session_id="worker-session",
+        workflow_name="",
+        intent="input",
+        cwd=str(tmp_path),
+        config_path=None,
+        set_overrides=(),
+        dangerously_skip_permissions=False,
+    )
+
+    with pytest.raises(RuntimeError, match="providers.opencode_go.session_header"):
+        await _run_direct_turn(fake_session, request)
+
+
+@pytest.mark.asyncio
 async def test_worker_finalization_dispatches_next_durable_queue_item(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -257,6 +315,199 @@ async def test_recovered_worker_processes_deferred_input_without_replaying_origi
     receipt = inbox.receipts("worker-session")[0]
     assert receipt.state == "completed"
     assert store.get("worker-session").status is SessionStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_worker_resumes_pending_direct_turn_before_delivering_deferred_input(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from agenthicc.background.input_inbox import BackgroundInputInbox
+    from agenthicc.runners.agent_turn_context import (
+        current_provider_diagnostic_context,
+        current_queued_message_source,
+    )
+    from agenthicc.memory.journal import ConversationJournal
+    from agenthicc.runners.durable_ledger import DurableIdempotencyLedger
+    from agenthicc.runners.run_coordinator import RunCoordinator
+    from lauren_ai import ToolResult
+
+    store = BackgroundStore(tmp_path / "background")
+    _queued(tmp_path, store)
+    inbox = BackgroundInputInbox(store)
+    inbox.enqueue_deferred(
+        "worker-session",
+        "new input must follow the interrupted turn",
+        expected_attempt=0,
+        expected_lease_token="",
+        message_id="deferred-after-resume",
+    )
+    fake_session = _Session()
+    journal_path = tmp_path / "conversation-journal.jsonl"
+    journal = ConversationJournal(journal_path)
+    journal.turn_started("interrupted-turn-17", "finish the original request", 0)
+    journal.step_started(
+        "interrupted-turn-17",
+        "interrupted-turn-17:0",
+        "interrupted-turn-17:0:attempt-1",
+        step_index=0,
+    )
+    ledger = DurableIdempotencyLedger(journal, "interrupted-turn-17")
+    ledger.record(
+        "write_file",
+        {"path": "artifact.txt"},
+        ToolResult(tool_use_id="tool-already-ran", content="created", is_error=False),
+    )
+    journal.step_committed(
+        "interrupted-turn-17",
+        "interrupted-turn-17:0",
+        step_index=0,
+        message_count=2,
+    )
+    journal.close()
+    journal = ConversationJournal(journal_path)
+    incomplete = RunCoordinator.detect_incomplete_turn(journal)
+    assert incomplete is not None
+    resume_plan = RunCoordinator.build_resume_plan(journal, incomplete)
+    fake_session.pending_resume = resume_plan
+    order: list[tuple[str, str]] = []
+
+    async def build(*args: object, **kwargs: object) -> _Session:
+        return fake_session
+
+    async def direct(
+        _session: object,
+        request: WorkerRequest,
+        *,
+        resume_plan: object | None = None,
+    ) -> None:
+        assert resume_plan is fake_session.pending_resume
+        replayed = resume_plan.ledger.lookup("write_file", {"path": "artifact.txt"})
+        assert replayed is not None and replayed.tool_use_id == "tool-already-ran"
+        assert request.intent == "finish the original request"
+        order.append(("resume", request.intent))
+        diagnostics = current_provider_diagnostic_context()
+        assert diagnostics is not None
+        assert diagnostics["phase"] == "recovering_prior_turn"
+        assert diagnostics["interrupted_turn_id"] == "interrupted-turn-17"
+        assert diagnostics["input_message_id"] == "deferred-after-resume"
+        queued = current_queued_message_source()
+        assert queued is not None
+        text = queued.claim()
+        assert text == "new input must follow the interrupted turn"
+        assert diagnostics["phase"] == "processing_input"
+        order.append(("input", text))
+
+    async def close(*args: object, **kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr("agenthicc.runners.tui_session._build_session_context", build)
+    monkeypatch.setattr("agenthicc.background.worker._run_direct_turn", direct)
+    monkeypatch.setattr("agenthicc.runners.headless._close_headless_session", close)
+    request = WorkerRequest(
+        session_id="worker-session",
+        workflow_name="",
+        intent="old launch intent must not run",
+        cwd=str(tmp_path),
+        config_path=None,
+        set_overrides=(),
+        dangerously_skip_permissions=False,
+    )
+
+    exit_code = await run_worker(request, store)
+
+    assert exit_code == 0, store.get("worker-session").error
+    assert order == [
+        ("resume", "finish the original request"),
+        ("input", "new input must follow the interrupted turn"),
+    ]
+    receipt = inbox.receipts("worker-session")[0]
+    assert receipt.message_id == "deferred-after-resume"
+    assert receipt.state == "completed"
+    assert store.get("worker-session").status is SessionStatus.COMPLETED
+    journal.close()
+
+
+@pytest.mark.asyncio
+async def test_failed_worker_resume_keeps_deferred_input_pending(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from agenthicc.background.input_inbox import BackgroundInputInbox
+
+    store = BackgroundStore(tmp_path / "background")
+    _queued(tmp_path, store)
+    inbox = BackgroundInputInbox(store)
+    inbox.enqueue_deferred(
+        "worker-session",
+        "preserve this exact message",
+        expected_attempt=0,
+        expected_lease_token="",
+        message_id="preserved-input",
+    )
+    fake_session = _Session()
+    fake_session.pending_resume = SimpleNamespace(
+        turn_id="interrupted-turn-18",
+        user_message="recover prior work",
+        ledger=object(),
+    )
+    resume_calls: list[tuple[str, str]] = []
+
+    async def build(*args: object, **kwargs: object) -> _Session:
+        return fake_session
+
+    async def fail_resume(
+        _session: object,
+        request: WorkerRequest,
+        *,
+        resume_plan: object | None = None,
+    ) -> None:
+        assert resume_plan is fake_session.pending_resume
+        resume_calls.append((request.intent, getattr(resume_plan, "turn_id")))
+        raise RuntimeError("provider still unavailable")
+
+    async def close(*args: object, **kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr("agenthicc.runners.tui_session._build_session_context", build)
+    monkeypatch.setattr("agenthicc.background.worker._run_direct_turn", fail_resume)
+    monkeypatch.setattr("agenthicc.runners.headless._close_headless_session", close)
+    request = WorkerRequest(
+        session_id="worker-session",
+        workflow_name="",
+        intent="must not replace the pending recovery",
+        cwd=str(tmp_path),
+        config_path=None,
+        set_overrides=(),
+        dangerously_skip_permissions=False,
+    )
+
+    exit_code = await run_worker(request, store)
+
+    assert exit_code == 1
+    assert resume_calls == [("recover prior work", "interrupted-turn-18")]
+    receipt = inbox.receipts("worker-session")[0]
+    assert receipt.message_id == "preserved-input"
+    assert receipt.text == "preserve this exact message"
+    assert receipt.state == "accepted"
+    assert receipt.deferred is True
+
+
+def test_active_workflow_blocks_direct_turn_recovery() -> None:
+    from agenthicc.kernel.state import NodeStatus
+
+    active_state = SimpleNamespace(
+        workflows={
+            "workflow-run": SimpleNamespace(name="create_workflow", status=NodeStatus.running)
+        }
+    )
+    session = SimpleNamespace(
+        processor=SimpleNamespace(get_state=lambda: active_state),
+        session_conversation=None,
+    )
+
+    conflict = _direct_resume_workflow_conflict(session)
+
+    assert conflict is not None
+    assert "in-progress workflow" in conflict
 
 
 @pytest.mark.asyncio

@@ -276,6 +276,38 @@ class TestRunWithTransportRetry:
         assert calls[0] == 3
         assert recovery_events == [(1, 2), (2, 2)]
 
+    async def test_missing_opencode_session_error_bypasses_irrecoverable_retries(self) -> None:
+        from agenthicc.runners.retry import RetryConfig, run_with_transport_retry
+        from lauren_ai._exceptions import TransportError
+
+        calls = [0]
+        recovery_events: list[tuple[int, int]] = []
+
+        async def fn() -> None:
+            calls[0] += 1
+            raise TransportError(
+                "MissingSessionID: request is missing x-opencode-session",
+                status_code=400,
+            )
+
+        async def on_recovery(attempt: int, limit: int, _delay: float, _exc: BaseException):
+            recovery_events.append((attempt, limit))
+
+        with pytest.raises(TransportError):
+            await run_with_transport_retry(
+                fn,
+                config=RetryConfig(
+                    max_retries=10,
+                    irrecoverable_error_max_retries=5,
+                    base_delay_s=0.0,
+                    jitter=False,
+                ),
+                on_irrecoverable_retry=on_recovery,
+            )
+
+        assert calls == [1]
+        assert recovery_events == []
+
     async def test_irrecoverable_error_exhaustion_propagates_after_budget(self) -> None:
         from agenthicc.runners.retry import RetryConfig, run_with_transport_retry
         from lauren_ai._exceptions import TransportError
