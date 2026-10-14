@@ -1,5 +1,19 @@
 """Parallel coding orchestration with isolated Git worktrees (PRD-203)."""
 
+from .environment import (
+    EnvironmentCache,
+    EnvironmentCommand,
+    EnvironmentCommandResult,
+    EnvironmentError,
+    EnvironmentManifest,
+    EnvironmentManifestError,
+    EnvironmentRunReceipt,
+    EnvironmentTrustRequired,
+    EnvironmentTrustStore,
+    WorktreeEnvironment,
+    load_environment_manifest,
+    resolve_worktree_path,
+)
 from .coordinator import CoordinatorError, ParallelCoordinator, worker_prompt
 from .agent_tool import make_spawn_worker_agents_tool
 from .manager import (
@@ -25,6 +39,15 @@ from .store import ManifestNotFound, ManifestStore
 
 __all__ = [
     "CoordinatorError",
+    "EnvironmentCache",
+    "EnvironmentCommand",
+    "EnvironmentCommandResult",
+    "EnvironmentError",
+    "EnvironmentManifest",
+    "EnvironmentManifestError",
+    "EnvironmentRunReceipt",
+    "EnvironmentTrustRequired",
+    "EnvironmentTrustStore",
     "IntegrationResult",
     "ManifestNotFound",
     "ManifestStore",
@@ -37,6 +60,7 @@ __all__ = [
     "TaskStatus",
     "WorktreeConflictError",
     "WorktreeDirtyError",
+    "WorktreeEnvironment",
     "WorktreeError",
     "WorktreeInspection",
     "WorktreeManager",
@@ -45,4 +69,6 @@ __all__ = [
     "WorktreeStatus",
     "WorkerResult",
     "worker_prompt",
+    "load_environment_manifest",
+    "resolve_worktree_path",
 ]

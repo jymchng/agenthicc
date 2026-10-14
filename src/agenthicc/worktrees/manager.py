@@ -156,21 +156,70 @@ class WorktreeManager:
         parent_session_id: str,
         task_id: str,
         base_commit: str | None = None,
+        worktree_id: str | None = None,
+        branch_name: str | None = None,
     ) -> WorktreeRecord:
         """Create one branch/worktree from an immutable clean repository base."""
 
-        self.ensure_clean()
         base = self.validate_base(base_commit or self.head())
-        worktree_id = uuid.uuid4().hex[:16]
-        branch = (
+        stable_id = worktree_id or uuid.uuid4().hex[:16]
+        if not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", stable_id):
+            raise WorktreeError("worktree_id contains unsupported characters")
+        branch = branch_name or (
             f"agenthicc/{_slug(parent_session_id, 'session')}/"
-            f"{_slug(task_id, 'task')}-{worktree_id[:8]}"
+            f"{_slug(task_id, 'task')}-{stable_id[:8]}"
         )
-        path = (self.root / worktree_id).resolve()
+        try:
+            checked_branch = subprocess.run(
+                ["git", "check-ref-format", "--branch", branch],
+                cwd=str(self.repository),
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise WorktreeError("unable to validate Git branch name") from exc
+        if checked_branch.returncode != 0:
+            raise WorktreeError("branch_name is not a valid Git branch")
+        path = (self.root / stable_id).resolve()
         if path.exists():
-            raise WorktreeError(f"worktree path already exists: {path}")
+            # Deterministic callers (scheduled occurrences) may be recovering
+            # a crash after Git created the worktree but before its receipt was
+            # committed. Re-adopt only when both path and branch match exactly.
+            try:
+                actual_root = Path(
+                    subprocess.run(
+                        ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
+                        capture_output=True,
+                        text=True,
+                        timeout=15,
+                        check=True,
+                    ).stdout.strip()
+                ).resolve()
+                actual_branch = self.branch(cwd=path)
+            except (OSError, subprocess.SubprocessError, WorktreeError) as exc:
+                raise WorktreeError(f"existing worktree path is not recoverable: {path}") from exc
+            if actual_root != path or actual_branch != branch:
+                raise WorktreeError(
+                    f"existing worktree does not match its recovery identity: {path}"
+                )
+            existing_head = self.head(cwd=path)
+            existing_clean = self.is_clean(cwd=path)
+            return WorktreeRecord(
+                worktree_id=stable_id,
+                repository=str(self.repository),
+                path=str(path),
+                branch=branch,
+                base_commit=base,
+                owner_session_id=parent_session_id,
+                task_id=task_id,
+                status=WorktreeStatus.ACTIVE,
+                head_commit=existing_head,
+                dirty=not existing_clean,
+            )
         record = WorktreeRecord(
-            worktree_id=worktree_id,
+            worktree_id=stable_id,
             repository=str(self.repository),
             path=str(path),
             branch=branch,
@@ -179,7 +228,26 @@ class WorktreeManager:
             task_id=task_id,
         )
         try:
-            self._run(["worktree", "add", "-b", branch, str(path), base])
+            self.ensure_clean()
+            try:
+                branch_check = subprocess.run(
+                    ["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"],
+                    cwd=str(self.repository),
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                    check=False,
+                )
+            except (OSError, subprocess.SubprocessError) as exc:
+                raise WorktreeError("unable to inspect worker branch") from exc
+            branch_exists = branch_check.returncode == 0
+            if branch_exists:
+                branch_head = self._run(["rev-parse", f"refs/heads/{branch}^{{commit}}"])
+                if branch_head != base:
+                    raise WorktreeError("recovery branch exists at a different commit")
+                self._run(["worktree", "add", str(path), branch])
+            else:
+                self._run(["worktree", "add", "-b", branch, str(path), base])
             actual_head = self.head(cwd=path)
             return record.evolve(status=WorktreeStatus.ACTIVE, head_commit=actual_head, dirty=False)
         except Exception:

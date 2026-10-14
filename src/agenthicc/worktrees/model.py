@@ -99,6 +99,7 @@ class WorktreeRecord:
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
     last_error: str = ""
+    environment_receipts: tuple[str, ...] = ()
 
     def evolve(self, **changes: object) -> "WorktreeRecord":
         dirty_value = changes.get("dirty", self.dirty)
@@ -119,6 +120,9 @@ class WorktreeRecord:
             created_at=_timestamp(changes.get("created_at", self.created_at), self.created_at),
             updated_at=_timestamp(changes.get("updated_at", time.time()), time.time()),
             last_error=_str(changes.get("last_error", self.last_error), self.last_error),
+            environment_receipts=_tuple(
+                changes.get("environment_receipts", self.environment_receipts)
+            )[-64:],
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -137,6 +141,7 @@ class WorktreeRecord:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "last_error": self.last_error,
+            "environment_receipts": list(self.environment_receipts),
         }
 
     @classmethod
@@ -159,6 +164,7 @@ class WorktreeRecord:
             created_at=_timestamp(value.get("created_at")),
             updated_at=_timestamp(value.get("updated_at")),
             last_error=_str(value.get("last_error")),
+            environment_receipts=_tuple(value.get("environment_receipts"))[-64:],
         )
 
 

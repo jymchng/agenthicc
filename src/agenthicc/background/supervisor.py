@@ -697,12 +697,15 @@ class BackgroundSupervisor:
         priority: QueuePriority | str = QueuePriority.NORMAL,
         idempotency_key: str = "",
         requested_profile_name: str = "",
+        environment_receipts: tuple[str, ...] = (),
     ) -> BackgroundSession:
         """Durably accept a background request, then launch or queue it."""
 
-        cleaned_intent = intent.strip()
-        if not cleaned_intent:
+        if not intent.strip():
             raise ValueError("Background intent must not be empty")
+        # Preserve the original user payload exactly. Schedules and session
+        # forwarding rely on this boundary to avoid silently rewriting prompts.
+        cleaned_intent = intent
         sid = session_id or uuid.uuid4().hex
         project = str(Path(cwd or os.getcwd()).resolve())
         normalized_priority = parse_priority(priority)
@@ -805,6 +808,7 @@ class BackgroundSupervisor:
                 owner_id=owner_id,
                 requested_profile_name=profile_name,
                 dispatch_state=dispatch_state,
+                environment_receipts=environment_receipts,
             )
             if self.queue_enabled and not queue_full:
                 session = session.evolve(latest_activity="Queued · waiting for worker capacity")

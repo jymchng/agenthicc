@@ -34,6 +34,9 @@ The primary entry point is `agenthicc.__main__:main`.
 - `session_service/` provides client-neutral snapshots, typed commands,
   versioned durable events, replay, bounded subscriptions, and an explicit
   loopback HTTP/SSE adapter shared by TUI, headless, CLI, web, and IDE clients.
+- `schedules/` provides repository-scoped recurring workflows with durable
+  SQLite revisions/occurrences, a single-owner scheduler service, explicit
+  DST/coalescing rules, and isolated worktrees for mutating runs.
 - `agenthicc init` creates an empty `AGENTS.md`, `.agenthicc/`, and a fully
   commented project configuration template; `/init` remains the managed
   `AGENTS.md` guidance preview/write command.
@@ -83,6 +86,7 @@ The primary entry point is `agenthicc.__main__:main`.
 | `WorkflowRecoveryCoordinator` / `WorkflowRecoveryRecord` | `agenthicc.runners.workflow_recovery` | Fail-closed interrupted/error-paused discovery, validation, claims, and typed rehydration |
 | `PromptContract` / `build_workflow_prompt_contract` | `agenthicc.runners.prompt_contract` | Cache-stable system/tool prefix plus append-only dynamic workflow context; emits redacted cache diagnostics |
 | `WorkflowExecutionResult` | `agenthicc.runners.headless` | JSON-safe headless workflow outcome |
+| `Schedule` / `Occurrence` / `ScheduleManager` / `ScheduleScheduler` | `agenthicc.schedules` | Durable repository schedules, revisioned run receipts, recurrence, and service-owned dispatch |
 | `DEFAULT_SUBAGENT_TIMEOUT_S` / `SubagentTypeSpec` / `SubagentPool` | `agenthicc.subagents` | Typed concurrent workers with complete-output aggregation; `spawn_subagents(timeout_s=...)` defaults to one hour |
 | `SubagentExecutionPolicy` / `AgentMessageBroker` / `AgentMessageEnvelope` | `agenthicc.subagents` | Immutable effective-mode inheritance and bounded parent/child/peer communication with durable clarification state |
 | `execute_workflow` | `agenthicc.runners.headless` | Execute a registered workflow in a session |

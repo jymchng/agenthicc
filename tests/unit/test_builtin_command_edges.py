@@ -14,6 +14,7 @@ from agenthicc.commands.builtins import (
     _cmd_mcp,
     _cmd_ps,
     _cmd_replay,
+    _cmd_schedule,
     _cmd_skills,
     _cmd_stop,
     _cmd_tools,
@@ -225,6 +226,32 @@ def test_workflow_runs_uses_recovery_callbacks_and_overlay(tmp_path: Path) -> No
     overlay.handle_key(Key.ENTER, "")
     assert selected == ["paused-run"]
     assert closed[-1] is True
+
+
+def test_tui_schedule_creation_persists_the_selected_config_path(tmp_path: Path) -> None:
+    ctx = _ctx(tmp_path)
+    captured: dict[str, object] = {}
+    ctx.text = "/schedule create code_plan local Plan interval:1h UTC -- run tests"
+    ctx.workflow_registry = SimpleNamespace(
+        get=lambda name: object() if name == "code_plan" else None
+    )  # type: ignore[assignment]
+    ctx.config.providers = {"local": object()}  # type: ignore[assignment]
+    ctx.schedule_repository_root = str(tmp_path)
+    ctx.schedule_config_path = str(tmp_path / "agenthicc.toml")
+
+    class FakeScheduleManager:
+        def create(self, **kwargs: object) -> SimpleNamespace:
+            captured.update(kwargs)
+            return SimpleNamespace(
+                schedule_id="schedule-id",
+                next_run_at=1_700_000_000.0,
+                timezone="UTC",
+            )
+
+    ctx.schedule_manager = FakeScheduleManager()  # type: ignore[assignment]
+    assert _cmd_schedule(ctx)
+    assert captured["config_path"] == ctx.schedule_config_path
+    assert captured["prompt"] == "run tests"
 
 
 def test_usage_command_renders_unavailable_and_available_snapshots(tmp_path: Path) -> None:

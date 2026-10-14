@@ -1365,6 +1365,7 @@ async def _build_session_context_impl(
         cfg=cfg,
         session_id=session_id,
         model_label=model_label,
+        config_path=config_path,
         mcp_manager=mcp_manager,
         console=console,
         memory_router=_memory_router,
@@ -2174,6 +2175,15 @@ class TUISession:
         # boundary; agent/workflow turns iterate it at their own dependency
         # boundary below.
         command_name = text.strip().split(None, 1)[0] if text.strip() else ""
+        schedule_manager = None
+        schedule_repository_root = ""
+        if command_name in {"/schedule", "/schedules"}:
+            from agenthicc.schedules import ScheduleManager, ScheduleStore  # noqa: PLC0415
+
+            schedule_manager = ScheduleManager(ScheduleStore())
+            schedule_repository_root = str(
+                ctx.workspace_scope.primary_root if ctx.workspace_scope is not None else Path.cwd()
+            )
         if command_name == "/tools":
             project_tools.extend(getattr(ctx, "browser_tools", ()))
         if ctx.mcp_registry is not None:
@@ -2210,6 +2220,9 @@ class TUISession:
             list_workflow_runs=self._list_workflow_runs,
             resume_workflow=self._resume_workflow_from_overlay,
             loop_manager=vars(self).get("_loop_manager"),
+            schedule_manager=schedule_manager,
+            schedule_repository_root=schedule_repository_root,
+            schedule_config_path=getattr(ctx, "config_path", None) or "",
             background_inbox=getattr(
                 getattr(ctx, "session_service", None), "background_inbox", None
             ),

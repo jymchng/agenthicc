@@ -57,6 +57,37 @@ The session runner currently places the kernel log beside the session directory
 and the conversation stores inside the directory. Keep these names distinct in
 support tooling.
 
+## Repository schedules
+
+| Path | Owner | Contents | Recovery |
+|---|---|---|---|
+| `~/.agenthicc/schedules/schedules.sqlite3` | `schedules.store.ScheduleStore` | Versioned definitions, immutable revision snapshots, audit entries, scheduler cursor, unique occurrences, run receipts, worktree/base-commit identity, and bounded outcomes | SQLite transactions and unique occurrence keys; service restart reconciles durable pending states against background sessions |
+| `~/.agenthicc/schedules/scheduler.lock` | `schedules.scheduler.ScheduleServiceLease` | Exclusive ownership of the user's live schedule service | OS advisory lock; automatically released when the service exits or crashes |
+| `~/.agenthicc/schedules/dispatch.lock` | `schedules.scheduler.ScheduleScheduler` | Cross-process critical section around pending-occurrence dispatch | OS advisory lock; a later owner retries the same durable occurrence/session identity |
+
+The schedule database has owner-only directory/file permissions and uses WAL,
+foreign keys, busy timeout, and full synchronous commits. Definition changes
+create a new revision; occurrence receipts reference the definition revision
+that created them. Deletion is a tombstone: future ticks stop while run
+history, background sessions, and worktree artifacts remain available. See
+[`guides/scheduled-workflows.md`](../guides/scheduled-workflows.md) for the
+operator contract, recurrence semantics, and service lifecycle.
+
+### Worker environment trust, caches, and provenance
+
+| Path | Owner | Contents | Recovery |
+|---|---|---|---|
+| `~/.agenthicc/environment-trust.json` | `worktrees.environment.EnvironmentTrustStore` | User-local repository identity to exact manifest SHA-256 trust decisions; no environment values | A changed digest is untrusted until explicitly reviewed again |
+| `~/.agenthicc/worktree-caches/{isolated,shared}/` | `WorktreeEnvironment` | Explicitly declared package/build caches; isolated entries are partitioned by repository, worktree, and cache name | Isolated entries are safe to discard; shared mutable entries use advisory locks |
+| `~/.agenthicc/background/events.jsonl` worker records | `BackgroundStore` | Bounded successful setup and action receipts: manifest digest, command IDs, start/end, result, and exit code | Replayed with the worker record; command output and environment/secret values are not persisted |
+| `~/.agenthicc/orchestrations/<id>.json` | `ManifestStore` | Bounded worktree-level setup receipts, including failed setup attempts that prevented a worker session from starting | Preserved with the orchestration for retry/diagnosis; no command output or environment values |
+
+The project manifest itself is `.agenthicc/environment.toml` in the repository
+and each worker checkout. Its SHA-256 is checked against the exact Git
+repository trust decision before setup or an action runs. See
+[`guides/worktree-environments.md`](../guides/worktree-environments.md) for
+the schema, Bubblewrap prerequisite, and network/filesystem enforcement.
+
 ### Path provenance
 
 Each location above is built by a real source expression, not inferred from
@@ -75,6 +106,7 @@ grep -rn 'Path.home() / ".agenthicc"' src/agenthicc --include=*.py
 | `~/.agenthicc/sessions/index.json`, `index.lock` | `src/agenthicc/runners/session_lease.py:492-493` |
 | `~/.agenthicc/session-service/` | `src/agenthicc/session_service/store.py:56` |
 | `~/.agenthicc/background/` | `src/agenthicc/background/store.py:25-26` |
+| `~/.agenthicc/schedules/` and its scheduler/dispatch locks | `src/agenthicc/schedules/store.py` and `src/agenthicc/schedules/scheduler.py` |
 | `~/.agenthicc/background/notifications/outbox.sqlite3` | `src/agenthicc/background/notifications.py` |
 | `~/.agenthicc/background/operator-inbox.sqlite3` | `src/agenthicc/background/inbox.py` |
 | `~/.agenthicc/background/input-inbox/<session-id>.jsonl` and `.lock` | `background.input_inbox.BackgroundInputInbox` | Owner-attempt-fenced live input, deferred stale-session recovery input, and delivery receipts | Append-only, fsynced, deduplicated FIFO; deferred items are rebound to the next worker lease only after that worker claims the same session; submitted text is sensitive and separate from lifecycle logs |

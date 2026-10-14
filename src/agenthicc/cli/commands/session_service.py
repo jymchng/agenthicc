@@ -223,9 +223,10 @@ async def session_serve(
         ),
     )
     root = Path(settings.store_path).expanduser() if settings.store_path else None
-    inbox = BackgroundInteractionInbox(
-        BackgroundStore(root, projection_batch_size=settings.manager.projection_batch_size)
+    background_store = BackgroundStore(
+        root, projection_batch_size=settings.manager.projection_batch_size
     )
+    inbox = BackgroundInteractionInbox(background_store)
     service = SessionService(background_inbox=inbox)
     server = LocalSessionServer(
         service,
@@ -234,9 +235,58 @@ async def session_serve(
         auth_token=auth_token or None,
     )
     url = await server.start()
-    print(json_module.dumps({"status": "ready", "url": url}), flush=True)
+    scheduler_task: asyncio.Task[None] | None = None
+    scheduler_stop = asyncio.Event()
+    scheduler_enabled = False
+    if settings.enabled:
+        from agenthicc.cli.commands.background import _store_and_supervisor  # noqa: PLC0415
+        from agenthicc.schedules import (  # noqa: PLC0415
+            ScheduleScheduler,
+            ScheduleStore,
+            background_lookup,
+            build_background_dispatcher,
+        )
+
+        _, supervisor = _store_and_supervisor(ctx, settings=settings)
+        schedule_store = ScheduleStore()
+        scheduler = ScheduleScheduler(
+            schedule_store,
+            build_background_dispatcher(
+                store=schedule_store,
+                supervisor=supervisor,
+                background_store=background_store,
+            ),
+            background_lookup=background_lookup(background_store),
+        )
+        scheduler_task = asyncio.create_task(
+            scheduler.run(stop=scheduler_stop), name="agenthicc-repository-scheduler"
+        )
+        # ScheduleScheduler acquires its non-blocking singleton synchronously
+        # before its first await. Surface owner conflicts before reporting ready.
+        await asyncio.sleep(0)
+        if scheduler_task.done():
+            exception = scheduler_task.exception()
+            await server.stop()
+            await service.close()
+            if exception is not None:
+                raise RuntimeError(f"Unable to start schedule service: {exception}") from exception
+            raise RuntimeError("Schedule service stopped during startup")
+        scheduler_enabled = True
+    print(
+        json_module.dumps(
+            {
+                "status": "ready",
+                "url": url,
+                "schedule_service": "running" if scheduler_enabled else "disabled",
+            }
+        ),
+        flush=True,
+    )
     try:
         await asyncio.Event().wait()
     finally:
+        if scheduler_task is not None:
+            scheduler_stop.set()
+            await scheduler_task
         await server.stop()
         await service.close()

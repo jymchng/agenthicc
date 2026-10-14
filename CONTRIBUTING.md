@@ -30,6 +30,10 @@ uv run pytest tests/ -q
 uv run nox -s llms_check
 ```
 
+Linux development and CI environments need the `bubblewrap` (`bwrap`) OS
+package for worktree-environment execution tests. Agenthicc fails closed when
+it is unavailable rather than running project commands without isolation.
+
 The Nox sessions are the CI definitions. `uv run nox --list` prints them:
 
 | Nox session | Runs |
@@ -67,7 +71,7 @@ separately.
 |---|---|
 | `tests/unit/` | Pure reducers, parsers, registries, configuration, rendering, security |
 | `tests/integration/` | Real event processor, memory/database, plugin/tool/workflow boundaries |
-| `tests/e2e/` | Full session, cassettes, PTY and cross-component behaviour |
+| `tests/e2e/` | Full session, cassettes, PTY and cross-component behaviour, including CLI schedule lifecycle and scheduler process recovery |
 | `tests/performance/` | The reconstruct-site performance case |
 | `tests/fixtures/` | Shared non-test data |
 | `tests/conftest.py`, `tests/conftest_cassette.py` | Shared state, processor, and cassette fixtures |

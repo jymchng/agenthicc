@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from agenthicc.background.terminals import TerminalManager
     from agenthicc.tools.mcp_manager import McpSessionManager
     from agenthicc.runners.loop_scheduler import LoopManager
+    from agenthicc.schedules.manager import ScheduleManager
 
 __all__ = [
     "Command",
@@ -115,6 +116,9 @@ class CommandContext:
     list_workflow_runs: "Callable[[], list[WorkflowRecoveryRecord]] | None" = None
     resume_workflow: "Callable[[str], bool] | None" = None
     loop_manager: "LoopManager | None" = None
+    schedule_manager: "ScheduleManager | None" = None
+    schedule_repository_root: str = ""
+    schedule_config_path: str = ""
     background_inbox: object | None = None
 
 

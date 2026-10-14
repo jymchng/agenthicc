@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import uuid
 from dataclasses import replace
 from pathlib import Path
@@ -22,6 +23,11 @@ from .model import (
     WorkerResult,
 )
 from .store import ManifestStore
+from .environment import (
+    EnvironmentRunReceipt,
+    EnvironmentTrustStore,
+    WorktreeEnvironment,
+)
 
 
 class CoordinatorError(RuntimeError):
@@ -50,6 +56,7 @@ class WorkerLauncher(Protocol):
         branch: str = "",
         base_commit: str = "",
         run_id: str = "",
+        environment_receipts: tuple[str, ...] = (),
     ) -> BackgroundSession: ...
 
 
@@ -88,6 +95,7 @@ class ParallelCoordinator:
         # mode when it constructs this coordinator.
         worker_workflow_name: str = "code_plan",
         worker_dangerously_skip_permissions: bool = False,
+        environment_trust_store: EnvironmentTrustStore | None = None,
     ) -> None:
         self.manager = manager or WorktreeManager(repository)
         self.store = store or ManifestStore()
@@ -99,6 +107,7 @@ class ParallelCoordinator:
         self.max_parallel_tasks = max_parallel_tasks
         self.worker_workflow_name = worker_workflow_name
         self.worker_dangerously_skip_permissions = worker_dangerously_skip_permissions
+        self.environment_trust_store = environment_trust_store or EnvironmentTrustStore()
 
     def create(self, *, orchestration_id: str | None = None) -> ParallelManifest:
         """Create a manifest from a clean coordinator worktree."""
@@ -163,7 +172,14 @@ class ParallelCoordinator:
             if task.status == TaskStatus.PENDING and set(task.dependencies).issubset(completed)
         ]
 
-    def dispatch(self, orchestration_id: str, task_id: str) -> ParallelTask:
+    def dispatch(
+        self,
+        orchestration_id: str,
+        task_id: str,
+        *,
+        environment_approved: bool = False,
+        cancel_event: threading.Event | None = None,
+    ) -> ParallelTask:
         manifest = self.manifest(orchestration_id)
         task = manifest.task(task_id)
         if task.status != TaskStatus.PENDING:
@@ -172,11 +188,40 @@ class ParallelCoordinator:
             raise CoordinatorError(f"task dependencies are not complete: {task_id}")
         if manifest.base_commit != self.manager.head():
             raise CoordinatorError("coordinator HEAD changed after the orchestration was created")
-        record = self.manager.create(
-            parent_session_id=self.parent_session_id,
-            task_id=task.task_id,
-            base_commit=manifest.base_commit,
+        # Fail before allocating a branch/worktree if project setup needs
+        # approval. The exact command/workspace/network/timeout preview is
+        # included in the actionable trust error.
+        project_environment = WorktreeEnvironment(
+            self.manager.repository, "preflight", trust_store=self.environment_trust_store
         )
+        project_manifest = project_environment.load()
+        planned_worktree_id = (
+            task.worktree_id
+            or uuid.uuid5(uuid.NAMESPACE_URL, f"agenthicc:{orchestration_id}:{task_id}").hex[:16]
+        )
+        planned_worktree_path = (
+            Path(manifest.worktree(task.worktree_id).path)
+            if task.worktree_id
+            else self.manager.root / planned_worktree_id
+        ).resolve()
+        if project_manifest is not None and project_manifest.setup:
+            project_environment.require_trust_or_approval(
+                project_manifest,
+                approved=environment_approved,
+                workspace_root=planned_worktree_path,
+            )
+        record = (
+            manifest.worktree(task.worktree_id)
+            if task.worktree_id
+            else self.manager.create(
+                parent_session_id=self.parent_session_id,
+                task_id=task.task_id,
+                base_commit=manifest.base_commit,
+                worktree_id=planned_worktree_id,
+            )
+        )
+        if not Path(record.path).is_dir():
+            raise CoordinatorError(f"worker worktree is missing: {record.path}")
         worker_session_id = uuid.uuid4().hex
         task = task.evolve(
             status=TaskStatus.DISPATCHING,
@@ -189,6 +234,99 @@ class ParallelCoordinator:
             worktrees=[record, *manifest.worktrees],
         )
         self.store.save(manifest)
+        environment_receipt: EnvironmentRunReceipt | None = None
+        try:
+            worker_environment = WorktreeEnvironment(
+                record.path,
+                record.worktree_id,
+                trust_store=self.environment_trust_store,
+            )
+            worker_manifest = worker_environment.load()
+            if (project_manifest is None) != (worker_manifest is None) or (
+                project_manifest is not None
+                and worker_manifest is not None
+                and project_manifest.digest != worker_manifest.digest
+            ):
+                raise CoordinatorError(
+                    "worker worktree environment manifest differs from the reviewed repository "
+                    "manifest; commit the manifest and retry dispatch"
+                )
+            environment_receipt = worker_environment.run_setup(
+                approved=environment_approved,
+                cancel_event=cancel_event,
+                expected_manifest_digest=(
+                    project_manifest.digest if project_manifest is not None else ""
+                ),
+            )
+        except Exception as exc:  # setup failure is durable and leaves the worktree intact
+            error = f"{type(exc).__name__}: {exc}"
+            retryable_task = task.evolve(
+                status=TaskStatus.PENDING,
+                worker_session_id="",
+                error=error,
+            )
+            self.store.save(
+                manifest.evolve(
+                    tasks=[
+                        retryable_task if item.task_id == task_id else item
+                        for item in manifest.tasks
+                    ],
+                    worktrees=[
+                        record.evolve(last_error=error)
+                        if item.worktree_id == record.worktree_id
+                        else item
+                        for item in manifest.worktrees
+                    ],
+                )
+            )
+            raise CoordinatorError(error) from exc
+        if environment_receipt is not None:
+            record = record.evolve(
+                environment_receipts=(
+                    *record.environment_receipts,
+                    environment_receipt.to_json(),
+                )[-64:]
+            )
+            manifest = manifest.evolve(
+                worktrees=[
+                    record if item.worktree_id == record.worktree_id else item
+                    for item in manifest.worktrees
+                ]
+            )
+            self.store.save(manifest)
+        receipts = (environment_receipt.to_json(),) if environment_receipt is not None else ()
+        if environment_receipt is not None and environment_receipt.result != "succeeded":
+            command_detail = next(
+                (
+                    item.error or item.stderr.strip()
+                    for item in environment_receipt.commands
+                    if item.error or item.stderr.strip()
+                ),
+                "",
+            )
+            error = f"environment setup did not complete: {environment_receipt.result}"
+            if command_detail:
+                error += f" · {command_detail[:500]}"
+            retryable_task = task.evolve(
+                status=TaskStatus.PENDING,
+                worker_session_id="",
+                error=error,
+            )
+            self.store.save(
+                manifest.evolve(
+                    tasks=[
+                        retryable_task if item.task_id == task_id else item
+                        for item in manifest.tasks
+                    ],
+                    worktrees=[
+                        record.evolve(last_error=error)
+                        if item.worktree_id == record.worktree_id
+                        else item
+                        for item in manifest.worktrees
+                    ],
+                )
+            )
+            raise CoordinatorError(error)
         queued_dispatch = False
         if self.supervisor is not None:
             try:
@@ -210,6 +348,7 @@ class ParallelCoordinator:
                     branch=record.branch,
                     base_commit=record.base_commit,
                     run_id=self.run_id,
+                    environment_receipts=receipts,
                 )
             except Exception as exc:
                 error = f"{type(exc).__name__}: {exc}"
@@ -509,7 +648,27 @@ class ParallelCoordinator:
         ready = self.ready_tasks(orchestration_id)[: self.max_parallel_tasks]
         results: list[ParallelTask] = []
         for task in ready:
-            results.append(await asyncio.to_thread(self.dispatch, orchestration_id, task.task_id))
+            cancel_event = threading.Event()
+            dispatch_task = asyncio.create_task(
+                asyncio.to_thread(
+                    self.dispatch,
+                    orchestration_id,
+                    task.task_id,
+                    cancel_event=cancel_event,
+                )
+            )
+            try:
+                results.append(await asyncio.shield(dispatch_task))
+            except asyncio.CancelledError:
+                # Cancelling asyncio.to_thread alone cannot stop its worker
+                # thread. Signal the command runner, then wait for its process
+                # group cleanup before propagating cancellation.
+                cancel_event.set()
+                try:
+                    await asyncio.shield(dispatch_task)
+                except Exception:  # noqa: BLE001 - preserve original cancellation
+                    pass
+                raise
         return results
 
 

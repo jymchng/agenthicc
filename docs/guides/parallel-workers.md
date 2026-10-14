@@ -25,6 +25,11 @@ must explicitly pass `dangerously_skip_permissions=true` when it has obtained
 the appropriate approval for autonomous worker tool execution; the default is
 deliberately safe.
 
+Repositories may also define `.agenthicc/environment.toml` for trusted worker
+setup and named actions. See [worktree environments and actions](worktree-environments.md)
+for the schema, digest trust, per-run approval, cache policy, and security
+limits.
+
 ## Start and inspect
 
 Select the workflow in the TUI or run it headlessly:

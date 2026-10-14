@@ -29,6 +29,7 @@ improvement backlog is [`PRD-138`](prds/prd-138-repository-improvement-roadmap.m
 | Input and triggers | `src/agenthicc/tui/input/`, `src/agenthicc/tui/trigger.py`, `src/agenthicc/tui/triggers/` |
 | Terminal portability | `src/agenthicc/tui/terminal/`, `cbreak_reader.py` |
 | Workflow engine | `src/agenthicc/workflows/` |
+| Repository schedules | `src/agenthicc/schedules/` (SQLite definitions/occurrences; service lifecycle in `cli/commands/session_service.py`) |
 | Agent registry | `src/agenthicc/agents/` |
 | Subagent policy and communication | `src/agenthicc/subagents/policy.py`, `communication.py`, `pool.py` |
 | Tools and integrations | `src/agenthicc/tools/`, `agent_tools.py` |
@@ -61,6 +62,11 @@ uv run pytest tests/ -q
 uv run agenthicc
 uv run agenthicc --headless
 ```
+
+Linux development and CI environments need the `bubblewrap` (`bwrap`) OS
+package for worktree-environment command execution and its isolation tests.
+These commands fail closed when Bubblewrap is unavailable rather than falling
+back to an unrestricted shell.
 
 `noxfile.py` is the CI session definition. Every session installs only the
 declared `dev` extra: TUI and API modules ship in the base package with no
@@ -127,6 +133,19 @@ Three details matter here:
    resume.
 5. Update `docs/guides/workflows.md` and the workflow findings in
    `docs/reference/workflow-review.md`.
+
+### Changing repository schedule behaviour
+
+1. Keep schedule definitions/revisions/occurrences in `schedules.store`; the
+   runner is a projection/dispatcher, not a second persistence authority.
+2. Preserve unique occurrence keys, deterministic background-session IDs,
+   service ownership, and the cross-process dispatch lock.
+3. Validate workflow/profile/mode changes and pause revised schedules until
+   their exact next-run preview has been explicitly confirmed.
+4. Test recurrence/DST with a fake clock, crash/restart reconciliation, CLI
+   lifecycle in subprocesses, isolated mutating worktrees, and TUI controls.
+5. Update `docs/guides/scheduled-workflows.md`, the CLI/storage references, and
+   PRD status when behavior or persistence changes.
 
 ### Adding a tool or integration
 

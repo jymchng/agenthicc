@@ -65,6 +65,11 @@ uv run agenthicc config show
 uv run agenthicc sessions list
 ```
 
+Linux development and CI environments need the `bubblewrap` (`bwrap`) OS
+package for worktree-environment command execution and its isolation tests.
+These commands fail closed when Bubblewrap is unavailable rather than falling
+back to an unrestricted shell.
+
 `noxfile.py` defines the CI sessions and embeds the `llms-full.txt` symbol
 check. Every session installs only the declared `dev` extra: TUI and API
 modules are base-package code with no separate extras, and the documentation
@@ -93,6 +98,7 @@ user-visible records, not current API documentation.
 |---|---|---|
 | Package entry point | `src/agenthicc/__main__.py`, `src/agenthicc/cli/` | CLI parsing, command discovery, dispatch |
 | Kernel state | `kernel/state.py` | Frozen domain dataclasses and copy-on-write helpers |
+| Repository schedules | `schedules/` | Durable user-local schedule revisions, recurrence, receipts, and single-owner scheduler dispatch |
 | Kernel events | `kernel/events.py` | Event/effect serialization and event contract |
 | Kernel reduction | `kernel/reducer.py` | Pure handlers and `_HANDLERS` registry |
 | Kernel runtime | `kernel/processor.py` | Queue, run loop, persistence, subscribers, effects |
@@ -131,6 +137,16 @@ user-visible records, not current API documentation.
    semantic index dependencies when the phase needs them.
 5. Reconcile declarative phase metadata with runtime behaviour; an inert
    configuration field is a bug even if the happy path works.
+
+### Changing scheduled workflows
+
+Schedule mutation belongs in `schedules/manager.py` and durable state belongs
+in `schedules/store.py`. Preserve the explicit service lease, due-cursor CAS,
+unique occurrence key, revision snapshot, deterministic session identity, and
+cross-process dispatch lock. An edited schedule must stay paused until its new
+next-run timestamp is reviewed and confirmed. Validate changes against the
+registered workflow, saved provider profile, and Safe/Plan/Yolo ceiling. See
+`docs/guides/scheduled-workflows.md` for DST, downtime, and operator semantics.
 
 ### Adding a tool
 

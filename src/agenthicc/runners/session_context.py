@@ -82,6 +82,7 @@ class SessionContext:
 
     # ── ui ────────────────────────────────────────────────────────────────────
     console: "Console"
+    config_path: str | None = None
 
     # PRD-172: compatibility alias points at the one session-scoped manager;
     # no workflow or turn is allowed to create its own MCP registry.

@@ -433,6 +433,9 @@ class BackgroundSession:
     # of the public dataclass and legacy event records.
     approval_item_id: str = ""
     input_item_id: str = ""
+    # PRD-229: bounded JSON receipts contain command IDs, manifest digest,
+    # timestamps, exit codes, and result states only (never command/env values).
+    environment_receipts: tuple[str, ...] = ()
 
     @classmethod
     def create(
@@ -459,6 +462,7 @@ class BackgroundSession:
         owner_id: str = "",
         requested_profile_name: str = "",
         dispatch_state: QueueDispatchState | str = QueueDispatchState.LEGACY,
+        environment_receipts: tuple[str, ...] = (),
     ) -> "BackgroundSession":
         timestamp = time.time() if now is None else now
         return cls(
@@ -489,6 +493,7 @@ class BackgroundSession:
             owner_id=owner_id[:256],
             requested_profile_name=requested_profile_name[:128],
             dispatch_state=_queue_dispatch_state(dispatch_state),
+            environment_receipts=tuple(environment_receipts[-64:]),
         )
 
     def evolve(self, **changes: object) -> "BackgroundSession":
@@ -667,6 +672,9 @@ class BackgroundSession:
             dispatch_token=_bounded_str("dispatch_token", self.dispatch_token, 128),
             dispatch_claimed_at=_clearable_float("dispatch_claimed_at", self.dispatch_claimed_at),
             priority_history=priority_history,
+            environment_receipts=_string_tuple(
+                changes.get("environment_receipts", self.environment_receipts)
+            )[-64:],
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -699,6 +707,7 @@ class BackgroundSession:
             "input_request": self.input_request,
             "input_value": self.input_value,
             "input_item_id": self.input_item_id,
+            "environment_receipts": list(self.environment_receipts),
             "worker_pid": self.worker_pid,
             "detached_goal": self.detached_goal,
             "worker_started_at": self.worker_started_at,
@@ -905,4 +914,5 @@ class BackgroundSession:
             dispatch_token=raw_dispatch_token[:128] if isinstance(raw_dispatch_token, str) else "",
             dispatch_claimed_at=_float_or_none(value.get("dispatch_claimed_at")),
             priority_history=priority_history,
+            environment_receipts=_string_tuple(value.get("environment_receipts"))[-64:],
         )

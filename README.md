@@ -792,6 +792,7 @@ Nox contains the CI session definitions (`noxfile.py`), including the embedded `
 - [TUI](./docs/guides/tui.md)
 - [Background sessions](./docs/guides/background-sessions.md)
 - [Workflows](./docs/guides/workflows.md)
+- [Repository-scoped scheduled workflows](./docs/guides/scheduled-workflows.md)
 - [Parallel coding workers](./docs/guides/parallel-workers.md)
 - [Custom workflows and TOML configuration](./docs/guides/custom-workflows-and-config.md)
 - [User-defined commands](./docs/guides/commands.md)

@@ -134,6 +134,138 @@ def _cmd_loops(ctx: CommandContext) -> bool:
     return True
 
 
+def _cmd_schedules(ctx: CommandContext) -> bool:
+    """Open the repository schedule manager."""
+
+    if ctx.args.strip():
+        ctx.console.print("Usage: /schedules", markup=False)
+        return True
+    manager = ctx.schedule_manager
+    if manager is None:
+        ctx.console.print("Repository schedule management is unavailable.", markup=False)
+        return True
+    if ctx.set_pending_menu is not None:
+        from agenthicc.tui.workspace.overlays.schedules import (  # noqa: PLC0415
+            ScheduleJobsOverlay,
+        )
+
+        ctx.set_pending_menu(
+            ScheduleJobsOverlay(
+                manager.store,
+                manager,
+                ctx.schedule_repository_root or ".",
+                ctx.close_overlay if ctx.close_overlay is not None else (lambda: None),
+                ctx.set_input_text if ctx.set_input_text is not None else (lambda _text: None),
+            )
+        )
+        return True
+    records = manager.store.list(repository_root=ctx.schedule_repository_root or None)
+    if not records:
+        ctx.console.print("No repository schedules.", markup=False)
+    else:
+        for record in records:
+            next_run = record.next_run_at
+            ctx.console.print(
+                f"{record.schedule_id[:14]}  {'enabled' if record.enabled else 'paused'}  "
+                f"{record.workflow_name}  next={next_run or '—'}",
+                markup=False,
+            )
+    return True
+
+
+def _cmd_schedule(ctx: CommandContext) -> bool:
+    """Create or control one repository-scoped schedule."""
+
+    import shlex as _shlex  # noqa: PLC0415
+
+    from agenthicc.schedules import (  # noqa: PLC0415
+        CoalescePolicy,
+        format_timestamp,
+        parse_recurrence,
+    )
+    from agenthicc.tui.runtime.mode_manager import canonical_mode_name  # noqa: PLC0415
+
+    manager = ctx.schedule_manager
+    if manager is None:
+        ctx.console.print("Repository schedule management is unavailable.", markup=False)
+        return True
+    _, separator, raw_args = ctx.text.partition(" ")
+    if not separator:
+        raw_args = ""
+    action, _, tail = raw_args.strip().partition(" ")
+    action = action.casefold()
+    try:
+        if action == "create":
+            left, separator, prompt = tail.partition(" -- ")
+            if not separator or not prompt.strip():
+                raise ValueError(
+                    "usage: /schedule create WORKFLOW PROFILE MODE RECURRENCE TIMEZONE -- PROMPT"
+                )
+            tokens = _shlex.split(left)
+            if len(tokens) != 5:
+                raise ValueError(
+                    "usage: /schedule create WORKFLOW PROFILE MODE RECURRENCE TIMEZONE -- PROMPT"
+                )
+            workflow_name, profile_name, raw_mode, recurrence, timezone = tokens
+            if ctx.workflow_registry is None or ctx.workflow_registry.get(workflow_name) is None:
+                raise ValueError(f"workflow {workflow_name!r} is not registered")
+            if profile_name not in ctx.config.providers:
+                raise ValueError(f"provider profile {profile_name!r} is not configured")
+            mode = canonical_mode_name(raw_mode)
+            if mode not in {"Safe", "Plan", "Yolo"}:
+                raise ValueError("permission ceiling must be Safe, Plan, or Yolo")
+            kind, spec = parse_recurrence(recurrence)
+            schedule = manager.create(
+                repository_root=ctx.schedule_repository_root or ".",
+                workflow_name=workflow_name,
+                prompt=prompt,
+                profile_name=profile_name,
+                permission_ceiling=mode,
+                recurrence_kind=kind,
+                recurrence_spec=spec,
+                timezone=timezone,
+                coalesce_policy=CoalescePolicy.SKIP,
+                config_path=ctx.schedule_config_path,
+            )
+            ctx.console.print(
+                f"Created disabled schedule {schedule.schedule_id}. Next run preview: "
+                f"{format_timestamp(schedule.next_run_at, schedule.timezone)} [{schedule.timezone}].",
+                markup=False,
+            )
+            return True
+
+        tokens = _shlex.split(tail)
+        if action == "run-now" and len(tokens) == 1:
+            occurrence = manager.run_now(tokens[0], actor="tui")
+            ctx.console.print(
+                f"Run accepted · occurrence {occurrence.occurrence_id} · session {occurrence.session_id}.",
+                markup=False,
+            )
+        elif action == "pause" and len(tokens) == 1:
+            schedule = manager.pause(tokens[0], actor="tui")
+            ctx.console.print(f"Schedule paused at revision {schedule.revision}.", markup=False)
+        elif action == "resume" and len(tokens) == 2:
+            schedule = manager.resume(tokens[0], confirm_next_run=tokens[1], actor="tui")
+            ctx.console.print(
+                f"Schedule resumed; next run {format_timestamp(schedule.next_run_at, schedule.timezone)}.",
+                markup=False,
+            )
+        elif action == "delete" and len(tokens) == 2 and tokens[1] == "--confirm":
+            schedule = manager.delete(tokens[0], actor="tui")
+            ctx.console.print(
+                f"Schedule deleted at revision {schedule.revision}; prior runs are preserved.",
+                markup=False,
+            )
+        else:
+            raise ValueError(
+                "usage: /schedule create ... | run-now ID | pause ID | "
+                "resume ID NEXT-RUN | delete ID --confirm"
+            )
+    except (OSError, RuntimeError, ValueError) as exc:
+        ctx.console.print(f"/schedule: {exc}", markup=False)
+    return True
+
+
 def _cmd_inbox(ctx: CommandContext) -> bool:
     """Open or print the durable background interaction inbox."""
 
@@ -1128,6 +1260,22 @@ BUILTIN_COMMANDS: list[Command] = [
         group="Built-in",
         busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
         handler=_cmd_loops,
+    ),
+    Command(
+        name="/schedules",
+        description="Manage repository-scoped scheduled workflows",
+        argument_hint="",
+        group="Built-in",
+        busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
+        handler=_cmd_schedules,
+    ),
+    Command(
+        name="/schedule",
+        description="Create or control a repository scheduled workflow",
+        argument_hint="create ... | run-now ID | pause ID | resume ID NEXT-RUN | delete ID --confirm",
+        group="Built-in",
+        busy_policy=BusyPolicy.IMMEDIATE_CONTROL,
+        handler=_cmd_schedule,
     ),
     Command(
         name="/inbox",

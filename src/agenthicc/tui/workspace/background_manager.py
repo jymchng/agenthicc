@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import textwrap
 import threading
 import time
 import uuid
@@ -26,6 +27,7 @@ from agenthicc.background import (
     SessionStatus,
 )
 from agenthicc.background.settings import BackgroundManagerSettings
+from agenthicc.worktrees.environment import EnvironmentCommand, EnvironmentRunReceipt
 
 MAX_SESSION_ROWS_PER_PAGE = 10
 
@@ -129,6 +131,12 @@ class BackgroundManager:
         self._selected_session_id: str | None = None
         self._detail_session_id: str | None = None
         self._detail_scroll = 0
+        self._environment_actions: tuple[EnvironmentCommand, ...] = ()
+        self._environment_action_mode = ""
+        self._environment_action_index = 0
+        self._environment_manifest_digest = ""
+        self._environment_workspace_root: Path | None = None
+        self._environment_action_cancel_event: threading.Event | None = None
         self.query = ""
         self.include_archived = True
         self.status_filter: SessionStatus | None = None
@@ -794,8 +802,27 @@ class BackgroundManager:
                     result = await self._resolve_operation(value)
             if isinstance(result, ManagerOperationResult) and not result.ok:
                 self._notice = f"{label.title()} failed: {result.message}"[:240]
+            elif isinstance(result, EnvironmentRunReceipt) and result.result != "succeeded":
+                detail = ""
+                if result.commands:
+                    first = result.commands[0]
+                    detail = first.error or first.stderr.strip() or first.stdout.strip()
+                    detail = " · " + " ".join(detail.split())[:100] if detail else ""
+                    if first.truncated:
+                        detail += " · output truncated"
+                self._notice = f"{label.title()} failed: {result.result}{detail}"[:240]
             else:
-                self._notice = f"{label.title()} completed"
+                output_summary = ""
+                if isinstance(result, EnvironmentRunReceipt) and result.commands:
+                    first = result.commands[0]
+                    output = first.stdout or first.stderr
+                    if output.strip():
+                        output_summary = " · " + " ".join(output.split())[:120]
+                    if first.result != "succeeded":
+                        output_summary = f" · {first.result}" + output_summary
+                    if first.truncated:
+                        output_summary += " · output truncated"
+                self._notice = f"{label.title()} completed{output_summary}"[:240]
                 if label == "attach":
                     self._attach_result = ManagerResult("attach", target_id)
         except asyncio.CancelledError:
@@ -1194,6 +1221,11 @@ class BackgroundManager:
             else False,
             self._composer_receipt,
             self._composer_submitting,
+            self._environment_action_mode,
+            self._environment_action_index,
+            tuple(item.command_id for item in self._environment_actions),
+            self._environment_manifest_digest,
+            str(self._environment_workspace_root or ""),
         )
 
     @staticmethod
@@ -1225,6 +1257,79 @@ class BackgroundManager:
         from rich.text import Text  # noqa: PLC0415
 
         target_id = self._detail_session_id or "unknown"
+        if self._environment_action_mode:
+            action = (
+                self._environment_actions[self._environment_action_index]
+                if self._environment_actions
+                else None
+            )
+            if self._environment_action_mode == "preview" and action is not None:
+                from agenthicc.worktrees.environment import (  # noqa: PLC0415
+                    resolve_worktree_path,
+                )
+
+                workspace_root = self._environment_workspace_root
+                if workspace_root is None and session is not None:
+                    workspace_root = Path(session.cwd)
+                cwd = (
+                    resolve_worktree_path(
+                        workspace_root,
+                        action.cwd,
+                        label=f"{action.command_id}.cwd",
+                    )
+                    if workspace_root is not None
+                    else Path(action.cwd)
+                )
+                rows = [
+                    ("Action", action.command_id),
+                    ("Command", action.command),
+                    ("Workspace", str(cwd)),
+                    ("Network implication", action.network),
+                    ("Timeout", f"{action.timeout_s:g}s"),
+                    ("Approval", "Press y to approve this exact run; Esc cancels"),
+                ]
+                display_rows: list[tuple[str, str]] = []
+                content_width = max(20, min(budget.width, self.console.width) - 8)
+                for label, value in rows:
+                    normalized = " ".join(value.split())
+                    wrapped = textwrap.wrap(
+                        normalized,
+                        width=max(8, content_width - len(label) - 2),
+                        break_long_words=True,
+                        break_on_hyphens=False,
+                    ) or [""]
+                    display_rows.extend(
+                        (label if index == 0 else "", part) for index, part in enumerate(wrapped)
+                    )
+                rows = display_rows
+                footer_label = "↑↓/PgUp/PgDn scroll · y approve/run · Esc back"
+            else:
+                rows = [("Available actions", "Select an action and press Enter to review it")]
+                rows.extend(
+                    (
+                        ("▶ " if index == self._environment_action_index else "  ")
+                        + item.command_id,
+                        item.command,
+                    )
+                    for index, item in enumerate(self._environment_actions)
+                )
+                footer_label = "↑↓ select · Enter preview · Esc back"
+            max_visible = max(1, budget.height - 5)
+            max_scroll = max(0, len(rows) - max_visible)
+            self._detail_scroll = min(self._detail_scroll, max_scroll)
+            visible = rows[self._detail_scroll : self._detail_scroll + max_visible]
+            body = Text()
+            for index, (label, value) in enumerate(visible):
+                if index:
+                    body.append("\n")
+                if label:
+                    body.append(f"{label}: ", style="bold")
+                body.append(" ".join(value.split()))
+            return Group(
+                Text("Worker Environment Action", style="bold cyan"),
+                Panel(body, title="Review before execution", padding=(0, 1), expand=True),
+                Text(footer_label, style="dim"),
+            )
         if session is None:
             rows = [
                 ("Session ID", target_id),
@@ -1311,6 +1416,8 @@ class BackgroundManager:
                 rows.append(("Branch", session.branch))
             if session.base_commit:
                 rows.append(("Base commit", session.base_commit))
+            if session.environment_receipts:
+                rows.append(("Environment runs", str(len(session.environment_receipts))))
             if session.status == SessionStatus.WAITING_APPROVAL:
                 rows.append(("Pending action", "Waiting for approval"))
             elif session.status == SessionStatus.WAITING_INPUT:
@@ -1356,7 +1463,7 @@ class BackgroundManager:
         first = self._detail_scroll + 1 if rows else 0
         last = min(len(rows), self._detail_scroll + len(visible))
         footer_label = (
-            "Esc · Enter attach · i input · ↑↓ PgUp/PgDn [ ] Home/End"
+            "Esc · Enter attach · i input · x actions · ↑↓ PgUp/PgDn [ ] Home/End"
             if session is not None
             else "Esc back · r refresh · q quit"
         )
@@ -2285,6 +2392,123 @@ class BackgroundManager:
                 return None
             self._dispatch_composer_key(key, ch)
             return None
+        if self._environment_action_mode:
+            if value == "ESC":
+                if self._environment_action_mode == "preview":
+                    self._environment_action_mode = "select"
+                else:
+                    self._environment_action_mode = ""
+                    self._environment_actions = ()
+                    self._environment_manifest_digest = ""
+                    self._environment_workspace_root = None
+                self._detail_scroll = 0
+                self._request_render("environment_action_closed")
+                return None
+            if value == "UP" or (value == "CHAR" and ch.lower() == "k"):
+                if self._environment_action_mode == "preview":
+                    self._detail_scroll = max(0, self._detail_scroll - 1)
+                    self._request_render("environment_action_scrolled")
+                elif self._environment_actions:
+                    self._environment_action_index = max(0, self._environment_action_index - 1)
+                    self._detail_scroll = 0
+                return None
+            if value == "DOWN" or (value == "CHAR" and ch.lower() == "j"):
+                if self._environment_action_mode == "preview":
+                    self._detail_scroll += 1
+                    self._request_render("environment_action_scrolled")
+                elif self._environment_actions:
+                    self._environment_action_index = min(
+                        len(self._environment_actions) - 1,
+                        self._environment_action_index + 1,
+                    )
+                    self._detail_scroll = 0
+                return None
+            if self._environment_action_mode == "preview":
+                scroll_step = max(1, self.viewport_budget.height - 8)
+                if value == "HOME":
+                    self._detail_scroll = 0
+                    self._request_render("environment_action_scrolled")
+                    return None
+                if value == "END":
+                    self._detail_scroll += 1_000_000
+                    self._request_render("environment_action_scrolled")
+                    return None
+                if value in {"PAGE_UP", "PAGEUP"}:
+                    self._detail_scroll = max(0, self._detail_scroll - scroll_step)
+                    self._request_render("environment_action_scrolled")
+                    return None
+                if value in {"PAGE_DOWN", "PAGEDOWN"}:
+                    self._detail_scroll += scroll_step
+                    self._request_render("environment_action_scrolled")
+                    return None
+                if ch == "[":
+                    self._detail_scroll = max(0, self._detail_scroll - 6)
+                    self._request_render("environment_action_scrolled")
+                    return None
+                if ch == "]":
+                    self._detail_scroll += 6
+                    self._request_render("environment_action_scrolled")
+                    return None
+            if value == "ENTER" and self._environment_actions:
+                self._environment_action_mode = "preview"
+                self._detail_scroll = 0
+                return None
+            if self._environment_action_mode == "preview" and ch.lower() == "y":
+                selected_action = self._environment_actions[self._environment_action_index]
+                selected_session = next(
+                    (
+                        item
+                        for item in (self._visible_sessions if self._async_mode else self._sessions)
+                        if item.session_id == self._detail_session_id
+                    ),
+                    None,
+                )
+                self._environment_action_mode = ""
+                if selected_session is None:
+                    self._notice = "Worker session is no longer available"
+                    return None
+                reviewed_manifest_digest = self._environment_manifest_digest
+
+                async def run_action() -> object:
+                    from agenthicc.worktrees.environment_actions import (  # noqa: PLC0415
+                        run_session_action,
+                    )
+
+                    cancel_event = threading.Event()
+                    self._environment_action_cancel_event = cancel_event
+                    command_task = asyncio.create_task(
+                        asyncio.to_thread(
+                            run_session_action,
+                            selected_session.session_id,
+                            selected_action.command_id,
+                            approved=True,
+                            cancel_event=cancel_event,
+                            expected_manifest_digest=reviewed_manifest_digest,
+                            sessions=self.store,
+                        )
+                    )
+                    try:
+                        return await asyncio.shield(command_task)
+                    except asyncio.CancelledError:
+                        # The thread running the subprocess cannot be stopped
+                        # by cancelling its asyncio wrapper. Signal its process
+                        # group explicitly before this operation unwinds.
+                        cancel_event.set()
+                        try:
+                            await asyncio.shield(command_task)
+                        except Exception:  # noqa: BLE001 - preserve task cancellation
+                            pass
+                        raise
+                    finally:
+                        if self._environment_action_cancel_event is cancel_event:
+                            self._environment_action_cancel_event = None
+                        if self._environment_manifest_digest == reviewed_manifest_digest:
+                            self._environment_manifest_digest = ""
+                            self._environment_workspace_root = None
+
+                self._start_operation(selected_session.session_id, "environment-action", run_action)
+                return None
+            return None
         # Detail navigation is a separate viewport. Consume vertical keys
         # here, before the list-selection handlers below, so scrolling cannot
         # close details or silently move the selected target.
@@ -2375,6 +2599,36 @@ class BackgroundManager:
                 self._mark_dirty("composer_target_missing")
             else:
                 self._open_input_composer(target)
+            return None
+        if self._detail_session_id is not None and ch.lower() == "x":
+            records = self._visible_sessions if self._async_mode else self._sessions
+            target = next(
+                (item for item in records if item.session_id == self._detail_session_id),
+                None,
+            )
+            if target is None or target.role != "worker":
+                self._notice = "Named environment actions are available only for worker sessions"
+                return None
+            try:
+                from agenthicc.worktrees.environment_actions import (  # noqa: PLC0415
+                    available_session_actions_with_context,
+                )
+
+                (
+                    self._environment_actions,
+                    self._environment_manifest_digest,
+                    self._environment_workspace_root,
+                ) = available_session_actions_with_context(target)
+            except (KeyError, OSError, RuntimeError, ValueError) as exc:
+                self._notice = f"Unable to load worker actions: {type(exc).__name__}: {exc}"[:240]
+                return None
+            if not self._environment_actions:
+                self._notice = "No named actions are declared for this worker"
+                return None
+            self._environment_action_mode = "select"
+            self._environment_action_index = 0
+            self._detail_scroll = 0
+            self._request_render("environment_actions_opened")
             return None
         if value == "ENTER":
             # Enter is deliberately two-step: first inspect the selected

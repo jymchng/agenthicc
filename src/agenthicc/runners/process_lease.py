@@ -19,7 +19,7 @@ import tempfile
 from collections.abc import Callable, Mapping
 from contextlib import AbstractContextManager
 from pathlib import Path
-from typing import BinaryIO
+from typing import BinaryIO, Protocol, cast
 
 if os.name != "nt":
     import fcntl
@@ -27,6 +27,7 @@ if os.name != "nt":
 __all__ = [
     "InterProcessLock",
     "InterProcessLockError",
+    "InterProcessLockBusy",
     "atomic_publish",
     "atomic_replace",
     "directory_fsync",
@@ -39,21 +40,35 @@ __all__ = [
 ProcessIdentityResolver = Callable[[int], tuple[str, str] | None]
 
 
+class _MsvcrtLocking(Protocol):
+    LK_LOCK: int
+    LK_NBLCK: int
+    LK_UNLCK: int
+
+    def locking(self, file_descriptor: int, mode: int, byte_count: int) -> None: ...
+
+
 class InterProcessLockError(RuntimeError):
     """Raised when the platform cannot establish a required file lock."""
 
 
-class InterProcessLock(AbstractContextManager[None]):
-    """A blocking, cross-process advisory lock for short critical sections.
+class InterProcessLockBusy(InterProcessLockError):
+    """A non-blocking lock request found another live owner."""
 
-    The lock is intentionally explicit about unsupported or failed backends.
-    Callers protecting a correctness invariant must not silently continue
-    without exclusion.  The file remains on disk as a lock namespace; the
-    operating-system lock, not its contents, provides the critical section.
+
+class InterProcessLock(AbstractContextManager[None]):
+    """Cross-process advisory lock for short sections or process ownership.
+
+    The lock is explicit about unsupported or failed backends. Callers
+    protecting a correctness invariant must not silently continue without
+    exclusion. The file remains on disk as a lock namespace; the OS lock,
+    not its contents, provides ownership. ``blocking=False`` is suitable for
+    singleton service ownership and raises :class:`InterProcessLockBusy`.
     """
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, blocking: bool = True) -> None:
         self.path = path
+        self.blocking = blocking
         self._handle: BinaryIO | None = None
         self._backend: str | None = None
 
@@ -74,17 +89,30 @@ class InterProcessLock(AbstractContextManager[None]):
                 handle.flush()
             handle.seek(0)
             if os.name == "nt":
-                import msvcrt  # noqa: PLC0415
+                import importlib
 
-                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+                msvcrt = cast(_MsvcrtLocking, importlib.import_module("msvcrt"))
+                mode = msvcrt.LK_LOCK if self.blocking else msvcrt.LK_NBLCK
+                try:
+                    msvcrt.locking(handle.fileno(), mode, 1)
+                except OSError as exc:
+                    if not self.blocking:
+                        raise InterProcessLockBusy(f"lock is owned: {self.path}") from exc
+                    raise
                 self._backend = "msvcrt"
             else:
-                flock = getattr(fcntl, "flock", None)
-                lock_ex = getattr(fcntl, "LOCK_EX", None)
-                if not callable(flock) or not isinstance(lock_ex, int):
-                    raise OSError("fcntl locking backend is unavailable")
-                flock(handle.fileno(), lock_ex)
+                operation = fcntl.LOCK_EX if self.blocking else fcntl.LOCK_EX | fcntl.LOCK_NB
+                try:
+                    fcntl.flock(handle.fileno(), operation)
+                except OSError as exc:
+                    if not self.blocking and exc.errno in {11, 13, 35}:
+                        raise InterProcessLockBusy(f"lock is owned: {self.path}") from exc
+                    raise
                 self._backend = "fcntl"
+        except InterProcessLockBusy:
+            handle.close()
+            self._handle = None
+            raise
         except (ImportError, OSError, AttributeError) as exc:
             handle.close()
             self._handle = None
@@ -100,16 +128,13 @@ class InterProcessLock(AbstractContextManager[None]):
             return None
         try:
             if backend == "msvcrt":
-                import msvcrt  # noqa: PLC0415
+                import importlib
 
+                msvcrt = cast(_MsvcrtLocking, importlib.import_module("msvcrt"))
                 handle.seek(0)
                 msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
             elif backend == "fcntl":
-                flock = getattr(fcntl, "flock", None)
-                lock_un = getattr(fcntl, "LOCK_UN", None)
-                if not callable(flock) or not isinstance(lock_un, int):
-                    raise OSError("fcntl unlocking backend is unavailable")
-                flock(handle.fileno(), lock_un)
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
         finally:
             handle.close()
         return None

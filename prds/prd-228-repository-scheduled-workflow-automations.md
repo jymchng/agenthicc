@@ -1,7 +1,7 @@
 ---
 title: "PRD-228: Repository-Scoped Scheduled Workflow Automations"
-status: Proposed
-version: 0.1.0
+status: Implemented
+version: 1.0.0
 date: 2026-10-13
 repository: jymchng/agenthicc
 priority: P1
@@ -72,10 +72,70 @@ the model, or automatic publishing/merging of changes.
 - Schedule deletion stops future occurrences but preserves historical run
   records and artifacts.
 
-## 6. Tests, rollout, dependencies
+## 6. Implementation scope and rollout
 
-Use fake clocks and time zones, crash-after-claim tests, duplicate dispatch
-tests, recurrence property tests, worktree integration, and end-to-end service
-restart coverage. Begin with read-only workflows and opt-in schedules. Requires
-PRD-223 scheduler ownership, PRD-225 queue policy, and PRD-229 for isolated
-mutable runs.
+The implementation is opt-in at the operator level: definitions start
+paused, and execution occurs only while `agenthicc session serve` owns the
+schedule-service lease. Read-only `Plan` schedules may use the repository
+checkout. Every other permission ceiling uses an isolated worktree at a
+recorded base commit; merges are never automatic. Schedules use the current
+provider profile/configuration at dispatch time and never persist credential
+values.
+
+## 7. Implementation decisions and deterministic semantics
+
+- Definitions, immutable revision snapshots, audit entries, occurrence
+  receipts, and outcomes are stored in owner-only
+  `~/.agenthicc/schedules/schedules.sqlite3`. Schedule IDs and occurrence IDs
+  are stable; scheduled occurrence keys include schedule ID, definition
+  revision, and the exact due cursor. Manual runs and retries receive separate
+  occurrence keys.
+- Before calling the background supervisor, the scheduler advances the due
+  cursor and commits a `PREPARING` occurrence with its deterministic session
+  identity. The dispatcher adopts that same identity after restart. A
+  cross-process dispatch lock covers pending-state selection through durable
+  supervisor admission; the service lease separately prevents two normal
+  service owners.
+- Manual `run-now` count/admission and occurrence insertion happen in one
+  SQLite write transaction. Simultaneous invocations therefore cannot exceed
+  `max_in_flight` or create multiple pending items under `queue_one`.
+- A definition edit is explicit (`schedules update ... --confirm`), creates
+  an audit revision, recomputes its next-run preview, and pauses the schedule.
+  The operator must resume with the exact displayed ISO timestamp, including
+  seconds and offset. This prevents an edit from silently re-arming changed
+  work under an old confirmation.
+- One-shot local times that do not exist during a DST spring-forward are
+  rejected. Ambiguous one-shot times choose the earlier instant (`fold=0`).
+  Cron wall times that do not exist are skipped; ambiguous cron wall times run
+  once at the earlier instant. Cron uses five numeric fields, Sunday 0/7, and
+  OR semantics when both day-of-month and weekday are restricted.
+- Interval recurrences remain anchored to the previous scheduled occurrence.
+  After downtime or a forward wall-clock jump, the cursor advances to the
+  first future tick without replaying every missed interval. A backward clock
+  correction does not move the persisted cursor backward or duplicate a
+  committed occurrence.
+- `skip` records a due tick as skipped while another run is active;
+  `queue_one` coalesces additional missed ticks into one waiting occurrence;
+  `allow_bounded` dispatches only up to its finite `max_in_flight` value and
+  records excess ticks as skipped. The default is `skip` with one active run.
+- Deletion is a tombstone. It stops future scheduled ticks but leaves
+  occurrence history, background-session records, and worktree artifacts
+  available for inspection. A retry is a new occurrence/session/attempt linked
+  to the failed or blocked occurrence.
+
+## 8. Verification
+
+- Unit coverage: interval/cron parsing, timezone validation, DST folds/gaps,
+  clock jumps, resume confirmation, edit pause/revision behavior, all
+  coalescing modes, bounded concurrency, retry identity, storage validation,
+  duplicate scheduler ticks, and crash-after-claim recovery.
+- Integration coverage: Plan versus mutating dispatch, recorded base commit,
+  isolated worktree, exact prompt/profile/mode propagation, deterministic
+  background-session adoption, and durable occurrence receipts.
+- E2E coverage: `tests/e2e/test_schedules_prd228.py` exercises the CLI lifecycle
+  across separate processes and kills/restarts the scheduler service after a
+  persisted claim to verify recovery uses the same occurrence and session.
+- User and operator contracts are documented in
+  [`docs/guides/scheduled-workflows.md`](../docs/guides/scheduled-workflows.md),
+  [`docs/reference/cli.md`](../docs/reference/cli.md), and
+  [`docs/reference/storage.md`](../docs/reference/storage.md).

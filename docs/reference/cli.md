@@ -62,7 +62,7 @@ interactive TUI sessions.
 
 ## Command groups
 
-Eight groups have subcommands. Each group name is also callable on its own
+Nine groups have subcommands. Each group name is also callable on its own
 (`agenthicc mcp`, `agenthicc jobs`) and prints that group's help.
 
 | Group | Purpose |
@@ -70,6 +70,7 @@ Eight groups have subcommands. Each group name is also callable on its own
 | `config` | Manage configuration |
 | `jobs` | Manage durable background sessions |
 | `mcp` | Manage configured MCP servers |
+| `schedules` | Manage durable repository-scoped workflow automations |
 | `session` | Inspect, control, and attach to client-neutral sessions |
 | `sessions` | Manage saved sessions |
 | `skills` | Install and manage skill definitions |
@@ -85,7 +86,19 @@ help string the command registers.
 | Command | Purpose |
 |---|---|
 | `agents [--json]` | Open the paginated background sessions manager, or list all sessions as JSON |
+| `agents actions WORKER_SESSION_ID [--json]` | List named actions in one worker worktree |
+| `agents action WORKER_SESSION_ID ACTION_ID [--approve] [--json]` | Review or run one worker action |
 | `runs` | Inspect and control durable goal runs |
+| `schedules create WORKFLOW PROFILE MODE RECURRENCE TIMEZONE PROMPT [options]` | Create a disabled schedule and preview its first run |
+| `schedules list [--repository-root PATH] [--all] [--json]` | List schedules and whether they are armed, paused, blocked, or awaiting the service |
+| `schedules show SCHEDULE_ID [--json]` | Inspect a schedule, revisions, and recent occurrences |
+| `schedules pause SCHEDULE_ID` / `resume SCHEDULE_ID [--confirm-next-run TIME]` | Pause or preview/confirm schedule execution |
+| `schedules run-now SCHEDULE_ID [--json]` | Queue an immediate auditable occurrence without moving the recurrence cursor |
+| `schedules update SCHEDULE_ID FIELD VALUE --confirm` | Create a revised, paused definition after explicit confirmation |
+| `schedules retry SCHEDULE_ID OCCURRENCE_ID` | Retry a failed/blocked occurrence as a new attempt |
+| `schedules history SCHEDULE_ID [--limit N]` | Inspect bounded run history |
+| `schedules delete SCHEDULE_ID --confirm` | Tombstone a schedule while preserving prior runs and artifacts |
+| `schedules service-status` | Check whether an Agenthicc service owns the schedule scheduler |
 | `attach SESSION_ID [--json]` | Attach the normal TUI to one exact background session |
 | `attach --run RUN_ID [--json]` | Explicit compatibility form for attaching a goal run |
 | `init [--write] [--force]` | Create `AGENTS.md` and a commented `.agenthicc` configuration template |
@@ -142,6 +155,16 @@ help string the command registers.
 | `trust cli` | Trust `.agenthicc/cli/` Python plugins for this project |
 | `workflows list [--json]` | List available workflow plugins |
 | `workflows run WORKFLOW_NAME --intent TEXT [--json]` | Run a workflow headlessly for one intent |
+| `worktrees trust [REPOSITORY] [--confirm]` | Preview or trust the current worktree environment manifest digest |
+| `worktrees dispatch ORCHESTRATION_ID TASK_ID [--approve] [--json]` | Dispatch a task, optionally approving setup for this run |
+| `worktrees actions WORKER_SESSION_ID [--json]` | List named actions in one worker worktree |
+| `worktrees action WORKER_SESSION_ID ACTION_ID [--approve] [--json]` | Review or run one worker action |
+| `worktrees setup WORKER_SESSION_ID [--approve] [--json]` | Run worker setup explicitly |
+
+See [worktree environments and actions](../guides/worktree-environments.md)
+for manifest format, trust, cache isolation, and action execution behavior.
+See [scheduled workflows](../guides/scheduled-workflows.md) for recurrence,
+timezone/DST, scheduler-service, coalescing, revision, and recovery semantics.
 
 !!! warning "`session send` takes a positional message"
     The message is the second positional argument, not a `--text` flag:

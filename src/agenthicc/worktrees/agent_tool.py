@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, TypedDict
 
 from .coordinator import CoordinatorError, ParallelCoordinator
 from .manager import RepositoryError, WorktreeError
+from .environment import EnvironmentTrustRequired
 from .store import ManifestStore
 
 if TYPE_CHECKING:
@@ -115,8 +116,11 @@ def make_spawn_worker_agents_tool(
             worker_workflow_name="",
             worker_dangerously_skip_permissions=dangerously_skip_permissions,
         )
+        orchestration_id = ""
+        submitted_task_ids: list[str] = []
         try:
             manifest = await asyncio.to_thread(coordinator.create)
+            orchestration_id = manifest.orchestration_id
             for raw_task in tasks:
                 if not isinstance(raw_task, dict):
                     raise CoordinatorError("every task must be an object")
@@ -140,14 +144,46 @@ def make_spawn_worker_agents_tool(
                     description=description,
                     dependencies=dependency_ids,
                 )
+                submitted_task_ids.append(task_id)
             dispatched = await coordinator.dispatch_ready(manifest.orchestration_id)
             refreshed = coordinator.manifest(manifest.orchestration_id)
-        except (CoordinatorError, RepositoryError, WorktreeError, OSError, ValueError) as exc:
-            return {
+        except (
+            CoordinatorError,
+            EnvironmentTrustRequired,
+            RepositoryError,
+            WorktreeError,
+            OSError,
+            ValueError,
+        ) as exc:
+            result: dict[str, object] = {
                 "ok": False,
                 "error": f"{type(exc).__name__}: {exc}",
                 "message": "Worker orchestration was not dispatched; inspect the repository and retry.",
             }
+            if orchestration_id:
+                pending_task_ids = submitted_task_ids
+                try:
+                    current_manifest = await asyncio.to_thread(
+                        coordinator.manifest, orchestration_id
+                    )
+                    pending_task_ids = [
+                        task.task_id
+                        for task in current_manifest.tasks
+                        if task.status.value == "pending"
+                    ]
+                except (KeyError, OSError, RuntimeError, ValueError):
+                    pass
+                result["orchestration_id"] = orchestration_id
+                result["pending_task_ids"] = pending_task_ids
+                result["recovery_commands"] = [
+                    f"agenthicc worktrees dispatch {orchestration_id} {task_id} --approve"
+                    for task_id in pending_task_ids
+                ]
+                result["message"] = (
+                    "Worker dispatch needs attention. The orchestration was preserved; inspect "
+                    "the pending task IDs or approve a specific task with the listed command."
+                )
+            return result
         return {
             "ok": True,
             "orchestration_id": refreshed.orchestration_id,

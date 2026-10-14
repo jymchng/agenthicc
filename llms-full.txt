@@ -2091,6 +2091,31 @@ orchestration/task identifiers for later review and integration. Normal
 approval and capability policy remains enabled unless the caller explicitly
 opts into dangerous permission bypass.
 
+### WorktreeEnvironment
+
+`agenthicc.worktrees.WorktreeEnvironment` loads and executes the optional
+versioned `.agenthicc/environment.toml` manifest for one exact worktree.
+`load_environment_manifest()` validates the schema and computes its SHA-256
+digest. Setup and named actions require either a matching user-local trust
+decision (`EnvironmentTrustStore`) or explicit per-run approval. Execution
+validates symlink-resolved worktree paths, applies bounded timeouts/output,
+redacts configured secrets, and terminates subprocess groups on cancellation
+or command exit so one-shot commands cannot leave unmanaged background
+children. It returns an `EnvironmentRunReceipt`. Durable receipts intentionally omit
+commands, output, and environment values. Cache reuse is opt-in and shared
+mutable caches require an exclusive advisory lock. The `network` field is
+review metadata; `none_declared` is enforced with a network namespace while
+the other values permit network access. Linux execution requires Bubblewrap
+and fails closed when isolation is unavailable. See
+`docs/guides/worktree-environments.md` for schema and CLI/TUI usage.
+
+### resolve_worktree_path
+
+Resolves a worktree-relative manifest path after symlink resolution and raises
+`EnvironmentManifestError` if it is absolute or escapes the assigned
+worktree. The same resolver is used for command working directories and
+expected outputs, including the TUI's pre-execution action preview.
+
 ### CodePlanRunner
 
 The specialized `code_plan` runner evolves `CodePlanState` through
@@ -2782,6 +2807,24 @@ Evaluate `tool_name` against `policy.permission_rules` top-to-bottom using
 matches. Raises `Rejection` when the action is `"deny"`.
 
 ---
+
+## Repository schedules — `agenthicc.schedules`
+
+`ScheduleStore` owns the user-local SQLite database for repository schedule
+definitions, immutable definition revisions, audit events, unique occurrence
+keys, and bounded run receipts. `ScheduleManager` validates edits and
+recurrences, creates occurrences with deterministic background-session IDs,
+and requires explicit next-run confirmation before resuming a paused or edited
+definition.
+
+`ScheduleScheduler` claims due occurrences with a persisted cursor before
+dispatch, serializes dispatch across processes, reconciles accepted background
+sessions after restart, and applies the configured `skip`, `queue_one`, or
+`allow_bounded` policy. `ScheduleServiceLease` ensures only one local
+`agenthicc session serve` process owns the schedule service. Mutating schedule
+runs use Agenthicc worktrees; scheduled changes are never automatically merged.
+See `docs/guides/scheduled-workflows.md` for CLI/TUI operations, recurrence
+syntax, DST and downtime semantics, and recovery behavior.
 
 ## Background sessions and terminals — `agenthicc.background`
 

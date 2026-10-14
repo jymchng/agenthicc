@@ -148,7 +148,9 @@ async def _empty() -> list[SessionSnapshot]:
 
 @pytest.mark.asyncio
 async def test_session_serve_stops_server_on_cancellation(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
 ) -> None:
     import agenthicc.cli.commands.session_service as commands
 
@@ -167,7 +169,25 @@ async def test_session_serve_stops_server_on_cancellation(
     async def wait() -> None:
         raise asyncio.CancelledError
 
-    monkeypatch.setattr(commands.asyncio, "Event", lambda: SimpleNamespace(wait=wait))
+    import agenthicc.schedules as schedules
+
+    schedule_store = schedules.ScheduleStore
+    monkeypatch.setattr(
+        schedules,
+        "ScheduleStore",
+        lambda: schedule_store(tmp_path / "schedule-state"),
+    )
+    original_event = asyncio.Event
+    event_count = 0
+
+    def event_factory() -> object:
+        nonlocal event_count
+        event_count += 1
+        if event_count == 1:
+            return original_event()
+        return SimpleNamespace(wait=wait)
+
+    monkeypatch.setattr(commands.asyncio, "Event", event_factory)
     with pytest.raises(asyncio.CancelledError):
         await commands.session_serve(SimpleNamespace())
     assert server.stopped is True

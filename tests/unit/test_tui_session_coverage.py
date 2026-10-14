@@ -88,6 +88,7 @@ def _make_session(
         model_label="test/model",
         console=Console(record=True),
         session_memory=memory,
+        workspace_scope=None,
         pending_resume=None,
         command_plugin_names=set(),
         initial_workflow=initial_workflow,
