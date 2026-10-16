@@ -42,6 +42,7 @@ import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 __all__ = [
     "ConversationJournal",
@@ -87,6 +88,8 @@ class IncompleteTurn:
     last_committed_cursor: int | None = None
     interrupted_step_id: str | None = None
     interrupted_attempt_id: str | None = None
+    workflow_run_id: str | None = None
+    execution_kind: Literal["direct", "workflow"] | None = None
 
 
 def journal_path_for(session_id: str) -> Path:
@@ -139,6 +142,8 @@ def fold_resume_state(path: Path) -> IncompleteTurn | None:
     if not path.exists():
         return None
     started: list[tuple[str, str, int]] = []  # (turn_id, user_message, base_count)
+    workflow_runs: dict[str, str | None] = {}
+    execution_kinds: dict[str, Literal["direct", "workflow"] | None] = {}
     completed: set[str] = set()
     records: dict[str, list[tuple[str, object]]] = {}
     committed: dict[str, tuple[str, int | None]] = {}
@@ -158,6 +163,24 @@ def fold_resume_state(path: Path) -> IncompleteTurn | None:
                 started.append(
                     (tid, entry.get("user_message", ""), int(entry.get("base_count", 0)))
                 )
+                workflow_run_id = entry.get("workflow_run_id")
+                if isinstance(workflow_run_id, str) and workflow_run_id:
+                    workflow_runs[tid] = workflow_run_id[:128]
+                else:
+                    workflow_runs.setdefault(tid, None)
+                raw_execution_kind = entry.get("execution_kind")
+                if raw_execution_kind == "workflow":
+                    execution_kinds[tid] = raw_execution_kind
+                elif raw_execution_kind == "direct":
+                    # Re-starting the same logical turn without workflow
+                    # context must not erase provenance from an earlier
+                    # durable workflow attempt.
+                    if execution_kinds.get(tid) != "workflow":
+                        execution_kinds[tid] = raw_execution_kind
+                elif tid not in execution_kinds and workflow_runs.get(tid):
+                    execution_kinds[tid] = "workflow"
+                else:
+                    execution_kinds.setdefault(tid, None)
                 records.setdefault(tid, [])
             elif kind in {"turn_completed", "turn_aborted", "turn_failed", "turn_recovered"}:
                 completed.add(entry["turn_id"])
@@ -192,6 +215,8 @@ def fold_resume_state(path: Path) -> IncompleteTurn | None:
                 last_committed_cursor=last_cursor,
                 interrupted_step_id=interrupted_step,
                 interrupted_attempt_id=interrupted_attempt,
+                workflow_run_id=workflow_runs.get(tid),
+                execution_kind=execution_kinds.get(tid),
             )
     return None
 
@@ -297,6 +322,7 @@ class ConversationJournal:
         *,
         conversation_id: str = "",
         base_cursor: int | None = None,
+        workflow_run_id: str | None = None,
     ) -> None:
         """Mark the start of a turn and its durable pre-turn checkpoint.
 
@@ -304,18 +330,20 @@ class ConversationJournal:
         and ``conversation_id`` make the newer step-aware recovery contract
         explicit without changing how legacy journals fold.
         """
-        self._write(
-            {
-                "seq": self._seq,
-                "kind": "turn_started",
-                "schema_version": 2,
-                "turn_id": str(turn_id)[:128],
-                "conversation_id": str(conversation_id)[:128],
-                "user_message": user_message,
-                "base_count": max(0, int(base_count)),
-                "base_cursor": base_cursor if base_cursor is not None else self._seq,
-            }
-        )
+        entry: dict[str, object] = {
+            "seq": self._seq,
+            "kind": "turn_started",
+            "schema_version": 3,
+            "execution_kind": "workflow" if workflow_run_id else "direct",
+            "turn_id": str(turn_id)[:128],
+            "conversation_id": str(conversation_id)[:128],
+            "user_message": user_message,
+            "base_count": max(0, int(base_count)),
+            "base_cursor": base_cursor if base_cursor is not None else self._seq,
+        }
+        if workflow_run_id:
+            entry["workflow_run_id"] = str(workflow_run_id)[:128]
+        self._write(entry)
 
     def turn_completed(self, turn_id: str) -> None:
         """Mark a turn as durably complete (it will not be resumed)."""

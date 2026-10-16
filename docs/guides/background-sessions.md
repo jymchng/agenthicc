@@ -105,7 +105,40 @@ requests are available from `/inbox` in the TUI and through `agenthicc jobs
 inbox` in scripts. These are typed responses to an exact pending operation;
 they are separate from arbitrary text submitted to a session from the
 `agenthicc agents` details view. Session-detail input is still forwarded
-unchanged and is never reinterpreted as an approval or workflow command.
+unchanged to the owning session, whose normal command/router path may handle
+commands such as `/workflow resume` or `/workflow reset`.
+
+### Input waiting on interrupted workflow recovery
+
+A background session can have both an unfinished journal turn and a saved
+workflow checkpoint. Agenthicc records whether a new turn belongs to a direct
+agent turn or to a workflow run, then uses that provenance to choose one safe
+recovery owner. A proven direct turn is replayed with its original turn ID and
+tool-result ledger before ordinary queued input is delivered. A turn owned by
+a workflow is never replayed as an independent direct turn.
+
+Older journals may not contain this ownership metadata. Agenthicc can still
+recover automatically when exactly one recoverable checkpoint matches the
+session's configured workflow, conversation ID, and original intent; it
+restores that run first, then delivers the queued input unchanged. If the
+identity does not match exactly or more than one run qualifies, the worker
+does not guess or reject accepted input. It leaves the session recoverable and
+the inbox receipt as `waiting for recovery`, with a bounded reason and relevant
+workflow run ID in the details view. Use an explicit target-side command from
+the selected session's details page, for example:
+
+```text
+/workflow resume <run-id>
+/workflow reset <run-id>
+```
+
+These are ordinary inputs forwarded to the target session. They do not attach
+the session to the foreground. A recovery control may be routed ahead of an
+earlier blocked ordinary message so the queue cannot deadlock; the ordinary
+message remains durably pending and retains its relative order when it is later
+delivered. New journal turns persist `execution_kind` and, for workflow turns,
+`workflow_run_id`; legacy entries remain readable. Merely having a checkpoint
+does not implicitly resume a workflow.
 
 ```text
 /inbox
@@ -284,24 +317,27 @@ A live worker that finishes before consuming an input leaves a visible
 rejection receipt rather than silently dropping the text.
 
 For a completed session, the accepted message starts a new background attempt
-for the same session and conversation. The worker processes that message first;
-it does not replay the completed attempt's original intent or detached goal-run
-bookkeeping. The session's effective configuration and security settings are
-retained, and the new worker is subject to the normal background concurrency
-limits. If the manager exits after persisting the message but before launch,
-background maintenance finds the still-pending receipt and starts recovery
-when capacity is available. This does not resume a workflow: slash commands,
-including `/workflow ...`, are forwarded unchanged and handled by the target's
-normal command router.
+for the same session and conversation. The worker first restores any unfinished
+transaction or uniquely identified workflow that owns the saved turn, then
+processes the accepted message; it does not replay the completed attempt's
+original launch intent or detached goal-run bookkeeping. The session's
+effective configuration and security settings are retained, and the new worker
+is subject to the normal background concurrency limits. If the manager exits
+after persisting the message but before launch, background maintenance finds
+the still-pending receipt and starts recovery when capacity is available.
+Slash commands, including `/workflow ...`, are still forwarded unchanged and
+handled by the target's normal command router.
 
 There is one direct-turn recovery case that precedes new input: if the journal
 contains an interrupted direct turn, the worker first re-drives that original
 message with its original turn ID and durable tool-idempotency ledger. The new
 inbox message remains pending until the recovered turn reaches a safe input
 boundary; if recovery fails first, the message stays recoverable for a later
-attempt. This is not automatic workflow recovery. An active or recoverable
-workflow checkpoint takes precedence and must be handled explicitly; the worker
-does not run a direct-turn recovery and a workflow recovery concurrently.
+attempt. A workflow checkpoint is automatically resumed only when durable turn
+provenance identifies it, or when exactly one legacy checkpoint matches the
+session workflow, conversation ID, and original intent. Ambiguous cases remain
+recoverable for explicit resolution; the worker never runs direct-turn and
+workflow recovery concurrently.
 
 The detail page's `Latest input` field shows the newest receipt (`queued`,
 `waiting for recovery`, `delivered`, `processed`, or `not delivered`) and a

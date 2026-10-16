@@ -205,6 +205,54 @@ async def test_details_input_composer_targets_live_owner_without_attach(tmp_path
     await manager._service.close()
 
 
+def test_recovery_wait_receipt_shows_action_without_exposing_input_body(
+    tmp_path: Path,
+) -> None:
+    store = BackgroundStore(tmp_path / "background")
+    session = BackgroundSession.create(
+        "recovery-wait-target",
+        title="Interrupted workflow",
+        cwd=str(tmp_path),
+        workflow_name="reconstruct_site",
+        intent="continue the build",
+    ).evolve(
+        status=SessionStatus.RUNNING,
+        worker_pid=os.getpid(),
+        lease_token="recovery-owner-token",
+        attempt=3,
+    )
+    store.create(session)
+    inbox = BackgroundInputInbox(store)
+    accepted = inbox.enqueue(
+        session.session_id,
+        "private user input that must not appear in status",
+        owner_attempt=session.attempt,
+        lease_token=session.lease_token,
+        message_id="pending-recovery-input",
+    )
+    inbox.mark_waiting_recovery(
+        session.session_id,
+        owner_attempt=session.attempt,
+        lease_token=session.lease_token,
+        reason="Ambiguous workflow ownership; send /workflow resume <run-id>.",
+    )
+
+    manager = BackgroundManager(Console(width=100, height=30, record=True), store=store)
+    activity, latest_input, _history = manager._load_detail_projection(session)
+
+    assert activity == []
+    assert latest_input is not None
+    assert "waiting for recovery" in latest_input
+    assert "/workflow resume <run-id>" in latest_input
+    assert accepted.text not in latest_input
+    manager._input_receipt_text[session.session_id] = latest_input
+    manager.console.print(manager._render_detail_page(session, manager.viewport_budget))
+    detail = manager.console.export_text()
+    assert "Latest input" in detail
+    assert "waiting for recovery" in detail
+    assert accepted.text not in detail
+
+
 @pytest.mark.asyncio
 async def test_completed_details_input_opens_and_starts_new_background_attempt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -327,16 +375,21 @@ async def test_details_input_recovers_stale_session_without_foreground_attach(
         manager._composer_input = object()  # type: ignore[assignment]
 
     monkeypatch.setattr(manager, "_build_target_input_editor", prepare_editor)
-    resumed: list[str] = []
+    launched: list[BackgroundSession] = []
 
-    def resume(session_id: str) -> BackgroundSession:
-        resumed.append(session_id)
-        return store.get(session_id)
+    def launch(_request: object, record: BackgroundSession) -> BackgroundSession:
+        launched.append(record)
+        return record
 
     def attach(_session_id: str) -> BackgroundSession:
         raise AssertionError("background recovery must not attach to the foreground")
 
-    monkeypatch.setattr(supervisor, "resume", resume)
+    monkeypatch.setattr(supervisor, "_launch", launch)
+    monkeypatch.setattr(
+        supervisor,
+        "resume",
+        lambda *_args, **_kwargs: pytest.fail("input recovery must not replay the launch intent"),
+    )
     monkeypatch.setattr(supervisor, "attach_foreground", attach)
     manager._open_input_composer(session)
     assert manager._composer_open
@@ -350,13 +403,15 @@ async def test_details_input_recovers_stale_session_without_foreground_attach(
     )
     try:
         assert result.ok
-        assert resumed == [session.session_id]
+        assert len(launched) == 1
+        assert launched[0].status is SessionStatus.STARTING
+        assert launched[0].resume_marker.startswith("input:")
+        assert store.get(session.session_id).status is SessionStatus.STARTING
         receipt = BackgroundInputInbox(store).receipts(session.session_id)[0]
         assert receipt.text == "continue this recoverable session"
         assert receipt.state == "accepted"
         assert receipt.deferred
         assert "background recovery" in manager._composer_receipt.casefold()
-        assert store.get(session.session_id).status is status
     finally:
         await manager._service.close()
 

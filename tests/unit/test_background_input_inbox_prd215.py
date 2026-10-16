@@ -244,6 +244,136 @@ def test_accepted_live_input_can_be_deferred_once_after_owner_completion(
     assert delivered.text == original.text
 
 
+def test_recovery_wait_is_durable_and_keeps_original_input_for_later_claim(
+    tmp_path: Path,
+) -> None:
+    store, session = _running_store(tmp_path)
+    inbox = BackgroundInputInbox(store)
+    ordinary = inbox.enqueue(
+        session.session_id,
+        "keep this exact ordinary message",
+        owner_attempt=session.attempt,
+        lease_token=session.lease_token,
+        message_id="ordinary-before-control",
+    )
+    control = inbox.enqueue(
+        session.session_id,
+        " /workflow resume run-42 ",
+        owner_attempt=session.attempt,
+        lease_token=session.lease_token,
+        message_id="recovery-control",
+    )
+
+    waiting = inbox.mark_waiting_recovery(
+        session.session_id,
+        owner_attempt=session.attempt,
+        lease_token=session.lease_token,
+        reason="Ambiguous workflow ownership; choose an explicit recovery action.",
+    )
+    by_id = {item.message_id: item for item in waiting}
+    assert by_id[ordinary.message_id].text == ordinary.text
+    assert by_id[ordinary.message_id].state == "accepted"
+    assert by_id[ordinary.message_id].deferred
+    assert "Ambiguous workflow ownership" in by_id[ordinary.message_id].recovery_error
+    assert by_id[control.message_id].text == control.text
+
+    # A later target worker may dispatch the recovery control by stable ID,
+    # while ordinary user text remains at the FIFO head and unchanged.
+    claimed_control = inbox.claim_by_id(
+        session.session_id,
+        control.message_id,
+        owner_attempt=session.attempt,
+        lease_token=session.lease_token,
+    )
+    assert claimed_control is not None
+    assert claimed_control.text == control.text
+    assert claimed_control.state == "delivered"
+    assert claimed_control.recovery_error == ""
+    receipts = {item.message_id: item for item in inbox.receipts(session.session_id)}
+    assert receipts[ordinary.message_id].state == "accepted"
+    assert receipts[ordinary.message_id].deferred
+    assert receipts[ordinary.message_id].text == ordinary.text
+
+
+def test_recovery_wait_reason_is_cleared_only_when_replacement_attempt_is_scheduled(
+    tmp_path: Path,
+) -> None:
+    store, running = _running_store(tmp_path)
+    inbox = BackgroundInputInbox(store)
+    queued = inbox.enqueue(
+        running.session_id,
+        "keep this payload unchanged",
+        owner_attempt=running.attempt,
+        lease_token=running.lease_token,
+        message_id="rearm-input",
+    )
+    inbox.mark_waiting_recovery(
+        running.session_id,
+        owner_attempt=running.attempt,
+        lease_token=running.lease_token,
+        reason="select a workflow",
+    )
+    waiting_session = store.transition(
+        running.session_id,
+        SessionStatus.ORPHANED,
+        expected_status=SessionStatus.RUNNING,
+        expected_attempt=running.attempt,
+        expected_lease_token=running.lease_token,
+    )
+
+    with pytest.raises(InvalidSessionTransition, match="recoverable owner"):
+        inbox.rearm_recovery_wait(
+            waiting_session.session_id,
+            expected_attempt=waiting_session.attempt - 1,
+            expected_lease_token=waiting_session.lease_token,
+        )
+    rearmed = inbox.rearm_recovery_wait(
+        waiting_session.session_id,
+        expected_attempt=waiting_session.attempt,
+        expected_lease_token=waiting_session.lease_token,
+    )
+    receipt = next(item for item in rearmed if item.message_id == queued.message_id)
+    assert receipt.text == queued.text
+    assert receipt.state == "accepted"
+    assert receipt.deferred
+    assert receipt.recovery_error == ""
+
+
+def test_recovery_control_claim_is_owner_fenced_and_idempotent(tmp_path: Path) -> None:
+    store, session = _running_store(tmp_path)
+    inbox = BackgroundInputInbox(store)
+    queued = inbox.enqueue_deferred(
+        session.session_id,
+        "/workflow reset run-42",
+        expected_attempt=session.attempt,
+        expected_lease_token=session.lease_token,
+        message_id="reset-control",
+    )
+    assert queued.deferred
+
+    with pytest.raises(InvalidSessionTransition, match="owner changed"):
+        inbox.claim_by_id(
+            session.session_id,
+            queued.message_id,
+            owner_attempt=session.attempt,
+            lease_token="stale-lease",
+        )
+    first = inbox.claim_by_id(
+        session.session_id,
+        queued.message_id,
+        owner_attempt=session.attempt,
+        lease_token=session.lease_token,
+    )
+    second = inbox.claim_by_id(
+        session.session_id,
+        queued.message_id,
+        owner_attempt=session.attempt,
+        lease_token=session.lease_token,
+    )
+    assert first is not None and first.state == "delivered"
+    assert second is None
+
+
 def test_completed_session_input_starts_one_new_attempt_without_replaying_goal(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -423,6 +553,76 @@ def test_maintenance_recovers_crash_after_completed_input_start_transition(
     assert inbox.receipts(completed.session_id)[0].state == "accepted"
 
 
+def test_maintenance_retries_legacy_workflow_wait_once_without_retry_loop(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    store, running = _running_store(tmp_path)
+    inbox = BackgroundInputInbox(store)
+    inbox.enqueue(
+        running.session_id,
+        "preserve and deliver after workflow recovery",
+        owner_attempt=running.attempt,
+        lease_token=running.lease_token,
+        message_id="legacy-waiting-input",
+    )
+    inbox.mark_waiting_recovery(
+        running.session_id,
+        owner_attempt=running.attempt,
+        lease_token=running.lease_token,
+        reason="Recovery ownership is ambiguous.",
+    )
+    orphaned = store.transition(
+        running.session_id,
+        SessionStatus.ORPHANED,
+        expected_status=SessionStatus.RUNNING,
+        expected_attempt=running.attempt,
+        expected_lease_token=running.lease_token,
+        worker_exit_reason="workflow_recovery_waiting",
+        resume_marker="resume:4",
+        lease_token="",
+    )
+    supervisor = BackgroundSupervisor(store, artifact_root=tmp_path / "artifacts")
+    launched: list[BackgroundSession] = []
+
+    def capture_launch(_request: object, record: BackgroundSession) -> BackgroundSession:
+        launched.append(record)
+        return record
+
+    monkeypatch.setattr(supervisor, "_launch", capture_launch)
+    supervisor._recover_pending_input_records([orphaned])
+
+    assert len(launched) == 1
+    assert launched[0].status is SessionStatus.STARTING
+    assert launched[0].resume_marker == "input:legacy-waiting-input"
+
+    # Simulate that replacement worker reaching the same unresolved result.
+    live = store.claim(
+        orphaned.session_id,
+        pid=os.getpid(),
+        lease_token="replacement-worker-lease",
+    )
+    inbox.mark_waiting_recovery(
+        live.session_id,
+        owner_attempt=live.attempt,
+        lease_token=live.lease_token,
+        reason="The workflow association is still ambiguous.",
+    )
+    recovered_orphan = store.transition(
+        orphaned.session_id,
+        SessionStatus.ORPHANED,
+        expected_status=SessionStatus.RUNNING,
+        expected_attempt=live.attempt,
+        expected_lease_token=live.lease_token,
+        worker_exit_reason="workflow_recovery_waiting",
+        resume_marker=launched[0].resume_marker,
+        lease_token="",
+    )
+    # A repeated unresolved attempt is not relaunched on every maintenance pass.
+    supervisor._recover_pending_input_records([recovered_orphan])
+    assert len(launched) == 1
+    assert store.get(orphaned.session_id).status is SessionStatus.ORPHANED
+
+
 def test_worker_exit_settles_consumed_and_unconsumed_receipts(tmp_path: Path) -> None:
     store, session = _running_store(tmp_path)
     inbox = BackgroundInputInbox(store)
@@ -542,13 +742,18 @@ def test_supervisor_queues_recoverable_input_before_resuming_in_background(
         expected_status=SessionStatus.RUNNING,
     )
     supervisor = BackgroundSupervisor(store)
-    resumed: list[str] = []
+    launched: list[tuple[object, BackgroundSession]] = []
 
-    def resume(session_id: str) -> BackgroundSession:
-        resumed.append(session_id)
-        return store.get(session_id)
+    def capture_launch(request: object, record: BackgroundSession) -> BackgroundSession:
+        launched.append((request, record))
+        return record
 
-    monkeypatch.setattr(supervisor, "resume", resume)
+    monkeypatch.setattr(supervisor, "_launch", capture_launch)
+    monkeypatch.setattr(
+        supervisor,
+        "resume",
+        lambda *_args, **_kwargs: pytest.fail("must start an input-driven attempt"),
+    )
     receipt = supervisor.enqueue_input_or_recover(
         orphaned.session_id,
         "recover this session",
@@ -557,11 +762,15 @@ def test_supervisor_queues_recoverable_input_before_resuming_in_background(
         message_id="recover-input",
     )
 
-    assert resumed == [orphaned.session_id]
+    assert len(launched) == 1
+    request, starting = launched[0]
+    assert request.intent == orphaned.intent
+    assert starting.status is SessionStatus.STARTING
+    assert starting.resume_marker == "input:recover-input"
     assert receipt.deferred
     assert receipt.recovery_error == ""
     assert BackgroundInputInbox(store).receipts(orphaned.session_id)[0].deferred
-    assert store.get(orphaned.session_id).status is SessionStatus.ORPHANED
+    assert store.get(orphaned.session_id).status is SessionStatus.STARTING
 
 
 def test_deferred_input_remains_durable_if_background_recovery_cannot_start(
@@ -577,10 +786,10 @@ def test_deferred_input_remains_durable_if_background_recovery_cannot_start(
     )
     supervisor = BackgroundSupervisor(store)
 
-    def fail_resume(_session_id: str) -> BackgroundSession:
+    def fail_start(*_args: object, **_kwargs: object) -> BackgroundSession:
         raise RuntimeError("worker capacity reached")
 
-    monkeypatch.setattr(supervisor, "resume", fail_resume)
+    monkeypatch.setattr(supervisor, "_start_deferred_input_attempt", fail_start)
     receipt = supervisor.enqueue_input_or_recover(
         failed.session_id,
         "do not lose this recovery input",
@@ -836,12 +1045,14 @@ async def test_background_workflow_resume_uses_recovery_coordinator(
         intent: str,
         *,
         resume_run_id: str | None = None,
+        resume_plan: object | None = None,
     ) -> object:
         assert (workflow_name, intent, resume_run_id) == (
             "goal_flow",
             "continue the saved task",
             "recoverable-run",
         )
+        assert resume_plan is None
         return SimpleNamespace(status="complete", error=None)
 
     registry = Workflows()
@@ -872,6 +1083,107 @@ async def test_background_workflow_resume_uses_recovery_coordinator(
     assert not result.selection_only
     assert result.message == "Workflow goal_flow resumed and completed."
     assert store.get(session_record.session_id).workflow_name == "goal_flow"
+
+
+@pytest.mark.asyncio
+async def test_explicit_workflow_resume_assigns_legacy_turn_to_selected_run(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    from agenthicc.background.worker import _handle_background_workflow_command
+    from agenthicc.memory.journal import ConversationJournal
+    from agenthicc.runners.run_coordinator import RunCoordinator
+
+    store, session_record = _running_store(tmp_path)
+    journal = ConversationJournal(tmp_path / "linked-turn.jsonl")
+    journal.turn_started(
+        "interrupted-workflow-turn",
+        "continue workflow phase",
+        0,
+    )
+    pending_resume = RunCoordinator.build_resume_plan(
+        journal,
+        RunCoordinator.detect_incomplete_turn(journal),  # type: ignore[arg-type]
+    )
+    pending_resume = replace(pending_resume, execution_kind=None)
+    checkpoint = SimpleNamespace(
+        run_id="recoverable-run",
+        workflow_name="goal_flow",
+        intent="continue the saved task",
+        recoverable=True,
+        display_error="",
+    )
+
+    class Workflows:
+        def get(self, name: str) -> object | None:
+            return SimpleNamespace(name=name) if name == "goal_flow" else None
+
+        def names(self) -> list[str]:
+            return ["goal_flow"]
+
+    class RecoveryCoordinator:
+        def __init__(self, _session_id: str) -> None:
+            pass
+
+        def select_latest_for_resume(self, **_kwargs: object) -> object:
+            return checkpoint
+
+    async def execute(
+        _session: object,
+        workflow_name: str,
+        intent: str,
+        *,
+        resume_run_id: str | None = None,
+        resume_plan: object | None = None,
+    ) -> object:
+        assert (workflow_name, intent, resume_run_id) == (
+            "goal_flow",
+            "continue the saved task",
+            "recoverable-run",
+        )
+        assert resume_plan is pending_resume
+        # This represents the bound workflow execution writing the resumed
+        # turn marker. The v3 journal entry establishes ownership for any
+        # subsequent recovery attempt.
+        journal.turn_started(
+            "interrupted-workflow-turn",
+            "continue workflow phase",
+            0,
+            workflow_run_id=resume_run_id or "",
+        )
+        journal.turn_completed("interrupted-workflow-turn")
+        return SimpleNamespace(status="complete", error=None)
+
+    session = SimpleNamespace(
+        session_id=session_record.session_id,
+        workflow_registry=Workflows(),
+        session_conversation=SimpleNamespace(journal=journal),
+        workspace_scope=SimpleNamespace(primary_root=str(tmp_path)),
+        cfg=SimpleNamespace(execution=SimpleNamespace(profile="test-profile")),
+        app_state=SimpleNamespace(active_mode=lambda: SimpleNamespace(default_workflow=None)),
+        pending_resume=pending_resume,
+    )
+    monkeypatch.setattr(
+        "agenthicc.runners.workflow_recovery.WorkflowRecoveryCoordinator",
+        RecoveryCoordinator,
+    )
+    monkeypatch.setattr("agenthicc.runners.headless.execute_workflow", execute)
+
+    try:
+        result = await _handle_background_workflow_command(
+            session,
+            "resume",
+            store=store,
+            attempt=session_record.attempt,
+            lease_token=session_record.lease_token,
+        )
+        assert result.error == ""
+        assert result.message == "Workflow goal_flow resumed and completed."
+        assert session.pending_resume is None
+    finally:
+        journal.close()
 
 
 @pytest.mark.asyncio
@@ -916,6 +1228,7 @@ async def test_background_workflow_resume_accepts_an_explicit_run_id(
         *,
         resume_run_id: str | None = None,
         continuation: str | None = None,
+        resume_plan: object | None = None,
     ) -> object:
         assert (workflow_name, intent, resume_run_id, continuation) == (
             "goal_flow",
@@ -923,6 +1236,7 @@ async def test_background_workflow_resume_accepts_an_explicit_run_id(
             "explicit-run-id",
             None,
         )
+        assert resume_plan is None
         return SimpleNamespace(status="complete", error=None)
 
     registry = Workflows()

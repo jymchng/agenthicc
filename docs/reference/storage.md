@@ -109,7 +109,7 @@ grep -rn 'Path.home() / ".agenthicc"' src/agenthicc --include=*.py
 | `~/.agenthicc/schedules/` and its scheduler/dispatch locks | `src/agenthicc/schedules/store.py` and `src/agenthicc/schedules/scheduler.py` |
 | `~/.agenthicc/background/notifications/outbox.sqlite3` | `src/agenthicc/background/notifications.py` |
 | `~/.agenthicc/background/operator-inbox.sqlite3` | `src/agenthicc/background/inbox.py` |
-| `~/.agenthicc/background/input-inbox/<session-id>.jsonl` and `.lock` | `background.input_inbox.BackgroundInputInbox` | Owner-attempt-fenced live input, deferred stale-session recovery input, and delivery receipts | Append-only, fsynced, deduplicated FIFO; deferred items are rebound to the next worker lease only after that worker claims the same session; submitted text is sensitive and separate from lifecycle logs |
+| `~/.agenthicc/background/input-inbox/<session-id>.jsonl` and `.lock` | `background.input_inbox.BackgroundInputInbox` | Owner-attempt-fenced live input, deferred stale-session recovery input, waiting/rearmed recovery reasons, and delivery receipts | Append-only, fsynced, deduplicated FIFO; deferred items are rebound to the next worker lease only after that worker claims the same session; recovery controls may be claimed by stable ID while ordinary messages remain queued in order; submitted text is sensitive and separate from lifecycle logs |
 | `~/.agenthicc/background/terminals/` | `src/agenthicc/background/terminals.py:349` |
 | `~/.agenthicc/cassettes` (default `--record-cassette`) | `src/agenthicc/cli/parser.py:61` |
 

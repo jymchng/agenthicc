@@ -18,7 +18,7 @@ from agenthicc.background import (
 from agenthicc.background.worker import (
     BackgroundApprovalService,
     WorkerRequest,
-    _direct_resume_workflow_conflict,
+    _assess_direct_turn_recovery,
     _run_direct_turn,
     run_worker,
 )
@@ -491,12 +491,15 @@ async def test_failed_worker_resume_keeps_deferred_input_pending(
     assert receipt.deferred is True
 
 
-def test_active_workflow_blocks_direct_turn_recovery() -> None:
+def test_unlinked_interrupted_turn_with_active_workflow_is_unresolved() -> None:
     from agenthicc.kernel.state import NodeStatus
+    from agenthicc.background.recovery import RecoveryOwner
 
     active_state = SimpleNamespace(
         workflows={
-            "workflow-run": SimpleNamespace(name="create_workflow", status=NodeStatus.running)
+            "workflow-run": SimpleNamespace(
+                name="create_workflow", status=NodeStatus.running, run_id="workflow-run"
+            )
         }
     )
     session = SimpleNamespace(
@@ -504,10 +507,251 @@ def test_active_workflow_blocks_direct_turn_recovery() -> None:
         session_conversation=None,
     )
 
-    conflict = _direct_resume_workflow_conflict(session)
+    assessment = _assess_direct_turn_recovery(
+        session,
+        SimpleNamespace(turn_id="old-turn", workflow_run_id=None),
+    )
 
-    assert conflict is not None
-    assert "in-progress workflow" in conflict
+    assert assessment.owner is RecoveryOwner.UNRESOLVED
+    assert assessment.related_run_ids == ("workflow-run",)
+
+
+@pytest.mark.asyncio
+async def test_recovery_control_reaches_target_behind_blocked_fifo_input(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from agenthicc.background.input_inbox import BackgroundInputInbox
+    from agenthicc.background.worker import _BackgroundWorkflowCommandResult
+    from agenthicc.kernel.state import NodeStatus
+
+    store = BackgroundStore(tmp_path / "background")
+    _queued(tmp_path, store)
+    inbox = BackgroundInputInbox(store)
+    ordinary_text = "preserve this earlier ordinary input"
+    command_text = "  /workflow resume workflow-run-17  "
+    ordinary = inbox.enqueue_deferred(
+        "worker-session",
+        ordinary_text,
+        expected_attempt=0,
+        expected_lease_token="",
+        message_id="ordinary-blocked",
+    )
+    command = inbox.enqueue_deferred(
+        "worker-session",
+        command_text,
+        expected_attempt=0,
+        expected_lease_token="",
+        message_id="workflow-resume-command",
+    )
+    assert ordinary.deferred and command.deferred
+
+    fake_session = _Session()
+    fake_session.pending_resume = SimpleNamespace(
+        turn_id="legacy-interrupted-turn",
+        user_message="old workflow phase request",
+        ledger=object(),
+        workflow_run_id=None,
+    )
+    active_state = SimpleNamespace(
+        workflows={
+            "workflow-run-17": SimpleNamespace(
+                name="reconstruct_site",
+                status=NodeStatus.running,
+                run_id="workflow-run-17",
+            )
+        }
+    )
+    fake_session.processor.get_state = lambda: active_state
+    routed: list[tuple[str, str]] = []
+
+    async def build(*_args: object, **_kwargs: object) -> _Session:
+        return fake_session
+
+    async def direct(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("ambiguous recovery must not issue a direct provider turn")
+
+    async def route(
+        _session: object,
+        args: str,
+        **_kwargs: object,
+    ) -> _BackgroundWorkflowCommandResult:
+        routed.append((args, command_text))
+        return _BackgroundWorkflowCommandResult(
+            message="target handled explicit workflow recovery command",
+            selection_only=True,
+        )
+
+    async def close(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr("agenthicc.runners.tui_session._build_session_context", build)
+    monkeypatch.setattr("agenthicc.background.worker._run_direct_turn", direct)
+    monkeypatch.setattr("agenthicc.background.worker._handle_background_workflow_command", route)
+    monkeypatch.setattr("agenthicc.runners.headless._close_headless_session", close)
+    request = WorkerRequest(
+        session_id="worker-session",
+        workflow_name="",
+        intent="must not replace pending recovery",
+        cwd=str(tmp_path),
+        config_path=None,
+        set_overrides=(),
+        dangerously_skip_permissions=False,
+    )
+
+    exit_code = await run_worker(request, store)
+
+    assert exit_code == 0
+    assert routed == [("resume workflow-run-17", command_text)]
+    user_events = [
+        payload
+        for kind, payload, _event_id in fake_session.app_state.conversation.events
+        if kind == "user_message"
+    ]
+    assert user_events == [
+        {"text": command_text, "source": "agents-manager"},
+    ]
+    receipts = {item.message_id: item for item in inbox.receipts("worker-session")}
+    assert receipts[command.message_id].state == "completed"
+    assert receipts[ordinary.message_id].state == "accepted"
+    assert receipts[ordinary.message_id].deferred
+    assert "/workflow resume <run-id>" in receipts[ordinary.message_id].recovery_error
+    current = store.get("worker-session")
+    assert current.status is SessionStatus.ORPHANED
+    assert current.failure_category == ""
+
+
+def test_legacy_recovery_assessment_correlates_exact_workflow_checkpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agenthicc.background.recovery import RecoveryOwner
+
+    record = SimpleNamespace(
+        run_id="workflow-run-17",
+        recoverable=True,
+        workflow_name="goal_flow",
+        conversation_id="worker-session",
+        intent="original workflow request",
+    )
+
+    class _RecoveryCoordinator:
+        def __init__(self, session_id: str) -> None:
+            assert session_id == "worker-session"
+
+        def inspect(self, **_kwargs: object) -> list[object]:
+            return [record]
+
+    monkeypatch.setattr(
+        "agenthicc.runners.workflow_recovery.WorkflowRecoveryCoordinator",
+        _RecoveryCoordinator,
+    )
+    session = SimpleNamespace(
+        session_id="worker-session",
+        processor=SimpleNamespace(get_state=lambda: SimpleNamespace(workflows={})),
+        session_conversation=object(),
+        cfg=SimpleNamespace(execution=SimpleNamespace(profile="")),
+        workflow_registry=object(),
+        workspace_scope=SimpleNamespace(primary_root="/workspace"),
+    )
+    assessment = _assess_direct_turn_recovery(
+        session,
+        SimpleNamespace(turn_id="legacy-turn", workflow_run_id=None),
+        configured_workflow_name="goal_flow",
+        session_intent="original workflow request",
+    )
+    assert assessment.owner is RecoveryOwner.WORKFLOW
+    assert assessment.workflow_run_id == "workflow-run-17"
+
+
+@pytest.mark.asyncio
+async def test_worker_resumes_uniquely_owned_workflow_before_forwarding_waiting_input(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from agenthicc.background.input_inbox import BackgroundInputInbox
+    from agenthicc.background.recovery import RecoveryAssessment, RecoveryOwner
+    from agenthicc.background.worker import _BackgroundWorkflowCommandResult
+
+    store = BackgroundStore(tmp_path / "background")
+    _queued(tmp_path, store)
+    inbox = BackgroundInputInbox(store)
+    inbox.enqueue_deferred(
+        "worker-session",
+        "please continue the existing task",
+        expected_attempt=0,
+        expected_lease_token="",
+        message_id="pending-user-input",
+    )
+    fake_session = _Session()
+    fake_session.pending_resume = SimpleNamespace(
+        turn_id="legacy-workflow-turn",
+        user_message="original workflow phase request",
+        ledger=object(),
+        workflow_run_id=None,
+        execution_kind=None,
+    )
+    workflow_calls: list[str] = []
+    direct_calls: list[str] = []
+
+    def assess(_session: object, pending: object, **_kwargs: object) -> RecoveryAssessment:
+        return (
+            RecoveryAssessment(
+                owner=RecoveryOwner.WORKFLOW,
+                turn_id="legacy-workflow-turn",
+                workflow_run_id="workflow-run-17",
+            )
+            if pending is not None
+            else RecoveryAssessment(owner=RecoveryOwner.NONE)
+        )
+
+    async def build(*_args: object, **_kwargs: object) -> _Session:
+        return fake_session
+
+    async def resume_workflow(
+        _session: object,
+        command_args: str,
+        **_kwargs: object,
+    ) -> _BackgroundWorkflowCommandResult:
+        workflow_calls.append(command_args)
+        fake_session.pending_resume = None
+        return _BackgroundWorkflowCommandResult(
+            workflow_name="goal_flow",
+            message="existing workflow turn recovered",
+        )
+
+    async def direct(_session: object, direct_request: WorkerRequest) -> None:
+        direct_calls.append(direct_request.intent)
+
+    async def close(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr("agenthicc.runners.tui_session._build_session_context", build)
+    monkeypatch.setattr("agenthicc.background.worker._assess_direct_turn_recovery", assess)
+    monkeypatch.setattr(
+        "agenthicc.background.worker._handle_background_workflow_command", resume_workflow
+    )
+    monkeypatch.setattr("agenthicc.background.worker._run_direct_turn", direct)
+    monkeypatch.setattr("agenthicc.runners.headless._close_headless_session", close)
+    request = WorkerRequest(
+        session_id="worker-session",
+        workflow_name="goal_flow",
+        intent="original workflow request",
+        cwd=str(tmp_path),
+        config_path=None,
+        set_overrides=(),
+        dangerously_skip_permissions=False,
+    )
+
+    assert await run_worker(request, store) == 0
+    assert workflow_calls == ["resume workflow-run-17"]
+    assert direct_calls == ["please continue the existing task"]
+    user_messages = [
+        payload["text"]
+        for kind, payload, _event_id in fake_session.app_state.conversation.events
+        if kind == "user_message"
+    ]
+    assert user_messages == ["please continue the existing task"]
+    receipt = inbox.receipts("worker-session")[0]
+    assert receipt.state == "completed"
+    assert store.get("worker-session").status is SessionStatus.COMPLETED
 
 
 @pytest.mark.asyncio

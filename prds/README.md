@@ -109,6 +109,7 @@ against the current source before implementing them.
 - [PRD-238 — Reversible Turn Checkpoints and Session Branches](prd-238-reversible-turn-checkpoints-and-session-branches.md)
 - [PRD-239 — Trusted Extension Bundles and Catalog](prd-239-trusted-extension-bundles-and-catalog.md)
 - [PRD-240 — Reliable Agents-Page Input: Provider Identity and Turn Recovery](prd-240-consistent-agent-input-session-recovery.md)
+- [PRD-241 — Deliver Agents-Page Input Through Conflicting Recovery State](prd-241-agents-input-with-conflicting-recovery-state.md)
 
 ### PRD-220–239 — OpenCode, Claude Code, and Codex feature study
 
@@ -532,6 +533,15 @@ deferred input. These are separate fixes—the reported missing-header response
 is not evidence of malformed assistant/tool history. Provider diagnostics are
 bounded and redacted; implementation and verification details are recorded in
 [PRD-240](prd-240-consistent-agent-input-session-recovery.md).
+
+PRD-241 is implemented: versioned turn provenance distinguishes direct turns
+from workflow-phase turns, and typed recovery arbitration replaces the broad
+session-wide workflow conflict check. A uniquely matching saved workflow is
+restored before accepted input is delivered; ambiguous state remains
+recoverable, and explicit workflow controls can reach the target behind a
+blocked FIFO head.
+See [PRD-241](prd-241-agents-input-with-conflicting-recovery-state.md) and the
+background-sessions/storage guides.
 
 PRD-218 fixes foreground `/detach` when the prior background attempt is
 completed. It reactivates the same session for eligible work, preserves the

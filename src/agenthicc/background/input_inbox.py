@@ -108,6 +108,8 @@ class BackgroundInputInbox:
                     "rejected",
                     "rebound",
                     "deferred",
+                    "waiting_recovery",
+                    "recovery_rearmed",
                 }
                 and message_id in records
             ):
@@ -150,6 +152,7 @@ class BackgroundInputInbox:
             state_changed_at=changed_at if isinstance(changed_at, (int, float)) else 0.0,
             error=str(record.get("error", ""))[:240],
             deferred=record.get("deferred") is True,
+            recovery_error=str(record.get("recovery_error", ""))[:240],
         )
 
     def enqueue(
@@ -344,6 +347,7 @@ class BackgroundInputInbox:
                         "owner_attempt": owner_attempt,
                         "owner_hash": owner_hash,
                         "deferred": False,
+                        "recovery_error": "",
                         "state": "accepted",
                         "state_changed_at": time.time(),
                     }
@@ -371,6 +375,163 @@ class BackgroundInputInbox:
                 record.update(claimed)
                 return self._as_input(record)
         return None
+
+    def claim_by_id(
+        self,
+        session_id: str,
+        message_id: str,
+        *,
+        owner_attempt: int,
+        lease_token: str,
+    ) -> BackgroundInput | None:
+        """Claim one accepted message by stable ID, even behind a blocked FIFO head.
+
+        This is reserved for target-session recovery-control commands. Ordinary
+        messages must continue to use :meth:`claim_next`, preserving their
+        accepted order at the conversation boundary.
+        """
+        path, lock_path = self._paths(session_id)
+        with InterProcessLock(lock_path):
+            current = self.store.get(session_id, include_deleted=True)
+            self._validate_current_owner(current, owner_attempt, lease_token)
+            records = self._projection(self._events(path))
+            record = records.get(message_id)
+            if record is None or record.get("state") != "accepted":
+                return None
+            owner_hash = self._owner_hash(lease_token)
+            if record.get("deferred") is True:
+                rebound = {
+                    "action": "rebound",
+                    "message_id": message_id,
+                    "owner_attempt": owner_attempt,
+                    "owner_hash": owner_hash,
+                    "deferred": False,
+                    "recovery_error": "",
+                    "state": "accepted",
+                    "state_changed_at": time.time(),
+                }
+                self._append(path, rebound)
+                record.update(rebound)
+            if (
+                record.get("owner_attempt") != owner_attempt
+                or record.get("owner_hash") != owner_hash
+            ):
+                return None
+            delivered = {
+                "action": "delivered",
+                "message_id": message_id,
+                "state": "delivered",
+                "state_changed_at": time.time(),
+            }
+            self._append(path, delivered)
+            record.update(delivered)
+            return self._as_input(record)
+
+    def mark_waiting_recovery(
+        self,
+        session_id: str,
+        *,
+        owner_attempt: int,
+        lease_token: str,
+        reason: str,
+    ) -> tuple[BackgroundInput, ...]:
+        """Return this attempt's undelivered messages to durable recovery wait.
+
+        The raw message and its stable ID remain unchanged. Clearing the lease
+        fence lets a future worker safely rebind the accepted message; the
+        bounded reason is projected to the details UI rather than converting
+        the receipt into a rejection that asks the user to resend.
+        """
+        path, lock_path = self._paths(session_id)
+        owner_hash = self._owner_hash(lease_token)
+        safe_reason = reason.strip()[:240] or "Waiting for explicit recovery action."
+        with InterProcessLock(lock_path):
+            current = self.store.get(session_id, include_deleted=True)
+            self._validate_current_owner(current, owner_attempt, lease_token)
+            records = self._projection(self._events(path))
+            now = time.time()
+            for message_id, record in records.items():
+                if record.get("state") not in {"accepted", "claimed"}:
+                    continue
+                is_deferred = record.get("deferred") is True
+                owned_by_attempt = (
+                    record.get("owner_attempt") == owner_attempt
+                    and record.get("owner_hash") == owner_hash
+                )
+                if not is_deferred and not owned_by_attempt:
+                    continue
+                event: dict[str, object] = {
+                    "action": "waiting_recovery",
+                    "message_id": message_id,
+                    "owner_attempt": owner_attempt,
+                    "owner_hash": "",
+                    "deferred": True,
+                    "recovery_error": safe_reason,
+                    "state": "accepted",
+                    "state_changed_at": now,
+                }
+                self._append(path, event)
+                record.update(event)
+            return tuple(
+                self._as_input(item) for item in sorted(records.values(), key=self._accepted_at)
+            )
+
+    def rearm_recovery_wait(
+        self,
+        session_id: str,
+        *,
+        expected_attempt: int,
+        expected_lease_token: str,
+    ) -> tuple[BackgroundInput, ...]:
+        """Schedule a fresh attempt for pending input without retaining stale wait errors.
+
+        Called only after the supervisor has decided to launch a replacement
+        worker. Clearing the previous wait reason here allows maintenance to
+        retry if that worker crashes before it claims the inbox item; a new
+        unresolved worker will persist a fresh reason before exiting.
+        """
+        path, lock_path = self._paths(session_id)
+        with InterProcessLock(lock_path):
+            current = self.store.get(session_id, include_deleted=True)
+            if (
+                current.status
+                not in {
+                    SessionStatus.COMPLETED,
+                    SessionStatus.FAILED,
+                    SessionStatus.ORPHANED,
+                    SessionStatus.CANCELLED,
+                    SessionStatus.ARCHIVED,
+                }
+                or current.attempt != expected_attempt
+                or current.lease_token != expected_lease_token
+            ):
+                raise InvalidSessionTransition(
+                    "Session is not the same recoverable owner; reopen details and retry"
+                )
+            records = self._projection(self._events(path))
+            now = time.time()
+            for message_id, record in records.items():
+                if (
+                    record.get("state") != "accepted"
+                    or record.get("deferred") is not True
+                    or not record.get("recovery_error")
+                ):
+                    continue
+                event: dict[str, object] = {
+                    "action": "recovery_rearmed",
+                    "message_id": message_id,
+                    "owner_attempt": expected_attempt,
+                    "owner_hash": "",
+                    "deferred": True,
+                    "recovery_error": "",
+                    "state": "accepted",
+                    "state_changed_at": now,
+                }
+                self._append(path, event)
+                record.update(event)
+            return tuple(
+                self._as_input(item) for item in sorted(records.values(), key=self._accepted_at)
+            )
 
     def peek_next(
         self,

@@ -37,6 +37,7 @@ WORKER_FINALIZATION_TIMEOUT_S = 30.0
 
 
 if TYPE_CHECKING:
+    from agenthicc.background.recovery import RecoveryAssessment
     from agenthicc.background.terminals import TerminalManager
     from agenthicc.runners.workflow_recovery import WorkflowRecoveryRecord
     from agenthicc.runners.session_context import SessionContext
@@ -1085,10 +1086,25 @@ async def _run_direct_turn(
     )
 
 
-def _direct_resume_workflow_conflict(session: object) -> str | None:
-    """Return a fail-closed diagnostic when workflow recovery owns the session."""
+def _assess_direct_turn_recovery(
+    session: object,
+    pending_resume: object,
+    *,
+    configured_workflow_name: str = "",
+    session_intent: str = "",
+) -> "RecoveryAssessment":
+    """Correlate an interrupted journal turn with durable workflow recovery.
+
+    The mere presence of a workflow record is not ownership evidence. New
+    journal entries carry the workflow run ID; historical entries without it
+    are held for an explicit recovery decision whenever workflow state exists.
+    """
+    from agenthicc.background.recovery import assess_recovery_owner  # noqa: PLC0415
+
     processor = _request_attribute(session, "processor", None)
     get_state = _request_attribute(processor, "get_state", None)
+    active_workflow_run_ids: list[str] = []
+    inspection_error = ""
     if callable(get_state):
         try:
             state = get_state()
@@ -1096,54 +1112,85 @@ def _direct_resume_workflow_conflict(session: object) -> str | None:
             from agenthicc.kernel.state import NodeStatus  # noqa: PLC0415
 
             if isinstance(workflows, Mapping):
-                if any(
-                    bool(_request_attribute(workflow, "name", ""))
-                    and _request_attribute(workflow, "status")
-                    not in {NodeStatus.complete, NodeStatus.failed}
-                    for workflow in workflows.values()
-                ):
-                    return (
-                        "Direct-turn recovery is blocked by an in-progress workflow; "
-                        "resume or reset the workflow explicitly before sending new input."
-                    )
+                for key, workflow in workflows.items():
+                    status = _request_attribute(workflow, "status")
+                    if status in {NodeStatus.complete, NodeStatus.failed}:
+                        continue
+                    if not _request_attribute(workflow, "name", ""):
+                        continue
+                    run_id = _request_attribute(workflow, "run_id", None)
+                    active_workflow_run_ids.append(str(run_id or key)[:128])
         except Exception as exc:  # noqa: BLE001 — do not run both recovery paths
-            return (
-                "Cannot inspect active workflow state before direct-turn recovery: "
-                f"{type(exc).__name__}"
-            )
+            inspection_error = f"active workflow projection: {type(exc).__name__}"
 
     conversation = _request_attribute(session, "session_conversation", None)
-    if conversation is None:
-        return None
-    from agenthicc.runners.workflow_recovery import (  # noqa: PLC0415
-        WorkflowRecoveryCoordinator,
+    recoverable_run_ids: list[str] = []
+    invalid_run_ids: list[str] = []
+    correlated_workflow_run_ids: list[str] = []
+    if conversation is not None:
+        from agenthicc.runners.workflow_recovery import (  # noqa: PLC0415
+            WorkflowRecoveryCoordinator,
+        )
+
+        config = _request_attribute(session, "cfg", None)
+        execution = _request_attribute(config, "execution", None)
+        profile = _request_attribute(execution, "profile", "")
+        registry = _request_attribute(session, "workflow_registry", None)
+        workspace_scope = _request_attribute(session, "workspace_scope", None)
+        workspace_root = _request_attribute(workspace_scope, "primary_root", "")
+        try:
+            records = WorkflowRecoveryCoordinator(
+                str(_request_attribute(session, "session_id", ""))
+            ).inspect(
+                workflow_registry=cast("WorkflowRegistry | None", registry),
+                conversation=cast("SessionConversation | None", conversation),
+                provider_profile=str(profile or ""),
+                workspace_root=str(workspace_root or ""),
+            )
+            recoverable_run_ids = [record.run_id for record in records if record.recoverable]
+            invalid_run_ids = [record.run_id for record in records if not record.recoverable]
+            session_id = str(_request_attribute(session, "session_id", ""))
+            if configured_workflow_name and session_intent:
+                correlated_workflow_run_ids = [
+                    record.run_id
+                    for record in records
+                    if record.workflow_name == configured_workflow_name
+                    and record.conversation_id == session_id
+                    and record.intent == session_intent
+                ]
+        except Exception as exc:  # noqa: BLE001 — preserve the pending input
+            inspection_error = (
+                inspection_error or f"workflow checkpoint inspection: {type(exc).__name__}"
+            )
+
+    raw_turn_workflow_run_id = _request_attribute(pending_resume, "workflow_run_id", None)
+    return assess_recovery_owner(
+        turn_id=str(_request_attribute(pending_resume, "turn_id", "")) or None,
+        turn_workflow_run_id=(
+            raw_turn_workflow_run_id
+            if isinstance(raw_turn_workflow_run_id, str) and raw_turn_workflow_run_id
+            else None
+        ),
+        turn_execution_kind=(
+            raw_execution_kind
+            if isinstance(
+                raw_execution_kind := _request_attribute(pending_resume, "execution_kind", None),
+                str,
+            )
+            else None
+        ),
+        recoverable_run_ids=recoverable_run_ids,
+        invalid_run_ids=invalid_run_ids,
+        active_workflow_run_ids=active_workflow_run_ids,
+        correlated_workflow_run_ids=correlated_workflow_run_ids,
+        inspection_error=inspection_error,
     )
 
-    config = _request_attribute(session, "cfg", None)
-    execution = _request_attribute(config, "execution", None)
-    profile = _request_attribute(execution, "profile", "")
-    registry = _request_attribute(session, "workflow_registry", None)
-    workspace_scope = _request_attribute(session, "workspace_scope", None)
-    workspace_root = _request_attribute(workspace_scope, "primary_root", "")
-    try:
-        records = WorkflowRecoveryCoordinator(
-            str(_request_attribute(session, "session_id", ""))
-        ).inspect(
-            workflow_registry=cast("WorkflowRegistry | None", registry),
-            conversation=cast("SessionConversation | None", conversation),
-            provider_profile=str(profile or ""),
-            workspace_root=str(workspace_root or ""),
-        )
-    except Exception as exc:  # noqa: BLE001 — preserve the pending input
-        return f"Cannot inspect workflow recovery records: {type(exc).__name__}"
-    if records:
-        run_ids = ", ".join(record.run_id for record in records[:4])
-        suffix = " …" if len(records) > 4 else ""
-        return (
-            "Direct-turn recovery is blocked because workflow recovery records "
-            f"need explicit handling ({run_ids}{suffix}); use /workflow resume or reset."
-        )
-    return None
+
+def _is_workflow_recovery_control(text: str) -> bool:
+    """Identify only target-routed commands that can resolve recovery state."""
+    parts = text.strip().split()
+    return len(parts) >= 2 and parts[0] == "/workflow" and parts[1] in {"resume", "reset"}
 
 
 def _safe_provider_failure_message(
@@ -1317,6 +1364,7 @@ async def _handle_background_workflow_command(
     store: BackgroundStore,
     attempt: int,
     lease_token: str,
+    input_resume_plan: "ResumePlan | None" = None,
 ) -> _BackgroundWorkflowCommandResult:
     """Handle one forwarded `/workflow` input in the target session runtime.
 
@@ -1535,6 +1583,39 @@ async def _handle_background_workflow_command(
                     error="The selected workflow checkpoint has no workflow name.",
                     selection_only=True,
                 )
+            pending_resume = _request_attribute(session, "pending_resume", None)
+            if pending_resume is not None:
+                raw_linked_run_id = _request_attribute(pending_resume, "workflow_run_id", None)
+                linked_run_id = (
+                    raw_linked_run_id
+                    if isinstance(raw_linked_run_id, str) and raw_linked_run_id
+                    else None
+                )
+                execution_kind = _request_attribute(pending_resume, "execution_kind", None)
+                if linked_run_id is not None and linked_run_id != record.run_id:
+                    return _BackgroundWorkflowCommandResult(
+                        workflow_name=workflow_name,
+                        error=(
+                            "The interrupted turn is linked to a different workflow run. "
+                            "The selected checkpoint and queued input are preserved."
+                        ),
+                        selection_only=True,
+                    )
+                if execution_kind == "direct":
+                    return _BackgroundWorkflowCommandResult(
+                        workflow_name=workflow_name,
+                        error=(
+                            "The interrupted journal turn is a direct-agent turn, not part of "
+                            "this workflow. The workflow command was handled, but the direct "
+                            "turn must recover first."
+                        ),
+                        selection_only=True,
+                    )
+                # An explicit target-side `/workflow resume [run-id]` is the
+                # operator's recovery-owner decision for legacy journals that
+                # predate turn-to-run provenance. The re-drive records this
+                # run ID on the next durable turn_started event.
+                input_resume_plan = cast("ResumePlan", pending_resume)
             selection_error = await persist_selection(
                 workflow_name,
                 f"Resuming workflow · {workflow_name}",
@@ -1551,7 +1632,22 @@ async def _handle_background_workflow_command(
                 workflow_name,
                 intent,
                 resume_run_id=record.run_id,
+                resume_plan=input_resume_plan,
             )
+            # The workflow resume may have completed the exact interrupted
+            # journal turn. Re-fold the authoritative journal before deciding
+            # whether deferred ordinary input can be delivered.
+            if input_resume_plan is not None and conversation is not None:
+                from agenthicc.runners.run_coordinator import RunCoordinator  # noqa: PLC0415
+
+                incomplete = RunCoordinator.detect_incomplete_turn(conversation.journal)
+                setattr(
+                    session,
+                    "pending_resume",
+                    RunCoordinator.build_resume_plan(conversation.journal, incomplete)
+                    if incomplete is not None
+                    else None,
+                )
             status = result.status
             if status == "complete":
                 return _BackgroundWorkflowCommandResult(
@@ -1924,11 +2020,61 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
             _record_input_delivery(item, starts_turn=True)
             return item.text
 
-        async def _drain_idle_inputs() -> None:
-            """Route every queued message through the target session's input path."""
+        async def _dispatch_workflow_input(item: object) -> None:
+            """Route a claimed workflow command through the target session."""
             nonlocal active_workflow_name
             nonlocal session_waiting_for_next_input
             nonlocal workflow_command_failure
+            diagnostic_context = current_provider_diagnostic_context()
+            message_id = str(_request_attribute(item, "message_id", ""))
+            text = str(_request_attribute(item, "text", ""))
+            if diagnostic_context is not None:
+                diagnostic_context["phase"] = "processing_input"
+                diagnostic_context["input_message_id"] = message_id
+            _record_input_delivery(item, starts_turn=False)
+            workflow_parts = text.strip().split(None, 1)
+            result = await _handle_background_workflow_command(
+                session,
+                workflow_parts[1] if len(workflow_parts) == 2 else "",
+                store=store,
+                attempt=claimed_attempt or 0,
+                lease_token=lease,
+            )
+            if result.fatal:
+                input_inbox.reject(
+                    request.session_id,
+                    message_id,
+                    owner_attempt=claimed_attempt or 0,
+                    lease_token=lease,
+                    reason=result.error,
+                )
+                delivered_input_ids.discard(message_id)
+                workflow_command_failure = result.error
+                session.app_state.conversation.append_event(
+                    "assistant_message",
+                    {"text": result.error, "source": "agents-manager-command"},
+                    event_id=f"background-command-error:{message_id}",
+                )
+                return
+            if result.workflow_name is not None:
+                active_workflow_name = result.workflow_name
+            session_waiting_for_next_input = result.selection_only or bool(result.error)
+            completed_command_ids.add(message_id)
+            response = result.error or result.message
+            if response:
+                session.app_state.conversation.append_event(
+                    "assistant_message",
+                    {"text": response, "source": "agents-manager-command"},
+                    event_id=(
+                        f"background-command-error:{message_id}"
+                        if result.error
+                        else f"background-command-output:{message_id}"
+                    ),
+                )
+
+        async def _drain_idle_inputs() -> None:
+            """Route every queued message through the target session's input path."""
+            nonlocal session_waiting_for_next_input
             from dataclasses import replace as dataclass_replace  # noqa: PLC0415
 
             while True:
@@ -1954,54 +2100,10 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
                     and registry.get(token) is not None
                 )
                 if item.text.startswith("/") or is_registered_skill:
-                    _record_input_delivery(item, starts_turn=False)
                     if token == "/workflow":
-                        workflow_parts = item.text.strip().split(None, 1)
-                        result = await _handle_background_workflow_command(
-                            session,
-                            workflow_parts[1] if len(workflow_parts) == 2 else "",
-                            store=store,
-                            attempt=claimed_attempt or 0,
-                            lease_token=lease,
-                        )
-                        if result.fatal:
-                            input_inbox.reject(
-                                request.session_id,
-                                item.message_id,
-                                owner_attempt=claimed_attempt or 0,
-                                lease_token=lease,
-                                reason=result.error,
-                            )
-                            delivered_input_ids.discard(item.message_id)
-                            workflow_command_failure = result.error
-                            session.app_state.conversation.append_event(
-                                "assistant_message",
-                                {
-                                    "text": result.error,
-                                    "source": "agents-manager-command",
-                                },
-                                event_id=f"background-command-error:{item.message_id}",
-                            )
-                            continue
-                        if result.workflow_name is not None:
-                            active_workflow_name = result.workflow_name
-                        session_waiting_for_next_input = result.selection_only or bool(result.error)
-                        completed_command_ids.add(item.message_id)
-                        response = result.error or result.message
-                        if response:
-                            session.app_state.conversation.append_event(
-                                "assistant_message",
-                                {
-                                    "text": response,
-                                    "source": "agents-manager-command",
-                                },
-                                event_id=(
-                                    f"background-command-error:{item.message_id}"
-                                    if result.error
-                                    else f"background-command-output:{item.message_id}"
-                                ),
-                            )
+                        await _dispatch_workflow_input(item)
                         continue
+                    _record_input_delivery(item, starts_turn=False)
                     if token == "/compact":
                         try:
                             await _compact_background_session(session)
@@ -2076,6 +2178,32 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
                 session_waiting_for_next_input = False
                 completed_command_ids.add(item.message_id)
 
+        async def _route_recovery_control_inputs() -> int:
+            """Route explicit workflow recovery commands without overtaking turns.
+
+            Ordinary messages stay accepted at the FIFO head. Only the target
+            session's explicit ``/workflow resume`` and ``/workflow reset``
+            controls may be claimed by stable ID to unblock recovery.
+            """
+            nonlocal active_workflow_name
+            nonlocal session_waiting_for_next_input
+            nonlocal workflow_command_failure
+            routed = 0
+            for receipt in input_inbox.receipts(request.session_id):
+                if receipt.state != "accepted" or not _is_workflow_recovery_control(receipt.text):
+                    continue
+                item = input_inbox.claim_by_id(
+                    request.session_id,
+                    receipt.message_id,
+                    owner_attempt=claimed_attempt or 0,
+                    lease_token=lease,
+                )
+                if item is None:
+                    continue
+                routed += 1
+                await _dispatch_workflow_input(item)
+            return routed
+
         queued_source = QueuedMessageSource(claim=_claim_session_input)
         provider_diagnostic_context = {
             "session_id": request.session_id,
@@ -2084,6 +2212,7 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
         }
 
         async def _execute() -> _WorkerOutcome:
+            nonlocal active_workflow_name
             current = store.get(request.session_id, include_deleted=True)
             if (
                 current.status is not SessionStatus.RUNNING
@@ -2104,53 +2233,161 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
             )
             pending_resume = _request_attribute(session, "pending_resume", None)
             if pending_resume is not None:
-                conflict = _direct_resume_workflow_conflict(session)
-                if conflict:
-                    return _WorkerOutcome(
-                        status=SessionStatus.FAILED,
-                        error=conflict,
-                        activity="Direct-turn recovery needs workflow attention",
-                        exit_reason="workflow_recovery_conflict",
-                        failure_category="workflow_recovery_conflict",
-                        exit_code=1,
-                    )
-                provider_diagnostic_context["phase"] = "recovering_prior_turn"
-                provider_diagnostic_context["interrupted_turn_id"] = str(
-                    _request_attribute(pending_resume, "turn_id", "")
-                )
-                if deferred_inputs:
-                    # Correlate any provider failure during recovery to the
-                    # first accepted message without consuming or disclosing it.
-                    provider_diagnostic_context["input_message_id"] = deferred_inputs[0].message_id
-                from dataclasses import replace as dataclass_replace  # noqa: PLC0415
+                from agenthicc.background.recovery import RecoveryOwner  # noqa: PLC0415
 
-                recovery_request = dataclass_replace(
-                    request,
-                    intent=str(_request_attribute(pending_resume, "user_message", "")),
-                )
-                await _run_direct_turn(
+                assessment = _assess_direct_turn_recovery(
                     session,
-                    recovery_request,
-                    resume_plan=cast("ResumePlan", pending_resume),
+                    pending_resume,
+                    configured_workflow_name=active_workflow_name,
+                    session_intent=request.intent,
                 )
-                await session.processor.drain()
-                if deferred_inputs:
-                    # The outer post-turn drain delivers anything the resumed
-                    # runner did not consume at one of its safe boundaries.
+                # A target-side recovery control must not be hidden behind a
+                # direct-turn replay either. Ordinary text remains queued; the
+                # explicit command is handled first, then ownership is assessed
+                # again before any provider turn is allowed.
+                routed_recovery_controls = await _route_recovery_control_inputs()
+                refreshed_resume = _request_attribute(session, "pending_resume", None)
+                if refreshed_resume is not None:
+                    pending_resume = refreshed_resume
+                    assessment = _assess_direct_turn_recovery(
+                        session,
+                        pending_resume,
+                        configured_workflow_name=active_workflow_name,
+                        session_intent=request.intent,
+                    )
+                else:
+                    from agenthicc.background.recovery import RecoveryAssessment
+
+                    assessment = RecoveryAssessment(owner=RecoveryOwner.NONE)
+
+                if (
+                    assessment.owner is RecoveryOwner.WORKFLOW
+                    and assessment.workflow_run_id
+                    and not routed_recovery_controls
+                ):
+                    recovery_run_id = assessment.workflow_run_id
+                    # This resumes the uniquely identified existing workflow
+                    # as part of restoring the target session. It does not
+                    # reinterpret or replace any inbox message: accepted user
+                    # input remains pending until the prior workflow turn has
+                    # reached a safe journal boundary.
+                    provider_diagnostic_context["phase"] = "recovering_workflow_turn"
+                    provider_diagnostic_context["workflow_run_id"] = recovery_run_id
+                    resume_result = await _handle_background_workflow_command(
+                        session,
+                        f"resume {recovery_run_id}",
+                        store=store,
+                        attempt=claimed_attempt or 0,
+                        lease_token=lease,
+                    )
+                    if resume_result.workflow_name is not None:
+                        active_workflow_name = resume_result.workflow_name
+                    refreshed_resume = _request_attribute(session, "pending_resume", None)
+                    if refreshed_resume is None:
+                        from agenthicc.background.recovery import RecoveryAssessment
+
+                        assessment = RecoveryAssessment(owner=RecoveryOwner.NONE)
+                    else:
+                        from agenthicc.background.recovery import RecoveryAssessment
+
+                        failure_detail = resume_result.error or resume_result.message
+                        if not failure_detail:
+                            failure_detail = "The saved workflow remains paused."
+                        assessment = RecoveryAssessment(
+                            owner=RecoveryOwner.UNRESOLVED,
+                            turn_id=str(_request_attribute(pending_resume, "turn_id", "")) or None,
+                            workflow_run_id=recovery_run_id,
+                            related_run_ids=(recovery_run_id,),
+                            reason=(
+                                "Automatic recovery of the identified workflow did not reach "
+                                f"a safe turn boundary: {failure_detail}"
+                            ),
+                        )
+                if assessment.owner in {RecoveryOwner.WORKFLOW, RecoveryOwner.UNRESOLVED}:
+                    if assessment.owner is RecoveryOwner.WORKFLOW:
+                        owner_run_id = assessment.workflow_run_id or "<run-id>"
+                        reason = (
+                            "This interrupted turn belongs to workflow run "
+                            f"{owner_run_id}. The queued input is preserved; send "
+                            f"`/workflow resume {owner_run_id}` to retry recovery, or "
+                            f"`/workflow reset {owner_run_id}` to explicitly discard it."
+                        )
+                    elif assessment.reason.startswith("Automatic recovery"):
+                        owner_run_id = assessment.workflow_run_id or "<run-id>"
+                        reason = (
+                            f"{assessment.reason} The queued input is preserved; retry with "
+                            f"`/workflow resume {owner_run_id}` or explicitly discard with "
+                            f"`/workflow reset {owner_run_id}`."
+                        )
+                    elif assessment.related_run_ids:
+                        choices = ", ".join(assessment.related_run_ids[:4])
+                        suffix = " …" if len(assessment.related_run_ids) > 4 else ""
+                        reason = (
+                            "Recovery ownership is ambiguous. Select the intended run with "
+                            f"`/workflow resume <run-id>` or discard a specific run with "
+                            f"`/workflow reset <run-id>`. Related run(s): {choices}{suffix}."
+                        )
+                    else:
+                        reason = (
+                            "Workflow recovery state could not be inspected safely. Review the "
+                            "saved workflow state, then send `/workflow resume <run-id>` or "
+                            "`/workflow reset <run-id>`."
+                        )
+                    recovery_reason = reason[:240]
+                    try:
+                        input_inbox.mark_waiting_recovery(
+                            request.session_id,
+                            owner_attempt=claimed_attempt or 0,
+                            lease_token=lease,
+                            reason=recovery_reason,
+                        )
+                    except (InvalidSessionTransition, KeyError):
+                        logger.info(
+                            "could not persist recovery-wait receipt for %s",
+                            request.session_id,
+                            exc_info=True,
+                        )
+                    return _WorkerOutcome(
+                        status=SessionStatus.ORPHANED,
+                        error=recovery_reason,
+                        activity="Waiting for workflow recovery",
+                        exit_reason="workflow_recovery_waiting",
+                        failure_category="",
+                        exit_code=0,
+                    )
+
+                if assessment.owner is RecoveryOwner.DIRECT_TURN:
+                    provider_diagnostic_context["phase"] = "recovering_prior_turn"
+                    provider_diagnostic_context["interrupted_turn_id"] = str(
+                        _request_attribute(pending_resume, "turn_id", "")
+                    )
+                    if deferred_inputs:
+                        provider_diagnostic_context["input_message_id"] = deferred_inputs[
+                            0
+                        ].message_id
+                    from dataclasses import replace as dataclass_replace  # noqa: PLC0415
+
+                    recovery_request = dataclass_replace(
+                        request,
+                        intent=str(_request_attribute(pending_resume, "user_message", "")),
+                    )
+                    await _run_direct_turn(
+                        session,
+                        recovery_request,
+                        resume_plan=cast("ResumePlan", pending_resume),
+                    )
+                    await session.processor.drain()
                     return _WorkerOutcome(
                         status=SessionStatus.COMPLETED,
                         error=None,
-                        activity="Interrupted turn recovered; queued input pending delivery",
+                        activity=(
+                            "Interrupted turn recovered; queued input pending delivery"
+                            if deferred_inputs
+                            else "Interrupted turn recovered"
+                        ),
                         exit_reason="turn_recovered",
                         exit_code=0,
                     )
-                return _WorkerOutcome(
-                    status=SessionStatus.COMPLETED,
-                    error=None,
-                    activity="Interrupted turn recovered",
-                    exit_reason="turn_recovered",
-                    exit_code=0,
-                )
             if deferred_inputs:
                 # A user submitted against a stale/recoverable session. Forward
                 # accepted text as target-session turns before considering the

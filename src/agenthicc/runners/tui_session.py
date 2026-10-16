@@ -3227,7 +3227,15 @@ class TUISession:
                 )
                 # Plugin owns runner construction — no name-based branching.
                 _wf_runner = _plugin_cls.build_runner(_wf_config, ctx.mode_manager)
-                _runner_result = await _wf_runner.run(text)
+                if self._workflow_handle is not None:
+                    from agenthicc.runners.workflow_execution_context import (  # noqa: PLC0415
+                        bind_workflow_execution,
+                    )
+
+                    with bind_workflow_execution(self._workflow_handle.run_id):
+                        _runner_result = await _wf_runner.run(text)
+                else:
+                    _runner_result = await _wf_runner.run(text)
                 self._record_returned_workflow_result(_runner_result)
                 self._finalize_returned_workflow()
                 # PRD-155: workflow-bound runs return to Safe after success.
@@ -3825,7 +3833,22 @@ class TUISession:
             resume_context = (
                 handle.context if handle is not None and handle.context is not None else context
             )
-            runner_result = await runner.resume(resume_context)
+            if handle is not None:
+                from agenthicc.runners.workflow_execution_context import (  # noqa: PLC0415
+                    bind_workflow_execution,
+                )
+
+                pending_resume = ctx.pending_resume
+                resume_plan = (
+                    pending_resume
+                    if pending_resume is not None
+                    and pending_resume.workflow_run_id == handle.run_id
+                    else None
+                )
+                with bind_workflow_execution(handle.run_id, resume_plan=resume_plan):
+                    runner_result = await runner.resume(resume_context)
+            else:
+                runner_result = await runner.resume(resume_context)
             if handle is not None and runner_result is not None:
                 handle.attach_context(runner_result)
             self._record_returned_workflow_result(runner_result)

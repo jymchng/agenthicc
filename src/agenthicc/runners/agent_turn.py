@@ -1940,12 +1940,17 @@ class AgentTurnRunner:
         # On a crash the absence of a matching turn_completed (written in the
         # finally below) flags this turn for resumption.
         if _journal is not None and ctx.session_memory is not None:
+            from agenthicc.runners.workflow_execution_context import (  # noqa: PLC0415
+                current_workflow_run_id,
+            )
+
             _journal.turn_started(
                 self._intent_id,
                 agent_text,
                 len(ctx.session_memory._messages),
                 conversation_id=ctx.conversation_id,
                 base_cursor=getattr(_journal, "cursor", None),
+                workflow_run_id=current_workflow_run_id(),
             )
 
         # PRD-182: retries must preserve the committed provider/tool prefix.
@@ -2636,6 +2641,18 @@ async def _run_agent_turn(
         from lauren_ai._memory import ShortTermMemory as _ShortTermMemory  # noqa: PLC0415
 
         session_memory = _ShortTermMemory()
+
+    if resume_turn_id is None and resume_ledger is None:
+        from agenthicc.runners.workflow_execution_context import (  # noqa: PLC0415
+            consume_workflow_resume_plan,
+        )
+
+        workflow_resume_plan = consume_workflow_resume_plan()
+        if workflow_resume_plan is not None:
+            plan_turn_id = workflow_resume_plan.turn_id
+            if isinstance(plan_turn_id, str) and plan_turn_id:
+                resume_turn_id = plan_turn_id
+                resume_ledger = cast("IdempotencyLedger", workflow_resume_plan.ledger)
 
     ctx = AgentTurnContext(
         text=text,

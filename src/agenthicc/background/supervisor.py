@@ -1385,11 +1385,14 @@ class BackgroundSupervisor:
 
         current = self.store.get(session.session_id, include_deleted=True)
         self._validate_input_target(current, expected_attempt, expected_lease_token)
-        recovering_interrupted_input_start = current.status in {
+        input_recoverable_statuses = {
+            SessionStatus.COMPLETED,
             SessionStatus.FAILED,
             SessionStatus.ORPHANED,
-        } and current.resume_marker.startswith("input:")
-        if current.status is not SessionStatus.COMPLETED and not recovering_interrupted_input_start:
+            SessionStatus.CANCELLED,
+            SessionStatus.ARCHIVED,
+        }
+        if current.status not in input_recoverable_statuses:
             raise InvalidSessionTransition(
                 f"Cannot start an input-driven attempt from {current.status.value}"
             )
@@ -1404,8 +1407,13 @@ class BackgroundSupervisor:
         request = self._input_reactivation_request(current)
         # Write the complete worker request before changing the lifecycle
         # record. If the process stops here, maintenance can retry from the
-        # still-completed record and its already durable inbox item.
+        # still-recoverable record and its already durable inbox item.
         self._write_request(request)
+        BackgroundInputInbox(self.store).rearm_recovery_wait(
+            current.session_id,
+            expected_attempt=expected_attempt,
+            expected_lease_token=expected_lease_token,
+        )
         starting = self.store.transition(
             current.session_id,
             SessionStatus.STARTING,
@@ -1459,7 +1467,22 @@ class BackgroundSupervisor:
             # would otherwise fall back to the original request intent).
             return receipt
         try:
-            resumed = self._resume_for_queued_input(session_id)
+            resumed = self._start_deferred_input_attempt(
+                self.store.get(session_id, include_deleted=True),
+                message_id=message_id,
+                expected_attempt=expected_attempt,
+                expected_lease_token=expected_lease_token,
+            )
+        except InvalidSessionTransition:
+            # A competing submitter or maintenance pass may have started the
+            # replacement worker. The accepted inbox item remains authoritative.
+            current = self.store.get(session_id, include_deleted=True)
+            if current.status in ACTIVE_STATUSES:
+                return receipt
+            return replace(
+                receipt,
+                recovery_error="Session changed; accepted input needs recovery"[:240],
+            )
         except Exception as exc:  # noqa: BLE001
             # Input is already durable. Do not report it as rejected and
             # invite a duplicate submission; expose a bounded recovery note.
@@ -1537,17 +1560,6 @@ class BackgroundSupervisor:
             raise InvalidSessionTransition("Deleted sessions cannot receive input")
         if session.attempt != expected_attempt or session.lease_token != expected_lease_token:
             raise InvalidSessionTransition("Session changed; reopen details and retry")
-
-    def _resume_for_queued_input(self, session_id: str) -> BackgroundSession:
-        """Start recovery once; tolerate a competing submit that won the race."""
-
-        try:
-            return self.resume(session_id)
-        except InvalidSessionTransition:
-            current = self.store.get(session_id, include_deleted=True)
-            if current.status in ACTIVE_STATUSES:
-                return current
-            raise
 
     def cancel(self, session_id: str) -> BackgroundSession:
         with self._scheduler_lock():
@@ -2069,13 +2081,21 @@ class BackgroundSupervisor:
                 current = self.store.get(snapshot.session_id, include_deleted=True)
             except SessionNotFound:
                 continue
+            legacy_workflow_recovery_wait = (
+                current.status in {SessionStatus.FAILED, SessionStatus.ORPHANED}
+                and current.worker_exit_reason == "workflow_recovery_waiting"
+                and not current.resume_marker.startswith("input:")
+            )
             if current.status is SessionStatus.COMPLETED:
                 input_start_recovery = True
             elif current.status in {SessionStatus.FAILED, SessionStatus.ORPHANED}:
-                # Only retry failures/orphans created after this input-driven
-                # transition. Never override an explicit cancellation or
-                # treat an unrelated stale session as a new input request.
-                input_start_recovery = current.resume_marker.startswith("input:")
+                # Retry a worker startup interrupted after input acceptance.
+                # A legacy workflow-recovery wait gets one startup retry after
+                # upgrade. The input marker plus receipt error then prevents
+                # maintenance from repeatedly launching an unresolved worker.
+                input_start_recovery = (
+                    current.resume_marker.startswith("input:") or legacy_workflow_recovery_wait
+                )
             else:
                 input_start_recovery = False
             if not input_start_recovery or current.cancellation_reason:
@@ -2083,7 +2103,9 @@ class BackgroundSupervisor:
             pending = tuple(
                 item
                 for item in inbox.receipts(current.session_id)
-                if item.state == "accepted" and item.deferred
+                if item.state == "accepted"
+                and item.deferred
+                and (legacy_workflow_recovery_wait or not item.recovery_error)
             )
             if not pending:
                 continue

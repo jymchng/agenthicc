@@ -943,6 +943,9 @@ class BackgroundManager:
         if receipt.error:
             safe_error = _Redactor().value(receipt.error, "message")
             detail += f" · {str(safe_error)[:120]}"
+        if receipt.recovery_error:
+            safe_recovery = _Redactor().value(receipt.recovery_error, "message")
+            detail += f" · {str(safe_recovery)[:120]}"
         self._input_receipt_text[session.session_id] = detail
         self._input_receipt_fingerprint[session.session_id] = receipt_fingerprint
         return activity, detail, history

@@ -120,6 +120,45 @@ class TestFoldResumeState:
         started_entry = next(entry for entry in entries if entry["kind"] == "step_started")
         assert isinstance(started_entry["base_cursor"], int)
 
+    def test_incomplete_turn_retains_workflow_run_provenance(self, tmp_path) -> None:
+        jp = tmp_path / "workflow-turn.jsonl"
+        journal = ConversationJournal(jp)
+        journal.turn_started(
+            "turn-linked",
+            "continue workflow phase",
+            base_count=2,
+            workflow_run_id="workflow-run-42",
+        )
+        journal.close()
+
+        incomplete = fold_resume_state(jp)
+        assert incomplete is not None
+        assert incomplete.workflow_run_id == "workflow-run-42"
+        assert incomplete.execution_kind == "workflow"
+        entries = [json.loads(line) for line in jp.read_text(encoding="utf-8").splitlines()]
+        started = next(entry for entry in entries if entry["kind"] == "turn_started")
+        assert started["schema_version"] == 3
+        assert started["workflow_run_id"] == "workflow-run-42"
+
+    def test_legacy_resume_start_does_not_erase_existing_workflow_provenance(
+        self, tmp_path
+    ) -> None:
+        jp = tmp_path / "workflow-turn-replay.jsonl"
+        journal = ConversationJournal(jp)
+        journal.turn_started(
+            "turn-linked",
+            "continue workflow phase",
+            base_count=2,
+            workflow_run_id="workflow-run-42",
+        )
+        journal.turn_started("turn-linked", "continue workflow phase", base_count=2)
+        journal.close()
+
+        incomplete = fold_resume_state(jp)
+        assert incomplete is not None
+        assert incomplete.workflow_run_id == "workflow-run-42"
+        assert incomplete.execution_kind == "workflow"
+
     def test_failed_turn_is_terminal_but_does_not_remove_messages(self, tmp_path) -> None:
         jp = tmp_path / "j.jsonl"
         j = ConversationJournal(jp)

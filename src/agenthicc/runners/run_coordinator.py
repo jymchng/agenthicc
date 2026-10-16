@@ -36,6 +36,8 @@ class ResumePlan:
     last_committed_step: str = ""
     last_committed_cursor: int | None = None
     interrupted_step_id: str | None = None
+    workflow_run_id: str | None = None
+    execution_kind: str | None = None
 
 
 class RunCoordinator:
@@ -62,4 +64,6 @@ class RunCoordinator:
             last_committed_step=incomplete.last_committed_step,
             last_committed_cursor=incomplete.last_committed_cursor,
             interrupted_step_id=incomplete.interrupted_step_id,
+            workflow_run_id=incomplete.workflow_run_id,
+            execution_kind=incomplete.execution_kind,
         )

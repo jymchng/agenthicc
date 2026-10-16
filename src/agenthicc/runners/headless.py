@@ -20,6 +20,7 @@ from agenthicc.runners.workflow_handle import classify_workflow_failure
 
 if TYPE_CHECKING:
     from agenthicc.cli.context import CLIContext
+    from agenthicc.runners.run_coordinator import ResumePlan
     from agenthicc.runners.session_context import SessionContext
     from agenthicc.runners.session_lease import SessionOwnerLease
 
@@ -180,6 +181,7 @@ async def execute_workflow(
     completed_turns: int = 0,
     resume_run_id: str | None = None,
     continuation: str | None = None,
+    resume_plan: ResumePlan | None = None,
 ) -> WorkflowExecutionResult:
     """Execute one registered workflow using an existing session context.
 
@@ -369,11 +371,19 @@ async def execute_workflow(
                 kind="workflow_started",
                 payload={"workflow": workflow_name, "intent": effective_intent},
             )
-        runner_result = (
-            await runner.resume(workflow_handle.context)
-            if resuming and workflow_handle is not None
-            else await runner.run(intent)
-        )
+        if workflow_handle is not None:
+            from agenthicc.runners.workflow_execution_context import (  # noqa: PLC0415
+                bind_workflow_execution,
+            )
+
+            with bind_workflow_execution(workflow_handle.run_id, resume_plan=resume_plan):
+                runner_result = (
+                    await runner.resume(workflow_handle.context)
+                    if resuming
+                    else await runner.run(intent)
+                )
+        else:
+            runner_result = await runner.run(intent)
         # Specialized runners may intentionally return a typed FAILED state
         # after a phase-local agent/provider exception. That is not successful
         # completion: convert it to the same durable failure boundary used by
