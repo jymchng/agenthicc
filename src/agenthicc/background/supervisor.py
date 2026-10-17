@@ -17,7 +17,7 @@ from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
 from collections.abc import Awaitable, Callable, Sequence
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING, Literal, TypedDict
 from .deletion import DeleteFailure, DeleteResult
 from .input_inbox import BackgroundInput, BackgroundInputInbox
 from .model import (
@@ -37,6 +37,7 @@ from .queue import (
     queue_position_map,
 )
 from agenthicc.runners.process_lease import InterProcessLock, atomic_replace
+from agenthicc.runners.process_lease import read_json_object
 from .store import (
     BackgroundStore,
     InvalidSessionTransition,
@@ -49,10 +50,28 @@ logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from .settings import BackgroundNotificationSettings
+    from agenthicc.runners.session_lease import SessionOwnerLease
 
 
 class QueueFullError(RuntimeError):
     """Admission was rejected because the durable pending queue is bounded."""
+
+
+class _BackgroundHandoffBlocked(InvalidSessionTransition):
+    """Typed, fail-closed outcome when a handoff cannot safely take ownership."""
+
+    def __init__(
+        self,
+        outcome: Literal[
+            "already_managed",
+            "dispatch_in_progress",
+            "ownership_unverifiable",
+            "reconciliation_race",
+        ],
+        message: str,
+    ) -> None:
+        self.outcome = outcome
+        super().__init__(message)
 
 
 class _CancellationMetadata(TypedDict, total=False):
@@ -831,6 +850,137 @@ class BackgroundSupervisor:
                 return self.store.get(sid, include_deleted=True)
             return self._launch(request, session)
 
+    def _reconcile_handoff_target(
+        self,
+        session: BackgroundSession,
+        *,
+        foreground_owner_lease: "SessionOwnerLease | None",
+    ) -> BackgroundSession:
+        """Resolve one active record before allowing a foreground handoff.
+
+        The background status is only a durable projection. A dead worker can
+        leave it active after an abrupt process exit, so process identity is
+        checked before refusing the handoff. Reconciliation is permitted only
+        while the caller still owns the matching foreground session lease and
+        the store still matches the exact snapshot inspected here.
+        """
+        if is_pending_queue_record(session):
+            raise _BackgroundHandoffBlocked(
+                "dispatch_in_progress",
+                "Background dispatch is still in progress for this session; "
+                "no duplicate worker was started. Refresh the session status and retry.",
+            )
+
+        process_state = self._worker_process_state(session)
+        if process_state is _WorkerProcessState.LIVE:
+            pid = session.worker_pid
+            pid_text = f" (worker PID {pid})" if pid is not None else ""
+            raise _BackgroundHandoffBlocked(
+                "already_managed",
+                f"Session is already managed by a live background worker{pid_text} "
+                f"(status {session.status.value}, attempt {session.attempt}); "
+                "no new worker was started. Inspect it with `agenthicc agents`.",
+            )
+
+        if process_state not in {
+            _WorkerProcessState.DEAD,
+            _WorkerProcessState.MISMATCHED,
+        }:
+            if (
+                session.status is SessionStatus.STARTING
+                and session.dispatch_state is QueueDispatchState.CLAIMED
+                and session.worker_pid is None
+            ):
+                raise _BackgroundHandoffBlocked(
+                    "dispatch_in_progress",
+                    "Background dispatch has a live claim but no worker PID yet; "
+                    "wait for dispatch recovery and retry. The session was not changed.",
+                )
+            raise _BackgroundHandoffBlocked(
+                "ownership_unverifiable",
+                f"Session has an active background record ({session.status.value}, "
+                f"attempt {session.attempt}), but worker ownership cannot be verified. "
+                "No lifecycle state was changed; inspect `agenthicc agents` and retry.",
+            )
+
+        if not self._foreground_lease_is_current(
+            session.session_id,
+            foreground_owner_lease,
+        ):
+            raise _BackgroundHandoffBlocked(
+                "ownership_unverifiable",
+                "The old background worker appears stopped, but this process cannot "
+                "prove current foreground ownership of the session. No state was changed. "
+                "Reopen it with `agenthicc --continue` to claim the session, then retry `/detach`.",
+            )
+
+        try:
+            self.store.mark_orphaned(
+                session.session_id,
+                expected_attempt=session.attempt,
+                expected_lease_token=session.lease_token or None,
+                expected_status=session.status,
+                expected_last_active=session.last_active,
+                expected_dispatch_state=session.dispatch_state,
+            )
+        except InvalidSessionTransition as exc:
+            # A heartbeat/finalizer/new attempt may win after process inspection.
+            # Accept a concurrently completed terminal record; otherwise never
+            # retry the stale write against a newer active revision.
+            current = self.store.get(session.session_id, include_deleted=True)
+            if current.status is SessionStatus.DELETED:
+                raise InvalidSessionTransition(
+                    "Deleted background sessions cannot be foregrounded"
+                ) from exc
+            if current.status in ACTIVE_STATUSES:
+                raise _BackgroundHandoffBlocked(
+                    "reconciliation_race",
+                    "Background worker state changed during handoff reconciliation. "
+                    "No replacement worker was started; refresh the session and retry.",
+                ) from exc
+            return current
+
+        reconciled = self.store.get(session.session_id, include_deleted=True)
+        if reconciled.status is SessionStatus.DELETED:
+            raise InvalidSessionTransition("Deleted background sessions cannot be foregrounded")
+        if reconciled.status in ACTIVE_STATUSES:
+            raise _BackgroundHandoffBlocked(
+                "reconciliation_race",
+                "Background worker state changed during handoff reconciliation. "
+                "No replacement worker was started; refresh the session and retry.",
+            )
+        return reconciled
+
+    @staticmethod
+    def _foreground_lease_is_current(
+        session_id: str,
+        lease: "SessionOwnerLease | None",
+    ) -> bool:
+        """Verify the supplied, unreleased lease still owns this session file."""
+        from agenthicc.runners.session_lease import SessionOwnerLease  # noqa: PLC0415
+
+        if (
+            not isinstance(lease, SessionOwnerLease)
+            or lease.released
+            or lease.session_id != session_id
+            or lease.info.session_id != session_id
+            or lease.info.pid != os.getpid()
+            or lease.info.owner_id != lease.owner_id
+        ):
+            return False
+        try:
+            payload = read_json_object(lease.path)
+        except OSError:
+            return False
+        return bool(
+            payload is not None
+            and payload.get("session_id") == session_id
+            and payload.get("owner_id") == lease.owner_id
+            and payload.get("pid") == os.getpid()
+            and payload.get("host") == lease.info.host
+            and payload.get("process_start_token") == lease.info.process_start_token
+        )
+
     def handoff(
         self,
         *,
@@ -847,8 +997,21 @@ class BackgroundSupervisor:
         start: bool = True,
         mode_name: str | None = None,
         resume_existing_only: bool | None = None,
+        requested_profile_name: str | None = None,
+        foreground_owner_lease: "SessionOwnerLease | None" = None,
     ) -> BackgroundSession:
-        """Detach an existing foreground session into one tracked worker."""
+        """Detach an existing foreground session into one tracked worker.
+
+        An active lifecycle projection is reconciled only when this caller
+        supplies its current foreground owner lease and the recorded worker
+        process is proven dead or mismatched. Heartbeat age and missing process
+        identity alone never authorize taking over the session.
+        """
+
+        if requested_profile_name is not None and (
+            not isinstance(requested_profile_name, str) or len(requested_profile_name) > 128
+        ):
+            raise ValueError("requested_profile_name must be a string of at most 128 characters")
 
         existing: BackgroundSession | None
         try:
@@ -866,12 +1029,21 @@ class BackgroundSupervisor:
                 artifact_dir=str(self.artifact_root / session_id),
                 run_id=run_id,
                 requested_mode_name=mode_name,
+                requested_profile_name=requested_profile_name or "",
             )
             self.store.create(existing)
         elif existing.status in ACTIVE_STATUSES:
-            raise InvalidSessionTransition("Session is already managed by a background worker")
+            existing = self._reconcile_handoff_target(
+                existing,
+                foreground_owner_lease=foreground_owner_lease,
+            )
         was_completed = existing.status is SessionStatus.COMPLETED
         effective_mode_name = self._mode_name_for_resume(session_id, mode_name)
+        effective_profile_name = (
+            existing.requested_profile_name
+            if requested_profile_name is None
+            else requested_profile_name
+        )
         request = BackgroundRequest(
             session_id=session_id,
             workflow_name=workflow_name or existing.workflow_name,
@@ -891,7 +1063,7 @@ class BackgroundSupervisor:
             priority=existing.priority,
             idempotency_key=existing.idempotency_key,
             owner_id=existing.owner_id or current_owner_id(),
-            requested_profile_name=existing.requested_profile_name,
+            requested_profile_name=effective_profile_name,
         )
         if existing.status == SessionStatus.FAILED:
             existing = self.store.transition(
@@ -930,6 +1102,7 @@ class BackgroundSupervisor:
             session_id,
             expected_status=existing.status,
             expected_attempt=existing.attempt,
+            requested_profile_name=effective_profile_name,
             requested_mode_name=effective_mode_name,
             mode_name="",
             mode_application_status="pending",

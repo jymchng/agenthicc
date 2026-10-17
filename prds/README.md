@@ -111,6 +111,10 @@ against the current source before implementing them.
 - [PRD-240 — Reliable Agents-Page Input: Provider Identity and Turn Recovery](prd-240-consistent-agent-input-session-recovery.md)
 - [PRD-241 — Deliver Agents-Page Input Through Conflicting Recovery State](prd-241-agents-input-with-conflicting-recovery-state.md)
 - [PRD-242 — Fail-Safe Conversation Compaction for Detached Sessions (implemented)](prd-242-resilient-detached-session-compaction.md)
+- [PRD-243 — Protocol-Safe Reasoning History and Deterministic Recovery](prd-243-reasoning-history-protocol-recovery.md)
+- [PRD-244 — Fast Live-Session Attach with On-Demand Transcript History](prd-244-fast-live-session-attach.md)
+- [PRD-245 — Recoverable Background Handoff After Abrupt Process Exit (implemented)](prd-245-recoverable-background-handoff-after-process-kill.md)
+- [PRD-246 — Actionable Recovery When Conversation Compaction Has No Summary (implemented)](prd-246-actionable-empty-summary-compaction-recovery.md)
 
 ### PRD-220–239 — OpenCode, Claude Code, and Codex feature study
 
@@ -551,6 +555,38 @@ checkpoint with a specific detached-session category. See
 [PRD-242](prd-242-resilient-detached-session-compaction.md), the
 [memory guide](../docs/guides/memory.md), and the
 [storage reference](../docs/reference/storage.md).
+
+PRD-243 investigates the reported thinking-mode HTTP 400 that requires the
+provider's prior `reasoning_content`. The repeat attempts are confirmed to
+come from PRD-198's generic permanent-4xx retry budget, while the exact origin
+of the missing field in the reported session cannot be proven without its
+request/journal evidence. The PRD specifies a typed no-retry classification,
+protocol-safe history transformation and compaction, and durable recovery that
+preserves the current workflow phase without exposing or fabricating hidden
+reasoning.
+
+PRD-244 proposes bounding transcript work on the live-session attach critical
+path. The current resume path selects at most 20 turns by default, but a single
+turn may still contain thousands of events, and the TUI awaits rendering its
+selected history before starting input. The proposal adds a strictly bounded
+recent preview, paginated on-demand access to older history, reuse of the
+recent-event projection for input navigation, and stage-level timing. Durable
+transcripts and full provider conversation memory remain unchanged.
+
+PRD-245 is implemented: after `--continue` reclaims a session whose worker was
+killed, `/detach` now verifies process identity and the current foreground
+owner lease, reconciles only the exact dead attempt, and resumes the same
+session. Live, dispatching, or unverifiable workers still fail closed, and the
+handoff retains the selected config/model/profile; see the regression tests
+and abrupt-kill guidance in [PRD-245](prd-245-recoverable-background-handoff-after-process-kill.md).
+
+PRD-246 is implemented: compaction outcomes now preserve the bounded summary
+classification and attempt count through local recovery, safely excerpt
+eligible generated tool output only when complete-exchange pruning is
+insufficient, count the full request context when supported, and leave
+irreducible or failed candidates uncommitted for recovery. See
+[PRD-246](prd-246-actionable-empty-summary-compaction-recovery.md) and the
+compaction recovery coverage in the unit, integration, and E2E suites.
 
 PRD-218 fixes foreground `/detach` when the prior background attempt is
 completed. It reactivates the same session for eligible work, preserves the

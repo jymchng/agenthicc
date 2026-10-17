@@ -11,6 +11,7 @@ call sites continue to work without modification.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import os
@@ -50,11 +51,17 @@ def _has_trailing_user_message(messages: list[object], text: str) -> bool:
     )
 
 
-def _conservative_message_estimate(messages: list[object], *, system: str = "") -> int:
+def _conservative_message_estimate(
+    messages: list[object], *, system: str = "", tools: list[object] | None = None
+) -> int:
     """Estimate request tokens with safety headroom for provider framing."""
-    from lauren_ai._transport import estimate_message_tokens  # noqa: PLC0415
+    from lauren_ai._transport import ToolSchema, estimate_message_tokens  # noqa: PLC0415
 
-    baseline = estimate_message_tokens(messages, system=system or None)
+    baseline = estimate_message_tokens(
+        messages,
+        system=system or None,
+        tools=cast("list[ToolSchema] | None", tools),
+    )
     # The transport heuristic is 4 chars/token. A 25% margin corresponds to
     # ~3.2 chars/token and protects non-English/code-heavy contexts.
     return max(1, (baseline * 5 + 3) // 4 + 32 * len(messages))
@@ -533,6 +540,7 @@ def _is_context_overflow_error(exc: BaseException) -> bool:
 if TYPE_CHECKING:
     from contextvars import Token
     from lauren_ai import AgentContext
+    from lauren_ai._agents import AgentMeta
     from lauren_ai._tools import ToolResult
     from collections.abc import Awaitable, Callable
     from lauren_ai._agents._runner import AgentRunnerBase
@@ -1670,6 +1678,7 @@ class AgentTurnRunner:
         *,
         max_input_tokens: int,
         force: bool = False,
+        agent_instance: object | None = None,
     ) -> bool:
         """Compact shared memory at Agenthicc's durable turn boundary.
 
@@ -1691,102 +1700,97 @@ class AgentTurnRunner:
             return False
 
         messages = getattr(memory, "_messages", None)
-        if not isinstance(messages, list) or not messages:
-            # A single enormous new user message has no older history to
-            # summarise.  It needs a user-facing irreducible-overflow error.
+        if not isinstance(messages, list):
             return False
 
         estimate = getattr(memory, "token_estimate", 0)
         if not isinstance(estimate, int):
-            return False
+            estimate = 0
+        system_prompt, tool_schemas, request_text = self._compaction_request_context(
+            active_runner,
+            agent_instance,
+            agent_text,
+        )
         projected_messages = list(messages)
-        if not _has_trailing_user_message(projected_messages, agent_text):
-            projected_messages.append({"role": "user", "content": agent_text})
-        # Use a stricter ratio than the shared 4-char heuristic. This is a
-        # decision estimate only; the model-aware count below is preferred.
-        summary = getattr(memory, "summary", None)
-        system_summary = summary if isinstance(summary, str) else ""
+        if not _has_trailing_user_message(projected_messages, request_text):
+            projected_messages.append({"role": "user", "content": request_text})
+        # Count the same logical request context as the provider call: system
+        # instructions and tool schemas are included when the transport exposes
+        # exact counting. The conservative estimate remains the fallback.
         projected = _conservative_message_estimate(
             projected_messages,
-            system=system_summary,
+            system=system_prompt,
+            tools=tool_schemas,
         )
         threshold = max(1, int(max_input_tokens * 0.8))
         if not force and projected < threshold:
             return False
 
-        exact_count: int | None = None
         transport = getattr(active_runner, "_transport", None)
-        count_tokens = getattr(transport, "count_tokens", None)
-        if not force and callable(count_tokens):
-            try:
-                from lauren_ai._transport import ContentBlock, Message  # noqa: PLC0415
-
-                countable_messages = [
-                    Message(
-                        role=cast(
-                            "Literal['user', 'assistant']", str(_message_field(msg, "role", "user"))
-                        ),
-                        content=cast(
-                            "str | list[ContentBlock]", _message_field(msg, "content", "")
-                        ),
-                    )
-                    for msg in projected_messages
-                    if _message_field(msg, "role", "") in {"user", "assistant"}
-                ]
-                exact_result = await asyncio.wait_for(
-                    count_tokens(
-                        countable_messages,
-                        model=self._model_id,
-                        system=system_summary or None,
-                    ),
-                    timeout=8.0,
-                )
-                if isinstance(exact_result, int) and exact_result >= 0:
-                    exact_count = exact_result
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:  # noqa: BLE001 - count is advisory only
-                if ctx.conv_store is not None:
-                    try:
-                        ctx.conv_store.append_event(
-                            "compaction_status",
-                            {
-                                "status": "token_count_unavailable",
-                                "error_type": type(exc).__name__[:96],
-                            },
-                        )
-                    except Exception:  # noqa: BLE001 - status projection is advisory
-                        logger.warning("could not project token-count fallback status")
-                logger.warning(
-                    "compaction token count unavailable (%s); using conservative estimate",
-                    type(exc).__name__,
-                )
+        exact_count = None
+        if not force:
+            exact_count = await self._exact_compaction_count(
+                transport,
+                projected_messages,
+                system_prompt=system_prompt,
+                tool_schemas=tool_schemas,
+            )
         if not force and exact_count is not None and exact_count < threshold:
             return False
 
+        if not messages and (
+            force
+            or projected >= max_input_tokens
+            or (exact_count is not None and exact_count >= max_input_tokens)
+        ):
+            from agenthicc.memory.compactor import (  # noqa: PLC0415
+                CompactionOutcome,
+                CompactionRecoveryRequired,
+                _emit_outcome,
+            )
+
+            outcome = CompactionOutcome(
+                "blocked_irreducible_context",
+                estimate,
+                estimate,
+                durable=False,
+                fallback_result="irreducible_latest_exchange",
+                recovery_reason="current_input_exceeds_budget",
+            )
+            _emit_outcome(ctx.conv_store, outcome)
+            raise CompactionRecoveryRequired(outcome)
+
         if transport is None or not callable(getattr(transport, "complete", None)):
-            if force or projected >= max_input_tokens:
+            if force or projected >= max_input_tokens or not messages:
                 from agenthicc.memory.compactor import (  # noqa: PLC0415
                     CompactionOutcome,
                     CompactionRecoveryRequired,
+                    _emit_outcome,
                 )
 
-                raise CompactionRecoveryRequired(
-                    CompactionOutcome(
-                        "blocked_irreducible_context",
-                        estimate,
-                        estimate,
-                        durable=False,
-                    )
+                outcome = CompactionOutcome(
+                    "blocked_irreducible_context",
+                    estimate,
+                    estimate,
+                    durable=False,
+                    fallback_result="no_safe_boundary",
+                    recovery_reason=(
+                        "current_input_exceeds_budget"
+                        if not messages
+                        else "latest_exchange_too_large"
+                    ),
                 )
+                _emit_outcome(ctx.conv_store, outcome)
+                raise CompactionRecoveryRequired(outcome)
             return False
 
-        before = estimate
         from agenthicc.memory.compactor import (  # noqa: PLC0415
             CompactionOutcome,
             CompactionRecoveryRequired,
+            _emit_outcome,
+            _prepare_local_compaction_fallback,
+            _replace_state,
             compact_memory_with_result,
-            local_compaction_fallback,
         )
 
         max_completion_tokens = _config_value(ctx.exec_cfg, "max_completion_tokens", None)
@@ -1804,49 +1808,235 @@ class AgentTurnRunner:
             run_id=self._intent_id,
             max_completion_tokens=max_completion_tokens,
             request_options=_config_value(ctx.exec_cfg, "request_options", None),
+            emit_result=False,
         )
         if outcome.applied:
+            _emit_outcome(ctx.conv_store, outcome)
             return True
 
         if outcome.status == "blocked_durability_error":
+            _emit_outcome(ctx.conv_store, outcome)
             raise CompactionRecoveryRequired(outcome)
 
-        fallback = local_compaction_fallback(memory, max_input_tokens=max_input_tokens)
-        if fallback.applied:
-            if ctx.conv_store is not None:
-                try:
-                    ctx.conv_store.append_event(
-                        "compaction_status",
-                        {
-                            "status": fallback.status,
-                            "before_tokens": fallback.before_tokens,
-                            "after_tokens": fallback.after_tokens,
-                            "durable": fallback.durable,
-                        },
-                    )
-                    ctx.conv_store.append_event(
-                        "system",
-                        {"text": "⎋ Compaction fallback: retained recent complete exchanges"},
-                    )
-                except Exception:  # noqa: BLE001 - reporting must not fail a turn
-                    logger.warning("could not project local compaction fallback status")
-            return True
+        prepared = _prepare_local_compaction_fallback(
+            memory,
+            max_input_tokens=max_input_tokens,
+        )
+        fallback = prepared.outcome
+        if prepared.messages is not None:
+            candidate_request = list(prepared.messages)
+            if not _has_trailing_user_message(candidate_request, request_text):
+                candidate_request.append({"role": "user", "content": request_text})
+            candidate_count = await self._exact_compaction_count(
+                transport,
+                candidate_request,
+                system_prompt=system_prompt,
+                tool_schemas=tool_schemas,
+            )
 
-        if fallback.status == "blocked_durability_error":
-            raise CompactionRecoveryRequired(fallback)
+            # Exact provider counting includes system/tool framing. If the
+            # conservative candidate still exceeds the hard budget, make one
+            # smaller deterministic candidate and re-count it. This is local
+            # token accounting, not another summary/provider retry.
+            if candidate_count is not None and candidate_count > max_input_tokens:
+                tighter_target = max(
+                    1,
+                    int(fallback.after_tokens * max_input_tokens / max(1, candidate_count) * 0.60),
+                )
+                prepared = _prepare_local_compaction_fallback(
+                    memory,
+                    max_input_tokens=max_input_tokens,
+                    target_tokens=tighter_target,
+                )
+                fallback = prepared.outcome
+                candidate_count = None
+                if prepared.messages is not None:
+                    candidate_request = list(prepared.messages)
+                    if not _has_trailing_user_message(candidate_request, request_text):
+                        candidate_request.append({"role": "user", "content": request_text})
+                    candidate_count = await self._exact_compaction_count(
+                        transport,
+                        candidate_request,
+                        system_prompt=system_prompt,
+                        tool_schemas=tool_schemas,
+                    )
+
+            if prepared.messages is not None and (
+                candidate_count is None or candidate_count <= max_input_tokens
+            ):
+                try:
+                    _replace_state(memory, prepared.messages, prepared.summary)
+                    from dataclasses import replace  # noqa: PLC0415
+
+                    fallback = replace(
+                        prepared.outcome,
+                        after_tokens=memory.token_estimate,
+                        durable=True,
+                    )
+                except Exception as exc:  # noqa: BLE001 - keep old projection on commit failure
+                    fallback = CompactionOutcome(
+                        "blocked_durability_error",
+                        prepared.outcome.before_tokens,
+                        prepared.outcome.before_tokens,
+                        durable=False,
+                        error_type=type(exc).__name__[:96],
+                        fallback_result="durability_error",
+                        recovery_reason="compaction_commit_failed",
+                    )
+            elif prepared.messages is not None:
+                fallback = CompactionOutcome(
+                    "blocked_irreducible_context",
+                    prepared.outcome.before_tokens,
+                    prepared.outcome.before_tokens,
+                    durable=False,
+                    fallback_result="irreducible_latest_exchange",
+                    recovery_reason="exact_count_over_budget",
+                )
+
+        from dataclasses import replace  # noqa: PLC0415
+
+        combined = replace(
+            fallback,
+            summary_result=outcome.summary_result,
+            summary_attempts=outcome.summary_attempts,
+            summary_error_type=outcome.summary_error_type,
+            error_type=fallback.error_type or outcome.error_type,
+        )
+        current_input_estimate = _conservative_message_estimate(
+            [{"role": "user", "content": request_text}],
+            system="",
+        )
+        if (
+            combined.status == "blocked_irreducible_context"
+            and current_input_estimate >= max_input_tokens
+            and combined.recovery_reason == "no_protocol_safe_boundary"
+        ):
+            combined = replace(combined, recovery_reason="current_input_exceeds_budget")
+        _emit_outcome(ctx.conv_store, combined)
+        if combined.status == "blocked_durability_error":
+            raise CompactionRecoveryRequired(combined)
+        if combined.applied:
+            return True
         # Below the hard usable budget, the independent provider guard remains
         # safe to use. After an actual context rejection, however, retaining an
         # unfit projection would simply replay the same failure forever.
-        if force or (exact_count is not None and exact_count >= max_input_tokens):
-            raise CompactionRecoveryRequired(
-                CompactionOutcome(
-                    "blocked_irreducible_context",
-                    before,
-                    before,
-                    durable=False,
-                )
-            )
+        if (
+            force
+            or projected >= max_input_tokens
+            or (exact_count is not None and exact_count >= max_input_tokens)
+        ):
+            raise CompactionRecoveryRequired(combined)
         return False
+
+    def _compaction_request_context(
+        self,
+        active_runner: AgentRunnerBase,
+        agent_instance: object | None,
+        agent_text: str,
+    ) -> tuple[str, list[object] | None, str]:
+        """Resolve the prompt/schema context used for exact candidate counts."""
+        ctx = self._ctx
+        memory = ctx.session_memory
+        meta: AgentMeta | None = None
+        if agent_instance is not None:
+            try:
+                meta = active_runner._get_meta(agent_instance)
+            except Exception:  # noqa: BLE001 - compatibility fallback is conservative
+                meta = None
+
+        system = getattr(meta, "system", None)
+        if not isinstance(system, str):
+            configured_system = _config_value(ctx.exec_cfg, "base_system_prompt", "")
+            system = configured_system if isinstance(configured_system, str) else ""
+        tools: list[object] | None = None
+        if meta is not None:
+            try:
+                schemas = active_runner._get_tool_schemas(meta)
+                if isinstance(schemas, list):
+                    tools = schemas
+            except Exception:  # noqa: BLE001 - omit unavailable schema estimate
+                tools = None
+
+        summary = getattr(memory, "summary", None)
+        contract = ctx.prompt_contract
+        if contract is not None:
+            request_text = agent_text
+            messages = getattr(memory, "_messages", [])
+            if not _has_trailing_user_message(messages, agent_text):
+                extra = list(getattr(self, "_runtime_dynamic_blocks", []))
+                if isinstance(summary, str) and summary:
+                    extra.append(PromptBlock("EARLIER CONVERSATION SUMMARY", summary))
+                try:
+                    request_text = contract.render_dynamic_message(agent_text, extra_blocks=extra)
+                except Exception:  # noqa: BLE001 - retain supplied prompt on compatibility failure
+                    request_text = agent_text
+        else:
+            request_text = agent_text
+            if isinstance(summary, str) and summary:
+                system = f"{system}\n\n[Earlier conversation summary]\n{summary}"
+        return system, tools, request_text
+
+    async def _exact_compaction_count(
+        self,
+        transport: object,
+        messages: list[object],
+        *,
+        system_prompt: str,
+        tool_schemas: list[object] | None,
+    ) -> int | None:
+        """Count a candidate with request framing when the adapter supports it."""
+        count_tokens = getattr(transport, "count_tokens", None)
+        if not callable(count_tokens):
+            return None
+        try:
+            from lauren_ai._transport import ContentBlock, Message  # noqa: PLC0415
+
+            countable_messages = [
+                Message(
+                    role=cast(
+                        "Literal['user', 'assistant']", str(_message_field(message, "role", "user"))
+                    ),
+                    content=cast(
+                        "str | list[ContentBlock]", _message_field(message, "content", "")
+                    ),
+                )
+                for message in messages
+                if _message_field(message, "role", "") in {"user", "assistant"}
+            ]
+            kwargs: dict[str, object] = {"model": self._model_id}
+            params: Mapping[str, inspect.Parameter]
+            try:
+                params = inspect.signature(count_tokens).parameters
+            except (TypeError, ValueError):
+                params = {}
+            accepts_kwargs = any(
+                parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in params.values()
+            )
+            if "system" in params or accepts_kwargs:
+                kwargs["system"] = system_prompt or None
+            if "tools" in params or accepts_kwargs:
+                kwargs["tools"] = tool_schemas
+            result = await asyncio.wait_for(count_tokens(countable_messages, **kwargs), timeout=8.0)
+            return result if isinstance(result, int) and result >= 0 else None
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - exact counting remains advisory
+            if self._ctx.conv_store is not None:
+                try:
+                    self._ctx.conv_store.append_event(
+                        "compaction_status",
+                        {
+                            "status": "token_count_unavailable",
+                            "error_type": type(exc).__name__[:96],
+                        },
+                    )
+                except Exception:  # noqa: BLE001 - projection is advisory
+                    logger.warning("could not project token-count fallback status")
+            logger.warning(
+                "compaction token count unavailable (%s); using conservative estimate",
+                type(exc).__name__,
+            )
+            return None
 
     def _local_compaction_fallback(self, *, max_input_tokens: int) -> bool:
         """Compatibility helper for older tests and callers."""
@@ -1996,6 +2186,7 @@ class AgentTurnRunner:
                 active_runner,
                 agent_text,
                 max_input_tokens=_window_tokens,
+                agent_instance=agent_instance,
             )
         except Exception as exc:
             from agenthicc.memory.compactor import CompactionRecoveryRequired  # noqa: PLC0415
@@ -2337,6 +2528,7 @@ class AgentTurnRunner:
                     active_runner,
                     agent_text,
                     max_input_tokens=_window_tokens,
+                    agent_instance=agent_instance,
                 )
                 if ctx.session_memory is not None and hasattr(ctx.session_memory, "snapshot"):
                     turn_snapshot = ctx.session_memory.snapshot()
@@ -2385,6 +2577,7 @@ class AgentTurnRunner:
                         agent_text,
                         max_input_tokens=_window_tokens,
                         force=True,
+                        agent_instance=agent_instance,
                     )
                 except Exception as compaction_exc:
                     from agenthicc.memory.compactor import CompactionRecoveryRequired  # noqa: PLC0415

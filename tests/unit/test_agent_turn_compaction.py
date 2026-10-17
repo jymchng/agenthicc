@@ -180,9 +180,202 @@ async def test_empty_summary_uses_a_bounded_local_fallback() -> None:
     # The fallback drops complete oldest exchanges; it never converts an
     # arbitrary transcript excerpt into a synthetic tool-history message.
     assert len(memory._messages) < 6
-    ctx.conv_store.append_event.assert_any_call(  # type: ignore[union-attr]
-        "system", {"text": "⎋ Compaction fallback: retained recent complete exchanges"}
+    fallback_notices = [
+        call.args[1]["text"]
+        for call in ctx.conv_store.append_event.call_args_list  # type: ignore[union-attr]
+        if call.args[0] == "system"
+        and str(call.args[1].get("text", "")).startswith("⎋ Compaction fallback:")
+    ]
+    assert len(fallback_notices) == 1
+    assert "retained recent complete exchanges" in fallback_notices[0]
+    assert "summary unavailable: empty_final" in fallback_notices[0]
+
+
+@pytest.mark.unit
+async def test_empty_summary_plus_oversized_tool_output_is_reduced_with_causal_status() -> None:
+    memory = ShortTermMemory(max_tokens=10_000)
+    memory.add_user("Inspect the output and report the result.")
+    memory._messages.append(
+        {
+            "role": "assistant",
+            "content": [{"type": "tool_use", "id": "tool-1", "name": "run_command", "input": {}}],
+            "reasoning_content": "provider reasoning metadata",
+        }
     )
+    memory.add_tool_result(
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "tool-1",
+                    "content": "head " + "x" * 12_000 + " tail",
+                }
+            ],
+        }
+    )
+    transport = _SummaryTransport(summary="")
+    ctx = _make_context(memory)
+    runner = AgentTurnRunner(ctx)
+    runner._model_id = "test-model"
+
+    compacted = await runner._auto_compact_if_needed(
+        SimpleNamespace(_transport=transport),
+        "continue",
+        max_input_tokens=800,
+        force=True,
+        agent_instance=object(),
+    )
+
+    assert compacted is True
+    assert len(transport.calls) == 2
+    result_block = memory._messages[-1]["content"][0]
+    assert result_block["tool_use_id"] == "tool-1"
+    assert "characters omitted" in result_block["content"]
+    assert memory._messages[1]["reasoning_content"] == "provider reasoning metadata"
+    statuses = [
+        call.args[1]
+        for call in ctx.conv_store.append_event.call_args_list  # type: ignore[union-attr]
+        if call.args[0] == "compaction_status"
+        and call.args[1].get("status") == "compacted_local_fallback"
+    ]
+    assert len(statuses) == 1
+    assert statuses[0]["summary_result"] == "empty_final"
+    assert statuses[0]["summary_attempts"] == 2
+    assert statuses[0]["fallback_result"] == "compacted_tool_output"
+
+
+@pytest.mark.unit
+async def test_generated_output_fallback_uses_exact_request_framing_and_bounded_recount() -> None:
+    class _CountedTransport(_SummaryTransport):
+        def __init__(self) -> None:
+            super().__init__(summary="")
+            self.counts = [1_000, 700]
+            self.count_calls: list[dict[str, object]] = []
+
+        async def count_tokens(self, messages, *, model, system=None, tools=None):  # noqa: ANN001
+            self.count_calls.append(
+                {"messages": messages, "model": model, "system": system, "tools": tools}
+            )
+            return self.counts.pop(0)
+
+    memory = ShortTermMemory(max_tokens=10_000)
+    memory.add_user("Inspect this output.")
+    memory._messages.append(
+        {
+            "role": "assistant",
+            "content": [{"type": "tool_use", "id": "tool-2", "name": "run_command", "input": {}}],
+        }
+    )
+    memory.add_tool_result(
+        {
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": "tool-2", "content": "z" * 12_000}],
+        }
+    )
+    transport = _CountedTransport()
+    active_runner = SimpleNamespace(
+        _transport=transport,
+        _get_meta=lambda _agent: SimpleNamespace(system="stable system prompt"),
+        _get_tool_schemas=lambda _meta: [{"name": "run_command", "parameters": {}}],
+    )
+    ctx = _make_context(memory)
+    runner = AgentTurnRunner(ctx)
+    runner._model_id = "test-model"
+
+    compacted = await runner._auto_compact_if_needed(
+        active_runner,
+        "continue",
+        max_input_tokens=800,
+        force=True,
+        agent_instance=object(),
+    )
+
+    assert compacted is True
+    assert len(transport.count_calls) == 2
+    assert all(call["system"] == "stable system prompt" for call in transport.count_calls)
+    assert all(
+        call["tools"] == [{"name": "run_command", "parameters": {}}]
+        for call in transport.count_calls
+    )
+
+
+@pytest.mark.unit
+async def test_still_over_budget_candidate_is_not_committed_or_sent() -> None:
+    class _OverBudgetTransport(_SummaryTransport):
+        def __init__(self) -> None:
+            super().__init__(summary="")
+            self.counts = [1_000, 950]
+            self.count_calls = 0
+
+        async def count_tokens(self, messages, *, model, system=None, tools=None):  # noqa: ANN001
+            self.count_calls += 1
+            return self.counts.pop(0)
+
+    memory = ShortTermMemory(max_tokens=10_000)
+    memory.add_user("Inspect this output.")
+    memory._messages.append(
+        {
+            "role": "assistant",
+            "content": [{"type": "tool_use", "id": "tool-3", "name": "run_command", "input": {}}],
+        }
+    )
+    memory.add_tool_result(
+        {
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": "tool-3", "content": "z" * 12_000}],
+        }
+    )
+    original_messages = memory._messages.copy()
+    transport = _OverBudgetTransport()
+    ctx = _make_context(memory)
+    runner = AgentTurnRunner(ctx)
+    runner._model_id = "test-model"
+
+    from agenthicc.memory.compactor import CompactionRecoveryRequired
+
+    with pytest.raises(CompactionRecoveryRequired) as raised:
+        await runner._auto_compact_if_needed(
+            SimpleNamespace(_transport=transport),
+            "continue",
+            max_input_tokens=800,
+            force=True,
+            agent_instance=object(),
+        )
+
+    assert raised.value.outcome.recovery_reason == "exact_count_over_budget"
+    assert transport.count_calls == 2
+    assert transport.calls  # summary request only; no model-turn request was sent
+    assert memory._messages == original_messages
+
+
+@pytest.mark.unit
+async def test_irreducible_current_input_reports_summary_and_fallback_causes() -> None:
+    user_input = "user-authored input " + "x" * 8_000
+    memory = ShortTermMemory(max_tokens=10_000)
+    memory.add_user(user_input)
+    ctx = _make_context(memory)
+    runner = AgentTurnRunner(ctx)
+    runner._model_id = "test-model"
+
+    from agenthicc.memory.compactor import CompactionRecoveryRequired
+
+    with pytest.raises(CompactionRecoveryRequired) as raised:
+        await runner._auto_compact_if_needed(
+            SimpleNamespace(_transport=_SummaryTransport(summary="")),
+            user_input,
+            max_input_tokens=800,
+            force=True,
+        )
+
+    assert raised.value.outcome.summary_result == "empty_final"
+    assert raised.value.outcome.summary_attempts == 2
+    assert raised.value.outcome.fallback_result == "irreducible_latest_exchange"
+    assert raised.value.outcome.recovery_reason == "current_input_exceeds_budget"
+    assert "summary=empty_final" in str(raised.value)
+    assert "reason=current_input_exceeds_budget" in str(raised.value)
+    assert "user-authored input" not in str(raised.value)
+    assert memory._messages[0]["content"] == user_input
 
 
 @pytest.mark.unit

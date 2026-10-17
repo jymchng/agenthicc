@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from agenthicc.memory.compactor import compact_memory_with_result
+from agenthicc.memory.compactor import compact_memory_with_result, local_compaction_fallback
 from agenthicc.memory.compactor import CompactionRecoveryRequired
 from agenthicc.memory.journal import ConversationJournal, fold_path, fold_resume_state
 from agenthicc.memory.journaled import JournaledShortTermMemory
@@ -107,6 +107,57 @@ async def test_failed_durable_compaction_keeps_original_projection_after_restart
     )
     assert resumed.messages == original_messages
     resumed.close()
+
+
+@pytest.mark.asyncio
+async def test_tool_output_fallback_commits_protocol_valid_projection_for_restart(
+    tmp_path: Path,
+) -> None:
+    journal_path = tmp_path / "tool-output-compaction.jsonl"
+    journal = ConversationJournal(journal_path)
+    memory = JournaledShortTermMemory(journal, max_tokens=10_000)
+    memory.add_user("Inspect the command output and report the error.")
+    memory._messages.append(
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "tool_use", "id": "tool-durable", "name": "run_command", "input": {}}
+            ],
+            "reasoning_content": "provider-required metadata",
+        }
+    )
+    memory.add_tool_result(
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "tool-durable",
+                    "content": "first line\n" + "log line\n" * 8_000 + "last line",
+                    "is_error": False,
+                }
+            ],
+        }
+    )
+
+    outcome = local_compaction_fallback(memory, max_input_tokens=800)
+
+    assert outcome.status == "compacted_local_fallback"
+    assert outcome.fallback_result == "compacted_tool_output"
+    assert memory.validate_tool_history().ok
+    expected_messages = list(memory._messages)
+    assert fold_path(journal_path) == (expected_messages, None)
+    assert expected_messages[0]["content"] == "Inspect the command output and report the error."
+    assert expected_messages[1]["reasoning_content"] == "provider-required metadata"
+    assert expected_messages[2]["content"][0]["tool_use_id"] == "tool-durable"
+    assert "characters omitted" in expected_messages[2]["content"][0]["content"]
+    journal.close()
+
+    reopened_journal = ConversationJournal(journal_path)
+    reopened = JournaledShortTermMemory(reopened_journal, max_tokens=10_000)
+    assert reopened._messages == expected_messages
+    assert reopened.validate_tool_history().ok
+    reopened_journal.close()
 
 
 @pytest.mark.asyncio

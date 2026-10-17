@@ -140,6 +140,13 @@ def test_supervisor_handoff_cancel_and_approval_edges(
         session_id="handoff", intent="continue", cwd=str(tmp_path), workflow_name="demo"
     )
     assert created.status is SessionStatus.QUEUED
+    from agenthicc.background.supervisor import _WorkerProcessState
+
+    monkeypatch.setattr(
+        supervisor,
+        "_worker_process_state",
+        lambda _session: _WorkerProcessState.LIVE,
+    )
     with pytest.raises(InvalidSessionTransition, match="already managed"):
         supervisor.handoff(session_id="handoff", intent="duplicate", cwd=str(tmp_path))
     assert supervisor.cancel("handoff").status is SessionStatus.CANCELLED
@@ -149,6 +156,160 @@ def test_supervisor_handoff_cancel_and_approval_edges(
     monkeypatch.setattr(supervisor, "_alive", lambda pid: False)
     monkeypatch.setattr(supervisor, "_terminate", lambda pid: None)
     supervisor._terminate(99999)
+
+
+def test_handoff_reconciles_dead_worker_only_with_current_foreground_lease(
+    tmp_path: Path,
+) -> None:
+    from agenthicc.runners.session_lease import SessionOpenCoordinator
+
+    store = BackgroundStore(tmp_path / "background")
+    stale = _record(tmp_path, "killed-worker").evolve(
+        status=SessionStatus.RUNNING,
+        attempt=4,
+        worker_pid=2_147_483_647,
+        lease_token="old-worker-token",
+    )
+    store.create(stale)
+    supervisor = BackgroundSupervisor(store, artifact_root=tmp_path / "sessions")
+
+    with pytest.raises(InvalidSessionTransition, match="current foreground ownership"):
+        supervisor.handoff(session_id=stale.session_id, intent="continue", start=False)
+    assert store.get(stale.session_id).status is SessionStatus.RUNNING
+
+    owner = SessionOpenCoordinator(tmp_path / "session-owners").acquire_new(stale.session_id)
+    try:
+        prepared = supervisor.handoff(
+            session_id=stale.session_id,
+            intent="continue with the selected model",
+            start=False,
+            resume_existing_only=True,
+            foreground_owner_lease=owner,
+        )
+        assert prepared.session_id == stale.session_id
+        assert prepared.status is SessionStatus.STARTING
+        assert prepared.attempt == 4
+        assert prepared.attempt_history[-1].status is SessionStatus.ORPHANED
+        request = json.loads(
+            (store.root / "requests" / f"{stale.session_id}.json").read_text(encoding="utf-8")
+        )
+        assert request["session_id"] == stale.session_id
+        assert request["resume_existing_only"] is True
+        assert request["intent"] == "continue with the selected model"
+    finally:
+        owner.release()
+
+
+def test_handoff_fails_closed_for_unverifiable_worker_and_dispatch_claim(
+    tmp_path: Path,
+) -> None:
+    from agenthicc.background.model import QueueDispatchState
+    from agenthicc.runners.session_lease import SessionOpenCoordinator
+
+    store = BackgroundStore(tmp_path / "background")
+    supervisor = BackgroundSupervisor(store, artifact_root=tmp_path / "sessions")
+    unknown = _record(tmp_path, "unknown-worker").evolve(
+        status=SessionStatus.RUNNING,
+        attempt=2,
+        worker_pid=None,
+        lease_token="possibly-live",
+    )
+    store.create(unknown)
+    owner = SessionOpenCoordinator(tmp_path / "session-owners").acquire_new(unknown.session_id)
+    try:
+        with pytest.raises(InvalidSessionTransition, match="cannot be verified"):
+            supervisor.handoff(
+                session_id=unknown.session_id,
+                intent="continue",
+                start=False,
+                foreground_owner_lease=owner,
+            )
+        assert store.get(unknown.session_id).status is SessionStatus.RUNNING
+
+        claimed = _record(tmp_path, "claimed-without-pid").evolve(
+            status=SessionStatus.STARTING,
+            dispatch_state=QueueDispatchState.CLAIMED,
+            dispatch_claimed_at=time.time(),
+            worker_pid=None,
+        )
+        store.create(claimed)
+        with pytest.raises(InvalidSessionTransition, match="dispatch has a live claim"):
+            supervisor.handoff(
+                session_id=claimed.session_id,
+                intent="continue",
+                start=False,
+                foreground_owner_lease=owner,
+            )
+        assert store.get(claimed.session_id).status is SessionStatus.STARTING
+    finally:
+        owner.release()
+
+
+def test_handoff_reconciliation_cas_race_does_not_overwrite_newer_worker_state(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from agenthicc.runners.session_lease import SessionOpenCoordinator
+
+    store = BackgroundStore(tmp_path / "background")
+    stale = _record(tmp_path, "worker-race").evolve(
+        status=SessionStatus.RUNNING,
+        attempt=3,
+        worker_pid=2_147_483_647,
+        lease_token="lease-a",
+    )
+    store.create(stale)
+    supervisor = BackgroundSupervisor(store, artifact_root=tmp_path / "sessions")
+    owner = SessionOpenCoordinator(tmp_path / "session-owners").acquire_new(stale.session_id)
+    observed: list[float] = []
+
+    def win_race(session_id: str, **_kwargs: object) -> BackgroundSession:
+        current = store.get(session_id)
+        newer_timestamp = (current.last_active or 1.0) + 1.0
+        observed.append(newer_timestamp)
+        store.update(session_id, last_active=newer_timestamp)
+        raise InvalidSessionTransition("activity changed")
+
+    monkeypatch.setattr(store, "mark_orphaned", win_race)
+    try:
+        with pytest.raises(InvalidSessionTransition, match="changed during handoff"):
+            supervisor.handoff(
+                session_id=stale.session_id,
+                intent="continue",
+                start=False,
+                foreground_owner_lease=owner,
+            )
+        current = store.get(stale.session_id)
+        assert current.status is SessionStatus.RUNNING
+        assert current.last_active == observed[0]
+    finally:
+        owner.release()
+
+
+def test_mark_orphaned_cas_rejects_changed_dispatch_state(tmp_path: Path) -> None:
+    from agenthicc.background.model import QueueDispatchState
+
+    store = BackgroundStore(tmp_path / "background")
+    active = _record(tmp_path, "dispatch-state-race").evolve(
+        status=SessionStatus.RUNNING,
+        attempt=1,
+        worker_pid=2_147_483_647,
+        lease_token="worker-lease",
+    )
+    store.create(active)
+    store.update(active.session_id, dispatch_state=QueueDispatchState.FAILED)
+    changed_dispatch = store.get(active.session_id)
+
+    with pytest.raises(InvalidSessionTransition, match="dispatch state changed"):
+        store.mark_orphaned(
+            active.session_id,
+            expected_attempt=active.attempt,
+            expected_lease_token=active.lease_token,
+            expected_status=active.status,
+            expected_last_active=changed_dispatch.last_active,
+            expected_dispatch_state=active.dispatch_state,
+        )
+    assert store.get(active.session_id).status is SessionStatus.RUNNING
 
 
 def test_store_rejects_corrupt_events_and_applies_filters(tmp_path: Path) -> None:
@@ -868,6 +1029,197 @@ async def test_foreground_handoff_reports_disabled_and_launch_failure(
     with contextlib.suppress(asyncio.CancelledError):
         await task
     assert "launch failed" in console.export_text()
+
+
+def test_detach_after_continue_preserves_owner_and_selected_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from rich.console import Console
+
+    from agenthicc.background.integration import _handoff
+    from agenthicc.background.settings import BackgroundSettings
+    from agenthicc.runners.session_lease import SessionOpenCoordinator
+
+    store_root = tmp_path / "background"
+    store = BackgroundStore(store_root)
+    stale = _record(tmp_path, "continue-then-detach").evolve(
+        status=SessionStatus.RUNNING,
+        attempt=3,
+        worker_pid=2_147_483_647,
+        lease_token="killed-worker-token",
+    )
+    store.create(stale)
+    config_path = tmp_path / "custom-agenthicc.toml"
+    config_path.write_text("[execution]\nmodel='selected-after-continue'\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "agenthicc.background.integration.load_background_settings",
+        lambda **_kwargs: BackgroundSettings(store_path=str(store_root)),
+    )
+    monkeypatch.setattr(
+        "agenthicc.background.supervisor.subprocess.Popen",
+        lambda *_args, **_kwargs: SimpleNamespace(pid=987_654_321),
+    )
+
+    owner = SessionOpenCoordinator(tmp_path / "session-owners").acquire_new(stale.session_id)
+    event = SimpleNamespace(kind="user_message", payload={"text": "continue the same task"})
+    mode = SimpleNamespace(name="Yolo", default_workflow="goal_flow")
+    ctx = SimpleNamespace(
+        session_id=stale.session_id,
+        config_path=str(config_path),
+        cfg=SimpleNamespace(
+            background=None,
+            execution=SimpleNamespace(profile="modal-kimi"),
+        ),
+        cfg_overrides=("execution.model=selected-after-continue",),
+        cfg_secret_overrides=("execution.api_key=TEST_SECRET",),
+        owner_lease=owner,
+        app_state=SimpleNamespace(
+            conversation=SimpleNamespace(
+                turns=lambda: [SimpleNamespace(events=[event])],
+                notify_transient=lambda _text: None,
+            ),
+            active_mode=lambda: mode,
+            cli_flags=SimpleNamespace(dangerously_skip_permissions=False),
+        ),
+        console=Console(record=True),
+    )
+    input_session = SimpleNamespace()
+    foreground = SimpleNamespace(
+        _ctx=ctx,
+        _workflow_override="",
+        _input_session=input_session,
+        _agent_task=None,
+    )
+
+    assert _handoff(foreground) is True
+    current = store.get(stale.session_id)
+    request = json.loads(
+        (store_root / "requests" / f"{stale.session_id}.json").read_text(encoding="utf-8")
+    )
+    assert current.status is SessionStatus.STARTING
+    assert current.session_id == stale.session_id
+    assert current.attempt == 3
+    assert current.attempt_history[-1].status is SessionStatus.ORPHANED
+    assert current.worker_pid == 987_654_321
+    assert request["config_path"] == str(config_path)
+    assert request["set_overrides"] == ["execution.model=selected-after-continue"]
+    assert request["set_secret_overrides"] == ["execution.api_key=TEST_SECRET"]
+    assert request["mode_name"] == "Yolo"
+    assert request["requested_profile_name"] == "modal-kimi"
+    assert request["workflow_name"] == "goal_flow"
+    assert request["resume_existing_only"] is True
+    assert owner.released
+    assert input_session._background_exit_requested is True
+
+
+def test_failed_worker_launch_restores_foreground_owner_for_safe_retry(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from rich.console import Console
+
+    from agenthicc.background.integration import _handoff
+    from agenthicc.background.settings import BackgroundSettings
+    from agenthicc.runners.session_lease import SessionOpenCoordinator
+
+    store_root = tmp_path / "background"
+    store = BackgroundStore(store_root)
+    completed = _record(tmp_path, "launch-failure-owner").evolve(
+        status=SessionStatus.COMPLETED,
+        attempt=1,
+        completed_at=time.time(),
+    )
+    store.create(completed)
+    monkeypatch.setattr(
+        "agenthicc.background.integration.load_background_settings",
+        lambda **_kwargs: BackgroundSettings(store_path=str(store_root)),
+    )
+    monkeypatch.setattr(
+        "agenthicc.background.supervisor.subprocess.Popen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("controlled launch failure")),
+    )
+    original_lease = SessionOpenCoordinator(tmp_path / "session-owners").acquire_new(
+        completed.session_id
+    )
+    event = SimpleNamespace(kind="user_message", payload={"text": "resume after failure"})
+    ctx = SimpleNamespace(
+        session_id=completed.session_id,
+        cfg=SimpleNamespace(background=None, execution=SimpleNamespace(profile="")),
+        owner_lease=original_lease,
+        app_state=SimpleNamespace(
+            conversation=SimpleNamespace(
+                turns=lambda: [SimpleNamespace(events=[event])],
+                notify_transient=lambda _message: None,
+            ),
+            active_mode=lambda: SimpleNamespace(name="Safe", default_workflow=""),
+            cli_flags=SimpleNamespace(dangerously_skip_permissions=False),
+        ),
+        console=Console(record=True),
+    )
+    session = SimpleNamespace(
+        _ctx=ctx,
+        _workflow_override="",
+        _input_session=SimpleNamespace(),
+        _agent_task=None,
+    )
+
+    assert _handoff(session) is True
+    assert store.get(completed.session_id).status is SessionStatus.FAILED
+    assert original_lease.released
+    assert ctx.owner_lease is not original_lease
+    assert ctx.owner_lease.released is False
+    assert ctx.owner_lease.path.is_file()
+    assert session._background_handoff_state == "idle"
+    assert getattr(session._input_session, "_background_exit_requested", False) is False
+    assert "controlled launch failure" in ctx.console.export_text()
+
+
+def test_repeated_detach_in_one_tui_does_not_prepare_twice(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from agenthicc.background.integration import _handoff
+    from agenthicc.background.settings import BackgroundSettings
+
+    store_root = tmp_path / "background"
+    event = SimpleNamespace(kind="user_message", payload={"text": "one request"})
+    calls: list[str] = []
+    record = _record(tmp_path, "idempotent-detach").evolve(status=SessionStatus.QUEUED)
+    monkeypatch.setattr(
+        "agenthicc.background.integration.load_background_settings",
+        lambda **_kwargs: BackgroundSettings(store_path=str(store_root)),
+    )
+
+    def prepare(_self: object, *, session_id: str, **_kwargs: object) -> BackgroundSession:
+        calls.append(session_id)
+        return record
+
+    monkeypatch.setattr("agenthicc.background.integration.BackgroundSupervisor.handoff", prepare)
+    ctx = SimpleNamespace(
+        session_id=record.session_id,
+        cfg=SimpleNamespace(background=None, execution=SimpleNamespace(profile="")),
+        app_state=SimpleNamespace(
+            conversation=SimpleNamespace(
+                turns=lambda: [SimpleNamespace(events=[event])],
+                notify_transient=lambda _message: None,
+            ),
+            active_mode=lambda: SimpleNamespace(default_workflow=""),
+            cli_flags=SimpleNamespace(dangerously_skip_permissions=False),
+        ),
+        console=SimpleNamespace(print=lambda _message: None),
+    )
+    session = SimpleNamespace(
+        _ctx=ctx,
+        _workflow_override="",
+        _input_session=SimpleNamespace(),
+        _agent_task=None,
+    )
+
+    assert _handoff(session) is True
+    assert _handoff(session) is True
+    assert calls == [record.session_id]
+    assert session._background_handoff_state == "started"
 
 
 @pytest.mark.asyncio

@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -125,6 +127,163 @@ def test_completed_session_detach_starts_same_session_without_replaying_intent(
     )
     assert request["resume_existing_only"] is True
     assert request["intent"] == completed.intent
+
+
+@pytest.mark.skipif(os.name == "nt", reason="process command identity recovery is POSIX-only")
+def test_killed_worker_continue_then_detach_uses_same_session_and_updated_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reproduce kill → --continue lease → config change → /detach end to end."""
+    from rich.console import Console
+
+    from agenthicc.background.integration import _handoff
+    from agenthicc.background.settings import BackgroundSettings
+    from agenthicc.runners.session_lease import SessionOpenCoordinator
+
+    store_root = tmp_path / "background"
+    artifacts = tmp_path / "artifacts"
+    session_id = "killed-then-continued"
+    store = BackgroundStore(store_root)
+    session = BackgroundSession.create(
+        session_id,
+        title="Killed worker recovery",
+        cwd=str(tmp_path),
+        workflow_name="goal_flow",
+        intent="continue the existing goal",
+        artifact_dir=str(artifacts / session_id),
+    )
+    store.create(session)
+
+    script = (
+        "import os, sys, time\n"
+        "from pathlib import Path\n"
+        "from agenthicc.background import BackgroundStore\n"
+        "args = sys.argv\n"
+        "request = Path(args[args.index('--request-file') + 1])\n"
+        "store = BackgroundStore(args[args.index('--store-root') + 1])\n"
+        "store.claim(request.stem, pid=os.getpid(), lease_token='e2e-worker-lease')\n"
+        "time.sleep(120)\n"
+    )
+
+    def worker_command(supervisor: BackgroundSupervisor, request_path: Path) -> list[str]:
+        return [
+            sys.executable,
+            "-c",
+            script,
+            "agenthicc.background.worker",
+            "--request-file",
+            str(request_path),
+            "--store-root",
+            str(supervisor.store.root),
+        ]
+
+    monkeypatch.setattr(BackgroundSupervisor, "_worker_command", worker_command)
+    actual_popen = subprocess.Popen
+    processes: list[subprocess.Popen[bytes]] = []
+
+    def capture_process(*args: object, **kwargs: object) -> subprocess.Popen[bytes]:
+        process = actual_popen(*args, **kwargs)  # type: ignore[arg-type]
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr("agenthicc.background.supervisor.subprocess.Popen", capture_process)
+
+    old_supervisor = BackgroundSupervisor(store, artifact_root=artifacts)
+    old_request = BackgroundRequest(
+        session_id=session_id,
+        workflow_name="goal_flow",
+        intent="continue the existing goal",
+        cwd=str(tmp_path),
+    )
+    old_supervisor._launch(old_request, session)
+    _wait_for_status(store, session_id, SessionStatus.RUNNING)
+    old_worker_pid = store.get(session_id).worker_pid
+    assert old_worker_pid is not None
+    old_process = processes[0]
+    os.kill(old_worker_pid, signal.SIGKILL)
+    old_process.wait(timeout=10)
+    assert old_process.returncode is not None
+
+    sessions_root = tmp_path / "sessions"
+    (sessions_root / session_id).mkdir(parents=True)
+    foreground_lease = SessionOpenCoordinator(sessions_root).acquire_existing(session_id)
+    changed_config = tmp_path / "agenthicc-custom.toml"
+    changed_config.write_text(
+        "[execution]\nmodel = 'model-selected-after-continue'\nprofile = 'modal-kimi'\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "agenthicc.background.integration.load_background_settings",
+        lambda **_kwargs: BackgroundSettings(store_path=str(store_root)),
+    )
+
+    user_event = SimpleNamespace(
+        kind="user_message",
+        payload={"text": "continue the existing goal"},
+    )
+    mode = SimpleNamespace(name="Yolo", default_workflow="goal_flow")
+    ctx = SimpleNamespace(
+        session_id=session_id,
+        config_path=str(changed_config),
+        cfg=SimpleNamespace(
+            background=None,
+            execution=SimpleNamespace(profile="modal-kimi"),
+        ),
+        cfg_overrides=(),
+        cfg_secret_overrides=(),
+        owner_lease=foreground_lease,
+        app_state=SimpleNamespace(
+            conversation=SimpleNamespace(
+                turns=lambda: [SimpleNamespace(events=[user_event])],
+                notify_transient=lambda _message: None,
+            ),
+            active_mode=lambda: mode,
+            cli_flags=SimpleNamespace(dangerously_skip_permissions=False),
+        ),
+        console=Console(record=True),
+    )
+    input_session = SimpleNamespace()
+    foreground = SimpleNamespace(
+        _ctx=ctx,
+        _workflow_override="",
+        _input_session=input_session,
+        _agent_task=None,
+    )
+
+    assert _handoff(foreground) is True
+    _wait_for_status(store, session_id, SessionStatus.RUNNING)
+    resumed = store.get(session_id)
+    request = json.loads(
+        (store_root / "requests" / f"{session_id}.json").read_text(encoding="utf-8")
+    )
+    assert resumed.session_id == session_id
+    assert resumed.attempt == 2
+    assert resumed.worker_pid not in {None, old_worker_pid}
+    assert resumed.attempt_history[-1].status is SessionStatus.ORPHANED
+    assert len(processes) == 2
+    assert request["config_path"] == str(changed_config)
+    assert request["set_overrides"] == []
+    assert request["requested_profile_name"] == "modal-kimi"
+    assert request["mode_name"] == "Yolo"
+    assert request["workflow_name"] == "goal_flow"
+    from agenthicc.config import load_config
+
+    worker_config = load_config(
+        config_path=changed_config,
+        user_path=tmp_path / "absent-user-config.toml",
+        env_overrides=False,
+        cli_overrides=request["set_overrides"],
+    )
+    assert worker_config.execution.model == "model-selected-after-continue"
+    assert worker_config.execution.profile == "modal-kimi"
+    assert foreground_lease.released
+    assert input_session._background_exit_requested is True
+
+    new_worker_pid = resumed.worker_pid
+    assert new_worker_pid is not None
+    os.kill(new_worker_pid, signal.SIGKILL)
+    processes[1].wait(timeout=10)
 
 
 def test_foreground_takeover_stops_owned_worker_before_resume(tmp_path: Path, monkeypatch) -> None:

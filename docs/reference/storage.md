@@ -195,9 +195,16 @@ the operation remains a blocked durability failure: Agenthicc does not publish
 the candidate in live memory or continue the affected detached turn. The
 background session is marked recoverable with a bounded category such as
 `compaction_persistence_failed` or `context_limit_unresolved`. Compaction
-status records contain only the outcome, before/after estimates, and exception
-class; they do not contain transcript text, provider payloads, credentials, or
-headers.
+status records contain only the outcome, before/after estimates, summary
+classification and bounded attempt count, fallback classification, recovery
+reason, and exception class; they do not contain transcript text, provider
+payloads, credentials, or headers. When summary generation is unavailable,
+local fallback first removes whole old exchanges and may then excerpt only
+recognized plain-text tool-result blocks. It preserves tool-call and result
+identities and does not modify user-authored input or opaque provider-specific
+blocks. The candidate is token-counted with system and tool schemas when
+supported; an over-budget candidate is never committed. A failed candidate or
+journal transaction leaves the pre-compaction projection recoverable.
 
 ### Provider-step recovery
 

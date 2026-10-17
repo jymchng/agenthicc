@@ -137,6 +137,14 @@ journal/checkpoint boundary and releases the foreground owner before the
 background worker becomes the sole owner. It does not create a second
 conversation or session.
 
+After an abrupt process kill, `--continue` may reclaim the session owner while
+the background lifecycle projection still records the previous attempt as
+active. A later `/detach` verifies the old worker PID/identity and the current
+foreground lease, marks only a conclusively dead attempt orphaned, then starts
+the next attempt for the same session. A live or unverifiable worker is never
+duplicated. The request preserves the resumed invocation's config path and
+overrides, including the selected model/profile.
+
 `agenthicc attach --run RUN_ID` performs the reverse operation: it stops the
 background worker, claims the existing session lease, and opens the normal TUI
 with the same transcript and workflow checkpoint. A live owner conflict is

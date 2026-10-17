@@ -63,6 +63,26 @@ The path through the runtime is:
    resources; after cleanup, control returns to the shell. The background
    worker is independent of that terminal shutdown.
 
+If the process that owned a session is killed abruptly, its lifecycle record
+may still say `running` after `agenthicc --continue` has safely reclaimed the
+session-owner lease. A subsequent `/detach` now reconciles that exact record:
+it verifies the recorded worker process identity, verifies the current TUI
+still owns the same session lease, and compare-and-sets the dead attempt to
+`orphaned` before preparing another attempt for the same session ID. It does
+not use heartbeat age alone to decide that a worker is dead. A verified live
+worker is left untouched; a dispatch claim or uninspectable process is
+reported as an actionable recovery conflict rather than starting a duplicate.
+
+The handoff also carries the resumed TUI's config path, CLI overrides,
+requested provider profile, mode, workflow, and run ID into its private worker
+request. Thus a config/model selection made for the resumed invocation is not
+silently replaced with the default config when the worker starts. Secrets stay
+in the protected request envelope and are not printed in status or error
+messages. If worker startup fails after the foreground lease is released, the
+TUI reacquires that lease only after the store confirms the worker attempt is
+terminal; otherwise it exits safely so the session can be reopened with
+`agenthicc --continue`.
+
 There is an important ordering detail in the current implementation: step 4
 requests cancellation, but does not await the agent task before steps 5–6
 release ownership and launch the worker. TUI teardown later awaits that task,
@@ -720,6 +740,7 @@ Accepted subcommands include `list`, `status`, `cancel`, `resume`, `retry`,
 | A background job wrote to an unexpected place | `cwd` was relative at submit time | Pass an explicit working directory to `run --background`; inspect `artifact_dir` in the job record |
 | A job shows `attempt: 2` unexpectedly | It was retried | Compare with `jobs status --json`; a retry after a cancellation may be intentional, so confirm before assuming a crash |
 | A stale job is still listed as running | Stale detection is lease-based | Check the worker lease; a dead worker is reclaimed rather than silently reported as healthy |
+| `/detach` says a session is already managed after `--continue` reclaimed it | The background lifecycle record can outlive the killed worker process | Retry `/detach`; it verifies process identity and the current foreground owner lease, then reconciles only the exact dead attempt. If the worker is live or its identity cannot be verified, inspect `agenthicc agents` and do not start a second worker |
 | Killing the parent session left child processes alive | Detached terminals are owned by the session's terminal manager | Cancelling a detached parent asks the terminal registry to stop its exact child groups. Inspect with `/ps` and stop with `/stop <terminal-id>` |
 | Background state disappeared after a restart | The store holds only the rebuildable lifecycle index | The index is rebuilt from durable owners (kernel events, conversation events, workflow phase state), so a lost index is recoverable |
 | Archiving lost the audit trail | Archive moves the listing entry | Workflow phase state, approvals, and memory keep their own owners; the index was never the audit trail |

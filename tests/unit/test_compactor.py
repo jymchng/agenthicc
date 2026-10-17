@@ -247,10 +247,111 @@ class TestCompactMemory:
 
         assert any(
             event.kind == "system"
-            and event.payload.get("text") == "⎋ Compaction returned an empty summary"
+            and str(event.payload.get("text", "")).startswith(
+                "⎋ Compaction summary unavailable (empty_final; 2 attempts)"
+            )
             for event in events
         )
         assert not any(event.payload.get("text") == "⎋ Nothing to compact" for event in events)
+
+    async def test_summary_outcome_classifies_empty_final_and_attempt_count(self) -> None:
+        mem = self._make_mem()
+        before = mem.snapshot()
+        transport = _MockTransport("")
+
+        outcome = await compact_memory_with_result(mem, transport, model="m")
+
+        assert outcome.status == "skipped_summary_unavailable"
+        assert outcome.summary_result == "empty_final"
+        assert outcome.summary_attempts == 2
+        assert outcome.summary_error_type == ""
+        assert mem.snapshot() == before
+        assert len(transport.calls) == 2
+
+    async def test_reasoning_only_summary_is_classified_without_exposing_reasoning(self) -> None:
+        class _ReasoningOnlyTransport:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            async def complete(self, *args, **kwargs):  # noqa: ANN002, ANN003
+                self.calls += 1
+                return SimpleNamespace(
+                    content=[{"type": "thinking", "thinking": "private reasoning payload"}]
+                )
+
+        from agenthicc.tui.conversation_store import ConversationStore
+
+        conv = ConversationStore()
+        events = []
+        conv.on_event(events.append)
+        mem = self._make_mem()
+        before = mem.snapshot()
+        transport = _ReasoningOnlyTransport()
+
+        outcome = await compact_memory_with_result(mem, transport, model="m", conv_store=conv)
+
+        assert outcome.summary_result == "reasoning_only"
+        assert outcome.summary_attempts == 2
+        assert transport.calls == 2
+        assert mem.snapshot() == before
+        assert "private reasoning payload" not in str(events)
+
+    def test_local_fallback_excerpts_tool_output_without_changing_protocol_or_user_text(
+        self,
+    ) -> None:
+        memory = ShortTermMemory(max_tokens=10_000)
+        user_request = "Read the build log and report the failing target."
+        memory.add_user(user_request)
+        memory._messages.append(
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "tool_use", "id": "tool-1", "name": "run_command", "input": {}}
+                ],
+                "reasoning_content": "provider-required reasoning metadata",
+            }
+        )
+        memory.add_tool_result(
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tool-1",
+                        "content": "BEGIN " + "x" * 10_000 + " END",
+                        "is_error": False,
+                    }
+                ],
+            }
+        )
+
+        outcome = local_compaction_fallback(memory, max_input_tokens=800)
+
+        assert outcome.status == "compacted_local_fallback"
+        assert outcome.fallback_result == "compacted_tool_output"
+        assert outcome.durable is True
+        assert memory._messages[0] == {"role": "user", "content": user_request}
+        assistant = memory._messages[1]
+        result = memory._messages[2]["content"][0]
+        assert assistant["content"][0]["id"] == "tool-1"
+        assert assistant["reasoning_content"] == "provider-required reasoning metadata"
+        assert result["tool_use_id"] == "tool-1"
+        assert result["is_error"] is False
+        assert "characters omitted" in result["content"]
+        assert result["content"].startswith("BEGIN ")
+        assert result["content"].endswith(" END")
+        assert memory.validate_tool_history().ok
+
+    def test_irreducible_user_message_is_unchanged_and_classified(self) -> None:
+        memory = ShortTermMemory(max_tokens=10_000)
+        memory.add_user("user-authored " + "x" * 10_000)
+        before = memory.snapshot()
+
+        outcome = local_compaction_fallback(memory, max_input_tokens=100)
+
+        assert outcome.status == "blocked_irreducible_context"
+        assert outcome.fallback_result == "irreducible_latest_exchange"
+        assert memory.snapshot() == before
 
     async def test_empty_final_response_is_retried_before_reporting_failure(self) -> None:
         from agenthicc.tui.conversation_store import ConversationStore

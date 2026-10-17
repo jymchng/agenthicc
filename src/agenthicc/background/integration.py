@@ -11,7 +11,7 @@ import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from .model import ACTIVE_STATUSES
+from .model import ACTIVE_STATUSES, SessionStatus
 from .settings import background_enabled, load_background_settings
 from .supervisor import BackgroundSupervisor
 from .store import BackgroundStore
@@ -49,8 +49,64 @@ def _last_user_text(session: object) -> str:
     return ""
 
 
+def _restore_foreground_lease(ctx: object, owner_lease: object | None) -> bool:
+    """Reclaim the same session lease after a confirmed worker launch failure."""
+    from agenthicc.runners.session_lease import (  # noqa: PLC0415
+        SessionOpenCoordinator,
+        SessionOwnerLease,
+    )
+
+    if not isinstance(owner_lease, SessionOwnerLease):
+        return False
+    session_id = vars(ctx).get("session_id")
+    if not isinstance(session_id, str):
+        return False
+
+    try:
+        restored = SessionOpenCoordinator(owner_lease.path.parent.parent).acquire_existing(
+            session_id,
+            entrypoint=owner_lease.info.entrypoint,
+        )
+    except Exception:  # noqa: BLE001
+        return False
+    setattr(ctx, "owner_lease", restored)
+    return True
+
+
 def _handoff(session: object) -> bool:
     ctx = getattr(session, "_ctx")
+    session_values = vars(session)
+    handoff_state = session_values.get("_background_handoff_state", "idle")
+    if handoff_state in {"preparing", "started"}:
+        # A repeated alias/key event must not prepare or launch another attempt.
+        return True
+    if handoff_state == "prepared":
+        # A prepared request is durable and may be retried after a confirmed
+        # launch failure without advancing the session attempt a second time.
+        prepared_supervisor = session_values.get("_background_prepared_supervisor")
+        prepared_session_id = session_values.get("_background_prepared_session_id")
+        if isinstance(prepared_supervisor, BackgroundSupervisor) and isinstance(
+            prepared_session_id, str
+        ):
+            try:
+                record = prepared_supervisor.start(prepared_session_id)
+            except Exception as exc:  # noqa: BLE001
+                ctx.console.print(
+                    f"Unable to start prepared background session: {type(exc).__name__}: {exc}"
+                )
+                return True
+            if record.status is SessionStatus.FAILED:
+                setattr(session, "_background_handoff_state", "idle")
+                ctx.console.print(record.error or "Background worker launch failed.")
+                return True
+            setattr(session, "_background_handoff_state", "started")
+            ctx.app_state.conversation.notify_transient(
+                f"Backgrounded session {record.session_id[:12]}… ({record.status.value})"
+            )
+            setattr(session_values["_input_session"], "_background_exit_requested", True)
+            return True
+        setattr(session, "_background_handoff_state", "idle")
+
     intent = _last_user_text(session)
     if not intent:
         ctx.console.print("Cannot background this session before it has a user request.")
@@ -81,6 +137,19 @@ def _handoff(session: object) -> bool:
         dispatch_lease_s=settings.dispatch_lease_s,
         notification_settings=settings.notifications,
     )
+    mode_name_value = vars(mode).get("name")
+    mode_name = mode_name_value if isinstance(mode_name_value, str) else None
+    cfg_values = vars(ctx).get("cfg")
+    execution_values = vars(cfg_values).get("execution") if cfg_values is not None else None
+    profile_value = vars(execution_values).get("profile", "") if execution_values else ""
+    requested_profile_name = (
+        profile_value.strip() if isinstance(profile_value, str) and profile_value.strip() else None
+    )
+    config_path_value = vars(ctx).get("config_path")
+    config_path = config_path_value if isinstance(config_path_value, str) else None
+    owner_lease = vars(ctx).get("owner_lease")
+    setattr(session, "_background_handoff_state", "preparing")
+    owner_released = False
     try:
         goal_run_id = str(vars(ctx).get("goal_run_id", "") or "")
         task = vars(session).get("_agent_task")
@@ -92,7 +161,7 @@ def _handoff(session: object) -> bool:
                 intent=intent,
                 workflow_name=workflow_name,
                 cwd=str(Path.cwd()),
-                config_path=None,
+                config_path=config_path,
                 set_overrides=tuple(vars(ctx).get("cfg_overrides", ())),
                 set_secret_overrides=tuple(vars(ctx).get("cfg_secret_overrides", ())),
                 dangerously_skip_permissions=bool(
@@ -102,7 +171,10 @@ def _handoff(session: object) -> bool:
                 ),
                 run_id=goal_run_id,
                 start=False,
+                mode_name=mode_name,
                 resume_existing_only=resume_existing_only,
+                requested_profile_name=requested_profile_name,
+                foreground_owner_lease=owner_lease,
             )
         except TypeError as exc:
             if "resume_existing_only" in str(exc):
@@ -113,7 +185,7 @@ def _handoff(session: object) -> bool:
                     intent=intent,
                     workflow_name=workflow_name,
                     cwd=str(Path.cwd()),
-                    config_path=None,
+                    config_path=config_path,
                     set_overrides=tuple(vars(ctx).get("cfg_overrides", ())),
                     set_secret_overrides=tuple(vars(ctx).get("cfg_secret_overrides", ())),
                     dangerously_skip_permissions=bool(
@@ -123,6 +195,9 @@ def _handoff(session: object) -> bool:
                     ),
                     run_id=goal_run_id,
                     start=False,
+                    mode_name=mode_name,
+                    requested_profile_name=requested_profile_name,
+                    foreground_owner_lease=owner_lease,
                 )
             elif "start" in str(exc):
                 # Keep compatibility with embedders that supplied the pre-204
@@ -135,7 +210,7 @@ def _handoff(session: object) -> bool:
                     intent=intent,
                     workflow_name=workflow_name,
                     cwd=str(Path.cwd()),
-                    config_path=None,
+                    config_path=config_path,
                     set_overrides=tuple(vars(ctx).get("cfg_overrides", ())),
                     set_secret_overrides=tuple(vars(ctx).get("cfg_secret_overrides", ())),
                     dangerously_skip_permissions=bool(
@@ -144,6 +219,9 @@ def _handoff(session: object) -> bool:
                         else False
                     ),
                     run_id=goal_run_id,
+                    mode_name=mode_name,
+                    requested_profile_name=requested_profile_name,
+                    foreground_owner_lease=owner_lease,
                 )
             else:
                 raise
@@ -158,10 +236,30 @@ def _handoff(session: object) -> bool:
         if prepared:
             # The request and session record are durable now. Release the
             # foreground lease before the worker is allowed to claim it.
-            owner_lease = vars(ctx).get("owner_lease")
+            record_path = supervisor.store.root / "requests" / f"{record.session_id}.json"
+            if record_path.is_file():
+                setattr(session, "_background_handoff_state", "prepared")
+                setattr(session, "_background_prepared_supervisor", supervisor)
+                setattr(session, "_background_prepared_session_id", record.session_id)
             if owner_lease is not None:
                 owner_lease.release()
+                owner_released = True
             record = supervisor.start(record.session_id)
+            if record.status is SessionStatus.FAILED:
+                restored = _restore_foreground_lease(ctx, owner_lease)
+                if restored:
+                    setattr(session, "_background_handoff_state", "idle")
+                    setattr(session, "_background_prepared_supervisor", None)
+                    setattr(session, "_background_prepared_session_id", None)
+                    ctx.console.print(record.error or "Background worker launch failed.")
+                    return True
+                setattr(session, "_background_handoff_state", "started")
+                setattr(session_values["_input_session"], "_background_exit_requested", True)
+                ctx.console.print(
+                    "Background worker launch failed and foreground ownership could not "
+                    "be safely restored; reopen the same session with `agenthicc --continue`."
+                )
+                return True
         if goal_run_id and record.status in ACTIVE_STATUSES:
             from agenthicc.runs import RunStore  # noqa: PLC0415
             from agenthicc.runs.model import GoalRunStatus  # noqa: PLC0415
@@ -179,8 +277,29 @@ def _handoff(session: object) -> bool:
                 # safe to fabricate a run record from the slash command.
                 pass
     except Exception as exc:  # noqa: BLE001
+        if not owner_released:
+            setattr(session, "_background_handoff_state", "idle")
+        else:
+            current = None
+            try:
+                current = supervisor.store.get(ctx.session_id, include_deleted=True)
+            except Exception:  # noqa: BLE001
+                pass
+            if current is not None and current.status not in ACTIVE_STATUSES:
+                if _restore_foreground_lease(ctx, owner_lease):
+                    setattr(session, "_background_handoff_state", "idle")
+                else:
+                    setattr(session, "_background_handoff_state", "started")
+                    setattr(session_values["_input_session"], "_background_exit_requested", True)
+            else:
+                # The child may have started but failed before its result was
+                # observed. Leave the terminal instead of retaining an
+                # unowned foreground runtime that could race the worker.
+                setattr(session, "_background_handoff_state", "started")
+                setattr(session_values["_input_session"], "_background_exit_requested", True)
         ctx.console.print(f"Unable to background session: {type(exc).__name__}: {exc}")
         return True
+    setattr(session, "_background_handoff_state", "started")
     ctx.app_state.conversation.notify_transient(
         f"Backgrounded session {record.session_id[:12]}… ({record.status.value})"
     )

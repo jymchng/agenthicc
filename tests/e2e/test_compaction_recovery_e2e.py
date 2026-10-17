@@ -44,8 +44,13 @@ class _Processor:
 
 
 class _SummaryTransport:
+    def __init__(self, summary: str = "Summary of the prior conversation.") -> None:
+        self.summary = summary
+        self.calls = 0
+
     async def complete(self, _messages, **_kwargs):  # noqa: ANN001
-        return SimpleNamespace(content="Summary of the prior conversation.")
+        self.calls += 1
+        return SimpleNamespace(content=self.summary)
 
 
 async def test_detached_direct_compaction_failure_is_recoverable_after_restart(
@@ -146,7 +151,8 @@ async def test_detached_direct_compaction_failure_is_recoverable_after_restart(
         False,
         detached_goal=True,
     )
-    assert await run_worker(request, store) == 0
+    exit_code = await run_worker(request, store)
+    assert exit_code == 0, f"{store.get(session_id).status}: {store.get(session_id).error}"
 
     recovered = store.get(session_id)
     assert recovered.status is SessionStatus.ORPHANED
@@ -160,4 +166,119 @@ async def test_detached_direct_compaction_failure_is_recoverable_after_restart(
     assert pending_turn is not None
     assert pending_turn.turn_id == "detached-direct-turn"
     assert pending_turn.user_message == "accepted request that must remain resumable"
+    reopened_journal.close()
+
+
+async def test_detached_empty_summary_and_irreducible_input_preserve_recovery_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import agenthicc.runners.headless as headless
+    import agenthicc.runners.tui_session as tui_session
+    import agenthicc.tui.runtime.session_log as session_log
+
+    session_id = "empty-summary-irreducible-e2e"
+    artifact_dir = tmp_path / "sessions" / session_id
+    artifact_dir.mkdir(parents=True)
+    journal_path = artifact_dir / "conversation-journal.jsonl"
+    store = BackgroundStore(tmp_path / "background")
+    store.create(
+        BackgroundSession.create(
+            session_id,
+            title="Empty summary recovery",
+            cwd=str(tmp_path),
+            workflow_name="",
+            intent="accepted oversized request",
+            artifact_dir=str(artifact_dir),
+        )
+    )
+    sessions: list[SimpleNamespace] = []
+    summary_transport = _SummaryTransport(summary="")
+
+    async def build(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        journal = ConversationJournal(journal_path)
+        memory = JournaledShortTermMemory(journal, max_tokens=10_000)
+        memory.add_user("Prior context " + "history " * 1_500)
+        app_state = SimpleNamespace(
+            conversation=ConversationStore(),
+            workflow_run=lambda: None,
+            cli_flags=None,
+        )
+        session = SimpleNamespace(
+            session_id=session_id,
+            processor=_Processor(),
+            session_memory=memory,
+            app_state=app_state,
+            cfg=SimpleNamespace(),
+            mode_manager=SimpleNamespace(active_name="Yolo"),
+        )
+        sessions.append(session)
+        return session
+
+    async def close(_session: object, processor_task: object, _registry: object) -> None:
+        task = processor_task
+        if isinstance(task, asyncio.Task):
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        for session in sessions:
+            session.session_memory._journal.close()
+
+    async def direct_turn(session: object, request: WorkerRequest, **_kwargs: object) -> None:
+        context = AgentTurnContext(
+            text=request.intent,
+            runner=SimpleNamespace(_transport=summary_transport, _signals=None),  # type: ignore[arg-type]
+            processor=session.processor,
+            session_memory=session.session_memory,
+            conversation_id=session.session_id,
+            max_agent_turns=1,
+            conv_store=session.app_state.conversation,
+            app_state=session.app_state,
+            exec_cfg=_SmallExecutionConfig(),  # type: ignore[arg-type]
+            active_agent="default",
+            completed_turns=0,
+            output_collector=[],
+        )
+        turn = AgentTurnRunner(context)
+        turn._intent_id = "irreducible-direct-turn"
+        turn._model_id = "offline-test"
+        await turn._stream(
+            object(),
+            request.intent + " " + "user data " * 1_000,
+            SimpleNamespace(_transport=summary_transport),  # type: ignore[arg-type]
+        )
+
+    monkeypatch.setattr(tui_session, "_build_session_context", build)
+    monkeypatch.setattr(headless, "_close_headless_session", close)
+    monkeypatch.setattr(session_log, "register_session", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("agenthicc.background.worker._run_direct_turn", direct_turn)
+
+    request = WorkerRequest(
+        session_id,
+        "",
+        "accepted oversized request",
+        str(tmp_path),
+        None,
+        (),
+        False,
+        detached_goal=True,
+    )
+    exit_code = await run_worker(request, store)
+    assert exit_code == 0, f"{store.get(session_id).status}: {store.get(session_id).error}"
+
+    recovered = store.get(session_id)
+    assert recovered.status is SessionStatus.ORPHANED
+    assert recovered.failure_category == "context_limit_unresolved"
+    assert recovered.error is not None
+    assert "summary=empty_final" in recovered.error
+    assert "fallback=irreducible_latest_exchange" in recovered.error
+    assert "reason=current_input_exceeds_budget" in recovered.error
+    assert summary_transport.calls == 2
+
+    reopened_journal = ConversationJournal(journal_path)
+    resumed_memory = JournaledShortTermMemory(reopened_journal, max_tokens=10_000)
+    assert len(resumed_memory._messages) == 1
+    assert resumed_memory._messages[0]["content"].startswith("Prior context ")
+    pending_turn = fold_resume_state(journal_path)
+    assert pending_turn is not None
+    assert pending_turn.turn_id == "irreducible-direct-turn"
+    assert pending_turn.user_message.startswith("accepted oversized request")
     reopened_journal.close()

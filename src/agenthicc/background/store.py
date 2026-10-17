@@ -937,6 +937,7 @@ class BackgroundStore:
         expected_lease_token: str | None = None,
         expected_attempt: int | None = None,
         expected_last_active: float | None = None,
+        expected_dispatch_state: QueueDispatchState | None = None,
         # ``object`` keeps ``**changes`` compatible with older dynamic callers
         # while the deletion methods below always pass a string or ``None``.
         expected_delete_operation_id: object | None = None,
@@ -958,6 +959,11 @@ class BackgroundStore:
                 raise InvalidSessionTransition(
                     "Background session activity changed during recovery"
                 )
+            if (
+                expected_dispatch_state is not None
+                and current.dispatch_state is not expected_dispatch_state
+            ):
+                raise InvalidSessionTransition("Background dispatch state changed during recovery")
             if (
                 expected_delete_operation_id is not None
                 and current.delete_operation_id != expected_delete_operation_id
@@ -1160,6 +1166,7 @@ class BackgroundStore:
         expected_lease_token: str | None = None,
         expected_attempt: int | None = None,
         expected_last_active: float | None = None,
+        expected_dispatch_state: QueueDispatchState | None = None,
         **changes: object,
     ) -> BackgroundSession:
         current = self.get(session_id, include_deleted=True)
@@ -1170,6 +1177,7 @@ class BackgroundStore:
                 expected_lease_token=expected_lease_token,
                 expected_attempt=expected_attempt,
                 expected_last_active=expected_last_active,
+                expected_dispatch_state=expected_dispatch_state,
                 **changes,
             )
         if current.status == SessionStatus.DELETED:
@@ -1223,6 +1231,7 @@ class BackgroundStore:
             expected_lease_token=expected_lease_token,
             expected_attempt=expected_attempt,
             expected_last_active=expected_last_active,
+            expected_dispatch_state=expected_dispatch_state,
             **changes,
         )
 
@@ -1377,6 +1386,7 @@ class BackgroundStore:
         expected_lease_token: str | None = None,
         expected_status: SessionStatus | None = None,
         expected_last_active: float | None = None,
+        expected_dispatch_state: QueueDispatchState | None = None,
     ) -> BackgroundSession:
         current = self.get(session_id)
         if current.status in ACTIVE_STATUSES and current.status != SessionStatus.CANCELLING:
@@ -1387,6 +1397,7 @@ class BackgroundStore:
                 expected_lease_token=expected_lease_token,
                 expected_status=expected_status,
                 expected_last_active=expected_last_active,
+                expected_dispatch_state=expected_dispatch_state,
                 latest_activity="Worker disappeared",
             )
         if current.status == SessionStatus.CANCELLING:
@@ -1397,6 +1408,7 @@ class BackgroundStore:
                 expected_lease_token=expected_lease_token,
                 expected_status=expected_status,
                 expected_last_active=expected_last_active,
+                expected_dispatch_state=expected_dispatch_state,
                 latest_activity="Cancellation cleanup expired",
             )
         return current

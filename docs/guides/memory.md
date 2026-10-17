@@ -111,17 +111,33 @@ before commit, journal folding restores the previous projection; if a write or
 fsync fails, an incomplete record is truncated where possible and the live
 buffer is not published. Manual `/compact` uses this same replacement boundary.
 
-When the summary call fails or returns no final text, Agenthicc attempts a
-clearly labeled local fallback that drops only complete oldest user-turn
-groups. It never truncates a tool call away from its result. If a single recent
-exchange is too large, or the journal cannot commit the replacement, the
-session reports a specific recoverable compaction/context failure rather than
-retrying the unchanged oversized request or declaring the work irrecoverably
-failed. Direct-turn recovery keeps the original turn ID discoverable; workflow
-recovery retains the existing checkpoint and phase. Cancellation continues to
-propagate as cancellation, with no partial summary committed. Status records
-contain only the outcome, estimates, and exception class—not transcript text,
-provider payloads, credentials, or headers.
+When the summary call fails or returns no final text, Agenthicc records a
+bounded classification (`summary_result`, attempt count, and exception class)
+and attempts a clearly labeled local fallback. It first drops only complete
+oldest user-turn groups; it never truncates a tool call away from its result.
+If the retained exchange is still too large, the fallback may excerpt only
+plain-text content inside recognized tool-result blocks, preserving tool-use
+IDs, result IDs, message order, assistant provider metadata, and all
+user-authored content. The excerpt includes an explicit omission marker. Opaque
+or multimodal payloads are not stringified or clipped.
+
+Before publishing a local candidate, Agenthicc includes the current user input,
+system prompt, and tool schemas in its token-budget check when the transport
+supports counting. It permits one deterministic tighter candidate and recount;
+it does not add another summary/provider retry. A candidate that remains over
+the hard usable budget is not committed or sent. If the latest user input is
+itself too large, no protocol-safe candidate exists, or the journal cannot
+commit, the session reports a specific recoverable compaction/context failure
+instead of retrying the unchanged oversized request or declaring the work
+irrecoverably failed. The failed transaction leaves the existing conversation
+projection intact. Direct-turn recovery keeps the original turn ID discoverable;
+workflow recovery retains the existing checkpoint and phase. Cancellation
+continues to propagate as cancellation, with no partial summary committed.
+
+The final `compaction_status` record is cumulative: it carries the summary
+classification and attempts together with the local fallback result and
+recovery reason. Records contain only bounded enums/counts and exception
+classes—not transcript text, provider payloads, credentials, or headers.
 
 ### Tool-exchange transactions
 
