@@ -90,6 +90,7 @@ def _make_session(
         session_memory=memory,
         workspace_scope=None,
         pending_resume=None,
+        resumed=False,
         command_plugin_names=set(),
         initial_workflow=initial_workflow,
     )

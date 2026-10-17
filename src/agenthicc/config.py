@@ -1447,12 +1447,17 @@ class BehaviourSettings:
     verbose: bool = False
     confirm_exits: bool = True
     resume_transcript_turns: int = 20
-    """Number of newest turns to replay when opening an existing session.
+    """Maximum newest turn groups attempted in the initial resume preview.
 
-    This bounds only the visual transcript and input history.  ``0`` keeps
-    the complete-history behavior; durable provider memory and session logs
-    are never deleted by this setting.
+    ``0`` removes this one limit only; hard event and byte limits still apply.
+    Older history is available through the paginated ``/history`` view.
     """
+    resume_transcript_max_events: int = 128
+    """Maximum event records retained in the initial resume preview."""
+    resume_transcript_max_bytes: int = 128 * 1024
+    """Maximum serialized event bytes retained for the initial preview."""
+    resume_transcript_max_event_bytes: int = 16 * 1024
+    """Maximum serialized bytes decoded from any one preview event."""
 
 
 @dataclass
@@ -2484,6 +2489,17 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
         verbose=_as_bool(beh.get("verbose"), False),
         confirm_exits=_as_bool(beh.get("confirm_exits"), True),
         resume_transcript_turns=max(0, _as_int(beh.get("resume_transcript_turns"), 20)),
+        resume_transcript_max_events=min(
+            1024, max(1, _as_int(beh.get("resume_transcript_max_events"), 128))
+        ),
+        resume_transcript_max_bytes=min(
+            1024 * 1024,
+            max(1024, _as_int(beh.get("resume_transcript_max_bytes"), 128 * 1024)),
+        ),
+        resume_transcript_max_event_bytes=min(
+            128 * 1024,
+            max(256, _as_int(beh.get("resume_transcript_max_event_bytes"), 16 * 1024)),
+        ),
     )
 
     loop_data = _section(data.get("loops"))

@@ -1,6 +1,6 @@
 ---
 title: "PRD-244: Fast Live-Session Attach with On-Demand Transcript History"
-status: Proposed
+status: Implemented
 version: 1.0.0
 date: 2026-10-17
 repository: jymchng/agenthicc
@@ -374,3 +374,43 @@ context promptly, and submit input once the session runtime is ready without
 waiting for every historical event to be rendered. Older transcript history
 remains inspectable in bounded chronological pages, and durable provider
 context, workflows, events, and recovery behavior remain unchanged.
+
+## 14. Implementation record
+
+Implemented on 2026-10-17.
+
+- Session resume now reads a single bounded JSONL suffix after the first Live
+  frame. The initial view is constrained by event, retained-byte, per-event,
+  and reverse-scan limits; zero turns disables only the turn-count cap.
+- The same `TranscriptPage` supplies presentation replay and accepted-user
+  input history. Historical replay remains presentation-only and does not
+  mutate the provider conversation journal, workflow checkpoint, or event log.
+- `/history` opens an on-demand chronological page browser. Older pages use
+  captured byte offsets, so concurrent appends do not shift already-browsed
+  pages. Selecting an oversized event loads only that one full record in its
+  detail view. Browsing never appends old records into live scrollback.
+- Startup reporting now includes session-context, provider-journal, first
+  frame, preview-read, input-history projection, preview-render, and
+  interactive-input readiness phases. Diagnostics contain timing/status only,
+  not transcript content.
+- Configuration is documented in `docs/guides/configuration.md`; behavior and
+  troubleshooting are documented in the TUI/session guides. A reproducible
+  large-log benchmark is available at `scripts/bench_resume_transcript.py`.
+
+Verification references:
+
+- Unit: `tests/unit/test_transcript_history_pages.py`,
+  `tests/unit/test_resume_transcript.py`, and `tests/unit/test_config.py`.
+- Integration: `tests/integration/test_transcript_attach_projection.py`.
+- Benchmark: `uv run python scripts/bench_resume_transcript.py --events 100000 --samples 5`.
+- Repository gates are recorded in the implementation handoff for this goal.
+
+Initial local benchmark evidence (Python 3.13.13, Linux x86_64, 8 reported
+CPUs; 3 samples) used a 100,000-event, 14.77 MB transcript with a 2 MiB final
+event and every tenth record represented as a tool completion. Preview-read
+p95 was 4.224 ms and input-ready-after-context p95 was 6.536 ms, both below
+the proposed targets. A separate all-tool run with 100,000 tool-completion
+events, one sample, and no oversized final event rendered the 128-event
+preview in 8.110 ms and reached input-ready-after-context in 16.485 ms. These
+are local development measurements, not CI wall-clock assertions; the script
+emits host and Python metadata for future comparisons.

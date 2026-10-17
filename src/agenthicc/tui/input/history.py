@@ -15,6 +15,13 @@ class HistoryNavigator:
         self._idx: int = len(history)
         self._saved: list[str] = []
 
+    def replace_history(self, history: list[str]) -> None:
+        """Replace the projection after asynchronous startup loading."""
+
+        self._history = history
+        self._idx = len(history)
+        self._saved = []
+
     def up(self, current_buf: list[str]) -> list[str] | None:
         """Return the previous history entry, or ``None`` if at the oldest."""
         if self._idx == len(self._history):

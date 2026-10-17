@@ -191,6 +191,39 @@ class TestLoadConfig:
         config = load_config(project_path=project, user_path=tmp_path / "missing.toml")
         assert config.behaviour.resume_transcript_turns == 0
 
+    def test_resume_transcript_page_limits_have_bounded_defaults_and_clamps(self, tmp_path):
+        project = tmp_path / "agenthicc.toml"
+        config = load_config(project_path=project, user_path=tmp_path / "missing.toml")
+        assert config.behaviour.resume_transcript_max_events == 128
+        assert config.behaviour.resume_transcript_max_bytes == 128 * 1024
+        assert config.behaviour.resume_transcript_max_event_bytes == 16 * 1024
+
+        project.write_text(
+            """[behaviour]
+resume_transcript_max_events = 5000
+resume_transcript_max_bytes = 999999999
+resume_transcript_max_event_bytes = 999999999
+""",
+            encoding="utf-8",
+        )
+        config = load_config(project_path=project, user_path=tmp_path / "missing.toml")
+        assert config.behaviour.resume_transcript_max_events == 1024
+        assert config.behaviour.resume_transcript_max_bytes == 1024 * 1024
+        assert config.behaviour.resume_transcript_max_event_bytes == 128 * 1024
+
+        project.write_text(
+            """[behaviour]
+resume_transcript_max_events = 0
+resume_transcript_max_bytes = 1
+resume_transcript_max_event_bytes = 1
+""",
+            encoding="utf-8",
+        )
+        config = load_config(project_path=project, user_path=tmp_path / "missing.toml")
+        assert config.behaviour.resume_transcript_max_events == 1
+        assert config.behaviour.resume_transcript_max_bytes == 1024
+        assert config.behaviour.resume_transcript_max_event_bytes == 256
+
     def test_invalid_toml_raises(self, tmp_path):
         bad = tmp_path / "agenthicc.toml"
         bad.write_text("[execution\nmax_parallel_tasks = ")

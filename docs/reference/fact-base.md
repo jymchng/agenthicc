@@ -285,7 +285,7 @@ Top-level `AgenthiccConfig` fields map one-to-one onto TOML sections
 | `SecuritySettings` (5) | `sandbox_mode`, `allowed_paths`, `network_allow_list`, `max_tool_cpu_seconds`, `max_tool_memory_mb` | `config.py:1322` |
 | `ApiSettings` (3) | `host`, `port`, `api_key_env` | `config.py:1331` |
 | `PluginSettings` (9) | `auto_trust`, `auto_install`, `install_target`, `allowed_modules`, `timeout_seconds`, `disabled`, `trust_file`, `audit_file`, `strict_cli_shadow` | `config.py:1338` |
-| `BehaviourSettings` (3) | `verbose`, `confirm_exits`, `resume_transcript_turns` | `config.py:1353` |
+| `BehaviourSettings` (6) | `verbose`, `confirm_exits`, `resume_transcript_turns`, `resume_transcript_max_events`, `resume_transcript_max_bytes`, `resume_transcript_max_event_bytes` | `src/agenthicc/config.py` |
 | `CloakBrowserSettings` (15) | `enabled`, `transport`, `cdp_endpoint`, `allowed_domains`, `headless`, `navigation_timeout_s`, `action_timeout_s`, `max_pages`, `max_actions_per_turn`, `max_snapshot_chars`, `max_screenshot_bytes`, `allow_persistent_profiles`, `profile_root`, `license_key_env`, `allow_all_domains` | `config.py:1129` |
 | `PlaywrightSettings` (16) | `enabled`, `transport`, `browser_type`, `browser_channel`, `executable_path`, `allowed_domains`, `headless`, `navigation_timeout_s`, `action_timeout_s`, `max_pages`, `max_actions_per_turn`, `max_snapshot_chars`, `max_screenshot_bytes`, `allow_persistent_profiles`, `profile_root`, `allow_all_domains` | `config.py:1220` |
 | `SkillsSettings` (2) | `install_default_skills`, `default_skill_directory` | `config.py:1455` |

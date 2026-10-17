@@ -467,7 +467,6 @@ def _reset_terminal_on_exit() -> None:
 
 
 from agenthicc.tui.runtime.session_log import (  # noqa: E402
-    DEFAULT_RESUME_TRANSCRIPT_TURNS,
     create_session_id,
     register_session,
     update_session_mode,
@@ -475,7 +474,6 @@ from agenthicc.tui.runtime.session_log import (  # noqa: E402
     touch_session,
     find_latest_session_for_cwd,
     SessionEventLog,
-    load_user_message_history,
 )
 from agenthicc.runners.session_lease import (  # noqa: E402
     SessionAlreadyActiveError,
@@ -665,6 +663,8 @@ async def _build_session_context(
     )
     startup = StartupCoordinator()
     startup.begin("bootstrap")
+    if not headless:
+        startup.begin("time_to_interactive_input")
     try:
         startup.begin("owner_lease")
         if owner_lease is None:
@@ -684,7 +684,8 @@ async def _build_session_context(
             raise SessionStorageError("provided session owner does not match resume ID")
         startup.finish("owner_lease")
         startup.finish("bootstrap")
-        return await _build_session_context_impl(
+        startup.begin("session_context")
+        context = await _build_session_context_impl(
             resume_id,
             cli_overrides,
             record_cassette_dir,
@@ -697,6 +698,8 @@ async def _build_session_context(
             startup=startup,
             config=config,
         )
+        startup.finish("session_context")
+        return context
     except BaseException as exc:
         owner_report = startup.report("owner_lease")
         if owner_report.state.value == "loading":
@@ -712,6 +715,14 @@ async def _build_session_context(
                 ReadinessState.FAILED,
                 error=f"{type(exc).__name__}: {exc}",
             )
+        for phase in ("session_context", "time_to_interactive_input"):
+            report = startup.report(phase)
+            if report.state.value == "loading":
+                startup.finish(
+                    phase,
+                    ReadinessState.FAILED,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
         if owner_lease is not None:
             owner_lease.release()
         raise
@@ -1201,10 +1212,20 @@ async def _build_session_context_impl(
     # memory-snapshot durability (which only checkpointed at turn boundaries).
     from agenthicc.runners.session_conversation import SessionConversation  # noqa: PLC0415
 
-    session_conversation = SessionConversation.open(
-        session_id,
-        max_tokens=cfg.execution.effective_usable_budget(),
-    )
+    startup.begin("provider_journal_restore")
+    try:
+        session_conversation = SessionConversation.open(
+            session_id,
+            max_tokens=cfg.execution.effective_usable_budget(),
+        )
+    except BaseException as exc:
+        startup.finish(
+            "provider_journal_restore",
+            ReadinessState.FAILED,
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        raise
+    startup.finish("provider_journal_restore")
     session_memory = session_conversation.memory
 
     # One browser manager and one opaque browser context per stable session
@@ -3976,24 +3997,80 @@ class TUISession:
         # project extension code, so it starts only after that first frame and
         # is joined at the agent-operation boundary.
         self._start_deferred_startup()
-        if getattr(ctx, "resumed", False):
-            from agenthicc.tui.runtime.session_log import SessionEventLog  # noqa: PLC0415
+        if ctx.resumed:
+            from agenthicc.runners.startup import ReadinessState  # noqa: PLC0415
+            from agenthicc.tui.runtime.session_log import (  # noqa: PLC0415
+                load_recent_transcript_page,
+                user_message_history_from_events,
+            )
 
-            behaviour = getattr(getattr(ctx, "cfg", None), "behaviour", None)
-            replay_turns = getattr(
-                behaviour,
-                "resume_transcript_turns",
-                DEFAULT_RESUME_TRANSCRIPT_TURNS,
-            )
-            if not isinstance(replay_turns, int):
-                replay_turns = DEFAULT_RESUME_TRANSCRIPT_TURNS
-            await self._workspace.replay_transcript(
-                SessionEventLog.load(
+            behaviour = ctx.cfg.behaviour
+            replay_turns = behaviour.resume_transcript_turns
+            max_events = behaviour.resume_transcript_max_events
+            max_bytes = behaviour.resume_transcript_max_bytes
+            max_event_bytes = behaviour.resume_transcript_max_event_bytes
+            if startup is not None:
+                startup.begin("transcript_preview_read")
+            try:
+                preview = await asyncio.to_thread(
+                    load_recent_transcript_page,
                     ctx.session_id,
-                    rendered=False,
-                    last_turns=replay_turns or None,
+                    last_turns=replay_turns,
+                    max_events=max_events,
+                    max_bytes=max_bytes,
+                    max_event_bytes=max_event_bytes,
                 )
-            )
+            except asyncio.CancelledError:
+                if startup is not None:
+                    startup.finish(
+                        "transcript_preview_read",
+                        ReadinessState.CANCELLED,
+                        error="cancelled",
+                    )
+                raise
+            except Exception as exc:  # noqa: BLE001 - transcript is presentation-only
+                preview = None
+                if startup is not None:
+                    startup.finish(
+                        "transcript_preview_read",
+                        ReadinessState.DEGRADED,
+                        error=f"{type(exc).__name__}: {exc}",
+                    )
+            else:
+                if startup is not None:
+                    startup.finish("transcript_preview_read")
+
+            page_events = preview.events if preview is not None else []
+            if startup is not None:
+                startup.begin("input_history_projection")
+            self._input_session.set_history(user_message_history_from_events(page_events))
+            if startup is not None:
+                startup.finish("input_history_projection")
+
+            if startup is not None:
+                startup.begin("transcript_preview_render")
+            try:
+                await self._workspace.replay_transcript(page_events)
+            except asyncio.CancelledError:
+                if startup is not None:
+                    startup.finish(
+                        "transcript_preview_render",
+                        ReadinessState.CANCELLED,
+                        error="cancelled",
+                    )
+                raise
+            except Exception as exc:  # noqa: BLE001 - input must remain usable
+                if startup is not None:
+                    startup.finish(
+                        "transcript_preview_render",
+                        ReadinessState.DEGRADED,
+                        error=f"{type(exc).__name__}: {exc}",
+                    )
+            else:
+                if startup is not None:
+                    startup.finish("transcript_preview_render")
+            if preview is not None and preview.notice:
+                ctx.app_state.conversation.notify_transient(preview.notice, duration=8.0)
         proc_task = asyncio.create_task(ctx.processor.run())
         # If a previous session had an in-progress workflow, show a notification
         # but do NOT auto-start it — the user decides what to do next.
@@ -4172,14 +4249,27 @@ async def _run_tui_session_impl(
         # PRD-79: stamp CLIFlags onto AppState immediately after creation; frozen for session lifetime.
         if cli_flags is not None:
             ctx.app_state.cli_flags = cli_flags
-        replay_turns = ctx.cfg.behaviour.resume_transcript_turns
+        session_startup = ctx.startup
+        assert session_startup is not None
         workspace = Workspace(
             ctx.app_state,
             ctx.console,
             max_live_tool_calls=ctx.cfg.tools.max_live_tool_calls,
             group_exploratory_calls=ctx.cfg.tools.group_exploratory_calls,
-            startup=ctx.startup,
+            startup=session_startup,
         )
+
+        def _input_ready(interactive: bool) -> None:
+            from agenthicc.runners.startup import ReadinessState  # noqa: PLC0415
+
+            report = session_startup.report("time_to_interactive_input")
+            if report.state.value == "loading":
+                session_startup.finish(
+                    "time_to_interactive_input",
+                    ReadinessState.READY if interactive else ReadinessState.DEGRADED,
+                    error=None if interactive else "non-interactive terminal",
+                )
+
         input_session = UnifiedInputSession(
             app_state=ctx.app_state,
             command_bus=ctx.command_bus,
@@ -4188,11 +4278,8 @@ async def _run_tui_session_impl(
             overlay_host=workspace.overlays,
             cwd=Path(os.getcwd()),
             cfg=ctx.cfg,
-            history=(
-                load_user_message_history(ctx.session_id, last_turns=replay_turns or None)
-                if ctx.resumed
-                else None
-            ),
+            history=[] if ctx.resumed else None,
+            on_ready=_input_ready,
         )
         session = TUISession(ctx, workspace, input_session)
         ctx.startup.finish("tui_shell")

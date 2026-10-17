@@ -124,8 +124,25 @@ agenthicc sessions list          # confirm the id
 agenthicc sessions show <id>     # inspect the session
 ```
 
-If the tail is too short, raise `[behaviour] resume_transcript_turns`. Remember
-that resume replays presentation-only; the events are not re-persisted.
+**Symptom:** `/detach` says the old background worker stopped but it cannot
+prove foreground ownership.
+
+**Fix:** agenthicc now attempts to reclaim the same session-owner lease only
+when it can prove the recorded worker is dead (or its process identity no
+longer matches). Queued dispatches, live workers, and unverifiable ownership
+remain protected. Reopen the intended session with `agenthicc --continue` or
+`agenthicc --resume <session-id>`, then retry `/detach`. If the error persists,
+another live process may own that session; close that process or wait for it to
+exit rather than deleting the owner file. Changing the model does not transfer
+session ownership, and `/model` itself requires a restart for its selection to
+take effect.
+
+If the recent preview is too short, raise `[behaviour] resume_transcript_turns`,
+`resume_transcript_max_events`, or `resume_transcript_max_bytes` within their
+hard caps. `resume_transcript_turns = 0` disables only the turn-count cap; it
+does not request an unbounded startup replay. Use `/history` to browse older
+events on demand. Transcript display and model context are separate: these
+settings do not truncate or delete provider conversation history.
 
 **Symptom:** a recurring prompt does not run after restarting agenthicc.
 

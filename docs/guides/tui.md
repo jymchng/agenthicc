@@ -152,24 +152,38 @@ a response, while its edits remain local to the overlay until saved.
 
 ### Resumed transcript
 
-When the TUI is opened with an existing session, the newest 20 complete turns
-are loaded from the tail of the session log after the Live workspace mounts and
-sent directly to `ScrollBufferAppender` in their original order. This bounded
-projection prevents a very large historical log from delaying startup. Set
-`[behaviour] resume_transcript_turns = N` to choose a different number; set it
-to `0` to request the complete visual transcript. The setting does not delete
-or trim provider memory, usage, workflow state, or the durable event log.
+When the TUI is opened with an existing session, it mounts the Live workspace
+before reading transcript history. It then loads a strict-bounded recent page
+and renders it in chronological order. The default page is limited to 20
+complete turns, 128 events, 128 KiB of serialized event data, and 16 KiB per
+event. `[behaviour] resume_transcript_turns = 0` removes only the turn limit;
+the hard page limits still apply. See the
+[configuration guide](configuration.md#resume-transcript-size) for tuning and
+hard maxima.
 
 The same renderers are used for old and live turns, tool completions, errors,
 and assistant responses. This is presentation-only replay: the events are not
 appended to `ConversationStore` and therefore are not written to
-`conversation.jsonl` a second time. Provider memory, usage, and workflow state
-continue to restore through their existing durable stores.
+`conversation.jsonl` a second time. Accepted user messages for input-history
+navigation are projected from the same bounded page; the resumed input editor
+does not scan the transcript a second time. Provider memory, usage, and
+workflow state continue to restore through their existing durable stores.
 
-While the transcript is being replayed, the status bar shows a
-`Loading transcript…` label. Replay is chunked so the TUI remains responsive
-until the scroll appender has finished loading the history; this applies
-equally to `--continue` and `--resume SESSION_ID`.
+The initial preview is bounded before rendering. Individual over-limit events
+appear as markers, and malformed tail records are skipped. Use `/history` to
+open a paginated overlay for older events: `[`/`PageUp` loads an older page,
+`]`/`PageDown` returns toward newer pages, `Enter` opens one event's details,
+and `Esc` returns to the live workspace. Historical pages are not appended to
+live scrollback; newly arriving events retain their normal order. `--continue`,
+`--resume SESSION_ID`, `agenthicc attach`, and the session-manager attach path
+share this same TUI bootstrap.
+
+Use `/startup` to inspect payload-free durations for session context and
+provider-journal restoration, first frame, transcript page read, input-history
+projection, transcript rendering, and interactive-input readiness.
+For repeatable large-log measurements without provider credentials, run
+`uv run python scripts/bench_resume_transcript.py --events 100000 --samples 5`;
+use `--tool-event-every 1 --large-event-bytes 0` for an all-tool-event log.
 
 When a tool approval, plan review, or `ask_user()` question is pending, the
 status bar changes from the animated Thinking state to a stable waiting label.

@@ -112,7 +112,7 @@ against the current source before implementing them.
 - [PRD-241 — Deliver Agents-Page Input Through Conflicting Recovery State](prd-241-agents-input-with-conflicting-recovery-state.md)
 - [PRD-242 — Fail-Safe Conversation Compaction for Detached Sessions (implemented)](prd-242-resilient-detached-session-compaction.md)
 - [PRD-243 — Protocol-Safe Reasoning History and Deterministic Recovery](prd-243-reasoning-history-protocol-recovery.md)
-- [PRD-244 — Fast Live-Session Attach with On-Demand Transcript History](prd-244-fast-live-session-attach.md)
+- [PRD-244 — Fast Live-Session Attach with On-Demand Transcript History (implemented)](prd-244-fast-live-session-attach.md)
 - [PRD-245 — Recoverable Background Handoff After Abrupt Process Exit (implemented)](prd-245-recoverable-background-handoff-after-process-kill.md)
 - [PRD-246 — Actionable Recovery When Conversation Compaction Has No Summary (implemented)](prd-246-actionable-empty-summary-compaction-recovery.md)
 
@@ -565,13 +565,13 @@ protocol-safe history transformation and compaction, and durable recovery that
 preserves the current workflow phase without exposing or fabricating hidden
 reasoning.
 
-PRD-244 proposes bounding transcript work on the live-session attach critical
-path. The current resume path selects at most 20 turns by default, but a single
-turn may still contain thousands of events, and the TUI awaits rendering its
-selected history before starting input. The proposal adds a strictly bounded
-recent preview, paginated on-demand access to older history, reuse of the
-recent-event projection for input navigation, and stage-level timing. Durable
-transcripts and full provider conversation memory remain unchanged.
+PRD-244 is implemented: resume mounts the Live workspace before loading a
+strict-bounded transcript preview, and `/history` pages older transcript events
+on demand without inserting them into live scrollback. The preview and input
+history share one event projection; provider journal and workflow state remain
+complete. Payload-free startup timings and a 100k-event benchmark are included.
+See the implementation record and verification references in
+[PRD-244](prd-244-fast-live-session-attach.md).
 
 PRD-245 is implemented: after `--continue` reclaims a session whose worker was
 killed, `/detach` now verifies process identity and the current foreground

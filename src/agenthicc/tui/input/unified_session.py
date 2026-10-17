@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from enum import Enum, auto
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 from agenthicc.tui.cbreak_reader import Key
 from agenthicc.tui.input.buffer import InputBuffer
@@ -66,6 +66,7 @@ class UnifiedInputSession:
         busy: bool = False,
         clear_after_acceptance: bool = False,
         preserve_submission_text: bool = False,
+        on_ready: Callable[[bool], None] | None = None,
     ) -> None:
         self._state: AppState = app_state
         self._bus: CommandBus = command_bus
@@ -77,6 +78,7 @@ class UnifiedInputSession:
         self._busy = busy
         self._clear_after_acceptance = clear_after_acceptance
         self._preserve_submission_text = preserve_submission_text
+        self._on_ready = on_ready
 
         self._mode: InputMode = InputMode.IDLE
         self._capabilities: list[Capability] = IDLE_CAPABILITIES  # switched by set_mode()
@@ -110,6 +112,11 @@ class UnifiedInputSession:
         self._ctrl_c_count = 0
         self._push()
 
+    def set_history(self, history: list[str]) -> None:
+        """Install resumed input history after the shared transcript preview loads."""
+
+        self._hist.replace_history(history)
+
     # ── main loop ─────────────────────────────────────────────────────────────
 
     async def run(self) -> None:
@@ -121,10 +128,14 @@ class UnifiedInputSession:
         if not backend.is_interactive():
             # Non-interactive environment (pipe, CI, redirect, Windows without
             # a console) — exit cleanly so TUISession cancels tasks normally.
+            if self._on_ready is not None:
+                self._on_ready(False)
             return
 
         loop = _asyncio.get_event_loop()
         with backend.enter_raw_mode():
+            if self._on_ready is not None:
+                self._on_ready(True)
             while True:
                 try:
                     # run_in_executor lets the event loop service other tasks

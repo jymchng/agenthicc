@@ -465,17 +465,33 @@ cache. Paths and retention are described in the [storage reference](../reference
 ### Resume transcript size
 
 Large sessions do not replay their entire visual transcript synchronously at
-startup. By default, resume displays the newest 20 complete turns by reading
-the tail of `conversation.jsonl`:
+startup. Resume first shows the live workspace, then reads a bounded recent
+preview from the tail of `conversation.jsonl`:
 
 ```toml
 [behaviour]
 resume_transcript_turns = 20
+resume_transcript_max_events = 128
+resume_transcript_max_bytes = 131072
+resume_transcript_max_event_bytes = 16384
 ```
 
-Use `0` to restore the legacy full-transcript replay. This setting only affects
-the TUI transcript and input-history projection; the provider conversation,
-durable journal, usage records, and workflow state remain complete.
+`resume_transcript_turns` limits the number of recent complete turns considered.
+Setting it to `0` removes only this turn-count limit; the hard page limits still
+apply. The defaults cap the preview at 128 events, 128 KiB of serialized event
+data, and 16 KiB per decoded event. Configured values are clamped to hard
+maximums of 1,024 events, 1 MiB per page, and 128 KiB per event. Older events
+remain available on demand with `/history`; `Enter` opens one event's full
+details. `[`/`PageUp` browse older pages and `]`/`PageDown` return toward newer
+pages. Browsing history never inserts old events into live scrollback.
+
+The limits affect only the visual preview and the input editor's accepted
+user-message history, which are projected from the same page. Provider
+conversation memory, the durable journal, usage records, workflow checkpoints,
+and the persisted transcript remain complete and unchanged. `/startup` reports
+the provider-journal restore, first-frame, preview-read, input-history
+projection, preview-render, and interactive-input readiness timings without
+including transcript text.
 
 ## Security
 

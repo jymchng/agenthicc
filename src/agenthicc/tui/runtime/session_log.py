@@ -8,8 +8,9 @@ import time
 import uuid
 from collections.abc import Callable, Collection, Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, BinaryIO, cast
 
 if TYPE_CHECKING:
     from agenthicc.tui.conversation_store import AppState
@@ -27,6 +28,55 @@ _SESSION_INDEX = _SESSIONS_DIR / "index.json"
 DEFAULT_RESUME_TRANSCRIPT_TURNS = 20
 _TAIL_READ_BYTES = 64 * 1024
 _MAX_RECENT_EVENTS = 4096
+DEFAULT_TRANSCRIPT_PREVIEW_EVENTS = 128
+DEFAULT_TRANSCRIPT_PREVIEW_BYTES = 128 * 1024
+DEFAULT_TRANSCRIPT_EVENT_BYTES = 16 * 1024
+MAX_TRANSCRIPT_PREVIEW_EVENTS = 1024
+MAX_TRANSCRIPT_PREVIEW_BYTES = 1024 * 1024
+MAX_TRANSCRIPT_EVENT_BYTES = 128 * 1024
+_TRANSCRIPT_SCAN_CHUNK_BYTES = 16 * 1024
+
+
+@dataclass(frozen=True, slots=True)
+class TranscriptCursor:
+    """Stable byte cursor for reading events older than a page.
+
+    ``skip_oversized_line`` indicates that the cursor currently falls inside a
+    JSONL record too large to locate within one page's scan budget. Subsequent
+    page requests continue the bounded reverse scan until its preceding line
+    boundary is found; appended records do not change these offsets.
+    """
+
+    offset: int
+    skip_oversized_line: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class TranscriptEntry:
+    """One bounded event projection and its source byte range."""
+
+    event: ConversationEvent
+    start_offset: int
+    end_offset: int
+    oversized: bool = False
+    partial_line: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class TranscriptPage:
+    """A bounded chronological event page plus an older-page cursor."""
+
+    entries: tuple[TranscriptEntry, ...]
+    older_cursor: TranscriptCursor | None
+    scanned_bytes: int = 0
+    retained_bytes: int = 0
+    notice: str = ""
+
+    @property
+    def events(self) -> list[ConversationEvent]:
+        """Return the page events in chronological presentation order."""
+
+        return [entry.event for entry in self.entries]
 
 
 def _int_value(value: object) -> int:
@@ -182,6 +232,393 @@ def get_session_log_path(session_id: str) -> Path:
     return _SESSIONS_DIR / session_id / "conversation.jsonl"
 
 
+def _checked_session_log_path(session_id: str) -> Path:
+    """Resolve one session transcript and reject path/symlink escapes."""
+
+    sessions_root = _SESSIONS_DIR.resolve()
+    path = get_session_log_path(session_id)
+    session_dir = path.parent.resolve()
+    if session_dir.parent != sessions_root:
+        raise ValueError(
+            "session identifier does not resolve directly under the sessions directory"
+        )
+    return session_dir / path.name
+
+
+def load_recent_transcript_page(
+    session_id: str,
+    *,
+    last_turns: int = DEFAULT_RESUME_TRANSCRIPT_TURNS,
+    max_events: int = DEFAULT_TRANSCRIPT_PREVIEW_EVENTS,
+    max_bytes: int = DEFAULT_TRANSCRIPT_PREVIEW_BYTES,
+    max_event_bytes: int = DEFAULT_TRANSCRIPT_EVENT_BYTES,
+) -> TranscriptPage:
+    """Load a strict-bounded newest transcript page.
+
+    A non-positive ``last_turns`` removes only the turn-count limit. Event,
+    retained-byte, per-event, and reverse-scan limits always remain active.
+    An oversized JSONL record is represented by a synthetic presentation-only
+    marker; its exact persisted event can be fetched by selecting it in the
+    history overlay.
+    """
+
+    path = _checked_session_log_path(session_id)
+    if not path.exists():
+        return TranscriptPage((), None)
+    return _load_transcript_page(
+        path,
+        upper_offset=path.stat().st_size,
+        last_turns=last_turns,
+        max_events=max_events,
+        max_bytes=max_bytes,
+        max_event_bytes=max_event_bytes,
+        rendered=False,
+    )
+
+
+def load_older_transcript_page(
+    session_id: str,
+    cursor: TranscriptCursor,
+    *,
+    max_events: int = 128,
+    max_bytes: int = DEFAULT_TRANSCRIPT_PREVIEW_BYTES,
+    max_event_bytes: int = DEFAULT_TRANSCRIPT_EVENT_BYTES,
+) -> TranscriptPage:
+    """Load one older page before a stable byte cursor.
+
+    The end offset is captured by the previous page, so records appended while
+    the history view is open do not shift or repeat this page.
+    """
+
+    try:
+        path = _checked_session_log_path(session_id)
+        if not path.exists():
+            return TranscriptPage((), None)
+        upper = max(0, min(cursor.offset, path.stat().st_size))
+    except (OSError, RuntimeError, ValueError):
+        return TranscriptPage((), None, notice="Unable to read transcript page.")
+    return _load_transcript_page(
+        path,
+        upper_offset=upper,
+        last_turns=0,
+        max_events=max_events,
+        max_bytes=max_bytes,
+        max_event_bytes=max_event_bytes,
+        rendered=False,
+        skip_oversized_line=cursor.skip_oversized_line,
+    )
+
+
+def load_transcript_entry(entry: TranscriptEntry) -> ConversationEvent | None:
+    """Load one selected event's complete payload for explicit inspection.
+
+    Ordinary preview/page reads never retain a line over its per-event limit.
+    Explicit detail reads are still capped at the hard event limit and never
+    load the surrounding transcript or an unbounded oversized record.
+    """
+
+    if not entry.oversized and not entry.partial_line:
+        return entry.event
+    try:
+        path = _checked_session_log_path_from_entry(entry)
+        with path.open("rb") as handle:
+            start = entry.start_offset
+            if entry.partial_line:
+                full_start, _scanned, complete = _find_line_start_before(
+                    handle, entry.start_offset, MAX_TRANSCRIPT_PREVIEW_BYTES
+                )
+                if not complete:
+                    return _inspection_limit_event(entry, "record start exceeds 1 MiB scan limit")
+                start = full_start
+            span = entry.end_offset - start
+            if span < 0:
+                return None
+            if span > MAX_TRANSCRIPT_EVENT_BYTES:
+                return _inspection_limit_event(
+                    entry,
+                    f"record is {span} bytes; inspection limit is {MAX_TRANSCRIPT_EVENT_BYTES} bytes",
+                )
+            handle.seek(start)
+            raw = handle.read(span)
+        return _decode_event(raw, rendered=False)
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+def _inspection_limit_event(entry: TranscriptEntry, reason: str) -> ConversationEvent:
+    """Describe an event that exceeds the explicit detail-view hard limit."""
+
+    return ConversationEvent(
+        event_id=entry.event.event_id,
+        kind="system",
+        payload={
+            "text": f"This transcript event was not expanded: {reason}.",
+            "source_event_id": entry.event.event_id,
+        },
+        timestamp=entry.event.timestamp,
+        rendered=False,
+    )
+
+
+def _checked_session_log_path_from_entry(entry: TranscriptEntry) -> Path:
+    """Resolve the current session path for an entry's private source marker."""
+
+    session_id = entry.event.payload.get("_agenthicc_session_id")
+    if not isinstance(session_id, str) or not session_id:
+        raise ValueError("transcript entry has no source session")
+    return _checked_session_log_path(session_id)
+
+
+def _load_transcript_page(
+    path: Path,
+    *,
+    upper_offset: int,
+    last_turns: int,
+    max_events: int,
+    max_bytes: int,
+    max_event_bytes: int,
+    rendered: bool,
+    skip_oversized_line: bool = False,
+) -> TranscriptPage:
+    """Read one bounded suffix of the JSONL log and project its newest events.
+
+    Reading a bounded suffix once is important: a line-at-a-time reverse scan
+    that re-reads a fixed-size chunk for every event can make a nominally small
+    page perform unbounded I/O for logs containing many short events.
+    """
+
+    max_events = min(MAX_TRANSCRIPT_PREVIEW_EVENTS, max(1, int(max_events)))
+    max_bytes = min(MAX_TRANSCRIPT_PREVIEW_BYTES, max(1024, int(max_bytes)))
+    max_event_bytes = min(MAX_TRANSCRIPT_EVENT_BYTES, max(256, int(max_event_bytes)))
+    # Reserve one byte for checking whether the bounded window starts on an
+    # actual JSONL record boundary.
+    max_scan_bytes = max(1, max_bytes + max_event_bytes - 1)
+    upper = max(0, min(upper_offset, path.stat().st_size))
+    lower = max(0, upper - max_scan_bytes)
+    selected: list[TranscriptEntry] = []
+    retained_bytes = 0
+    scanned_bytes = 0
+    notice = ""
+
+    try:
+        with path.open("rb") as handle:
+            starts_at_line_boundary = lower == 0
+            if lower > 0:
+                handle.seek(lower - 1)
+                starts_at_line_boundary = handle.read(1) == b"\n"
+            handle.seek(lower)
+            raw_window = handle.read(upper - lower)
+        scanned_bytes = len(raw_window) + (1 if lower > 0 else 0)
+
+        # For an oversized record split across pages, discard its tail until
+        # its newline. If it spans the whole byte budget, advance the cursor
+        # by one bounded window and continue on the next explicit page action.
+        if skip_oversized_line:
+            last_newline = raw_window.rfind(b"\n")
+            if last_newline < 0:
+                cursor = TranscriptCursor(lower, True) if lower > 0 else None
+                return TranscriptPage(
+                    (),
+                    cursor,
+                    scanned_bytes,
+                    0,
+                    "Scanning past an oversized transcript event; press older again.",
+                )
+            raw_window = raw_window[: last_newline + 1]
+            upper = lower + len(raw_window)
+
+        # An append can be interrupted between writing a JSON record and its
+        # newline. A valid JSON object is still safe to display; malformed tail
+        # fragments are skipped like any other corrupt record.
+        if lower > 0 and not starts_at_line_boundary:
+            first_newline = raw_window.find(b"\n")
+            if first_newline < 0:
+                if skip_oversized_line:
+                    cursor = TranscriptCursor(lower, True)
+                    return TranscriptPage(
+                        (),
+                        cursor,
+                        scanned_bytes,
+                        0,
+                        "Scanning past an oversized transcript event; press older again.",
+                    )
+                marker = _oversized_preview_event(
+                    path, lower, upper, partial=True, rendered=rendered
+                )
+                return TranscriptPage(
+                    (TranscriptEntry(marker, lower, upper, oversized=True, partial_line=True),),
+                    TranscriptCursor(lower, True),
+                    scanned_bytes,
+                    min(max_bytes, _marker_size(marker)),
+                    "An exceptionally large event is shown as a marker; inspect it with Enter.",
+                )
+            if first_newline == len(raw_window) - 1:
+                # The bounded window contains only the suffix of one record,
+                # followed by its newline. It is the newest event, not an
+                # older prefix to discard.
+                marker = _oversized_preview_event(
+                    path, lower, upper, partial=True, rendered=rendered
+                )
+                return TranscriptPage(
+                    (TranscriptEntry(marker, lower, upper, oversized=True, partial_line=True),),
+                    TranscriptCursor(lower, True),
+                    scanned_bytes,
+                    min(max_bytes, _marker_size(marker)),
+                    "An exceptionally large event is shown as a marker; inspect it with Enter.",
+                )
+            raw_window = raw_window[first_newline + 1 :]
+            lower += first_newline + 1
+
+        turn_count = 0
+        line_end = len(raw_window)
+        if line_end and raw_window.endswith(b"\n"):
+            line_end -= 1
+        records_scanned = 0
+        max_records_scanned = max_events * 4
+        oldest_scanned_offset: int | None = None
+        while (
+            line_end >= 0 and len(selected) < max_events and records_scanned < max_records_scanned
+        ):
+            previous_newline = raw_window.rfind(b"\n", 0, line_end)
+            line_start = previous_newline + 1
+            body = raw_window[line_start:line_end]
+            end = line_end + 1 if line_end < len(raw_window) else line_end
+            start = lower + line_start
+            end += lower
+            line_end = previous_newline
+            if not body:
+                continue
+            records_scanned += 1
+            oldest_scanned_offset = start
+            if body.endswith(b"\r"):
+                body = body[:-1]
+            record_bytes = len(body)
+            event: ConversationEvent | None
+            oversized = record_bytes > max_event_bytes
+            if oversized:
+                event = _oversized_preview_event(path, start, end, partial=False, rendered=rendered)
+                entry = TranscriptEntry(event, start, end, oversized=True)
+                cost = _marker_size(event)
+                notice = "An oversized event is shown as a marker; inspect it with Enter."
+            else:
+                event = _decode_event(body, rendered=rendered)
+                if event is None:
+                    notice = notice or "Malformed transcript records were skipped."
+                    continue
+                entry = TranscriptEntry(event, start, end)
+                cost = record_bytes
+
+            if retained_bytes + cost > max_bytes:
+                if not selected and not oversized:
+                    marker = _oversized_preview_event(
+                        path, start, end, partial=False, rendered=rendered
+                    )
+                    marker_cost = _marker_size(marker)
+                    if marker_cost <= max_bytes:
+                        selected.append(TranscriptEntry(marker, start, end, oversized=True))
+                        retained_bytes += marker_cost
+                        notice = "An event exceeded the preview byte budget; inspect it with Enter."
+                break
+
+            selected.append(entry)
+            retained_bytes += cost
+            if event.kind == "turn_start":
+                turn_count += 1
+                if last_turns > 0 and turn_count >= last_turns:
+                    break
+
+        selected.reverse()
+        if selected:
+            earliest_offset = selected[0].start_offset
+            older_cursor = TranscriptCursor(earliest_offset) if earliest_offset > 0 else None
+        elif oldest_scanned_offset is not None:
+            older_cursor = TranscriptCursor(oldest_scanned_offset)
+        elif lower > 0:
+            older_cursor = TranscriptCursor(lower, skip_oversized_line)
+        else:
+            older_cursor = None
+        if records_scanned >= max_records_scanned and older_cursor is not None:
+            notice = notice or "Page event scan reached its safety limit; press older to continue."
+        if scanned_bytes >= max_scan_bytes and older_cursor is not None:
+            notice = notice or "Page scan reached its safety limit; press older to continue."
+        return TranscriptPage(
+            tuple(selected),
+            scanned_bytes=scanned_bytes,
+            retained_bytes=retained_bytes,
+            notice=notice,
+            older_cursor=older_cursor,
+        )
+    except OSError:
+        return TranscriptPage(
+            (), None, scanned_bytes, retained_bytes, "Unable to read transcript page."
+        )
+
+
+def _marker_size(event: ConversationEvent) -> int:
+    """Return the serialized-size estimate of a bounded synthetic marker."""
+
+    return len(
+        json.dumps(
+            {
+                "event_id": event.event_id,
+                "kind": event.kind,
+                "payload": event.payload,
+                "timestamp": event.timestamp,
+            },
+            separators=(",", ":"),
+        ).encode("utf-8")
+    )
+
+
+def _find_line_start_before(
+    handle: BinaryIO, upper_offset: int, scan_budget: int
+) -> tuple[int, int, bool]:
+    """Find the current oversized record's start using bounded reverse I/O."""
+
+    search_end = max(0, upper_offset)
+    scanned = 0
+    remaining = scan_budget
+    while search_end > 0 and remaining > 0:
+        amount = min(_TRANSCRIPT_SCAN_CHUNK_BYTES, remaining, search_end)
+        start = search_end - amount
+        handle.seek(start)
+        block = handle.read(amount)
+        scanned += len(block)
+        newline = block.rfind(b"\n")
+        if newline >= 0:
+            return start + newline + 1, scanned, True
+        search_end = start
+        remaining = scan_budget - scanned
+    if search_end == 0:
+        return 0, scanned, True
+    return search_end, scanned, False
+
+
+def _oversized_preview_event(
+    path: Path,
+    start: int,
+    end: int,
+    *,
+    partial: bool,
+    rendered: bool,
+) -> ConversationEvent:
+    """Create a bounded presentation marker for a non-retained JSONL record."""
+
+    span = max(0, end - start)
+    reason = "exceptionally large" if partial else f"{span} bytes"
+    session_id = path.parent.name
+    return ConversationEvent(
+        event_id=f"preview-omitted:{session_id}:{start}:{end}",
+        kind="system",
+        payload={
+            "text": f"Transcript event ({reason}) omitted from preview; use /history and Enter to inspect.",
+            "_agenthicc_session_id": session_id,
+        },
+        timestamp=0.0,
+        rendered=rendered,
+    )
+
+
 def load_pending_question_waits(session_id: str) -> dict[str, dict[str, object]]:
     """Return durable, non-sensitive question waits without replaying answers.
 
@@ -290,8 +727,14 @@ def load_user_message_history(
     durable transcript and include only accepted user-message events, not
     assistant output or internal lifecycle events.
     """
+    return user_message_history_from_events(SessionEventLog.load(session_id, last_turns=last_turns))
+
+
+def user_message_history_from_events(events: Collection[ConversationEvent]) -> list[str]:
+    """Project accepted user submissions from an already-loaded event page."""
+
     history: list[str] = []
-    for event in SessionEventLog.load(session_id, last_turns=last_turns):
+    for event in events:
         if event.kind != "user_message":
             continue
         text = event.payload.get("text")

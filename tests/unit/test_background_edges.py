@@ -1113,6 +1113,71 @@ def test_detach_after_continue_preserves_owner_and_selected_configuration(
     assert input_session._background_exit_requested is True
 
 
+def test_detach_reclaims_released_foreground_lease_for_proven_dead_worker(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A resumed TUI can re-claim its lease if its in-memory handle went stale."""
+    from rich.console import Console
+
+    from agenthicc.background.integration import _handoff
+    from agenthicc.background.settings import BackgroundSettings
+    from agenthicc.runners.session_lease import SessionOpenCoordinator
+
+    store_root = tmp_path / "background"
+    store = BackgroundStore(store_root)
+    stale = _record(tmp_path, "released-continue-owner").evolve(
+        status=SessionStatus.RUNNING,
+        attempt=2,
+        worker_pid=2_147_483_647,
+        lease_token="stopped-worker-token",
+    )
+    store.create(stale)
+    monkeypatch.setattr(
+        "agenthicc.background.integration.load_background_settings",
+        lambda **_kwargs: BackgroundSettings(store_path=str(store_root)),
+    )
+    monkeypatch.setattr(
+        "agenthicc.background.supervisor.subprocess.Popen",
+        lambda *_args, **_kwargs: SimpleNamespace(pid=987_654_322),
+    )
+
+    stale_owner = SessionOpenCoordinator(tmp_path / "session-owners").acquire_new(stale.session_id)
+    stale_owner.release()
+    user_event = SimpleNamespace(kind="user_message", payload={"text": "continue this work"})
+    ctx = SimpleNamespace(
+        session_id=stale.session_id,
+        cfg=SimpleNamespace(background=None, execution=SimpleNamespace(profile="")),
+        owner_lease=stale_owner,
+        app_state=SimpleNamespace(
+            conversation=SimpleNamespace(
+                turns=lambda: [SimpleNamespace(events=[user_event])],
+                notify_transient=lambda _text: None,
+            ),
+            active_mode=lambda: SimpleNamespace(name="Yolo", default_workflow="goal_flow"),
+            cli_flags=SimpleNamespace(dangerously_skip_permissions=False),
+        ),
+        console=Console(record=True),
+    )
+    input_session = SimpleNamespace()
+    foreground = SimpleNamespace(
+        _ctx=ctx,
+        _workflow_override="",
+        _input_session=input_session,
+        _agent_task=None,
+    )
+
+    assert _handoff(foreground) is True
+
+    current = store.get(stale.session_id)
+    assert current.status is SessionStatus.STARTING
+    assert current.attempt == 2
+    assert current.attempt_history[-1].status is SessionStatus.ORPHANED
+    assert ctx.owner_lease is not stale_owner
+    assert ctx.owner_lease.released is True  # released only after worker handoff
+    assert input_session._background_exit_requested is True
+
+
 def test_failed_worker_launch_restores_foreground_owner_for_safe_retry(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

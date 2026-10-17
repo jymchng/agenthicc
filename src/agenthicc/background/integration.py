@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from .model import ACTIVE_STATUSES, SessionStatus
 from .settings import background_enabled, load_background_settings
@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from agenthicc.tui.input.capabilities import _ExitSentinel
     from agenthicc.tui.input.unified_session import UnifiedInputSession
     from agenthicc.tui.runtime.commands import SendMessageCommand
+    from agenthicc.runners.session_lease import SessionOwnerLease
 
 _INSTALLED = False
 
@@ -71,6 +72,67 @@ def _restore_foreground_lease(ctx: object, owner_lease: object | None) -> bool:
         return False
     setattr(ctx, "owner_lease", restored)
     return True
+
+
+def _reclaim_foreground_lease(
+    ctx: object,
+    supervisor: BackgroundSupervisor,
+    session_id: str,
+    owner_lease: "SessionOwnerLease | None",
+) -> "SessionOwnerLease | None":
+    """Refresh a stale TUI lease before reconciling a proven-dead worker.
+
+    The normal ``--continue`` path already passes a current lease. This is a
+    recovery guard for sessions whose lease handle became stale while the
+    foreground TUI remained alive. The coordinator still performs the
+    exclusive, process-aware claim; if another live owner holds the session,
+    this function leaves the original handle untouched and the supervisor
+    fails closed as before.
+    """
+    from agenthicc.background.queue import is_pending_queue_record  # noqa: PLC0415
+    from agenthicc.background.supervisor import _WorkerProcessState  # noqa: PLC0415
+    from agenthicc.runners.session_lease import (  # noqa: PLC0415
+        SessionOpenCoordinator,
+        SessionOwnerLease,
+        default_sessions_dir,
+    )
+
+    try:
+        record = supervisor.store.get(session_id)
+    except KeyError:
+        return owner_lease
+    if (
+        record.status not in ACTIVE_STATUSES
+        or is_pending_queue_record(record)
+        or supervisor._worker_process_state(record)
+        not in {_WorkerProcessState.DEAD, _WorkerProcessState.MISMATCHED}
+        or (
+            isinstance(owner_lease, SessionOwnerLease)
+            and supervisor._foreground_lease_is_current(session_id, owner_lease)
+        )
+    ):
+        return owner_lease
+
+    sessions_dir = (
+        owner_lease.path.parent.parent
+        if isinstance(owner_lease, SessionOwnerLease)
+        else default_sessions_dir()
+    )
+    try:
+        refreshed = SessionOpenCoordinator(sessions_dir).acquire_existing(
+            session_id,
+            entrypoint="tui",
+        )
+    except Exception:  # noqa: BLE001
+        # Keep the existing lease (if any) and let the supervisor report its
+        # normal ownership error. Acquisition failures must not authorize a
+        # takeover or mutate the background record.
+        return owner_lease
+
+    if isinstance(owner_lease, SessionOwnerLease) and owner_lease.session_id == session_id:
+        owner_lease.release()
+    setattr(ctx, "owner_lease", refreshed)
+    return refreshed
 
 
 def _handoff(session: object) -> bool:
@@ -147,13 +209,19 @@ def _handoff(session: object) -> bool:
     )
     config_path_value = vars(ctx).get("config_path")
     config_path = config_path_value if isinstance(config_path_value, str) else None
-    owner_lease = vars(ctx).get("owner_lease")
+    owner_lease = cast("SessionOwnerLease | None", vars(ctx).get("owner_lease"))
     setattr(session, "_background_handoff_state", "preparing")
     owner_released = False
     try:
         goal_run_id = str(vars(ctx).get("goal_run_id", "") or "")
         task = vars(session).get("_agent_task")
         resume_existing_only = not (isinstance(task, asyncio.Task) and not task.done())
+        owner_lease = _reclaim_foreground_lease(
+            ctx,
+            supervisor,
+            ctx.session_id,
+            owner_lease,
+        )
         prepared = True
         try:
             record = supervisor.handoff(

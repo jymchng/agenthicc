@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 from rich.console import Console
 
+from agenthicc.config import AgenthiccConfig
 from agenthicc.tui.conversation_store import AppState, ConversationEvent
 from agenthicc.tui.runtime.session_log import SessionEventLog, load_user_message_history
 from agenthicc.tui.workspace.appender import ScrollBufferAppender
@@ -135,24 +136,39 @@ def test_resumed_input_history_uses_persisted_user_messages(
     assert session._buf.text == "second request"
 
 
+@pytest.mark.parametrize("load_fails", [False, True])
 @pytest.mark.asyncio
 async def test_resumed_tui_replays_transcript_before_accepting_input(
     monkeypatch: pytest.MonkeyPatch,
+    load_fails: bool,
 ) -> None:
     from agenthicc.tui.runtime import CommandBus
     from agenthicc.runners.tui_session import TUISession
+    from agenthicc.runners.startup import ReadinessState, StartupCoordinator
     import agenthicc.tui.runtime.session_log as session_log
+    from agenthicc.tui.runtime.session_log import TranscriptEntry, TranscriptPage
 
-    history = [ConversationEvent("old", "text", {"text": "from yesterday"}, 1.0)]
+    history = [
+        ConversationEvent("old-user", "user_message", {"text": "from last session"}, 0.5),
+        ConversationEvent("old", "text", {"text": "from yesterday"}, 1.0),
+    ]
     load_calls: list[dict[str, object]] = []
 
-    def load_history(_session_id: str, **kwargs: object) -> list[ConversationEvent]:
+    def load_history(_session_id: str, **kwargs: object) -> TranscriptPage:
         load_calls.append(kwargs)
-        return history
+        if load_fails:
+            raise OSError("injected transcript read failure")
+        return TranscriptPage(
+            (
+                TranscriptEntry(history[0], 0, 1),
+                TranscriptEntry(history[1], 1, 2),
+            ),
+            None,
+        )
 
     monkeypatch.setattr(
-        session_log.SessionEventLog,
-        "load",
+        session_log,
+        "load_recent_transcript_page",
         staticmethod(load_history),
     )
 
@@ -172,36 +188,68 @@ async def test_resumed_tui_replays_transcript_before_accepting_input(
             self.calls.append("stop")
 
     class Input:
+        history: list[str] = []
+        on_ready = None
+
+        def set_history(self, messages: list[str]) -> None:
+            self.history = messages
+
         async def run(self) -> None:
-            return
+            assert self.on_ready is not None
+            self.on_ready(True)
 
     async def processor_run() -> None:
         await __import__("asyncio").Event().wait()
 
     workspace = Workspace()
+    input_session = Input()
+    startup = StartupCoordinator()
+    startup.begin("time_to_interactive_input")
+    config = AgenthiccConfig()
+    config.behaviour.resume_transcript_turns = 2
     ctx = SimpleNamespace(
         resumed=True,
         session_id="resumed-session",
+        startup=startup,
         command_bus=CommandBus(),
         processor=SimpleNamespace(run=processor_run),
         app_state=AppState.create(),
-        cfg=SimpleNamespace(behaviour=SimpleNamespace(resume_transcript_turns=2)),
+        cfg=config,
     )
     session = TUISession.__new__(TUISession)
     session._ctx = ctx
     session._workspace = workspace
-    session._input_session = Input()
+    session._input_session = input_session
     session._agent_task = None
     session._msg_queue = []
     session._wire_approval_overlay = lambda: None
     session._notify_incomplete_workflow = lambda: None
     session._maybe_resume_interrupted_turn = lambda: None
+    input_session.on_ready = lambda interactive: startup.finish(
+        "time_to_interactive_input",
+        ReadinessState.READY if interactive else ReadinessState.DEGRADED,
+    )
 
     await session.run()
 
     assert workspace.calls[:2] == ["start", "replay"]
-    assert workspace.events == history
-    assert load_calls == [{"rendered": False, "last_turns": 2}]
+    assert workspace.events == ([] if load_fails else history)
+    assert load_calls == [
+        {
+            "last_turns": 2,
+            "max_events": session_log.DEFAULT_TRANSCRIPT_PREVIEW_EVENTS,
+            "max_bytes": session_log.DEFAULT_TRANSCRIPT_PREVIEW_BYTES,
+            "max_event_bytes": session_log.DEFAULT_TRANSCRIPT_EVENT_BYTES,
+        }
+    ]
+    assert session._input_session.history == ([] if load_fails else ["from last session"])
+    assert startup.report("first_frame").state is ReadinessState.READY
+    assert startup.report("transcript_preview_read").state is (
+        ReadinessState.DEGRADED if load_fails else ReadinessState.READY
+    )
+    assert startup.report("input_history_projection").state is ReadinessState.READY
+    assert startup.report("transcript_preview_render").state is ReadinessState.READY
+    assert startup.report("time_to_interactive_input").state is ReadinessState.READY
 
 
 @pytest.mark.asyncio

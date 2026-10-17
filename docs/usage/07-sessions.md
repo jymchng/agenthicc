@@ -37,7 +37,11 @@ agenthicc --resume <session-id> # a specific session
 On resume, the newest complete turns are replayed into the transcript
 presentation-only — the events are not re-persisted. Set
 `[behaviour] resume_transcript_turns = N` to change how many turns are replayed
-(`0` means the full transcript).
+(`0` removes only the turn limit; event and byte caps still apply). The default
+preview is also capped by event count, total bytes, and per-event bytes. Use
+`/history` to browse older transcript pages without delaying attach or mixing
+old events into live scrollback. The same bounded page supplies the input
+editor's accepted-message history.
 
 ## How sessions work
 

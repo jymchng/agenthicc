@@ -399,7 +399,45 @@ def _help_menu(ctx: CommandContext) -> "Overlay":
 
 
 def _cmd_history(ctx: CommandContext) -> bool:
-    ctx.console.print("[dim]/history: not available in this mode.[/dim]")
+    """Open the bounded, paginated event-history view for this session."""
+
+    if ctx.args.strip():
+        ctx.console.print("Usage: /history", markup=False)
+        return True
+    if not ctx.session_id:
+        ctx.console.print("Transcript history is unavailable without a session ID.", markup=False)
+        return True
+    from agenthicc.tui.runtime.session_log import load_recent_transcript_page  # noqa: PLC0415
+
+    behavior = ctx.config.behaviour
+    try:
+        page = load_recent_transcript_page(
+            ctx.session_id,
+            last_turns=behavior.resume_transcript_turns,
+            max_events=behavior.resume_transcript_max_events,
+            max_bytes=behavior.resume_transcript_max_bytes,
+            max_event_bytes=behavior.resume_transcript_max_event_bytes,
+        )
+    except (OSError, RuntimeError, ValueError) as exc:
+        ctx.console.print(f"Unable to load transcript history: {type(exc).__name__}.", markup=False)
+        return True
+    if ctx.set_pending_menu is not None:
+        from agenthicc.tui.workspace.overlays.transcript_history import (  # noqa: PLC0415
+            TranscriptHistoryOverlay,
+        )
+
+        ctx.set_pending_menu(
+            TranscriptHistoryOverlay(
+                ctx.session_id,
+                page,
+                ctx.close_overlay if ctx.close_overlay is not None else (lambda: None),
+            )
+        )
+        return True
+    ctx.console.print(
+        f"Transcript preview loaded {len(page.entries)} events; use the interactive TUI to browse older pages.",
+        markup=False,
+    )
     return True
 
 
@@ -1341,7 +1379,7 @@ BUILTIN_COMMANDS: list[Command] = [
     ),
     Command(
         name="/history",
-        description="Browse the event log",
+        description="Browse this session's transcript in bounded pages",
         busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
         handler=_cmd_history,
     ),
