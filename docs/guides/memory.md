@@ -94,18 +94,34 @@ that repair is journaled, so a follow-up such as “what were you doing?” sees
 the same context in the current process and after restart. A cancellation no
 longer erases the whole turn by rolling memory back to its pre-turn count.
 
-Automatic compaction is model-aware. Newer lauren-ai versions receive the
-resolved `context_window` and use their exact-count compaction ladder. When an
-older lauren-ai transport cannot provide that guard, agenthicc runs the same
-bounded map-reduce fallback at the turn boundary. If the provider still
-returns a context-length 400, the current committed projection is compacted
-once and the request is retried without restoring a pre-turn snapshot. This
-preserves earlier provider steps when a later request overflows. If a provider
-returns an empty final summary (common
-when a reasoning endpoint spends the initial output budget on hidden
-reasoning), agenthicc retries the summary with a larger completion budget and
-the configured provider request options. Only when that retry still produces
-no usable final text is a bounded local recent-history fallback applied.
+Automatic compaction is owned by Agenthicc at the shared agent-turn boundary
+for foreground, detached, direct, and workflow turns. Agenthicc disables
+lauren-ai's independent proactive summarizer in these sessions so a token-count
+or journal error cannot bypass the durable-session recovery policy. Near the
+conservative 80% input threshold, the runner attempts a bounded model-aware
+token count; a timeout, unsupported counter, or invalid result falls back to a
+stricter local estimate. It does not multiply this decision into the provider
+turn retry loop.
+
+Compaction first builds a replacement without changing live memory. A generated
+summary includes any prior rolling summary, then replaces the previous summary
+and conversation projection in one journal transaction. The journal writes a
+prepare record, a candidate reset, and a commit receipt. If the process stops
+before commit, journal folding restores the previous projection; if a write or
+fsync fails, an incomplete record is truncated where possible and the live
+buffer is not published. Manual `/compact` uses this same replacement boundary.
+
+When the summary call fails or returns no final text, Agenthicc attempts a
+clearly labeled local fallback that drops only complete oldest user-turn
+groups. It never truncates a tool call away from its result. If a single recent
+exchange is too large, or the journal cannot commit the replacement, the
+session reports a specific recoverable compaction/context failure rather than
+retrying the unchanged oversized request or declaring the work irrecoverably
+failed. Direct-turn recovery keeps the original turn ID discoverable; workflow
+recovery retains the existing checkpoint and phase. Cancellation continues to
+propagate as cancellation, with no partial summary committed. Status records
+contain only the outcome, estimates, and exception class—not transcript text,
+provider payloads, credentials, or headers.
 
 ### Tool-exchange transactions
 
@@ -136,11 +152,12 @@ release exposing `ShortTermMemory.validate_tool_history()`,
 `commit_tool_exchange()`, and `abort_tool_exchange()`. Agenthicc fails closed
 with an upgrade message when that contract is absent.
 
-The manual `/compact` command uses the bounded map-reduce summarizer, retries
-empty final responses before falling back locally, and records a reset in the
-journal so the durable projection remains aligned with the live messages.
-Automatic and manual compaction both emit a visible
-`⎋ Compacting conversation…` event.
+Automatic and manual compaction emit a visible
+`⎋ Compacting conversation…` event and a bounded `compaction_status` record.
+The status record includes a start marker and distinguishes successful summary
+compaction, local complete-turn reduction, summary unavailability, journal
+failure, and irreducible context. The lossy local outcome is never described
+as an LLM summary.
 
 ## Context budgeting
 

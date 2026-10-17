@@ -101,6 +101,46 @@ class TestRollbackAndCompaction:
         assert folded == [{"role": "user", "content": "[COMPACT SUMMARY]\n…"}]
         j.close()
 
+    def test_replace_state_commits_before_publishing_and_rehydrates(self, tmp_path) -> None:
+        j, mem = _make(tmp_path)
+        mem.add_user("original user request")
+        mem.add_assistant(_completion("original answer"))
+        candidate = [
+            {"role": "user", "content": "[COMPACT SUMMARY]\nKeep the decision."},
+            {"role": "assistant", "content": "Understood."},
+        ]
+
+        mem.replace_state(candidate, None)
+
+        assert mem._messages == candidate
+        assert fold_path(j.path) == (candidate, None)
+        path = j.path
+        j.close()
+        resumed_journal = ConversationJournal(path)
+        resumed = JournaledShortTermMemory(resumed_journal, max_tokens=32_000)
+        assert resumed._messages == candidate
+        assert resumed.summary is None
+        resumed_journal.close()
+
+    def test_replace_state_failure_preserves_live_and_durable_state(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        j, mem = _make(tmp_path)
+        mem.add_user("keep this exact history")
+        before = mem.snapshot()
+        candidate = [{"role": "user", "content": "[COMPACT SUMMARY]\nnew"}]
+
+        def fail_replace(journal_arg, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003, ARG001
+            raise OSError("simulated journal failure")
+
+        monkeypatch.setattr(ConversationJournal, "replace_state", fail_replace)
+        with pytest.raises(OSError):
+            mem.replace_state(candidate, None)
+
+        assert mem.snapshot() == before
+        assert fold_path(j.path) == (before["messages"], before["summary"])
+        j.close()
+
 
 class TestProviderStepRecovery:
     def test_step_checkpoint_methods_journal_boundaries_without_copying_history(

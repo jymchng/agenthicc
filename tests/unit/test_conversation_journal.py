@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
@@ -60,6 +61,44 @@ class TestAppendAndFold:
         seqs2 = [json.loads(line)["seq"] for line in jp.read_text().splitlines() if line.strip()]
         assert seqs2 == [0, 1, 2]
 
+    def test_transactional_replace_commits_full_projection(self, tmp_path) -> None:
+        jp = tmp_path / "j.jsonl"
+        journal = ConversationJournal(jp)
+        journal.append_message(_msg("user", "old"))
+        candidate = [_msg("user", "[COMPACT SUMMARY]"), _msg("assistant", "ok")]
+
+        journal.replace_state(candidate, "rolling summary")
+        journal.close()
+
+        assert fold_path(jp) == (candidate, "rolling summary")
+
+    def test_uncommitted_replace_rolls_back_on_fold_and_next_append(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        jp = tmp_path / "j.jsonl"
+        journal = ConversationJournal(jp)
+        journal.append_message(_msg("user", "original"))
+        original_write = ConversationJournal._write
+
+        def fail_commit(journal_arg, entry):  # noqa: ANN001, ARG001
+            if entry.get("kind") == "state_replace_commit":
+                raise OSError("simulated commit failure")
+            original_write(journal_arg, entry)
+
+        monkeypatch.setattr(ConversationJournal, "_write", fail_commit)
+        with pytest.raises(OSError):
+            journal.replace_state([_msg("user", "candidate")], None)
+
+        # Recovery folds the prepare+candidate pair as the previous state.
+        assert fold_path(jp) == ([_msg("user", "original")], None)
+        monkeypatch.setattr(ConversationJournal, "_write", original_write)
+        journal.append_message(_msg("assistant", "after recovery"))
+        journal.close()
+        assert fold_path(jp) == (
+            [_msg("user", "original"), _msg("assistant", "after recovery")],
+            None,
+        )
+
 
 class TestDurabilityAndCrash:
     def test_each_append_is_flushed_to_disk(self, tmp_path) -> None:
@@ -82,6 +121,28 @@ class TestDurabilityAndCrash:
             fh.write('{"seq": 1, "kind": "append", "message": {"role": "ass')
         messages, _ = fold_path(jp)
         assert messages == [_msg("user", "good")], "partial trailing line must be ignored"
+
+    def test_failed_fsync_truncates_uncommitted_record(self, tmp_path, monkeypatch) -> None:
+        jp = tmp_path / "j.jsonl"
+        journal = ConversationJournal(jp)
+        real_fsync = os.fsync
+        calls = 0
+
+        def fail_first_fsync(descriptor: int) -> None:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise OSError("simulated fsync failure")
+            real_fsync(descriptor)
+
+        monkeypatch.setattr("agenthicc.memory.journal.os.fsync", fail_first_fsync)
+        with pytest.raises(OSError):
+            journal.append_message(_msg("user", "must not become visible"))
+        assert fold_path(jp) == ([], None)
+
+        journal.append_message(_msg("user", "subsequent durable message"))
+        journal.close()
+        assert fold_path(jp) == ([_msg("user", "subsequent durable message")], None)
 
     def test_subagent_results_are_durable_and_not_provider_messages(self, tmp_path) -> None:
         jp = tmp_path / "j.jsonl"

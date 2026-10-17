@@ -21,12 +21,18 @@ compact_memory(
 
 from __future__ import annotations
 
-__all__ = ["compact_memory"]
+__all__ = [
+    "CompactionOutcome",
+    "compact_memory",
+    "compact_memory_with_result",
+    "local_compaction_fallback",
+]
 
 import inspect
 import logging
-from collections.abc import Mapping
-from typing import TYPE_CHECKING
+from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from lauren_ai._memory import ShortTermMemory
@@ -44,6 +50,60 @@ _SUMMARY_MAX_COMPLETION_TOKENS: int = 1_024
 _SUMMARY_RETRY_MAX_COMPLETION_TOKENS: int = 2_048
 
 
+@runtime_checkable
+class _ReplaceStateMemory(Protocol):
+    def replace_state(self, messages: Sequence[object], summary: str | None) -> None: ...
+
+
+@runtime_checkable
+class _JournalResetMemory(Protocol):
+    def journal_reset(self) -> None: ...
+
+
+@runtime_checkable
+class _SummaryMemory(Protocol):
+    @property
+    def summary(self) -> str | None: ...
+
+
+@dataclass(frozen=True)
+class CompactionOutcome:
+    """Bounded, content-free result of one compaction attempt."""
+
+    status: Literal[
+        "compacted_summary",
+        "compacted_local_fallback",
+        "skipped_summary_unavailable",
+        "blocked_durability_error",
+        "blocked_irreducible_context",
+    ]
+    before_tokens: int
+    after_tokens: int
+    durable: bool
+    error_type: str = ""
+
+    @property
+    def applied(self) -> bool:
+        """Whether a replacement memory projection was committed."""
+        return self.status in {"compacted_summary", "compacted_local_fallback"}
+
+
+class CompactionRecoveryRequired(RuntimeError):
+    """Compaction could not safely commit or fit; preserve session for resume."""
+
+    def __init__(self, outcome: CompactionOutcome) -> None:
+        self.outcome = outcome
+        self.failure_category = (
+            "compaction_persistence_failed"
+            if outcome.status == "blocked_durability_error"
+            else "context_limit_unresolved"
+        )
+        super().__init__(
+            "Conversation compaction requires recovery "
+            f"(status={outcome.status}, error_type={outcome.error_type or 'none'})"
+        )
+
+
 async def compact_memory(
     memory: ShortTermMemory,
     transport: object,
@@ -57,7 +117,7 @@ async def compact_memory(
     max_completion_tokens: int | None = None,
     request_options: object | None = None,
 ) -> int:
-    """Summarise *memory* in-place into a ``[COMPACT SUMMARY]`` / ack pair.
+    """Compatibility wrapper: summarize *memory* and return its token estimate.
 
     Uses lauren-ai's map-reduce summariser so a history larger than the model
     window is compressed via bounded chunks rather than a single over-budget
@@ -66,9 +126,51 @@ async def compact_memory(
     Sets ``conv_store.compaction_active`` for the duration and unconditionally
     clears it (even on error).  Returns the new ``token_estimate``.
     """
+    outcome = await compact_memory_with_result(
+        memory,
+        transport,
+        model=model,
+        conv_store=conv_store,
+        max_input_tokens=max_input_tokens,
+        usage_ledger=usage_ledger,
+        session_id=session_id,
+        run_id=run_id,
+        max_completion_tokens=max_completion_tokens,
+        request_options=request_options,
+    )
+    return outcome.after_tokens
+
+
+async def compact_memory_with_result(
+    memory: ShortTermMemory,
+    transport: object,
+    *,
+    model: str,
+    conv_store: ConversationStore | None = None,
+    max_input_tokens: int = 0,
+    usage_ledger: UsageLedger | None = None,
+    session_id: str = "",
+    run_id: str = "",
+    max_completion_tokens: int | None = None,
+    request_options: object | None = None,
+) -> CompactionOutcome:
+    """Summarize into a candidate projection and commit it transactionally.
+
+    Summary/provider failures leave the original projection untouched. A
+    journal-backed memory must expose ``replace_state``; mutations are not
+    attempted through the older mutate-then-journal hook.
+    """
+    before_tokens = _memory_tokens(memory)
     if conv_store is not None:
-        conv_store.compaction_active.set(True)
-        conv_store.append_event("system", {"text": "⎋ Compacting conversation…"})
+        try:
+            conv_store.compaction_active.set(True)
+            conv_store.append_event("system", {"text": "⎋ Compacting conversation…"})
+            conv_store.append_event(
+                "compaction_status",
+                {"status": "started", "before_tokens": before_tokens},
+            )
+        except Exception as exc:  # noqa: BLE001 - presentation is advisory
+            log.warning("could not project compaction start (%s)", type(exc).__name__)
 
     try:
         import asyncio  # noqa: PLC0415
@@ -76,7 +178,11 @@ async def compact_memory(
         # Yield so the spinner repaint flushes before the LLM call begins.
         await asyncio.sleep(0)
 
-        transcript = _format_transcript(memory._messages)
+        messages = list(memory._messages)
+        prior_summary = _memory_summary(memory)
+        transcript = _format_transcript(messages)
+        if isinstance(prior_summary, str) and prior_summary.strip():
+            transcript = f"Earlier summary:\n{prior_summary.strip()}\n\n{transcript}"
         had_transcript = bool(transcript.strip())
         max_input_chars = 0
         if max_input_tokens > 0:
@@ -97,46 +203,203 @@ async def compact_memory(
             request_options=request_options,
         )
 
-        if summary:
-            memory._messages = [
-                {"role": "user", "content": f"[COMPACT SUMMARY]\n{summary}"},
-                {"role": "assistant", "content": _ACK},
-            ]
-            # PRD-129 Phase 2: replacing _messages in place bypasses the
-            # JournaledShortTermMemory append/restore overrides — record the
-            # reset so the durable journal stays in sync with the live buffer.
-            journal_reset = getattr(memory, "journal_reset", None)
-            if callable(journal_reset):
-                journal_reset()
+        if not summary:
+            outcome = CompactionOutcome(
+                "skipped_summary_unavailable" if had_transcript else "blocked_irreducible_context",
+                before_tokens,
+                before_tokens,
+                durable=False,
+            )
+            _emit_outcome(conv_store, outcome)
+            return outcome
 
-        new_estimate = memory.token_estimate
-        log.info("compactor: compacted to ~%d tokens", new_estimate)
+        candidate = [
+            {"role": "user", "content": f"[COMPACT SUMMARY]\n{summary}"},
+            {"role": "assistant", "content": _ACK},
+        ]
+        from lauren_ai._memory import ShortTermMemory as _ShortTermMemory  # noqa: PLC0415
 
-        if conv_store is not None:
-            if summary:
-                text = f"⎋ Compacted → ~{new_estimate:,} tokens"
-            elif had_transcript:
-                # A non-empty history with an empty model response is a
-                # failed compaction, not an empty conversation.  Reporting it
-                # accurately prevents the operator from mistaking a provider
-                # failure for a successful no-op before an overflow retry.
-                text = "⎋ Compaction returned an empty summary"
-            else:
-                text = "⎋ Nothing to compact"
-            conv_store.append_event("system", {"text": text})
-        return new_estimate
+        candidate_memory = _ShortTermMemory(max_tokens=max(1, max_input_tokens))
+        candidate_memory._messages = list(candidate)
+        candidate_tokens = _memory_tokens(candidate_memory)
+        if candidate_tokens >= before_tokens:
+            outcome = CompactionOutcome(
+                "blocked_irreducible_context",
+                before_tokens,
+                before_tokens,
+                durable=False,
+            )
+            _emit_outcome(conv_store, outcome)
+            return outcome
+        try:
+            # The generated summary incorporates the rolling summary above;
+            # clear its separate field to avoid duplicating it in the next
+            # provider request.
+            _replace_state(memory, candidate, None)
+        except Exception as exc:  # noqa: BLE001 - typed blocked outcome, old state retained
+            log.warning("compactor: durable replacement failed (%s)", type(exc).__name__)
+            outcome = CompactionOutcome(
+                "blocked_durability_error",
+                before_tokens,
+                before_tokens,
+                durable=False,
+                error_type=type(exc).__name__[:96],
+            )
+            _emit_outcome(conv_store, outcome)
+            return outcome
+
+        after_tokens = _memory_tokens(memory)
+        outcome = CompactionOutcome("compacted_summary", before_tokens, after_tokens, durable=True)
+        log.info("compactor: compacted to ~%d tokens", after_tokens)
+        _emit_outcome(conv_store, outcome)
+        return outcome
 
     except Exception as exc:  # noqa: BLE001
-        log.warning("compactor: compaction failed: %s", exc)
-        if conv_store is not None:
-            conv_store.append_event(
-                "system", {"text": f"⎋ Compaction failed: {type(exc).__name__}"}
-            )
-        return memory.token_estimate
+        log.warning("compactor: summary failed (%s)", type(exc).__name__)
+        outcome = CompactionOutcome(
+            "skipped_summary_unavailable",
+            before_tokens,
+            before_tokens,
+            durable=False,
+            error_type=type(exc).__name__[:96],
+        )
+        _emit_outcome(conv_store, outcome)
+        return outcome
 
     finally:
         if conv_store is not None:
-            conv_store.compaction_active.set(False)
+            try:
+                conv_store.compaction_active.set(False)
+            except Exception as exc:  # noqa: BLE001 - presentation is advisory
+                log.warning("could not clear compaction indicator (%s)", type(exc).__name__)
+
+
+def local_compaction_fallback(
+    memory: ShortTermMemory,
+    *,
+    max_input_tokens: int,
+) -> CompactionOutcome:
+    """Commit a bounded recent-message projection without splitting exchanges.
+
+    The fallback only removes complete oldest turns. An individually
+    oversized remaining exchange is reported as irreducible rather than
+    truncating a tool call/result or user message in place.
+    """
+    before = _memory_tokens(memory)
+    messages = memory._messages
+    if not messages:
+        return CompactionOutcome("blocked_irreducible_context", before, before, False)
+
+    try:
+        from lauren_ai._memory import ShortTermMemory as _ShortTermMemory  # noqa: PLC0415
+
+        target = max(1, int(max_input_tokens * 0.75))
+        non_system = [message for message in messages if _field(message, "role", "") != "system"]
+        starts = [
+            index
+            for index, message in enumerate(non_system)
+            if _is_conversational_user_message(message)
+        ]
+        if not starts:
+            return CompactionOutcome("blocked_irreducible_context", before, before, durable=False)
+        system_messages = [
+            message for message in messages if _field(message, "role", "") == "system"
+        ]
+        first_kept = starts[0]
+        candidate_messages = system_messages + non_system[first_kept:]
+        candidate_memory = _ShortTermMemory(max_tokens=max(1, max_input_tokens))
+        candidate_memory._messages = list(candidate_messages)
+        prior_summary = _memory_summary(memory)
+        candidate_memory._summary = prior_summary
+        after = _memory_tokens(candidate_memory)
+        remaining_starts = starts[1:]
+        while after > target and remaining_starts:
+            first_kept = remaining_starts.pop(0)
+            candidate_messages = system_messages + non_system[first_kept:]
+            candidate_memory._messages = list(candidate_messages)
+            after = _memory_tokens(candidate_memory)
+        if after > target or after >= before or not candidate_messages:
+            return CompactionOutcome("blocked_irreducible_context", before, before, durable=False)
+        _replace_state(memory, candidate_messages, prior_summary)
+        committed_after = _memory_tokens(memory)
+        return CompactionOutcome("compacted_local_fallback", before, committed_after, durable=True)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("compactor: local replacement failed (%s)", type(exc).__name__)
+        return CompactionOutcome(
+            "blocked_durability_error",
+            before,
+            before,
+            durable=False,
+            error_type=type(exc).__name__[:96],
+        )
+
+
+def _replace_state(
+    memory: ShortTermMemory, messages: Sequence[object], summary: str | None
+) -> None:
+    """Publish a prepared replacement through the durable memory contract."""
+    if isinstance(memory, _ReplaceStateMemory):
+        memory.replace_state(messages, summary)
+        return
+    # A journal without the transaction hook cannot safely compact: mutating
+    # first and attempting a later reset can split the live/durable state.
+    if isinstance(memory, _JournalResetMemory):
+        raise RuntimeError("journaled memory does not implement transactional replace_state")
+    memory._messages = list(messages)
+    memory._summary = summary
+
+
+def _memory_tokens(memory: ShortTermMemory) -> int:
+    value = memory.token_estimate
+    estimate = max(0, value) if isinstance(value, int) else 0
+    summary = _memory_summary(memory)
+    if isinstance(summary, str) and summary:
+        estimate += max(1, (len(summary) + 2) // 3)
+    return estimate
+
+
+def _memory_summary(memory: ShortTermMemory) -> str | None:
+    """Read the optional summary from full memories and lightweight adapters."""
+    return memory.summary if isinstance(memory, _SummaryMemory) else None
+
+
+def _is_conversational_user_message(message: object) -> bool:
+    """Distinguish a user turn from a user-role tool-result envelope."""
+    if _field(message, "role", "") != "user":
+        return False
+    content = _field(message, "content", "")
+    if isinstance(content, list) and content:
+        blocks = [block for block in content if _field(block, "type", "") != "text"]
+        if blocks and all(_field(block, "type", "") == "tool_result" for block in blocks):
+            return False
+    return True
+
+
+def _emit_outcome(conv_store: ConversationStore | None, outcome: CompactionOutcome) -> None:
+    """Project redacted status only; never include conversation contents."""
+    if conv_store is None:
+        return
+    labels = {
+        "compacted_summary": f"⎋ Compacted → ~{outcome.after_tokens:,} tokens",
+        "compacted_local_fallback": "⎋ Compaction fallback: retained recent complete exchanges",
+        "skipped_summary_unavailable": "⎋ Compaction returned an empty summary",
+        "blocked_durability_error": "⎋ Compaction blocked: durable memory could not be committed",
+        "blocked_irreducible_context": "⎋ Compaction blocked: no complete recent exchange fits",
+    }
+    try:
+        conv_store.append_event(
+            "compaction_status",
+            {
+                "status": outcome.status,
+                "before_tokens": outcome.before_tokens,
+                "after_tokens": outcome.after_tokens,
+                "durable": outcome.durable,
+                "error_type": outcome.error_type,
+            },
+        )
+        conv_store.append_event("system", {"text": labels[outcome.status]})
+    except Exception as exc:  # noqa: BLE001 - observability must not fail a turn
+        log.warning("compaction status projection failed (%s)", type(exc).__name__)
 
 
 # ── internal helpers ──────────────────────────────────────────────────────────
@@ -314,6 +577,8 @@ def _summary_output_limit(configured: int | None, *, retry: bool) -> int:
 
 def _accepts_keyword(callable_obj: object, name: str) -> bool:
     """Return whether a transport method can receive an optional keyword."""
+    if not callable(callable_obj):
+        return False
     try:
         parameters = inspect.signature(callable_obj).parameters.values()
     except (TypeError, ValueError):

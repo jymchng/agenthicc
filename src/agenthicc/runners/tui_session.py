@@ -2866,7 +2866,7 @@ class TUISession:
 
     async def _handle_compact_command(self) -> None:
         """Handle /compact — compact the current session memory (PRD-119)."""
-        from agenthicc.memory.compactor import compact_memory  # noqa: PLC0415
+        from agenthicc.memory.compactor import compact_memory_with_result  # noqa: PLC0415
 
         ctx = self._ctx
         conv = ctx.app_state.conversation
@@ -2884,7 +2884,7 @@ class TUISession:
         model = ctx.cfg.execution.effective_model()
         # Bound each summariser call to the model window so compacting a history
         # larger than the window map-reduces instead of overflowing (PRD-135 B).
-        await compact_memory(
+        outcome = await compact_memory_with_result(
             mem,
             transport,
             model=model,
@@ -2896,7 +2896,20 @@ class TUISession:
             max_completion_tokens=getattr(ctx.cfg.execution, "max_completion_tokens", None),
             request_options=getattr(ctx.cfg.execution, "request_options", None),
         )
-        conv.notify_transient("⎋ Compacted")
+        if outcome.applied:
+            conv.notify_transient(
+                "⎋ Compacted"
+                if outcome.status == "compacted_summary"
+                else "⎋ Compaction fallback: retained recent complete exchanges"
+            )
+        elif outcome.status == "blocked_durability_error":
+            conv.notify_transient(
+                "⚠ Compaction was not committed; conversation history is preserved"
+            )
+        else:
+            conv.notify_transient(
+                "⚠ Compaction did not change the conversation; history is preserved"
+            )
 
     def route(self, msg: str) -> bool:
         """Return True if command routing consumes *msg* locally."""

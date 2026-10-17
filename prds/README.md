@@ -110,6 +110,7 @@ against the current source before implementing them.
 - [PRD-239 — Trusted Extension Bundles and Catalog](prd-239-trusted-extension-bundles-and-catalog.md)
 - [PRD-240 — Reliable Agents-Page Input: Provider Identity and Turn Recovery](prd-240-consistent-agent-input-session-recovery.md)
 - [PRD-241 — Deliver Agents-Page Input Through Conflicting Recovery State](prd-241-agents-input-with-conflicting-recovery-state.md)
+- [PRD-242 — Fail-Safe Conversation Compaction for Detached Sessions (implemented)](prd-242-resilient-detached-session-compaction.md)
 
 ### PRD-220–239 — OpenCode, Claude Code, and Codex feature study
 
@@ -542,6 +543,14 @@ recoverable, and explicit workflow controls can reach the target behind a
 blocked FIFO head.
 See [PRD-241](prd-241-agents-input-with-conflicting-recovery-state.md) and the
 background-sessions/storage guides.
+
+PRD-242 is implemented: Agenthicc owns bounded automatic compaction for all
+turn types, journal-backed replacements are transactional, and unsafe
+durability/context outcomes preserve direct-turn recovery or a workflow
+checkpoint with a specific detached-session category. See
+[PRD-242](prd-242-resilient-detached-session-compaction.md), the
+[memory guide](../docs/guides/memory.md), and the
+[storage reference](../docs/reference/storage.md).
 
 PRD-218 fixes foreground `/detach` when the prior background attempt is
 completed. It reactivates the same session for eligible work, preserves the

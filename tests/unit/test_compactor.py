@@ -2,11 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from types import SimpleNamespace
 
 from lauren_ai._memory import ShortTermMemory
-from agenthicc.memory.compactor import compact_memory, _format_transcript
+from agenthicc.memory.compactor import (
+    compact_memory,
+    compact_memory_with_result,
+    local_compaction_fallback,
+    _format_transcript,
+)
 
 
 # ── auto_compact default ───────────────────────────────────────────────────────
@@ -210,11 +217,16 @@ class TestCompactMemory:
         from agenthicc.tui.conversation_store import ConversationStore
 
         conv = ConversationStore()
+        events = []
+        conv.on_event(events.append)
         mem = self._make_mem()
         transport = _MockTransport("done")
         await compact_memory(mem, transport, model="m", conv_store=conv)
-        # compact_memory appends system events — since there's no active turn,
-        # they go into the current turn if one exists; we just verify no crash.
+        statuses = [event.payload for event in events if event.kind == "compaction_status"]
+        assert statuses[0]["status"] == "started"
+        assert isinstance(statuses[0]["before_tokens"], int)
+        assert statuses[-1]["status"] == "compacted_summary"
+        assert "transcript" not in str(statuses).lower()
         assert not conv.compaction_active()
 
     async def test_works_without_conv_store(self) -> None:
@@ -285,6 +297,57 @@ class TestCompactMemory:
         assert transport.calls[1]["max_completion_tokens"] == 2_048
         assert "Recovered from stream." in mem._messages[0]["content"]
         assert "hidden reasoning" not in mem._messages[0]["content"]
+
+    async def test_summary_cancellation_propagates_without_mutating_memory(self) -> None:
+        class _CancelledTransport:
+            async def complete(self, *args, **kwargs):  # noqa: ANN002, ANN003
+                raise asyncio.CancelledError
+
+        mem = self._make_mem()
+        before = mem.snapshot()
+
+        with pytest.raises(asyncio.CancelledError):
+            await compact_memory_with_result(mem, _CancelledTransport(), model="m")
+
+        assert mem.snapshot() == before
+
+    async def test_journal_reset_failure_returns_typed_blocked_outcome(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        from agenthicc.memory.journal import ConversationJournal, fold_path
+        from agenthicc.memory.journaled import JournaledShortTermMemory
+
+        journal = ConversationJournal(tmp_path / "journal.jsonl")
+        mem = JournaledShortTermMemory(journal)
+        mem.add_user("important user request " + "history " * 500)
+        before = mem.snapshot()
+
+        def fail_replace(journal_arg, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003, ARG001
+            raise OSError("disk is unavailable")
+
+        monkeypatch.setattr(ConversationJournal, "replace_state", fail_replace)
+        outcome = await compact_memory_with_result(mem, _MockTransport(), model="m")
+
+        assert outcome.status == "blocked_durability_error"
+        assert not outcome.applied
+        assert mem.snapshot() == before
+        assert fold_path(journal.path) == (before["messages"], before["summary"])
+        journal.close()
+
+    def test_local_fallback_drops_whole_oldest_exchanges(self) -> None:
+        mem = ShortTermMemory(max_tokens=8_000)
+        for index in range(5):
+            mem.add_user(f"request {index}: " + "u" * 800)
+            mem.add_assistant({"role": "assistant", "content": f"answer {index}: " + "a" * 800})
+        original_count = len(mem._messages)
+
+        outcome = local_compaction_fallback(mem, max_input_tokens=1_000)
+
+        assert outcome.status == "compacted_local_fallback"
+        assert len(mem._messages) < original_count
+        assert mem._messages[0]["role"] == "user"
+        assert mem._messages[-1]["role"] == "assistant"
+        assert all("request" in str(msg["content"]) for msg in mem._messages[::2])
 
 
 # ── _format_transcript ─────────────────────────────────────────────────────────

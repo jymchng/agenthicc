@@ -69,6 +69,16 @@ async def test_headless_approval_policy_and_result_serialization() -> None:
     assert payload["event_type"] == "WorkflowRunCompleted"
     assert payload["phases"] == ["plan"]
     assert payload["phase_metadata"] == {"plan": {"approved": True}}
+    categorized = WorkflowExecutionResult(
+        "session",
+        "goal_flow",
+        "run",
+        "paused",
+        ("implement",),
+        error="durable compaction unavailable",
+        failure_category="compaction_persistence_failed",
+    )
+    assert categorized.to_dict()["failure_category"] == "compaction_persistence_failed"
 
 
 def test_headless_session_resolution_preserves_explicit_resume() -> None:
@@ -294,6 +304,62 @@ async def test_execute_workflow_publishes_success_and_paused_failure_events(
         await failure.processor.stop()
         await task
         failure_conversation.close()
+
+
+@pytest.mark.asyncio
+async def test_compaction_failure_is_a_paused_workflow_with_specific_category(
+    tmp_path: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agenthicc.memory.compactor import CompactionOutcome, CompactionRecoveryRequired
+    from agenthicc.workflows.plugin import PhaseSpec, WorkflowPlugin
+
+    class _CompactionWorkflow(WorkflowPlugin):
+        name = "headless_compaction_failure"
+        phases = [PhaseSpec(name="implement")]
+
+        @classmethod
+        def create_initial_context(cls, intent: str, run_id: str, _memory: object) -> object:
+            from agenthicc.workflows.plugin import WorkflowContext
+
+            return WorkflowContext(
+                intent=intent,
+                run_id=run_id,
+                workflow_name=cls.name,
+                current_phase="implement",
+            )
+
+        @classmethod
+        def build_runner(cls, _config: object, _mode_manager: object) -> object:
+            class _Runner:
+                async def run(self, _intent: str) -> object:
+                    raise CompactionRecoveryRequired(
+                        CompactionOutcome("blocked_durability_error", 1000, 1000, durable=False)
+                    )
+
+                async def resume(self, _context: object) -> object:
+                    raise AssertionError("fresh run should not resume")
+
+            return _Runner()
+
+    session, conversation, checkpoint_store = _workflow_session(_CompactionWorkflow, tmp_path)
+    monkeypatch.setattr(
+        "agenthicc.runners.workflow_checkpoint_store.WorkflowCheckpointStore",
+        lambda _session_id: checkpoint_store,
+    )
+    processor_task = __import__("asyncio").create_task(session.processor.run())
+    try:
+        await __import__("asyncio").sleep(0)
+        result = await execute_workflow(session, _CompactionWorkflow.name, "intent")
+        assert result.status == "paused"
+        assert result.failure_category == "compaction_persistence_failed"
+        assert result.run_id
+        checkpoint = checkpoint_store.load(result.run_id)
+        assert checkpoint is not None
+        assert checkpoint.current_phase == "implement"
+    finally:
+        await session.processor.stop()
+        await processor_task
+        conversation.close()
 
 
 @pytest.mark.asyncio

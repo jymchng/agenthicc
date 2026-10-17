@@ -38,7 +38,9 @@ from __future__ import annotations
 
 import json
 import hashlib
+import logging
 import os
+import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -54,6 +56,7 @@ __all__ = [
 ]
 
 _SESSIONS_DIR = Path.home() / ".agenthicc" / "sessions"
+logger = logging.getLogger(__name__)
 
 
 def tool_exchange_recovery_event_id(exchange_id: str, event: str = "repaired") -> str:
@@ -110,6 +113,16 @@ def fold_path(path: Path) -> tuple[list[object], str | None]:
         return [], None
     messages: list[object] = []
     summary: str | None = None
+    pending_replace: tuple[str, list[object], str | None] | None = None
+
+    def rollback_pending() -> None:
+        nonlocal messages, summary, pending_replace
+        if pending_replace is not None:
+            _transaction_id, previous_messages, previous_summary = pending_replace
+            messages = list(previous_messages)
+            summary = previous_summary
+            pending_replace = None
+
     with path.open("r", encoding="utf-8") as fh:
         for raw in fh:
             line = raw.strip()
@@ -122,11 +135,34 @@ def fold_path(path: Path) -> tuple[list[object], str | None]:
                 # everything before it is intact and durable.
                 break
             kind = entry.get("kind")
-            if kind == "append":
-                messages.append(entry["message"])
+            if kind == "state_replace_prepare":
+                rollback_pending()
+                transaction_id = entry.get("transaction_id")
+                if isinstance(transaction_id, str):
+                    pending_replace = (
+                        transaction_id,
+                        list(entry.get("previous_messages", [])),
+                        entry.get("previous_summary"),
+                    )
             elif kind == "reset":
-                messages = list(entry.get("messages", []))
-                summary = entry.get("summary")
+                transaction_id = entry.get("transaction_id")
+                if pending_replace is not None and transaction_id == pending_replace[0]:
+                    messages = list(entry.get("messages", []))
+                    summary = entry.get("summary")
+                else:
+                    rollback_pending()
+                    messages = list(entry.get("messages", []))
+                    summary = entry.get("summary")
+            elif kind == "state_replace_commit":
+                if (
+                    pending_replace is not None
+                    and entry.get("transaction_id") == pending_replace[0]
+                ):
+                    pending_replace = None
+            elif kind == "append":
+                rollback_pending()
+                messages.append(entry["message"])
+    rollback_pending()
     return messages, summary
 
 
@@ -243,10 +279,69 @@ class ConversationJournal:
             return sum(1 for line in fh if line.strip())
 
     def _write(self, entry: dict[str, object]) -> None:
-        self._fh.write(json.dumps(entry, default=str) + "\n")
         self._fh.flush()
-        os.fsync(self._fh.fileno())
+        descriptor = self._fh.fileno()
+        start_offset = os.fstat(descriptor).st_size
+        payload = (json.dumps(entry, default=str) + "\n").encode("utf-8")
+        offset = 0
+        try:
+            while offset < len(payload):
+                written = os.write(descriptor, payload[offset:])
+                if written <= 0:
+                    raise OSError("conversation journal write made no progress")
+                offset += written
+            os.fsync(descriptor)
+        except BaseException:
+            # A partial JSONL record must not become visible as a successful
+            # state transition. Restore the exact previous EOF before
+            # propagating the original disk error.
+            try:
+                os.ftruncate(descriptor, start_offset)
+                os.fsync(descriptor)
+            except OSError as rollback_exc:
+                logger.critical(
+                    "conversation journal append rollback failed (%s)",
+                    type(rollback_exc).__name__,
+                )
+            raise
         self._seq += 1
+
+    def replace_state(self, messages: list[object], summary: str | None) -> None:
+        """Atomically journal a full projection replacement for compaction.
+
+        The prepare record stores the prior folded projection. If a process
+        stops after the candidate reset but before its commit receipt, folding
+        rolls back to the prior projection. All records are fsynced
+        individually, and a failed/partial final record is truncated by
+        :meth:`_write` when the filesystem permits it.
+        """
+        previous_messages, previous_summary = self.fold()
+        transaction_id = uuid.uuid4().hex
+        self._write(
+            {
+                "seq": self._seq,
+                "kind": "state_replace_prepare",
+                "transaction_id": transaction_id,
+                "previous_messages": previous_messages,
+                "previous_summary": previous_summary,
+            }
+        )
+        self._write(
+            {
+                "seq": self._seq,
+                "kind": "reset",
+                "transaction_id": transaction_id,
+                "messages": list(messages),
+                "summary": summary,
+            }
+        )
+        self._write(
+            {
+                "seq": self._seq,
+                "kind": "state_replace_commit",
+                "transaction_id": transaction_id,
+            }
+        )
 
     def append_message(self, message: object) -> None:
         """Durably record one appended message."""

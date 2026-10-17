@@ -17,6 +17,8 @@ process restart.
 
 from __future__ import annotations
 
+import copy
+from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
 from lauren_ai._memory import ShortTermMemory
@@ -132,6 +134,34 @@ class JournaledShortTermMemory(ShortTermMemory):
         bypasses the append/restore overrides), keeping the journal in sync.
         """
         self._journal.reset(self._messages, self._summary)
+
+    def replace_state(self, messages: Iterable[object], summary: str | None) -> None:
+        """Durably replace the projection before publishing it in memory.
+
+        Lauren-ai 1.6.0 does not expose this hook yet, so defining it here also
+        gives Agenthicc's compactor a transactional boundary on the minimum
+        supported dependency. The journal writes a prepare/candidate/commit
+        sequence; folding ignores an uncommitted candidate and restores the
+        exact prior projection after a crash.
+        """
+        candidate = copy.deepcopy(list(messages))
+        active_exchange = self.active_tool_exchange
+        if active_exchange is not None and active_exchange.state == "started":
+            from lauren_ai import ToolConversationIntegrityError
+
+            raise ToolConversationIntegrityError(
+                "Cannot replace conversation state during an active tool exchange",
+                code="compaction_during_tool_exchange",
+                expected_count=len(active_exchange.call_ids),
+                observed_count=0,
+            )
+
+        self._journal.replace_state(candidate, summary)
+        # Publish only after the durable transaction succeeds. This mirrors
+        # lauren-ai's base replacement contract while retaining compatibility
+        # with 1.6.0, where that method is not yet present.
+        self._messages = candidate
+        self._summary = summary
 
     # ── provider-step recovery contract (PRD-182) ─────────────────────────
 

@@ -17,7 +17,7 @@ other per-session artifact lives **inside** it.
 | `~/.agenthicc/sessions/index.json` | `SessionOpenCoordinator` | Session index used by discovery and `--continue` selection | Rebuilt from session directories |
 | `~/.agenthicc/sessions/index.lock` | `SessionOpenCoordinator` | Short session-index read/modify/write critical section | OS advisory lock; never held for a turn or TUI lifetime |
 | `<id>/conversation.jsonl` | `SessionEventLog` | Reactive conversation events | Replay renderer/metrics |
-| `<id>/conversation-journal.jsonl` | `ConversationJournal` / `UsageLedger` | Messages, resets, logical-turn/provider-step receipts, bounded partial-fragment diagnostics, hashed tool records, idempotent tool-recovery receipts, subagent worker/pool results, typed parent/child/peer communication events, and versioned usage records | Rebuild memory, preserve committed work after a mid-turn failure, restore usage, resume interrupted turns without replaying completed side effects, recover complete subagent results, and rehydrate pending communication |
+| `<id>/conversation-journal.jsonl` | `ConversationJournal` / `UsageLedger` | Messages, resets and transactional state-replacement receipts, logical-turn/provider-step receipts, bounded partial-fragment diagnostics, hashed tool records, idempotent tool-recovery receipts, subagent worker/pool results, typed parent/child/peer communication events, and versioned usage records | Rebuild memory, roll back incomplete compaction, preserve committed work after a mid-turn failure, restore usage, resume interrupted turns without replaying completed side effects, recover complete subagent results, and rehydrate pending communication |
 | `<id>/loop.json` | `runners.loop_scheduler.LoopStore` | Versioned recurring prompt/command definition, cadence, lifecycle, counters, and bounded error state | Rehydrate an explicit `/loop` after `--resume`/`--continue`; missed intervals are coalesced and stopped/expired records remain terminal |
 | `<id>/loop.lock` | `runners.loop_scheduler.LoopStore` | Short atomic loop-record write lock | OS advisory lock; never held while an agent turn or scheduler callback runs |
 | `<id>/.owner` | `SessionOwnerLease` | One live process owner for the whole durable session | Atomic claim/release; stale recovery only when process death is proven |
@@ -165,6 +165,39 @@ observe the repair, but journal replay and the TUI event store project that ID
 only once. A journal receipt means the repair occurred; the reactive
 conversation log records whether its user-facing notice was projected, so a
 crash between those two writes does not hide the only diagnostic.
+
+### Transactional conversation compaction
+
+Automatic and manual compaction replace the live conversation through
+`JournaledShortTermMemory.replace_state()` and
+`ConversationJournal.replace_state()`. The journal writes three fsynced
+records:
+
+```text
+state_replace_prepare(transaction_id, previous_messages, previous_summary)
+reset(transaction_id, candidate_messages, candidate_summary)
+state_replace_commit(transaction_id)
+```
+
+The prepare record is a rollback projection, not a provider message. Folding
+applies the candidate only when its matching commit receipt exists. If a crash
+or write failure leaves the transaction incomplete, `fold_path()` restores the
+previous messages and summary; a later append first resolves any pending
+replacement back to that prior state. A successful compaction therefore
+rehydrates exactly the committed summary/recent-message projection, while a
+failed one preserves the pre-compaction conversation. Legacy untagged `reset`
+records retain their existing immediate semantics and require no journal
+migration.
+
+`ConversationJournal._write()` records the prior file offset and truncates a
+partial/failed append before propagating an I/O error. If rollback itself fails,
+the operation remains a blocked durability failure: Agenthicc does not publish
+the candidate in live memory or continue the affected detached turn. The
+background session is marked recoverable with a bounded category such as
+`compaction_persistence_failed` or `context_limit_unresolved`. Compaction
+status records contain only the outcome, before/after estimates, and exception
+class; they do not contain transcript text, provider payloads, credentials, or
+headers.
 
 ### Provider-step recovery
 

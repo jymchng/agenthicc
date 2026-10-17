@@ -37,6 +37,7 @@ WORKER_FINALIZATION_TIMEOUT_S = 30.0
 
 
 if TYPE_CHECKING:
+    from agenthicc.memory.compactor import CompactionOutcome
     from agenthicc.background.recovery import RecoveryAssessment
     from agenthicc.background.terminals import TerminalManager
     from agenthicc.runners.workflow_recovery import WorkflowRecoveryRecord
@@ -1715,9 +1716,12 @@ async def _handle_background_workflow_command(
         )
 
 
-async def _compact_background_session(session: SessionContext) -> None:
+async def _compact_background_session(session: SessionContext) -> CompactionOutcome:
     """Run the same bounded compactor used by the owning TUI session."""
-    from agenthicc.memory.compactor import compact_memory  # noqa: PLC0415
+    from agenthicc.memory.compactor import (  # noqa: PLC0415
+        CompactionRecoveryRequired,
+        compact_memory_with_result,
+    )
 
     memory = session.session_memory
     if not memory._messages:
@@ -1726,7 +1730,7 @@ async def _compact_background_session(session: SessionContext) -> None:
     if transport is None:
         raise RuntimeError("No provider transport is available for compaction")
     execution = session.cfg.execution
-    await compact_memory(
+    outcome = await compact_memory_with_result(
         memory,
         transport,
         model=execution.effective_model(),
@@ -1738,6 +1742,9 @@ async def _compact_background_session(session: SessionContext) -> None:
         max_completion_tokens=execution.max_completion_tokens,
         request_options=execution.request_options,
     )
+    if outcome.status == "blocked_durability_error":
+        raise CompactionRecoveryRequired(outcome)
+    return outcome
 
 
 async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
@@ -2106,8 +2113,12 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
                     _record_input_delivery(item, starts_turn=False)
                     if token == "/compact":
                         try:
-                            await _compact_background_session(session)
+                            compaction_outcome = await _compact_background_session(session)
                         except Exception as exc:  # noqa: BLE001
+                            from agenthicc.memory.compactor import CompactionRecoveryRequired  # noqa: PLC0415
+
+                            if isinstance(exc, CompactionRecoveryRequired):
+                                raise
                             from agenthicc.tui.runtime.session_export import _Redactor  # noqa: PLC0415
 
                             error = str(
@@ -2126,10 +2137,17 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
                         else:
                             completed_command_ids.add(item.message_id)
                             session_waiting_for_next_input = True
+                            outcome_status = compaction_outcome.status
+                            compacted = compaction_outcome.applied
+                            message = (
+                                "Session memory compacted."
+                                if compacted
+                                else "Compaction did not change session memory; history was preserved."
+                            )
                             session.app_state.conversation.append_event(
                                 "assistant_message",
                                 {
-                                    "text": "Session memory compacted.",
+                                    "text": f"{message} (status: {outcome_status})",
                                     "source": "agents-manager-command",
                                 },
                                 event_id=f"background-command-output:{item.message_id}",
@@ -2453,7 +2471,18 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
                     )
                 completed = result.status == "complete"
                 recoverable = result.status == "paused"
-                status = SessionStatus.COMPLETED if completed else SessionStatus.FAILED
+                category = str(_request_attribute(result, "failure_category", "") or "")
+                compaction_recovery = recoverable and category in {
+                    "compaction_persistence_failed",
+                    "context_limit_unresolved",
+                }
+                status = (
+                    SessionStatus.COMPLETED
+                    if completed
+                    else SessionStatus.ORPHANED
+                    if compaction_recovery
+                    else SessionStatus.FAILED
+                )
                 raw_phases = getattr(result, "phases", ())
                 phases = (
                     tuple(phase for phase in raw_phases if isinstance(phase, str) and phase)
@@ -2463,11 +2492,17 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
                 return _WorkerOutcome(
                     status=status,
                     error=result.error,
-                    activity=f"Workflow {result.status}",
+                    activity=(
+                        "Workflow compaction needs recovery"
+                        if compaction_recovery
+                        else f"Workflow {result.status}"
+                    ),
                     phase_history=phases,
                     exit_reason=(
                         "workflow_complete"
                         if completed
+                        else category
+                        if compaction_recovery
                         else "recoverable_error"
                         if recoverable
                         else "irrecoverable_error"
@@ -2475,11 +2510,13 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
                     failure_category=(
                         ""
                         if completed
+                        else category
+                        if compaction_recovery
                         else "recoverable_workflow"
                         if recoverable
                         else "irrecoverable_error"
                     ),
-                    exit_code=0 if completed else 1,
+                    exit_code=0 if completed or compaction_recovery else 1,
                 )
             if request.resume_existing_only:
                 return _WorkerOutcome(
@@ -2550,6 +2587,18 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
         )
         raise
     except Exception as exc:  # noqa: BLE001
+        from agenthicc.memory.compactor import CompactionRecoveryRequired  # noqa: PLC0415
+
+        if isinstance(exc, CompactionRecoveryRequired) and request.detached_goal:
+            outcome = _WorkerOutcome(
+                status=SessionStatus.ORPHANED,
+                error=str(exc),
+                activity="Conversation compaction needs recovery",
+                exit_reason=exc.failure_category,
+                failure_category=exc.failure_category,
+                exit_code=0,
+            )
+            return 0
         safe_provider_error = (
             _safe_provider_failure_message(
                 session,

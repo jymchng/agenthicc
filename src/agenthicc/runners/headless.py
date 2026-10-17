@@ -52,6 +52,7 @@ class WorkflowExecutionResult:
     phases: tuple[str, ...]
     error: str | None = None
     phase_metadata: dict[str, object] = field(default_factory=dict)
+    failure_category: str = ""
 
     def to_dict(self) -> dict[str, object]:
         """Return the stable JSON representation used by CLI and stdin modes."""
@@ -66,6 +67,8 @@ class WorkflowExecutionResult:
         }
         if self.phase_metadata:
             result["phase_metadata"] = self.phase_metadata
+        if self.failure_category:
+            result["failure_category"] = self.failure_category
         return result
 
 
@@ -267,6 +270,7 @@ async def execute_workflow(
         workflow_handle.original_intent if resuming and workflow_handle is not None else intent
     )
     error: str | None = None
+    failure_category = ""
     runner_result: object | None = None
     try:
         # Establish a durable identity before any plugin setup.  A generic
@@ -433,6 +437,10 @@ async def execute_workflow(
         raise
     except Exception as exc:  # noqa: BLE001
         error = f"{type(exc).__name__}: {exc}"
+        from agenthicc.memory.compactor import CompactionRecoveryRequired  # noqa: PLC0415
+
+        if isinstance(exc, CompactionRecoveryRequired):
+            failure_category = exc.failure_category
         if workflow_handle is not None:
             checkpoint = workflow_handle.finalize_failure(
                 error,
@@ -520,6 +528,7 @@ async def execute_workflow(
         phases=tuple(phases),
         error=error,
         phase_metadata=phase_metadata,
+        failure_category=failure_category,
     )
     if session_service is not None:
         try:
@@ -533,6 +542,7 @@ async def execute_workflow(
                         "run_id": result.run_id,
                         "phase": getattr(workflow_handle, "current_phase", None) or "",
                         "failure_kind": getattr(workflow_handle, "failure_kind", None)
+                        or result.failure_category
                         or "workflow_error",
                         "revision": getattr(workflow_handle, "checkpoint_revision", 0),
                         "resumable": True,

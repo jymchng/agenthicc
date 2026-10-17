@@ -18,7 +18,7 @@ import re
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, TypeVar, cast
+from typing import TYPE_CHECKING, Literal, TypeVar, cast
 
 from agenthicc.runners.agent_turn_context import AgentTurnContext
 from agenthicc.runners.prompt_contract import PromptBlock
@@ -33,6 +33,31 @@ from agenthicc.tools.hooks import (
 
 logger = logging.getLogger(__name__)
 _T = TypeVar("_T")
+
+
+def _message_field(message: object, name: str, default: object = None) -> object:
+    if isinstance(message, Mapping):
+        return message.get(name, default)
+    return getattr(message, name, default)
+
+
+def _has_trailing_user_message(messages: list[object], text: str) -> bool:
+    if not messages:
+        return False
+    last = messages[-1]
+    return (
+        _message_field(last, "role", "") == "user" and _message_field(last, "content", None) == text
+    )
+
+
+def _conservative_message_estimate(messages: list[object], *, system: str = "") -> int:
+    """Estimate request tokens with safety headroom for provider framing."""
+    from lauren_ai._transport import estimate_message_tokens  # noqa: PLC0415
+
+    baseline = estimate_message_tokens(messages, system=system or None)
+    # The transport heuristic is 4 chars/token. A 25% margin corresponds to
+    # ~3.2 chars/token and protects non-English/code-heavy contexts.
+    return max(1, (baseline * 5 + 3) // 4 + 32 * len(messages))
 
 
 def _config_value(config: object | None, name: str, default: object) -> object:
@@ -1646,15 +1671,14 @@ class AgentTurnRunner:
         max_input_tokens: int,
         force: bool = False,
     ) -> bool:
-        """Compact the shared session memory before an oversized turn.
+        """Compact shared memory at Agenthicc's durable turn boundary.
 
-        Recent Lauren releases own this operation and perform an exact
-        ``count_tokens`` check.  Older releases (including 1.3.1) expose only
-        the sliding-window heuristic, so agenthicc keeps this compatibility
-        fallback at the send boundary.  The fallback uses the bounded,
-        map-reduce compactor and is deliberately conservative: it compacts at
-        80% of the usable input budget, leaving room for the current user
-        message and provider/system/tool framing.
+        Agenthicc deliberately owns this decision for both direct and workflow
+        turns. This keeps journal persistence and detached-session recovery
+        inside the same boundary instead of relying on lauren-ai's internal
+        compaction exception handling. Exact token counting is attempted only
+        near the conservative threshold, is time-bounded, and falls back to a
+        stricter local estimate when unavailable.
 
         ``force`` is used only after a provider explicitly rejects the request
         for context length. The caller compacts the current projection in
@@ -1675,23 +1699,101 @@ class AgentTurnRunner:
         estimate = getattr(memory, "token_estimate", 0)
         if not isinstance(estimate, int):
             return False
-        projected = estimate + max(1, len(agent_text) // 4)
+        projected_messages = list(messages)
+        if not _has_trailing_user_message(projected_messages, agent_text):
+            projected_messages.append({"role": "user", "content": agent_text})
+        # Use a stricter ratio than the shared 4-char heuristic. This is a
+        # decision estimate only; the model-aware count below is preferred.
+        summary = getattr(memory, "summary", None)
+        system_summary = summary if isinstance(summary, str) else ""
+        projected = _conservative_message_estimate(
+            projected_messages,
+            system=system_summary,
+        )
         threshold = max(1, int(max_input_tokens * 0.8))
         if not force and projected < threshold:
             return False
 
+        exact_count: int | None = None
         transport = getattr(active_runner, "_transport", None)
+        count_tokens = getattr(transport, "count_tokens", None)
+        if not force and callable(count_tokens):
+            try:
+                from lauren_ai._transport import ContentBlock, Message  # noqa: PLC0415
+
+                countable_messages = [
+                    Message(
+                        role=cast(
+                            "Literal['user', 'assistant']", str(_message_field(msg, "role", "user"))
+                        ),
+                        content=cast(
+                            "str | list[ContentBlock]", _message_field(msg, "content", "")
+                        ),
+                    )
+                    for msg in projected_messages
+                    if _message_field(msg, "role", "") in {"user", "assistant"}
+                ]
+                exact_result = await asyncio.wait_for(
+                    count_tokens(
+                        countable_messages,
+                        model=self._model_id,
+                        system=system_summary or None,
+                    ),
+                    timeout=8.0,
+                )
+                if isinstance(exact_result, int) and exact_result >= 0:
+                    exact_count = exact_result
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - count is advisory only
+                if ctx.conv_store is not None:
+                    try:
+                        ctx.conv_store.append_event(
+                            "compaction_status",
+                            {
+                                "status": "token_count_unavailable",
+                                "error_type": type(exc).__name__[:96],
+                            },
+                        )
+                    except Exception:  # noqa: BLE001 - status projection is advisory
+                        logger.warning("could not project token-count fallback status")
+                logger.warning(
+                    "compaction token count unavailable (%s); using conservative estimate",
+                    type(exc).__name__,
+                )
+        if not force and exact_count is not None and exact_count < threshold:
+            return False
+
         if transport is None or not callable(getattr(transport, "complete", None)):
+            if force or projected >= max_input_tokens:
+                from agenthicc.memory.compactor import (  # noqa: PLC0415
+                    CompactionOutcome,
+                    CompactionRecoveryRequired,
+                )
+
+                raise CompactionRecoveryRequired(
+                    CompactionOutcome(
+                        "blocked_irreducible_context",
+                        estimate,
+                        estimate,
+                        durable=False,
+                    )
+                )
             return False
 
         before = estimate
-        from agenthicc.memory.compactor import compact_memory  # noqa: PLC0415
+        from agenthicc.memory.compactor import (  # noqa: PLC0415
+            CompactionOutcome,
+            CompactionRecoveryRequired,
+            compact_memory_with_result,
+            local_compaction_fallback,
+        )
 
         max_completion_tokens = _config_value(ctx.exec_cfg, "max_completion_tokens", None)
         if not isinstance(max_completion_tokens, int):
             max_completion_tokens = None
 
-        await compact_memory(
+        outcome = await compact_memory_with_result(
             memory,
             transport,
             model=self._model_id,
@@ -1703,71 +1805,58 @@ class AgentTurnRunner:
             max_completion_tokens=max_completion_tokens,
             request_options=_config_value(ctx.exec_cfg, "request_options", None),
         )
-        after = getattr(memory, "token_estimate", before)
-        if isinstance(after, int) and after < before:
+        if outcome.applied:
             return True
 
-        # A provider may accept the summarisation request but return no text
-        # (some OpenAI-compatible reasoning endpoints do this for a
-        # stream=False completion).  Never continue with the same oversized
-        # memory in that case.  Use a deterministic, journal-aware lossy
-        # fallback as the final safety rung; it is better to retain recent
-        # context and continue than to resubmit an identical context-length
-        # rejection.
-        return self._local_compaction_fallback(max_input_tokens=max_input_tokens)
+        if outcome.status == "blocked_durability_error":
+            raise CompactionRecoveryRequired(outcome)
+
+        fallback = local_compaction_fallback(memory, max_input_tokens=max_input_tokens)
+        if fallback.applied:
+            if ctx.conv_store is not None:
+                try:
+                    ctx.conv_store.append_event(
+                        "compaction_status",
+                        {
+                            "status": fallback.status,
+                            "before_tokens": fallback.before_tokens,
+                            "after_tokens": fallback.after_tokens,
+                            "durable": fallback.durable,
+                        },
+                    )
+                    ctx.conv_store.append_event(
+                        "system",
+                        {"text": "⎋ Compaction fallback: retained recent complete exchanges"},
+                    )
+                except Exception:  # noqa: BLE001 - reporting must not fail a turn
+                    logger.warning("could not project local compaction fallback status")
+            return True
+
+        if fallback.status == "blocked_durability_error":
+            raise CompactionRecoveryRequired(fallback)
+        # Below the hard usable budget, the independent provider guard remains
+        # safe to use. After an actual context rejection, however, retaining an
+        # unfit projection would simply replay the same failure forever.
+        if force or (exact_count is not None and exact_count >= max_input_tokens):
+            raise CompactionRecoveryRequired(
+                CompactionOutcome(
+                    "blocked_irreducible_context",
+                    before,
+                    before,
+                    durable=False,
+                )
+            )
+        return False
 
     def _local_compaction_fallback(self, *, max_input_tokens: int) -> bool:
-        """Bound memory locally when an LLM summary is unavailable."""
+        """Compatibility helper for older tests and callers."""
         memory = self._ctx.session_memory
         if memory is None:
             return False
-        before = getattr(memory, "token_estimate", 0)
-        if not isinstance(before, int):
-            return False
+        from agenthicc.memory.compactor import local_compaction_fallback  # noqa: PLC0415
 
-        # Keep a generous recent window but leave ample room for system/tool
-        # schemas and the requested completion.  This path is only reached
-        # after LLM compaction failed or produced no usable reduction.
-        target = max(1, int(max_input_tokens * 0.75))
-        trim_to_fit = getattr(memory, "trim_to_fit", None)
-        if callable(trim_to_fit):
-            trim_to_fit(target)
-        after = getattr(memory, "token_estimate", before)
-
-        if not isinstance(after, int) or after >= before:
-            messages = getattr(memory, "_messages", None)
-            if not isinstance(messages, list) or not messages:
-                return False
-            from agenthicc.memory.compactor import _format_transcript  # noqa: PLC0415
-
-            # Keep the replacement strictly smaller than the oversized source
-            # even when the source is one indivisible user/tool message.
-            excerpt = _format_transcript(messages)[-1_000:]
-            memory._messages = [
-                {
-                    "role": "user",
-                    "content": (
-                        "[COMPACT FALLBACK]\n"
-                        "The prior history exceeded the model context and its summary was empty. "
-                        "Continue from this recent transcript excerpt:\n"
-                        f"{excerpt}"
-                    ),
-                },
-                {
-                    "role": "assistant",
-                    "content": "Understood. Continuing from the retained context.",
-                },
-            ]
-            after = getattr(memory, "token_estimate", before)
-
-        journal_reset = getattr(memory, "journal_reset", None)
-        if callable(journal_reset):
-            journal_reset()
-        if self._ctx.conv_store is not None:
-            self._ctx.conv_store.append_event(
-                "system", {"text": "⎋ Compaction fallback: retained recent history"}
-            )
-        return isinstance(after, int) and after < before
+        outcome = local_compaction_fallback(memory, max_input_tokens=max_input_tokens)
+        return outcome.applied
 
     def _prepare_cache_stable_message(self, message: str) -> str:
         """Move the rolling summary into dynamic context for contract turns.
@@ -1853,15 +1942,14 @@ class AgentTurnRunner:
 
         turn_completed = False
         turn_cancelled = False
+        turn_recoverable_compaction = False
         turn_error: BaseException | None = None
 
-        # PRD-135: auto-compaction is driven *inside* the run loop by lauren-ai's
-        # exact-count compaction ladder (rung 1 — proactive LLM summarisation —
-        # then the hard pre-send guard).  It fires at ``summarize_at`` of the live
-        # window on every turn, including turn 0 (the resumed/prior history plus
-        # the just-added user message), so the old pre-run `should_compact` pass
-        # is redundant and has been removed.  The manual `/compact` command still
-        # uses `compact_memory` directly.
+        # Agenthicc owns proactive compaction immediately before the shared
+        # runner call so it can durably commit journal-backed state and turn a
+        # failed persistence step into a recoverable session outcome. Lauren's
+        # own automatic summarizer is disabled below to prevent a second
+        # untyped compaction path from bypassing this boundary.
         #
         # PRD-133/136: the live-context budget is derived from the model's real
         # context window — resolved from the [memory.context_windows] map (per
@@ -1893,15 +1981,47 @@ class AgentTurnRunner:
             _window = _context_window_for(self._model_id)
             _window_tokens = max(1, _window - _max_output - max(4_000, _window // 25))
 
-        if contract is not None:
-            # Use agenthicc's journal-aware compactor before handing control to
-            # lauren-ai.  This keeps the provider runner from rebuilding a
-            # system prompt containing its rolling summary.
+        # Proactive compaction happens before lauren-ai appends this turn's
+        # user message. If its durable replacement is blocked, preserve the
+        # accepted direct-turn input as an incomplete logical turn so a
+        # detached session can re-drive it after recovery. Workflow turns use
+        # their workflow checkpoint as the recovery authority instead; writing
+        # a parallel turn-recovery marker there would create competing cursors.
+        _journal = getattr(ctx.session_memory, "journal", None)
+        # The same durable compaction policy applies to foreground, detached,
+        # direct, and workflow turns. For contract turns, keep the summary out
+        # of the stable system prompt after this memory boundary is updated.
+        try:
             await self._auto_compact_if_needed(
                 active_runner,
                 agent_text,
                 max_input_tokens=_window_tokens,
             )
+        except Exception as exc:
+            from agenthicc.memory.compactor import CompactionRecoveryRequired  # noqa: PLC0415
+
+            if isinstance(exc, CompactionRecoveryRequired) and _journal is not None:
+                from agenthicc.runners.workflow_execution_context import (  # noqa: PLC0415
+                    current_workflow_run_id,
+                )
+
+                if current_workflow_run_id() is None and ctx.session_memory is not None:
+                    try:
+                        _journal.turn_started(
+                            self._intent_id,
+                            agent_text,
+                            len(ctx.session_memory._messages),
+                            conversation_id=ctx.conversation_id,
+                            base_cursor=_journal.cursor,
+                        )
+                        _journal.turn_recovery_started(self._intent_id)
+                    except Exception as journal_exc:  # noqa: BLE001 - keep typed recovery state
+                        logger.critical(
+                            "could not persist the direct-turn recovery marker (%s)",
+                            type(journal_exc).__name__,
+                        )
+            raise
+        if contract is not None:
             agent_text = self._prepare_cache_stable_message(agent_text)
             if ctx.conv_store is not None:
                 ctx.conv_store.append_event("prompt_cache", contract.diagnostics())
@@ -1923,7 +2043,6 @@ class AgentTurnRunner:
         # is fsync'd to the journal keyed by this turn's id — so even a process
         # crash mid-turn can be resumed (Phase 3) with completed tools replayed.
         # A resumed turn arrives with a pre-seeded ledger (ctx.resume_ledger).
-        _journal = getattr(ctx.session_memory, "journal", None)
         if ctx.resume_ledger is not None:
             turn_ledger = ctx.resume_ledger
         elif _journal is not None:
@@ -1985,14 +2104,9 @@ class AgentTurnRunner:
                 max_tokens_per_turn=_max_output,
                 parallel_tool_calls=True,
                 memory_window_tokens=_window_tokens,
-                # Old Lauren's heuristic summariser is intentionally disabled
-                # here: the agenthicc fallback is bounded, journal-aware, and
-                # emits the same user-visible compaction event.
-                summarize_at=(
-                    None
-                    if contract is not None
-                    else (0.8 if _auto_compact and _supports_context_guard else None)
-                ),
+                # Agenthicc owns all summarization so failures and journal
+                # commits share one typed, resumable boundary.
+                summarize_at=None,
                 summary_model=self._model_id,
             )
             # Provider profiles carry sampling and vendor-specific request
@@ -2214,10 +2328,10 @@ class AgentTurnRunner:
         self._reset_attempt_output = _reset_attempt_output
 
         try:
-            # Older Lauren releases do not run the exact-count compaction
-            # ladder.  This preflight is a compatibility fallback; newer
-            # releases also receive context_window above and keep their exact
-            # guard as the source of truth.
+            # A second preflight is needed only for old lauren-ai runtimes that
+            # cannot enforce the context-window guard themselves. The earlier
+            # proactive pass already compacted when above threshold; this is
+            # therefore an inexpensive no-op in the normal case.
             if not _supports_context_guard:
                 await self._auto_compact_if_needed(
                     active_runner,
@@ -2265,12 +2379,20 @@ class AgentTurnRunner:
                 _resume_existing_turn[0] = _stream_seeded_user[0]
                 _record_partial_fragment()
                 _reset_attempt_output()
-                compacted = await self._auto_compact_if_needed(
-                    active_runner,
-                    agent_text,
-                    max_input_tokens=_window_tokens,
-                    force=True,
-                )
+                try:
+                    compacted = await self._auto_compact_if_needed(
+                        active_runner,
+                        agent_text,
+                        max_input_tokens=_window_tokens,
+                        force=True,
+                    )
+                except Exception as compaction_exc:
+                    from agenthicc.memory.compactor import CompactionRecoveryRequired  # noqa: PLC0415
+
+                    if isinstance(compaction_exc, CompactionRecoveryRequired):
+                        turn_error = compaction_exc
+                        turn_recoverable_compaction = True
+                    raise
                 if compacted:
                     if ctx.session_memory is not None and hasattr(ctx.session_memory, "snapshot"):
                         _safe_snapshot_includes_user[0] = (
@@ -2380,7 +2502,7 @@ class AgentTurnRunner:
                         _journal.turn_completed(self._intent_id)
                     elif turn_cancelled:
                         _journal.turn_aborted(self._intent_id, reason="cancelled")
-                    elif ctx.resume_turn_id is not None:
+                    elif ctx.resume_turn_id is not None or turn_recoverable_compaction:
                         # A failed re-drive must remain discoverable with its
                         # original turn ID and durable tool ledger. Closing it
                         # with turn_failed would make a later worker start a

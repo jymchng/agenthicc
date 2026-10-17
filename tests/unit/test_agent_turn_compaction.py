@@ -108,9 +108,61 @@ async def test_old_lauren_fallback_compacts_at_the_usable_budget() -> None:
 
 
 @pytest.mark.unit
-async def test_empty_summary_uses_a_bounded_local_fallback() -> None:
+async def test_token_counter_error_falls_back_to_conservative_estimate() -> None:
+    class _FailingCounter(_SummaryTransport):
+        async def count_tokens(self, messages, *, model, system=None):  # noqa: ANN001
+            raise TimeoutError("counter unavailable")
+
     memory = ShortTermMemory(max_tokens=800)
     memory.add_user("h" * 2_800)
+    transport = _FailingCounter()
+    ctx = _make_context(memory)
+    runner = AgentTurnRunner(ctx)
+    runner._model_id = "test-model"
+
+    compacted = await runner._auto_compact_if_needed(
+        SimpleNamespace(_transport=transport),
+        "continue",
+        max_input_tokens=800,  # type: ignore[arg-type]
+    )
+
+    assert compacted is True
+    assert transport.calls
+    ctx.conv_store.append_event.assert_any_call(  # type: ignore[union-attr]
+        "compaction_status",
+        {"status": "token_count_unavailable", "error_type": "TimeoutError"},
+    )
+
+
+@pytest.mark.unit
+async def test_exact_token_count_can_skip_conservative_compaction() -> None:
+    class _UnderBudgetCounter(_SummaryTransport):
+        async def count_tokens(self, messages, *, model, system=None):  # noqa: ANN001
+            return 100
+
+    memory = ShortTermMemory(max_tokens=800)
+    memory.add_user("h" * 2_800)
+    transport = _UnderBudgetCounter()
+    ctx = _make_context(memory)
+    runner = AgentTurnRunner(ctx)
+    runner._model_id = "test-model"
+
+    compacted = await runner._auto_compact_if_needed(
+        SimpleNamespace(_transport=transport),
+        "continue",
+        max_input_tokens=800,  # type: ignore[arg-type]
+    )
+
+    assert compacted is False
+    assert transport.calls == []
+
+
+@pytest.mark.unit
+async def test_empty_summary_uses_a_bounded_local_fallback() -> None:
+    memory = ShortTermMemory(max_tokens=800)
+    for _ in range(3):
+        memory.add_user("h" * 700)
+        memory.add_assistant({"role": "assistant", "content": "a" * 200})
     transport = _SummaryTransport(summary="")
     ctx = _make_context(memory)
     runner = AgentTurnRunner(ctx)
@@ -125,9 +177,11 @@ async def test_empty_summary_uses_a_bounded_local_fallback() -> None:
 
     assert compacted is True
     assert memory.token_estimate < 700
-    assert "COMPACT FALLBACK" in memory._messages[0]["content"]
+    # The fallback drops complete oldest exchanges; it never converts an
+    # arbitrary transcript excerpt into a synthetic tool-history message.
+    assert len(memory._messages) < 6
     ctx.conv_store.append_event.assert_any_call(  # type: ignore[union-attr]
-        "system", {"text": "⎋ Compaction fallback: retained recent history"}
+        "system", {"text": "⎋ Compaction fallback: retained recent complete exchanges"}
     )
 
 
@@ -156,7 +210,7 @@ async def test_failed_turn_browser_cleanup_does_not_terminally_close_session(
 
 
 @pytest.mark.unit
-async def test_context_overflow_compacts_then_retries_without_duplicate_user_message() -> None:
+async def test_irreducible_context_overflow_is_recoverable_not_retried_unchanged() -> None:
     memory = ShortTermMemory(max_tokens=800)
     memory.add_user("h" * 1_800)  # ~450 tokens; below the proactive threshold
     # Reproduce the reported endpoint behaviour: the compaction completion
@@ -192,13 +246,16 @@ async def test_context_overflow_compacts_then_retries_without_duplicate_user_mes
     runner._model_id = "test-model"
     runner._intent_id = "turn-1"
 
-    await runner._stream(object(), "continue", active_runner)  # type: ignore[arg-type]
+    from agenthicc.memory.compactor import CompactionRecoveryRequired
 
-    assert active_runner.run_stream.await_count == 2
-    # The first empty completion is retried with a larger completion budget
-    # before the final local fallback is allowed.
+    with pytest.raises(CompactionRecoveryRequired):
+        await runner._stream(object(), "continue", active_runner)  # type: ignore[arg-type]
+
+    assert active_runner.run_stream.await_count == 1
+    # No second model request is made with the same irreducible history.
+    # One empty-summary retry is bounded by the existing compaction helper;
+    # the full model turn itself is not retried with unchanged context.
     assert len(transport.calls) == 2
-    assert "COMPACT FALLBACK" in memory._messages[0]["content"]
     assert (
         sum(
             message.get("content") == "continue"
@@ -207,11 +264,141 @@ async def test_context_overflow_compacts_then_retries_without_duplicate_user_mes
         )
         == 1
     )
+
+
+@pytest.mark.unit
+async def test_failed_durable_compaction_keeps_direct_turn_discoverable(
+    tmp_path, monkeypatch
+) -> None:
+    from agenthicc.memory.compactor import CompactionRecoveryRequired
+    from agenthicc.memory.journal import ConversationJournal, fold_path, fold_resume_state
+    from agenthicc.memory.journaled import JournaledShortTermMemory
+
+    journal = ConversationJournal(tmp_path / "conversation.jsonl")
+    memory = JournaledShortTermMemory(journal, max_tokens=800)
+    memory.add_user("earlier context " + "x" * 1_500)
+    original_messages, original_summary = fold_path(journal.path)
+
+    def fail_replace(journal_arg, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003, ARG001
+        raise OSError("simulated durable commit failure")
+
+    monkeypatch.setattr(ConversationJournal, "replace_state", fail_replace)
+    overflow = Exception("maximum context length exceeded")
+    overflow.status_code = 400  # type: ignore[attr-defined]
+    transport = _SummaryTransport(summary="safe summary")
+
+    async def failed_stream():
+        raise overflow
+        yield  # pragma: no cover
+
+    async def run_stream(*args, **kwargs):  # noqa: ANN002, ANN003
+        memory.add_user(args[1])
+        return failed_stream()
+
+    active_runner = SimpleNamespace(
+        _transport=transport,
+        run_stream=AsyncMock(side_effect=run_stream),
+    )
+    ctx = _make_context(memory)
+    runner = AgentTurnRunner(ctx)
+    runner._model_id = "test-model"
+    runner._intent_id = "turn-recoverable"
+
+    with pytest.raises(CompactionRecoveryRequired):
+        await runner._stream(object(), "continue", active_runner)  # type: ignore[arg-type]
+
+    assert fold_path(journal.path) == (
+        original_messages + [{"role": "user", "content": "continue"}],
+        original_summary,
+    )
+    incomplete = fold_resume_state(journal.path)
+    assert incomplete is not None
+    assert incomplete.turn_id == "turn-recoverable"
+    journal.close()
     assert any(
         call.args[0] is not None and call.args[1] == "continue"
         for call in active_runner.run_stream.await_args_list
     )
     ctx.conv_store.close_turn.assert_called_once()  # type: ignore[union-attr]
+
+
+@pytest.mark.unit
+async def test_proactive_compaction_failure_journals_unsubmitted_direct_input(
+    tmp_path: Path,
+) -> None:
+    from agenthicc.memory.compactor import CompactionOutcome, CompactionRecoveryRequired
+    from agenthicc.memory.journal import ConversationJournal, fold_path, fold_resume_state
+    from agenthicc.memory.journaled import JournaledShortTermMemory
+
+    journal = ConversationJournal(tmp_path / "conversation.jsonl")
+    memory = JournaledShortTermMemory(journal, max_tokens=800)
+    memory.add_user("prior conversation")
+    original_messages, _ = fold_path(journal.path)
+    ctx = _make_context(memory)
+    runner = AgentTurnRunner(ctx)
+    runner._intent_id = "turn-proactive-compaction"
+    runner._auto_compact_if_needed = AsyncMock(
+        side_effect=CompactionRecoveryRequired(
+            CompactionOutcome(
+                "blocked_durability_error",
+                1_000,
+                1_000,
+                durable=False,
+                error_type="OSError",
+            )
+        )
+    )  # type: ignore[method-assign]
+
+    with pytest.raises(CompactionRecoveryRequired):
+        await runner._stream(
+            object(),
+            "accepted direct input",
+            SimpleNamespace(_transport=_SummaryTransport()),  # type: ignore[arg-type]
+        )
+
+    # Compaction ran before lauren-ai had appended the submitted user message.
+    # The durable turn marker keeps that input available for an exact resume.
+    assert fold_path(journal.path) == (original_messages, None)
+    incomplete = fold_resume_state(journal.path)
+    assert incomplete is not None
+    assert incomplete.turn_id == "turn-proactive-compaction"
+    assert incomplete.user_message == "accepted direct input"
+    journal.close()
+
+
+@pytest.mark.unit
+async def test_recovery_marker_write_failure_does_not_mask_compaction_category(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agenthicc.memory.compactor import CompactionOutcome, CompactionRecoveryRequired
+    from agenthicc.memory.journal import ConversationJournal, fold_resume_state
+    from agenthicc.memory.journaled import JournaledShortTermMemory
+
+    journal = ConversationJournal(tmp_path / "conversation.jsonl")
+    memory = JournaledShortTermMemory(journal, max_tokens=800)
+    ctx = _make_context(memory)
+    runner = AgentTurnRunner(ctx)
+    runner._intent_id = "turn-marker-write-failure"
+    runner._auto_compact_if_needed = AsyncMock(
+        side_effect=CompactionRecoveryRequired(
+            CompactionOutcome("blocked_durability_error", 900, 900, durable=False)
+        )
+    )  # type: ignore[method-assign]
+
+    def fail_turn_started(*_args: object, **_kwargs: object) -> None:
+        raise OSError("journal unavailable")
+
+    monkeypatch.setattr(ConversationJournal, "turn_started", fail_turn_started)
+    with pytest.raises(CompactionRecoveryRequired) as raised:
+        await runner._stream(
+            object(),
+            "accepted input",
+            SimpleNamespace(_transport=_SummaryTransport()),  # type: ignore[arg-type]
+        )
+
+    assert raised.value.failure_category == "compaction_persistence_failed"
+    assert fold_resume_state(journal.path) is None
+    journal.close()
 
 
 @pytest.mark.unit

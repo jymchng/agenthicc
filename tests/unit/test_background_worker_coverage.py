@@ -224,6 +224,59 @@ async def test_worker_success_workflow_failure_and_timeout(
     assert paused.worker_exit_reason == "recoverable_error"
     assert paused.failure_category == "recoverable_workflow"
 
+    store.create(_session(tmp_path, "worker-compaction-recovery"))
+    monkeypatch.setattr(
+        headless,
+        "execute_workflow",
+        lambda *args, **kwargs: asyncio.sleep(
+            0,
+            result=SimpleNamespace(
+                status="paused",
+                error="Conversation compaction requires recovery",
+                failure_category="compaction_persistence_failed",
+            ),
+        ),
+    )
+    compaction_request = WorkerRequest(
+        "worker-compaction-recovery",
+        "demo",
+        "work",
+        str(tmp_path),
+        None,
+        (),
+        False,
+        detached_goal=True,
+    )
+    assert await worker.run_worker(compaction_request, store) == 0
+    compaction_session = store.get("worker-compaction-recovery")
+    assert compaction_session.status is SessionStatus.ORPHANED
+    assert compaction_session.failure_category == "compaction_persistence_failed"
+    assert compaction_session.worker_exit_reason == "compaction_persistence_failed"
+
+    from agenthicc.memory.compactor import CompactionOutcome, CompactionRecoveryRequired
+
+    async def fail_compaction(*args: object, **kwargs: object) -> None:
+        raise CompactionRecoveryRequired(
+            CompactionOutcome("blocked_durability_error", 900, 900, durable=False)
+        )
+
+    monkeypatch.setattr(worker, "_run_direct_turn", fail_compaction)
+    store.create(_session(tmp_path, "worker-direct-compaction-recovery"))
+    direct_compaction_request = WorkerRequest(
+        "worker-direct-compaction-recovery",
+        "",
+        "work",
+        str(tmp_path),
+        None,
+        (),
+        False,
+        detached_goal=True,
+    )
+    assert await worker.run_worker(direct_compaction_request, store) == 0
+    direct_compaction_session = store.get("worker-direct-compaction-recovery")
+    assert direct_compaction_session.status is SessionStatus.ORPHANED
+    assert direct_compaction_session.failure_category == "compaction_persistence_failed"
+
     store.create(_session(tmp_path, "worker-failed"))
 
     async def fail(*args: object, **kwargs: object) -> None:
