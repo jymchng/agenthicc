@@ -2125,6 +2125,57 @@ sets the handoff event. `CodePlanContext` carries the approved plan, selected
 execute mode, summaries, rejection/failure reasons, command outcomes, and
 shared short-term memory.
 
+### UiUxProMax
+
+The built-in `ui_ux_pro_max` workflow uses typed, checkpointed phase state and
+three adaptive routes: broad product/design work, targeted component work, and
+accessibility audits. The broad route is
+`PRODUCT_DISCOVERY → DESIGN_INTELLIGENCE → DESIGN_SYSTEM_SYNTHESIS →
+DESIGN_SYSTEM_REVIEW → STACK_ADAPTATION → EXPERIENCE_ARCHITECTURE →
+DESIGN_IMPLEMENTATION → VISUAL_UX_AUDIT → DESIGN_REMEDIATION →
+DESIGN_ACCEPTANCE → DELIVERY`. Targeted and accessibility-only routes skip
+unneeded phases. All transitions are phase-tool gated, review/remediation loops
+are bounded, and critical failed or unverified acceptance criteria cannot be
+reported as success.
+
+The optional upstream UI/UX Pro Max skill is used only when loaded in
+Agenthicc's skill catalog. The workflow checks the actual skill instructions,
+search CLI, supported datasets/domains, and stack options before claiming or
+using a capability. It never installs or clones the skill, performs
+unrestricted web searches, or automatically persists generated skill output.
+If unavailable or failing, it records an explicit limitation and uses
+repository-grounded evidence. Full reports and source files remain workspace
+artifacts; bounded typed summaries and references are stored in the checkpoint,
+and session memory is reattached rather than serialized.
+
+### UiUxProMaxContext
+
+Bounded typed product brief, route profile, research evidence summaries,
+design-system decisions, review state, stack guidance, experience architecture,
+implementation summary, audit/remediation results, acceptance statuses, and
+artifact references. Runtime conversation memory is excluded from checkpoint
+serialization and supplied again when restoring the workflow.
+
+### UiUxProMaxParams
+
+Per-phase model overrides for discovery, research, synthesis, review, stack
+adaptation, architecture, implementation, audit, remediation, acceptance, and
+delivery. Design-review attempts, remediation cycles, and per-phase turns are
+bounded by the workflow.
+
+### UiUxProMaxRunner
+
+Runs the outer specialized state machine and bounded inner agent-turn loop,
+routes profile-specific transitions, reconciles the checkpoint cursor on
+resume, and shares the session conversation, workspace policy, mode, tools,
+and approval services.
+
+### UiUxProMaxState
+
+Durable workflow cursor for discovery, design research/synthesis/review, stack
+adaptation, experience architecture, implementation, visual audit,
+remediation, acceptance, delivery, and terminal outcomes.
+
 ### GoalFlowWorkflow / GoalFlowRunner
 
 The built-in `goal_flow` runner evolves `GoalState` through clarify, goal

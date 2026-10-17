@@ -188,6 +188,7 @@ Every public module below imports cleanly and is documented in `llms-full.txt`.
 | `agenthicc.runners.headless` | Headless runner — emits kernel events as JSON lines to stdout. |
 | `agenthicc.runners.startup` | Session startup phases and readiness gates (PRD-176). |
 | `agenthicc.workflows` | Workflow system (PRD-87, PRD-112, PRD-116). |
+| `agenthicc.workflows.ui_ux_pro_max` | Adaptive, resumable design-intelligence workflow: product discovery, skill-backed research, design-system synthesis/review, stack adaptation, experience architecture, implementation, UX audit/remediation, and evidence-based acceptance. |
 | `agenthicc.workflows.checkpoint` | Serializable workflow checkpoints and context codecs (PRD-156). |
 | `agenthicc.workflows.create_workflow` | create_workflow — the meta-workflow that authors new custom workflows. |
 | `agenthicc.tui.workspace` | TUI workspace package (PRD-60). |

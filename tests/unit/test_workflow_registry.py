@@ -133,6 +133,7 @@ class TestBuildWorkflowRegistry:
             "make_book",
             "reconstruct_site",
             "site_imitate",
+            "ui_ux_pro_max",
         ]
         assert calls == []
         assert registry.mode_default_map() == {"Plan": "code_plan"}
@@ -146,6 +147,28 @@ class TestBuildWorkflowRegistry:
         assert plugin_cls is not None
         assert plugin_cls.name == "make_book"
         assert plugin_cls.__name__ == "MakeBookWorkflow"
+
+    def test_ui_ux_pro_max_is_registered_and_loadable(self):
+        plugin_cls = build_workflow_registry().get("ui_ux_pro_max")
+
+        assert plugin_cls is not None
+        assert plugin_cls.name == "ui_ux_pro_max"
+        assert plugin_cls.__name__ == "UiUxProMax"
+        assert plugin_cls.mode_bindings == []
+        assert plugin_cls.phase_names() == [
+            "product_discovery",
+            "design_intelligence",
+            "targeted_design_research",
+            "design_system_synthesis",
+            "design_system_review",
+            "stack_adaptation",
+            "experience_architecture",
+            "design_implementation",
+            "visual_ux_audit",
+            "design_remediation",
+            "design_acceptance",
+            "delivery",
+        ]
 
     def test_code_plan_has_four_phases(self):
         # Single-agent workflow: plan / execute / review / summarize.

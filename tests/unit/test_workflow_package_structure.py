@@ -110,6 +110,7 @@ def test_load_builtin_workflows_returns_current_builtins() -> None:
         "make_book",
         "reconstruct_site",
         "site_imitate",
+        "ui_ux_pro_max",
     }
 
 

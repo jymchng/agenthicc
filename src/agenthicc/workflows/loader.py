@@ -79,6 +79,11 @@ _BUILTIN_WORKFLOW_DESCRIPTORS = (
     BuiltinWorkflowDescriptor(
         "site_imitate", "agenthicc.workflows.site_imitate.runner", "SiteImitateWorkflow"
     ),
+    BuiltinWorkflowDescriptor(
+        "ui_ux_pro_max",
+        "agenthicc.workflows.ui_ux_pro_max.definition",
+        "UiUxProMax",
+    ),
 )
 
 

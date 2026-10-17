@@ -90,6 +90,7 @@ nav:
       - Background sessions: guides/background-sessions.md
       - Goal runs and detached orchestration: guides/goal-runs.md
       - Workflows: guides/workflows.md
+      - UI/UX Pro Max workflow: guides/ui-ux-pro-max-workflow.md
       - Scheduled workflows: guides/scheduled-workflows.md
       - Parallel coding workers: guides/parallel-workers.md
       - Worktree environments and actions: guides/worktree-environments.md

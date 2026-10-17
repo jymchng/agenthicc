@@ -29,7 +29,7 @@ New here? Start with the [quickstart](docs/guides/quickstart.md), browse the [gl
 | **Terminal workspace** | Rich Live TUI with approvals, overlays, modes, slash commands, workflow progress, and a pinned composer |
 | **Headless mode** | Stdin-based JSON-lines interface for pipelines and CI |
 | **State-driven kernel** | Immutable domain state with JSONL persistence and event sourcing |
-| **Workflow system** | `code_plan`, `create_workflow`, `copy_website`, `reconstruct_site`, `site_imitate`, and user-authored workflows with typed state machines |
+| **Workflow system** | `code_plan`, `create_workflow`, `ui_ux_pro_max`, website workflows, and user-authored workflows with typed state machines |
 | **Extension registries** | Tools, agents, skills, modes, commands, and MCP servers |
 | **Memory** | Session, project, and global memory with durable conversation journaling |
 | **Context budgeting** | Model-aware compaction, transport retries, and tool-result replay for interrupted/resumed turns |
@@ -38,7 +38,7 @@ New here? Start with the [quickstart](docs/guides/quickstart.md), browse the [gl
 
 ### Built-in workflows
 
-All nine registered workflows, including the parallel_code_plan coordinator:
+All ten registered workflows, including the parallel_code_plan coordinator:
 
 | Workflow | Purpose |
 |---|---|
@@ -51,6 +51,7 @@ All nine registered workflows, including the parallel_code_plan coordinator:
 | `copy_website` | Study a website with Playwright and rebuild it as a mobile-friendly Next.js application |
 | `reconstruct_site` | Reconstruct a reference website through evidence-first responsive research, implementation, and validation phases |
 | `site_imitate` | Generate a mobile-first responsive site from a reference design (viewport checks enforced) |
+| `ui_ux_pro_max` | Product discovery, evidence-led design intelligence, system synthesis/review, stack adaptation, experience architecture, implementation, UX audit/remediation, and evidence-based acceptance |
 
 ---
 

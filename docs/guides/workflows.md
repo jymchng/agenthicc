@@ -224,6 +224,20 @@ The generic `WorkflowRunner` executes `WorkflowPlugin` phase specifications.
 Workflow selection is influenced by the active mode, registry mappings, and the
 session-local `/workflow` override.
 
+### `ui_ux_pro_max`
+
+`ui_ux_pro_max` is a native, resumable design-intelligence workflow. It has
+specialized discovery, research, synthesis, review, stack adaptation,
+experience architecture, implementation, audit, remediation, and acceptance
+phases. Broad product work uses the full path; targeted component tasks and
+accessibility audits skip design-system generation and unrelated phases. Its
+capability map, profile selection, artifacts, phase contracts, and configuration
+are documented in the [UI/UX Pro Max workflow guide](ui-ux-pro-max-workflow.md).
+
+```bash
+uv run agenthicc workflows run ui_ux_pro_max --intent "Improve the mobile checkout"
+```
+
 ### `make_book` and its standalone builder
 
 The `make_book` workflow produces a technical PDF and a matching reflowable

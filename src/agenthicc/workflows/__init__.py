@@ -119,6 +119,11 @@ _LAZY_EXPORTS: Final[dict[str, tuple[str, str]]] = {
         "agenthicc.workflows.reconstruct_site",
         "ReconstructState",
     ),
+    "UiUxProMax": ("agenthicc.workflows.ui_ux_pro_max", "UiUxProMax"),
+    "UiUxProMaxContext": ("agenthicc.workflows.ui_ux_pro_max", "UiUxProMaxContext"),
+    "UiUxProMaxParams": ("agenthicc.workflows.ui_ux_pro_max", "UiUxProMaxParams"),
+    "UiUxProMaxRunner": ("agenthicc.workflows.ui_ux_pro_max", "UiUxProMaxRunner"),
+    "UiUxProMaxState": ("agenthicc.workflows.ui_ux_pro_max", "UiUxProMaxState"),
 }
 
 
@@ -201,4 +206,9 @@ __all__ = [
     "ReconstructSiteRunner",
     "ReconstructSiteWorkflow",
     "ReconstructState",
+    "UiUxProMax",
+    "UiUxProMaxContext",
+    "UiUxProMaxParams",
+    "UiUxProMaxRunner",
+    "UiUxProMaxState",
 ]
