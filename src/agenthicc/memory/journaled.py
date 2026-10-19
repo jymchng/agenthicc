@@ -18,18 +18,60 @@ process restart.
 from __future__ import annotations
 
 import copy
+import hashlib
 from collections.abc import Iterable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
-from lauren_ai._memory import ShortTermMemory
+from lauren_ai import ToolConversationIntegrityError
+from lauren_ai._memory import ShortTermMemory, ToolHistoryIssue, ToolHistoryReport
 
 if TYPE_CHECKING:
     from lauren_ai._memory import ToolExchange, ToolResultRecord
 
 from agenthicc.memory.journal import ConversationJournal, tool_exchange_recovery_event_id
-from agenthicc.memory.tool_history import repair_non_adjacent_tool_history
+from agenthicc.memory.tool_history import (
+    ToolHistoryRecoveryRequired,
+    ToolHistoryRecoveryState,
+    repair_non_adjacent_tool_history,
+)
 
 __all__ = ["JournaledShortTermMemory"]
+
+
+def _tool_call_id_hash(value: object) -> str:
+    if not isinstance(value, str) or not value:
+        return ""
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
+
+
+def _repairable_tool_call_hashes(report: ToolHistoryReport) -> frozenset[str]:
+    """Hash uniquely identified unanswered calls reported as missing or late.
+
+    The persisted assistant ``tool_use`` block is itself durable evidence that
+    the model requested a tool. If its result is missing after a process
+    interruption, recovery may add an explicit *interrupted* error result; it
+    must never invent successful tool output. Lauren-ai may classify an
+    unanswered call as ``non_adjacent_results`` when an unrelated result occurs
+    later in the transcript, so both validator issue codes are considered.
+    Duplicate call IDs are excluded because they cannot be paired
+    unambiguously.
+    """
+    recovered: set[str] = set()
+    for issue in report.issues:
+        if issue.code not in {"missing_results", "non_adjacent_results"}:
+            continue
+        expected = issue.expected_ids
+        observed = set(issue.observed_ids)
+        counts: dict[str, int] = {}
+        for call_id in expected:
+            if isinstance(call_id, str) and call_id:
+                counts[call_id] = counts.get(call_id, 0) + 1
+        recovered.update(
+            _tool_call_id_hash(call_id)
+            for call_id, count in counts.items()
+            if count == 1 and call_id not in observed
+        )
+    return frozenset(recovered)
 
 
 class JournaledShortTermMemory(ShortTermMemory):
@@ -38,21 +80,26 @@ class JournaledShortTermMemory(ShortTermMemory):
     def __init__(self, journal: ConversationJournal, max_tokens: int = 40_000) -> None:
         super().__init__(max_tokens=max_tokens)
         self._journal = journal
+        self._tool_history_recovery = ToolHistoryRecoveryState()
         # Resume: fold any existing journal content into memory *without*
         # re-journaling it (these entries are already durable on disk).
         msgs, summary = journal.fold()
         if msgs or summary is not None:
             self._messages = list(msgs)
             self._summary = summary
+        corrupt_count = journal.corrupt_trailing_records
+        if corrupt_count:
+            self._tool_history_recovery = ToolHistoryRecoveryState(
+                "journal_corrupt",
+                (f"corrupt_trailing_records:{min(corrupt_count, 1_000_000)}",),
+                False,
+            )
+            return
         # A queued continuation can be journaled before a late result from an
-        # interrupted tool task. Lauren-ai correctly rejects that shape as
-        # ambiguous; at this session boundary the tool IDs make the repair
-        # deterministic. Handle it before the normal missing-tail check.
-        repair_non_adjacent_tool_history(self)
-        # A crash can also leave an assistant tool batch appended without its
-        # result exchange. Repair the in-memory projection before the first
-        # resumed provider request and make that repair durable immediately.
-        self.ensure_valid_and_persist()
+        # interrupted task. Repair only exact, uniquely correlated IDs. A
+        # repair failure is represented as blocked provider readiness so the
+        # durable session remains available for inspection.
+        self.retry_tool_history_recovery()
 
     # ── append surface — record every newly-added message ────────────────────
 
@@ -71,7 +118,15 @@ class JournaledShortTermMemory(ShortTermMemory):
         super().add_assistant(completion)
         self._journal_new(before)
 
+    def add_tool_result(self, result: object) -> None:
+        before = len(self._messages)
+        super().add_tool_result(result)
+        self._journal_new(before)
+
     def add_tool_results(self, results: list[object]) -> None:
+        if len(results) == 1:
+            self.add_tool_result(results[0])
+            return
         before = len(self._messages)
         super().add_tool_results(results)
         self._journal_new(before)
@@ -291,12 +346,183 @@ class JournaledShortTermMemory(ShortTermMemory):
         the repaired history is the context the next turn must remember, so it
         must survive a process restart as well.
         """
-        before = list(self._messages)
-        self.ensure_valid()
-        changed = self._messages != before
+        before = copy.deepcopy(self._messages)
+        candidate = copy.copy(self)
+        candidate._messages = copy.deepcopy(before)
+        candidate._active_exchange = None
+        candidate.ensure_valid()
+        report = candidate.validate_tool_history()
+        if not report.ok:
+            from agenthicc.memory.tool_history import _integrity_error  # noqa: PLC0415
+
+            raise _integrity_error(report)
+        changed = candidate._messages != before
         if changed:
-            self._journal.reset(self._messages, self._summary)
+            self.commit_repaired_tool_history(candidate._messages, self._summary)
         return changed
+
+    @property
+    def tool_history_recovery(self) -> ToolHistoryRecoveryState:
+        """Return the redacted provider-readiness state of this session history."""
+        return self._tool_history_recovery
+
+    def retry_tool_history_recovery(self) -> ToolHistoryRecoveryState:
+        """Retry only deterministic local repair; never contact a provider."""
+        if self._tool_history_recovery.status == "journal_corrupt":
+            # fold_path deliberately stops at the first malformed JSON record.
+            # Treating that prefix as a complete transcript could silently
+            # discard valid later records, so automatic repair must not clear
+            # this state or make the prefix provider-eligible.
+            return self._tool_history_recovery
+        try:
+            original = copy.deepcopy(self._messages)
+            candidate = copy.copy(self)
+            candidate._messages = copy.deepcopy(original)
+            candidate._active_exchange = None
+            pending_call_hashes = self._journal.fold_pending_tool_exchange_call_hashes()
+            source_report = candidate.validate_tool_history()
+            # A crash may occur after the assistant tool-call message is
+            # journaled but before tool_exchange_started is. The exact,
+            # uniquely identified missing call in the persisted transcript is
+            # sufficient evidence to record an explicit interruption result;
+            # requiring the later lifecycle receipt left this narrow crash
+            # window permanently blocked. This never fabricates tool output.
+            repairable_missing_hashes = pending_call_hashes | _repairable_tool_call_hashes(
+                source_report
+            )
+            repair_non_adjacent_tool_history(
+                candidate,
+                commit=False,
+                allowed_missing_result_hashes=repairable_missing_hashes,
+            )
+            # Lauren-ai's canonical repair synthesizes only an error result
+            # for an unanswered call whose exact ID was present in the source
+            # validator report (or in the unfinished-exchange receipt).
+            # Duplicate, orphan, malformed, and otherwise ambiguous history
+            # still fails the final full validation below.
+            before_heal = candidate.validate_tool_history()
+            for issue in before_heal.issues:
+                if issue.code != "missing_results":
+                    continue
+                expected = issue.expected_ids
+                observed_ids = set(issue.observed_ids)
+                missing_ids = [value for value in expected if value not in observed_ids]
+                if not missing_ids or any(
+                    _tool_call_id_hash(value) not in repairable_missing_hashes
+                    for value in missing_ids
+                ):
+                    from agenthicc.memory.tool_history import _integrity_error  # noqa: PLC0415
+
+                    raise _integrity_error(before_heal)
+            # Lauren-ai's canonical deterministic repair handles a uniquely
+            # identified missing result after non-adjacent results have been
+            # reordered. Both operations stay on this detached projection.
+            candidate.ensure_valid()
+            report = candidate.validate_tool_history()
+            if not report.ok:
+                from agenthicc.memory.tool_history import _integrity_error  # noqa: PLC0415
+
+                raise _integrity_error(report)
+            changed = candidate._messages != original
+            if changed:
+                self.commit_repaired_tool_history(candidate._messages, self._summary)
+        except Exception as exc:
+            self._tool_history_recovery = self._blocked_recovery_state(
+                exc,
+                repair_attempted=True,
+            )
+            return self._tool_history_recovery
+        self._tool_history_recovery = ToolHistoryRecoveryState(
+            "repaired" if changed else "ready",
+            (),
+            True,
+        )
+        return self._tool_history_recovery
+
+    def ensure_provider_ready(self) -> bool:
+        """Repair/validate history before any model request.
+
+        Returns true when this call made a deterministic repair. Invalid state
+        remains blocked and raises a typed, redacted error before provider I/O.
+        """
+        if not self._tool_history_recovery.provider_ready:
+            state = self.retry_tool_history_recovery()
+            if not state.provider_ready:
+                raise ToolHistoryRecoveryRequired(state)
+            return state.status == "repaired"
+
+        report = self.validate_tool_history()
+        if report.ok:
+            return False
+        state = self.retry_tool_history_recovery()
+        if not state.provider_ready:
+            raise ToolHistoryRecoveryRequired(state)
+        return state.status == "repaired"
+
+    def commit_repaired_tool_history(
+        self,
+        messages: list[object],
+        summary: str | None,
+    ) -> None:
+        """Validate and atomically commit a complete repaired projection.
+
+        This is the journal boundary used by deterministic tool-history repair.
+        The existing projection is not published or altered unless the full
+        Lauren-ai validator accepts the candidate and its journal transaction
+        commits.
+        """
+        candidate_messages = copy.deepcopy(messages)
+        candidate = copy.copy(self)
+        candidate._messages = candidate_messages
+        candidate._summary = summary
+        candidate._active_exchange = None
+        report = candidate.validate_tool_history()
+        if not report.ok:
+            from agenthicc.memory.tool_history import _integrity_error  # noqa: PLC0415
+
+            raise _integrity_error(report)
+
+        self._journal.replace_state(candidate_messages, summary)
+        self._messages = candidate_messages
+        self._summary = summary
+        active_exchange = self.active_tool_exchange
+        if active_exchange is not None and active_exchange.state == "started":
+            self._abort_repaired_exchange(active_exchange)
+        # Clear the stale in-memory owner. A late tool task must receive the
+        # existing exchange_owner_mismatch diagnostic rather than append to
+        # the recovered conversation.
+        self._active_exchange = None
+
+    def _blocked_recovery_state(
+        self,
+        error: BaseException,
+        *,
+        repair_attempted: bool,
+    ) -> ToolHistoryRecoveryState:
+        """Summarize a failed repair without copying message contents to UI state."""
+        issues: tuple[ToolHistoryIssue, ...] = ()
+        codes: tuple[str, ...] = ()
+        try:
+            report = self.validate_tool_history()
+            issues = report.issues
+            codes = tuple(dict.fromkeys(issue.code[:64] for issue in issues))
+        except Exception:
+            codes = ()
+        error_code = error.code if isinstance(error, ToolConversationIntegrityError) else None
+        if isinstance(error, OSError):
+            error_code = "journal_write_failed"
+        if isinstance(error_code, str) and error_code and error_code not in codes:
+            codes = (*codes, error_code[:64])
+        if not codes:
+            codes = ("history_repair_failed",)
+        status: Literal["repair_required", "irrecoverable", "journal_corrupt"]
+        if error_code == "journal_corrupt":
+            status = "journal_corrupt"
+        elif issues and all(not issue.repairable for issue in issues):
+            status = "irrecoverable"
+        else:
+            status = "repair_required"
+        return ToolHistoryRecoveryState(status, codes[:8], repair_attempted)
 
     def on_tool_exchange_started(self, exchange: ToolExchange) -> None:
         """Persist safe lifecycle metadata for an in-flight exchange."""

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import zipfile
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -189,3 +190,121 @@ async def test_complete_file_backed_gate_sequence_and_checkpoint(tmp_path: Path)
         "final_layout_review",
         "compile",
     ]
+
+
+@pytest.mark.asyncio
+async def test_resume_recovers_verified_eighth_chapter_without_restarting_earlier_work(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "book"
+    chapter_dir = output / "chapters"
+    chapter_dir.mkdir(parents=True)
+    chapters = [
+        make_book.ChapterInfo(
+            index=index,
+            title=f"Chapter {index + 1}",
+            file_path=f"chapters/{index + 1:02d}-chapter-{index + 1}.md",
+            status="written",
+            word_count=100 + index,
+        )
+        for index in range(7)
+    ]
+    chapters.append(make_book.ChapterInfo(index=7, title="Chapter 8"))
+    chapter_path = make_book._canonical_chapter_path(str(output), 7, "Chapter 8")
+    chapter_path.parent.mkdir(parents=True, exist_ok=True)
+    chapter_path.write_text("# Chapter 8\n\nVerified recovered content.\n", encoding="utf-8")
+    prior_receipts = [
+        {"phase": "chapter", "chapter_index": index, "file_path": chapter.file_path}
+        for index, chapter in enumerate(chapters[:7])
+    ]
+    context = make_book.MakeBookContext(
+        intent="write the book",
+        run_id="same-run-id",
+        state=make_book.MakeBookState.FAILED,
+        output_dir=str(output),
+        assets_dir=str(output / "assets"),
+        chapters=chapters,
+        current_chapter_index=7,
+        fail_reason="chapter 8 never confirmed completion",
+        transition_receipts=list(prior_receipts),
+        artifacts={f"chapter_{index}": "preserved" for index in range(7)},
+    )
+    runner = object.__new__(make_book.MakeBookRunner)
+    runner._cfg = SimpleNamespace(session_memory=object(), workflow_handle=None)
+    phase_calls: list[str] = []
+
+    async def unexpected_phase(**kwargs: object) -> None:
+        phase_calls.append(str(kwargs.get("text", "")))
+        raise AssertionError("a valid existing chapter should be recovered without an LLM turn")
+
+    async def finish_after_chapters(
+        ctx: make_book.MakeBookContext,
+        _memory: object,
+        *,
+        final: bool,
+    ) -> make_book.MakeBookState:
+        assert final is False
+        return make_book.MakeBookState.COMPLETE
+
+    runner.run_phase = unexpected_phase  # type: ignore[method-assign]
+    runner._layout_review = finish_after_chapters  # type: ignore[method-assign]
+
+    resumed = await runner.resume(context)
+
+    assert resumed.state is make_book.MakeBookState.COMPLETE
+    assert resumed.run_id == "same-run-id"
+    assert resumed.current_chapter_index == 8
+    assert resumed.chapters[7].status == "written"
+    assert resumed.chapters[7].file_path == str(chapter_path.relative_to(output))
+    assert [chapter.file_path for chapter in resumed.chapters[:7]] == [
+        chapter.file_path for chapter in chapters[:7]
+    ]
+    assert resumed.transition_receipts[:7] == prior_receipts
+    assert len(resumed.transition_receipts) == 8
+    assert resumed.transition_receipts[-1]["chapter_index"] == 7
+    assert all(resumed.artifacts[f"chapter_{index}"] == "preserved" for index in range(7))
+    assert phase_calls == []
+
+
+@pytest.mark.asyncio
+async def test_resume_retries_only_current_chapter_when_artifact_fails_gate(
+    tmp_path: Path,
+) -> None:
+    chapters = [
+        make_book.ChapterInfo(
+            index=index,
+            title=f"Chapter {index + 1}",
+            file_path=f"chapters/{index + 1:02d}-chapter-{index + 1}.md",
+            status="written",
+        )
+        for index in range(7)
+    ]
+    chapters.append(make_book.ChapterInfo(index=7, title="Chapter 8"))
+    context = make_book.MakeBookContext(
+        intent="write the book",
+        run_id="same-run-id",
+        state=make_book.MakeBookState.FAILED,
+        output_dir=str(tmp_path),
+        assets_dir=str(tmp_path / "assets"),
+        chapters=chapters,
+        current_chapter_index=7,
+        fail_reason="chapter 8 never confirmed completion",
+    )
+    runner = object.__new__(make_book.MakeBookRunner)
+    runner._cfg = SimpleNamespace(session_memory=object(), workflow_handle=None)
+    prompts: list[str] = []
+
+    async def stop_after_bounded_attempts(**kwargs: object) -> None:
+        prompts.append(f"{kwargs.get('text', '')}\n{kwargs.get('system_prompt', '')}")
+
+    runner.run_phase = stop_after_bounded_attempts  # type: ignore[method-assign]
+
+    resumed = await runner.resume(context)
+
+    assert resumed.state is make_book.MakeBookState.FAILED
+    assert resumed.fail_reason == "chapter 8 never confirmed completion"
+    assert resumed.current_chapter_index == 7
+    assert len(prompts) == make_book._MAX_ATTEMPTS
+    assert all("chapter 8 of 8" in prompt.lower() for prompt in prompts)
+    assert all("chapter 1 of 8" not in prompt.lower() for prompt in prompts)
+    assert [chapter.status for chapter in resumed.chapters[:7]] == ["written"] * 7

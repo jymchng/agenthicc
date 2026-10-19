@@ -460,6 +460,44 @@ async def test_tui_can_pause_and_resume_the_same_workflow_run_repeatedly(
         conversation.close()
 
 
+def test_workflow_resume_retries_history_repair_and_stays_blocked_if_invalid(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agenthicc.memory.tool_history import ToolHistoryRecoveryState
+    from agenthicc.runners.session_conversation import SessionConversation
+
+    session, ctx, _workspace, _input = _make_session()
+    conversation = SessionConversation.open(
+        "tui-unrepairable-history",
+        max_tokens=10_000,
+        journal_path=tmp_path / "conversation.jsonl",
+    )
+    ctx.session_conversation = conversation
+    ctx.session_memory = conversation.memory
+    blocked = ToolHistoryRecoveryState(
+        "irrecoverable", ("non_adjacent_results", "missing_results"), True
+    )
+    conversation.memory._tool_history_recovery = blocked
+    attempts: list[bool] = []
+
+    def fail_repair() -> ToolHistoryRecoveryState:
+        attempts.append(True)
+        return blocked
+
+    monkeypatch.setattr(conversation, "retry_tool_history_recovery", fail_repair)
+    try:
+        assert session._handle_workflow_resume("saved-run") is True
+        assert attempts == [True]
+        assert session._workflow_handle is None
+        assert session._agent_task is None
+        notice = ctx.app_state.conversation.notification() or ""
+        assert "non_adjacent_results" in notice
+        assert "missing_results" in notice
+    finally:
+        conversation.close()
+
+
 @pytest.mark.asyncio
 async def test_resumed_workflow_selection_wins_for_the_next_ordinary_turn() -> None:
     session, ctx, _workspace, _input = _make_session()

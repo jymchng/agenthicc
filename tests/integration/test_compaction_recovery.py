@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import copy
 from types import SimpleNamespace
 from pathlib import Path
 
@@ -107,6 +109,159 @@ async def test_failed_durable_compaction_keeps_original_projection_after_restart
     )
     assert resumed.messages == original_messages
     resumed.close()
+
+
+async def test_inflight_compaction_cannot_replace_a_newer_tool_history_projection(
+    tmp_path: Path,
+) -> None:
+    """Compaction output is committed only against the history it summarized."""
+    journal_path = tmp_path / "concurrent-compaction.jsonl"
+    journal = ConversationJournal(journal_path)
+    memory = JournaledShortTermMemory(journal, max_tokens=20_000)
+    memory.add_user("Prior context " + "background " * 5_000)
+
+    summary_started = asyncio.Event()
+    release_summary = asyncio.Event()
+
+    class _BlockingSummaryTransport:
+        async def complete(self, _messages, **_kwargs):  # noqa: ANN001
+            summary_started.set()
+            await release_summary.wait()
+            return SimpleNamespace(content="Summary of the pre-turn conversation.")
+
+    compaction = asyncio.create_task(
+        compact_memory_with_result(
+            memory,
+            _BlockingSummaryTransport(),
+            model="offline-test",
+            max_input_tokens=20_000,
+        )
+    )
+    await summary_started.wait()
+
+    # Model the durable sequence produced when a new provider/tool turn writes
+    # while an independently-started compaction is awaiting its summarizer.
+    memory.add_assistant(
+        {
+            "role": "assistant",
+            "content": [{"type": "tool_use", "id": "late-a", "name": "Read", "input": {}}],
+        }
+    )
+    memory.add_user("Continue while preserving the pending tool work")
+    memory.add_user(
+        [
+            {
+                "type": "tool_result",
+                "tool_use_id": "late-a",
+                "content": "result A",
+                "is_error": False,
+            }
+        ]
+    )
+    memory.add_assistant(
+        {
+            "role": "assistant",
+            "content": [{"type": "tool_use", "id": "late-b", "name": "Read", "input": {}}],
+        }
+    )
+    expected_current_messages = copy.deepcopy(memory._messages)
+    issue_codes = {issue.code for issue in memory.validate_tool_history().issues}
+    assert "non_adjacent_results" in issue_codes
+    assert "missing_results" in issue_codes
+
+    release_summary.set()
+    outcome = await compaction
+
+    assert outcome.status == "skipped_concurrent_update"
+    assert memory._messages == expected_current_messages
+    assert fold_path(journal_path) == (expected_current_messages, None)
+    journal.close()
+
+
+@pytest.mark.asyncio
+async def test_compaction_refuses_invalid_source_history_without_mutating_journal(
+    tmp_path: Path,
+) -> None:
+    journal_path = tmp_path / "invalid-source-compaction.jsonl"
+    journal = ConversationJournal(journal_path)
+    memory = JournaledShortTermMemory(journal, max_tokens=20_000)
+    memory.add_user("Inspect the repository")
+    memory.add_assistant(
+        {
+            "role": "assistant",
+            "content": [{"type": "tool_use", "id": "call-late", "name": "Read", "input": {}}],
+        }
+    )
+    memory.add_user("Continue after interruption")
+    memory.add_tool_result(
+        {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "call-late", "content": "late result"}
+            ],
+        }
+    )
+    memory.add_assistant(
+        {
+            "role": "assistant",
+            "content": [{"type": "tool_use", "id": "call-missing", "name": "Read", "input": {}}],
+        }
+    )
+    original_messages = copy.deepcopy(memory._messages)
+    original_journal = journal_path.read_bytes()
+
+    class _MustNotSummarize:
+        async def complete(self, *_args, **_kwargs):  # noqa: ANN001
+            raise AssertionError("invalid source history must be rejected before summarization")
+
+    summary_outcome = await compact_memory_with_result(
+        memory,
+        _MustNotSummarize(),
+        model="offline-test",
+        max_input_tokens=1_000,
+    )
+    local_outcome = local_compaction_fallback(memory, max_input_tokens=1_000)
+
+    assert summary_outcome.status == "blocked_irreducible_context"
+    assert summary_outcome.recovery_reason == "invalid_tool_history"
+    assert local_outcome.status == "blocked_irreducible_context"
+    assert local_outcome.recovery_reason == "invalid_tool_history"
+    assert memory._messages == original_messages
+    assert journal_path.read_bytes() == original_journal
+    assert fold_path(journal_path) == (original_messages, None)
+    journal.close()
+
+
+def test_compaction_commit_boundary_rejects_invalid_candidate_without_journaling(
+    tmp_path: Path,
+) -> None:
+    from agenthicc.memory.compactor import _InvalidCompactionCandidate, _replace_state
+
+    journal_path = tmp_path / "invalid-candidate-compaction.jsonl"
+    journal = ConversationJournal(journal_path)
+    memory = JournaledShortTermMemory(journal, max_tokens=10_000)
+    memory.add_user("Preserve this history")
+    original_messages = copy.deepcopy(memory._messages)
+    original_journal = journal_path.read_bytes()
+
+    with pytest.raises(_InvalidCompactionCandidate, match="missing_results"):
+        _replace_state(
+            memory,
+            [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "tool_use", "id": "unanswered", "name": "Read", "input": {}}
+                    ],
+                }
+            ],
+            None,
+        )
+
+    assert memory._messages == original_messages
+    assert journal_path.read_bytes() == original_journal
+    assert fold_path(journal_path) == (original_messages, None)
+    journal.close()
 
 
 @pytest.mark.asyncio

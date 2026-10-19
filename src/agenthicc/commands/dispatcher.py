@@ -64,6 +64,7 @@ class CommandDispatcher:
             cancel_active=ctx.cancel_active,
             list_workflow_runs=ctx.list_workflow_runs,
             resume_workflow=ctx.resume_workflow,
+            repair_session_history=ctx.repair_session_history,
             loop_manager=ctx.loop_manager,
         )
 

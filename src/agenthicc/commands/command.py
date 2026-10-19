@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from agenthicc.tools.mcp_manager import McpSessionManager
     from agenthicc.runners.loop_scheduler import LoopManager
     from agenthicc.schedules.manager import ScheduleManager
+    from agenthicc.memory.tool_history import ToolHistoryRecoveryState
 
 __all__ = [
     "Command",
@@ -115,6 +116,7 @@ class CommandContext:
     # reaching into TUISession internals or constructing a second resume path.
     list_workflow_runs: "Callable[[], list[WorkflowRecoveryRecord]] | None" = None
     resume_workflow: "Callable[[str], bool] | None" = None
+    repair_session_history: "Callable[[], ToolHistoryRecoveryState] | None" = None
     loop_manager: "LoopManager | None" = None
     schedule_manager: "ScheduleManager | None" = None
     schedule_repository_root: str = ""

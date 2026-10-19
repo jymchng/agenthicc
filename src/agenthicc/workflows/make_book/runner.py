@@ -597,7 +597,7 @@ def _toc_manifest_path(run_id: str) -> str:
     return str((Path.cwd() / ".agenthicc" / "make_book" / safe_id / "toc.json").resolve())
 
 
-def _markdown_asset_references(path: Path, output_dir: str, assets_dir: str) -> list[str]:
+def _markdown_asset_references(path: Path, output_dir: str, assets_dir: str) -> list[Path]:
     """Extract and verify Markdown image references for one chapter."""
 
     text = path.read_text(encoding="utf-8", errors="replace")
@@ -896,6 +896,14 @@ def _make_chapter_tools(
     """Return the summary-only chapter completion gate."""
     from lauren_ai._tools import tool
 
+    def inspect_artifact() -> dict[str, object]:
+        return _inspect_chapter_artifact(
+            output_dir=output_dir,
+            assets_dir=assets_dir,
+            chapter_index=chapter_index,
+            chapter_title=chapter_title,
+        )
+
     @tool()
     async def confirm_chapter_complete(summary: str) -> dict[str, object]:
         """Verify the current chapter, deriving path, count, and assets.
@@ -909,62 +917,73 @@ def _make_chapter_tools(
                 "error": "confirm_chapter_complete summary is empty.",
                 "fix": "Write the chapter, then call confirm_chapter_complete(summary=...).",
             }
-        candidate = str(_canonical_chapter_path(output_dir, chapter_index, chapter_title))
         try:
-            path = _resolve_under(output_dir, candidate)
-        except (ValueError, FileNotFoundError) as exc:
-            return _path_error(
-                candidate,
-                Path(output_dir).expanduser().resolve(),
-                "was not found or is outside the book output directory",
-            ) | {"detail": str(exc)}
-        if path.suffix.lower() != ".md":
-            return _path_error(
-                candidate, Path(output_dir).expanduser().resolve(), "is not a Markdown chapter"
-            )
-        try:
-            contents = path.read_text(encoding="utf-8")
-        except OSError as exc:
-            return _path_error(
-                candidate, Path(output_dir).expanduser().resolve(), "could not be read"
-            ) | {"detail": str(exc)}
-        if not contents.strip():
-            return _path_error(candidate, Path(output_dir).expanduser().resolve(), "is empty")
-        try:
-            referenced_assets = _markdown_asset_references(path, output_dir, assets_dir)
-        except (ValueError, FileNotFoundError) as exc:
+            receipt = inspect_artifact()
+        except (ValueError, OSError) as exc:
             return {
                 "ok": False,
-                "error": f"chapter {chapter_index + 1} has invalid referenced assets.",
-                "fix": "Ensure every referenced asset exists under the assets directory.",
-                "detail": str(exc),
+                "error": str(exc),
+                "fix": "Write the canonical chapter and ensure all referenced assets exist, then retry.",
             }
-        words = len(re.findall(r"\b[\w][\w'’-]*\b", contents))
-        canonical_assets = _display_paths(referenced_assets, output_dir)
         data["chapter_index"] = chapter_index
-        data["file_path"] = str(path.relative_to(Path(output_dir).expanduser().resolve()))
-        data["word_count"] = words
-        data["assets"] = canonical_assets
+        data["file_path"] = receipt["file_path"]
+        data["word_count"] = receipt["word_count"]
+        data["assets"] = receipt["assets"]
         data["summary"] = _compact(summary)
-        data["receipt"] = _transition_receipt(
-            {
-                "receipt": {
-                    "chapter_index": chapter_index,
-                    "file_path": data["file_path"],
-                    "word_count": words,
-                    "assets": canonical_assets,
-                    "bytes": path.stat().st_size,
-                }
-            },
-            phase="chapter",
-        )
+        data["receipt"] = _transition_receipt({"receipt": receipt}, phase="chapter")
         event.set()
         return {
             "ok": True,
-            "message": f"Chapter {chapter_index + 1} confirmed at '{data['file_path']}' ({words} words).",
+            "message": (
+                f"Chapter {chapter_index + 1} confirmed at '{data['file_path']}' "
+                f"({data['word_count']} words)."
+            ),
         }
 
     return [confirm_chapter_complete]
+
+
+def _inspect_chapter_artifact(
+    *,
+    output_dir: str,
+    assets_dir: str,
+    chapter_index: int,
+    chapter_title: str,
+) -> dict[str, object]:
+    """Apply the chapter transition gate to an existing canonical artifact.
+
+    This is shared by the agent-facing confirmation tool and checkpoint
+    recovery. Recovery must use exactly the same path, content, and asset
+    checks as a normal phase transition before synthesizing a missing receipt.
+    """
+    root = Path(output_dir).expanduser().resolve()
+    candidate = str(_canonical_chapter_path(output_dir, chapter_index, chapter_title))
+    try:
+        path = _resolve_under(output_dir, candidate)
+    except (ValueError, FileNotFoundError) as exc:
+        raise ValueError(
+            f"chapter {chapter_index + 1} canonical artifact was not found "
+            "or is outside the book output directory"
+        ) from exc
+    if path.suffix.lower() != ".md":
+        raise ValueError(f"chapter {chapter_index + 1} artifact is not Markdown")
+    try:
+        contents = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise ValueError(f"chapter {chapter_index + 1} artifact could not be read") from exc
+    if not contents.strip():
+        raise ValueError(f"chapter {chapter_index + 1} artifact is empty")
+    try:
+        referenced_assets = _markdown_asset_references(path, output_dir, assets_dir)
+    except (ValueError, FileNotFoundError) as exc:
+        raise ValueError(f"chapter {chapter_index + 1} has invalid referenced assets") from exc
+    return {
+        "chapter_index": chapter_index,
+        "file_path": str(path.relative_to(root)),
+        "word_count": len(re.findall(r"\b[\w][\w'’-]*\b", contents)),
+        "assets": _display_paths(referenced_assets, output_dir),
+        "bytes": path.stat().st_size,
+    }
 
 
 def _make_assets_tools(
@@ -1657,6 +1676,18 @@ class MakeBookRunner(CodePlanRunner):
         if handle is not None:
             handle.attach_context(context)
         state = context.state
+        failed_chapter_index = context.current_chapter_index
+        if (
+            state is MakeBookState.FAILED
+            and 0 <= failed_chapter_index < len(context.chapters)
+            and context.fail_reason
+            == f"chapter {failed_chapter_index + 1} never confirmed completion"
+        ):
+            # A bounded phase failure is recoverable only for this exact
+            # chapter-gate failure. Retain the original run, context, receipts,
+            # and chapter cursor; _chapter first revalidates any existing file.
+            state = MakeBookState.CHAPTER
+            context.state = state
         while not state.is_terminal:
             context.state = state
             context.phase_iteration += 1
@@ -2128,6 +2159,33 @@ class MakeBookRunner(CodePlanRunner):
         if index >= len(ctx.chapters):
             return MakeBookState.LAYOUT_REVIEW
         chapter: ChapterInfo = ctx.chapters[index]
+        recovery_feedback = ""
+        expected_failure = f"chapter {index + 1} never confirmed completion"
+        if ctx.fail_reason == expected_failure:
+            try:
+                existing_receipt = _inspect_chapter_artifact(
+                    output_dir=ctx.output_dir,
+                    assets_dir=ctx.assets_dir,
+                    chapter_index=index,
+                    chapter_title=chapter.title,
+                )
+            except ValueError as exc:
+                # The artifact is absent or does not satisfy the same gate used
+                # by confirm_chapter_complete. Retry only this chapter and
+                # explain the failed check to its agent.
+                recovery_feedback = str(exc)
+            else:
+                recovery_data: dict[str, object] = {
+                    "chapter_index": index,
+                    "file_path": existing_receipt["file_path"],
+                    "word_count": existing_receipt["word_count"],
+                    "assets": existing_receipt["assets"],
+                    "summary": "Recovered after validating the existing chapter artifact.",
+                    "receipt": _transition_receipt({"receipt": existing_receipt}, phase="chapter"),
+                }
+                self._record_chapter_completion(ctx, index, recovery_data)
+                ctx.fail_reason = ""
+                return MakeBookState.CHAPTER
         research_block: str = ctx.research_notes.get(index, "")
         research_files: str = "\n".join(f"  {path}" for path in ctx.research_files)
         for attempt in range(1, _MAX_ATTEMPTS + 1):
@@ -2144,6 +2202,12 @@ class MakeBookRunner(CodePlanRunner):
                 if attempt == 1
                 else ("Call confirm_chapter_complete(summary=...) now after writing the chapter.")
             )
+            if attempt == 1 and recovery_feedback:
+                text += (
+                    "\n\nRecovery check: the existing canonical chapter did not pass "
+                    f"the completion gate ({recovery_feedback}). Repair only this chapter "
+                    "and its required referenced assets; do not rewrite earlier chapters."
+                )
             await self.run_phase(
                 stable_system_prompt=CACHE_CONTRACT,
                 intent=ctx.intent,
@@ -2320,23 +2384,37 @@ class MakeBookRunner(CodePlanRunner):
                 ),
             )
             if event.is_set():
-                self._capture_transition_receipt(ctx, data, "chapter")
-                chapter.file_path = str(data.get("file_path", ""))
-                chapter.word_count = int(data.get("word_count", 0))
-                chapter.status = "written"
-                chapter.assets = [str(a) for a in data.get("assets", [])]
-                for asset in chapter.assets:
-                    if asset not in ctx.images:
-                        ctx.images.append(asset)
-                ctx.artifacts[f"chapter_{index}"] = (
-                    f"{chapter.title}: {chapter.file_path} ({chapter.word_count} words, "
-                    f"{len(chapter.assets)} assets)"
-                )
-                ctx.current_chapter_index = index + 1
+                self._record_chapter_completion(ctx, index, data)
+                ctx.fail_reason = ""
                 return MakeBookState.CHAPTER
 
         ctx.fail_reason = f"chapter {index + 1} never confirmed completion"
         return MakeBookState.FAILED
+
+    def _record_chapter_completion(
+        self,
+        ctx: MakeBookContext,
+        index: int,
+        data: dict[str, object],
+    ) -> None:
+        """Apply the same checkpoint update for agent and recovered gates."""
+        self._capture_transition_receipt(ctx, data, "chapter")
+        chapter = ctx.chapters[index]
+        chapter.file_path = str(data.get("file_path", ""))
+        chapter.word_count = int(data.get("word_count", 0))
+        chapter.status = "written"
+        raw_assets = data.get("assets", [])
+        chapter.assets = (
+            [str(asset) for asset in raw_assets] if isinstance(raw_assets, list) else []
+        )
+        for asset in chapter.assets:
+            if asset not in ctx.images:
+                ctx.images.append(asset)
+        ctx.artifacts[f"chapter_{index}"] = (
+            f"{chapter.title}: {chapter.file_path} ({chapter.word_count} words, "
+            f"{len(chapter.assets)} assets)"
+        )
+        ctx.current_chapter_index = index + 1
 
     async def _assets(
         self,

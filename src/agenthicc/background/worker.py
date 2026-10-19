@@ -2476,11 +2476,15 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
                     "compaction_persistence_failed",
                     "context_limit_unresolved",
                 }
+                history_recovery = (
+                    result.status == "blocked" and category == "tool_history_recovery_required"
+                )
+                recovery_blocked = compaction_recovery or history_recovery
                 status = (
                     SessionStatus.COMPLETED
                     if completed
                     else SessionStatus.ORPHANED
-                    if compaction_recovery
+                    if recovery_blocked
                     else SessionStatus.FAILED
                 )
                 raw_phases = getattr(result, "phases", ())
@@ -2493,7 +2497,9 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
                     status=status,
                     error=result.error,
                     activity=(
-                        "Workflow compaction needs recovery"
+                        "Conversation history needs recovery"
+                        if history_recovery
+                        else "Workflow compaction needs recovery"
                         if compaction_recovery
                         else f"Workflow {result.status}"
                     ),
@@ -2502,7 +2508,7 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
                         "workflow_complete"
                         if completed
                         else category
-                        if compaction_recovery
+                        if recovery_blocked
                         else "recoverable_error"
                         if recoverable
                         else "irrecoverable_error"
@@ -2511,12 +2517,12 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
                         ""
                         if completed
                         else category
-                        if compaction_recovery
+                        if recovery_blocked
                         else "recoverable_workflow"
                         if recoverable
                         else "irrecoverable_error"
                     ),
-                    exit_code=0 if completed or compaction_recovery else 1,
+                    exit_code=0 if completed or recovery_blocked else 1,
                 )
             if request.resume_existing_only:
                 return _WorkerOutcome(
@@ -2587,6 +2593,18 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
         )
         raise
     except Exception as exc:  # noqa: BLE001
+        from agenthicc.memory.tool_history import ToolHistoryRecoveryRequired  # noqa: PLC0415
+
+        if isinstance(exc, ToolHistoryRecoveryRequired):
+            outcome = _WorkerOutcome(
+                status=SessionStatus.ORPHANED,
+                error=str(exc),
+                activity="Conversation history needs recovery",
+                exit_reason="tool_history_recovery_required",
+                failure_category="tool_history_recovery_required",
+                exit_code=0,
+            )
+            return 0
         from agenthicc.memory.compactor import CompactionRecoveryRequired  # noqa: PLC0415
 
         if isinstance(exc, CompactionRecoveryRequired) and request.detached_goal:

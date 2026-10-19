@@ -114,6 +114,34 @@ turn discoverable on the next attach. Only the resumed turn's successful
 completion writes the terminal `turn_recovered` marker. This prevents a restart
 window from hiding the very history it is meant to preserve.
 
+### Provider history blocked during session open
+
+The durable session and provider conversation have separate readiness. If a
+tool-history repair candidate fails Lauren-ai's validator, Agenthicc still
+opens the session for transcript and checkpoint inspection, but blocks direct
+turns and workflow resumes before provider I/O. The notice includes only safe
+validator issue codes. Use `/history repair` to retry a deterministic local
+repair; it validates a detached candidate and commits it atomically. Duplicate,
+orphan, or otherwise ambiguous results are never guessed or removed. A corrupt
+JSONL tail is reported as `journal_corrupt` and is not auto-truncated; preserve
+the original journal and restore only from a known-good backup.
+
+For a uniquely identified unanswered tool call, repair records an explicit
+interruption error result (not a fabricated tool success) even if a crash
+occurred before the exchange-start receipt was written. This closes the
+assistant-call/start-receipt crash window. `/workflow resume` retries this same
+local repair before dispatching the saved checkpoint; if validation still
+fails, it leaves the workflow checkpoint untouched and sends nothing to a
+provider.
+
+After history becomes provider-ready, explicitly resume the existing workflow
+checkpoint. A failed `make_book` chapter phase with the exact
+`chapter N never confirmed completion` failure resumes at that chapter's
+saved index. Agenthicc validates the canonical chapter and referenced assets
+with the same gate used by `confirm_chapter_complete`; a valid artifact gets
+one idempotent receipt, while an invalid/missing artifact retries only that
+chapter. Earlier chapter receipts and artifacts remain untouched.
+
 ### Workflow errors are saved before the TUI returns to idle
 
 All workflow setup, phase, provider, tool, timeout, cancellation, and other

@@ -150,12 +150,32 @@ records. `tool_exchange_started`, `tool_exchange_result_recorded`,
 state without storing tool arguments or output in diagnostics; call IDs are
 stored as short hashes. The canonical message append/reset records remain the
 source used to rebuild memory. If a crash leaves an assistant tool batch with
-missing results, `JournaledShortTermMemory` inserts deterministic interruption
-results, writes one durable reset, and then the shared validator must pass
-before provider I/O. A known cancellation/queued-continuation race is also
-repaired by moving its matching late result back beside the assistant call and
-writing one durable reset. Invalid unknown, duplicate, empty, or ambiguous
-non-adjacent exchanges fail closed rather than being silently rewritten.
+missing results, `JournaledShortTermMemory` builds a detached candidate,
+inserts deterministic interruption results only where Lauren-ai's validator
+allows it, validates the complete result, and commits one atomic state
+replacement. A known cancellation/queued-continuation race is repaired on the
+same candidate by moving matching late results beside their assistant calls;
+any uniquely identified missing call receives an explicit interruption error
+result that says its outcome is unavailable—it never fabricates successful
+tool output. This also covers a crash between persisting the assistant's tool
+call and writing `tool_exchange_started`, and Lauren-ai's classification where
+an unrelated later result makes an unanswered call appear non-adjacent; such a
+result is never reassigned to the unanswered call. An unfinished exchange
+record is corroborating evidence, not a prerequisite. Duplicate call IDs,
+duplicate or orphan results, malformed messages, and any other ambiguous
+shape remain blocked. The full candidate is validated before one atomic
+commit. Failed validation or journal persistence leaves the original
+projection unchanged.
+
+If a persisted history cannot be repaired, opening the session does not discard
+or hide its transcript, workflow checkpoint, or artifacts. The session exposes
+a redacted readiness state (`repair_required`, `irrecoverable`, or
+`journal_corrupt`) and blocks every provider request until full validation
+passes. In the foreground, `/history repair` retries only deterministic local
+repair; it never contacts a provider or removes history. Diagnostics expose
+bounded issue codes and counts, never prompts, tool arguments/results, secrets,
+or raw provider payloads. A checkpoint resume remains a separate explicit
+operation and cannot silently restart at the workflow's first phase.
 
 For repaired exchanges, the `tool_exchange_aborted` record includes a
 versioned, stable `event_id` derived from the opaque exchange identity. The
@@ -188,6 +208,13 @@ rehydrates exactly the committed summary/recent-message projection, while a
 failed one preserves the pre-compaction conversation. Legacy untagged `reset`
 records retain their existing immediate semantics and require no journal
 migration.
+
+Because summary generation and exact token counting can yield while a turn
+appends new messages, compaction compares its detached source snapshot with
+live memory immediately before the replacement transaction. A mismatch skips
+compaction and preserves the newer memory and journal projection. Manual
+`/compact` also acquires the session-conversation ownership lease, preventing
+it from racing an active agent turn.
 
 `ConversationJournal._write()` records the prior file offset and truncates a
 partial/failed append before propagating an I/O error. If rollback itself fails,
@@ -299,6 +326,10 @@ Service exports contain only the policy-filtered snapshot and durable event
 projection. Project roots, workflow/agent fields, credentials, and private
 payload keys are filtered before delivery; a support export can still contain
 user prompts and tool results and must be reviewed before sharing.
+The snapshot's `readiness` projection separately reports whether the session is
+viewable, its provider history is validated, and a workflow checkpoint is
+resumable. Readiness updates contain only bounded status values and booleans;
+they never copy transcript or tool content into the service ledger.
 
 Workflow checkpoints deliberately do not duplicate provider messages or
 credentials. They store typed workflow state, the cursor into the session

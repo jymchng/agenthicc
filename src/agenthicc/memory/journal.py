@@ -109,11 +109,18 @@ def fold_path(path: Path) -> tuple[list[object], str | None]:
 
     A missing file folds to ``([], None)``.  Corrupt trailing lines are skipped.
     """
+    messages, summary, _corrupt_tail_records = fold_path_with_report(path)
+    return messages, summary
+
+
+def fold_path_with_report(path: Path) -> tuple[list[object], str | None, int]:
+    """Fold a journal and report non-empty records skipped after corrupt JSON."""
     if not path.exists():
-        return [], None
+        return [], None, 0
     messages: list[object] = []
     summary: str | None = None
     pending_replace: tuple[str, list[object], str | None] | None = None
+    corrupt_tail_records = 0
 
     def rollback_pending() -> None:
         nonlocal messages, summary, pending_replace
@@ -133,6 +140,7 @@ def fold_path(path: Path) -> tuple[list[object], str | None]:
             except json.JSONDecodeError:
                 # Crash mid-write left a partial last line — stop folding here;
                 # everything before it is intact and durable.
+                corrupt_tail_records = 1 + sum(1 for tail in fh if tail.strip())
                 break
             kind = entry.get("kind")
             if kind == "state_replace_prepare":
@@ -163,7 +171,7 @@ def fold_path(path: Path) -> tuple[list[object], str | None]:
                 rollback_pending()
                 messages.append(entry["message"])
     rollback_pending()
-    return messages, summary
+    return messages, summary, corrupt_tail_records
 
 
 def fold_resume_state(path: Path) -> IncompleteTurn | None:
@@ -264,12 +272,13 @@ class ConversationJournal:
     content is replayed via :meth:`fold`.
     """
 
-    __slots__ = ("_path", "_seq", "_fh")
+    __slots__ = ("_path", "_seq", "_fh", "_corrupt_trailing_records")
 
     def __init__(self, path: Path) -> None:
         self._path = path
         path.parent.mkdir(parents=True, exist_ok=True)
         self._seq = self._count_existing()
+        self._corrupt_trailing_records = 0
         self._fh = path.open("a", encoding="utf-8")
 
     def _count_existing(self) -> int:
@@ -774,6 +783,44 @@ class ConversationJournal:
             }
         )
 
+    def fold_pending_tool_exchange_call_hashes(self) -> frozenset[str]:
+        """Return hashed call IDs from exchanges started but not terminalized.
+
+        An unfinished lifecycle transaction is the durable evidence that a
+        missing provider result can be repaired as an interruption. IDs remain
+        hashed in the returned set; callers hash message IDs before matching.
+        Legacy journals without lifecycle events therefore fail closed for
+        missing-result synthesis while remaining eligible for exact result
+        reordering when every result is present.
+        """
+        if not self._path.exists():
+            return frozenset()
+        pending: dict[str, set[str]] = {}
+        with self._path.open("r", encoding="utf-8") as fh:
+            for raw in fh:
+                line = raw.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    break
+                if not isinstance(entry, dict):
+                    continue
+                kind = entry.get("kind")
+                exchange_id = entry.get("exchange_id")
+                if not isinstance(exchange_id, str) or not exchange_id:
+                    continue
+                if kind == "tool_exchange_started":
+                    call_ids = entry.get("call_ids")
+                    if isinstance(call_ids, list):
+                        pending[exchange_id] = {
+                            value for value in call_ids if isinstance(value, str) and value
+                        }
+                elif kind in {"tool_exchange_committed", "tool_exchange_aborted"}:
+                    pending.pop(exchange_id, None)
+        return frozenset(value for call_hashes in pending.values() for value in call_hashes)
+
     def fold_tool_exchange_recoveries(self) -> list[dict[str, object]]:
         """Return valid durable tool-recovery receipts in journal order.
 
@@ -1003,7 +1050,14 @@ class ConversationJournal:
 
     def fold(self) -> tuple[list[object], str | None]:
         """Reconstruct ``(messages, summary)`` by replaying the on-disk journal."""
-        return fold_path(self._path)
+        messages, summary, corrupt_count = fold_path_with_report(self._path)
+        self._corrupt_trailing_records = corrupt_count
+        return messages, summary
+
+    @property
+    def corrupt_trailing_records(self) -> int:
+        """Count non-empty records skipped after the first malformed JSON line."""
+        return self._corrupt_trailing_records
 
     def resume_state(self) -> IncompleteTurn | None:
         """Return the incomplete turn to resume, or ``None``."""

@@ -4988,7 +4988,9 @@ subscriptions without replacing the kernel or workflow runtime.
 
 Policy-filtered read model containing stable session identity, lifecycle,
 workflow/agent metadata, queue/resource counts, capabilities, and the latest
-event sequence.
+event sequence. Its `readiness` projection distinguishes session visibility,
+provider-history validity, and workflow resumability without exposing
+transcript or tool content.
 
 ### SessionCommand
 

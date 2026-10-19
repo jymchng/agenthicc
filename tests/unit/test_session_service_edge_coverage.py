@@ -106,6 +106,43 @@ async def test_session_command_matrix_projection_and_adoption(tmp_path: Path) ->
     await service.close()
 
 
+async def test_session_readiness_projection_is_safe_and_durable(tmp_path: Path) -> None:
+    service = SessionService(store_root=tmp_path / "service")
+    snapshot = await service.create_session(
+        project_root=tmp_path,
+        capabilities=frozenset({"read", "control"}),
+    )
+    await service.publish(
+        snapshot.session_id,
+        source="tui",
+        kind="session_readiness_changed",
+        payload={
+            "session_viewable": True,
+            "provider_history_status": "repair_required",
+            "provider_history_ready": False,
+            "workflow_recovery_status": "resumable",
+            "workflow_resumable": True,
+            "transcript": "MUST_NOT_ENTER_READINESS_PROJECTION",
+            "api_key": "never-project-this",
+        },
+    )
+
+    projected = await service.snapshot(snapshot.session_id)
+    assert projected.readiness == {
+        "session_viewable": True,
+        "provider_history_status": "repair_required",
+        "provider_history_ready": False,
+        "workflow_recovery_status": "resumable",
+        "workflow_resumable": True,
+    }
+
+    restored = SessionService(store_root=tmp_path / "service")
+    reopened = await restored.snapshot(snapshot.session_id)
+    assert reopened.readiness == projected.readiness
+    await service.close()
+    await restored.close()
+
+
 async def test_session_service_rejects_invalid_commands_and_subscription_close(
     tmp_path: Path,
 ) -> None:

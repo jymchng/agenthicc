@@ -298,6 +298,7 @@ class SessionService:
         project_root = snapshot.project_root
         parent = snapshot.parent_session_id
         capabilities = snapshot.capabilities
+        readiness = dict(snapshot.readiness)
 
         if event.kind == "session_created":
             state = SessionState.IDLE
@@ -353,6 +354,52 @@ class SessionService:
             state = SessionState.COMPLETED
         elif event.kind == "workflow_phase_changed":
             workflow.update({key: value for key, value in payload.items() if key != "secret"})
+        elif event.kind == "session_readiness_changed":
+            provider_status = payload.get("provider_history_status")
+            provider_ready = payload.get("provider_history_ready")
+            workflow_status = payload.get("workflow_recovery_status")
+            workflow_resumable = payload.get("workflow_resumable")
+            if isinstance(provider_status, str) and provider_status in {
+                "unknown",
+                "ready",
+                "repaired",
+                "repair_required",
+                "irrecoverable",
+                "journal_corrupt",
+            }:
+                readiness["provider_history_status"] = provider_status
+            if provider_ready is None or isinstance(provider_ready, bool):
+                readiness["provider_history_ready"] = provider_ready
+            if isinstance(workflow_status, str) and workflow_status in {
+                "unknown",
+                "none",
+                "resumable",
+                "blocked",
+            }:
+                readiness["workflow_recovery_status"] = workflow_status
+            if workflow_resumable is None or isinstance(workflow_resumable, bool):
+                readiness["workflow_resumable"] = workflow_resumable
+            readiness["session_viewable"] = True
+        elif event.kind == "workflow_recovery_available":
+            count = _count(payload.get("count"))
+            invalid_ids = payload.get("invalid_run_ids", [])
+            has_invalid = isinstance(invalid_ids, (list, tuple)) and bool(invalid_ids)
+            readiness["workflow_recovery_status"] = (
+                "resumable" if count else "blocked" if has_invalid else "none"
+            )
+            readiness["workflow_resumable"] = count > 0
+        elif event.kind == "workflow_paused_after_error":
+            readiness["workflow_recovery_status"] = "resumable"
+            readiness["workflow_resumable"] = True
+        elif event.kind == "workflow_resume_started":
+            readiness["workflow_recovery_status"] = "unknown"
+            readiness["workflow_resumable"] = None
+        elif event.kind in {"workflow_run_completed", "workflow_discarded"}:
+            readiness["workflow_recovery_status"] = "none"
+            readiness["workflow_resumable"] = False
+        elif event.kind == "workflow_failure_diagnostic":
+            readiness["workflow_recovery_status"] = "blocked"
+            readiness["workflow_resumable"] = False
         elif event.kind == "agent_changed":
             agent.update({key: value for key, value in payload.items() if key != "secret"})
         elif event.kind == "job_changed":
@@ -379,6 +426,7 @@ class SessionService:
             terminals_running=terminals,
             last_event_sequence=max(snapshot.last_event_sequence, event.sequence),
             capabilities=capabilities,
+            readiness=readiness,
         )
 
     @staticmethod

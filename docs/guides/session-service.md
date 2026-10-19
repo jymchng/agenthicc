@@ -13,6 +13,25 @@ JSON objects with the same fields) and consume `SessionEvent` values. A
 reconnecting client stores its last durable sequence, requests a fresh
 snapshot, and replays events after that cursor.
 
+Snapshots include a `readiness` projection that keeps session visibility,
+provider-history validity, and workflow recovery distinct. For example:
+
+```json
+{
+  "session_viewable": true,
+  "provider_history_status": "repair_required",
+  "provider_history_ready": false,
+  "workflow_recovery_status": "resumable",
+  "workflow_resumable": true
+}
+```
+
+Older sessions and sessions not yet inspected report `unknown`/`null` readiness
+until the TUI validates their journal and workflow checkpoints. The projection
+contains no transcript or tool payloads. A viewable session is not necessarily
+safe to send to a provider, and a recoverable workflow still requires an
+explicit resume action.
+
 Commands with an `idempotency_key` are recorded in the service ledger. A
 retrying client receives the original `CommandResult` with `replayed: true`
 and does not queue a second turn or repeat a control side effect. An

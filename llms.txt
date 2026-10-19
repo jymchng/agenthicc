@@ -101,7 +101,7 @@ The primary entry point is `agenthicc.__main__:main`.
 | `make_cloakbrowser_tools` / `make_playwright_tools` | `agenthicc.tools.cloakbrowser` / `agenthicc.tools.playwright` | Nine capability-tagged agent-facing tools for either lazy optional backend |
 | `export_session` | `agenthicc.tui.runtime.session_export` | Redacted portable session export |
 | `inspect_session` | `agenthicc.tui.runtime.session_export` | Redacted durable session health and usage summary |
-| `SessionService` / `SessionSnapshot` / `SessionCommand` | `agenthicc.session_service` | Client-neutral session coordination and policy-filtered read model |
+| `SessionService` / `SessionSnapshot` / `SessionCommand` | `agenthicc.session_service` | Client-neutral session coordination, readiness projection, and policy-filtered read model |
 | `SessionEvent` / `SessionEventStore` | `agenthicc.session_service` | Versioned durable event envelope and fsync-backed replay ledger |
 | `UsageLedger` / `UsageRecord` / `UsageSnapshot` | `agenthicc.runners.usage_ledger` | Session-scoped durable provider usage, quality, cost, and reconciliation |
 | `InProcessSessionClient` / `HttpSessionClient` | `agenthicc.session_service` | In-process and local HTTP client adapters |

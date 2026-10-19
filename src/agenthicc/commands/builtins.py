@@ -401,8 +401,49 @@ def _help_menu(ctx: CommandContext) -> "Overlay":
 def _cmd_history(ctx: CommandContext) -> bool:
     """Open the bounded, paginated event-history view for this session."""
 
-    if ctx.args.strip():
-        ctx.console.print("Usage: /history", markup=False)
+    action = ctx.args.strip().casefold()
+    if action == "repair":
+        if ctx.repair_session_history is None:
+            ctx.console.print(
+                "Conversation repair is available only in an attached foreground session.",
+                markup=False,
+            )
+            return True
+        try:
+            state = ctx.repair_session_history()
+        except Exception as exc:  # noqa: BLE001 - report type only, never transcript data
+            ctx.console.print(
+                f"Conversation repair failed ({type(exc).__name__}); preserved history was not sent.",
+                markup=False,
+            )
+            return True
+        if state.provider_ready:
+            status = state.status
+            ctx.console.print(
+                "Conversation history is valid for provider use."
+                if status == "ready"
+                else "Conversation history was repaired and validated; workflow state is preserved.",
+                markup=False,
+            )
+        else:
+            status = state.status
+            safe_codes = ", ".join(code[:64] for code in state.issue_codes[:8]) or "unknown"
+            if status == "journal_corrupt":
+                message = (
+                    "Conversation history is preserved but blocked from provider use "
+                    f"(issues: {safe_codes}). Automatic repair will not skip or rewrite "
+                    "journal records; preserve the original and restore from a known-good "
+                    "backup before resuming."
+                )
+            else:
+                message = (
+                    "Conversation history is preserved but still blocked from provider use "
+                    f"(issues: {safe_codes}). No journal contents were discarded."
+                )
+            ctx.console.print(message, markup=False)
+        return True
+    if action:
+        ctx.console.print("Usage: /history [repair]", markup=False)
         return True
     if not ctx.session_id:
         ctx.console.print("Transcript history is unavailable without a session ID.", markup=False)
@@ -571,6 +612,11 @@ def _workflows_busy_policy(args: str) -> BusyPolicy:
     return (
         BusyPolicy.IMMEDIATE_READ_ONLY if args.strip().lower() in {"", "runs"} else BusyPolicy.QUEUE
     )
+
+
+def _history_busy_policy(args: str) -> BusyPolicy:
+    """Keep transcript browsing read-only and queue durable repair operations."""
+    return BusyPolicy.IMMEDIATE_READ_ONLY if not args.strip() else BusyPolicy.QUEUE
 
 
 def _present_registry_result(ctx: CommandContext, title: str, message: str) -> None:
@@ -1379,8 +1425,10 @@ BUILTIN_COMMANDS: list[Command] = [
     ),
     Command(
         name="/history",
-        description="Browse this session's transcript in bounded pages",
+        description="Browse transcript history or repair provider tool history",
+        argument_hint="[repair]",
         busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
+        busy_policy_resolver=_history_busy_policy,
         handler=_cmd_history,
     ),
     Command(

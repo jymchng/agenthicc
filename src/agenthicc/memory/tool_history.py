@@ -11,9 +11,71 @@ been inserted between the call and its late result.
 from __future__ import annotations
 
 import copy
+import hashlib
 from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import Literal
 
-__all__ = ["repair_non_adjacent_tool_history"]
+from lauren_ai._memory import ShortTermMemory, ToolHistoryReport
+
+__all__ = [
+    "ToolHistoryRecoveryRequired",
+    "ToolHistoryRecoveryState",
+    "repair_non_adjacent_tool_history",
+]
+
+
+@dataclass(frozen=True, slots=True)
+class ToolHistoryRecoveryState:
+    """Safe summary of whether persisted conversation history can reach a provider."""
+
+    status: Literal["ready", "repaired", "repair_required", "irrecoverable", "journal_corrupt"] = (
+        "ready"
+    )
+    issue_codes: tuple[str, ...] = ()
+    repair_attempted: bool = False
+
+    @property
+    def provider_ready(self) -> bool:
+        """Whether the current memory passed Lauren-ai's full validator."""
+        return self.status in {"ready", "repaired"}
+
+
+class ToolHistoryRecoveryRequired(RuntimeError):
+    """Typed, redacted failure raised before invalid history reaches a provider."""
+
+    def __init__(self, state: ToolHistoryRecoveryState) -> None:
+        self.state = state
+        codes = ", ".join(state.issue_codes) or "validation_unavailable"
+        super().__init__(
+            "Conversation tool history is preserved but not provider-ready "
+            f"(issues: {codes}); run /history repair before resuming."
+        )
+
+
+def _integrity_error(report: ToolHistoryReport) -> Exception:
+    """Build Lauren-ai's typed integrity error from its redacted report."""
+    from lauren_ai import ToolConversationIntegrityError  # noqa: PLC0415
+
+    issue = report.first_issue
+    if issue is None:
+        return ToolHistoryRecoveryRequired(
+            ToolHistoryRecoveryState("repair_required", ("validation_failed",), True)
+        )
+    code = issue.code[:64]
+    expected = issue.expected_count
+    observed = issue.observed_count
+    assistant_index = issue.assistant_index
+    repairable = issue.repairable
+    return ToolConversationIntegrityError(
+        f"Tool conversation repair candidate remains invalid (code={code}, "
+        f"expected={expected}, observed={observed})",
+        code=code,
+        expected_count=expected,
+        observed_count=observed,
+        assistant_index=assistant_index,
+        repairable=repairable,
+    )
 
 
 def _result_id(block: Mapping[str, object]) -> str:
@@ -69,30 +131,34 @@ def _matching_result_blocks(
     return matches, cleaned if remaining else None, True
 
 
-def repair_non_adjacent_tool_history(memory: object) -> bool:
+def repair_non_adjacent_tool_history(
+    memory: ShortTermMemory,
+    *,
+    commit: bool = True,
+    allowed_missing_result_hashes: frozenset[str] | None = None,
+) -> bool:
     """Move late results next to their assistant calls and persist the repair.
 
     Only ``non_adjacent_results`` is repaired. Unknown, duplicate, orphan, and
     malformed result IDs remain fail-closed. Missing expected results receive
-    an explicit interruption result, matching lauren-ai's normal missing-tail
-    recovery contract.
+    an explicit interruption result only when their hashed IDs are present in
+    ``allowed_missing_result_hashes``; the journaled caller may derive this
+    evidence from either an unfinished exchange receipt or a unique missing
+    call in the persisted validator report. The synthetic result always says
+    the tool outcome is unavailable; it never claims success. ``None`` retains
+    the in-memory recovery behavior for a currently owned exchange. With
+    ``commit=False``, apply the candidate only to the supplied detached
+    projection so journaled callers can combine repairs in one atomic commit.
     """
-    validate = getattr(memory, "validate_tool_history", None)
-    if not callable(validate):
-        return False
     try:
-        report = validate()
+        report = memory.validate_tool_history()
     except Exception:
         return False
-    issues = [
-        issue
-        for issue in getattr(report, "issues", ())
-        if getattr(issue, "code", "") == "non_adjacent_results"
-    ]
+    issues = [issue for issue in report.issues if issue.code == "non_adjacent_results"]
     if not issues:
         return False
 
-    original_messages = getattr(memory, "_messages", None)
+    original_messages = memory._messages
     if not isinstance(original_messages, list):
         return False
     repaired = copy.deepcopy(original_messages)
@@ -105,10 +171,8 @@ def repair_non_adjacent_tool_history(memory: object) -> bool:
         key=lambda item: int(getattr(item, "assistant_index", -1) or -1),
         reverse=True,
     ):
-        assistant_index = getattr(issue, "assistant_index", None)
-        expected_ids = tuple(
-            value for value in getattr(issue, "expected_ids", ()) if isinstance(value, str)
-        )
+        assistant_index = issue.assistant_index
+        expected_ids = issue.expected_ids
         if not isinstance(assistant_index, int) or not expected_ids:
             continue
         if assistant_index < 0 or assistant_index >= len(repaired):
@@ -145,6 +209,10 @@ def repair_non_adjacent_tool_history(memory: object) -> bool:
         for tool_use_id in expected_ids:
             existing_block = found.get(tool_use_id)
             if existing_block is None:
+                if allowed_missing_result_hashes is not None:
+                    call_hash = hashlib.sha256(tool_use_id.encode("utf-8")).hexdigest()[:12]
+                    if call_hash not in allowed_missing_result_hashes:
+                        return False
                 existing_block = {
                     "type": "tool_result",
                     "tool_use_id": tool_use_id,
@@ -166,26 +234,31 @@ def repair_non_adjacent_tool_history(memory: object) -> bool:
     if not changed:
         return False
 
-    snapshot = getattr(memory, "snapshot", None)
-    original_snapshot = snapshot() if callable(snapshot) else copy.deepcopy(original_messages)
-    restore = getattr(memory, "restore", None)
-    try:
-        if callable(restore):
-            summary = (
-                original_snapshot.get("summary") if isinstance(original_snapshot, Mapping) else None
-            )
-            # Clear the stale exchange so a late task cannot append an orphan
-            # result after the queued continuation.
-            restore({"messages": repaired, "summary": summary})
-        else:
-            memory._messages = repaired  # type: ignore[attr-defined]
-        final_report = validate()
-        if not getattr(final_report, "ok", False):
-            raise ValueError("repaired tool history remains invalid")
-    except Exception:
-        if callable(restore):
-            restore(original_snapshot)
-        else:
-            memory._messages = original_messages  # type: ignore[attr-defined]
-        raise
+    # Validate a detached candidate first.  Calling ``restore`` on journaled
+    # memory persists before validation and then needs a second journal reset
+    # to roll back a bad candidate, making a failed repair observable as a
+    # state mutation.  The validator is a pure projection check, so a shallow
+    # memory copy with a deep-copied message list is sufficient and avoids
+    # copying journal handles, locks, or tool executors.
+    candidate_memory = copy.copy(memory)
+    candidate_memory._messages = repaired
+    if not commit:
+        # The journaled caller may have an independent, repairable missing
+        # result elsewhere in the same projection. Defer full validation until
+        # it has applied Lauren-ai's canonical missing-result repair to this
+        # same detached candidate.
+        memory._messages = repaired
+        return True
+
+    final_report = candidate_memory.validate_tool_history()
+    if not final_report.ok:
+        raise _integrity_error(final_report)
+
+    summary = memory._summary
+    from agenthicc.memory.journaled import JournaledShortTermMemory  # noqa: PLC0415
+
+    if isinstance(memory, JournaledShortTermMemory):
+        memory.commit_repaired_tool_history(repaired, summary)
+    else:
+        memory.restore({"messages": repaired, "summary": summary})
     return True

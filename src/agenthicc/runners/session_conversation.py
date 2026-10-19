@@ -17,6 +17,7 @@ from lauren_ai._memory import ShortTermMemory
 
 from agenthicc.memory.journal import ConversationJournal, journal_path_for
 from agenthicc.memory.journaled import JournaledShortTermMemory
+from agenthicc.memory.tool_history import ToolHistoryRecoveryState
 
 __all__ = ["ConversationBusyError", "SessionConversation"]
 
@@ -79,6 +80,15 @@ class SessionConversation:
     def owner(self) -> str | None:
         """Return the current process-local turn owner, if any."""
         return self._owner
+
+    @property
+    def tool_history_recovery(self) -> ToolHistoryRecoveryState:
+        """Return whether the persisted provider conversation is safe to use."""
+        return self.memory.tool_history_recovery
+
+    def retry_tool_history_recovery(self) -> ToolHistoryRecoveryState:
+        """Retry deterministic local history repair without provider I/O."""
+        return self.memory.retry_tool_history_recovery()
 
     async def acquire(self, owner_id: str) -> None:
         """Acquire the conversation for one agent activity.

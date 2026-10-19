@@ -1,10 +1,11 @@
-"""Conversation compactor — the manual ``/compact`` command (PRD-119, PRD-135).
+"""Durable conversation compaction (PRD-119, PRD-135, PRD-242).
 
-*Automatic* compaction lives in lauren-ai's runner (PRD-135): the exact-count
-compaction ladder fires proactively each turn (``_maybe_compact`` →
-``_summarize_memory``) before the hard pre-send guard would resort to lossy
-truncation.  This module provides only the user-invoked ``/compact`` command,
-which compresses the **whole** session into a dense summary on demand.
+Agenthicc owns both proactive turn-boundary compaction and user-invoked
+``/compact`` so both use the same journal-safe replacement contract. The
+proactive threshold/context-fit policy is in ``AgentTurnRunner``; this module
+builds summaries and protocol-preserving local candidates. Candidates use a
+compare-before-commit check because summarization and exact token counting may
+yield while the live conversation changes.
 
 It uses lauren-ai's canonical ``Message`` and transport interfaces.  Long
 transcripts are split into bounded chunks and reduced through the same
@@ -76,6 +77,7 @@ class CompactionOutcome:
         "compacted_summary",
         "compacted_local_fallback",
         "skipped_summary_unavailable",
+        "skipped_concurrent_update",
         "blocked_durability_error",
         "blocked_irreducible_context",
     ]
@@ -108,8 +110,11 @@ class CompactionOutcome:
         "current_input_exceeds_budget",
         "no_protocol_safe_boundary",
         "summary_not_reducing_context",
+        "invalid_tool_history",
+        "invalid_tool_history_candidate",
         "compaction_commit_failed",
         "exact_count_over_budget",
+        "concurrent_update",
         "",
     ] = ""
 
@@ -162,6 +167,18 @@ class _PreparedLocalFallback:
     outcome: CompactionOutcome
     messages: list[object] | None = None
     summary: str | None = None
+
+
+class _ConcurrentCompactionUpdate(RuntimeError):
+    """The live conversation changed while a compaction candidate was awaited."""
+
+
+class _InvalidCompactionCandidate(RuntimeError):
+    """A candidate would violate the provider tool-history contract."""
+
+    def __init__(self, issue_code: str) -> None:
+        self.issue_code = issue_code[:64] or "validation_failed"
+        super().__init__(self.issue_code)
 
 
 async def compact_memory(
@@ -222,6 +239,24 @@ async def compact_memory_with_result(
     attempted through the older mutate-then-journal hook.
     """
     before_tokens = _memory_tokens(memory)
+    source_issue = _tool_history_issue_code(
+        memory._messages,
+        _memory_summary(memory),
+        _memory_max_tokens(memory),
+    )
+    if source_issue:
+        outcome = CompactionOutcome(
+            "blocked_irreducible_context",
+            before_tokens,
+            before_tokens,
+            durable=False,
+            fallback_result="no_safe_boundary",
+            recovery_reason="invalid_tool_history",
+            error_type=source_issue,
+        )
+        if emit_result:
+            _emit_outcome(conv_store, outcome)
+        return outcome
     if conv_store is not None:
         try:
             conv_store.compaction_active.set(True)
@@ -237,7 +272,10 @@ async def compact_memory_with_result(
         # Yield so the spinner repaint flushes before the LLM call begins.
         await asyncio.sleep(0)
 
-        messages = list(memory._messages)
+        # Keep a detached snapshot: transcript generation and the summarizer
+        # both outlive this synchronous read and the live turn may keep
+        # appending provider/tool messages while either is running.
+        messages = copy.deepcopy(list(memory._messages))
         prior_summary = _memory_summary(memory)
         transcript = _format_transcript(messages)
         if isinstance(prior_summary, str) and prior_summary.strip():
@@ -307,7 +345,39 @@ async def compact_memory_with_result(
             # The generated summary incorporates the rolling summary above;
             # clear its separate field to avoid duplicating it in the next
             # provider request.
-            _replace_state(memory, candidate, None)
+            _replace_state(
+                memory,
+                candidate,
+                None,
+                expected_messages=messages,
+                expected_summary=prior_summary,
+            )
+        except _ConcurrentCompactionUpdate:
+            outcome = CompactionOutcome(
+                "skipped_concurrent_update",
+                before_tokens,
+                _memory_tokens(memory),
+                durable=False,
+                summary_result="summarized",
+                summary_attempts=summary_result.attempts,
+                recovery_reason="concurrent_update",
+            )
+            if emit_result:
+                _emit_outcome(conv_store, outcome)
+            return outcome
+        except _InvalidCompactionCandidate as exc:
+            outcome = CompactionOutcome(
+                "blocked_irreducible_context",
+                before_tokens,
+                before_tokens,
+                durable=False,
+                fallback_result="no_safe_boundary",
+                recovery_reason="invalid_tool_history_candidate",
+                error_type=exc.issue_code,
+            )
+            if emit_result:
+                _emit_outcome(conv_store, outcome)
+            return outcome
         except Exception as exc:  # noqa: BLE001 - typed blocked outcome, old state retained
             log.warning("compactor: durable replacement failed (%s)", type(exc).__name__)
             outcome = CompactionOutcome(
@@ -375,11 +445,53 @@ def local_compaction_fallback(
     the tool call/result structure and all user-authored content. Unknown or
     multimodal payloads are left untouched and can therefore remain blocked.
     """
+    before_tokens = _memory_tokens(memory)
+    source_issue = _tool_history_issue_code(
+        memory._messages,
+        _memory_summary(memory),
+        _memory_max_tokens(memory),
+    )
+    if source_issue:
+        return CompactionOutcome(
+            "blocked_irreducible_context",
+            before_tokens,
+            before_tokens,
+            durable=False,
+            fallback_result="no_safe_boundary",
+            recovery_reason="invalid_tool_history",
+            error_type=source_issue,
+        )
+    expected_messages = copy.deepcopy(list(memory._messages))
+    expected_summary = _memory_summary(memory)
     prepared = _prepare_local_compaction_fallback(memory, max_input_tokens=max_input_tokens)
     if prepared.messages is None:
         return prepared.outcome
     try:
-        _replace_state(memory, prepared.messages, prepared.summary)
+        _replace_state(
+            memory,
+            prepared.messages,
+            prepared.summary,
+            expected_messages=expected_messages,
+            expected_summary=expected_summary,
+        )
+    except _ConcurrentCompactionUpdate:
+        return replace(
+            prepared.outcome,
+            status="skipped_concurrent_update",
+            after_tokens=_memory_tokens(memory),
+            durable=False,
+            recovery_reason="concurrent_update",
+        )
+    except _InvalidCompactionCandidate as exc:
+        return replace(
+            prepared.outcome,
+            status="blocked_irreducible_context",
+            after_tokens=prepared.outcome.before_tokens,
+            durable=False,
+            error_type=exc.issue_code,
+            fallback_result="no_safe_boundary",
+            recovery_reason="invalid_tool_history_candidate",
+        )
     except Exception as exc:  # noqa: BLE001 - durable commit is the publish boundary
         log.warning("compactor: local replacement failed (%s)", type(exc).__name__)
         return replace(
@@ -538,6 +650,23 @@ def _candidate_memory_tokens(
     return _memory_tokens(candidate_memory)
 
 
+def _tool_history_issue_code(
+    messages: Sequence[object],
+    summary: str | None,
+    max_tokens: int,
+) -> str:
+    """Return a bounded validator issue code without repairing or mutating state."""
+    from lauren_ai._memory import ShortTermMemory as _ShortTermMemory  # noqa: PLC0415
+
+    candidate = _ShortTermMemory(max_tokens=max(1, max_tokens))
+    candidate._messages = copy.deepcopy(list(messages))
+    candidate._summary = summary
+    report = candidate.validate_tool_history()
+    if report.ok:
+        return ""
+    return str(getattr(report.first_issue, "code", "validation_failed"))[:64]
+
+
 def _has_reducible_tool_output(messages: list[object]) -> bool:
     return any(_tool_result_text_segments(message) for message in messages)
 
@@ -676,9 +805,41 @@ def _excerpt_text(text: str, retained_chars: int) -> str:
 
 
 def _replace_state(
-    memory: ShortTermMemory, messages: Sequence[object], summary: str | None
+    memory: ShortTermMemory,
+    messages: Sequence[object],
+    summary: str | None,
+    *,
+    expected_messages: Sequence[object] | None = None,
+    expected_summary: str | None = None,
 ) -> None:
-    """Publish a prepared replacement through the durable memory contract."""
+    """Publish only if the source snapshot still owns the live conversation.
+
+    Compaction may await a remote summary or exact token count. A session turn
+    can append tool calls/results during that wait, so replacing the projection
+    without comparing it to the source snapshot can overwrite newer history.
+    The comparison and replacement contain no await point; in the normal
+    single-event-loop session this is an atomic compare-and-swap boundary.
+    """
+    from lauren_ai._memory import ShortTermMemory as _ShortTermMemory  # noqa: PLC0415
+
+    candidate_memory = _ShortTermMemory(max_tokens=_memory_max_tokens(memory))
+    candidate_memory._messages = copy.deepcopy(list(messages))
+    candidate_memory._summary = summary
+    report = candidate_memory.validate_tool_history()
+    if not report.ok:
+        issue = report.first_issue
+        raise _InvalidCompactionCandidate(getattr(issue, "code", "validation_failed"))
+
+    if expected_messages is not None:
+        current_messages = memory._messages
+        current_summary = _memory_summary(memory)
+        if (
+            list(current_messages or ()) != list(expected_messages)
+            or current_summary != expected_summary
+        ):
+            raise _ConcurrentCompactionUpdate(
+                "conversation changed while compaction was in progress"
+            )
     if isinstance(memory, _ReplaceStateMemory):
         memory.replace_state(messages, summary)
         return
@@ -697,6 +858,12 @@ def _memory_tokens(memory: ShortTermMemory) -> int:
     if isinstance(summary, str) and summary:
         estimate += max(1, (len(summary) + 2) // 3)
     return estimate
+
+
+def _memory_max_tokens(memory: ShortTermMemory) -> int:
+    """Read the optional memory capacity from full memories or test adapters."""
+    value = getattr(memory, "max_tokens", 40_000)
+    return max(1, value) if isinstance(value, int) and not isinstance(value, bool) else 40_000
 
 
 def _memory_summary(memory: ShortTermMemory) -> str | None:
@@ -725,6 +892,8 @@ def _emit_outcome(conv_store: ConversationStore | None, outcome: CompactionOutco
         "current_input_exceeds_budget": "current input exceeds the usable context budget",
         "no_protocol_safe_boundary": "no protocol-safe history boundary can fit",
         "summary_not_reducing_context": "summary did not reduce the context",
+        "invalid_tool_history": "source conversation failed tool-history validation",
+        "invalid_tool_history_candidate": "candidate failed tool-history validation",
         "compaction_commit_failed": "durable compaction could not be committed",
         "exact_count_over_budget": "candidate still exceeds the exact provider token budget",
         "": "",
@@ -740,6 +909,10 @@ def _emit_outcome(conv_store: ConversationStore | None, outcome: CompactionOutco
         label = (
             "⎋ Compaction summary unavailable "
             f"({outcome.summary_result}; {outcome.summary_attempts} attempts); conversation unchanged"
+        )
+    elif outcome.status == "skipped_concurrent_update":
+        label = (
+            "⎋ Compaction skipped: conversation changed while it was running; newer history kept"
         )
     elif outcome.status == "blocked_durability_error":
         label = "⎋ Compaction blocked: durable memory could not be committed"

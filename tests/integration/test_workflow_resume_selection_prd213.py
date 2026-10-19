@@ -33,6 +33,34 @@ async def test_latest_checkpoint_resume_rehydrates_selection_before_dispatch(
     )
     ctx.session_conversation = conversation
     ctx.session_memory = conversation.memory
+    from agenthicc.memory.tool_history import ToolHistoryRecoveryState
+
+    conversation.memory.restore(
+        [
+            {"role": "user", "content": "inspect"},
+            {
+                "role": "assistant",
+                "content": [{"type": "tool_use", "id": "late-call", "name": "Read", "input": {}}],
+            },
+            {
+                "role": "assistant",
+                "content": [{"type": "tool_use", "id": "later-call", "name": "Read", "input": {}}],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "later-call",
+                        "content": "later result",
+                    }
+                ],
+            },
+        ]
+    )
+    conversation.memory._tool_history_recovery = ToolHistoryRecoveryState(
+        "repair_required", ("non_adjacent_results",), True
+    )
     store = WorkflowCheckpointStore(conversation.conversation_id, root=tmp_path / "checkpoints")
     session._workflow_recovery = WorkflowRecoveryCoordinator(
         conversation.conversation_id,
@@ -87,6 +115,8 @@ async def test_latest_checkpoint_resume_rehydrates_selection_before_dispatch(
 
     try:
         assert session._handle_workflow_resume(None) is True
+        assert conversation.tool_history_recovery.provider_ready is True
+        assert conversation.memory.validate_tool_history().ok
         # This assertion is synchronous with the accepted persisted transition:
         # it does not wait for the scheduled agent task to run.
         assert session._workflow_override == RecoveredWorkflow.name
@@ -100,7 +130,7 @@ async def test_latest_checkpoint_resume_rehydrates_selection_before_dispatch(
 
         await asyncio.wait_for(started.wait(), timeout=1)
         await asyncio.sleep(0)
-        assert published == [
+        assert published[-1:] == [
             (
                 "workflow_resume_started",
                 {
@@ -110,6 +140,7 @@ async def test_latest_checkpoint_resume_rehydrates_selection_before_dispatch(
                 },
             )
         ]
+        assert published[0][0] == "session_readiness_changed"
 
         task = session._agent_task
         assert task is not None

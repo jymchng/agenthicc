@@ -113,12 +113,26 @@ def test_headless_session_and_workflow_resume_selection(monkeypatch: pytest.Monk
     )
     session = SimpleNamespace(
         session_id="selected-session",
-        session_conversation=object(),
+        session_conversation=SimpleNamespace(
+            retry_tool_history_recovery=lambda: SimpleNamespace(provider_ready=True)
+        ),
         workspace_scope=SimpleNamespace(primary_root="/repo"),
         workflow_registry=object(),
         cfg=SimpleNamespace(execution=SimpleNamespace(profile="profile")),
     )
     assert headless._select_headless_workflow_resume(session, "goal_flow") == "workflow-run"
+    from agenthicc.memory.tool_history import (
+        ToolHistoryRecoveryRequired,
+        ToolHistoryRecoveryState,
+    )
+
+    session.session_conversation = SimpleNamespace(
+        retry_tool_history_recovery=lambda: ToolHistoryRecoveryState(
+            "repair_required", ("missing_results",), True
+        )
+    )
+    with pytest.raises(ToolHistoryRecoveryRequired):
+        headless._select_headless_workflow_resume(session, "goal_flow")
     session.session_conversation = None
     assert headless._select_headless_workflow_resume(session, "goal_flow") is None
     resume_id, lease = _resolve_headless_session(CLIContext(continue_session=False))
@@ -154,6 +168,76 @@ async def test_execute_workflow_rejects_invalid_requests_before_provider_calls()
         await execute_workflow(session, "available", "  ")
     with pytest.raises(ValueError, match="durable session conversation"):
         await execute_workflow(session, "available", "intent", resume_run_id="run")
+
+
+@pytest.mark.asyncio
+async def test_execute_workflow_retries_history_repair_and_blocks_before_workflow_start(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agenthicc.memory.tool_history import ToolHistoryRecoveryState
+    from tests.unit.test_workflow_cli import _make_plugin
+
+    plugin = _make_plugin("history_gate")
+    session, conversation, _store = _workflow_session(plugin, tmp_path)
+    conversation.memory._tool_history_recovery = ToolHistoryRecoveryState(
+        "repair_required", ("non_adjacent_results", "missing_results"), True
+    )
+    attempts: list[bool] = []
+
+    def remains_blocked() -> ToolHistoryRecoveryState:
+        attempts.append(True)
+        return ToolHistoryRecoveryState(
+            "irrecoverable", ("non_adjacent_results", "missing_results"), True
+        )
+
+    monkeypatch.setattr(conversation, "retry_tool_history_recovery", remains_blocked)
+    try:
+        result = await execute_workflow(session, plugin.name, "resume the saved workflow")
+        assert result.status == "blocked"
+        assert result.failure_category == "tool_history_recovery_required"
+        assert "non_adjacent_results, missing_results" in (result.error or "")
+        assert result.run_id == ""
+        assert attempts == [True]
+        assert session.app_state.workflow_run() is None
+    finally:
+        conversation.close()
+
+
+@pytest.mark.asyncio
+async def test_execute_workflow_continues_after_local_history_repair(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    from agenthicc.memory.tool_history import ToolHistoryRecoveryState
+    from tests.unit.test_workflow_cli import _make_plugin
+
+    plugin = _make_plugin("history_repaired")
+    session, conversation, _store = _workflow_session(plugin, tmp_path)
+    conversation.memory._tool_history_recovery = ToolHistoryRecoveryState(
+        "repair_required", ("non_adjacent_results",), True
+    )
+    attempts: list[bool] = []
+
+    def repair_history() -> ToolHistoryRecoveryState:
+        attempts.append(True)
+        state = ToolHistoryRecoveryState("repaired", (), True)
+        conversation.memory._tool_history_recovery = state
+        return state
+
+    monkeypatch.setattr(conversation, "retry_tool_history_recovery", repair_history)
+    processor_task = asyncio.create_task(session.processor.run())
+    try:
+        await asyncio.sleep(0)
+        result = await execute_workflow(session, plugin.name, "continue the saved workflow")
+        assert result.status == "complete", result.error
+        assert attempts == [True]
+    finally:
+        await session.processor.stop()
+        await processor_task
+        conversation.close()
 
 
 @pytest.mark.asyncio

@@ -93,6 +93,15 @@ class SessionSnapshot:
     terminals_running: int = 0
     last_event_sequence: int = 0
     capabilities: tuple[str, ...] = ()
+    readiness: dict[str, object] = field(
+        default_factory=lambda: {
+            "session_viewable": True,
+            "provider_history_status": "unknown",
+            "provider_history_ready": None,
+            "workflow_recovery_status": "unknown",
+            "workflow_resumable": None,
+        }
+    )
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, object]) -> SessionSnapshot:
@@ -145,6 +154,7 @@ class SessionSnapshot:
             terminals_running=integer("terminals_running"),
             last_event_sequence=integer("last_event_sequence"),
             capabilities=tuple(item for item in raw_capabilities if isinstance(item, str)),
+            readiness=mapping("readiness"),
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -166,6 +176,7 @@ class SessionSnapshot:
             "terminals_running": self.terminals_running,
             "last_event_sequence": self.last_event_sequence,
             "capabilities": list(self.capabilities),
+            "readiness": dict(self.readiness),
         }
 
 

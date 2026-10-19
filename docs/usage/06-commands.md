@@ -16,7 +16,7 @@ The canonical registry is `BUILTIN_COMMANDS` in
 | `/config` | — | Open the configuration overlay |
 | `/expand` | `[tool-id-or-@path]` | Expand a collapsed tool group |
 | `/help` | `[/command]` | Show help |
-| `/history` | — | Show history |
+| `/history` | `[repair]` | Browse transcript history; `/history repair` retries safe local tool-history repair |
 | `/init` | `[write] [--force]` | Create the AGENTS.md / config scaffold |
 | `/mcp` | `[status\|reload\|connect NAME\|disconnect NAME\|refresh NAME\|doctor [NAME]]` | MCP status and control |
 | `/model` | `[provider] [model]` | Switch model |

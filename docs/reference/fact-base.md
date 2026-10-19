@@ -134,7 +134,7 @@ The canonical registry is `BUILTIN_COMMANDS`
 | `/config` | — | — | `src/agenthicc/commands/builtins.py:940` |
 | `/expand` | `[tool-id-or-@path]` | — | `src/agenthicc/commands/builtins.py:947` |
 | `/help` | `[/command]` | — | `src/agenthicc/commands/builtins.py:954` |
-| `/history` | — | — | `src/agenthicc/commands/builtins.py:961` |
+| `/history` | `[repair]` | — | `src/agenthicc/commands/builtins.py:401` |
 | `/init` | `[write] [--force]` | — | `src/agenthicc/commands/builtins.py:967` |
 | `/mcp` | `[status\|reload\|connect NAME\|disconnect NAME\|refresh NAME\|doctor [NAME]]` | — | `src/agenthicc/commands/builtins.py:974` |
 | `/model` | `[provider] [model]` | — | `src/agenthicc/commands/builtins.py:983` |

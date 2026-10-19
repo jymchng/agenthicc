@@ -11,6 +11,7 @@ call sites continue to work without modification.
 from __future__ import annotations
 
 import asyncio
+import copy
 import inspect
 import json
 import logging
@@ -141,22 +142,22 @@ def _preserve_interrupted_memory(memory: object | None) -> bool:
     """
     if memory is None:
         return False
+    from lauren_ai._memory import ShortTermMemory as _ShortTermMemory  # noqa: PLC0415
+
+    if not isinstance(memory, _ShortTermMemory):
+        # Older/lightweight SessionContext implementations may expose an
+        # append-only memory facade. There is no provider-history repair to do
+        # unless the object implements Lauren-ai's canonical memory contract.
+        return False
     if repair_non_adjacent_tool_history(memory):
         return True
-    before = list(getattr(memory, "_messages", ()))
-    persist_heal = getattr(memory, "ensure_valid_and_persist", None)
-    if callable(persist_heal):
-        changed = persist_heal()
-        return (
-            bool(changed)
-            if isinstance(changed, bool)
-            else before != list(getattr(memory, "_messages", ()))
-        )
-    ensure_valid = getattr(memory, "ensure_valid", None)
-    if callable(ensure_valid):
-        ensure_valid()
-        return before != list(getattr(memory, "_messages", ()))
-    return False
+    before = copy.deepcopy(memory._messages)
+    from agenthicc.memory.journaled import JournaledShortTermMemory  # noqa: PLC0415
+
+    if isinstance(memory, JournaledShortTermMemory):
+        return memory.ensure_valid_and_persist()
+    memory.ensure_valid()
+    return before != memory._messages
 
 
 # ── Permanent-error detection (PRD-117) ───────────────────────────────────────
@@ -1788,6 +1789,9 @@ class AgentTurnRunner:
             CompactionOutcome,
             CompactionRecoveryRequired,
             _emit_outcome,
+            _ConcurrentCompactionUpdate,
+            _InvalidCompactionCandidate,
+            _memory_summary,
             _prepare_local_compaction_fallback,
             _replace_state,
             compact_memory_with_result,
@@ -1814,16 +1818,26 @@ class AgentTurnRunner:
             _emit_outcome(ctx.conv_store, outcome)
             return True
 
+        if outcome.status == "skipped_concurrent_update":
+            _emit_outcome(ctx.conv_store, outcome)
+            if force:
+                raise CompactionRecoveryRequired(outcome)
+            return False
+
         if outcome.status == "blocked_durability_error":
             _emit_outcome(ctx.conv_store, outcome)
             raise CompactionRecoveryRequired(outcome)
 
+        expected_messages = copy.deepcopy(list(memory._messages))
+        expected_summary = _memory_summary(memory)
         prepared = _prepare_local_compaction_fallback(
             memory,
             max_input_tokens=max_input_tokens,
         )
         fallback = prepared.outcome
         if prepared.messages is not None:
+            from dataclasses import replace  # noqa: PLC0415
+
             candidate_request = list(prepared.messages)
             if not _has_trailing_user_message(candidate_request, request_text):
                 candidate_request.append({"role": "user", "content": request_text})
@@ -1865,24 +1879,58 @@ class AgentTurnRunner:
                 candidate_count is None or candidate_count <= max_input_tokens
             ):
                 try:
-                    _replace_state(memory, prepared.messages, prepared.summary)
-                    from dataclasses import replace  # noqa: PLC0415
-
+                    _replace_state(
+                        memory,
+                        prepared.messages,
+                        prepared.summary,
+                        expected_messages=expected_messages,
+                        expected_summary=expected_summary,
+                    )
                     fallback = replace(
                         prepared.outcome,
                         after_tokens=memory.token_estimate,
                         durable=True,
                     )
                 except Exception as exc:  # noqa: BLE001 - keep old projection on commit failure
-                    fallback = CompactionOutcome(
-                        "blocked_durability_error",
-                        prepared.outcome.before_tokens,
-                        prepared.outcome.before_tokens,
-                        durable=False,
-                        error_type=type(exc).__name__[:96],
-                        fallback_result="durability_error",
-                        recovery_reason="compaction_commit_failed",
-                    )
+                    if isinstance(exc, _ConcurrentCompactionUpdate):
+                        fallback = replace(
+                            prepared.outcome,
+                            status="skipped_concurrent_update",
+                            after_tokens=memory.token_estimate,
+                            durable=False,
+                            recovery_reason="concurrent_update",
+                        )
+                        combined = replace(
+                            fallback,
+                            summary_result=outcome.summary_result,
+                            summary_attempts=outcome.summary_attempts,
+                            summary_error_type=outcome.summary_error_type,
+                            error_type=outcome.error_type,
+                        )
+                        _emit_outcome(ctx.conv_store, combined)
+                        if force:
+                            raise CompactionRecoveryRequired(combined)
+                        return False
+                    if isinstance(exc, _InvalidCompactionCandidate):
+                        fallback = replace(
+                            prepared.outcome,
+                            status="blocked_irreducible_context",
+                            after_tokens=prepared.outcome.before_tokens,
+                            durable=False,
+                            error_type=exc.issue_code,
+                            fallback_result="no_safe_boundary",
+                            recovery_reason="invalid_tool_history_candidate",
+                        )
+                    else:
+                        fallback = CompactionOutcome(
+                            "blocked_durability_error",
+                            prepared.outcome.before_tokens,
+                            prepared.outcome.before_tokens,
+                            durable=False,
+                            error_type=type(exc).__name__[:96],
+                            fallback_result="durability_error",
+                            recovery_reason="compaction_commit_failed",
+                        )
             elif prepared.messages is not None:
                 fallback = CompactionOutcome(
                     "blocked_irreducible_context",
@@ -2093,6 +2141,21 @@ class AgentTurnRunner:
         from lauren_ai._config import AgentConfig as _AgentConfig  # noqa: PLC0415
 
         ctx = self._ctx
+
+        from agenthicc.memory.journaled import JournaledShortTermMemory  # noqa: PLC0415
+
+        if isinstance(ctx.session_memory, JournaledShortTermMemory):
+            repaired_history = ctx.session_memory.ensure_provider_ready()
+            if repaired_history and ctx.conv_store is not None:
+                ctx.conv_store.append_event(
+                    "system",
+                    {
+                        "text": (
+                            "Tool execution history was repaired before continuing; "
+                            "completed work was preserved."
+                        )
+                    },
+                )
 
         # A cancellation/resume race can leave a result block behind a queued
         # user message. Repair the persisted projection before Lauren-ai's

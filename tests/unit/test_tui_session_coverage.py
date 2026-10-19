@@ -85,6 +85,7 @@ def _make_session(
         mode_manager=mode_manager,
         command_bus=bus,
         session_id="tui-coverage",
+        session_conversation=None,
         model_label="test/model",
         console=Console(record=True),
         session_memory=memory,
@@ -759,6 +760,34 @@ async def test_tui_resume_workflow_task_and_compact_branches(
 
 
 @pytest.mark.asyncio
+async def test_manual_compaction_does_not_run_while_session_conversation_is_owned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agenthicc.runners.session_conversation import ConversationBusyError
+
+    session, ctx, _workspace, _input = _make_session()
+    compact_started = False
+
+    class BusyConversation:
+        async def acquire(self, _owner_id: str) -> None:
+            raise ConversationBusyError("agent turn owns the conversation")
+
+        def release(self, _owner_id: str) -> None:
+            raise AssertionError("a failed acquisition must not be released")
+
+    async def compact() -> None:
+        nonlocal compact_started
+        compact_started = True
+
+    ctx.session_conversation = BusyConversation()
+    monkeypatch.setattr(session, "_compact_session_memory", compact)
+
+    await session._handle_compact_command()
+
+    assert compact_started is False
+
+
+@pytest.mark.asyncio
 async def test_tui_run_registers_handlers_and_stops_cleanly() -> None:
     session, ctx, workspace, input_session = _make_session()
 
@@ -769,6 +798,39 @@ async def test_tui_run_registers_handlers_and_stops_cleanly() -> None:
     await session.run()
     assert workspace.started and workspace.stopped
     assert ctx.command_bus._handlers
+
+
+@pytest.mark.asyncio
+async def test_session_context_startup_failure_releases_foreground_lease(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agenthicc.runners import tui_session
+    from agenthicc.runners.tui_session import _build_session_context
+
+    class OwnerLease:
+        session_id = "failed-open-session"
+
+        def __init__(self) -> None:
+            self.released = False
+
+        def release(self) -> None:
+            self.released = True
+
+    owner_lease = OwnerLease()
+
+    async def fail_session_construction(*_args: object, **_kwargs: object) -> object:
+        raise RuntimeError("conversation startup failed")
+
+    monkeypatch.setattr(tui_session, "_build_session_context_impl", fail_session_construction)
+    with pytest.raises(RuntimeError, match="conversation startup failed"):
+        await _build_session_context(
+            "failed-open-session",
+            [],
+            headless=True,
+            owner_lease=owner_lease,
+        )
+
+    assert owner_lease.released is True
 
 
 @pytest.mark.asyncio

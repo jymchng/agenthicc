@@ -139,3 +139,64 @@ async def test_make_book_end_to_end_records_verified_phase_receipts(tmp_path: Pa
     assert restored.shared_memory == "rehydrated"
     assert restored.toc_manifest_path == context.toc_manifest_path
     assert restored.transition_receipts == context.transition_receipts
+
+
+@pytest.mark.asyncio
+async def test_resumed_failed_chapter_checkpoint_revalidates_existing_artifact(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "resumed-book"
+    runner = object.__new__(MakeBookRunner)
+    runner._cfg = _runner_config()
+    context = MakeBookWorkflow.checkpoint_context_from_payload(
+        {
+            "intent": "write a technical book",
+            "run_id": "e2e-original-run",
+            "state": "FAILED",
+            "output_dir": str(output),
+            "assets_dir": str(output / "assets"),
+            "current_chapter_index": 0,
+            "fail_reason": "chapter 1 never confirmed completion",
+            "chapters": [
+                {
+                    "index": 0,
+                    "title": "First Chapter",
+                    "outline": "Keep the first chapter intact",
+                    "status": "pending",
+                }
+            ],
+        },
+        memory=object(),
+    )
+    chapter = output / "chapters" / "01-first-chapter.md"
+    chapter.parent.mkdir(parents=True)
+    chapter.write_text("# First Chapter\n\nCompleted before the missing gate.\n", encoding="utf-8")
+    calls: list[str] = []
+
+    async def no_agent_turn(**kwargs: object) -> None:
+        calls.append(str(kwargs.get("text", "")))
+        raise AssertionError("validated chapter recovery should not regenerate the artifact")
+
+    async def finish_layout(
+        _context: object,
+        _memory: object,
+        *,
+        final: bool,
+    ) -> object:
+        assert final is False
+        from agenthicc.workflows.make_book.runner import MakeBookState
+
+        return MakeBookState.COMPLETE
+
+    runner.run_phase = no_agent_turn  # type: ignore[method-assign]
+    runner._layout_review = finish_layout  # type: ignore[method-assign]
+
+    resumed = await runner.resume(context)
+
+    assert resumed.state.name == "COMPLETE"
+    assert resumed.run_id == "e2e-original-run"
+    assert resumed.current_chapter_index == 1
+    assert resumed.chapters[0].status == "written"
+    assert resumed.chapters[0].file_path == "chapters/01-first-chapter.md"
+    assert [receipt["phase"] for receipt in resumed.transition_receipts] == ["chapter"]
+    assert calls == []

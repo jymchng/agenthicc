@@ -253,6 +253,36 @@ async def test_worker_success_workflow_failure_and_timeout(
     assert compaction_session.failure_category == "compaction_persistence_failed"
     assert compaction_session.worker_exit_reason == "compaction_persistence_failed"
 
+    store.create(_session(tmp_path, "worker-history-recovery"))
+    monkeypatch.setattr(
+        headless,
+        "execute_workflow",
+        lambda *args, **kwargs: asyncio.sleep(
+            0,
+            result=SimpleNamespace(
+                status="blocked",
+                error="Conversation history requires repair",
+                failure_category="tool_history_recovery_required",
+            ),
+        ),
+    )
+    history_request = WorkerRequest(
+        "worker-history-recovery",
+        "demo",
+        "work",
+        str(tmp_path),
+        None,
+        (),
+        False,
+        detached_goal=True,
+    )
+    assert await worker.run_worker(history_request, store) == 0
+    history_session = store.get("worker-history-recovery")
+    assert history_session.status is SessionStatus.ORPHANED
+    assert history_session.failure_category == "tool_history_recovery_required"
+    assert history_session.worker_exit_reason == "tool_history_recovery_required"
+    assert history_session.latest_activity == "Conversation history needs recovery"
+
     from agenthicc.memory.compactor import CompactionOutcome, CompactionRecoveryRequired
 
     async def fail_compaction(*args: object, **kwargs: object) -> None:

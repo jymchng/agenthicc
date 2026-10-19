@@ -28,6 +28,7 @@ def _optional_field(value: object, name: str, default: object = None) -> object:
 if TYPE_CHECKING:
     from lauren_ai._agents._runner import AgentRunnerBase
     from lauren_ai._config import LLMConfig
+    from lauren_ai._memory import ShortTermMemory
     from agenthicc.cli.context import CLIContext, CLIFlags
     from agenthicc.config import AgenthiccConfig
     from agenthicc.config import CloakBrowserSettings, PlaywrightSettings
@@ -54,6 +55,7 @@ if TYPE_CHECKING:
     from agenthicc.tools.base import ToolLike
     from agenthicc.tools.cloakbrowser.session import BrowserSessionManager
     from agenthicc.background.terminals import TerminalManager
+    from agenthicc.memory.tool_history import ToolHistoryRecoveryState
 
 
 def _make_session_tools(
@@ -111,7 +113,7 @@ async def _run_agent_turn(*args: object, **kwargs: object) -> None:
     await typed_runner(*args, **kwargs)
 
 
-def _preserve_interrupted_memory(memory: object | None) -> bool:
+def _preserve_interrupted_memory(memory: ShortTermMemory | None) -> bool:
     """Lazy compatibility shim for the interruption recovery path."""
     from agenthicc.runners.agent_turn import (  # noqa: PLC0415
         _preserve_interrupted_memory as preserve,
@@ -1496,6 +1498,8 @@ class TUISession:
             next_queued_message=self._next_queued_message,
         )
         self._restore_paused_workflow()
+        self._publish_session_readiness()
+        self._notify_tool_history_recovery()
         self._sync_terminal_status()
 
     # ── internal helpers ──────────────────────────────────────────────────────
@@ -1503,6 +1507,96 @@ class TUISession:
     def _set_pending_skill(self, body: str) -> None:
         self._pending_skill_body.clear()
         self._pending_skill_body.append(body)
+
+    def _tool_history_state(self) -> ToolHistoryRecoveryState | None:
+        """Read the session conversation's redacted provider-readiness state."""
+        from agenthicc.runners.session_conversation import (  # noqa: PLC0415
+            SessionConversation,
+        )
+
+        conversation = self._ctx.session_conversation
+        return (
+            conversation.tool_history_recovery
+            if isinstance(conversation, SessionConversation)
+            else None
+        )
+
+    def _tool_history_blocked(self) -> bool:
+        state = self._tool_history_state()
+        return state is not None and not state.provider_ready
+
+    def _notify_tool_history_recovery(self) -> None:
+        """Keep an unready session inspectable and show the safe repair action."""
+        state = self._tool_history_state()
+        if state is None or state.provider_ready:
+            return
+        summary = (
+            ", ".join(code[:64] for code in state.issue_codes[:4]) or "history validation failed"
+        )
+        if state.status == "journal_corrupt":
+            message = (
+                "⚠ Session history is preserved and can be inspected, but agent/workflow "
+                f"requests are blocked ({summary}). Automatic repair is disabled because "
+                "the journal tail may contain skipped records; preserve the journal and "
+                "restore only from a known-good backup."
+            )
+        else:
+            message = (
+                "⚠ Session history is preserved and can be inspected, but agent/workflow "
+                f"requests are blocked ({summary}). Run /history repair to retry safe local repair."
+            )
+        self._ctx.app_state.conversation.notify_transient(message)
+
+    def _repair_session_history(
+        self,
+        *,
+        success_message: str = (
+            "✓ Conversation history is provider-ready. Resume the saved workflow explicitly if needed."
+        ),
+    ) -> ToolHistoryRecoveryState:
+        """Retry deterministic local repair without sending a provider request."""
+        conversation = self._ctx.session_conversation
+        if conversation is None:
+            raise RuntimeError("session conversation recovery is unavailable")
+        state = conversation.retry_tool_history_recovery()
+        self._publish_session_readiness()
+        if state.provider_ready:
+            self._ctx.app_state.conversation.notify_transient(success_message)
+        else:
+            self._notify_tool_history_recovery()
+        return state
+
+    def _publish_session_readiness(self) -> None:
+        """Publish only bounded recovery readiness, never transcript contents."""
+        state = self._tool_history_state()
+        if state is None:
+            provider_status = "unknown"
+            provider_ready: bool | None = None
+        else:
+            provider_status = state.status
+            provider_ready = state.provider_ready
+
+        candidates = self._workflow_recovery_records
+        errors = self._workflow_recovery_errors
+        if candidates:
+            workflow_status = "resumable"
+            workflow_resumable: bool | None = True
+        elif errors:
+            workflow_status = "blocked"
+            workflow_resumable = False
+        else:
+            workflow_status = "none"
+            workflow_resumable = False
+        self._publish_session_event(
+            "session_readiness_changed",
+            {
+                "session_viewable": True,
+                "provider_history_status": provider_status,
+                "provider_history_ready": provider_ready,
+                "workflow_recovery_status": workflow_status,
+                "workflow_resumable": workflow_resumable,
+            },
+        )
 
     def _loop_is_idle(self) -> bool:
         """Return whether a loop may enqueue one normal user turn."""
@@ -2243,6 +2337,7 @@ class TUISession:
             cancel_active=self._cancel_active_task,
             list_workflow_runs=self._list_workflow_runs,
             resume_workflow=self._resume_workflow_from_overlay,
+            repair_session_history=self._repair_session_history,
             loop_manager=vars(self).get("_loop_manager"),
             schedule_manager=schedule_manager,
             schedule_repository_root=schedule_repository_root,
@@ -2733,6 +2828,16 @@ class TUISession:
         drift between the two command forms.
         """
         conv = self._ctx.app_state.conversation
+        if self._tool_history_blocked():
+            # A persisted history can be blocked at startup because a previous
+            # process stopped between a tool call and its durable result. Retry
+            # Agenthicc's deterministic, journal-backed repair before refusing
+            # an explicit workflow resume. This never contacts the provider.
+            recovery = self._repair_session_history(
+                success_message="✓ Conversation history repaired; continuing workflow resume."
+            )
+            if not recovery.provider_ready:
+                return True
         if self._agent_task is not None and not self._agent_task.done():
             conv.notify_transient("⚠ Cannot resume a workflow while another run is active")
             return True
@@ -2887,6 +2992,31 @@ class TUISession:
 
     async def _handle_compact_command(self) -> None:
         """Handle /compact — compact the current session memory (PRD-119)."""
+        from agenthicc.runners.session_conversation import (  # noqa: PLC0415
+            ConversationBusyError,
+        )
+
+        ctx = self._ctx
+        conversation = ctx.session_conversation
+        owner_id = f"manual_compaction:{uuid.uuid4().hex}"
+        acquired = False
+        if conversation is not None:
+            try:
+                await conversation.acquire(owner_id)
+                acquired = True
+            except ConversationBusyError:
+                ctx.app_state.conversation.notify_transient(
+                    "⚠ Cannot compact while an agent turn is using the conversation"
+                )
+                return
+        try:
+            await self._compact_session_memory()
+        finally:
+            if acquired and conversation is not None:
+                conversation.release(owner_id)
+
+    async def _compact_session_memory(self) -> None:
+        """Run compaction while owning the session conversation boundary."""
         from agenthicc.memory.compactor import compact_memory_with_result  # noqa: PLC0415
 
         ctx = self._ctx
@@ -2926,6 +3056,10 @@ class TUISession:
         elif outcome.status == "blocked_durability_error":
             conv.notify_transient(
                 "⚠ Compaction was not committed; conversation history is preserved"
+            )
+        elif outcome.status == "skipped_concurrent_update":
+            conv.notify_transient(
+                "⎋ Compaction skipped because the conversation changed; newer history was kept"
             )
         else:
             conv.notify_transient(
@@ -3093,6 +3227,10 @@ class TUISession:
                 if self._agent_task is not None and not self._agent_task.done():
                     return
                 continue
+            if self._tool_history_blocked():
+                self._notify_tool_history_recovery()
+                notice_kept = True
+                continue
             self._ctx.app_state.conversation.notification.set(None)
             self._ctx.app_state.conversation.append_event("user_message", {"text": msg})
             if self._start_workflow_continuation(msg):
@@ -3121,6 +3259,10 @@ class TUISession:
         from agenthicc.tui.input.unified_session import InputMode  # noqa: PLC0415
 
         ctx = self._ctx
+
+        if self._tool_history_blocked():
+            self._notify_tool_history_recovery()
+            return
 
         self._input_session.set_mode(InputMode.STREAMING)
         ctx.approval_svc.reset_turn_memory()

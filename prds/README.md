@@ -115,6 +115,7 @@ against the current source before implementing them.
 - [PRD-244 — Fast Live-Session Attach with On-Demand Transcript History (implemented)](prd-244-fast-live-session-attach.md)
 - [PRD-245 — Recoverable Background Handoff After Abrupt Process Exit (implemented)](prd-245-recoverable-background-handoff-after-process-kill.md)
 - [PRD-246 — Actionable Recovery When Conversation Compaction Has No Summary (implemented)](prd-246-actionable-empty-summary-compaction-recovery.md)
+- [PRD-247 — Recover and Open Sessions When Tool-History Repair Fails (implemented)](prd-247-recover-session-when-tool-history-repair-fails.md)
 
 ### PRD-220–239 — OpenCode, Claude Code, and Codex feature study
 

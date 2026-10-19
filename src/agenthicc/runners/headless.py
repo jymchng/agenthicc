@@ -163,6 +163,13 @@ def _select_headless_workflow_resume(
     conversation = getattr(session, "session_conversation", None)
     if conversation is None:
         return None
+    from agenthicc.memory.tool_history import ToolHistoryRecoveryRequired  # noqa: PLC0415
+
+    retry_recovery = getattr(conversation, "retry_tool_history_recovery", None)
+    if callable(retry_recovery):
+        recovery = retry_recovery()
+        if not recovery.provider_ready:
+            raise ToolHistoryRecoveryRequired(recovery)
     workspace_scope = getattr(session, "workspace_scope", None)
     workspace_root = str(getattr(workspace_scope, "primary_root", "") or "")
     coordinator = WorkflowRecoveryCoordinator(session.session_id)
@@ -218,6 +225,26 @@ async def execute_workflow(
     if resuming and session_conversation is None:
         raise ValueError("workflow resume requires the durable session conversation")
     if session_conversation is not None:
+        # Detached execution and foreground workflow resume share the same
+        # provider-history gate. Try deterministic local journal repair before
+        # creating/claiming a workflow handle; an irreparable transcript must
+        # not turn into an ordinary provider/workflow failure or reach an LLM.
+        recovery = session_conversation.retry_tool_history_recovery()
+        if not recovery.provider_ready:
+            codes = ", ".join(code[:64] for code in recovery.issue_codes[:4])
+            detail = codes or "validation_unavailable"
+            return WorkflowExecutionResult(
+                session_id=session.session_id,
+                workflow_name=workflow_name,
+                run_id=resume_run_id or "",
+                status="blocked",
+                phases=(),
+                error=(
+                    "Conversation history is preserved but is not provider-ready "
+                    f"(issues: {detail}); workflow execution was not started."
+                ),
+                failure_category="tool_history_recovery_required",
+            )
         checkpoint_store = WorkflowCheckpointStore(session.session_id)
         if resuming:
             from agenthicc.runners.workflow_recovery import WorkflowRecoveryCoordinator  # noqa: PLC0415
@@ -742,14 +769,27 @@ async def _run_headless_workflow_stream(ctx: "CLIContext") -> None:
                     resume_run_id=resume_run_id,
                 )
             except Exception as exc:  # noqa: BLE001
-                result = WorkflowExecutionResult(
-                    session_id=session.session_id,
-                    workflow_name=workflow_name,
-                    run_id="",
-                    status="failed",
-                    phases=(),
-                    error=f"{type(exc).__name__}: {exc}",
-                )
+                from agenthicc.memory.tool_history import ToolHistoryRecoveryRequired  # noqa: PLC0415
+
+                if isinstance(exc, ToolHistoryRecoveryRequired):
+                    result = WorkflowExecutionResult(
+                        session_id=session.session_id,
+                        workflow_name=workflow_name,
+                        run_id="",
+                        status="blocked",
+                        phases=(),
+                        error=str(exc),
+                        failure_category="tool_history_recovery_required",
+                    )
+                else:
+                    result = WorkflowExecutionResult(
+                        session_id=session.session_id,
+                        workflow_name=workflow_name,
+                        run_id="",
+                        status="failed",
+                        phases=(),
+                        error=f"{type(exc).__name__}: {exc}",
+                    )
             print(json.dumps(result.to_dict()), flush=True)
             completed_turns += 1
     finally:
