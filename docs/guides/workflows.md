@@ -107,6 +107,19 @@ Corrupt checkpoints, incompatible plugins/profiles/workspaces, cursor drift,
 and unrecoverable tool tails stay on disk for diagnosis and produce a stable
 error plus a reset/reload action. They are never replaced by a new run.
 
+Checkpoint identity is schema-aware. `WorkflowCheckpoint.workflow_name` is
+always the workflow that owns the run. The framework validates a restored
+generic `WorkflowContext.workflow_name` as that owner, but it does not infer
+identity from a field name on other typed contexts: for example,
+`CreateWorkflowContext.workflow_name` is the slug being authored and is
+preserved as domain data. A custom workflow that also stores its owner identity
+inside its context can opt in by overriding
+`WorkflowPlugin.checkpoint_context_owner_workflow_name(context)`; return the
+owner string to validate it, or `None` when that context carries no separate
+owner identity. The run ID is checked when the restored context provides one.
+These rules do not relax checkpoint owner, plugin fingerprint, topology,
+phase/index, conversation, journal, or claim validation.
+
 Provider-step recovery is separate from workflow recovery. A workflow resume
 may record `turn_recovery_started` while it rehydrates the shared journal, but
 that marker is non-terminal: a crash during rehydration leaves the interrupted

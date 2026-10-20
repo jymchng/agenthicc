@@ -1,8 +1,8 @@
 ---
 title: "PRD-243: Protocol-Safe Reasoning History and Deterministic Recovery"
 status: Proposed
-version: 1.0.0
-date: 2026-10-17
+version: 1.1.0
+date: 2026-10-19
 repository: jymchng/agenthicc
 priority: P1
 related_prds: [prd-190, prd-195, prd-198, prd-242]
@@ -13,34 +13,47 @@ tags: [reasoning-content, provider-compatibility, retries, compaction, recovery]
 
 ## 1. Executive summary
 
-An OpenAI-compatible provider rejected a request with HTTP 400:
+An OpenAI-compatible provider rejected a request with HTTP 400. The observed
+gateway-wrapped form was:
 
 ```text
-The `reasoning_content` in the thinking mode must be passed back to the API.
+Upstream request failed: [invalid_request_error] The `reasoning_content` in
+the thinking mode must be passed back to the API.
 ```
 
-Agenthicc then showed `Provider request rejected retry N/5` repeatedly for the
-same error. Investigation confirms two separate defects:
+Agenthicc then showed `Provider request rejected retry 3/5` for the same error.
+The supplied session's durable event journal confirms that the same wrapped
+error was categorized as `irrecoverable_provider` and that retry events 1/5 and
+2/5 were scheduled. The session journal also records successful compactions
+earlier in the run. Investigation confirms a retry-classification defect and
+a plausible history-transformation risk, but does not yet prove which operation
+removed the required field:
 
 1. **The repeated retries are caused by Agenthicc's broad permanent-4xx retry
    policy.** The error is a deterministic conversation-protocol rejection, but
    the retry classifier categorizes nearly every provider HTTP 400 as eligible
    for the separate `irrecoverable_error_max_retries` budget. That setting
    defaults to five retries after the initial request. The same invalid
-   conversation is therefore sent up to six times, with no changed payload.
-2. **The request history lacked a provider-required assistant field.** Current
-   lauren-ai 1.6.0 captures, stores, and serializes `reasoning_content` in the
-   ordinary response → memory → tool-result follow-up path. However, Agenthicc
-   can still produce a history without it: legacy sessions may predate that
-   contract, and Agenthicc compaction replaces history with a synthetic
-   assistant acknowledgement while omitting provider reasoning metadata.
+   conversation can be sent up to six times (the initial attempt plus five
+   retries), with no changed payload. The session journal captures retry
+   events 1/5 and 2/5; the user-visible excerpt reached retry 3/5.
+2. **The provider rejected the serialized request history for missing a
+   required assistant field.** Current lauren-ai 1.6.0 captures, stores, and
+   serializes `reasoning_content` in the ordinary response → memory →
+   tool-result follow-up path. However, Agenthicc can still produce a history
+   without it: legacy sessions may predate that contract, and Agenthicc
+   compaction replaces history with a synthetic assistant acknowledgement
+   while omitting provider reasoning metadata.
 
-The supplied transcript does not include the actual serialized failed request,
-the affected journal, or a compaction event. It proves the provider rejected
-the request and that Agenthicc kept retrying; it does **not** prove whether this
-particular missing field came from compaction, a legacy journal, another
-history transformation, or an incompatible runtime. The implementation must
-diagnose that distinction safely instead of guessing.
+Session-specific evidence narrows but does not settle the source: the supplied
+session journal contains multiple successful `compacted_summary` events before
+the reasoning-history rejection, so compaction is an observed exposure in this
+run, not merely a hypothetical one. The event journal does not contain the
+serialized failed request or message-level provenance linking a particular
+assistant response to a later transformed request. Therefore it does **not**
+prove that compaction caused this missing field; a legacy record, another
+history projection, or an incompatible runtime remains possible. The
+implementation must diagnose that distinction safely instead of guessing.
 
 This PRD defines a complete fix across lauren-ai and Agenthicc: typed
 conversation-protocol errors, immediate no-retry handling for this deterministic
@@ -53,21 +66,26 @@ checkpoints intact without fabricating hidden reasoning.
 The observed sequence was:
 
 ```text
-Agent receives a successful tool result
+Agenthicc sends a request containing assistant conversation history
         ↓
-Agenthicc sends the next model request
+Gateway returns HTTP 400: [invalid_request_error]
+reasoning_content in thinking mode must be passed back
         ↓
-Provider rejects assistant history: reasoning_content missing (HTTP 400)
+Agenthicc classifies it as irrecoverable_provider
         ↓
-Agenthicc schedules permanent-error retries, attempts 2/5 through 5/5
-        ↓
-Every retry sends the same conversation and receives the same rejection
+UI shows "Provider request rejected retry 3/5"
 ```
 
 The tool command and its output are not themselves the failure. The error
 occurs when the next model request is validated. Repeated attempts waste time,
 provider quota, and user attention, while obscuring the actionable fact that
 the serialized conversation is incompatible with the selected endpoint.
+
+The `3/5` counter means the third retry from a budget of five retries; it is
+not an upstream retry instruction and does not mean the provider requested
+three attempts. The journal for the supplied session recorded retry indices
+1 and 2 with `status_code=400`, `category=irrecoverable_provider`, and
+`max_retries=5`, matching the visible third-retry report.
 
 ## 3. Evidence-based investigation
 
@@ -91,11 +109,12 @@ that classifier. This was verified against the current source.
 
 `ExecutionSettings.irrecoverable_error_max_retries` defaults to `5`. The
 shared retry helper interprets this as retries **after** the initial attempt.
-The behavior is consistent with the observed `retry 2/5` through `retry 5/5`
-notices. PRD-198 intentionally made unrelated provider 4xx errors eligible for
-a bounded retry budget, but it did not carve out deterministic conversation
-protocol errors. The TUI's “non-retryable” wording in lauren-ai's
-`_actionable_provider_message()` does not control Agenthicc's retry decision:
+The supplied UI excerpt reached `retry 3/5`; the session journal records the
+first two retry events. PRD-198 intentionally made unrelated provider 4xx
+errors eligible for a bounded retry budget, but it did not carve out
+deterministic conversation protocol errors. The TUI's “non-retryable” wording
+in lauren-ai's `_actionable_provider_message()` does not control Agenthicc's
+retry decision:
 lauren-ai still wraps the response as a generic `TransportError` with status
 400, and Agenthicc classifies by status.
 
@@ -136,7 +155,46 @@ field. Whether every gateway requires it after such a compaction depends on
 that gateway's conversation contract; Agenthicc currently records no capability
 or provenance to decide safely.
 
-### 3.5 Other possible sources are not distinguishable from this transcript
+### 3.5 Session evidence narrows the source but does not prove it
+
+The durable journal for the session supplied for investigation contains 21
+successful, durable `compacted_summary` events before the reasoning-history
+rejection; the latest is recorded before the retry events. This confirms that
+the affected session went through compaction, making it a concrete exposure to
+investigate rather than a theoretical possibility. The journal does not record
+the exact provider-bound message list or per-message reasoning-field
+provenance, however. Temporal ordering alone cannot establish that a particular
+compaction removed the required field or that the rejected request used the
+compacted projection.
+
+The journal also records two `provider_recovery_retry` events with
+`status_code=400`, `category=irrecoverable_provider`, and retry indices 1 and 2
+of 5. Their bounded error details match the upstream wrapper, the
+`invalid_request_error` classification, and the specific reasoning-replay
+message. This confirms that the observed wrapper reached Agenthicc's generic
+permanent-4xx retry path. It does not reveal the original assistant message or
+the transformation that made the request unacceptable.
+
+### 3.6 Gateway-wrapped error signature
+
+The gateway embeds the upstream error type and message in a wrapper, for
+example:
+
+```text
+Upstream request failed: [invalid_request_error] The `reasoning_content` in
+the thinking mode must be passed back to the API. (request_id: <opaque-id>)
+```
+
+Classification must handle this nested form, including a structured error
+object or a bounded exception/cause chain. `invalid_request_error` by itself
+is too broad: ordinary malformed requests, unsupported parameters, and other
+client errors must not be treated as this reasoning-history condition.
+Recognize the specific requirement that prior `reasoning_content` be replayed,
+then bypass retries. Treat the opaque request ID as optional correlation
+metadata only; it is not proof of the missing field's origin and must not cause
+raw request/response content to be logged.
+
+### 3.7 Remaining source possibilities
 
 The same provider response can result from:
 
@@ -148,10 +206,11 @@ The same provider response can result from:
 - a third-party OpenAI-compatible adapter that does not return or serialize
   this extension as expected.
 
-The pasted report contains no provider request payload, journal, response
-metadata, or compaction status. The fix must make these conditions observable
-using redacted metadata and must not claim which one happened in this specific
-run without that evidence.
+The reviewed journal provides retry and compaction-status evidence, but not the
+provider request payload, the response that introduced the required field, or
+message-level lineage across compaction and serialization. The fix must make
+these conditions observable using redacted metadata and must not claim
+compaction (or any other stage) as the cause without that evidence.
 
 ## 4. Goals
 
@@ -203,9 +262,13 @@ retryable = false
 
 The OpenAI-compatible adapter may recognize the provider's structured error
 code/type where available and a narrowly scoped, tested message signature when
-the gateway supplies only text. It must not put raw request bodies, API keys,
-or hidden reasoning in the new error. The original SDK exception may remain
-chained for debug inspection, subject to existing redaction rules.
+the gateway supplies only text. It MUST unwrap or inspect the bounded gateway
+error/cause chain so the signature remains recognizable when wrapped as
+`Upstream request failed: [invalid_request_error] ...`. The generic wrapper or
+`invalid_request_error` label alone MUST NOT trigger this classification.
+It must not put raw request bodies, API keys, or hidden reasoning in the new
+error. The original SDK exception may remain chained for debug inspection,
+subject to existing redaction rules.
 
 Agenthicc MUST classify this stable error code before generic status-based
 classification. Avoid spreading string matching across retry, TUI, worker, and
@@ -296,7 +359,8 @@ a compact diagnostic record containing only:
 ```text
 code, provider/profile/model identifiers, session/turn identifiers,
 source stage (legacy journal, compaction, serialization, or unknown),
-message ordinal or opaque message ID, retry_count=0
+message ordinal or opaque message ID, retry_count=0,
+optional bounded provider request ID
 ```
 
 Do not persist the actual reasoning value, prompt, authorization headers, raw
@@ -423,13 +487,16 @@ exact reasoning field durably associated with assistant response
 | 243.19 | Diagnostics identify a proven source stage or say `unknown`; they never claim compaction or legacy origin without evidence. |
 | 243.20 | Reasoning text, authorization, raw requests, and response bodies are absent from normal UI, durable diagnostic metadata, logs, and metrics. |
 | 243.21 | Existing non-reasoning OpenAI-compatible and Anthropic conversations retain their current request shape and behavior. |
+| 243.22 | The gateway-wrapped `Upstream request failed: [invalid_request_error] ... reasoning_content ... must be passed back` maps to the typed no-retry classification; `invalid_request_error` without that specific reasoning-replay meaning does not. |
 
 ## 9. Test plan
 
 ### 9.1 Unit tests
 
 - Parse structured and text-only provider variants of the missing-reasoning
-  400 into one typed category; reject near-match ordinary 400 messages.
+  400 into one typed category, including the gateway-wrapped
+  `[invalid_request_error]` form; reject generic invalid-request and other
+  near-match ordinary 400 messages.
 - Prove this category bypasses both retry budgets and emits no retry callback.
 - Verify unrelated provider 4xx errors still follow PRD-198's explicit
   separate budget.

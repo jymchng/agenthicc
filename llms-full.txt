@@ -1934,6 +1934,16 @@ restarting them.
 The restore hook must attach the supplied session memory and must not construct
 a second conversation.
 
+Recovery treats `WorkflowCheckpoint.workflow_name` as the canonical run owner.
+It does not infer ownership from an arbitrary context attribute named
+`workflow_name`. The default
+`checkpoint_context_owner_workflow_name(context)` hook recognizes the generic
+`WorkflowContext` owner field and returns `None` for other context schemas.
+Custom workflows may override it to return an explicitly stored owner name;
+`CreateWorkflowContext.workflow_name` is an authored workflow slug and remains
+unchanged. A restored `run_id` is validated when the context schema provides
+one.
+
 `SessionConversation` owns the stable session `conversation_id` and the single
 journal-backed provider memory shared by direct turns and workflow phases.
 `WorkflowRunHandle` owns workflow-specific context, lifecycle, phase cursor, and

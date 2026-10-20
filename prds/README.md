@@ -116,6 +116,7 @@ against the current source before implementing them.
 - [PRD-245 — Recoverable Background Handoff After Abrupt Process Exit (implemented)](prd-245-recoverable-background-handoff-after-process-kill.md)
 - [PRD-246 — Actionable Recovery When Conversation Compaction Has No Summary (implemented)](prd-246-actionable-empty-summary-compaction-recovery.md)
 - [PRD-247 — Recover and Open Sessions When Tool-History Repair Fails (implemented)](prd-247-recover-session-when-tool-history-repair-fails.md)
+- [PRD-248 — Make Workflow Recovery Context-Identity Checks Schema-Aware (implemented)](prd-248-workflow-context-identity-semantics.md)
 
 ### PRD-220–239 — OpenCode, Claude Code, and Codex feature study
 
@@ -557,14 +558,15 @@ checkpoint with a specific detached-session category. See
 [memory guide](../docs/guides/memory.md), and the
 [storage reference](../docs/reference/storage.md).
 
-PRD-243 investigates the reported thinking-mode HTTP 400 that requires the
-provider's prior `reasoning_content`. The repeat attempts are confirmed to
-come from PRD-198's generic permanent-4xx retry budget, while the exact origin
-of the missing field in the reported session cannot be proven without its
-request/journal evidence. The PRD specifies a typed no-retry classification,
-protocol-safe history transformation and compaction, and durable recovery that
-preserves the current workflow phase without exposing or fabricating hidden
-reasoning.
+PRD-243 investigates the gateway-wrapped thinking-mode HTTP 400 requiring the
+provider's prior `reasoning_content`. The supplied session journal confirms
+the generic permanent-4xx retry classification and records successful
+compactions before the rejection; it does not prove that compaction caused the
+missing field because provider-bound messages and message-level lineage were
+not recorded. The PRD specifies precise wrapper recognition with a no-retry
+classification, protocol-safe history transformation and compaction, and
+durable recovery that preserves the current workflow phase without exposing
+or fabricating hidden reasoning.
 
 PRD-244 is implemented: resume mounts the Live workspace before loading a
 strict-bounded transcript preview, and `/history` pages older transcript events
@@ -588,6 +590,18 @@ insufficient, count the full request context when supported, and leave
 irreducible or failed candidates uncommitted for recovery. See
 [PRD-246](prd-246-actionable-empty-summary-compaction-recovery.md) and the
 compaction recovery coverage in the unit, integration, and E2E suites.
+
+PRD-248 implements schema-aware context identity validation for workflow
+resume. Recovery now treats the checkpoint as the canonical run owner, uses
+the explicit `WorkflowPlugin.checkpoint_context_owner_workflow_name()` hook
+for context-level owner identity, and preserves
+`CreateWorkflowContext.workflow_name` as the authored workflow slug. Unit,
+disk-backed integration, and process-restart E2E tests verify both valid
+create-workflow recovery and genuine identity mismatch rejection. The session
+ID supplied during implementation showed a separate `goal_flow` cancellation
+in its readable event projection and did not reproduce this identity error;
+the PRD records that evidence limitation rather than attributing the bug to
+that session.
 
 PRD-218 fixes foreground `/detach` when the prior background attempt is
 completed. It reactivates the same session for eligible work, preserves the

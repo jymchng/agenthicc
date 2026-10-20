@@ -683,20 +683,39 @@ class WorkflowRecoveryCoordinator:
                         f"saved workflow context cannot be restored: {type(exc).__name__}: {exc}",
                     )
                 context_run_id = getattr(restored, "run_id", None)
-                if context_run_id != checkpoint.run_id:
+                if context_run_id is not None and context_run_id != checkpoint.run_id:
                     return (
                         "context_identity_mismatch",
                         "saved workflow context has a different run id",
                     )
-                context_workflow = getattr(restored, "workflow_name", None)
-                if isinstance(context_workflow, str) and context_workflow not in {
-                    "",
-                    checkpoint.workflow_name,
-                }:
-                    return (
-                        "context_identity_mismatch",
-                        "saved workflow context has a different workflow name",
-                    )
+                identity_resolver = getattr(
+                    workflow, "checkpoint_context_owner_workflow_name", None
+                )
+                if callable(identity_resolver):
+                    try:
+                        context_workflow = identity_resolver(restored)
+                    except Exception as exc:  # noqa: BLE001 - plugin codec boundary
+                        return (
+                            "context_identity_metadata_invalid",
+                            "saved workflow context owner identity could not be resolved: "
+                            f"{type(exc).__name__}",
+                        )
+                    if context_workflow is not None and (
+                        not isinstance(context_workflow, str) or not context_workflow.strip()
+                    ):
+                        return (
+                            "context_identity_metadata_invalid",
+                            "saved workflow context owner identity must be a non-empty string "
+                            "or None",
+                        )
+                    if (
+                        isinstance(context_workflow, str)
+                        and context_workflow != checkpoint.workflow_name
+                    ):
+                        return (
+                            "context_identity_mismatch",
+                            "saved workflow context owner does not match the checkpoint owner",
+                        )
                 context_phase = getattr(restored, "current_phase", None)
                 if not isinstance(context_phase, str) or not context_phase:
                     state = getattr(restored, "state", None)

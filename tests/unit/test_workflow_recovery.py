@@ -6,7 +6,7 @@ import hashlib
 import json
 import os
 import socket
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import pytest
@@ -21,7 +21,13 @@ from agenthicc.runners.workflow_recovery import WorkflowRecoveryCoordinator, Wor
 from agenthicc.workflows.code_plan.definition import CodePlan
 from agenthicc.workflows.code_plan.state import CodePlanContext, CodePlanState
 from agenthicc.workflows.checkpoint import context_from_payload, context_to_payload
-from agenthicc.workflows.plugin import WorkflowContext
+from agenthicc.workflows.create_workflow.definition import CreateWorkflow
+from agenthicc.workflows.create_workflow.state import (
+    CreateWorkflowContext,
+    CreateWorkflowState,
+    PhaseArtifact,
+)
+from agenthicc.workflows.plugin import PhaseSpec, WorkflowContext, WorkflowPlugin
 from agenthicc.workflows.registry import WorkflowRegistry
 
 pytestmark = pytest.mark.unit
@@ -202,6 +208,276 @@ def _running_checkpoint(
     handle.attach_context(context)
     handle.update_phase(phase, phase_index, phase_iteration)
     return store, handle
+
+
+def test_create_workflow_authored_slug_is_not_mistaken_for_checkpoint_owner(
+    tmp_path: Path,
+) -> None:
+    conversation = _conversation(tmp_path)
+    try:
+        store = WorkflowCheckpointStore("session-recovery", root=tmp_path / "checkpoints")
+        handle = WorkflowRunHandle.create(
+            run_id="create-run",
+            workflow=CreateWorkflow,
+            conversation=conversation,
+            intent="author a resume workflow",
+            checkpoint_store=store,
+        )
+        authored_path = str(tmp_path / ".drafts" / "create-run" / "tailor_resume" / "runner.py")
+        context = CreateWorkflowContext(
+            intent="author a resume workflow",
+            run_id="create-run",
+            design="A workflow that safely resumes tailored drafts.",
+            workflow_name="tailor_resume",
+            generated_path=authored_path,
+            generation_summary="Wrote the initial workflow package.",
+            artifacts={
+                "design": PhaseArtifact(
+                    phase="design",
+                    kind="design",
+                    content="Approved workflow design.",
+                    metadata={"approved": True},
+                ),
+                "generate": PhaseArtifact(
+                    phase="generate",
+                    kind="workflow_file",
+                    content="class TailorResumeWorkflow: ...",
+                    metadata={"path": authored_path},
+                ),
+            },
+            state=CreateWorkflowState.GENERATE,
+            phase_iteration=2,
+            phase_attempts={"design": 1, "generate": 2},
+            completed_phases=["design"],
+        )
+        handle.attach_context(context)
+        handle.update_phase("generate", 1, 2)
+
+        registry = WorkflowRegistry()
+        registry.register(CreateWorkflow)
+        coordinator = WorkflowRecoveryCoordinator("session-recovery", checkpoint_store=store)
+        record = coordinator.inspect(
+            workflow_registry=registry,
+            conversation=conversation,
+        )[0]
+
+        assert record.recoverable is True
+        assert record.error_code is None
+        restored_handle = coordinator.rehydrate(
+            record,
+            workflow=CreateWorkflow,
+            conversation=conversation,
+            owner_id="create-workflow-recovery-test",
+        )
+        restored = restored_handle.context
+        assert isinstance(restored, CreateWorkflowContext)
+        assert restored.run_id == "create-run"
+        assert restored.state is CreateWorkflowState.GENERATE
+        assert restored.phase_iteration == 2
+        assert restored.workflow_name == "tailor_resume"
+        assert restored.generated_path == authored_path
+        assert restored.design == context.design
+        assert restored.generation_summary == context.generation_summary
+        assert restored.phase_attempts == context.phase_attempts
+        assert restored.completed_phases == context.completed_phases
+        assert restored.artifacts == context.artifacts
+        restored_handle.release_claim()
+    finally:
+        conversation.close()
+
+
+def test_generic_workflow_context_owner_mismatch_remains_rejected(tmp_path: Path) -> None:
+    conversation = _conversation(tmp_path)
+    try:
+        store, handle = _running_checkpoint(tmp_path, conversation)
+        context = WorkflowContext(
+            intent="implement recovery",
+            run_id="run-1",
+            workflow_name="different_owner",
+            current_phase="plan",
+            phase_iteration=1,
+        )
+        handle.attach_context(context)
+        handle.update_phase("plan", 0, 1)
+        registry = WorkflowRegistry()
+        registry.register(CodePlan)
+
+        record = WorkflowRecoveryCoordinator("session-recovery", checkpoint_store=store).inspect(
+            workflow_registry=registry, conversation=conversation
+        )[0]
+
+        assert record.recoverable is False
+        assert record.error_code == "context_identity_mismatch"
+        assert record.error == "saved workflow context owner does not match the checkpoint owner"
+    finally:
+        conversation.close()
+
+
+@pytest.mark.parametrize("declared_owner", [None, "explicit-domain-workflow"])
+def test_custom_context_identity_is_only_checked_when_plugin_declares_it(
+    tmp_path: Path,
+    declared_owner: str | None,
+) -> None:
+    conversation = _conversation(tmp_path)
+    try:
+        workflow: type[WorkflowPlugin] = (
+            _ExplicitDomainContextWorkflow if declared_owner is not None else _DomainContextWorkflow
+        )
+        store = WorkflowCheckpointStore("session-recovery", root=tmp_path / workflow.name)
+        handle = WorkflowRunHandle.create(
+            run_id="custom-run",
+            workflow=workflow,
+            conversation=conversation,
+            intent="exercise custom workflow context identity",
+            checkpoint_store=store,
+        )
+        context = _DomainWorkflowContext(
+            workflow_name="authored_domain_slug",
+            current_phase="work",
+            phase_iteration=1,
+            owner_workflow_name=declared_owner,
+        )
+        handle.attach_context(context)
+        handle.update_phase("work", 0, 1)
+        registry = WorkflowRegistry()
+        registry.register(workflow)
+
+        record = WorkflowRecoveryCoordinator("session-recovery", checkpoint_store=store).inspect(
+            workflow_registry=registry, conversation=conversation
+        )[0]
+
+        assert record.recoverable is True
+        assert record.error_code is None
+    finally:
+        conversation.close()
+
+
+def test_explicit_custom_context_owner_mismatch_fails_closed(tmp_path: Path) -> None:
+    conversation = _conversation(tmp_path)
+    try:
+        workflow = _ExplicitDomainContextWorkflow
+        store = WorkflowCheckpointStore("session-recovery", root=tmp_path / workflow.name)
+        handle = WorkflowRunHandle.create(
+            run_id="custom-mismatch-run",
+            workflow=workflow,
+            conversation=conversation,
+            intent="exercise explicit workflow identity",
+            checkpoint_store=store,
+        )
+        handle.attach_context(
+            _DomainWorkflowContext(
+                workflow_name="authored_domain_slug",
+                current_phase="work",
+                phase_iteration=1,
+                owner_workflow_name="another-workflow",
+            )
+        )
+        handle.update_phase("work", 0, 1)
+        registry = WorkflowRegistry()
+        registry.register(workflow)
+
+        record = WorkflowRecoveryCoordinator("session-recovery", checkpoint_store=store).inspect(
+            workflow_registry=registry, conversation=conversation
+        )[0]
+
+        assert record.recoverable is False
+        assert record.error_code == "context_identity_mismatch"
+        assert record.error == "saved workflow context owner does not match the checkpoint owner"
+    finally:
+        conversation.close()
+
+
+def test_malformed_explicit_context_owner_metadata_is_diagnostic_only(tmp_path: Path) -> None:
+    conversation = _conversation(tmp_path)
+    try:
+        workflow = _BlankOwnerContextWorkflow
+        store = WorkflowCheckpointStore("session-recovery", root=tmp_path / workflow.name)
+        handle = WorkflowRunHandle.create(
+            run_id="custom-invalid-owner-run",
+            workflow=workflow,
+            conversation=conversation,
+            intent="exercise malformed owner metadata",
+            checkpoint_store=store,
+        )
+        handle.attach_context(
+            _DomainWorkflowContext(
+                workflow_name="authored_domain_slug",
+                current_phase="work",
+                phase_iteration=1,
+            )
+        )
+        handle.update_phase("work", 0, 1)
+        registry = WorkflowRegistry()
+        registry.register(workflow)
+
+        record = WorkflowRecoveryCoordinator("session-recovery", checkpoint_store=store).inspect(
+            workflow_registry=registry, conversation=conversation
+        )[0]
+
+        assert record.recoverable is False
+        assert record.error_code == "context_identity_metadata_invalid"
+        assert record.error == (
+            "saved workflow context owner identity must be a non-empty string or None"
+        )
+        assert store.load("custom-invalid-owner-run") is not None
+    finally:
+        conversation.close()
+
+
+@dataclass
+class _DomainWorkflowContext:
+    workflow_name: str
+    current_phase: str
+    phase_iteration: int
+    owner_workflow_name: str | None = None
+
+
+class _DomainContextWorkflow(WorkflowPlugin):
+    name = "custom-domain-workflow"
+    phases = [PhaseSpec(name="work")]
+
+    @classmethod
+    def checkpoint_context_to_payload(cls, context: object) -> dict[str, object]:
+        assert isinstance(context, _DomainWorkflowContext)
+        return {
+            "workflow_name": context.workflow_name,
+            "current_phase": context.current_phase,
+            "phase_iteration": context.phase_iteration,
+            "owner_workflow_name": context.owner_workflow_name,
+        }
+
+    @classmethod
+    def checkpoint_context_from_payload(
+        cls,
+        payload: dict[str, object],
+        memory: object | None = None,
+    ) -> _DomainWorkflowContext:
+        del memory
+        owner = payload.get("owner_workflow_name")
+        return _DomainWorkflowContext(
+            workflow_name=str(payload["workflow_name"]),
+            current_phase=str(payload["current_phase"]),
+            phase_iteration=int(payload["phase_iteration"]),
+            owner_workflow_name=owner if isinstance(owner, str) else None,
+        )
+
+
+class _ExplicitDomainContextWorkflow(_DomainContextWorkflow):
+    name = "explicit-domain-workflow"
+
+    @classmethod
+    def checkpoint_context_owner_workflow_name(cls, context: object) -> str | None:
+        assert isinstance(context, _DomainWorkflowContext)
+        return context.owner_workflow_name
+
+
+class _BlankOwnerContextWorkflow(_DomainContextWorkflow):
+    name = "blank-owner-workflow"
+
+    @classmethod
+    def checkpoint_context_owner_workflow_name(cls, context: object) -> str | None:
+        del cls, context
+        return ""
 
 
 def test_process_interrupted_checkpoint_is_rehydrated_at_exact_typed_state(

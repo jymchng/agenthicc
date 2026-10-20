@@ -5,11 +5,19 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 from pathlib import Path
+from types import SimpleNamespace
 
 from agenthicc.runners.session_conversation import SessionConversation
 from agenthicc.runners.workflow_checkpoint_store import WorkflowCheckpointStore
 from agenthicc.runners.workflow_recovery import WorkflowRecoveryCoordinator
 from agenthicc.workflows.base_runner import BaseWorkflowRunner
+from agenthicc.workflows.create_workflow.definition import CreateWorkflow
+from agenthicc.workflows.create_workflow.runner import CreateWorkflowRunner
+from agenthicc.workflows.create_workflow.state import (
+    CreateWorkflowContext,
+    CreateWorkflowState,
+    PhaseArtifact,
+)
 from agenthicc.workflows.plugin import PhaseSpec, WorkflowPlugin
 from agenthicc.workflows.registry import WorkflowRegistry
 
@@ -72,6 +80,12 @@ class E2EWorkflow(WorkflowPlugin):
             shared_memory=memory,
         )
 
+    @classmethod
+    def checkpoint_context_owner_workflow_name(cls, context: object) -> str | None:
+        if isinstance(context, E2EContext):
+            return context.workflow_name
+        return None
+
 
 def test_process_restart_resume_calls_typed_runner_resume_once(tmp_path: Path) -> None:
     E2ERunner.resumed.clear()
@@ -133,6 +147,131 @@ def test_process_restart_resume_calls_typed_runner_resume_once(tmp_path: Path) -
         assert E2ERunner.resumed[0].current_phase == "second"
         assert E2ERunner.resumed[0].shared_memory is reopened.memory
         assert restored.lifecycle == "paused"
+        restored.release_claim()
+    finally:
+        reopened.close()
+
+
+def test_create_workflow_restart_resumes_generate_with_existing_authored_draft(
+    tmp_path: Path,
+) -> None:
+    """A target workflow slug remains domain data across process-style recovery."""
+    session_id = "e2e-create-workflow-recovery"
+    run_id = "e2e-create-run"
+    journal_path = tmp_path / "sessions" / session_id / "conversation-journal.jsonl"
+    checkpoint_root = tmp_path / "sessions"
+    draft = tmp_path / ".agenthicc" / "workflows" / ".drafts" / run_id / "tailor_resume"
+    runner_path = draft / "runner.py"
+    runner_path.parent.mkdir(parents=True)
+    runner_path.write_text("# preserved draft\n", encoding="utf-8")
+    original_draft = runner_path.read_bytes()
+
+    first = SessionConversation.open(
+        session_id,
+        max_tokens=10_000,
+        journal_path=journal_path,
+    )
+    from agenthicc.runners.workflow_handle import WorkflowRunHandle
+
+    initial = WorkflowRunHandle.create(
+        run_id=run_id,
+        workflow=CreateWorkflow,
+        conversation=first,
+        intent="author tailor_resume",
+        checkpoint_store=WorkflowCheckpointStore(session_id, root=checkpoint_root),
+    )
+    initial.attach_context(
+        CreateWorkflowContext(
+            intent="author tailor_resume",
+            run_id=run_id,
+            design="A resumable tailored workflow.",
+            workflow_name="tailor_resume",
+            generated_path=str(runner_path),
+            generation_summary="Initial workflow draft written.",
+            artifacts={
+                "design": PhaseArtifact(
+                    phase="design",
+                    kind="design",
+                    content="Approved design.",
+                ),
+                "generate": PhaseArtifact(
+                    phase="generate",
+                    kind="workflow_file",
+                    content="Draft source.",
+                    metadata={"path": str(runner_path)},
+                ),
+            },
+            state=CreateWorkflowState.GENERATE,
+            phase_iteration=2,
+            phase_attempts={"design": 1, "generate": 2},
+            completed_phases=["design"],
+        )
+    )
+    initial.update_phase("generate", 1, 2)
+    first.close()
+
+    reopened = SessionConversation.open(
+        session_id,
+        max_tokens=10_000,
+        journal_path=journal_path,
+    )
+    try:
+        registry = WorkflowRegistry()
+        registry.register(CreateWorkflow)
+        store = WorkflowCheckpointStore(session_id, root=checkpoint_root)
+        coordinator = WorkflowRecoveryCoordinator(session_id, checkpoint_store=store)
+        record = coordinator.inspect(
+            workflow_registry=registry,
+            conversation=reopened,
+        )[0]
+        assert record.recoverable is True
+
+        restored = coordinator.rehydrate(
+            record,
+            workflow=CreateWorkflow,
+            conversation=reopened,
+            owner_id="e2e-create-workflow-owner",
+        )
+        assert isinstance(restored.context, CreateWorkflowContext)
+
+        dispatch_states: list[CreateWorkflowState] = []
+
+        class _WorkflowRunProjection:
+            def set(self, _value: object) -> None:
+                return None
+
+        class _Processor:
+            async def emit(self, _event: object) -> None:
+                return None
+
+        runner = object.__new__(CreateWorkflowRunner)
+        runner._cfg = SimpleNamespace(
+            workflow_handle=restored,
+            session_memory=reopened.memory,
+            app_state=SimpleNamespace(workflow_run=_WorkflowRunProjection()),
+            processor=_Processor(),
+        )
+
+        async def dispatch(
+            state: CreateWorkflowState,
+            _context: CreateWorkflowContext,
+        ) -> CreateWorkflowState:
+            dispatch_states.append(state)
+            return CreateWorkflowState.COMPLETE
+
+        runner._dispatch = dispatch  # type: ignore[method-assign]
+        runner._reconcile_resume_cursor = lambda _context: None  # type: ignore[method-assign]
+        runner._checkpoint_boundary = lambda *_args: None  # type: ignore[method-assign]
+
+        resumed_context = asyncio.run(runner.resume(restored.context))
+
+        assert dispatch_states == [CreateWorkflowState.GENERATE]
+        assert resumed_context.run_id == run_id
+        assert resumed_context.workflow_name == "tailor_resume"
+        assert resumed_context.generated_path == str(runner_path)
+        assert resumed_context.state is CreateWorkflowState.COMPLETE
+        assert runner_path.read_bytes() == original_draft
+        assert store.load(run_id).status == "complete"  # type: ignore[union-attr]
         restored.release_claim()
     finally:
         reopened.close()

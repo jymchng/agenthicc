@@ -36,6 +36,19 @@ validation mode remains compatible with existing manually installed plugins.
 The generated template and smoke path exercise the same annotation, boundary,
 resume, and error-propagation contract.
 
+## PRD-248 context-identity recovery — 2026-10-20
+
+Resolved in the current implementation. Workflow ownership remains
+`WorkflowCheckpoint.workflow_name`; recovery no longer compares that value to
+an arbitrary restored `context.workflow_name`. `WorkflowPlugin` now provides
+the opt-in `checkpoint_context_owner_workflow_name(context)` contract, whose
+default recognizes the generic `WorkflowContext` and deliberately returns no
+owner identity for other context schemas. This preserves
+`CreateWorkflowContext.workflow_name` as the authored workflow slug while
+retaining fail-closed checks for generic or explicitly declared owner
+mismatches. Unit, disk-backed integration, and process-restart E2E coverage
+exercise the `create_workflow` generate-phase case and the mismatch paths.
+
 ## PRD-185 dynamic `goal_flow` audit — 2026-08-31
 
 Resolved in the current implementation. `goal_flow` now owns a canonical

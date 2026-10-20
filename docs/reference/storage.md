@@ -341,6 +341,19 @@ unreadable, stale, or plugin-mismatched checkpoints fail closed. Workflow
 contexts have no framework-imposed serialized byte ceiling; they must still be
 JSON-compatible, and available filesystem capacity is the practical limit.
 
+Recovery identity follows the context schema rather than matching attribute
+names by convention. `WorkflowCheckpoint.workflow_name` is the canonical run
+owner. The default `WorkflowPlugin.checkpoint_context_owner_workflow_name()`
+recognizes `WorkflowContext.workflow_name` as an owner identity and returns
+`None` for other context types. A custom plugin can override the hook to
+declare an owner identity in its decoded context. In particular,
+`CreateWorkflowContext.workflow_name` is an authored-workflow slug, not the
+`create_workflow` run owner; it round-trips unchanged and is not compared to
+the checkpoint owner. A context `run_id`, when supplied, remains validated
+against the checkpoint. Registry membership, plugin fingerprint, topology,
+phase/index, conversation cursor, and single-owner claim checks remain
+independent fail-closed guards.
+
 ### Active workflow checkpoint topology
 
 `WorkflowCheckpoint.phase_index` is an index into the active phase graph for

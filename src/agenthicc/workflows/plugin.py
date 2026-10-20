@@ -587,6 +587,23 @@ class WorkflowPlugin(abc.ABC):
         """
         return None
 
+    @classmethod
+    def checkpoint_context_owner_workflow_name(cls, context: object) -> str | None:
+        """Return the owning workflow identity encoded in *context*, if any.
+
+        A context field named ``workflow_name`` is not an identity contract by
+        itself: plugins may use that name for domain data (for example, the
+        slug of a workflow being authored). The generic :class:`WorkflowContext`
+        is the one built-in context whose ``workflow_name`` explicitly means
+        its owner. Custom contexts may opt in by overriding this method and
+        returning their actual owning-workflow identity. Returning ``None``
+        means the checkpoint's workflow identity is authoritative and the
+        context has no additional owner identity to validate.
+        """
+        if isinstance(context, WorkflowContext) and context.workflow_name:
+            return context.workflow_name
+        return None
+
 
 # ── WorkflowEntry — registry provenance record (PRD-116) ─────────────────────
 # Defined after WorkflowPlugin so it can annotate type[WorkflowPlugin].
