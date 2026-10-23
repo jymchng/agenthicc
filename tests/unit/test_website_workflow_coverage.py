@@ -87,6 +87,18 @@ def _write_epub(path: Path) -> None:
         archive.writestr("book.opf", "<package></package>")
 
 
+@pytest.fixture(autouse=True)
+def _isolated_working_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run each test in its own directory.
+
+    A runner without a workspace scope keeps its run state under ``.agenthicc/``
+    in the working directory, so these tests used to write into the repository
+    and read earlier runs' state back — including files another user's run had
+    left unreadable.
+    """
+    monkeypatch.chdir(tmp_path)
+
+
 def _runner_config() -> SimpleNamespace:
     return workflow_config(
         agent_runner=object(),

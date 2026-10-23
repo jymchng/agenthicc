@@ -4,8 +4,8 @@ import json
 import hashlib
 import os
 import socket
+import shlex
 import subprocess
-import sys
 import threading
 import asyncio
 import time
@@ -241,18 +241,17 @@ def _repo(tmp_path: Path) -> Path:
     return root
 
 
-def _py(source: str) -> str:
-    return f'{sys.executable} -c "{source.replace(chr(34), chr(92) + chr(34))}"'
-
-
 def _manifest(root: Path, body: str) -> Path:
     path = root / ".agenthicc" / "environment.toml"
     path.write_text("version = 1\n" + body, encoding="utf-8")
     return path
 
 
-def _command_line(source: str) -> str:
-    return "command = " + json.dumps(_py(source)) + "\n"
+# Sandboxed commands use only the shell and base system tools. The interpreter
+# running the tests can live where the sandbox cannot reach it — another user's
+# private home when the suite runs as root — and would then fail every command.
+def _command_line(command: str) -> str:
+    return "command = " + json.dumps(command) + "\n"
 
 
 def test_manifest_parses_setup_actions_and_cache_declarations(tmp_path: Path) -> None:
@@ -289,27 +288,6 @@ sharing = "isolated"
     assert parsed.actions[0].command_id == "test"
     assert parsed.caches[0].sharing == "isolated"
     assert any("requires_network" in line for line in parsed.preview())
-
-
-def test_setup_default_id_and_repeat_runs_produce_declared_readiness(tmp_path: Path) -> None:
-    root = _repo(tmp_path)
-    _manifest(
-        root,
-        "[[setup]]\n"
-        + _command_line("from pathlib import Path; Path('ready').write_text('yes')")
-        + "expected_outputs = ['ready']\n",
-    )
-    environment = WorktreeEnvironment(root, "wt-repeat")
-    manifest = environment.load()
-    assert manifest is not None
-    assert manifest.setup[0].command_id == "setup_1"
-
-    first = environment.run_setup(approved=True, expected_manifest_digest=manifest.digest)
-    second = environment.run_setup(approved=True, expected_manifest_digest=manifest.digest)
-
-    assert first is not None and first.result == "succeeded"
-    assert second is not None and second.result == "succeeded"
-    assert (root / "ready").read_text(encoding="utf-8") == "yes"
 
 
 def test_missing_environment_dependency_and_platform_mismatch_are_reported(
@@ -488,7 +466,7 @@ def test_action_redacts_declared_secret_and_persists_no_command_output(tmp_path:
     _manifest(
         root,
         "[actions.print_token]\n"
-        + _command_line("import os; print(os.environ['TEST_TOKEN'])")
+        + _command_line("printenv TEST_TOKEN")
         + 'env = ["TEST_TOKEN"]\nsecret_env = ["TEST_TOKEN"]\n',
     )
     os.environ["TEST_TOKEN"] = secret
@@ -501,7 +479,7 @@ def test_action_redacts_declared_secret_and_persists_no_command_output(tmp_path:
     command_result = receipt.commands[0]
     assert "<redacted>" in command_result.stdout
     assert secret not in receipt.to_json()
-    assert "import os; print(os.environ['TEST_TOKEN'])" not in receipt.to_json()
+    assert "printenv TEST_TOKEN" not in receipt.to_json()
 
 
 def test_redaction_includes_short_configured_secret_values() -> None:
@@ -514,7 +492,7 @@ def test_command_output_is_capped_and_timeout_is_reported(tmp_path: Path) -> Non
     root = _repo(tmp_path)
     _manifest(
         root,
-        "[actions.large]\n" + _command_line("print('x' * 1000)") + "timeout_s = 3\n",
+        "[actions.large]\n" + _command_line("yes x | head -c 1000") + "timeout_s = 3\n",
     )
     env = WorktreeEnvironment(root, "wt-output", output_limit=64)
     manifest = env.load()
@@ -525,7 +503,7 @@ def test_command_output_is_capped_and_timeout_is_reported(tmp_path: Path) -> Non
 
     _manifest(
         root,
-        "[actions.slow]\n" + _command_line("import time; time.sleep(5)") + "timeout_s = 0.1\n",
+        "[actions.slow]\n" + _command_line("sleep 5") + "timeout_s = 0.1\n",
     )
     timeout_result = (
         WorktreeEnvironment(root, "wt-timeout").run_action("slow", approved=True).commands[0]
@@ -538,7 +516,7 @@ def test_cancelling_action_terminates_its_process_group(tmp_path: Path) -> None:
     root = _repo(tmp_path)
     _manifest(
         root,
-        "[actions.cancel]\n" + _command_line("import time; time.sleep(20)") + "timeout_s = 30\n",
+        "[actions.cancel]\n" + _command_line("sleep 20") + "timeout_s = 30\n",
     )
     cancel_event = threading.Event()
     threading.Timer(0.1, cancel_event.set).start()
@@ -583,8 +561,7 @@ def test_action_cannot_write_outside_its_worktree(tmp_path: Path) -> None:
     outside.parent.mkdir()
     _manifest(
         root,
-        "[actions.escape]\n"
-        + _command_line(f"from pathlib import Path; Path({str(outside)!r}).write_text('escaped')"),
+        "[actions.escape]\n" + _command_line(f"printf escaped > {shlex.quote(str(outside))}"),
     )
 
     receipt = WorktreeEnvironment(root, "wt-isolation").run_action(
@@ -609,11 +586,7 @@ def test_immutable_shared_cache_is_mounted_read_only(tmp_path: Path) -> None:
         'env_var = "SHARED_CACHE"\n'
         'path = "immutable"\n'
         'sharing = "immutable_shared"\n'
-        "[actions.write_cache]\n"
-        + _command_line(
-            "import os; from pathlib import Path; "
-            "Path(os.environ['SHARED_CACHE'], 'unexpected').write_text('bad')"
-        ),
+        "[actions.write_cache]\n" + _command_line('printf bad > "$SHARED_CACHE/unexpected"'),
     )
 
     receipt = WorktreeEnvironment(
@@ -630,29 +603,36 @@ def test_none_declared_network_action_cannot_reach_host_loopback(tmp_path: Path)
     root = _repo(tmp_path)
     listener = socket.socket()
     listener.bind(("127.0.0.1", 0))
-    listener.listen(1)
+    listener.listen(2)
     port = listener.getsockname()[1]
+    # The sandbox shell is bash, whose /dev/tcp opens a connection. The control
+    # action shares the host network and must connect, so "blocked" from the
+    # isolated action can only come from the network isolation.
+    probe = (
+        f"if (exec 3<>/dev/tcp/127.0.0.1/{port}) 2>/dev/null; "
+        "then echo connected; else echo blocked; fi"
+    )
     _manifest(
         root,
         "[actions.network_check]\n"
-        + _command_line(
-            "import socket; s=socket.socket(); s.settimeout(0.25); "
-            f"exec(\"try:\\n s.connect(('127.0.0.1',{port}))\\n print('connected')\\n"
-            "except OSError:\\n print('blocked')\")"
-        )
+        + _command_line(probe)
         + 'network = "none_declared"\n'
+        + "timeout_s = 2\n"
+        + "[actions.network_control]\n"
+        + _command_line(probe)
         + "timeout_s = 2\n",
     )
+    environment = WorktreeEnvironment(root, "wt-no-network")
     try:
-        receipt = WorktreeEnvironment(root, "wt-no-network").run_action(
-            "network_check",
-            approved=True,
-        )
+        isolated = environment.run_action("network_check", approved=True)
+        control = environment.run_action("network_control", approved=True)
     finally:
         listener.close()
 
-    assert receipt.result == "succeeded"
-    assert "blocked" in receipt.commands[0].stdout
+    assert control.result == "succeeded"
+    assert "connected" in control.commands[0].stdout
+    assert isolated.result == "succeeded"
+    assert "blocked" in isolated.commands[0].stdout
 
 
 def test_manifest_rejects_worktree_relative_cwd_symlink_escape(

@@ -22,7 +22,7 @@ repository at `2d66765`.
 |---|---|
 | 1.1 Format | Every file passes `ruff format --check`; `nox -s lint` runs it on all of `src/`, `tests/` and `scripts/` |
 | 1.2 mypy | `mypy src/agenthicc`: 0 errors. Six bundled runners that subclass `CodePlanRunner` (`copy_website`, `goal_flow`, `make_agenthicc_tool`, `make_book`, `reconstruct_site/phase_impl`, `site_imitate`) carry `# mypy: disable-error-code=override` with `owner=PRD-250 WS-4.2; expires=2026-12-03`, enforced by `type_audit` |
-| 1.3 Branch protection | `.github/workflows/ci.yml` ends in one aggregate **Required checks** job; `scripts/apply_branch_protection.sh` requires it and code-owner review on `main`. **Not yet applied** — needs a repository administrator |
+| 1.3 Branch protection | `.github/workflows/ci.yml` ends in one aggregate **Required checks** job; `scripts/apply_branch_protection.sh` requires it and code-owner review on `main`. **Not wanted** — the maintainer decided not to protect `main` (2026-10-23) |
 | 1.4 Release | `release.yml` re-runs CI for the tagged commit, requires the tag to equal `v` + the package version, and checks the wheel's `agenthicc --version`; the CLI reads the version from package metadata. The version stays declared in `pyproject.toml` (no `setuptools-scm`) |
 | 1.5 CodeQL and docs | CodeQL installs the declared `dev` extra; `docs.yml` and the CI docs job build with `--strict` |
 | 1.6 Dependencies | One `dev` extra (now with `twine` and the book/screenshot test dependency); the dependency group and the `aiohttp`/`httpx` core/extra duplicates are removed. Nox sessions use the uv backend, so each tool runs at its declared version inside the session venv |
