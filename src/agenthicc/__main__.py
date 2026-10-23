@@ -37,7 +37,7 @@ def _run_tui(ctx: object) -> None:
 def main() -> None:
     ctx, ns = parse_cli()
     if ctx.goal is not None:
-        from agenthicc.runs.cli import run_goal_cli  # noqa: PLC0415
+        from agenthicc.runs.cli import run_goal_cli
 
         run_goal_cli(ctx)
         return

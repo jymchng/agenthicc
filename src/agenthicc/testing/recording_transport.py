@@ -105,7 +105,7 @@ class RecordingTransport:
         tool_names = [_tool_schema_name(t) for t in (tools or [])]
         inner = cast(_Transport, self._inner)
         if not stream:
-            from lauren_ai._transport import Completion  # noqa: PLC0415
+            from lauren_ai._transport import Completion
 
             result = await inner.complete(
                 messages,
@@ -128,7 +128,7 @@ class RecordingTransport:
             return completion
 
         # Streaming: intercept chunks to assemble the full response.
-        from lauren_ai._transport import CompletionChunk  # noqa: PLC0415
+        from lauren_ai._transport import CompletionChunk
 
         inner_iter = cast(
             AsyncIterator[CompletionChunk],

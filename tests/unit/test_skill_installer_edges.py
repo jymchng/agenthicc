@@ -108,20 +108,21 @@ def test_clone_reports_git_failures_without_leaking_temp_directories(
     import subprocess
 
     monkeypatch.setattr(installer.tempfile, "mkdtemp", lambda **_kwargs: "/tmp/fake-skill-root")
-    monkeypatch.setattr(
-        installer.asyncio,
-        "to_thread",
-        lambda *_args, **_kwargs: _failed_process(),
-    )
+
+    async def fake_to_thread(func: object, /, *args: object, **kwargs: object) -> object:
+        # Only the git clone fails; filesystem helpers run as normal.
+        if func is installer.subprocess.run:
+            return SimpleNamespace(returncode=1, stderr="fatal: repository unavailable")
+        assert callable(func)
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(installer.asyncio, "to_thread", fake_to_thread)
 
     async def check() -> None:
         with pytest.raises(SkillInstallError, match="clone failed"):
             await installer._clone_repository(
                 installer._GitRepositorySource("https://github.com/a/b.git")
             )
-
-    async def _failed_process() -> SimpleNamespace:
-        return SimpleNamespace(returncode=1, stderr="fatal: repository unavailable")
 
     asyncio.run(check())
     assert subprocess is not None

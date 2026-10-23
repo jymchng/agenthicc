@@ -60,10 +60,11 @@ class ModeLoadResult:
     modes: list[Mode] = field(default_factory=list)
     error: str | None = None
     missing_deps: list[str] = field(default_factory=list)
+    untrusted: bool = False  # skipped without import: not trusted (agenthicc trust)
 
     @property
     def ok(self) -> bool:
-        return self.error is None and not self.missing_deps
+        return self.error is None and not self.missing_deps and not self.untrusted
 
 
 @dataclass
@@ -103,23 +104,6 @@ class ModePluginSet:
 
 
 # ---------------------------------------------------------------------------
-# Dependency checking
-# ---------------------------------------------------------------------------
-
-
-def _check_missing_deps(deps: list[str]) -> list[str]:
-    missing: list[str] = []
-    for dep in deps:
-        # Strip version specifiers to get the bare package name.
-        pkg = dep.split(">=")[0].split("<=")[0].split("==")[0].split("!=")[0].strip()
-        try:
-            importlib.metadata.version(pkg)
-        except Exception:
-            missing.append(dep)
-    return missing
-
-
-# ---------------------------------------------------------------------------
 # Core file loader
 # ---------------------------------------------------------------------------
 
@@ -129,30 +113,31 @@ def load_mode_file(path: Path) -> ModeLoadResult:
 
     Steps
     -----
-    1. Check ``DEPENDENCIES`` (if declared) against installed packages.
-    2. Import the module via :func:`importlib.util`.
-    3. Extract ``MODE`` (single) or ``MODES`` (list).
-    4. If ``source_id`` is still ``"builtin"``, replace it with
+    1. Skip an untrusted file without importing it.
+    2. Read ``DEPENDENCIES`` statically and check them against installed packages.
+    3. Import the module, once.
+    4. Extract ``MODE`` (single) or ``MODES`` (list).
+    5. If ``source_id`` is still ``"builtin"``, replace it with
        ``"mode-plugin:<stem>"`` so the registry can later remove it.
     """
-    # ── Step 1: probe for DEPENDENCIES ────────────────────────────────────
-    declared_deps: list[str] = []
-    try:
-        probe_spec = importlib.util.spec_from_file_location("_mode_dep_probe", path)
-        if probe_spec and probe_spec.loader:
-            probe_mod = importlib.util.module_from_spec(probe_spec)
-            probe_spec.loader.exec_module(probe_mod)
-            declared_deps = list(getattr(probe_mod, "DEPENDENCIES", []))
-    except SyntaxError as exc:
-        return ModeLoadResult(path=path, error=f"SyntaxError: {exc}")
-    except Exception:
-        pass  # will be caught properly in step 2
+    from agenthicc.plugins.deps import (
+        PluginDependencyError,
+        declared_dependencies,
+        missing_requirements,
+    )
+    from agenthicc.plugins.trust import current_extension_trust
 
-    missing = _check_missing_deps(declared_deps)
+    # ── Steps 1-2: trust and declared dependencies, without executing ─────
+    if not current_extension_trust().permits(path, kind="mode"):
+        return ModeLoadResult(path=path, untrusted=True)
+    try:
+        missing = missing_requirements(declared_dependencies(path))
+    except PluginDependencyError as exc:
+        return ModeLoadResult(path=path, error=str(exc))
     if missing:
         return ModeLoadResult(path=path, missing_deps=missing)
 
-    # ── Step 2: full import ────────────────────────────────────────────────
+    # ── Step 3: import, once ───────────────────────────────────────────────
     module_name = f"_agenthicc_mode_plugin_{path.stem}_{abs(hash(str(path)))}"
     try:
         spec = importlib.util.spec_from_file_location(module_name, path)
@@ -166,7 +151,7 @@ def load_mode_file(path: Path) -> ModeLoadResult:
     except Exception as exc:
         return ModeLoadResult(path=path, error=f"{type(exc).__name__}: {exc}")
 
-    # ── Step 3: extract MODE / MODES ──────────────────────────────────────
+    # ── Step 4: extract MODE / MODES ──────────────────────────────────────
     source_tag = f"mode-plugin:{path.stem}"
 
     raw_modes: list[Mode] = []
@@ -180,7 +165,7 @@ def load_mode_file(path: Path) -> ModeLoadResult:
                 if isinstance(item, Mode):
                     raw_modes.append(item)
 
-    # ── Step 4: fix up source_id ──────────────────────────────────────────
+    # ── Step 5: fix up source_id ──────────────────────────────────────────
     modes: list[Mode] = []
     for m in raw_modes:
         if m.source_id == "builtin":

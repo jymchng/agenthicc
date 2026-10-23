@@ -31,7 +31,10 @@ Example
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
+from typing import TYPE_CHECKING, AsyncGenerator
+
+if TYPE_CHECKING:
+    import httpx
 
 __all__ = [
     "agenthicc_http_client",
@@ -81,7 +84,7 @@ async def agenthicc_http_client(
     *,
     timeout: float | None = None,
     follow_redirects: bool = True,
-) -> AsyncGenerator["httpx.AsyncClient", None]:  # type: ignore[name-defined]
+) -> AsyncGenerator[httpx.AsyncClient, None]:
     """Async context manager yielding a configured ``httpx.AsyncClient``.
 
     Parameters
@@ -92,7 +95,7 @@ async def agenthicc_http_client(
     follow_redirects:
         Whether to follow HTTP redirects.  Default ``True``.
     """
-    import httpx  # noqa: PLC0415
+    import httpx
 
     read_t = timeout if timeout is not None else _default_timeout
     # 0.0 → None (httpx unbounded); positive → that many seconds.
@@ -118,7 +121,7 @@ def is_network_error(exc: BaseException) -> bool:
     """
     # httpx hierarchy (lazy import so this module is importable without httpx)
     try:
-        import httpx as _httpx  # noqa: PLC0415
+        import httpx as _httpx
 
         if isinstance(exc, (_httpx.TimeoutException, _httpx.HTTPError)):
             return True

@@ -80,7 +80,7 @@ if TYPE_CHECKING:
     from agenthicc.memory.router import MemoryRouter
     from agenthicc.memory.vector import SemanticIndex
     from agenthicc.mentions.cache import MentionCache
-    from agenthicc.tools.approval import ApprovalService
+    from agenthicc.tools.approval import ApprovalBroker
     from agenthicc.tools.base import ToolLike
     from agenthicc.tools.mcp import McpToolRegistry
     from agenthicc.tools.mcp_manager import McpSessionManager
@@ -109,7 +109,7 @@ class AgentTurnOptions(TypedDict):
     mcp_registry: "McpToolRegistry | McpSessionManager | None"
     active_agent: str
     completed_turns: int
-    approval_svc: "ApprovalService | None"
+    approval_svc: "ApprovalBroker | None"
     output_collector: "list[str] | None"
     command_outcomes: "list[dict[str, object]] | None"
     next_queued_message: NotRequired[Callable[[], str | None] | None]
@@ -157,7 +157,7 @@ class AgentTurnContext:
     completed_turns: int = 0
 
     # ── approval / hooks ──────────────────────────────────────────────────────
-    approval_svc: "ApprovalService | None" = None
+    approval_svc: "ApprovalBroker | None" = None
     workspace_access: "WorkspaceAccessPolicy | None" = None
 
     # ── memory (PRD-101) ──────────────────────────────────────────────────────

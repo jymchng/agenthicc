@@ -31,6 +31,7 @@ from agenthicc.workflows.phase_lifecycle import (
     reconcile_phase_cursor,
 )
 from agenthicc.workflows.checkpoint import CheckpointValidationError
+from agenthicc.workflows.payload import payload_strings
 from .evidence import (
     ArtifactRecord,
     EvidenceIntegrityError,
@@ -110,6 +111,8 @@ from agenthicc.workflows.reconstruct_site.research import (
 )
 
 if TYPE_CHECKING:
+    from lauren_ai._memory import ShortTermMemory
+
     from agenthicc.tui.runtime.mode_manager import ModeManager
     from agenthicc.workflows.checkpoint import WorkflowCheckpointTopology
     from agenthicc.workflows.config import WorkflowConfig
@@ -261,28 +264,26 @@ class ReconstructSiteRunner(PhaseRunner):
         self._active_plan: ActiveReconstructPlan | None = None
         self._evidence: ReconstructEvidenceStore | None = None
         self._pending_reentry: tuple[str, str, str] | None = None
-        self._reconstruct_tool_cache: list[ToolLike] | None = None
+        self._screenshot_tool: ToolLike | None = None
         self._active_phase_name = ""
 
     def _params(self) -> ReconstructSiteParams:
-        params = getattr(self._cfg, "params", None)
+        params = self._cfg.params
         return params if isinstance(params, ReconstructSiteParams) else ReconstructSiteParams()
 
     def _phase_model(self, phase_name: str) -> str:
-        """Resolve a phase model even for minimal compatibility test configs."""
-        params = getattr(self._cfg, "params", None)
+        """Resolve a phase's model from the workflow params, then the class default."""
+        params = self._cfg.params
         if params is not None:
-            model_for_phase = getattr(params, "model_for_phase", None)
-            if callable(model_for_phase):
-                value = model_for_phase(phase_name, "")
-                if value:
-                    return str(value)
+            value = params.model_for_phase(phase_name, "")
+            if value:
+                return value
         return str(getattr(self, f"{phase_name}_model", "") or "")
 
     def invalidate_tool_bundle_cache(self, *, reason: str = "configuration_changed") -> None:
         """Invalidate both the inherited stable bundle and reconstruct tools."""
         super().invalidate_tool_bundle_cache(reason=reason)
-        self._reconstruct_tool_cache = None
+        self._screenshot_tool = None
 
     def _select_profile(self, context: ReconstructContext) -> ActiveReconstructPlan:
         self._restore_persisted_plan_version(context)
@@ -293,12 +294,6 @@ class ReconstructSiteRunner(PhaseRunner):
             profile = context.profile.strip().lower()
         elif configured:
             profile = configured
-        elif not hasattr(self._cfg, "params"):
-            # Very small downstream adapters historically supplied only cfg
-            # and monkey-patched run_phase. Preserve their all-phases driver
-            # semantics while real WorkflowConfig instances use the explicit
-            # application default below.
-            profile = ReconstructProfile.PRODUCTION.value
         elif "static=True" in context.phase_summaries.get("init", ""):
             profile = ReconstructProfile.STATIC.value
         else:
@@ -347,12 +342,12 @@ class ReconstructSiteRunner(PhaseRunner):
             context.plan_version = stored.strip()
 
     def _workspace(self) -> WorkspaceView:
-        scope = getattr(self._cfg, "workspace_scope", None)
+        scope = self._cfg.workspace_scope
         root = scope.primary_root if scope is not None else Path.cwd()
         return WorkspaceView(root)
 
     def _ensure_evidence(self, context: ReconstructContext) -> ReconstructEvidenceStore:
-        evidence = getattr(self, "_evidence", None)
+        evidence = self._evidence
         if evidence is None:
             if context.artifact_manifest_path:
                 try:
@@ -377,10 +372,7 @@ class ReconstructSiteRunner(PhaseRunner):
                 evidence.set_metadata(profile=context.profile)
             elif evidence.manifest.revision == 0:
                 evidence.set_metadata()
-            if (
-                getattr(self._cfg, "browser_manager", None) is None
-                and context.screenshot_status == "pending"
-            ):
+            if self._cfg.browser_manager is None and context.screenshot_status == "pending":
                 evidence.record_degraded_screenshot(
                     role="reference",
                     route="*",
@@ -390,19 +382,17 @@ class ReconstructSiteRunner(PhaseRunner):
                 )
                 context.screenshot_status = "degraded"
             context.browser_capability_status = (
-                "unavailable"
-                if getattr(self._cfg, "browser_manager", None) is None
-                else "available"
+                "unavailable" if self._cfg.browser_manager is None else "available"
             )
             context.browser_backend = (
                 "unavailable"
-                if getattr(self._cfg, "browser_manager", None) is None
+                if self._cfg.browser_manager is None
                 else type(self._cfg.browser_manager).__name__
             )
         return evidence
 
     async def _init(  # type: ignore[override]
-        self, context: ReconstructContext, memory: object
+        self, context: ReconstructContext, memory: ShortTermMemory | None
     ) -> ReconstructState:
         state = await super()._init(context, memory)
         self._active_plan = self._select_profile(context)
@@ -410,7 +400,7 @@ class ReconstructSiteRunner(PhaseRunner):
         return state
 
     async def _research_gate(  # type: ignore[override]
-        self, context: ReconstructContext, memory: object
+        self, context: ReconstructContext, memory: ShortTermMemory | None
     ) -> ReconstructState:
         """Require validated baseline approval before entering bootstrap."""
         from agenthicc.workflows.reconstruct_site.phase_impl import _MAX_ATTEMPTS
@@ -444,15 +434,9 @@ class ReconstructSiteRunner(PhaseRunner):
                         summary=str(payload.get("summary", "")),
                     )
                 else:
-                    raw_exceptions = payload.get("exception_ids", [])
-                    exception_ids = (
-                        [str(item) for item in raw_exceptions if isinstance(item, str)]
-                        if isinstance(raw_exceptions, list)
-                        else []
-                    )
                     gate.approve_degraded(
                         current,
-                        exception_ids=exception_ids,
+                        exception_ids=payload_strings(payload.get("exception_ids")),
                         rationale=str(payload.get("rationale", "")),
                     )
             except ResearchValidationError as exc:
@@ -522,7 +506,6 @@ class ReconstructSiteRunner(PhaseRunner):
                 decision: dict[str, object]
                 try:
                     if summary_only:
-                        exception_ids = data.get("exception_ids", [])
                         decision = {
                             "status": (
                                 "approved_degraded" if action == "approve_degraded" else "approved"
@@ -532,11 +515,7 @@ class ReconstructSiteRunner(PhaseRunner):
                             "summary": str(data.get("summary", data.get("rationale", ""))),
                             "baseline_artifact_id": baseline_id,
                             "blocking_cell_ids": [],
-                            "exception_ids": (
-                                [str(item) for item in exception_ids if isinstance(item, str)]
-                                if isinstance(exception_ids, list)
-                                else []
-                            ),
+                            "exception_ids": payload_strings(data.get("exception_ids")),
                         }
                     else:
                         gate = ResearchGate(context.profile)
@@ -549,15 +528,9 @@ class ReconstructSiteRunner(PhaseRunner):
                                 summary=str(data.get("summary", "")),
                             ).to_dict()
                         else:
-                            raw_exceptions = data.get("exception_ids", [])
-                            exception_ids = (
-                                [str(item) for item in raw_exceptions if isinstance(item, str)]
-                                if isinstance(raw_exceptions, list)
-                                else []
-                            )
                             decision = gate.approve_degraded(
                                 matrix,
-                                exception_ids=exception_ids,
+                                exception_ids=payload_strings(data.get("exception_ids")),
                                 rationale=str(data.get("rationale", "")),
                             ).to_dict()
                 except ResearchValidationError as exc:
@@ -575,11 +548,9 @@ class ReconstructSiteRunner(PhaseRunner):
                 context.research_gate_decision = decision
                 context.research_exceptions = [
                     {"exception_id": item, "status": "accepted"}
-                    for item in decision.get("exception_ids", [])
+                    for item in payload_strings(decision.get("exception_ids"))
                 ]
-                context.unresolved_research = [
-                    str(item) for item in decision.get("blocking_cell_ids", [])
-                ]
+                context.unresolved_research = payload_strings(decision.get("blocking_cell_ids"))
                 context.last_transition = action
                 context.research_metrics["gate_duration_ms"] = int(
                     (time.monotonic() - gate_started) * 1000
@@ -830,7 +801,7 @@ class ReconstructSiteRunner(PhaseRunner):
             matrix = self._coverage(context)
         except ResearchValidationError:
             return
-        for cell_id, cell in tuple(matrix.cells.items()):
+        for cell in tuple(matrix.cells.values()):
             if not any(
                 self._coverage_artifact_kind(item) in invalidated_kinds
                 for item in cell.artifact_ids
@@ -961,7 +932,7 @@ class ReconstructSiteRunner(PhaseRunner):
 
     def _mark_browser_unavailable(self, context: ReconstructContext) -> None:
         """Turn a missing browser into explicit unavailable cells."""
-        if getattr(self._cfg, "browser_manager", None) is not None:
+        if self._cfg.browser_manager is not None:
             return
         try:
             matrix = self._coverage(context)
@@ -979,13 +950,13 @@ class ReconstructSiteRunner(PhaseRunner):
         context.coverage_matrix = matrix.to_dict()
 
     def _active_plan_skips(self) -> tuple[tuple[str, str], ...]:
-        plan = getattr(self, "_active_plan", None)
+        plan = self._active_plan
         if plan is None:
             return ()
         return tuple((item.name, item.reason) for item in plan.skipped)
 
     def _plan_for(self, context: ReconstructContext) -> ActiveReconstructPlan:
-        plan = getattr(self, "_active_plan", None)
+        plan = self._active_plan
         if plan is None:
             self._active_plan = self._select_profile(context)
             plan = self._active_plan
@@ -1013,9 +984,9 @@ class ReconstructSiteRunner(PhaseRunner):
         self, context: ReconstructContext, phase_name: str, plan: ActiveReconstructPlan
     ) -> None:
         index = plan.index[phase_name]
-        model = self._phase_model(phase_name) or getattr(self, "_model_id", "")
-        context.cache_epoch = getattr(self, "_tool_cache_epoch", 0)
-        context.cache_epoch_reason = getattr(self, "_tool_cache_epoch_reason", "initial")
+        model = self._phase_model(phase_name) or self._model_id
+        context.cache_epoch = self._tool_cache_epoch
+        context.cache_epoch_reason = self._tool_cache_epoch_reason
         display_name = phase_name
         if phase_name == "page":
             progress = context.page_progress
@@ -1252,7 +1223,7 @@ class ReconstructSiteRunner(PhaseRunner):
                     for item in store.manifest.artifacts
                     if item.status == "complete"
                 ),
-                "llm_turns": max(0, int(getattr(self._cfg, "completed_turns", 0))),
+                "llm_turns": max(0, int(self._cfg.completed_turns)),
             }
         )
         digest = json.dumps(store.checkpoint_digest(), sort_keys=True, separators=(",", ":"))
@@ -1594,7 +1565,7 @@ class ReconstructSiteRunner(PhaseRunner):
 
         receipt_phases: tuple[str, ...] = ()
         journal_phases: tuple[str, ...] = ()
-        store = getattr(self, "_evidence", None)
+        store = self._evidence
         if store is not None:
             try:
                 receipts = store.read_phase_receipts()
@@ -1756,7 +1727,9 @@ class ReconstructSiteRunner(PhaseRunner):
         if current_name not in plan.names or plan.index[phase_name] < plan.index[current_name]:
             context.state = ReconstructState[phase_name.upper()]
 
-    async def _run_context(self, context: ReconstructContext, memory: object) -> ReconstructContext:
+    async def _run_context(
+        self, context: ReconstructContext, memory: ShortTermMemory | None
+    ) -> ReconstructContext:
         self._active_context = context
         plan = self._plan_for(context)
         state = self._state_after_profile(context.state, plan)
@@ -1900,7 +1873,7 @@ class ReconstructSiteRunner(PhaseRunner):
                     )
             log.info("reconstruct_site[%s] → %s", context.profile, state.name)
         context.state = state
-        evidence = getattr(self, "_evidence", None)
+        evidence = self._evidence
         if evidence is not None:
             evidence.set_metadata(
                 status="complete" if state is ReconstructState.COMPLETE else "failed"
@@ -1916,11 +1889,7 @@ class ReconstructSiteRunner(PhaseRunner):
         from lauren_ai._memory import ShortTermMemory
 
         handle = self._cfg.workflow_handle
-        run_id = (
-            handle.run_id
-            if handle is not None
-            else getattr(self, "_run_id", "") or uuid.uuid4().hex
-        )
+        run_id = handle.run_id if handle is not None else self._run_id or uuid.uuid4().hex
         self._run_id = run_id
         memory = self._cfg.session_memory or ShortTermMemory(
             max_tokens=self._cfg.cfg.execution.effective_usable_budget()
@@ -1930,7 +1899,7 @@ class ReconstructSiteRunner(PhaseRunner):
             run_id=run_id,
             state=ReconstructState.INIT,
             shared_memory=memory,
-            conversation_id=str(getattr(self._cfg, "conversation_id", "")),
+            conversation_id=str(self._cfg.conversation_id),
         )
         return await self._run_context(context, memory)
 
@@ -1947,9 +1916,7 @@ class ReconstructSiteRunner(PhaseRunner):
             or ShortTermMemory(max_tokens=self._cfg.cfg.execution.effective_usable_budget())
         )
         context.shared_memory = memory
-        context.conversation_id = context.conversation_id or str(
-            getattr(self._cfg, "conversation_id", "")
-        )
+        context.conversation_id = context.conversation_id or str(self._cfg.conversation_id)
         self._active_plan = self._select_profile(context)
         self._rehydrate_evidence(context)
         # This is intentionally before _run_context: its first operation for
@@ -1960,9 +1927,9 @@ class ReconstructSiteRunner(PhaseRunner):
 
     async def run_phase(self, **kwargs: object) -> None:
         prompt = str(kwargs.get("system_prompt", ""))
-        context = getattr(self, "_active_context", None)
-        active_phase = getattr(self, "_active_phase_name", "")
-        plan = getattr(self, "_active_plan", None)
+        context = self._active_context
+        active_phase = self._active_phase_name
+        plan = self._active_plan
         if plan is not None and active_phase:
             # PhasePlan is the source of truth for the turn budget. The
             # historical phase methods still pass their old literal values,
@@ -1994,9 +1961,9 @@ class ReconstructSiteRunner(PhaseRunner):
             **kwargs,  # type: ignore[arg-type]
         )
 
-    def _reentry_state(self, target_phase: str) -> ReconstructState:  # type: ignore[override]
-        context = getattr(self, "_active_context", None)
-        plan = getattr(self, "_active_plan", None)
+    def _reentry_state(self, target_phase: str) -> ReconstructState:
+        context = self._active_context
+        plan = self._active_plan
         if plan is None:
             plan = RECONSTRUCT_PHASE_PLAN.active(ReconstructProfile.PRODUCTION)
             self._active_plan = plan
@@ -2016,7 +1983,7 @@ class ReconstructSiteRunner(PhaseRunner):
 
     def _validate_reentry_target(self, target_phase: str) -> str | None:
         """Return a model-safe error for invalid target arguments."""
-        plan = getattr(self, "_active_plan", None)
+        plan = self._active_plan
         if plan is None:
             plan = RECONSTRUCT_PHASE_PLAN.active(ReconstructProfile.PRODUCTION)
             self._active_plan = plan
@@ -2024,7 +1991,7 @@ class ReconstructSiteRunner(PhaseRunner):
             plan.resolve_reentry(target_phase)
         except PhasePlanError as exc:
             return str(exc)
-        active_context = getattr(self, "_active_context", None)
+        active_context = self._active_context
         if (
             active_context is not None
             and active_context.reentry_count >= self._params().max_reentries
@@ -2032,11 +1999,20 @@ class ReconstructSiteRunner(PhaseRunner):
             return f"re-entry budget exhausted ({self._params().max_reentries})"
         return None
 
-    def _base_tools(self) -> list[ToolLike]:
-        tool_cache = getattr(self, "_reconstruct_tool_cache", None)
-        if tool_cache is not None:
-            return list(tool_cache)
-        tools = list(super()._base_tools())
+    def _base_tools(self, mode: str | None = None) -> list[ToolLike]:
+        from agenthicc.tools.base import tool_name
+
+        tools = [*super()._base_tools(mode), self._screenshot_record_tool()]
+        if self._active_context is not None:
+            self._active_context.stable_tool_bundle_fingerprint = hashlib.sha256(
+                "\n".join(tool_name(item) for item in tools).encode()
+            ).hexdigest()[:32]
+        return tools
+
+    def _screenshot_record_tool(self) -> ToolLike:
+        """Return the evidence-linking tool, built once per cache epoch."""
+        if self._screenshot_tool is not None:
+            return self._screenshot_tool
         from lauren_ai._tools import tool
         from agenthicc.tools.capabilities import tool_write
 
@@ -2101,16 +2077,8 @@ class ReconstructSiteRunner(PhaseRunner):
                 "artifact_id": record.artifact_id,
             }
 
-        self._reconstruct_tool_cache = [*tools, record_reconstruct_screenshot]
-        if self._active_context is not None:
-            tool_names = [
-                str(getattr(item, "__name__", getattr(item, "name", "")))
-                for item in self._reconstruct_tool_cache
-            ]
-            self._active_context.stable_tool_bundle_fingerprint = hashlib.sha256(
-                "\n".join(tool_names).encode()
-            ).hexdigest()[:32]
-        return list(self._reconstruct_tool_cache)
+        self._screenshot_tool = record_reconstruct_screenshot
+        return record_reconstruct_screenshot
 
 
 def _upgrade_context(context: PhaseContext) -> ReconstructContext:
@@ -2313,7 +2281,7 @@ class ReconstructSiteWorkflow(WorkflowPlugin):
 
     @classmethod
     def checkpoint_context_from_payload(
-        cls, payload: dict[str, object], memory: object | None = None
+        cls, payload: dict[str, object], memory: ShortTermMemory | None = None
     ) -> ReconstructContext:
         base = PhaseWorkflow.checkpoint_context_from_payload(payload, memory)
         values: dict[str, object] = {

@@ -1,9 +1,16 @@
-"""Skills runtime: context injection, arg substitution, auto-triggering (PRD-23)."""
+"""Skills runtime: context commands, arg substitution, auto-triggering (PRD-23).
+
+A skill body may name *context commands* with ``!`command``` placeholders.
+Agenthicc never runs them itself. A skill can come from a repository the user
+has not reviewed, and a direct shell call would bypass approvals, the
+Plan/Safe/Yolo capability ceiling and workspace limits. Each placeholder is
+rendered as an instruction for the agent to run the command with its command
+tool, where all of those apply (PRD-250 S-01).
+"""
 
 from __future__ import annotations
 
 import re
-import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -11,7 +18,7 @@ if TYPE_CHECKING:
     from agenthicc.skills.loader import SkillDef
 
 __all__ = [
-    "inject_context",
+    "render_context_commands",
     "substitute_args",
     "load_template",
     "maybe_load_reference",
@@ -20,28 +27,21 @@ __all__ = [
 ]
 
 # Matches !`shell command` placeholders
-_INJECT_RE = re.compile(r"!`([^`]+)`")
+_CONTEXT_COMMAND_RE = re.compile(r"!`([^`]+)`")
 
 
-def inject_context(body: str, cwd: Path) -> str:
-    """Replace !`shell command` placeholders with their stdout output."""
+def render_context_commands(body: str) -> str:
+    """Replace each ``!`command``` placeholder with an instruction to run it.
 
-    def _run(match: re.Match[str]) -> str:
-        cmd = match.group(1)
-        try:
-            result = subprocess.run(
-                cmd,
-                shell=True,
-                cwd=str(cwd),
-                capture_output=True,
-                text=True,
-                timeout=15,
-            )
-            return result.stdout.strip()
-        except Exception as exc:  # noqa: BLE001
-            return f"[context injection failed: {exc}]"
+    The command is never executed here; the agent runs it through its command
+    tool, subject to approvals, the active mode and workspace limits.
+    """
 
-    return _INJECT_RE.sub(_run, body)
+    def _instruction(match: re.Match[str]) -> str:
+        command = match.group(1).strip()
+        return f"[run `{command}` with your command tool and use its output here]"
+
+    return _CONTEXT_COMMAND_RE.sub(_instruction, body)
 
 
 def substitute_args(
@@ -102,13 +102,12 @@ def find_matching_skills(
 def process_skill_body(
     skill: SkillDef,
     args: list[str],
-    cwd: Path,
     session_id: str = "",
     effort: str = "medium",
 ) -> str:
     """Produce the final skill body by running all processing steps in order."""
     body = skill.body
-    body = inject_context(body, cwd)
+    body = render_context_commands(body)
     body = substitute_args(body, args, session_id=session_id, effort=effort)
     body = maybe_load_reference(body, skill.path)
     body += load_template(skill.path)

@@ -348,8 +348,8 @@ def build_background_dispatcher(
     """Build a bounded dispatcher over the existing background worker path."""
 
     def dispatch(schedule: Schedule, occurrence: Occurrence) -> Mapping[str, object]:
-        from agenthicc.worktrees.manager import WorktreeManager  # noqa: PLC0415
-        from agenthicc.worktrees.model import WorktreeRecord  # noqa: PLC0415
+        from agenthicc.worktrees.manager import WorktreeManager
+        from agenthicc.worktrees.model import WorktreeRecord
 
         repository = Path(schedule.repository_root).resolve()
         git = WorktreeManager(repository)
@@ -460,7 +460,7 @@ def background_lookup(store: BackgroundStore) -> Callable[[str], BackgroundSessi
     """Adapt a canonical background store without leaking its concrete type."""
 
     def lookup(session_id: str) -> BackgroundSession | None:
-        from agenthicc.background.store import SessionNotFound  # noqa: PLC0415
+        from agenthicc.background.store import SessionNotFound
 
         try:
             return store.get(session_id, include_deleted=True)

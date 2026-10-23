@@ -6,21 +6,28 @@ on:
       - "v*"
 
 permissions:
-  contents: write
-  id-token: write  # Required for OIDC PyPI publish
+  contents: read
 
 jobs:
   # --------------------------------------------------------------------------
-  # Build — verify everything then produce the distributable artifacts
+  # Every gate, run again for the tagged commit: a tag on a red commit cannot
+  # publish because every later job needs this one.
+  # --------------------------------------------------------------------------
+  ci:
+    name: CI for the tagged commit
+    uses: ./.github/workflows/ci.yml
+
+  # --------------------------------------------------------------------------
+  # Build — the tag must name the package version, and the built wheel must
+  # report that version from `agenthicc --version`.
   # --------------------------------------------------------------------------
   build:
     name: Build distribution
+    needs: [ci]
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0  # setuptools-scm needs full history
 
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
@@ -32,19 +39,33 @@ jobs:
         with:
           enable-cache: false
 
-      - name: Install nox + build backend
-        run: |
-          uv tool install nox
-          uv pip install build
+      - name: Install nox
+        run: uv tool install nox
 
-      - name: Check llms-full.txt
-        run: nox -s llms_check
+      - name: Check the tag names the package version
+        run: |
+          version="$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")"
+          if [ "v${version}" != "${GITHUB_REF_NAME}" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match the project version ${version}"
+            exit 1
+          fi
 
       - name: Build wheel and sdist
         run: nox -s build
 
       - name: Check distributions
         run: nox -s build_check
+
+      - name: Check the wheel reports its own version
+        run: |
+          uv venv "${RUNNER_TEMP}/wheel-check"
+          uv pip install --python "${RUNNER_TEMP}/wheel-check" dist/*.whl
+          expected="agenthicc ${GITHUB_REF_NAME#v}"
+          actual="$("${RUNNER_TEMP}/wheel-check/bin/agenthicc" --version)"
+          if [ "${actual}" != "${expected}" ]; then
+            echo "::error::the wheel reports '${actual}', expected '${expected}'"
+            exit 1
+          fi
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
@@ -53,13 +74,15 @@ jobs:
           path: dist/
 
   # --------------------------------------------------------------------------
-  # Publish to TestPyPI — runs automatically on every tag
+  # Publish to TestPyPI — runs automatically on every green tag
   # --------------------------------------------------------------------------
   publish-testpypi:
     name: Publish to TestPyPI
     runs-on: ubuntu-latest
     needs: [build]
     environment: testpypi
+    permissions:
+      id-token: write  # OIDC trusted publishing
 
     steps:
       - name: Download build artifacts
@@ -82,6 +105,9 @@ jobs:
     runs-on: ubuntu-latest
     needs: [publish-testpypi]
     environment: pypi
+    permissions:
+      contents: write  # create the GitHub Release
+      id-token: write  # OIDC trusted publishing
 
     steps:
       - name: Download build artifacts

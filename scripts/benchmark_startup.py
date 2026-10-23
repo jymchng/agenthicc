@@ -304,11 +304,17 @@ def main(argv: list[str] | None = None) -> int:
         "process_spawn_ms": _summary(process_spawn),
         "version_process_ms": _summary(version),
         "version_application_ms": _summary(
-            [max(0.0, elapsed - baseline) for elapsed, baseline in zip(version, process_spawn)]
+            [
+                max(0.0, elapsed - baseline)
+                for elapsed, baseline in zip(version, process_spawn, strict=True)
+            ]
         ),
         "help_process_ms": _summary(help_timings),
         "help_application_ms": _summary(
-            [max(0.0, elapsed - baseline) for elapsed, baseline in zip(help_timings, process_spawn)]
+            [
+                max(0.0, elapsed - baseline)
+                for elapsed, baseline in zip(help_timings, process_spawn, strict=True)
+            ]
         ),
         "fast_path_metrics": fast_metrics,
         "session_service_cold": cold_probe,

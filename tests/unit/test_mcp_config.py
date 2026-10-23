@@ -89,7 +89,7 @@ def test_parse_mcp_servers_graceful_on_missing_import(monkeypatch):
     # Simulate ImportError path by patching directly
     def _failing_parse(raw_list):
         try:
-            from agenthicc.tools.mcp import McpServerConfig  # noqa: PLC0415
+            from agenthicc.tools.mcp import McpServerConfig
 
             return [McpServerConfig.from_dict(d) for d in raw_list]
         except ImportError:
@@ -146,7 +146,7 @@ def test_mcp_servers_merge_by_stable_name_not_array_position() -> None:
                 ]
             }
         },
-        {"tools": {"mcp_servers": [{"name": "second", "url": "updated"}] }},
+        {"tools": {"mcp_servers": [{"name": "second", "url": "updated"}]}},
     )
     assert merged["tools"]["mcp_servers"] == [
         {"name": "first", "url": "one"},

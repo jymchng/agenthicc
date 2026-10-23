@@ -38,7 +38,7 @@ from agenthicc.tui.workspace.overlays.prompt import PromptOverlay
 if TYPE_CHECKING:
     from rich.console import RenderableType
     from rich.text import Text
-    from agenthicc.tools.approval import ApprovalRequest, ApprovalService
+    from agenthicc.tools.approval import ApprovalRequest, InteractiveApprovals
 
 _BORDER = "─"
 _PLAN_VISIBLE_LINES = 20  # plan lines shown in the viewport at once
@@ -66,7 +66,7 @@ class PlanApprovalOverlay(PromptOverlay):
     def __init__(
         self,
         req: ApprovalRequest,
-        service: ApprovalService,
+        service: InteractiveApprovals,
         close_fn: Callable[[], None],
     ) -> None:
         super().__init__()
@@ -161,10 +161,10 @@ class PlanApprovalOverlay(PromptOverlay):
         """Render plan_text as Markdown into a flat list[Text], one item per
         terminal line.  Cached by width so terminal resizes invalidate it.
         """
-        from io import StringIO  # noqa: PLC0415
-        from rich.console import Console  # noqa: PLC0415
-        from rich.markdown import Markdown  # noqa: PLC0415
-        from rich.text import Text  # noqa: PLC0415
+        from io import StringIO
+        from rich.console import Console
+        from rich.markdown import Markdown
+        from rich.text import Text
 
         buf = StringIO()
         con = Console(
@@ -182,8 +182,8 @@ class PlanApprovalOverlay(PromptOverlay):
     # ── SELECTING ─────────────────────────────────────────────────────────────
 
     def _render_selecting(self) -> RenderableType:
-        from rich.console import Group  # noqa: PLC0415
-        from rich.text import Text  # noqa: PLC0415
+        from rich.console import Group
+        from rich.text import Text
 
         term = shutil.get_terminal_size((80, 24))
         cols = term.columns
@@ -304,9 +304,9 @@ class PlanApprovalOverlay(PromptOverlay):
     # ── PROMPTING ─────────────────────────────────────────────────────────────
 
     def _render_prompting(self) -> RenderableType:
-        from rich.console import Group  # noqa: PLC0415
-        from rich.text import Text  # noqa: PLC0415
-        from rich.markup import escape as _e  # noqa: PLC0415
+        from rich.console import Group
+        from rich.text import Text
+        from rich.markup import escape as _e
 
         cols = shutil.get_terminal_size((80, 24)).columns
         label = self._option_specs()[self._pending_option][0]
@@ -345,9 +345,9 @@ class PlanApprovalOverlay(PromptOverlay):
     # ── MODE_SELECTING ──────────────────────────────────────────────────────
 
     def _render_mode_selecting(self) -> RenderableType:
-        from rich.console import Group  # noqa: PLC0415
-        from rich.markup import escape as _e  # noqa: PLC0415
-        from rich.text import Text  # noqa: PLC0415
+        from rich.console import Group
+        from rich.markup import escape as _e
+        from rich.text import Text
 
         cols = shutil.get_terminal_size((80, 24)).columns
         modes = self._mode_values()

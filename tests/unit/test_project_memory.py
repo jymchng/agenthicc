@@ -102,3 +102,55 @@ class TestProjectMemoryArtifacts:
         record = await layer.put_artifact("string content")
         assert isinstance(record.content, bytes)
         assert record.content == b"string content"
+
+
+class TestProjectMemoryConnections:
+    """D-01: every operation closes the connection it opened."""
+
+    @staticmethod
+    def _track_connections(layer: ProjectMemoryLayer, monkeypatch) -> tuple[list, list]:
+        import sqlite3
+
+        opened: list[sqlite3.Connection] = []
+        closed: list[sqlite3.Connection] = []
+
+        class RecordingConnection(sqlite3.Connection):
+            def close(self) -> None:
+                closed.append(self)
+                super().close()
+
+        def recording_connect() -> sqlite3.Connection:
+            conn = sqlite3.connect(layer.db_path, timeout=10.0, factory=RecordingConnection)
+            conn.row_factory = sqlite3.Row
+            opened.append(conn)
+            return conn
+
+        monkeypatch.setattr(layer, "_connect", recording_connect)
+        return opened, closed
+
+    async def test_every_operation_closes_its_connection(self, tmp_path, monkeypatch):
+        layer = ProjectMemoryLayer(tmp_path / "test.db")
+        opened, closed = self._track_connections(layer, monkeypatch)
+
+        await layer.set("k", "v")
+        await layer.get("k")
+        await layer.delete("k")
+        record = await layer.put_artifact("content")
+        await layer.get_artifact(record.artifact_id)
+        await layer.vacuum()
+
+        assert len(opened) == 6
+        assert closed == opened
+
+    async def test_a_failed_write_rolls_back_and_still_closes(self, tmp_path, monkeypatch):
+        import sqlite3
+
+        layer = ProjectMemoryLayer(tmp_path / "test.db")
+        opened, closed = self._track_connections(layer, monkeypatch)
+
+        with pytest.raises(sqlite3.Error):
+            await layer.set(object(), "v")  # type: ignore[arg-type]  # cannot be bound
+
+        assert len(opened) == 1
+        assert closed == opened
+        assert await layer.get("k") == (False, None)

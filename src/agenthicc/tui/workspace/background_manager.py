@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import inspect
 import json
 import textwrap
@@ -905,9 +906,9 @@ class BackgroundManager:
         self, session: BackgroundSession
     ) -> tuple[list[str], str | None, list[str]]:
         """Read bounded activity, input receipt, and session input history."""
-        from agenthicc.background.input_inbox import BackgroundInputInbox  # noqa: PLC0415
-        from agenthicc.tui.runtime.session_export import _Redactor  # noqa: PLC0415
-        from agenthicc.tui.runtime.session_log import load_user_message_history  # noqa: PLC0415
+        from agenthicc.background.input_inbox import BackgroundInputInbox
+        from agenthicc.tui.runtime.session_export import _Redactor
+        from agenthicc.tui.runtime.session_log import load_user_message_history
 
         activity = self._activity_lines(session)
         history = self._input_history.get(session.session_id)
@@ -1047,7 +1048,7 @@ class BackgroundManager:
         repaints.
         """
 
-        from agenthicc.tui.runtime.session_export import _Redactor  # noqa: PLC0415
+        from agenthicc.tui.runtime.session_export import _Redactor
 
         path = Path(session.artifact_dir).expanduser() / "conversation.jsonl"
         try:
@@ -1255,9 +1256,9 @@ class BackgroundManager:
         session: BackgroundSession | None,
         budget: ViewportBudget,
     ) -> RenderableType:
-        from rich.console import Group  # noqa: PLC0415
-        from rich.panel import Panel  # noqa: PLC0415
-        from rich.text import Text  # noqa: PLC0415
+        from rich.console import Group
+        from rich.panel import Panel
+        from rich.text import Text
 
         target_id = self._detail_session_id or "unknown"
         if self._environment_action_mode:
@@ -1267,7 +1268,7 @@ class BackgroundManager:
                 else None
             )
             if self._environment_action_mode == "preview" and action is not None:
-                from agenthicc.worktrees.environment import (  # noqa: PLC0415
+                from agenthicc.worktrees.environment import (
                     resolve_worktree_path,
                 )
 
@@ -1484,22 +1485,22 @@ class BackgroundManager:
 
     def _build_target_input_editor(self, target: BackgroundSession) -> None:
         """Create the canonical editor with registries scoped to *target*."""
-        from agenthicc.commands.builtins import build_builtin_registry  # noqa: PLC0415
-        from agenthicc.commands.plugin_loader import discover_command_plugins  # noqa: PLC0415
-        from agenthicc.config import load_config  # noqa: PLC0415
-        from agenthicc.skills.loader import discover_skills  # noqa: PLC0415
-        from agenthicc.tui.conversation_store import AppState  # noqa: PLC0415
-        from agenthicc.tui.input.unified_session import UnifiedInputSession  # noqa: PLC0415
-        from agenthicc.tui.runtime.commands import CommandBus, SendMessageCommand  # noqa: PLC0415
-        from agenthicc.tui.runtime.mode_manager import ModeManager  # noqa: PLC0415
-        from agenthicc.tui.trigger import TriggerManager  # noqa: PLC0415
-        from agenthicc.tui.triggers.at_mention import AtMentionTrigger  # noqa: PLC0415
-        from agenthicc.tui.triggers.slash_command import (  # noqa: PLC0415
+        from agenthicc.commands.builtins import build_builtin_registry
+        from agenthicc.commands.plugin_loader import discover_command_plugins
+        from agenthicc.config import load_config
+        from agenthicc.skills.loader import discover_skills
+        from agenthicc.tui.conversation_store import AppState
+        from agenthicc.tui.input.unified_session import UnifiedInputSession
+        from agenthicc.tui.runtime.commands import CommandBus, SendMessageCommand
+        from agenthicc.tui.runtime.mode_manager import ModeManager
+        from agenthicc.tui.trigger import TriggerManager
+        from agenthicc.tui.triggers.at_mention import AtMentionTrigger
+        from agenthicc.tui.triggers.slash_command import (
             SkillTrigger,
             SlashCommandTrigger,
         )
-        from agenthicc.tui.workspace.overlay import OverlayHost  # noqa: PLC0415
-        from agenthicc.workflows.registry import build_workflow_registry  # noqa: PLC0415
+        from agenthicc.tui.workspace.overlay import OverlayHost
+        from agenthicc.workflows.registry import build_workflow_registry
 
         target_root = Path(target.cwd).expanduser().resolve()
         project_agent_dir = target_root / ".agenthicc"
@@ -1537,7 +1538,7 @@ class BackgroundManager:
         ).all_commands:
             commands.register(command)
         skills = discover_skills(project_dir=project_agent_dir, user_dir=user_agent_dir)
-        from agenthicc.runners.tui_session import _build_skill_command  # noqa: PLC0415
+        from agenthicc.runners.tui_session import _build_skill_command
 
         for slug, skill in skills.items():
             command = _build_skill_command(slug, skill)
@@ -1615,7 +1616,7 @@ class BackgroundManager:
         command: object,
     ) -> ManagerOperationResult:
         """Submit only to the immutable detail target captured by the editor."""
-        from agenthicc.tui.runtime.commands import SendMessageCommand  # noqa: PLC0415
+        from agenthicc.tui.runtime.commands import SendMessageCommand
 
         if not isinstance(command, SendMessageCommand):
             return ManagerOperationResult(
@@ -1672,7 +1673,7 @@ class BackgroundManager:
                     message_id=command.command_id,
                 )
                 if accepted.ok:
-                    from agenthicc.background.input_inbox import BackgroundInput  # noqa: PLC0415
+                    from agenthicc.background.input_inbox import BackgroundInput
 
                     receipt = accepted.value
                     if isinstance(receipt, BackgroundInput) and receipt.deferred:
@@ -1781,8 +1782,8 @@ class BackgroundManager:
             self._composer_building = False
         editor = self._composer_input
         if editor is not None:
-            from agenthicc.tui.cbreak_reader import Key  # noqa: PLC0415
-            from agenthicc.tui.input.capabilities import _EXIT  # noqa: PLC0415
+            from agenthicc.tui.cbreak_reader import Key
+            from agenthicc.tui.input.capabilities import _EXIT
 
             pending, self._composer_pending_keys = self._composer_pending_keys, []
             for key, char in pending:
@@ -1819,7 +1820,7 @@ class BackgroundManager:
             if editor is None:
                 return None
             result = await editor._dispatch(key, ch)
-            from agenthicc.tui.input.capabilities import _EXIT  # noqa: PLC0415
+            from agenthicc.tui.input.capabilities import _EXIT
 
             if result is _EXIT:
                 self._close_input_composer()
@@ -1841,10 +1842,10 @@ class BackgroundManager:
             task.add_done_callback(_consume_task_result)
 
     def _render_input_composer(self, budget: ViewportBudget) -> RenderableType:
-        from rich.console import Group  # noqa: PLC0415
-        from rich.panel import Panel  # noqa: PLC0415
-        from rich.text import Text  # noqa: PLC0415
-        from agenthicc.tui.workspace.components import ComposerComponent  # noqa: PLC0415
+        from rich.console import Group
+        from rich.panel import Panel
+        from rich.text import Text
+        from agenthicc.tui.workspace.components import ComposerComponent
 
         target = self._composer_target
         state = self._composer_state
@@ -1882,11 +1883,11 @@ class BackgroundManager:
         )
 
     def render(self, *, all_sessions: bool = False) -> RenderableType:
-        from rich.console import Group  # noqa: PLC0415
-        from rich.panel import Panel  # noqa: PLC0415
-        from rich.table import Table  # noqa: PLC0415
-        from rich.text import Text  # noqa: PLC0415
-        from rich import box  # noqa: PLC0415
+        from rich.console import Group
+        from rich.panel import Panel
+        from rich.table import Table
+        from rich.text import Text
+        from rich import box
 
         frame_started = time.monotonic()
         self._record_metric("frame_requested")
@@ -2020,7 +2021,7 @@ class BackgroundManager:
                 "",
                 "Start one with agenthicc run --background",
             )
-        for local_index, session in enumerate(sessions):
+        for session in sessions:
             marker = "▸" if session.session_id == self._selected_session_id else " "
             if session.last_active > self._seen_activity.get(
                 session.session_id, session.last_active
@@ -2113,7 +2114,7 @@ class BackgroundManager:
                     # The detail panel is narrower than the terminal due to
                     # borders and padding; reserve room for the label and
                     # always crop rather than wrapping the transcript text.
-                    from rich.markup import escape  # noqa: PLC0415
+                    from rich.markup import escape
 
                     legacy_error = (
                         " ".join(selected.error.split())[: max(8, min(48, budget.width // 3))]
@@ -2139,7 +2140,7 @@ class BackgroundManager:
                 previous = selected.attempt_history[-1]
                 previous_text = previous.error or previous.latest_activity or "No error details"
                 previous_text = " ".join(previous_text.split())[: max(1, budget.width - 42)]
-                from rich.markup import escape  # noqa: PLC0415
+                from rich.markup import escape
 
                 detail_lines.append(
                     f"[dim]Previous attempt {previous.attempt} ({previous.status.value}): "
@@ -2151,7 +2152,7 @@ class BackgroundManager:
                 and not activity_lines
                 and len(detail_lines) < content_capacity
             ):
-                from rich.markup import escape  # noqa: PLC0415
+                from rich.markup import escape
 
                 legacy_error = " ".join(selected.error.split())[: max(1, budget.width - 40)]
                 detail_lines.append(f"[dim]Legacy prior error: {escape(legacy_error)}[/dim]")
@@ -2473,7 +2474,7 @@ class BackgroundManager:
                 reviewed_manifest_digest = self._environment_manifest_digest
 
                 async def run_action() -> object:
-                    from agenthicc.worktrees.environment_actions import (  # noqa: PLC0415
+                    from agenthicc.worktrees.environment_actions import (
                         run_session_action,
                     )
 
@@ -2613,7 +2614,7 @@ class BackgroundManager:
                 self._notice = "Named environment actions are available only for worker sessions"
                 return None
             try:
-                from agenthicc.worktrees.environment_actions import (  # noqa: PLC0415
+                from agenthicc.worktrees.environment_actions import (
                     available_session_actions_with_context,
                 )
 
@@ -2810,8 +2811,8 @@ class BackgroundManager:
     async def run(self) -> ManagerResult:
         """Run the manager until quit, attach, or a non-interactive fallback."""
 
-        from agenthicc.tui.terminal.backend import get_backend  # noqa: PLC0415
-        from rich.live import Live  # noqa: PLC0415
+        from agenthicc.tui.terminal.backend import get_backend
+        from rich.live import Live
 
         manager_opened_at = time.monotonic()
         self._record_metric("manager_open")
@@ -2912,16 +2913,14 @@ class BackgroundManager:
                             if result is not None:
                                 if result.action == "attach" and result.session_id:
                                     attach_target = result.session_id
-
-                                    async def prepare_attach() -> ManagerOperationResult:
-                                        return await self._service.attach_prepare_async(
-                                            attach_target
-                                        )
-
+                                    # Bind the target now: the operation runs
+                                    # later, after more keys may have arrived.
                                     self._start_operation(
                                         attach_target,
                                         "attach",
-                                        prepare_attach,
+                                        functools.partial(
+                                            self._service.attach_prepare_async, attach_target
+                                        ),
                                     )
                                 else:
                                     return result
@@ -2978,9 +2977,8 @@ class BackgroundManager:
             read_was_pending = read_future is not None and not read_future.done()
             if read_future is not None and read_was_pending:
                 read_future.cancel()
-                deadline = time.monotonic() + 0.25
-                while not read_finished.is_set() and time.monotonic() < deadline:
-                    await asyncio.sleep(0.005)
+                # The reader thread sets this once restore() unblocks its read.
+                await asyncio.to_thread(read_finished.wait, 0.25)
             if read_future is None or read_finished.is_set() or not read_was_pending:
                 close_backend = getattr(backend, "close", None)
                 if callable(close_backend):

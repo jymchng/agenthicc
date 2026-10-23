@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from agenthicc.auth import (
+    AuthNetworkError,
     AGENTHICC_REVOKE_URL,
     AuthClient,
     TokenBundle,
@@ -173,7 +174,7 @@ class TestAuthClientExchangeCode:
 
         with patch("httpx.AsyncClient", return_value=mock_client):
             client = AuthClient()
-            with pytest.raises(Exception):
+            with pytest.raises(AuthNetworkError, match="HTTPStatusError"):
                 await client._exchange_code("c", "v", "http://localhost/cb")
 
 

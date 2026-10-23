@@ -31,6 +31,8 @@ log = logging.getLogger(__name__)
 
 
 class _WorkflowHandle(Protocol):
+    phase_index: int
+
     def attach_context(self, context: object) -> None: ...
 
     def update_phase(
@@ -250,9 +252,7 @@ def checkpoint_phase_boundary(
         # topology. Use that canonical coordinate for deduplication and the
         # auxiliary journal too; a caller's raw index may belong to the full
         # registry rather than a profile-filtered plan.
-        effective_phase_index = getattr(handle, "phase_index", phase_index)
-        if not isinstance(effective_phase_index, int) or isinstance(effective_phase_index, bool):
-            effective_phase_index = phase_index
+        effective_phase_index = handle.phase_index
         boundary_key = "|".join(
             (
                 completed,

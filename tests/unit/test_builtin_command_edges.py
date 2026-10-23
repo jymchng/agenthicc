@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -67,7 +66,15 @@ def test_builtin_busy_policy_helpers() -> None:
 async def test_mcp_reload_schedules_a_session_wide_manager_reload() -> None:
     calls: list[str] = []
 
+    from agenthicc.supervised_tasks import SupervisedTasks
+
     class FakeMcpManager:
+        def __init__(self) -> None:
+            self.actions = SupervisedTasks("fake mcp actions")
+
+        def start_action(self, operation, *, name: str) -> None:  # type: ignore[no-untyped-def]
+            self.actions.start(operation, name=name)
+
         def status(self) -> dict[str, object]:
             return {"demo": {"status": "ready"}}
 
@@ -76,10 +83,11 @@ async def test_mcp_reload_schedules_a_session_wide_manager_reload() -> None:
             return []
 
     ctx = _ctx(Path("."))
-    ctx.mcp_manager = FakeMcpManager()  # type: ignore[assignment]
+    manager = FakeMcpManager()
+    ctx.mcp_manager = manager  # type: ignore[assignment]
     ctx.args = "reload"
     assert _cmd_mcp(ctx)
-    await asyncio.sleep(0)
+    assert await manager.actions.wait(timeout=5)
     assert calls == ["reload"]
     assert "/mcp reload complete" in ctx.console.export_text()
 
@@ -221,7 +229,7 @@ def test_workflow_runs_uses_recovery_callbacks_and_overlay(tmp_path: Path) -> No
     ctx.close_overlay = lambda: closed.append(True)
 
     assert _cmd_workflows(ctx)
-    overlay = getattr(ctx, "_overlay")
+    overlay = ctx._overlay
     assert isinstance(overlay, WorkflowRunsOverlay)
     overlay.handle_key(Key.ENTER, "")
     assert selected == ["paused-run"]

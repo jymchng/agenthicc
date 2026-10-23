@@ -49,8 +49,8 @@ def test_plan_review_stays_single_and_stable_when_animation_is_paused() -> None:
 
 
 def test_waiting_render_is_stable_when_wall_clock_advances(monkeypatch: pytest.MonkeyPatch) -> None:
-    import agenthicc.tui.conversation_store as conversation_store_module  # noqa: PLC0415
-    from agenthicc.tui.workspace.components import StatusComponent  # noqa: PLC0415
+    import agenthicc.tui.conversation_store as conversation_store_module
+    from agenthicc.tui.workspace.components import StatusComponent
 
     now = 10.0
     monkeypatch.setattr(conversation_store_module.time, "monotonic", lambda: now)

@@ -37,6 +37,10 @@ WORKER_FINALIZATION_TIMEOUT_S = 30.0
 
 
 if TYPE_CHECKING:
+    from lauren_ai._transport import Transport
+
+    from agenthicc.tools.approval import ApprovalRequest, ApprovalResponse
+
     from agenthicc.memory.compactor import CompactionOutcome
     from agenthicc.background.recovery import RecoveryAssessment
     from agenthicc.background.terminals import TerminalManager
@@ -192,82 +196,45 @@ class _FinalizationChanges(TypedDict, total=False):
     mode_application_error: str
 
 
-def _signal_value(value: object, default: object = None) -> object:
-    """Return a reactive signal's value, or a plain attribute value."""
-
-    return value() if callable(value) else (value if value is not None else default)
-
-
-def _name(value: object) -> str:
-    raw = getattr(value, "name", value)
-    return str(raw).upper()
-
-
-def _confirmed_idle_after_thinking(session: object) -> bool:
+def _confirmed_idle_after_thinking(session: SessionContext) -> bool:
     """Return whether the canonical session state describes terminal idle.
 
     This intentionally does not inspect rendered TUI output. A completed
     turn plus a canonical ``IDLE`` signal is the smallest reliable evidence
-    available to a headless worker; pending waits, tools, compaction, child
-    workers, and active workflows veto the result. The helper is kept pure
-    with respect to the session so it is straightforward to exercise with
-    deterministic fakes.
+    available to a headless worker; a pending approval, a running tool,
+    compaction, unfinished subagent workers and an active workflow veto it.
     """
+    from agenthicc.tui.conversation_store import AgentState
 
-    app_state = getattr(session, "app_state", None)
-    conversation = getattr(app_state, "conversation", None)
-    if conversation is None:
+    app_state = session.app_state
+    conversation = app_state.conversation
+    if conversation.agent_state() is not AgentState.IDLE:
         return False
-    if _name(_signal_value(getattr(conversation, "agent_state", None), "")) != "IDLE":
+    if conversation.active_tool() or conversation.compaction_active():
         return False
-    if _signal_value(getattr(conversation, "active_tool", None), ""):
-        return False
-    if _signal_value(getattr(conversation, "compaction_active", None), False) is True:
-        return False
-    pool = _signal_value(getattr(conversation, "subagent_pool_state", None), None)
-    if pool is not None:
-        pool_status = _name(_signal_value(getattr(pool, "status", None), ""))
-        raw_workers = getattr(pool, "workers", ())
-        workers = raw_workers if isinstance(raw_workers, (list, tuple)) else ()
-        active_workers = any(
-            _name(getattr(worker, "status", "")) not in {"DONE", "FAILED", "CANCELLED"}
-            for worker in workers
-        )
-        raw_total = getattr(pool, "total", 0)
-        raw_done = getattr(pool, "done", 0)
-        total = raw_total if isinstance(raw_total, int) else 0
-        done = raw_done if isinstance(raw_done, int) else 0
-        if (
-            pool_status not in {"", "DONE", "COMPLETED", "FAILED", "CANCELLED"}
-            or active_workers
-            or total > done
-        ):
-            return False
-
-    for name in (
-        "pending_approval",
-        "pending_question",
-        "continuation_pending",
-        "queued_user_input",
-        "pending_user_input",
+    pool = conversation.subagent_pool_state()
+    if pool is not None and (
+        any(worker.status.upper() not in {"DONE", "FAILED", "CANCELLED"} for worker in pool.workers)
+        or pool.total > pool.done
     ):
-        candidate = _signal_value(getattr(app_state, name, None), None)
-        if candidate not in (None, False, "", (), [], {}):
-            return False
-
-    workflow_run = _signal_value(getattr(app_state, "workflow_run", None), None)
-    if workflow_run is not None:
-        workflow_status = _name(_signal_value(getattr(workflow_run, "status", None), ""))
-        if workflow_status not in {"", "COMPLETE", "COMPLETED", "FAILED", "EXITED"}:
-            return False
-
-    turns = _signal_value(getattr(conversation, "turns", None), ())
-    if not isinstance(turns, (list, tuple)) or not turns:
+        return False
+    if app_state.pending_approval() is not None:
+        return False
+    workflow_run = app_state.workflow_run()
+    if workflow_run is not None and workflow_run.status.upper() not in {
+        "",
+        "COMPLETE",
+        "COMPLETED",
+        "FAILED",
+        "EXITED",
+    }:
         return False
     # A closed COMPLETE/ERROR turn is durable evidence that the worker was
     # active. Historical turns are acceptable here because this helper is
     # called only after the current worker operation has returned.
-    return any(_name(getattr(turn, "state", "")) in {"COMPLETE", "ERROR"} for turn in turns)
+    return any(
+        turn.state in (AgentState.COMPLETE, AgentState.ERROR) for turn in conversation.turns()
+    )
 
 
 def _outcome_changes(
@@ -353,7 +320,7 @@ def _finalize_worker(
             and current.mode_application_status is ModeApplicationStatus.PENDING
             and current.mode_application_attempt == expected_attempt
         ):
-            from agenthicc.tui.runtime.session_export import _Redactor  # noqa: PLC0415
+            from agenthicc.tui.runtime.session_export import _Redactor
 
             raw_mode_error = outcome.error or "Mode resolution failed"
             safe_mode_error = str(_Redactor().value(raw_mode_error, "mode_application_error"))
@@ -474,8 +441,8 @@ def _persist_goal_run_outcome(
 
     if not request.run_id:
         return
-    from agenthicc.runs.model import GoalRunStatus, RunAgentRecord  # noqa: PLC0415
-    from agenthicc.runs.store import RunNotFound, RunStore  # noqa: PLC0415
+    from agenthicc.runs.model import GoalRunStatus, RunAgentRecord
+    from agenthicc.runs.store import RunNotFound, RunStore
 
     status = {
         SessionStatus.COMPLETED: GoalRunStatus.COMPLETED,
@@ -557,7 +524,7 @@ class BackgroundApprovalService:
         self.question_timeout_s = float(question_timeout_s)
         self.conversation_store = conversation_store
         if inbox is None:
-            from agenthicc.background.inbox import BackgroundInteractionInbox  # noqa: PLC0415
+            from agenthicc.background.inbox import BackgroundInteractionInbox
 
             inbox = BackgroundInteractionInbox(store)
         self.inbox = inbox
@@ -589,7 +556,7 @@ class BackgroundApprovalService:
         tool_use_id = _request_attribute(req, "tool_use_id", "")
         mode_options = _request_attribute(req, "mode_options", ())
         tool_input = _request_attribute(req, "tool_input", {})
-        from agenthicc.tui.runtime.session_export import _Redactor  # noqa: PLC0415
+        from agenthicc.tui.runtime.session_export import _Redactor
 
         safe_input = _Redactor().value(tool_input, "tool_input")
         if not isinstance(safe_input, dict):
@@ -659,7 +626,7 @@ class BackgroundApprovalService:
         target: dict[str, object],
         timeout_s: float | None,
     ) -> tuple[object | None, str]:
-        from agenthicc.background.inbox import BackgroundInteractionInbox  # noqa: PLC0415
+        from agenthicc.background.inbox import BackgroundInteractionInbox
 
         inbox = self.inbox
         if not isinstance(inbox, BackgroundInteractionInbox):
@@ -798,10 +765,10 @@ class BackgroundApprovalService:
         except Exception:  # noqa: BLE001
             return
 
-    async def request_approval(self, req: object) -> object:
-        from agenthicc.tools.approval import ApprovalResponse  # noqa: PLC0415
+    async def request_approval(self, req: ApprovalRequest) -> ApprovalResponse:
+        from agenthicc.tools.approval import ApprovalResponse
 
-        if getattr(req, "kind", "tool") == "questions":
+        if req.kind == "questions":
             return await self.request_input(req)
 
         request_id = str(
@@ -842,10 +809,10 @@ class BackgroundApprovalService:
             request_id=request_id,
         )
 
-    async def request_input(self, req: object) -> object:
+    async def request_input(self, req: ApprovalRequest) -> ApprovalResponse:
         """Wait for explicit input to a workflow ``ask_user`` request."""
 
-        from agenthicc.tools.approval import ApprovalResponse  # noqa: PLC0415
+        from agenthicc.tools.approval import ApprovalResponse
 
         try:
             timeout_s = object.__getattribute__(req, "timeout_s")
@@ -974,7 +941,7 @@ class BackgroundApprovalService:
     def respond(self, allowed: bool, **kwargs: object) -> None:
         current = self.store.get(self.session_id)
         if current.approval_item_id:
-            from agenthicc.background.inbox import BackgroundInteractionInbox  # noqa: PLC0415
+            from agenthicc.background.inbox import BackgroundInteractionInbox
 
             inbox = self.inbox
             if not isinstance(inbox, BackgroundInteractionInbox):
@@ -1006,7 +973,7 @@ class BackgroundApprovalService:
         if current.status != SessionStatus.WAITING_INPUT:
             raise InvalidSessionTransition("Session is not waiting for input")
         if current.input_item_id:
-            from agenthicc.background.inbox import (  # noqa: PLC0415
+            from agenthicc.background.inbox import (
                 BackgroundInteractionInbox,
                 response_from_text,
             )
@@ -1031,7 +998,7 @@ class BackgroundApprovalService:
 class BackgroundInputService(BackgroundApprovalService):
     """Named input boundary for integrations that do not need approvals."""
 
-    async def request_input(self, req: object) -> object:
+    async def request_input(self, req: ApprovalRequest) -> ApprovalResponse:
         return await super().request_input(req)
 
 
@@ -1043,45 +1010,45 @@ def _load_request(path: Path) -> WorkerRequest:
 
 
 async def _run_direct_turn(
-    session: object,
+    session: SessionContext,
     request: WorkerRequest,
     *,
     resume_plan: "ResumePlan | None" = None,
 ) -> None:
     """Run a direct turn through the canonical agent-turn runner."""
 
-    from agenthicc.runners.agent_turn import _run_agent_turn  # noqa: PLC0415
+    from agenthicc.runners.agent_turn import _run_agent_turn
 
-    agent_runner = getattr(session, "agent_runner", None)
+    agent_runner = session.agent_runner
     if agent_runner is None:
         config_error = _request_attribute(session, "llm_config_error", None)
         if isinstance(config_error, str) and config_error:
             raise RuntimeError(f"LLM configuration error: {config_error}")
         raise RuntimeError("No LLM configured for background session")
-    app_state = getattr(session, "app_state")
-    cfg = getattr(session, "cfg")
+    app_state = session.app_state
+    cfg = session.cfg
     await _run_agent_turn(
         request.intent,
         agent_runner,
-        getattr(session, "processor"),
-        session_memory=getattr(session, "session_memory"),
-        conversation_id=str(getattr(session, "session_id", "")),
+        session.processor,
+        session_memory=session.session_memory,
+        conversation_id=str(session.session_id),
         max_agent_turns=cfg.execution.max_agent_turns,
         conv_store=app_state.conversation,
         app_state=app_state,
         exec_cfg=cfg.execution,
-        skills=getattr(session, "skills"),
+        skills=session.skills,
         skill_permissions=cfg.agents.skill_permissions_for("default"),
-        mention_cache=getattr(session, "mention_cache"),
-        project_plugin_tools=list(getattr(getattr(session, "project_plugins"), "all_tools", ())),
-        mcp_registry=getattr(session, "mcp_registry"),
+        mention_cache=session.mention_cache,
+        project_plugin_tools=list(getattr(session.project_plugins, "all_tools", ())),
+        mcp_registry=session.mcp_registry,
         active_agent="default",
         completed_turns=0,
-        approval_svc=getattr(session, "approval_svc"),
-        workspace_access=vars(session).get("workspace_access"),
-        memory_router=getattr(session, "memory_router"),
-        semantic_index=getattr(session, "semantic_index"),
-        browser_manager=getattr(session, "browser_manager", None),
+        approval_svc=session.approval_svc,
+        workspace_access=session.workspace_access,
+        memory_router=session.memory_router,
+        semantic_index=session.semantic_index,
+        browser_manager=session.browser_manager,
         resume_turn_id=resume_plan.turn_id if resume_plan is not None else None,
         resume_ledger=resume_plan.ledger if resume_plan is not None else None,
     )
@@ -1100,7 +1067,7 @@ def _assess_direct_turn_recovery(
     journal entries carry the workflow run ID; historical entries without it
     are held for an explicit recovery decision whenever workflow state exists.
     """
-    from agenthicc.background.recovery import assess_recovery_owner  # noqa: PLC0415
+    from agenthicc.background.recovery import assess_recovery_owner
 
     processor = _request_attribute(session, "processor", None)
     get_state = _request_attribute(processor, "get_state", None)
@@ -1110,7 +1077,7 @@ def _assess_direct_turn_recovery(
         try:
             state = get_state()
             workflows = _request_attribute(state, "workflows", {})
-            from agenthicc.kernel.state import NodeStatus  # noqa: PLC0415
+            from agenthicc.kernel.state import NodeStatus
 
             if isinstance(workflows, Mapping):
                 for key, workflow in workflows.items():
@@ -1129,7 +1096,7 @@ def _assess_direct_turn_recovery(
     invalid_run_ids: list[str] = []
     correlated_workflow_run_ids: list[str] = []
     if conversation is not None:
-        from agenthicc.runners.workflow_recovery import (  # noqa: PLC0415
+        from agenthicc.runners.workflow_recovery import (
             WorkflowRecoveryCoordinator,
         )
 
@@ -1203,7 +1170,7 @@ def _safe_provider_failure_message(
     diagnostic_context: Mapping[str, str | int] | None,
 ) -> str | None:
     """Project HTTP provider errors into bounded, payload-free status text."""
-    from agenthicc.runners.agent_turn import (  # noqa: PLC0415
+    from agenthicc.runners.agent_turn import (
         _http_status_code,
         _missing_opencode_session_diagnostic,
         _provider_error_identifiers,
@@ -1271,11 +1238,11 @@ def _dispatch_background_command(
     Returns ``(error, skill_body)``; an empty error means the command was
     handled. Captured command output is projected into the target transcript.
     """
-    from io import StringIO  # noqa: PLC0415
+    from io import StringIO
 
-    from rich.console import Console  # noqa: PLC0415
+    from rich.console import Console
 
-    from agenthicc.commands import CommandContext, CommandDispatcher  # noqa: PLC0415
+    from agenthicc.commands import CommandContext, CommandDispatcher
 
     normalized = text.strip()
     token = normalized.split(None, 1)[0] if normalized else ""
@@ -1315,7 +1282,7 @@ def _dispatch_background_command(
     try:
         handled = CommandDispatcher(registry).dispatch(normalized, context)
     except Exception as exc:  # noqa: BLE001
-        from agenthicc.tui.runtime.session_export import _Redactor  # noqa: PLC0415
+        from agenthicc.tui.runtime.session_export import _Redactor
 
         safe_error = _Redactor().value(f"{type(exc).__name__}: {exc}", "message")
         return (f"{token} failed: {str(safe_error)[:200]}", None)
@@ -1323,7 +1290,7 @@ def _dispatch_background_command(
         return (f"{token} could not be handled by the owning session.", None)
     rendered = output.getvalue().strip()
     if rendered:
-        from agenthicc.tui.runtime.session_export import _Redactor  # noqa: PLC0415
+        from agenthicc.tui.runtime.session_export import _Redactor
 
         safe_output = str(_Redactor().value(rendered, "message"))[:8_000]
         session.app_state.conversation.append_event(
@@ -1373,8 +1340,8 @@ async def _handle_background_workflow_command(
     equivalent of ``TUISession.route()``: command feedback is a handled target
     response, while only a lost/stale worker lease is a delivery failure.
     """
-    from agenthicc.runners.headless import execute_workflow  # noqa: PLC0415
-    from agenthicc.runners.workflow_recovery import (  # noqa: PLC0415
+    from agenthicc.runners.headless import execute_workflow
+    from agenthicc.runners.workflow_recovery import (
         WorkflowRecoveryCoordinator,
     )
 
@@ -1475,7 +1442,7 @@ async def _handle_background_workflow_command(
                     record,
                     owner_id=f"background:{os.getpid()}:{record.run_id}",
                 )
-                from agenthicc.kernel import Event  # noqa: PLC0415
+                from agenthicc.kernel import Event
 
                 try:
                     await session.processor.emit(
@@ -1639,15 +1606,13 @@ async def _handle_background_workflow_command(
             # journal turn. Re-fold the authoritative journal before deciding
             # whether deferred ordinary input can be delivered.
             if input_resume_plan is not None and conversation is not None:
-                from agenthicc.runners.run_coordinator import RunCoordinator  # noqa: PLC0415
+                from agenthicc.runners.run_coordinator import RunCoordinator
 
                 incomplete = RunCoordinator.detect_incomplete_turn(conversation.journal)
-                setattr(
-                    session,
-                    "pending_resume",
+                session.pending_resume = (
                     RunCoordinator.build_resume_plan(conversation.journal, incomplete)
                     if incomplete is not None
-                    else None,
+                    else None
                 )
             status = result.status
             if status == "complete":
@@ -1707,7 +1672,7 @@ async def _handle_background_workflow_command(
             selection_only=True,
         )
     except Exception as exc:  # noqa: BLE001
-        from agenthicc.tui.runtime.session_export import _Redactor  # noqa: PLC0415
+        from agenthicc.tui.runtime.session_export import _Redactor
 
         error = str(_Redactor().value(f"{type(exc).__name__}: {exc}", "message"))[:400]
         return _BackgroundWorkflowCommandResult(
@@ -1718,7 +1683,7 @@ async def _handle_background_workflow_command(
 
 async def _compact_background_session(session: SessionContext) -> CompactionOutcome:
     """Run the same bounded compactor used by the owning TUI session."""
-    from agenthicc.memory.compactor import (  # noqa: PLC0415
+    from agenthicc.memory.compactor import (
         CompactionRecoveryRequired,
         compact_memory_with_result,
     )
@@ -1726,7 +1691,9 @@ async def _compact_background_session(session: SessionContext) -> CompactionOutc
     memory = session.session_memory
     if not memory._messages:
         raise ValueError("There is no session memory to compact")
-    transport = cast("object", object.__getattribute__(session.agent_runner, "_transport"))
+    transport = cast(
+        "Transport | None", object.__getattribute__(session.agent_runner, "_transport")
+    )
     if transport is None:
         raise RuntimeError("No provider transport is available for compaction")
     execution = session.cfg.execution
@@ -1750,7 +1717,7 @@ async def _compact_background_session(session: SessionContext) -> CompactionOutc
 async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
     """Claim, execute, and finalize one background session."""
 
-    from agenthicc.background.settings import (  # noqa: PLC0415
+    from agenthicc.background.settings import (
         BackgroundSettings,
         load_background_settings,
     )
@@ -1813,16 +1780,16 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
                     return
 
         heartbeat_task = asyncio.create_task(_heartbeat(), name="background-heartbeat")
-        from agenthicc.runners.headless import (  # noqa: PLC0415
+        from agenthicc.runners.headless import (
             _HeadlessApprovalService,
             _close_headless_session,
             execute_workflow,
             _select_headless_workflow_resume,
         )
-        from agenthicc.runners.tui_session import _build_session_context  # noqa: PLC0415
-        from agenthicc.runners.session_lease import SessionOpenCoordinator  # noqa: PLC0415
-        from agenthicc.background.input_inbox import BackgroundInputInbox  # noqa: PLC0415
-        from agenthicc.runners.agent_turn_context import (  # noqa: PLC0415
+        from agenthicc.runners.tui_session import _build_session_context
+        from agenthicc.runners.session_lease import SessionOpenCoordinator
+        from agenthicc.background.input_inbox import BackgroundInputInbox
+        from agenthicc.runners.agent_turn_context import (
             QueuedMessageSource,
             bind_provider_diagnostic_context,
             bind_queued_message_source,
@@ -1848,7 +1815,7 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
         # A CLI-created job may be the first durable record for this session.
         # Register it only when no foreground metadata exists; resume must not
         # reset the original session's timestamps.
-        from agenthicc.tui.runtime.session_log import register_session  # noqa: PLC0415
+        from agenthicc.tui.runtime.session_log import register_session
 
         metadata_path = (
             Path.home() / ".agenthicc" / "sessions" / request.session_id / "metadata.json"
@@ -1882,14 +1849,12 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
             lease_token=lease,
         )
         session.app_state.cli_flags = ctx.flags
-        from agenthicc.background.terminals import set_current_terminal_manager  # noqa: PLC0415
+        from agenthicc.background.terminals import set_current_terminal_manager
 
         terminal_manager = getattr(session, "terminal_manager", None)
         if terminal_manager is not None:
             terminal_token = set_current_terminal_manager(terminal_manager)
-        setattr(
-            session,
-            "approval_svc",
+        session.approval_svc = (
             _HeadlessApprovalService(request.dangerously_skip_permissions)
             if request.dangerously_skip_permissions
             else BackgroundApprovalService(
@@ -1899,7 +1864,7 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
                 conversation_store=_request_attribute(
                     _request_attribute(session, "app_state", None), "conversation", None
                 ),
-            ),
+            )
         )
         workspace_access = getattr(session, "workspace_access", None)
         if workspace_access is not None:
@@ -1960,7 +1925,7 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
             if pending is None:
                 return None
             if pending.text.startswith(("/", "$")):
-                from agenthicc.commands.busy_policy import classify_busy_command  # noqa: PLC0415
+                from agenthicc.commands.busy_policy import classify_busy_command
 
                 registry = session.cmd_registry
                 decision = classify_busy_command(pending.text, registry)
@@ -2082,7 +2047,7 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
         async def _drain_idle_inputs() -> None:
             """Route every queued message through the target session's input path."""
             nonlocal session_waiting_for_next_input
-            from dataclasses import replace as dataclass_replace  # noqa: PLC0415
+            from dataclasses import replace as dataclass_replace
 
             while True:
                 pending = input_inbox.peek_next(
@@ -2115,11 +2080,11 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
                         try:
                             compaction_outcome = await _compact_background_session(session)
                         except Exception as exc:  # noqa: BLE001
-                            from agenthicc.memory.compactor import CompactionRecoveryRequired  # noqa: PLC0415
+                            from agenthicc.memory.compactor import CompactionRecoveryRequired
 
                             if isinstance(exc, CompactionRecoveryRequired):
                                 raise
-                            from agenthicc.tui.runtime.session_export import _Redactor  # noqa: PLC0415
+                            from agenthicc.tui.runtime.session_export import _Redactor
 
                             error = str(
                                 _Redactor().value(f"{type(exc).__name__}: {exc}", "message")
@@ -2251,7 +2216,7 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
             )
             pending_resume = _request_attribute(session, "pending_resume", None)
             if pending_resume is not None:
-                from agenthicc.background.recovery import RecoveryOwner  # noqa: PLC0415
+                from agenthicc.background.recovery import RecoveryOwner
 
                 assessment = _assess_direct_turn_recovery(
                     session,
@@ -2383,7 +2348,7 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
                         provider_diagnostic_context["input_message_id"] = deferred_inputs[
                             0
                         ].message_id
-                    from dataclasses import replace as dataclass_replace  # noqa: PLC0415
+                    from dataclasses import replace as dataclass_replace
 
                     recovery_request = dataclass_replace(
                         request,
@@ -2593,7 +2558,7 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
         )
         raise
     except Exception as exc:  # noqa: BLE001
-        from agenthicc.memory.tool_history import ToolHistoryRecoveryRequired  # noqa: PLC0415
+        from agenthicc.memory.tool_history import ToolHistoryRecoveryRequired
 
         if isinstance(exc, ToolHistoryRecoveryRequired):
             outcome = _WorkerOutcome(
@@ -2605,7 +2570,7 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
                 exit_code=0,
             )
             return 0
-        from agenthicc.memory.compactor import CompactionRecoveryRequired  # noqa: PLC0415
+        from agenthicc.memory.compactor import CompactionRecoveryRequired
 
         if isinstance(exc, CompactionRecoveryRequired) and request.detached_goal:
             outcome = _WorkerOutcome(
@@ -2660,7 +2625,7 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
                         exc_info=True,
                     )
         if terminal_token is not None:
-            from agenthicc.background.terminals import reset_current_terminal_manager  # noqa: PLC0415
+            from agenthicc.background.terminals import reset_current_terminal_manager
 
             reset_current_terminal_manager(terminal_token)
         heartbeat_stop.set()
@@ -2669,7 +2634,7 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
             await asyncio.gather(heartbeat_task, return_exceptions=True)
         if processor_task is not None and session is not None:
             try:
-                from agenthicc.runners.headless import _close_headless_session  # noqa: PLC0415
+                from agenthicc.runners.headless import _close_headless_session
 
                 await asyncio.wait_for(
                     _close_headless_session(session, processor_task, None),
@@ -2699,7 +2664,7 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
         except OSError:  # pragma: no cover - only an unrecoverable cwd teardown
             pass
         try:
-            from agenthicc.background.supervisor import BackgroundSupervisor  # noqa: PLC0415
+            from agenthicc.background.supervisor import BackgroundSupervisor
 
             BackgroundSupervisor(
                 store,

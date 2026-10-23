@@ -132,8 +132,8 @@ class TestFindCachedResult:
 class TestResumeCacheRoundTrip:
     async def test_tool_caches_and_retrieves_result(self) -> None:
         """Full round-trip: run pool, cache, retrieve on second call."""
-        from unittest.mock import AsyncMock, MagicMock, patch  # noqa: PLC0415
-        from agenthicc.subagents.tool import make_spawn_subagents_tool  # noqa: PLC0415
+        from unittest.mock import AsyncMock, MagicMock, patch
+        from agenthicc.subagents.tool import make_spawn_subagents_tool
 
         conv = ConversationStore()
         conv.begin_turn("agent", "t1")
@@ -175,8 +175,8 @@ class TestResumeCacheRoundTrip:
 
     async def test_changed_context_does_not_reuse_cached_result(self) -> None:
         """Context changes alter the work request and must execute again."""
-        from unittest.mock import AsyncMock, MagicMock, patch  # noqa: PLC0415
-        from agenthicc.subagents.tool import make_spawn_subagents_tool  # noqa: PLC0415
+        from unittest.mock import AsyncMock, MagicMock, patch
+        from agenthicc.subagents.tool import make_spawn_subagents_tool
 
         conv = ConversationStore()
         conv.begin_turn("agent", "t1")
@@ -209,9 +209,9 @@ class TestResumeCacheRoundTrip:
         self, tmp_path
     ) -> None:
         """A completed pool remains resumable when the TUI projection is absent."""
-        from types import SimpleNamespace  # noqa: PLC0415
-        from unittest.mock import AsyncMock, patch  # noqa: PLC0415
-        from agenthicc.subagents.tool import make_spawn_subagents_tool  # noqa: PLC0415
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, patch
+        from agenthicc.subagents.tool import make_spawn_subagents_tool
 
         class FakeRunner:
             _transport = None

@@ -9,8 +9,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from rich.console import Console
-    from lauren_ai._memory import ShortTermMemory
     from agenthicc.tui.conversation_store import ConversationStore
     from agenthicc.tui.runtime.mode_manager import ModeManager
 

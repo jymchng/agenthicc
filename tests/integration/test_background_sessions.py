@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
+from agenthicc.tools.approval import ApprovalRequest
 
 from agenthicc.background import (
     BackgroundSession,
@@ -23,8 +26,22 @@ from agenthicc.background.worker import (
     run_worker,
 )
 from agenthicc.background.settings import BackgroundSettings
+from agenthicc.kernel import Event
+from tests.session_fakes import session_context
 
 pytestmark = pytest.mark.integration
+
+
+def _approval_request(tool_name: str = "write", **fields: object) -> ApprovalRequest:
+    """A real tool approval request, as the approval gate builds them."""
+    return ApprovalRequest(
+        tool_name=tool_name,
+        tool_use_id=f"call-{tool_name}",
+        tool_input={},
+        capabilities=frozenset({"write"}),
+        event=asyncio.Event(),
+        **fields,  # type: ignore[arg-type]
+    )
 
 
 def _queued(tmp_path: Path, store: BackgroundStore) -> BackgroundSession:
@@ -43,14 +60,23 @@ def _queued(tmp_path: Path, store: BackgroundStore) -> BackgroundSession:
 
 
 class _Processor:
+    def __init__(self) -> None:
+        self._sinks: list[Callable[[Event], None]] = []
+
     async def run(self) -> None:
         await asyncio.Event().wait()
 
     async def drain(self) -> None:
         return None
 
-    async def emit(self, *_args: object, **_kwargs: object) -> None:
-        return None
+    def add_sink(self, sink: Callable[[Event], None]) -> Callable[[], None]:
+        self._sinks.append(sink)
+        return lambda: self._sinks.remove(sink) if sink in self._sinks else None
+
+    async def emit(self, event: Event, *_args: object, **_kwargs: object) -> None:
+        """Stand-in for an applied event: notify every sink at once."""
+        for sink in list(self._sinks):
+            sink(event)
 
 
 class _Conversation:
@@ -77,6 +103,9 @@ class _Session:
     def __init__(self) -> None:
         from agenthicc.commands import build_builtin_registry
 
+        # Start from every SessionContext field at its default, as the worker
+        # reads them directly; the fields below are the ones this fake drives.
+        vars(self).update(vars(session_context()))
         self.session_id = "worker-session"
         self.processor = _Processor()
         self.app_state = _AppState()
@@ -124,7 +153,7 @@ async def test_worker_uses_canonical_direct_turn_and_finalizes(monkeypatch, tmp_
         assert current.mode_application_status.value == "applied"
         assert current.mode_name == "Yolo"
         assert current.mode_application_attempt == current.attempt
-        assert getattr(getattr(session, "mode_manager"), "active_name") == current.mode_name
+        assert session.mode_manager.active_name == current.mode_name
 
     async def close(*args: object, **kwargs: object) -> None:
         return None
@@ -461,7 +490,7 @@ async def test_failed_worker_resume_keeps_deferred_input_pending(
         resume_plan: object | None = None,
     ) -> None:
         assert resume_plan is fake_session.pending_resume
-        resume_calls.append((request.intent, getattr(resume_plan, "turn_id")))
+        resume_calls.append((request.intent, resume_plan.turn_id))
         raise RuntimeError("provider still unavailable")
 
     async def close(*args: object, **kwargs: object) -> None:
@@ -1699,8 +1728,8 @@ async def test_worker_first_turn_sees_attested_mode_from_production_session_buil
 
     async def fake_provider_turn(*args: object, **kwargs: object) -> None:
         app_state = kwargs["app_state"]
-        mode_manager = getattr(app_state, "active_mode")()
-        active_mode = getattr(mode_manager, "name")
+        mode_manager = app_state.active_mode()
+        active_mode = mode_manager.name
         durable = store.get("worker-session")
         assert args[0] == "deterministic first turn"
         assert args[1] is fake_agent_runner
@@ -1709,9 +1738,9 @@ async def test_worker_first_turn_sees_attested_mode_from_production_session_buil
         first_turn_observations.append(
             (
                 active_mode,
-                getattr(mode_manager, "name"),
+                mode_manager.name,
                 durable.mode_name,
-                getattr(getattr(app_state, "cli_flags"), "dangerously_skip_permissions"),
+                app_state.cli_flags.dangerously_skip_permissions,
             )
         )
 
@@ -1913,7 +1942,7 @@ async def test_worker_uses_headless_workflow_result(monkeypatch, tmp_path: Path)
     async def execute(session: object, workflow_name: str, intent: str) -> object:
         assert workflow_name == "demo"
         assert intent == "run workflow"
-        assert getattr(getattr(session, "mode_manager"), "active_name") == "Yolo"
+        assert session.mode_manager.active_name == "Yolo"
         return SimpleNamespace(status="complete", error=None)
 
     async def close(*args: object, **kwargs: object) -> None:
@@ -2139,7 +2168,7 @@ async def test_project_workflow_runs_through_background_worker(monkeypatch, tmp_
         "                        output_summary='project output', iteration=1, duration_s=0.01\n"
         "                    )]\n"
         "                ))\n"
-        "                config.processor.event_log.append(Event.create(\n"
+        "                await config.processor.emit(Event.create(\n"
         "                    'WorkflowPhaseCompleted',\n"
         "                    {'run_id': run_id, 'phase_name': 'plan'},\n"
         "                ))\n"
@@ -2262,7 +2291,7 @@ async def test_background_approval_waits_for_manager_decision(tmp_path: Path) ->
     _queued(tmp_path, store)
     store.claim("worker-session", pid=1, lease_token="worker")
     service = BackgroundApprovalService(store, "worker-session")
-    task = asyncio.create_task(service.request_approval(SimpleNamespace(tool_name="write_file")))
+    task = asyncio.create_task(service.request_approval(_approval_request("write_file")))
     deadline = asyncio.get_running_loop().time() + 2.0
     while store.get("worker-session").status is not SessionStatus.WAITING_APPROVAL:
         if asyncio.get_running_loop().time() > deadline:

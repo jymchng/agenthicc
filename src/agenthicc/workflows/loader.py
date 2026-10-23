@@ -94,7 +94,7 @@ def builtin_workflow_descriptors() -> tuple[BuiltinWorkflowDescriptor, ...]:
 
 def load_builtin_workflow(descriptor: BuiltinWorkflowDescriptor) -> type[WorkflowPlugin]:
     """Import and return one built-in workflow described by *descriptor*."""
-    from agenthicc.workflows.plugin import WorkflowPlugin  # noqa: PLC0415
+    from agenthicc.workflows.plugin import WorkflowPlugin
 
     module = __import__(descriptor.module, fromlist=[descriptor.attribute])
     plugin_cls = getattr(module, descriptor.attribute)
@@ -112,13 +112,24 @@ def load_python_workflows(
     path: Path,
     source: str = "user",
 ) -> list[type[WorkflowPlugin]]:
-    """Import a workflow file or package and return its plugin classes.
+    """Import a trusted workflow file or package and return its plugin classes.
 
-    ``source`` remains part of the public signature for compatibility; source
-    provenance is recorded by :mod:`agenthicc.workflows.registry`.
+    Every Python file of a workflow package must be trusted, because the
+    entry module can import any of them; an untrusted workflow is skipped
+    without being imported. ``source`` remains part of the public signature;
+    source provenance is recorded by :mod:`agenthicc.workflows.registry`.
     """
+    from agenthicc.plugins.trust import current_extension_trust
+
+    trust = current_extension_trust()
+    sources = sorted(path.rglob("*.py")) if path.is_dir() else [path]
+    untrusted = [
+        source_file for source_file in sources if not trust.permits(source_file, kind="workflow")
+    ]
+    if untrusted:
+        return []
     try:
-        from agenthicc.workflows.plugin import WorkflowPlugin  # noqa: PLC0415
+        from agenthicc.workflows.plugin import WorkflowPlugin
 
         modules = load_python_workflow_modules(path)
         results: list[type[WorkflowPlugin]] = []
@@ -220,7 +231,7 @@ def _execute_workflow_package(
         package = ModuleType(package_name)
         package.__file__ = str(path / "runner.py")
         package.__package__ = package_name
-        setattr(package, "__path__", [str(path)])
+        package.__path__ = [str(path)]
         package_spec = importlib.machinery.ModuleSpec(
             package_name,
             loader=None,

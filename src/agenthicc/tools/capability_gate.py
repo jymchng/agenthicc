@@ -38,7 +38,7 @@ class ToolCapabilityGate:
         self._app_state = app_state
 
     async def before_tool_call(self, ctx: ToolCallContext) -> object:
-        from lauren_ai._tools._hooks import BeforeToolHookDecision  # noqa: PLC0415
+        from lauren_ai._tools._hooks import BeforeToolHookDecision
 
         mode = self._app_state.active_mode()
         blocked = mode.blocked_capabilities
@@ -68,11 +68,11 @@ class ToolCapabilityGate:
         return BeforeToolHookDecision.proceed()
 
     async def after_tool_call(self, result: object, ctx: ToolCallContext) -> object:
-        from lauren_ai._tools._hooks import AfterToolHookDecision  # noqa: PLC0415
+        from lauren_ai._tools._hooks import AfterToolHookDecision
 
         return AfterToolHookDecision.proceed()
 
     async def on_tool_error(self, exc: Exception, ctx: ToolCallContext) -> object:
-        from lauren_ai._tools._hooks import ErrorToolHookDecision  # noqa: PLC0415
+        from lauren_ai._tools._hooks import ErrorToolHookDecision
 
         return ErrorToolHookDecision.reraise()

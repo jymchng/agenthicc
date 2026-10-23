@@ -33,7 +33,7 @@ class S3FilesystemBackend:
         path_style: bool = False,
     ) -> None:
         try:
-            import boto3  # noqa: PLC0415
+            import boto3
         except ImportError as exc:
             raise ImportError("S3 backend requires boto3. Install: pip install boto3") from exc
 
@@ -100,7 +100,7 @@ class S3FilesystemBackend:
 
     def _is_404(self, exc: Exception) -> bool:
         try:
-            import botocore.exceptions  # noqa: PLC0415
+            import botocore.exceptions
         except ImportError:
             return False
         if isinstance(exc, botocore.exceptions.ClientError):
@@ -234,7 +234,7 @@ class S3FilesystemBackend:
     # ------------------------------------------------------------------
 
     def exists(self, path: str) -> bool:
-        import botocore.exceptions  # noqa: PLC0415
+        import botocore.exceptions
 
         self._check_escape(path)
         key = self._key(path)
@@ -430,7 +430,7 @@ class S3FilesystemBackend:
             return []
 
         keys = [self._key(p) for p in paths]
-        key_to_path = dict(zip(keys, paths))
+        key_to_path = dict(zip(keys, paths, strict=True))
 
         results: list[dict] = []
         for i in range(0, len(keys), 1000):
@@ -465,6 +465,6 @@ class S3FilesystemBackend:
 
 
 def _make_path_style_config() -> object:
-    from botocore.config import Config  # noqa: PLC0415
+    from botocore.config import Config
 
     return Config(s3={"addressing_style": "path"})

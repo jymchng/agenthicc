@@ -19,7 +19,6 @@ from agenthicc.tools.capabilities import ToolCapability
 # Injected before every agent's role-specific system prompt by
 # AgentsRegistry.make_instance().  Ensures all agents share the same
 # foundational operating contract regardless of role.
-# Can be overridden per-project via cfg.execution.base_system_prompt.
 
 BASE_SYSTEM_PROMPT = (
     "You are a capable AI assistant working inside the current project directory. "

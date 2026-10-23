@@ -22,10 +22,10 @@ class TestDeepMerge:
         assert deep_merge({"a": 1, "b": 2}, {"a": 9})["a"] == 9
 
     def test_nested_tables_merge_recursively(self):
-        base = {"execution": {"max_parallel_tasks": 2, "agent_pool_size": 4}}
-        override = {"execution": {"agent_pool_size": 8}}
+        base = {"execution": {"max_parallel_tasks": 2, "max_agent_turns": 4}}
+        override = {"execution": {"max_agent_turns": 8}}
         merged = deep_merge(base, override)
-        assert merged["execution"] == {"max_parallel_tasks": 2, "agent_pool_size": 8}
+        assert merged["execution"] == {"max_parallel_tasks": 2, "max_agent_turns": 8}
 
     def test_lists_are_replaced_not_appended(self):
         merged = deep_merge({"x": {"l": [1, 2]}}, {"x": {"l": [3]}})
@@ -41,7 +41,7 @@ class TestLoadConfig:
             project,
             """
             [execution]
-            max_concurrent_intents = 4
+            max_agent_turns = 4
             max_parallel_tasks = 2
         """,
         )
@@ -49,12 +49,12 @@ class TestLoadConfig:
             user,
             """
             [execution]
-            max_concurrent_intents = 16
+            max_agent_turns = 16
         """,
         )
         config = load_config(project_path=project, user_path=user)
         # project value wins
-        assert config.execution.max_concurrent_intents == 4
+        assert config.execution.max_agent_turns == 4
         # project value also present
         assert config.execution.max_parallel_tasks == 2
 
@@ -66,20 +66,20 @@ class TestLoadConfig:
             project,
             """
             [execution]
-            max_concurrent_intents = 4
+            max_agent_turns = 4
         """,
         )
         _write(
             user,
             """
             [execution]
-            max_concurrent_intents = 16
+            max_agent_turns = 16
             max_parallel_tasks = 99
         """,
         )
         config = load_config(project_path=project, user_path=user)
         # project overrides user-global for this key
-        assert config.execution.max_concurrent_intents == 4
+        assert config.execution.max_agent_turns == 4
         # user-global value used for key not set in project
         assert config.execution.max_parallel_tasks == 99
 
@@ -90,52 +90,42 @@ class TestLoadConfig:
             project,
             """
             [execution]
-            max_concurrent_intents = 4
+            max_agent_turns = 4
             max_parallel_tasks = 2
-            agent_pool_size = 32
+            authoring_max_phase_turns = 32
 
-            [api]
-            port = 9000
+            [behaviour]
+            resume_transcript_turns = 9
         """,
         )
         _write(
             user,
             """
             [execution]
-            max_concurrent_intents = 16
+            max_agent_turns = 16
         """,
         )
         config = load_config(project_path=project, user_path=user)
         # project value wins
-        assert config.execution.max_concurrent_intents == 4
+        assert config.execution.max_agent_turns == 4
         # siblings from project present
         assert config.execution.max_parallel_tasks == 2
-        assert config.execution.agent_pool_size == 32
+        assert config.execution.authoring_max_phase_turns == 32
         # other table from project present
-        assert config.api.port == 9000
+        assert config.behaviour.resume_transcript_turns == 9
 
     def test_defaults_when_no_files(self, tmp_path):
         config = load_config(
             project_path=tmp_path / "missing.toml",
             user_path=tmp_path / "missing_user.toml",
         )
-        assert config.execution.max_concurrent_intents == 8
+        assert config.execution.max_agent_turns == 200
         assert config.execution.max_parallel_tasks == 4
-        assert config.execution.agent_pool_size == 16
         assert config.execution.authoring_max_generation_attempts == 20
         assert config.execution.authoring_max_phase_turns == 20
         assert config.execution.timeout_s == 3600.0
-        assert config.security.sandbox_mode is True
         assert config.security.allowed_paths == ["/workspace"]
-        assert config.security.max_tool_cpu_seconds == 30
-        assert config.security.max_tool_memory_mb == 512
-        assert config.api.host == "127.0.0.1"
-        assert config.api.port == 8000
-        assert config.api.api_key_env == "AGENTHICC_API_KEY"
-        assert config.memory.vector_db == "sqlite-vec"
-        assert config.memory.session_ttl_seconds == 86400
         assert config.behaviour.resume_transcript_turns == 20
-        assert config.hooks == {}
         assert config.tools.allowed == []
         assert config.tools.denied == []
 
@@ -277,7 +267,6 @@ resume_transcript_max_event_bytes = 1
             transport = "local"
 
             [plugins]
-            auto_trust = true
             strict_cli_shadow = true
             """
         )
@@ -286,7 +275,6 @@ resume_transcript_max_event_bytes = 1
 
         assert config.execution.turn_timeout_s == 12.5
         assert config.tools.playwright.transport == "local"
-        assert config.plugins.auto_trust is True
         assert config.plugins.strict_cli_shadow is True
 
     def test_prompt_cache_enables_llm_caching(self, tmp_path):
@@ -327,15 +315,11 @@ resume_transcript_max_event_bytes = 1
         # project list wins; user-global list replaced
         assert config.security.allowed_paths == ["/workspace", "/data"]
 
-    def test_hooks_and_tools_sections(self, tmp_path):
+    def test_tools_section(self, tmp_path):
         project = tmp_path / "agenthicc.toml"
         _write(
             project,
             """
-            [hooks]
-            "intent.pre_validate" = ["myproj.hooks.audit"]
-            tool.post_execute = ["myproj.hooks.log_tool"]
-
             [tools]
             plugins = ["myproj.tools:Plugin"]
             allowed = ["read_*"]
@@ -347,8 +331,6 @@ resume_transcript_max_event_bytes = 1
         """,
         )
         config = load_config(project_path=project, user_path=tmp_path / "missing.toml")
-        assert config.hooks["intent.pre_validate"] == ["myproj.hooks.audit"]
-        assert config.hooks["tool.post_execute"] == ["myproj.hooks.log_tool"]
         assert config.tools.plugins == ["myproj.tools:Plugin"]
         assert config.tools.allowed == ["read_*"]
         assert config.tools.denied == ["shell_exec"]
@@ -361,14 +343,10 @@ resume_transcript_max_event_bytes = 1
 class TestConverters:
     def test_to_system_settings(self):
         config = AgenthiccConfig()
-        config.execution.max_concurrent_intents = 3
         config.execution.max_parallel_tasks = 7
-        config.execution.agent_pool_size = 11
         settings = config.to_system_settings()
         assert isinstance(settings, SystemSettings)
-        assert settings.max_concurrent_intents == 3
         assert settings.max_parallel_tasks == 7
-        assert settings.agent_pool_size == 11
 
     def test_to_security_policy_fail_closed(self):
         config = AgenthiccConfig()

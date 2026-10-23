@@ -393,7 +393,7 @@ class TestToolGroupCountSignal:
     def test_increments_on_tool_complete(self):
         store = ConversationStore()
         store.begin_turn("assistant")
-        for i in range(3):
+        for _ in range(3):
             store.append_event(
                 "tool_complete",
                 {

@@ -89,7 +89,7 @@ Rich renderables.
 uv run ruff check src/ tests/ scripts/
 uv run ruff format --check src/ tests/ scripts/
 uv run mypy src/agenthicc
-uv run mypy tests/unit/test_kernel_event_typing.py tests/unit/test_type_audit.py
+uv run mypy tests/unit/test_kernel_event_typing.py tests/unit/test_type_audit.py scripts/type_audit.py
 uv run python scripts/type_audit.py --check docs/reference/type-safety-baseline.json
 uv run pytest tests/unit -q
 uv run pytest tests/integration -q
@@ -108,11 +108,40 @@ of PRD-138 P0.5.
 
 ## Coverage and flake control
 
-The `coverage` Nox session enforces a 90% repository-wide floor. Treat that as
-the release gate implemented by `noxfile.py`, not as a measure of feature
+The `coverage` Nox session runs the unit, integration and E2E suites with
+branch coverage and with subprocess measurement (`[tool.coverage.run] patch =
+["subprocess"]`), so CLI and worker processes the E2E suite starts are counted.
+It fails below `[tool.coverage.report] fail_under` in `pyproject.toml`, a floor
+set to the measured value that is only ever raised. `tests/performance` runs
+uninstrumented in `tests_performance`, because tracing invalidates its timing
+budgets. Tracing also roughly triples CPU time, so the session passes
+`--timeout=180`: a test without its own `timeout` mark gets three times the
+60-second default, and a test's own mark still applies. Treat the floor as a ratchet, not as a measure of feature
 completeness. Use coverage to identify untested boundaries, not as a substitute
 for failure-mode tests. Avoid live network, real credentials, and
 nondeterministic wall-clock assertions.
+
+A test that starts a fresh interpreter — `python -m agenthicc`, a detached
+worker, or a `python -c` child that imports the package — takes its bounds from
+`tests/cli_process.py`. Pass `timeout=CLI_PROCESS_TIMEOUT_S` to each wait and
+decorate the test with `@cli_test_timeout(n)` for its `n` sequential waits:
+
+```python
+from tests.cli_process import CLI_PROCESS_TIMEOUT_S, cli_test_timeout
+
+
+@cli_test_timeout(2)
+def test_status_after_submit(tmp_path: Path) -> None:
+    submitted = subprocess.run([...], timeout=CLI_PROCESS_TIMEOUT_S, check=False)
+    status = subprocess.run([...], timeout=CLI_PROCESS_TIMEOUT_S, check=False)
+```
+
+The CLI imports its command modules before it parses arguments, and the
+coverage session traces every child interpreter, so one start-up can take most
+of a minute on a loaded host. Without the mark, `pytest-timeout`'s 60-second
+default fires before a longer per-process ceiling can apply. These bounds stop
+a hung process; start-up performance belongs to `scripts/benchmark_startup.py`
+and `tests/performance`.
 
 ## Try it
 

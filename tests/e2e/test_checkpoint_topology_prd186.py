@@ -71,7 +71,7 @@ def test_resume_does_not_rewind_profiled_workflow_to_init(tmp_path: Path) -> Non
         assert resumed.current_phase == "visual_validation"
         assert resumed.phase_index == 14
         assert resumed.context is not None
-        assert getattr(resumed.context, "state") is ReconstructState.VISUAL_VALIDATION
+        assert resumed.context.state is ReconstructState.VISUAL_VALIDATION
         assert resumed.run_id == checkpoint.run_id
         assert resumed.conversation.conversation_id == checkpoint.conversation_id
     finally:

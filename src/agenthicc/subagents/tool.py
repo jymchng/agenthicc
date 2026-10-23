@@ -27,7 +27,8 @@ import json
 from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Literal, TypedDict
 
-from agenthicc.subagents.pool import SubagentTask, _tool_name
+from agenthicc.subagents.pool import SubagentTask
+from agenthicc.tools.base import tool_name
 from agenthicc.subagents.types import SubagentTypeRegistry
 from agenthicc.subagents.communication import (
     PoolHandle,
@@ -45,7 +46,7 @@ if TYPE_CHECKING:
     from agenthicc.runners.retry import RetryConfig
     from agenthicc.runners.usage_ledger import UsageLedger
     from agenthicc.memory.journal import ConversationJournal
-    from agenthicc.tools.approval import ApprovalService
+    from agenthicc.tools.approval import ApprovalBroker
     from agenthicc.tools.workspace_access import WorkspaceAccessPolicy
 
 __all__ = ["make_spawn_subagents_tool"]
@@ -102,7 +103,7 @@ def make_spawn_subagents_tool(
     conversation_id: str = "",
     parent_run_id: str = "",
     provider_options: Mapping[str, object] | None = None,
-    approval_svc: "ApprovalService | None" = None,
+    approval_svc: "ApprovalBroker | None" = None,
     workspace_access: "WorkspaceAccessPolicy | None" = None,
     conversation_journal: "ConversationJournal | None" = None,
     policy: SubagentExecutionPolicy | None = None,
@@ -168,18 +169,18 @@ def make_spawn_subagents_tool(
         results are used as the resume cache even when the reactive TUI store
         was not restored.
     """
-    from lauren_ai._tools import tool as _tool  # noqa: PLC0415
-    from agenthicc.subagents.pool import (  # noqa: PLC0415
+    from lauren_ai._tools import tool as _tool
+    from agenthicc.subagents.pool import (
         SubagentPool,
         SubagentTask,
         _validate_timeout_s,
     )
-    from agenthicc.subagents.types import DEFAULT_REGISTRY, DEFAULT_SUBAGENT_TIMEOUT_S  # noqa: PLC0415
+    from agenthicc.subagents.types import DEFAULT_REGISTRY, DEFAULT_SUBAGENT_TIMEOUT_S
 
     _registry = registry if registry is not None else DEFAULT_REGISTRY
     effective_policy = policy or SubagentExecutionPolicy.from_app_state(
         app_state,
-        visible_tool_names=frozenset(_tool_name(item) for item in all_tools),
+        visible_tool_names=frozenset(tool_name(item) for item in all_tools),
     )
     continuation_registry = registry_for_session(conversation_id, conv_store)
 
@@ -379,7 +380,7 @@ def make_spawn_subagents_tool(
     # parent/subagent communication tools so custom workflows receive it too,
     # without creating a second injection path in the runner.
     if workspace_access is not None:
-        from agenthicc.worktrees.agent_tool import (  # noqa: PLC0415
+        from agenthicc.worktrees.agent_tool import (
             make_spawn_worker_agents_tool,
         )
 
@@ -391,7 +392,7 @@ def make_spawn_subagents_tool(
         goal_run_id = ""
         if conversation_id:
             try:
-                from agenthicc.runs import RunStore  # noqa: PLC0415
+                from agenthicc.runs import RunStore
 
                 goal_run_id = next(
                     (
@@ -413,11 +414,8 @@ def make_spawn_subagents_tool(
                 workspace_access=workspace_access,
             )
         )
-    setattr(
-        spawn_subagents,
-        "__agenthicc_subagent_communication_tools__",
-        communication_tools,
-    )
+    # Metadata on a tool function object; callables have no typed attributes.
+    setattr(spawn_subagents, "__agenthicc_subagent_communication_tools__", communication_tools)  # noqa: B010
     return spawn_subagents
 
 
@@ -439,7 +437,7 @@ def _tasks_fingerprint(tasks: list[SubagentTask], policy_revision: str = "") -> 
         )
     ]
     entries.append({"policy_revision": policy_revision})
-    return hashlib.md5(json.dumps(entries, ensure_ascii=False).encode()).hexdigest()[:16]  # noqa: S324
+    return hashlib.md5(json.dumps(entries, ensure_ascii=False).encode()).hexdigest()[:16]
 
 
 def _find_cached_result(

@@ -69,10 +69,8 @@ settings and commented examples for dynamic tables such as:
 
 - `[providers."profile-name"]` and its headers/request options;
 - `[[tools.mcp_servers]]`;
-- `[memory.context_windows]`;
-- `[agents."agent-name"]` and `[workflows."workflow-name"]`;
-- `[storage.s3.mounts."mount-name"]`; and
-- hook tables.
+- `[memory.context_windows]`; and
+- `[agents."agent-name"]` and `[workflows."workflow-name"]`.
 
 Uncomment and edit only the settings needed by the project. Existing files are
 preserved by `agenthicc init`; pass `--force` only when replacement is
@@ -218,9 +216,7 @@ the code rather than hard-coding them in support material.
 
 | Key | Default | Meaning |
 |---|---:|---|
-| `max_concurrent_intents` | 8 | Concurrent intent limit exposed to kernel settings |
-| `max_parallel_tasks` | 4 | Workflow parallelism setting |
-| `agent_pool_size` | 16 | Legacy/domain capacity setting still present in kernel settings |
+| `max_parallel_tasks` | 4 | Workflow parallelism; reflected into the kernel's `SystemSettings` |
 | `max_agent_turns` | 200 | Agent-loop iteration cap |
 | `authoring_max_generation_attempts` | 20 | Maximum complete source-generation attempts for `create_*` authoring |
 | `authoring_max_phase_turns` | 20 | Maximum agent sub-turns in one `create_*` phase; phase definitions may request less |
@@ -450,17 +446,16 @@ HTTP or shell-tool permissions.
 ## Memory and storage
 
 ```toml
-[memory]
-project_memory_path = ".agenthicc/memory"
-vector_db = "sqlite-vec"
-session_ttl_seconds = 86400
-
 [memory.context_windows]
 default = 128000
+"model-id" = 200000
 ```
 
-The current runtime also creates durable session journals and a project file
-cache. Paths and retention are described in the [storage reference](../reference/storage.md).
+`[memory.context_windows]` is the only memory table: it maps model IDs to
+context-window sizes, with `default` as the fallback for unknown models. Memory
+locations are fixed rather than configurable — session journals, project
+memory and the project file cache live under `.agenthicc/`, as described in the
+[storage reference](../reference/storage.md).
 
 ### Resume transcript size
 
@@ -497,11 +492,8 @@ including transcript text.
 
 ```toml
 [security]
-sandbox_mode = true
 allowed_paths = ["/absolute/path/to/project"]
 network_allow_list = ["api.example.com"]
-max_tool_cpu_seconds = 30
-max_tool_memory_mb = 512
 ```
 
 `WorkspaceView` resolves real paths, so `..` traversal, absolute escapes, and
@@ -513,12 +505,18 @@ currently inject these boundaries into user callables automatically.
 Security-bypassing flags such as `--dangerously-skip-permissions` are CLI-only
 and are intentionally not persisted in TOML.
 
-## API configuration status
+## Removed settings
 
-`ApiSettings` remains in the configuration dataclasses for compatibility, but
-there is no `src/agenthicc/api/` implementation in this checkout. Do not treat
-`[api]` as a working server configuration until the API decision in PRD-138 is
-implemented and tested.
+Settings that nothing read have been deleted rather than left inert (PRD-250
+S-03): the `[api]`, `[hooks]` and `[storage]` sections; `[memory]`'s
+`project_memory_path`, `vector_db` and `session_ttl_seconds`;
+`execution.max_concurrent_intents`, `execution.agent_pool_size` and
+`execution.provider_capabilities`; `behaviour.confirm_exits` and
+`behaviour.verbose`; `security.sandbox_mode`, `security.max_tool_cpu_seconds`
+and `security.max_tool_memory_mb`; and every `[plugins]` key except
+`strict_cli_shadow`. A configuration file that still sets them loads, but the
+values have no effect. A test asserts that every remaining settings field has a
+reader.
 
 ## Adding a setting
 
@@ -536,7 +534,7 @@ implemented and tested.
 | A secret ends up in the file | A literal value was used instead of an environment reference | Use `--set-secret section.key=ENV_VAR`; the value is read from the environment, never stored |
 | Validation passes but a value is still wrong | Validation checks the schema, not your intent | `config validate` confirms syntax and known keys; `config show` (or `config profiles`) shows what actually resolved |
 | The wrong config file is read | A relative path or a different project root | Pass `--config PATH`, and confirm with the `path` field of `agenthicc mcp list --json` |
-| A section is ignored | The section name is not one of the recognised ones | Real sections: `execution`, `providers`, `behaviour`, `hooks`, `tools`, `memory`, `security`, `api`, `plugins`, `skills`, `agents`, `storage`, `workflows.<name>` |
+| A section is ignored | The section name is not one of the recognised ones | Real sections: `execution`, `providers`, `behaviour`, `tools`, `memory.context_windows`, `security`, `plugins`, `skills`, `agents`, `loops`, `background`, `workflows.<name>` |
 | A `[behavior]` section has no effect | The real key is spelled `behaviour` with a British `-our` | Rename the section. This is a config key, not prose, so it must stay byte-accurate in every example |
 | A profile is not applied | Profiles select a bundle of execution settings | List them with `agenthicc config profiles`, then select one with `[execution] profile` |
 | A new config file is needed | None exists or it was moved | `agenthicc config init` creates one; `--force` overwrites, so inspect first |

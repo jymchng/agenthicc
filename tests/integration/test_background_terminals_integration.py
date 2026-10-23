@@ -54,7 +54,7 @@ async def test_ps_json_and_stop_are_immediate_owned_controls(tmp_path: Path) -> 
     assert dispatcher.dispatch("/ps --json", context) is True
     assert terminal_id in output.getvalue()
     assert dispatcher.dispatch(f"/stop {terminal_id}", context) is True
-    await asyncio.sleep(0.2)
+    await asyncio.wait_for(manager.wait(terminal_id), timeout=10)
     assert manager.get(terminal_id) is not None
     assert manager.get(terminal_id).state.value == "stopped"
     await manager.close()
@@ -108,7 +108,7 @@ async def test_terminal_overlay_can_select_and_stop_a_live_handle(tmp_path: Path
     Console(file=rendered, force_terminal=False).print(overlay.render())
     assert terminal_id in rendered.getvalue()
     overlay.handle_key(Key.CHAR, "s")
-    await asyncio.sleep(0.2)
+    await asyncio.wait_for(manager.wait(terminal_id), timeout=10)
     assert manager.get(terminal_id) is not None
     assert manager.get(terminal_id).state.value == "stopped"
     overlay.handle_key(Key.ESC, "")

@@ -5,7 +5,7 @@ tags: [hooks, lifecycle, audit, tool-policy, plugins]
 description: >-
   Implement and register LifecycleHook subclasses that observe, rewrite, abort, or
   recover tool calls. Covers the three lauren-ai ToolHook stages and their decision
-  factories, HookRegistry and HookRunner, and dotpath wiring from the [hooks] config.
+  factories, HookRegistry and HookRunner, and wiring hooks into the executor in code.
 ---
 
 # Skill: Extending with Hooks
@@ -242,28 +242,15 @@ value it is used as-is. Either way it must be a `ToolHook` or it raises
 
 ## Configuration
 
-Static hooks come from the `[hooks]` table. `load_config` flattens the nested
-tables into dotted keys on `AgenthiccConfig.hooks: dict[str, list[str]]`
-(`src/agenthicc/config.py:1494`), where a nested table's path becomes the key
-(`_flatten_hooks`, `:1825`):
+There is no `[hooks]` configuration table. It used to be parsed into
+`AgenthiccConfig.hooks`, but no lifecycle point ever read it, so PRD-250 S-03
+deleted it instead of leaving an inert setting that looked like a working
+extension point. A configuration file that still has a `[hooks]` table loads,
+and the table has no effect.
 
-```toml
-[hooks]
-"intent.pre_validate" = ["myapp.hooks:validate_intent"]
-
-[hooks.file_write]
-before = ["myapp.hooks:FileWriteAuditHook"]
-error  = ["myapp.hooks:CachedFallbackHook"]
-```
-
-The first form produces the key `"intent.pre_validate"`; the second produces
-`"file_write.before"` and `"file_write.error"`. The config template documents the
-same convention with the comment `"intent.pre_validate" = ["module:function"]`
-(`src/agenthicc/config_template.py:256`).
-
-Numbers are not `ToolHook`s — the config layer only *carries* the dotpaths and
-their arguments. A consumer decides what `module:function` means for its own
-lifecycle point.
+Register hooks in code, through one of the two paths below. To load a hook
+named by a string, call `load_hook_from_dotpath("module:attribute")` where your
+code owns that decision.
 
 ---
 
@@ -317,7 +304,7 @@ expected.
 | `ImportError` from `load_hook_from_dotpath` | Module not importable in this process | Make the module importable from the working directory |
 | A sibling hook does not see your input change | Same-stage hooks run concurrently | Rely only on documented ordering, or use separate stages |
 | State leaks between tool calls | Per-call state kept on `self` | Use `ctx.state` |
-| Config hook never fires | Value is carried but no consumer reads that key | Wire the key into the lifecycle point that owns it |
+| A `[hooks]` entry in `agenthicc.toml` never fires | The `[hooks]` table was removed; nothing reads it | Register the hook in code through `AgenthiccToolExecutor(global_hooks=...)` or the agent turn's hook list |
 
 ---
 
@@ -332,7 +319,6 @@ expected.
 - Hooks are shared singletons — keep per-call data in `ctx.state`.
 - Dotpaths use a colon: `module:attribute`.
 - Same-stage hooks run concurrently under `asyncio.gather`.
-- `[hooks]` keys are flattened to dotted strings on
-  `AgenthiccConfig.hooks`; the layer carries them, a consumer interprets them.
+- There is no `[hooks]` config table; register hooks in code.
 - For policy, prefer the built-in `ToolCapabilityGate` and `ApprovalGate` over
   writing a new gate from scratch.

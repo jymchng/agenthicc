@@ -11,6 +11,7 @@ import sys
 import time
 
 from agenthicc.schedules import RecurrenceKind, ScheduleManager, ScheduleStore, format_timestamp
+from tests.cli_process import CLI_PROCESS_TIMEOUT_S, cli_test_timeout
 
 
 def _run_cli(
@@ -31,7 +32,7 @@ def _run_cli(
         env=environment,
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=CLI_PROCESS_TIMEOUT_S,
         check=False,
     )
 
@@ -52,6 +53,7 @@ def _create_repo(tmp_path: Path) -> tuple[Path, Path]:
     return repository, config_path
 
 
+@cli_test_timeout(11)
 def test_cli_schedule_lifecycle_persists_revisions_and_history_across_processes(
     tmp_path: Path,
 ) -> None:
@@ -183,6 +185,7 @@ def test_cli_schedule_lifecycle_persists_revisions_and_history_across_processes(
     assert json.loads(remaining.stdout) == []
 
 
+@cli_test_timeout(2)
 def test_service_process_restart_recovers_claimed_occurrence_once(tmp_path: Path) -> None:
     home = tmp_path / "home"
     repository = tmp_path / "repo"
@@ -259,7 +262,7 @@ loop.close()
         stderr=subprocess.PIPE,
         text=True,
     )
-    deadline = time.monotonic() + 15
+    deadline = time.monotonic() + CLI_PROCESS_TIMEOUT_S
     try:
         while time.monotonic() < deadline and not marker.exists():
             if interrupted.poll() is not None:
@@ -286,7 +289,7 @@ loop.close()
         env=child_env("recover"),
         capture_output=True,
         text=True,
-        timeout=15,
+        timeout=CLI_PROCESS_TIMEOUT_S,
         check=False,
     )
     assert restarted.returncode == 0, restarted.stderr

@@ -51,7 +51,7 @@ class ParallelCodePlan(WorkflowPlugin):
     def build_runner(
         cls, config: WorkflowConfig, mode_manager: ModeManager | None
     ) -> ParallelCodePlanRunner:
-        from .runner import ParallelCodePlanRunner  # noqa: PLC0415
+        from .runner import ParallelCodePlanRunner
 
         return ParallelCodePlanRunner(config, mode_manager)
 
@@ -68,7 +68,7 @@ class ParallelCodePlan(WorkflowPlugin):
     def create_initial_context(
         cls, intent: str, run_id: str, memory: object | None = None
     ) -> object:
-        from .runner import ParallelCodePlanContext  # noqa: PLC0415
+        from .runner import ParallelCodePlanContext
 
         return ParallelCodePlanContext(
             intent=intent,
@@ -78,7 +78,7 @@ class ParallelCodePlan(WorkflowPlugin):
 
     @classmethod
     def checkpoint_context_to_payload(cls, context: object) -> dict[str, object] | None:
-        from .runner import ParallelCodePlanContext  # noqa: PLC0415
+        from .runner import ParallelCodePlanContext
 
         if not isinstance(context, ParallelCodePlanContext):
             return None
@@ -99,7 +99,7 @@ class ParallelCodePlan(WorkflowPlugin):
         payload: dict[str, object],
         memory: object | None = None,
     ) -> object | None:
-        from .runner import ParallelCodePlanContext  # noqa: PLC0415
+        from .runner import ParallelCodePlanContext
 
         raw_iteration = payload.get("phase_iteration", 0)
         iteration = raw_iteration if isinstance(raw_iteration, int) else 0

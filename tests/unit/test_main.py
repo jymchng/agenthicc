@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 import os
 import time
 import uuid
@@ -708,7 +709,10 @@ class TestRunHeadless:
             mock_get_loop.return_value = loop
             original_run_in_executor = loop.run_in_executor
 
-            async def fake_executor(_exec, fn):
+            async def fake_executor(_exec, fn, *args):
+                # Feed stdin only; other executor work (path checks) runs normally.
+                if fn != sys.stdin.readline:
+                    return fn(*args)
                 return next(lines, "")
 
             loop.run_in_executor = fake_executor
@@ -738,7 +742,10 @@ class TestRunHeadless:
         loop = asyncio.get_event_loop()
         original_exec = loop.run_in_executor
 
-        async def fake_executor(_exec, fn):
+        async def fake_executor(_exec, fn, *args):
+            # Feed stdin only; other executor work (path checks) runs normally.
+            if fn != sys.stdin.readline:
+                return fn(*args)
             return next(input_lines, "")
 
         loop.run_in_executor = fake_executor
@@ -764,7 +771,10 @@ class TestRunHeadless:
         loop = asyncio.get_event_loop()
         original_exec = loop.run_in_executor
 
-        async def fake_executor(_exec, fn):
+        async def fake_executor(_exec, fn, *args):
+            # Feed stdin only; other executor work (path checks) runs normally.
+            if fn != sys.stdin.readline:
+                return fn(*args)
             return next(input_lines, "")
 
         loop.run_in_executor = fake_executor
@@ -789,7 +799,10 @@ class TestRunHeadless:
         loop = asyncio.get_event_loop()
         original_exec = loop.run_in_executor
 
-        async def fake_executor(_exec, fn):
+        async def fake_executor(_exec, fn, *args):
+            # Feed stdin only; other executor work (path checks) runs normally.
+            if fn != sys.stdin.readline:
+                return fn(*args)
             return next(input_lines, "")
 
         async def instant_timeout(coro, timeout):

@@ -68,9 +68,9 @@ add capability metadata, and register it. Project tools are discovered from
 `.agenthicc/tools/`; MCP servers contribute tools too.
 
 !!! warning "Your own tools are code execution"
-    Project-local tools, agents, modes, workflows, skills, and commands are
-    Python. Review them before use. `agenthicc trust cli` covers
-    `.agenthicc/cli/` only, not `.agenthicc/tools/`.
+    Project-local tools, agents, modes, workflows and commands are Python. They
+    load only after `agenthicc trust add` records your review of their exact
+    content; an edited file is skipped until you trust it again.
 
 ## How do sessions work?
 

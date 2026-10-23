@@ -22,7 +22,7 @@ class GoalRunManagerResult:
 
 
 def _key_value(key: object) -> str:
-    from agenthicc.tui.cbreak_reader import Key  # noqa: PLC0415
+    from agenthicc.tui.cbreak_reader import Key
 
     if isinstance(key, Key):
         return key.value
@@ -46,9 +46,9 @@ class GoalRunManagerView:
         return self._goal_run
 
     def render(self) -> "RenderableType":
-        from rich.console import Group  # noqa: PLC0415
-        from rich.panel import Panel  # noqa: PLC0415
-        from rich.table import Table  # noqa: PLC0415
+        from rich.console import Group
+        from rich.panel import Panel
+        from rich.table import Table
 
         run = self._goal_run or self.refresh()
         if self.help_visible:
@@ -163,8 +163,8 @@ class GoalRunManagerView:
         return None
 
     async def run(self) -> GoalRunManagerResult:
-        from agenthicc.tui.terminal.backend import get_backend  # noqa: PLC0415
-        from rich.live import Live  # noqa: PLC0415
+        from agenthicc.tui.terminal.backend import get_backend
+        from rich.live import Live
 
         backend = get_backend()
         if not backend.is_interactive():

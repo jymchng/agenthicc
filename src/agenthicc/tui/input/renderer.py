@@ -80,7 +80,7 @@ def build_prompt(
 
 def show_exit_hint(resume_id: str = "", out: TextIO | None = None) -> None:
     """Print the --resume / --continue hint below the input bar on exit."""
-    import shutil  # noqa: PLC0415
+    import shutil
 
     out = out or sys.stdout
     cols = shutil.get_terminal_size((80, 24)).columns

@@ -1,0 +1,231 @@
+name: CI
+
+# Every gate of the repository runs here. Branch protection requires only the
+# final "Required checks" job, which fails unless every other job succeeded,
+# and the release workflow calls this workflow for the tagged commit.
+on:
+  push:
+    branches: ["main", "dev"]
+  pull_request:
+    branches: ["main", "dev"]
+    # labeled/unlabeled re-run the type ratchet when the explicit
+    # "type-baseline-increase" approval label is added or removed.
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint and format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: false
+      - run: uv tool install nox
+      - run: nox -s lint
+
+  typecheck:
+    name: Type check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: false
+      - run: uv tool install nox
+      - run: nox -s typecheck
+      - run: nox -s typecheck_contracts
+
+  type-audit:
+    name: Type-safety ratchet
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # --baseline-ref compares against the target branch
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: false
+      - run: uv tool install nox
+      - name: Check the baseline (it may only decrease)
+        if: >-
+          github.event_name == 'pull_request' &&
+          !contains(github.event.pull_request.labels.*.name, 'type-baseline-increase')
+        run: nox -s type_audit -- --baseline-ref "origin/${{ github.base_ref }}"
+      - name: Check the baseline (owner-approved increase or branch push)
+        if: >-
+          github.event_name != 'pull_request' ||
+          contains(github.event.pull_request.labels.*.name, 'type-baseline-increase')
+        run: nox -s type_audit
+
+  llms:
+    name: llms-full.txt symbols
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: false
+      - run: uv tool install nox
+      - run: nox -s llms_check
+
+  docs:
+    name: Docs (strict)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: false
+      - run: uv tool install nox
+      - run: nox -s docs
+
+  unit:
+    name: Unit tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install worktree command sandbox
+        run: sudo apt-get update -qq && sudo apt-get install -y bubblewrap
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: false
+      - run: uv tool install nox
+      - run: nox -s "tests_unit-${{ matrix.python-version }}" -- -q
+
+  integration:
+    name: Integration tests and cassette replay (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install worktree command sandbox
+        run: sudo apt-get update -qq && sudo apt-get install -y bubblewrap
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: false
+      - run: uv tool install nox
+      - run: nox -s "tests_integration-${{ matrix.python-version }}" -- -q
+
+  e2e:
+    name: E2E and performance tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install worktree command sandbox
+        run: sudo apt-get update -qq && sudo apt-get install -y bubblewrap
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: false
+      - run: uv tool install nox
+      - run: nox -s tests_e2e -- -q
+      - run: nox -s tests_performance -- -q
+
+  windows:
+    name: Windows lock, filesystem and terminal tests
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: false
+      - run: uv tool install nox
+      - run: nox -s tests_windows -- -q
+
+  coverage:
+    name: Coverage (branch and subprocess)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install worktree command sandbox
+        run: sudo apt-get update -qq && sudo apt-get install -y bubblewrap
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: false
+      - run: uv tool install nox
+      - run: nox -s coverage -- -q
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: |
+            htmlcov/
+            coverage.xml
+      - name: Upload to Codecov
+        uses: codecov/codecov-action@v4
+        continue-on-error: true
+        with:
+          files: coverage.xml
+          flags: unittests
+          name: agenthicc
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+  required:
+    name: Required checks
+    if: always()
+    needs: [lint, typecheck, type-audit, llms, docs, unit, integration, e2e, windows, coverage]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail unless every gate succeeded
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'EOF'
+          import json
+          import os
+          import sys
+
+          results = {name: job["result"] for name, job in json.loads(os.environ["RESULTS"]).items()}
+          for name, result in sorted(results.items()):
+              print(f"{name}: {result}")
+          sys.exit(0 if all(result == "success" for result in results.values()) else 1)
+          EOF

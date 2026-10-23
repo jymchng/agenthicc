@@ -22,6 +22,8 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
+from agenthicc.tools.base import tool_name
+
 if TYPE_CHECKING:
     from agenthicc.tools.base import ToolLike
 
@@ -33,7 +35,6 @@ __all__ = [
     "PromptContract",
     "build_prompt_contract",
     "build_workflow_prompt_contract",
-    "tool_name",
     "tool_fingerprint",
 ]
 
@@ -87,24 +88,9 @@ def _digest(value: object) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def tool_name(tool: object) -> str:
-    """Return the provider-facing name of a callable or Tool object."""
-
-    value = getattr(tool, "__name__", None)
-    if isinstance(value, str) and value:
-        return value
-    value = getattr(tool, "name", None)
-    if isinstance(value, str) and value:
-        return value
-    value = getattr(tool, "provider_name", None)
-    if isinstance(value, str) and value:
-        return value
-    return type(tool).__qualname__
-
-
 def _tool_metadata(tool: object) -> object | None:
     try:
-        from lauren_ai._tools import TOOL_META  # noqa: PLC0415
+        from lauren_ai._tools import TOOL_META
 
         return getattr(tool, TOOL_META, None)
     except ImportError:

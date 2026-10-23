@@ -16,7 +16,8 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, cast
 
-from agenthicc.runners.prompt_contract import _tool_schema, tool_fingerprint, tool_name
+from agenthicc.runners.prompt_contract import _tool_schema, tool_fingerprint
+from agenthicc.tools.base import tool_name
 from agenthicc.tools.base import ToolLike
 from agenthicc.tools.capabilities import (
     ToolCapability,
@@ -26,6 +27,7 @@ from agenthicc.tools.capabilities import (
 )
 
 if TYPE_CHECKING:
+    from agenthicc.tui.runtime.mode_manager import RuntimeMode
     from agenthicc.workflows.config import WorkflowConfig
 
 __all__ = [
@@ -627,11 +629,17 @@ def build_authoring_snapshot(
     allowed_tool_names: frozenset[str] | None = None,
     tools: Iterable[ToolLike] | None = None,
     source_by_name: Mapping[str, str] | None = None,
+    active_mode: RuntimeMode | None = None,
 ) -> AuthoringSnapshot:
-    """Build one bounded effective snapshot without probing external services."""
-    from agenthicc.agents.plugin import ROLE_DEFAULT_ALLOWED  # noqa: PLC0415
+    """Build one bounded effective snapshot without probing external services.
 
-    mode = config.app_state.active_mode()
+    *active_mode* is the mode the phase will run under; it defaults to the
+    session's active mode.  Pass it when the phase overrides the mode, so the
+    snapshot does not describe the caller's capability ceiling.
+    """
+    from agenthicc.agents.plugin import ROLE_DEFAULT_ALLOWED
+
+    mode = active_mode if active_mode is not None else config.app_state.active_mode()
     role = _bounded_text(phase_role or "auto", 64)
     if phase_capabilities is not None:
         resolved_phase = tuple(_capability_values(phase_capabilities))
@@ -645,7 +653,7 @@ def build_authoring_snapshot(
     # Include the same live callables here so the authoring catalog describes
     # the effective turn rather than only the project-plugin subset.  Project
     # tools remain first, matching the registry's last-writer-wins precedence.
-    from agenthicc.agent_tools import AGENT_TOOLS  # noqa: PLC0415
+    from agenthicc.agent_tools import AGENT_TOOLS
 
     visible.extend(cast(Iterable[ToolLike], AGENT_TOOLS))
     unavailable_by_name: dict[str, str] = {}
@@ -746,6 +754,7 @@ def _snapshot_cache_key(
     phase_capabilities: Iterable[object] | None,
     allowed_tool_names: frozenset[str] | None,
     tools: Iterable[ToolLike] | None,
+    active_mode: RuntimeMode | None = None,
 ) -> str:
     """Build a redacted key for one effective authoring snapshot.
 
@@ -754,7 +763,7 @@ def _snapshot_cache_key(
     fields are enough to invalidate a session cache when those integrations
     change.
     """
-    mode = config.app_state.active_mode()
+    mode = active_mode if active_mode is not None else config.app_state.active_mode()
     browser = getattr(config, "browser_manager", None)
     settings = getattr(browser, "settings", None)
     mcp = getattr(config, "mcp_registry", None)
@@ -785,7 +794,7 @@ def _snapshot_cache_key(
         # registries change, without probing any external service.
         tool_list = list(config.all_plugin_tools())
         try:
-            from agenthicc.agent_tools import AGENT_TOOLS  # noqa: PLC0415
+            from agenthicc.agent_tools import AGENT_TOOLS
 
             tool_list.extend(cast(Iterable[ToolLike], AGENT_TOOLS))
         except (ImportError, AttributeError):
@@ -860,6 +869,7 @@ class AuthoringSnapshotCache:
         phase_capabilities: Iterable[object] | None = None,
         allowed_tool_names: frozenset[str] | None = None,
         tools: Iterable[ToolLike] | None = None,
+        active_mode: RuntimeMode | None = None,
     ) -> AuthoringSnapshot:
         """Return a cached snapshot or build one from current live metadata."""
         tool_list = list(tools) if tools is not None else None
@@ -873,6 +883,7 @@ class AuthoringSnapshotCache:
             phase_capabilities=resolved_phase_capabilities,
             allowed_tool_names=allowed_tool_names,
             tools=tool_list,
+            active_mode=active_mode,
         )
         cached = self._entries.get(key)
         if cached is not None:
@@ -884,6 +895,7 @@ class AuthoringSnapshotCache:
             phase_capabilities=resolved_phase_capabilities,
             allowed_tool_names=allowed_tool_names,
             tools=tool_list,
+            active_mode=active_mode,
         )
         self._entries[key] = snapshot
         while len(self._entries) > max(1, self.max_entries):

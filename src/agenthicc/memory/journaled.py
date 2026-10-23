@@ -353,7 +353,7 @@ class JournaledShortTermMemory(ShortTermMemory):
         candidate.ensure_valid()
         report = candidate.validate_tool_history()
         if not report.ok:
-            from agenthicc.memory.tool_history import _integrity_error  # noqa: PLC0415
+            from agenthicc.memory.tool_history import _integrity_error
 
             raise _integrity_error(report)
         changed = candidate._messages != before
@@ -411,7 +411,7 @@ class JournaledShortTermMemory(ShortTermMemory):
                     _tool_call_id_hash(value) not in repairable_missing_hashes
                     for value in missing_ids
                 ):
-                    from agenthicc.memory.tool_history import _integrity_error  # noqa: PLC0415
+                    from agenthicc.memory.tool_history import _integrity_error
 
                     raise _integrity_error(before_heal)
             # Lauren-ai's canonical deterministic repair handles a uniquely
@@ -420,7 +420,7 @@ class JournaledShortTermMemory(ShortTermMemory):
             candidate.ensure_valid()
             report = candidate.validate_tool_history()
             if not report.ok:
-                from agenthicc.memory.tool_history import _integrity_error  # noqa: PLC0415
+                from agenthicc.memory.tool_history import _integrity_error
 
                 raise _integrity_error(report)
             changed = candidate._messages != original
@@ -478,7 +478,7 @@ class JournaledShortTermMemory(ShortTermMemory):
         candidate._active_exchange = None
         report = candidate.validate_tool_history()
         if not report.ok:
-            from agenthicc.memory.tool_history import _integrity_error  # noqa: PLC0415
+            from agenthicc.memory.tool_history import _integrity_error
 
             raise _integrity_error(report)
 

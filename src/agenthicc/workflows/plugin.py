@@ -13,7 +13,6 @@ blocked-capabilities ceiling.
 
 from __future__ import annotations
 
-import abc
 import dataclasses
 import re
 import time
@@ -21,9 +20,12 @@ from dataclasses import field
 from collections.abc import Collection, Iterable, Mapping
 from typing import TYPE_CHECKING
 
+from agenthicc.tools.base import tool_name
 from agenthicc.tools.capabilities import ToolCapability, get_tool_capabilities
 
 if TYPE_CHECKING:
+    from lauren_ai._memory import ShortTermMemory
+
     from agenthicc.workflows.base_runner import BaseWorkflowRunner
     from agenthicc.workflows.checkpoint import WorkflowCheckpointTopology
     from agenthicc.workflows.config import WorkflowConfig
@@ -117,11 +119,7 @@ def phase_transition_instruction(
     mutations: list[str] = []
     expected = set(expected_tool_names) if expected_tool_names is not None else None
     for tool in tools:
-        name_value: object = getattr(tool, "__name__", "")
-        name = name_value if isinstance(name_value, str) else ""
-        if not name:
-            fallback: object = getattr(tool, "name", "")
-            name = fallback if isinstance(fallback, str) else ""
+        name = tool_name(tool)
         # ``ask_user`` is marked CONTROL for safe capability handling, but it
         # clarifies requirements and does not transition the workflow.
         is_control_tool = name != "ask_user" and ToolCapability.CONTROL in get_tool_capabilities(
@@ -347,7 +345,7 @@ class PhaseSpec:
             return self.allowed_capabilities_override
         if self.allowed_capabilities is not None:
             return self.allowed_capabilities
-        from agenthicc.agents.plugin import ROLE_DEFAULT_ALLOWED  # noqa: PLC0415
+        from agenthicc.agents.plugin import ROLE_DEFAULT_ALLOWED
 
         return ROLE_DEFAULT_ALLOWED.get(self.agent_type)
 
@@ -454,7 +452,7 @@ def _parse_output_schema(text: str, schema: str | None) -> dict[str, object] | N
 # ── WorkflowPlugin ABC ────────────────────────────────────────────────────────
 
 
-class WorkflowPlugin(abc.ABC):
+class WorkflowPlugin:
     """ABC for Python workflow definitions (PRD-116).
 
     Subclasses declare workflow identity and behaviour as class attributes and
@@ -526,7 +524,7 @@ class WorkflowPlugin(abc.ABC):
         Default: generic ``WorkflowRunner`` driven by ``cls.phases``.
         Override to return a specialised runner (e.g. ``CodePlanRunner``).
         """
-        from agenthicc.workflows.default.runner import WorkflowRunner  # noqa: PLC0415
+        from agenthicc.workflows.default.runner import WorkflowRunner
 
         return WorkflowRunner(cls, config, mode_manager)
 
@@ -576,7 +574,7 @@ class WorkflowPlugin(abc.ABC):
     def checkpoint_context_from_payload(
         cls,
         payload: dict[str, object],
-        memory: object | None = None,
+        memory: ShortTermMemory | None = None,
     ) -> object | None:
         """Restore a custom context produced by
         :meth:`checkpoint_context_to_payload`.

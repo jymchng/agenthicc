@@ -111,7 +111,7 @@ class GoalRunManager:
         self.require_git = require_git
 
     def _validate_workflow(self, workflow_name: str) -> None:
-        from agenthicc.workflows.registry import build_workflow_registry  # noqa: PLC0415
+        from agenthicc.workflows.registry import build_workflow_registry
 
         registry = build_workflow_registry(load_external=True)
         if registry.get(workflow_name) is None:
@@ -376,7 +376,7 @@ class GoalRunManager:
     ]:
         """Fold PRD-203 manifests into bounded run-level projections."""
 
-        from agenthicc.worktrees import ManifestStore  # noqa: PLC0415
+        from agenthicc.worktrees import ManifestStore
 
         orchestration_ids: list[str] = []
         tasks: list[RunTaskRecord] = []
@@ -474,7 +474,7 @@ class GoalRunManager:
         workflow_root = Path.home() / ".agenthicc" / "sessions" / run.main_session_id / "workflows"
         if not workflow_root.is_dir():
             return "", "", ""
-        from agenthicc.runners.workflow_checkpoint_store import (  # noqa: PLC0415
+        from agenthicc.runners.workflow_checkpoint_store import (
             WorkflowCheckpointStore,
         )
 
@@ -563,7 +563,7 @@ class GoalRunManager:
                     workflow_run_id=workflow_run_id,
                     attention_reasons=attention_reasons,
                 )
-        from agenthicc.worktrees import ManifestStore  # noqa: PLC0415
+        from agenthicc.worktrees import ManifestStore
 
         orchestration_ids, tasks, worktrees, manifest_attention = self._manifest_projection(run)
         if orchestration_ids or tasks or worktrees or manifest_attention:

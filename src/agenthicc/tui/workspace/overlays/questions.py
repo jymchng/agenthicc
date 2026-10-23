@@ -33,7 +33,7 @@ from typing import TYPE_CHECKING, Callable
 if TYPE_CHECKING:
     from rich.console import RenderableType
     from rich.text import Text
-    from agenthicc.tools.approval import ApprovalRequest, ApprovalService
+    from agenthicc.tools.approval import ApprovalRequest, InteractiveApprovals
 
 from agenthicc.tui.cbreak_reader import Key
 from agenthicc.tui.workspace.overlays.prompt import PromptOverlay
@@ -92,7 +92,7 @@ class QuestionsOverlay(PromptOverlay):
     def __init__(
         self,
         req: ApprovalRequest,
-        service: ApprovalService,
+        service: InteractiveApprovals,
         close_fn: Callable[[], None],
     ) -> None:
         super().__init__()
@@ -190,9 +190,9 @@ class QuestionsOverlay(PromptOverlay):
                 return
 
     def _submit(self) -> None:
-        import json  # noqa: PLC0415
+        import json
 
-        answers = {q.id: s.answer for q, s in zip(self._questions, self._states)}
+        answers = {q.id: s.answer for q, s in zip(self._questions, self._states, strict=True)}
         self._respond(allowed=True, message=json.dumps(answers), outcome="answered")
         self._close()
 
@@ -218,8 +218,8 @@ class QuestionsOverlay(PromptOverlay):
 
     def _prepare_question_lines(self, width: int) -> None:
         """Wrap every question at *width* and invalidate stale width caches."""
-        from rich.console import Console  # noqa: PLC0415
-        from rich.text import Text  # noqa: PLC0415
+        from rich.console import Console
+        from rich.text import Text
 
         width = max(1, width)
         if self._question_width != width:
@@ -293,7 +293,7 @@ class QuestionsOverlay(PromptOverlay):
 
     def _render_question_view(self, q_idx: int, rows: int) -> list[RenderableType]:
         """Render a fixed-height, indented question viewport and indicator."""
-        from rich.text import Text  # noqa: PLC0415
+        from rich.text import Text
 
         lines = self._question_lines[q_idx]
         state = self._states[q_idx]
@@ -346,8 +346,8 @@ class QuestionsOverlay(PromptOverlay):
     # ── SELECTING ─────────────────────────────────────────────────────────────
 
     def _render_selecting(self) -> RenderableType:
-        from rich.console import Group  # noqa: PLC0415
-        from rich.text import Text  # noqa: PLC0415
+        from rich.console import Group
+        from rich.text import Text
 
         term = shutil.get_terminal_size((80, 24))
         cols = term.columns
@@ -492,8 +492,8 @@ class QuestionsOverlay(PromptOverlay):
     # ── TYPING ────────────────────────────────────────────────────────────────
 
     def _render_typing(self) -> RenderableType:
-        from rich.console import Group  # noqa: PLC0415
-        from rich.text import Text  # noqa: PLC0415
+        from rich.console import Group
+        from rich.text import Text
 
         cols = shutil.get_terminal_size((80, 24)).columns
         border_w = min(cols, 66)
@@ -547,8 +547,8 @@ class QuestionsOverlay(PromptOverlay):
     # ── fallback when no questions parsed ─────────────────────────────────────
 
     def _render_empty(self) -> RenderableType:
-        from rich.console import Group  # noqa: PLC0415
-        from rich.text import Text  # noqa: PLC0415
+        from rich.console import Group
+        from rich.text import Text
 
         cols = shutil.get_terminal_size((80, 24)).columns
         return Group(

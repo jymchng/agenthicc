@@ -11,6 +11,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.cli_process import CLI_PROCESS_TIMEOUT_S, cli_test_timeout
+
 pytestmark = pytest.mark.e2e
 
 
@@ -24,6 +26,7 @@ def _environment(home: Path, root: Path) -> dict[str, str]:
     return environment
 
 
+@cli_test_timeout(2)
 def test_fast_help_and_version_do_not_import_runtime_or_mutate_home(tmp_path: Path) -> None:
     root = Path(__file__).parents[2]
     home = tmp_path / "home"
@@ -52,12 +55,13 @@ def test_fast_help_and_version_do_not_import_runtime_or_mutate_home(tmp_path: Pa
             text=True,
             capture_output=True,
             check=False,
-            timeout=15,
+            timeout=CLI_PROCESS_TIMEOUT_S,
         )
         assert result.returncode == 0, result.stderr
     assert not home.exists()
 
 
+@cli_test_timeout(1)
 def test_large_legacy_store_lists_without_replaying_unselected_sessions(tmp_path: Path) -> None:
     root = Path(__file__).parents[2]
     home = tmp_path / "home"
@@ -113,11 +117,12 @@ def test_large_legacy_store_lists_without_replaying_unselected_sessions(tmp_path
         text=True,
         capture_output=True,
         check=False,
-        timeout=15,
+        timeout=CLI_PROCESS_TIMEOUT_S,
     )
     assert result.returncode == 0, result.stderr
 
 
+@cli_test_timeout(8)
 def test_offline_startup_benchmark_reports_separate_milestones(tmp_path: Path) -> None:
     root = Path(__file__).parents[2]
     result = subprocess.run(
@@ -137,7 +142,7 @@ def test_offline_startup_benchmark_reports_separate_milestones(tmp_path: Path) -
         text=True,
         capture_output=True,
         check=False,
-        timeout=30,
+        timeout=8 * CLI_PROCESS_TIMEOUT_S,  # the script and the seven interpreters it starts
     )
     assert result.returncode == 0, result.stderr
     data = json.loads(result.stdout)

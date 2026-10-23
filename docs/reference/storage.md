@@ -613,12 +613,11 @@ clarification/INIT run.
 |---|---|---|
 | Project memory | `.agenthicc/memory/project.db` | Namespaced KV and artifacts |
 | Workspace file cache | `.agenthicc/cache/file-cache.db` | Freshness-validated file contents |
-| Plugin trust | `.agenthicc/trusted_plugins.json` | Approved plugin hashes/decisions |
-| Plugin audit | `.agenthicc/plugin_audit.jsonl` | Load/trust audit records |
+| Extension trust | `~/.agenthicc/trust.json` | Resolved path → SHA-256 records for trusted project extensions (`agenthicc trust`); owner-only, written atomically, never stored in a repository |
 | Global memory | `~/.agenthicc/global.db` | User-wide KV values |
 
-Paths can be configured where the corresponding settings support it. Inspect
-the current session context before assuming a custom path is active.
+These locations are fixed; no setting relocates them. An unreadable trust
+store trusts nothing rather than being overwritten.
 
 ## Durability rules
 

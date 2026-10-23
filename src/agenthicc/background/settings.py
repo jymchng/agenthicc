@@ -293,6 +293,11 @@ class BackgroundSettings:
     dispatch_lease_s: float = 30.0
     notifications: BackgroundNotificationSettings = BackgroundNotificationSettings()
 
+    @property
+    def store_root(self) -> Path | None:
+        """The configured store directory, or ``None`` for the default location."""
+        return Path(self.store_path).expanduser() if self.store_path else None
+
     @classmethod
     def from_mapping(cls, raw: Mapping[str, object]) -> "BackgroundSettings":
         """Build settings and reject unsafe or ambiguous values."""

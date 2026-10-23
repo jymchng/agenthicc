@@ -197,8 +197,8 @@ class BrowserPolicy:
             )
         try:
             parsed = urlsplit(url.strip())
-            # Accessing ``port`` validates malformed numeric ports.
-            parsed.port
+            # Reading ``port`` raises ValueError for a malformed numeric port.
+            _ = parsed.port
         except ValueError as exc:
             raise BrowserToolError(BrowserErrorKind.INVALID_INPUT, "URL is malformed.") from exc
         if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:

@@ -5,10 +5,9 @@ from __future__ import annotations
 import json
 import os
 import time
-from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator
 
+from agenthicc.runners.process_lease import InterProcessLock
 from .model import ParallelManifest
 
 
@@ -29,26 +28,9 @@ class ManifestStore:
         self.root = Path(root or Path.home() / ".agenthicc" / "orchestrations").expanduser()
         self.lock_path = self.root / "manifests.lock"
 
-    @contextmanager
-    def _lock(self) -> Iterator[None]:
-        self.root.mkdir(parents=True, exist_ok=True)
-        handle = self.lock_path.open("a+", encoding="utf-8")
-        try:
-            try:
-                import fcntl  # noqa: PLC0415
-
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-            except (ImportError, OSError):
-                pass
-            yield
-        finally:
-            try:
-                import fcntl  # noqa: PLC0415
-
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-            except (ImportError, OSError):
-                pass
-            handle.close()
+    def _lock(self) -> InterProcessLock:
+        """Exclusive cross-process lock; raises ``InterProcessLockError`` if unavailable."""
+        return InterProcessLock(self.lock_path)
 
     def _path(self, orchestration_id: str) -> Path:
         if not orchestration_id or Path(orchestration_id).name != orchestration_id:
@@ -134,7 +116,7 @@ class ManifestStore:
 
 
 def _manifest_from_mapping(value: dict[str, object]) -> ParallelManifest:
-    from .model import (  # noqa: PLC0415
+    from .model import (
         OrchestrationStatus,
         ParallelTask,
         TaskStatus,

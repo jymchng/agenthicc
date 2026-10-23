@@ -340,10 +340,10 @@ def _import_plugins(
     namespace is returned so runner checks can look at every class the file
     defined — the module itself is removed from ``sys.modules`` again.
     """
-    import inspect  # noqa: PLC0415
+    import inspect
 
-    from agenthicc.workflows.plugin import WorkflowPlugin as _Plugin  # noqa: PLC0415
-    from agenthicc.workflows.loader import load_python_workflow_modules  # noqa: PLC0415
+    from agenthicc.workflows.plugin import WorkflowPlugin as _Plugin
+    from agenthicc.workflows.loader import load_python_workflow_modules
 
     try:
         modules = load_python_workflow_modules(path)
@@ -373,7 +373,7 @@ def _check_phases(
     warnings: list[str],
 ) -> tuple[str, ...]:
     """Validate ``plugin.phases`` structurally; return the ordered phase names."""
-    from agenthicc.workflows.plugin import PhaseRole, PhaseSpec  # noqa: PLC0415
+    from agenthicc.workflows.plugin import PhaseRole, PhaseSpec
 
     phases = plugin.phases
     if not isinstance(phases, list):
@@ -461,7 +461,7 @@ def _check_phase_capabilities(
     errors: list[str],
 ) -> None:
     """Validate capability allowlists against the live capability taxonomy."""
-    from agenthicc.tools.capabilities import ToolCapability  # noqa: PLC0415
+    from agenthicc.tools.capabilities import ToolCapability
 
     known = {capability.value for capability in ToolCapability}
     phases = plugin.phases if isinstance(plugin.phases, list) else ()
@@ -497,7 +497,7 @@ def _default_build_runner_func() -> object:
     Used to detect whether a generated plugin supplies its own runner, which
     changes an empty ``phases`` list from an error into a warning.
     """
-    from agenthicc.workflows.plugin import WorkflowPlugin  # noqa: PLC0415
+    from agenthicc.workflows.plugin import WorkflowPlugin
 
     return WorkflowPlugin.build_runner.__func__  # type: ignore[attr-defined]
 
@@ -516,7 +516,7 @@ def _overrides_plugin_method(plugin: type[WorkflowPlugin], method_name: str) -> 
     class while still distinguishing it from the no-op hooks inherited from
     :class:`WorkflowPlugin`.
     """
-    from agenthicc.workflows.plugin import WorkflowPlugin  # noqa: PLC0415
+    from agenthicc.workflows.plugin import WorkflowPlugin
 
     for base in plugin.__mro__:
         if base is WorkflowPlugin:
@@ -574,7 +574,7 @@ def _check_checkpoint_topology_contract(
     """
     if not strict:
         return
-    from agenthicc.workflows.checkpoint import (  # noqa: PLC0415
+    from agenthicc.workflows.checkpoint import (
         CheckpointValidationError,
         resolve_workflow_checkpoint_topology,
     )
@@ -641,7 +641,7 @@ def _check_runner(
     because a single-phase unconditional workflow legitimately needs no runner —
     but the runner it *does* ship must be usable.
     """
-    from agenthicc.workflows.base_runner import BaseWorkflowRunner  # noqa: PLC0415
+    from agenthicc.workflows.base_runner import BaseWorkflowRunner
 
     if not _has_custom_runner(plugin):
         if phase_count > 1:
@@ -1445,7 +1445,7 @@ def validate_workflow_file(
                 "It must work with an empty mapping, since TOML config is optional."
             )
         else:
-            from agenthicc.workflows.plugin import WorkflowParams  # noqa: PLC0415
+            from agenthicc.workflows.plugin import WorkflowParams
 
             if not isinstance(params, WorkflowParams):
                 errors.append(

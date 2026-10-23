@@ -23,6 +23,12 @@ registry reads it at discovery time; the custom runner owns the per-chapter
 loop and updates the TUI phase counter dynamically.
 """
 
+# Type debt: this runner reuses CodePlanRunner's turn machinery but drives its
+# own state machine, so run(), resume() and its phase methods keep their own
+# signatures. PRD-250 WS-4.2 replaces the inheritance with a generic base.
+# type-debt: owner=PRD-250 WS-4.2; expires=2026-12-03
+# mypy: disable-error-code=override
+
 from __future__ import annotations
 
 import asyncio
@@ -32,7 +38,7 @@ import logging
 import re
 import uuid
 import zipfile
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from enum import Enum, auto
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -40,6 +46,12 @@ from urllib.parse import urlparse
 
 from agenthicc.workflows.code_plan.runner import CodePlanRunner
 from agenthicc.workflows.make_book.builder import write_build_book_script
+from agenthicc.workflows.payload import (
+    payload_int,
+    payload_mapping,
+    payload_mappings,
+    payload_strings,
+)
 from agenthicc.workflows.plugin import PhaseSpec, WorkflowParams, WorkflowPlugin
 
 if TYPE_CHECKING:
@@ -552,6 +564,11 @@ def _display_paths(paths: list[Path], root_text: str) -> list[str]:
     return [str(path.relative_to(root)) for path in sorted(paths, key=lambda item: str(item))]
 
 
+def _resolved_path(path: str) -> Path:
+    """Expand ``~`` and resolve *path* (touches the filesystem)."""
+    return Path(path).expanduser().resolve()
+
+
 def _files_under(directory: Path, suffixes: frozenset[str]) -> list[Path]:
     """List regular files in a canonical directory, deterministically."""
 
@@ -679,15 +696,15 @@ def _make_toc_tools(
                 "error": "submit_toc summary is empty.",
                 "fix": "Write the TOC manifest first, then call submit_toc(summary=...).",
             }
-        manifest = Path(manifest_path).expanduser().resolve()
-        if not manifest.is_file():
+        manifest = await asyncio.to_thread(_resolved_path, manifest_path)
+        if not await asyncio.to_thread(manifest.is_file):
             return {
                 "ok": False,
                 "error": f"TOC manifest '{manifest}' was not found.",
                 "fix": "Write the JSON manifest at the exact path from the phase prompt, then retry submit_toc(summary=...).",
             }
         try:
-            raw_plan = json.loads(manifest.read_text(encoding="utf-8"))
+            raw_plan = json.loads(await asyncio.to_thread(manifest.read_text, encoding="utf-8"))
         except (OSError, UnicodeError, json.JSONDecodeError) as exc:
             return {
                 "ok": False,
@@ -769,10 +786,9 @@ def _make_toc_tools(
                 "error": "TOC manifest output_dir contains a NUL character.",
                 "fix": "Use a normal book directory or omit output_dir.",
             }
-        if requested_output_dir:
-            output_dir = str(Path(requested_output_dir).expanduser().resolve())
-        else:
-            output_dir = str(Path(_chapter_slug(title)).resolve())
+        output_dir = str(
+            await asyncio.to_thread(_resolved_path, requested_output_dir or _chapter_slug(title))
+        )
         data["title"] = title.strip()
         data["author"] = author
         data["audience"] = audience
@@ -833,8 +849,10 @@ def _make_research_tools(
                 "error": "research directory is not configured.",
                 "fix": "Use the directory supplied by the phase prompt.",
             }
-        root = Path(research_dir).expanduser().resolve()
-        files = _files_under(root, frozenset({".md", ".txt", ".json", ".yaml", ".yml"}))
+        root = await asyncio.to_thread(_resolved_path, research_dir)
+        files = await asyncio.to_thread(
+            _files_under, root, frozenset({".md", ".txt", ".json", ".yaml", ".yml"})
+        )
         if not files:
             return {
                 "ok": False,
@@ -863,12 +881,14 @@ def _make_research_tools(
                 "error": f"research handoff is missing chapter note files for {missing} under '{root}'.",
                 "fix": "Use names such as ch01-notes.md, ch02-notes.md, then retry submit_research(summary=...).",
             }
+        sources: list[str] = []
+        stored = _display_paths(canonical, str(root))
         data["notes"] = {}
-        data["sources"] = []
+        data["sources"] = sources
         data["summary"] = _compact(summary)
-        data["files"] = _display_paths(canonical, str(root))
+        data["files"] = stored
         data["receipt"] = _transition_receipt(
-            {"receipt": {"files": data["files"], "chapter_count": chapter_count}},
+            {"receipt": {"files": stored, "chapter_count": chapter_count}},
             phase="research",
         )
         event.set()
@@ -876,7 +896,7 @@ def _make_research_tools(
             "ok": True,
             "message": (
                 f"Research recorded: {chapter_count} chapters covered, "
-                f"{len(data['sources'])} sources, {len(data['files'])} files stored "
+                f"{len(sources)} sources, {len(stored)} files stored "
                 "under the research/ directory. The chapter phases start next."
             ),
         }
@@ -1019,8 +1039,8 @@ def _make_assets_tools(
                 "error": "assets directory is not configured.",
                 "fix": "Use the asset directory supplied by the phase prompt.",
             }
-        root = Path(assets_dir).expanduser().resolve()
-        assets = _files_under(root, _SUPPORTED_ASSET_SUFFIXES)
+        root = await asyncio.to_thread(_resolved_path, assets_dir)
+        assets = await asyncio.to_thread(_files_under, root, _SUPPORTED_ASSET_SUFFIXES)
         if required and len(assets) < minimum_assets:
             return {
                 "ok": False,
@@ -1152,7 +1172,7 @@ def _make_assets_tools(
         event.set()
         return {
             "ok": True,
-            "message": (f"{len(data['assets'])} assets confirmed. The chapter phases start next."),
+            "message": (f"{len(canonical)} assets confirmed. The chapter phases start next."),
         }
 
     return [confirm_assets_ready]
@@ -1176,8 +1196,8 @@ def _make_front_matter_tools(
                 "error": "confirm_front_matter_ready summary is empty.",
                 "fix": "Write front matter, then call confirm_front_matter_ready(summary=...).",
             }
-        root = Path(output_dir).expanduser().resolve() / "front-matter"
-        files = _files_under(root, frozenset({".md"}))
+        root = await asyncio.to_thread(_resolved_path, output_dir) / "front-matter"
+        files = await asyncio.to_thread(_files_under, root, frozenset({".md"}))
         if any(path.name.casefold() == "contents.md" for path in files):
             return {
                 "ok": False,
@@ -1220,8 +1240,8 @@ def _make_back_matter_tools(
                 "error": "confirm_back_matter_ready summary is empty.",
                 "fix": "Write back matter, then call confirm_back_matter_ready(summary=...).",
             }
-        root = Path(output_dir).expanduser().resolve() / "back-matter"
-        files = _files_under(root, frozenset({".md"}))
+        root = await asyncio.to_thread(_resolved_path, output_dir) / "back-matter"
+        files = await asyncio.to_thread(_files_under, root, frozenset({".md"}))
         if any(path.name.casefold() == "contents.md" for path in files):
             return {
                 "ok": False,
@@ -1458,16 +1478,16 @@ def _make_compile_tools(
                 "error": "book output directory is not configured.",
                 "fix": "Run the TOC phase before compiling.",
             }
-        root = Path(output_dir).expanduser().resolve()
+        root = await asyncio.to_thread(_resolved_path, output_dir)
         builder = root / "build_book.py"
-        if not builder.is_file():
+        if not await asyncio.to_thread(builder.is_file):
             return {
                 "ok": False,
                 "error": f"reusable builder is missing under '{root}'.",
                 "fix": "Call create_build_book() first, run the builder, then retry mark_book_complete(summary=...).",
             }
         dist = root / "dist"
-        candidates = _files_under(dist, frozenset({".pdf"}))
+        candidates = await asyncio.to_thread(_files_under, dist, frozenset({".pdf"}))
         if len(candidates) != 1:
             return {
                 "ok": False,
@@ -1783,7 +1803,7 @@ class MakeBookRunner(CodePlanRunner):
     async def _toc(
         self,
         ctx: MakeBookContext,
-        memory: object,
+        memory: ShortTermMemory | None,
     ) -> MakeBookState:
         """Loop until submit_toc fires; return RESEARCH or FAILED."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
@@ -1860,11 +1880,8 @@ class MakeBookRunner(CodePlanRunner):
             )
             if event.is_set():
                 self._capture_transition_receipt(ctx, data, "toc")
-                raw_chapters = data.get("chapters", [])
                 chapters: list[ChapterInfo] = []
-                for index, raw in enumerate(raw_chapters):
-                    if not isinstance(raw, dict):
-                        continue
+                for index, raw in enumerate(payload_mappings(data.get("chapters"))):
                     chapters.append(
                         ChapterInfo(
                             index=index,
@@ -1878,7 +1895,7 @@ class MakeBookRunner(CodePlanRunner):
                 ctx.technical_level = str(data.get("technical_level", "advanced"))
                 ctx.prerequisites = str(data.get("prerequisites", ""))
                 ctx.output_dir = str(data.get("output_dir", ""))
-                ctx.content_types = list(data.get("content_types", [])) or [
+                ctx.content_types = payload_strings(data.get("content_types")) or [
                     "images",
                     "equations",
                     "code",
@@ -1907,7 +1924,7 @@ class MakeBookRunner(CodePlanRunner):
     async def _research(
         self,
         ctx: MakeBookContext,
-        memory: object,
+        memory: ShortTermMemory | None,
     ) -> MakeBookState:
         """Loop until submit_research fires; return CHAPTER or FAILED."""
         chapter_titles: str = "\n".join(
@@ -2125,16 +2142,15 @@ class MakeBookRunner(CodePlanRunner):
             )
             if event.is_set():
                 self._capture_transition_receipt(ctx, data, "research")
-                raw_notes = data.get("notes", {})
                 ctx.research_notes = {
-                    int(key): str(value)
-                    for key, value in raw_notes.items()
+                    int(key): value
+                    for key, value in payload_mapping(data.get("notes")).items()
                     if isinstance(value, str)
                 }
-                ctx.research_sources = list(data.get("sources", []))
+                ctx.research_sources = payload_strings(data.get("sources"))
                 ctx.research_summary = str(data.get("summary", ""))
-                ctx.research_files = [str(f) for f in (data.get("files") or [])]
-                ctx.images = [str(a) for a in data.get("assets", [])]
+                ctx.research_files = payload_strings(data.get("files"))
+                ctx.images = payload_strings(data.get("assets"))
                 ctx.artifacts["research"] = (
                     f"{len(ctx.research_notes)} chapters researched; "
                     f"{len(ctx.research_sources)} sources; "
@@ -2149,7 +2165,7 @@ class MakeBookRunner(CodePlanRunner):
     async def _chapter(
         self,
         ctx: MakeBookContext,
-        memory: object,
+        memory: ShortTermMemory | None,
     ) -> MakeBookState:
         """Write one chapter; loop until confirm_chapter_complete fires.
 
@@ -2401,7 +2417,7 @@ class MakeBookRunner(CodePlanRunner):
         self._capture_transition_receipt(ctx, data, "chapter")
         chapter = ctx.chapters[index]
         chapter.file_path = str(data.get("file_path", ""))
-        chapter.word_count = int(data.get("word_count", 0))
+        chapter.word_count = payload_int(data.get("word_count"), 0)
         chapter.status = "written"
         raw_assets = data.get("assets", [])
         chapter.assets = (
@@ -2419,7 +2435,7 @@ class MakeBookRunner(CodePlanRunner):
     async def _assets(
         self,
         ctx: MakeBookContext,
-        memory: object,
+        memory: ShortTermMemory | None,
     ) -> MakeBookState:
         """Produce all figure/asset files; loop until confirm_assets_ready fires."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
@@ -2532,7 +2548,7 @@ class MakeBookRunner(CodePlanRunner):
             )
             if event.is_set():
                 self._capture_transition_receipt(ctx, data, "assets")
-                ctx.images = [str(a) for a in data.get("assets", [])]
+                ctx.images = payload_strings(data.get("assets"))
                 ctx.artifacts["assets"] = f"{len(ctx.images)} assets produced"
                 return MakeBookState.CHAPTER
 
@@ -2542,7 +2558,7 @@ class MakeBookRunner(CodePlanRunner):
     async def _layout_review(
         self,
         ctx: MakeBookContext,
-        memory: object,
+        memory: ShortTermMemory | None,
         *,
         final: bool,
     ) -> MakeBookState:
@@ -2601,9 +2617,9 @@ class MakeBookRunner(CodePlanRunner):
                     ctx.final_layout_summary = summary
                 else:
                     ctx.layout_summary = summary
-                ctx.layout_files = [str(path) for path in data.get("files", [])]
-                ctx.layout_image_count = int(data.get("image_count", 0))
-                ctx.layout_table_count = int(data.get("table_count", 0))
+                ctx.layout_files = payload_strings(data.get("files"))
+                ctx.layout_image_count = payload_int(data.get("image_count"), 0)
+                ctx.layout_table_count = payload_int(data.get("table_count"), 0)
                 ctx.artifacts[phase] = (
                     f"{ctx.layout_image_count} images/diagrams, "
                     f"{ctx.layout_table_count} tables verified"
@@ -2616,7 +2632,7 @@ class MakeBookRunner(CodePlanRunner):
     async def _front_matter(
         self,
         ctx: MakeBookContext,
-        memory: object,
+        memory: ShortTermMemory | None,
     ) -> MakeBookState:
         """Build the preface; the builder generates the TOC; return BACK_MATTER or FAILED."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
@@ -2665,7 +2681,7 @@ class MakeBookRunner(CodePlanRunner):
             if event.is_set():
                 self._capture_transition_receipt(ctx, data, "front_matter")
                 ctx.front_matter_summary = str(data.get("summary", ""))
-                ctx.front_matter_files = list(data.get("files", []))
+                ctx.front_matter_files = payload_strings(data.get("files"))
                 ctx.artifacts["front_matter"] = ctx.front_matter_summary
                 return MakeBookState.BACK_MATTER
 
@@ -2675,7 +2691,7 @@ class MakeBookRunner(CodePlanRunner):
     async def _back_matter(
         self,
         ctx: MakeBookContext,
-        memory: object,
+        memory: ShortTermMemory | None,
     ) -> MakeBookState:
         """Build the index page; return FINAL_LAYOUT_REVIEW or FAILED."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
@@ -2716,7 +2732,7 @@ class MakeBookRunner(CodePlanRunner):
             if event.is_set():
                 self._capture_transition_receipt(ctx, data, "back_matter")
                 ctx.back_matter_summary = str(data.get("summary", ""))
-                ctx.back_matter_files = list(data.get("files", []))
+                ctx.back_matter_files = payload_strings(data.get("files"))
                 ctx.artifacts["back_matter"] = ctx.back_matter_summary
                 return MakeBookState.FINAL_LAYOUT_REVIEW
 
@@ -2726,7 +2742,7 @@ class MakeBookRunner(CodePlanRunner):
     async def _compile(
         self,
         ctx: MakeBookContext,
-        memory: object,
+        memory: ShortTermMemory | None,
     ) -> MakeBookState:
         """Typeset the PDF; loop until a verdict tool fires."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
@@ -3004,7 +3020,7 @@ class MakeBookRunner(CodePlanRunner):
                         ctx.artifacts["builder"] = ctx.build_script_path
                     return MakeBookState.COMPLETE
                 ctx.fail_reason = str(data.get("issue", ""))
-                bad_index: int = int(data.get("chapter_index", -1))
+                bad_index = payload_int(data.get("chapter_index"), -1)
                 if 0 <= bad_index < len(ctx.chapters):
                     ctx.current_chapter_index = bad_index
                     return MakeBookState.CHAPTER
@@ -3303,7 +3319,7 @@ class MakeBookWorkflow(WorkflowPlugin):
     def checkpoint_context_from_payload(
         cls,
         payload: dict[str, object],
-        memory: object | None = None,
+        memory: ShortTermMemory | None = None,
     ) -> MakeBookContext:
         """Restore state and attach the already-open session memory."""
         raw_state = str(payload.get("state", MakeBookState.TOC.name))
@@ -3364,7 +3380,7 @@ class MakeBookWorkflow(WorkflowPlugin):
             intent=str(payload.get("intent", "")),
             run_id=str(payload.get("run_id", "")),
             state=state,
-            phase_iteration=int(payload.get("phase_iteration", 0)),
+            phase_iteration=payload_int(payload.get("phase_iteration"), 0),
             title=str(payload.get("title", "")),
             author=str(payload.get("author", "")),
             audience=str(payload.get("audience", "")),
@@ -3372,7 +3388,7 @@ class MakeBookWorkflow(WorkflowPlugin):
             prerequisites=str(payload.get("prerequisites", "")),
             output_dir=str(payload.get("output_dir", "")),
             toc_manifest_path=str(payload.get("toc_manifest_path", "")),
-            content_types=list(payload.get("content_types", []))
+            content_types=payload_strings(payload.get("content_types"))
             or [
                 "images",
                 "equations",
@@ -3381,32 +3397,22 @@ class MakeBookWorkflow(WorkflowPlugin):
             ],
             assets_dir=str(payload.get("assets_dir", "")),
             research_dir=str(payload.get("research_dir", "")),
-            images=[str(i) for i in payload.get("images", [])]
-            if isinstance(payload.get("images", []), list)
-            else [],
+            images=payload_strings(payload.get("images")),
             chapters=chapters,
-            current_chapter_index=int(payload.get("current_chapter_index", 0)),
+            current_chapter_index=payload_int(payload.get("current_chapter_index"), 0),
             toc_summary=str(payload.get("toc_summary", "")),
             research_notes=research_notes,
             research_sources=research_sources,
             research_summary=str(payload.get("research_summary", "")),
-            research_files=[str(f) for f in payload.get("research_files", [])]
-            if isinstance(payload.get("research_files", []), list)
-            else [],
+            research_files=payload_strings(payload.get("research_files")),
             front_matter_summary=str(payload.get("front_matter_summary", "")),
-            front_matter_files=[str(f) for f in payload.get("front_matter_files", [])]
-            if isinstance(payload.get("front_matter_files", []), list)
-            else [],
+            front_matter_files=payload_strings(payload.get("front_matter_files")),
             back_matter_summary=str(payload.get("back_matter_summary", "")),
-            back_matter_files=[str(f) for f in payload.get("back_matter_files", [])]
-            if isinstance(payload.get("back_matter_files", []), list)
-            else [],
+            back_matter_files=payload_strings(payload.get("back_matter_files")),
             layout_summary=str(payload.get("layout_summary", "")),
-            layout_files=[str(f) for f in payload.get("layout_files", [])]
-            if isinstance(payload.get("layout_files", []), list)
-            else [],
-            layout_image_count=int(payload.get("layout_image_count", 0)),
-            layout_table_count=int(payload.get("layout_table_count", 0)),
+            layout_files=payload_strings(payload.get("layout_files")),
+            layout_image_count=payload_int(payload.get("layout_image_count"), 0),
+            layout_table_count=payload_int(payload.get("layout_table_count"), 0),
             final_layout_summary=str(payload.get("final_layout_summary", "")),
             build_script_path=str(payload.get("build_script_path", "")),
             pdf_path=str(payload.get("pdf_path", "")),
@@ -3428,7 +3434,7 @@ class MakeBookWorkflow(WorkflowPlugin):
         return MakeBookRunner(config, mode_manager)
 
     @classmethod
-    def build_params(cls, source: dict[str, object]) -> WorkflowParams:
+    def build_params(cls, source: Mapping[str, object]) -> WorkflowParams:
         """Build typed params from [workflows.make_book]."""
         return MakeBookParams(
             toc_model=str(source.get("toc_model", "") or ""),

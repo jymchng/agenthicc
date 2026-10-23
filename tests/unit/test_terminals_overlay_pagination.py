@@ -38,7 +38,7 @@ class _ViewportOverlay(Overlay):
     def render(self):
         return "overlay"
 
-    def handle_key(self, key: Key, ch: str) -> bool:  # noqa: ARG002
+    def handle_key(self, key: Key, ch: str) -> bool:
         return True
 
 

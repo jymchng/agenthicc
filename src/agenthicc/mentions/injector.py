@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import asyncio
 import glob as _glob
 import mimetypes
@@ -165,11 +166,9 @@ async def _check_robots(url: str, user_agent: str = "agenthicc") -> bool:
         parsed = urllib.parse.urlparse(url)
         robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
         rp = urllib.robotparser.RobotFileParser()
-        try:
-            import httpx  # noqa: PLC0415
-        except ImportError:
+        if importlib.util.find_spec("httpx") is None:
             return True
-        from agenthicc.tools.http import agenthicc_http_client  # noqa: PLC0415
+        from agenthicc.tools.http import agenthicc_http_client
 
         async with agenthicc_http_client(timeout=5.0) as client:
             try:
@@ -201,7 +200,7 @@ async def _format_url_block(
 
     # Fetch
     try:
-        from agenthicc.tools.http import agenthicc_http_client  # noqa: PLC0415
+        from agenthicc.tools.http import agenthicc_http_client
 
         async with agenthicc_http_client(timeout=timeout, follow_redirects=True) as client:
             resp = await client.get(url, headers={"User-Agent": "agenthicc/1.0"})
@@ -512,7 +511,7 @@ async def build_context_prefix(
     The prefix_block is empty string when there are no mentions.
     Caller prepends prefix_block to the user message sent to the LLM.
     """
-    from .parser import parse_mentions  # noqa: PLC0415
+    from .parser import parse_mentions
 
     cfg = cfg or InjectionConfig(cwd=cwd or Path.cwd())
     mentions = parse_mentions(

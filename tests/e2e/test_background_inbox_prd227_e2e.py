@@ -16,10 +16,12 @@ from agenthicc.background import (
     BackgroundStore,
     SessionStatus,
 )
+from tests.cli_process import CLI_PROCESS_TIMEOUT_S, cli_test_timeout
 
 pytestmark = pytest.mark.e2e
 
 
+@cli_test_timeout(2)
 def test_cli_lists_and_answers_exact_persisted_question(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
@@ -62,7 +64,7 @@ def test_cli_lists_and_answers_exact_persisted_question(tmp_path: Path) -> None:
         env=env,
         text=True,
         capture_output=True,
-        timeout=30,
+        timeout=CLI_PROCESS_TIMEOUT_S,
         check=False,
     )
     assert listing.returncode == 0, listing.stderr
@@ -88,7 +90,7 @@ def test_cli_lists_and_answers_exact_persisted_question(tmp_path: Path) -> None:
         env=env,
         text=True,
         capture_output=True,
-        timeout=30,
+        timeout=CLI_PROCESS_TIMEOUT_S,
         check=False,
     )
     assert answered.returncode == 0, answered.stderr

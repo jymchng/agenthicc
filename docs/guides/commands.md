@@ -59,8 +59,8 @@ Cloakbrowser endpoint status without executing arbitrary shell text.
 ```
 
 The skill guides the agent to generate a complete raw Python module with a
-literal `COMMAND` or `COMMANDS` export. Review the generated code and run
-`/commands reload` after placing it in the trusted project commands directory.
+literal `COMMAND` or `COMMANDS` export. Review the generated code, trust it with
+`agenthicc trust add .agenthicc/commands/<file>.py`, and run `/commands reload`.
 
 For the normal interactive TUI, export `COMMANDS` as a list or tuple when a
 module contains multiple commands. A singular `COMMAND` export is also
@@ -242,10 +242,11 @@ fail atomically and leaves the previously active command set unchanged.
 ## Trust and security
 
 `.agenthicc/commands/` and `~/.agenthicc/commands/` contain executable Python.
-Review command files before launching a session. The normal slash-command
-scanner does not invoke the trust helper or show a trust prompt. The separate
-`agenthicc trust cli` flow protects project-local `.agenthicc/cli/` plugins;
-that manifest does not automatically protect `.agenthicc/commands/`.
+Files under your own `~/.agenthicc/` are trusted by location. A project command
+file is imported only after you review it and record trust for its exact
+content with `agenthicc trust add .agenthicc/commands/<file>.py` (or
+`agenthicc trust add` for every project extension); an untrusted or edited file
+is logged and skipped. See [Trust and dependencies](plugins.md#trust-and-dependencies).
 
 A command handler can still initiate writes, subprocesses, network calls, or
 tool-like side effects. Keep command handlers small and route those operations
@@ -286,9 +287,9 @@ For the prompt-driven authoring skill, submit its instructions directly:
 ```
 
 The `/create-commands` skill is independent of `create_workflow`; it gives the
-agent project-specific guidance for producing a trusted `Command` export.
-Review generated code and reload the command registry after placing a trusted
-plugin in `.agenthicc/commands/`.
+agent project-specific guidance for producing a `Command` export. Review the
+generated code, trust it with `agenthicc trust add`, and reload the command
+registry.
 
 ## Troubleshooting
 
@@ -298,7 +299,7 @@ plugin in `.agenthicc/commands/`.
 | A slash command you wrote is never suggested | It was not discovered or its name collides | Check for a name collision with a builtin, and inspect the discovery result rather than the log tail |
 | `/workflow` or `/compact` errors when invoked | Both carry `handler=None` deliberately | They are intercepted in `TUISession.route()`; their registry entries exist so the picker can display and complete them |
 | A documented command is missing from autocomplete | It is not in `BUILTIN_COMMANDS` | The registry holds 23 entries; `/background` (alias `/bg`) is injected separately and `/create-tools` and `/create-commands` come from bootstrap skills |
-| `agenthicc trust cli` did not protect your slash-command plugin | It covers `.agenthicc/cli/` plugins, not normal TUI slash-command plugins | Apply the same manual review to `.agenthicc/commands/` code: loading it is code execution |
+| A project command is skipped as untrusted | It has no trust record, or it changed since it was trusted | Review it, run `agenthicc trust add .agenthicc/commands/<file>.py`, then `/commands reload` |
 | Arguments are not parsed as expected | There is no shared argument grammar | Use the command's own `argument_hint` and handler; do not assume shell-style quoting |
 | A command's output interleaves badly during a turn | Commands that print while a turn renders | Prefer structured state updates over direct printing in a long-running turn |
 | A command works in the TUI but not in a script | Slash commands are a TUI surface | For scripts use the CLI (`agenthicc ...`) or the client-neutral `session` group |
@@ -315,7 +316,7 @@ entries. Then add the two surfaces that live outside that literal —
 
 ### Slash commands are not a security boundary
 
-`.agenthicc/commands/` holds Python code. `agenthicc trust cli` protects
-`.agenthicc/cli/` plugins only, so a slash-command plugin is *not* covered by
-that manifest. Treat it exactly like any other project code you intend to
-import, and review it before use.
+`.agenthicc/commands/` holds Python code. Trusting a command file records that
+you reviewed its current content; it does not sandbox the handler, which runs
+with your permissions. Treat it exactly like any other project code you intend
+to import, and review it before you trust it.

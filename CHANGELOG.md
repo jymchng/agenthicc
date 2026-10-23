@@ -9,6 +9,85 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — required quality gates (PRD-250 WS-1)
+
+- One CI workflow, `.github/workflows/ci.yml`, runs every gate — lint and
+  format, mypy, the type ratchet, `llms_check`, a strict docs build, unit and
+  integration tests on Python 3.11–3.13, E2E and performance tests, a Windows
+  job for the lock, filesystem and terminal code, and branch-and-subprocess
+  coverage — and ends in one aggregate **Required checks** job.
+  `scripts/apply_branch_protection.sh` makes that check and code-owner review
+  required on `main`; it is not applied automatically.
+- Releases re-run that CI for the tagged commit, require the tag to name the
+  package version, and check that the built wheel's `agenthicc --version`
+  reports it. `agenthicc --version` now reads the installed distribution's
+  version instead of a literal.
+- `mypy src/agenthicc` is clean. Six bundled workflow runners that subclass
+  `CodePlanRunner` carry a module-level `override` suppression with an owner
+  (PRD-250 WS-4.2) and an expiry date that `type_audit` enforces.
+- `scripts/type_audit.py` holds the baseline in both directions — a stale
+  baseline fails until it is lowered with `--update` — rejects a pull request
+  that raises a baseline value (`--baseline-ref`), and counts module-level
+  `# mypy:` suppressions. The baseline was lowered to the measured debt, and
+  `getattr` calls fell from 716 to 500 through typed access.
+- Nox sessions run on the uv backend, so each tool runs at its declared
+  version inside the session's virtualenv; previously a session could run a
+  copy that happened to be on `PATH`, or none at all on a clean runner. The two
+  `dev` dependency sets are one `dev` extra that also declares `twine` and the
+  book/screenshot test dependency; core/extra duplicates were removed.
+- Coverage measures branches and CLI/worker subprocesses, and the floor is
+  `[tool.coverage.report] fail_under`. Pre-commit hooks run the project's own
+  ruff, mypy, type ratchet and unit tests. `.github/CODEOWNERS` owns the
+  quality baselines and gate definitions.
+- Tests that start a fresh interpreter — a CLI command or a detached worker —
+  take their wall-clock ceiling from `tests/cli_process.py`, and each test's
+  `pytest-timeout` covers all of its waits. The 15- and 30-second ceilings they
+  replace expired under traced coverage on a loaded host, and some longer
+  ceilings could never apply under the 60-second default. The coverage session
+  gives a test without its own mark three times that default, because tracing
+  roughly triples CPU time.
+
+### Fixed — verified defects (PRD-250 D-01–D-10)
+
+- Project-memory SQLite connections are closed; fire-and-forget tasks are owned
+  by a `SupervisedTasks` supervisor that logs failures and drains on shutdown;
+  the kernel processor keeps no unbounded event list (use `add_sink`), rejects
+  undeclared events with a published `KernelEventRejected`, counts dropped
+  notifications, writes its log off the event loop, drains with
+  `Queue.join()`, and stops after the events already emitted (cancelling
+  `run()` now always stops it, including on Python 3.11); every store uses one
+  fail-closed `InterProcessLock`; plugin
+  dependencies are read statically so each plugin imports once; reactive
+  subscriber failures are logged with the signal name and `Computed.dispose()`
+  releases subscriptions; bugbear and async findings are fixed and the `B`,
+  `ASYNC`, `RUF006` and `RUF100` rules are enabled.
+- A workflow checkpoint now restores nested `design_tokens` losslessly, and the
+  base reconstruct-site runner declares the re-entry hooks it calls.
+
+### Security — trust gaps (PRD-250 S-01–S-03)
+
+- Skill `` !`command` `` placeholders are never executed when a skill loads; the
+  agent is asked to run each command through its command tool, where approvals,
+  the mode ceiling and the sandbox apply.
+- Every Python extension loader — tools, commands, workflows, modes, agents and
+  CLI plugins — imports a project file only when `~/.agenthicc/trust.json`
+  holds a record of its current SHA-256. Manage trust with `agenthicc trust
+  list`, `add` and `revoke`. The old CLI-only trust manifest and audit file are
+  removed.
+- Settings that nothing read were deleted instead of left inert, including the
+  `[api]`, `[hooks]` and `[storage]` sections, `[memory]`'s storage keys,
+  `security.sandbox_mode` and most `[plugins]` keys; a test asserts every
+  remaining field has a reader. The undeclared `execution.base_system_prompt`
+  and mention-budget reads were removed.
+
+### Added — hermetic cassette replay
+
+- `run_headless_replay(..., hermetic=True)` replaces side-effecting built-in
+  tools with schema-identical stubs inside the tool registry
+  (`override_builtin_tools`, `hermetic_builtin_groups`) and owns a durable
+  workflow handle, so a recorded `goal_flow` campaign replays as a regression
+  test without running any recorded command.
+
 ### Added — session-scoped recurring `/loop` prompts (PRD-193)
 
 - Added the interactive `/loop [interval] <prompt-or-registered-command>`

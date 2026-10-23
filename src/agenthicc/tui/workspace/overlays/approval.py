@@ -15,13 +15,13 @@ from agenthicc.tui.workspace.overlay import Overlay
 
 if TYPE_CHECKING:
     from rich.console import RenderableType
-    from agenthicc.tools.approval import ApprovalRequest, ApprovalService
+    from agenthicc.tools.approval import ApprovalRequest, InteractiveApprovals
 
 _BORDER_CHAR = "─"
 
 # (hotkey, label_template, respond kwargs)
 # {caps} in label_template is replaced with the capability string at render time.
-_OPTIONS: list[tuple[str, str, dict[str, bool]]] = [
+_OPTIONS: list[tuple[str, str, dict[str, object]]] = [
     ("y", "Allow once", dict(allowed=True)),
     ("a", "Allow all {caps} this turn", dict(allowed=True, remember=True)),
     ("A", "Allow all {caps} this session", dict(allowed=True, remember_all=True)),
@@ -57,7 +57,7 @@ class ApprovalOverlay(Overlay):
     def __init__(
         self,
         req: ApprovalRequest,
-        service: ApprovalService,
+        service: InteractiveApprovals,
         close_fn: Callable[[], None],
     ) -> None:
         self._req = req
@@ -76,9 +76,9 @@ class ApprovalOverlay(Overlay):
         pass
 
     def render(self) -> RenderableType:
-        from rich.console import Group  # noqa: PLC0415
-        from rich.text import Text  # noqa: PLC0415
-        from rich.markup import escape as _e  # noqa: PLC0415
+        from rich.console import Group
+        from rich.text import Text
+        from rich.markup import escape as _e
 
         cols = shutil.get_terminal_size((80, 24)).columns
         req = self._req

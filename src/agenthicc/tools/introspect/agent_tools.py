@@ -38,10 +38,10 @@ async def list_agenthicc_docs(section: str = "") -> dict[str, object]:
     Args:
         section: Optional path prefix to filter by, e.g. "guides" or "reference".
     """
-    from agenthicc.tools.introspect import docs_root, list_docs  # noqa: PLC0415
+    from agenthicc.tools.introspect import docs_root, list_docs
 
     if docs_root() is None:
-        from agenthicc.tools.introspect import DOCS_DIR_ENV  # noqa: PLC0415
+        from agenthicc.tools.introspect import DOCS_DIR_ENV
 
         return {
             "ok": False,
@@ -78,7 +78,7 @@ async def read_agenthicc_doc(
         start_line: 1-based first line to return (default 1).
         max_lines: Maximum lines to return (default 400, hard cap 2000).
     """
-    from agenthicc.tools.introspect import read_doc  # noqa: PLC0415
+    from agenthicc.tools.introspect import read_doc
 
     return read_doc(path, start_line=start_line, max_lines=max_lines)
 
@@ -101,7 +101,7 @@ async def search_agenthicc_docs(
         max_results: Maximum matches to return (default 40, hard cap 200).
         section: Optional path prefix to restrict the search to.
     """
-    from agenthicc.tools.introspect import search_docs  # noqa: PLC0415
+    from agenthicc.tools.introspect import search_docs
 
     return search_docs(query, max_results=max_results, section=section)
 
@@ -126,7 +126,7 @@ async def inspect_agenthicc_source(target: str, include_source: bool = True) -> 
         target: Dotted module path, optionally with ":Symbol" or ":Class.method".
         include_source: Include the source text (default True).
     """
-    from agenthicc.tools.introspect import resolve_source  # noqa: PLC0415
+    from agenthicc.tools.introspect import resolve_source
 
     return resolve_source(target, include_source=include_source)
 
@@ -149,7 +149,7 @@ async def search_agenthicc_source(
         module: Optional dotted module or subpackage to restrict the search to,
             e.g. "agenthicc.workflows".
     """
-    from agenthicc.tools.introspect import search_source  # noqa: PLC0415
+    from agenthicc.tools.introspect import search_source
 
     return search_source(query, max_results=max_results, module=module)
 

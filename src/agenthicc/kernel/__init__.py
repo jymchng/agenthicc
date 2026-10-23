@@ -1,16 +1,15 @@
 """Agenthicc kernel — event-sourced AppState (PRD-01)."""
 
-from .events import Effect, EffectType, Event
+from .events import PROJECTION_EVENT_TYPES, Effect, EffectType, Event, UnknownEventError
 from .processor import (
     EffectExecutor,
     EventProcessor,
+    EventSink,
     NoOpEffectExecutor,
     restore_from_log,
 )
-from .reducer import ReducerFn, root_reducer
+from .reducer import REDUCED_EVENT_TYPES, ReducerFn, root_reducer
 from .state import (
-    AgentInstance,
-    AgentStatus,
     AppState,
     Intent,
     IntentStatus,
@@ -18,21 +17,21 @@ from .state import (
     PermissionRule,
     SecurityPolicy,
     SystemSettings,
-    Task,
     ToolRegistration,
     Workflow,
     WorkflowNode,
 )
 
 __all__ = [
-    "AgentInstance",
-    "AgentStatus",
+    "PROJECTION_EVENT_TYPES",
+    "REDUCED_EVENT_TYPES",
     "AppState",
     "Effect",
     "EffectExecutor",
     "EffectType",
     "Event",
     "EventProcessor",
+    "EventSink",
     "Intent",
     "IntentStatus",
     "NodeStatus",
@@ -41,8 +40,8 @@ __all__ = [
     "ReducerFn",
     "SecurityPolicy",
     "SystemSettings",
-    "Task",
     "ToolRegistration",
+    "UnknownEventError",
     "Workflow",
     "WorkflowNode",
     "restore_from_log",

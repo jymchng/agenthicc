@@ -48,6 +48,9 @@ async def test_recording_proxy_forwards_and_records_selected_mode(tmp_path: Path
         remember_all=False,
         message="",
         mode="Yolo",
+        scope_grant=None,
+        request_id=None,
+        outcome=None,
     )
     record = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
     assert record["mode"] == "Yolo"

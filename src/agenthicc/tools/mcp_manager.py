@@ -22,7 +22,7 @@ import json
 import logging
 import os
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Coroutine, Mapping
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
@@ -30,6 +30,7 @@ from types import MappingProxyType
 from typing import Any, TYPE_CHECKING, cast
 
 from agenthicc.kernel import Event
+from agenthicc.supervised_tasks import SupervisedTasks
 from agenthicc.tools.mcp import (
     AgenthiccMcpTool,
     McpServerConfig,
@@ -276,6 +277,7 @@ class McpSessionManager:
         self._locks: dict[str, asyncio.Lock] = {}
         self._refresh_tasks: dict[str, asyncio.Task[None]] = {}
         self._lifecycle_tasks: set[asyncio.Task[object]] = set()
+        self._actions = SupervisedTasks("mcp actions")
         self._revision = 0
         self._closed = False
         self._required_failures: dict[str, str] = {}
@@ -747,11 +749,20 @@ class McpSessionManager:
             raise McpRequiredServerError(self._required_failures)
         return self.all_tools()
 
+    def start_action(self, operation: Coroutine[object, object, None], *, name: str) -> None:
+        """Run a user-requested MCP action in the background.
+
+        The manager owns the task: a failure is logged, and shutdown cancels
+        an action that is still running.
+        """
+        self._actions.start(operation, name=name)
+
     async def shutdown(self) -> None:
-        """Cancel refreshes and close every bridge exactly once."""
+        """Cancel actions and refreshes and close every bridge exactly once."""
         if self._closed:
             return
         self._closed = True
+        await self._actions.aclose(timeout=0.0)
         current = asyncio.current_task()
         tasks = {
             task

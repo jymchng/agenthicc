@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 from contextvars import ContextVar
 import os
-import shutil
 import signal
 import sys
 import tempfile
@@ -21,10 +20,25 @@ from agenthicc.tools.exec.outcome import (
     CommandKind,
     CommandOutcome,
     CommandState,
+    bash_executable,
     invalid_timeout_result,
     resolve_deadline,
     validate_timeout,
 )
+
+
+def _consume_json_report(path: str) -> dict[str, object]:
+    """Read a JSON report written by a test run, then delete it."""
+    import json
+    from contextlib import suppress
+
+    try:
+        with open(path, encoding="utf-8") as handle:
+            report = json.load(handle)
+    finally:
+        with suppress(FileNotFoundError):
+            os.unlink(path)
+    return report if isinstance(report, dict) else {}
 
 
 # Direct callers historically receive a structured ``cancelled`` outcome when
@@ -128,7 +142,7 @@ async def _run_proc(
     process: asyncio.subprocess.Process | None = None
     communication: asyncio.Task[tuple[bytes, bytes]] | None = None
 
-    if not os.path.isdir(cwd):
+    if not await asyncio.to_thread(os.path.isdir, cwd):
         return CommandOutcome(
             state=CommandState.SPAWN_FAILED,
             command_kind=kind,
@@ -194,11 +208,7 @@ async def _run_proc(
                 cwd=cwd,
                 env=effective_env,
                 start_new_session=True,
-                executable=(
-                    "/bin/bash"
-                    if os.name != "nt" and os.path.exists("/bin/bash")
-                    else shutil.which("bash")
-                ),
+                executable=await asyncio.to_thread(bash_executable),
             )
         return await asyncio.create_subprocess_exec(
             *cmd,
@@ -648,7 +658,7 @@ class RunTestsTool(Tool):
         self, args: Mapping[str, object], context: Mapping[str, object]
     ) -> dict[str, object]:
         import re
-        import uuid  # noqa: PLC0415
+        import uuid
 
         path = arg_str(args, "path", "tests/")
         executable_path = path
@@ -697,7 +707,9 @@ class RunTestsTool(Tool):
         if not isinstance(raw_extra, list) or not all(isinstance(item, str) for item in raw_extra):
             raise ValueError("tool argument 'args' must be a list of strings")
         extra = list(raw_extra)
-        report_path = f"/tmp/pytest_report_{uuid.uuid4().hex}.json"
+        report_path = os.path.join(
+            tempfile.gettempdir(), f"agenthicc-pytest-report-{uuid.uuid4().hex}.json"
+        )
 
         if arg_str(args, "framework", "pytest") == "pytest":
             cmd = [
@@ -720,17 +732,17 @@ class RunTestsTool(Tool):
             shell=False,
         )
 
-        passed = failed = errors = None
+        passed: object = None
+        failed: object = None
+        errors: object = None
         try:
-            import json  # noqa: PLC0415
-
-            with open(report_path) as f:
-                report = json.load(f)
-            summary = report.get("summary", {})
+            report = await asyncio.to_thread(_consume_json_report, report_path)
+            summary = report.get("summary")
+            if not isinstance(summary, dict):
+                raise ValueError("pytest JSON report has no summary")
             passed = summary.get("passed", 0)
             failed = summary.get("failed", 0)
             errors = summary.get("error", 0)
-            os.unlink(report_path)
         except Exception:
             stdout = _result_text(result, "stdout")
             m = re.search(r"(\d+) passed", stdout)

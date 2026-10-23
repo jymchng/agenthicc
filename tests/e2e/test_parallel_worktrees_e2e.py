@@ -7,7 +7,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+from tests.cli_process import CLI_PROCESS_TIMEOUT_S, cli_test_timeout
 
+
+@cli_test_timeout(1)
 def test_worktrees_cli_is_available_without_a_provider(tmp_path: Path) -> None:
     environment = dict(os.environ)
     environment["HOME"] = str(tmp_path / "home")
@@ -18,7 +21,7 @@ def test_worktrees_cli_is_available_without_a_provider(tmp_path: Path) -> None:
         env=environment,
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=CLI_PROCESS_TIMEOUT_S,
         check=False,
     )
     assert result.returncode == 0

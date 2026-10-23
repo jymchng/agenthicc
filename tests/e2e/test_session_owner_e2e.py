@@ -11,10 +11,12 @@ from pathlib import Path
 import pytest
 
 from agenthicc.runners.session_lease import SessionOwnerStore
+from tests.cli_process import CLI_PROCESS_TIMEOUT_S, cli_test_timeout
 
 pytestmark = pytest.mark.e2e
 
 
+@cli_test_timeout(1)
 def test_second_cli_continue_exits_before_session_construction(tmp_path: Path) -> None:
     home = tmp_path / "home"
     sessions = home / ".agenthicc" / "sessions"
@@ -37,7 +39,7 @@ def test_second_cli_continue_exits_before_session_construction(tmp_path: Path) -
             env=env,
             text=True,
             capture_output=True,
-            timeout=15,
+            timeout=CLI_PROCESS_TIMEOUT_S,
         )
     finally:
         owner.release()
@@ -49,6 +51,7 @@ def test_second_cli_continue_exits_before_session_construction(tmp_path: Path) -
     assert "TUI error" not in result.stderr
 
 
+@cli_test_timeout(1)
 def test_explicit_resume_conflict_has_the_same_early_exit(tmp_path: Path) -> None:
     home = tmp_path / "home"
     sessions = home / ".agenthicc" / "sessions"
@@ -67,7 +70,7 @@ def test_explicit_resume_conflict_has_the_same_early_exit(tmp_path: Path) -> Non
             env=env,
             text=True,
             capture_output=True,
-            timeout=15,
+            timeout=CLI_PROCESS_TIMEOUT_S,
         )
     finally:
         owner.release()
@@ -78,6 +81,7 @@ def test_explicit_resume_conflict_has_the_same_early_exit(tmp_path: Path) -> Non
     assert "TUI error" not in result.stderr
 
 
+@cli_test_timeout(1)
 def test_headless_workflow_conflict_is_machine_readable_and_pre_startup(tmp_path: Path) -> None:
     home = tmp_path / "home"
     sessions = home / ".agenthicc" / "sessions"
@@ -109,7 +113,7 @@ def test_headless_workflow_conflict_is_machine_readable_and_pre_startup(tmp_path
             input="",
             text=True,
             capture_output=True,
-            timeout=15,
+            timeout=CLI_PROCESS_TIMEOUT_S,
         )
     finally:
         owner.release()
@@ -122,6 +126,7 @@ def test_headless_workflow_conflict_is_machine_readable_and_pre_startup(tmp_path
     assert all(record.get("status") != "ready" for record in records)
 
 
+@cli_test_timeout(1)
 def test_generic_headless_resume_cannot_bypass_the_owner(tmp_path: Path) -> None:
     home = tmp_path / "home"
     sessions = home / ".agenthicc" / "sessions"
@@ -141,7 +146,7 @@ def test_generic_headless_resume_cannot_bypass_the_owner(tmp_path: Path) -> None
             input="",
             text=True,
             capture_output=True,
-            timeout=15,
+            timeout=CLI_PROCESS_TIMEOUT_S,
         )
     finally:
         owner.release()

@@ -17,13 +17,13 @@ class Overlay(ABC):
 
     name: str = "overlay"
 
-    def on_mount(self) -> None:
+    def on_mount(self) -> None:  # noqa: B027 — optional hook, deliberately not abstract
         """Called when overlay becomes active."""
 
-    def on_unmount(self) -> None:
+    def on_unmount(self) -> None:  # noqa: B027 — optional hook, deliberately not abstract
         """Called when overlay is dismissed."""
 
-    def set_viewport(self, width: int, height: int) -> None:
+    def set_viewport(self, width: int, height: int) -> None:  # noqa: B027 — optional hook
         """Receive the available Live-region viewport before rendering.
 
         Overlays that need responsive layout may override this hook.  The

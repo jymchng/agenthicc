@@ -38,19 +38,46 @@ The Nox sessions are the CI definitions. `uv run nox --list` prints them:
 
 | Nox session | Runs |
 |---|---|
-| `tests` (3.12, 3.13) | Full suite, parametrised over the supported Pythons |
-| `tests_unit` / `tests_integration` / `tests_e2e` | The matching `tests/` subdirectory |
-| `coverage` | Full suite with a 90% floor |
+| `tests` (3.11, 3.12, 3.13) | Full suite on one supported Python, e.g. `nox -s tests-3.12` |
+| `tests_unit` / `tests_integration` (3.11, 3.12, 3.13) | The matching `tests/` subdirectory on one Python, e.g. `nox -s tests_unit-3.12` |
+| `tests_e2e` | `tests/e2e` on Python 3.12 |
+| `tests_windows` | The lock, Windows filesystem and Windows terminal tests (the Windows CI job) |
+| `coverage` | Full suite with branch and subprocess coverage; the floor is `[tool.coverage.report] fail_under` |
 | `lint` / `format` | Ruff check plus format check, or format in place |
-| `typecheck` / `typecheck_contracts` | mypy over `src/agenthicc`, then over the ratchet tests |
-| `type_audit` | Typing hygiene against `docs/reference/type-safety-baseline.json` |
-| `build` / `build_check` | `uv build`, then `twine check dist/*` |
-| `llms_check` | Every `agenthicc.__all__` symbol has a `###` heading in `llms-full.txt` |
+| `typecheck` / `typecheck_contracts` | mypy over `src/agenthicc`, then over the boundary tests and the ratchet script |
+| `type_audit` | The typing-debt ratchet against `docs/reference/type-safety-baseline.json` |
+| `docs` | `mkdocs build --strict` |
+| `build` / `build_check` | `uv build`, then `twine check --strict dist/*` |
+| `llms_check` | Every `agenthicc.__all__` and `agenthicc.kernel.__all__` symbol has a `###` heading in `llms-full.txt` |
 | `clean` | Remove build, test, and coverage artifacts |
 
-Every session installs only the `dev` extra, which already includes the MkDocs
-toolchain. Report failures from a clean checkout rather than silently changing
-the environment.
+Every session runs on nox's uv backend: `uv sync --extra dev` installs the
+project and its one `dev` extra — test, lint, type, docs and release tools —
+into the session's own virtualenv, so each tool runs at its declared version on
+the session's interpreter. Report failures from a clean checkout rather than
+silently changing the environment.
+
+## Required gates
+
+`.github/workflows/ci.yml` runs every gate on each push and pull request: lint,
+typecheck, the type ratchet, `llms_check`, the strict docs build, unit and
+integration tests on Python 3.11–3.13, E2E tests, the Windows tests, and
+coverage. Its final job, **Required checks**, fails unless all of them
+succeeded; branch protection requires that one check, and
+`scripts/apply_branch_protection.sh` applies the rule for a repository
+administrator. The release workflow runs the same CI for the tagged commit
+before it builds, so a tag on a red commit cannot publish.
+
+The same gates run locally before you push:
+
+```bash
+uvx pre-commit install   # ruff on commit; mypy, the ratchet and unit tests on push
+```
+
+Quality baselines — the type-safety baseline, the coverage floor and the gate
+definitions — are owned in `.github/CODEOWNERS`. The type ratchet fails when a
+pull request raises a baseline value; see the
+[type-safety guide](docs/guides/type-safety.md).
 
 ## Which surface are you changing?
 

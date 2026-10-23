@@ -55,7 +55,7 @@ from agenthicc.workflows.create_workflow.state import (
 )
 
 if TYPE_CHECKING:
-    from agenthicc.tui.runtime.mode_manager import ModeManager
+    from agenthicc.tui.runtime.mode_manager import ModeManager, RuntimeMode
     from agenthicc.workflows.config import WorkflowConfig
     from agenthicc.workflows.create_workflow.draft import DraftManifest
     from agenthicc.workflows.create_workflow.catalog import AuthoringSnapshot
@@ -444,6 +444,48 @@ _SUMMARIZE_PROMPT: str = (
 )
 
 
+def _trust_published_workflow(published: Path) -> None:
+    """Record trust for every Python file of a just-published workflow package."""
+    from agenthicc.plugins.trust import current_extension_trust
+
+    trust = current_extension_trust()
+    sources = sorted(published.rglob("*.py")) if published.is_dir() else [published]
+    for source in sources:
+        trust.trust(source, kind="workflow")
+
+
+def _stage_draft(
+    reported_path: str,
+    draft_path: Path,
+    *,
+    root: Path,
+    run_id: str,
+    workflow_name: str,
+) -> DraftManifest | None:
+    """Move a package reported outside the draft into it, then scan the draft.
+
+    The model may report the directory it wrote instead of the draft path;
+    staging it keeps the draft the only path later phases consume. Returns
+    ``None`` when no draft exists. Raises ``DraftError``, ``OSError`` or
+    ``ValueError`` when staging or scanning fails. This touches the
+    filesystem, so async callers run it in a worker thread.
+    """
+    from agenthicc.workflows.create_workflow.draft import (
+        scan_draft,
+        stage_legacy_package,
+    )
+
+    if reported_path.strip():
+        reported = Path(reported_path).expanduser()
+        if not reported.is_absolute():
+            reported = root / reported
+        if reported.exists() and reported.resolve() != draft_path.resolve():
+            stage_legacy_package(reported, destination=draft_path, root=root)
+    if not draft_path.is_dir():
+        return None
+    return scan_draft(draft_path, root=root, run_id=run_id, workflow_name=workflow_name)
+
+
 class CreateWorkflowRunner(BaseWorkflowRunner):
     """State-machine runner for the create_workflow meta-workflow.
 
@@ -482,7 +524,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
         # repeating schema extraction for every retry while still naturally
         # invalidating when modes, MCP catalogs, browser selection, or tools
         # change.
-        from agenthicc.workflows.create_workflow.catalog import (  # noqa: PLC0415
+        from agenthicc.workflows.create_workflow.catalog import (
             AuthoringSnapshotCache,
         )
 
@@ -506,10 +548,10 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
 
     async def run(self, intent: str) -> CreateWorkflowContext:
         """Drive the full design → generate → validate → summarize state machine."""
-        from lauren_ai._memory import ShortTermMemory  # noqa: PLC0415
+        from lauren_ai._memory import ShortTermMemory
 
-        from agenthicc.kernel import Event  # noqa: PLC0415
-        from agenthicc.workflows.plugin import WorkflowRun  # noqa: PLC0415
+        from agenthicc.kernel import Event
+        from agenthicc.workflows.plugin import WorkflowRun
 
         session_memory = (
             self._cfg.session_memory
@@ -686,8 +728,8 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
 
     async def resume(self, context: object) -> CreateWorkflowContext:
         """Resume a typed checkpoint context or a legacy generic context."""
-        from lauren_ai._memory import ShortTermMemory  # noqa: PLC0415
-        from agenthicc.workflows.plugin import WorkflowContext  # noqa: PLC0415
+        from lauren_ai._memory import ShortTermMemory
+        from agenthicc.workflows.plugin import WorkflowContext
 
         handle = self._cfg.workflow_handle
         session_memory = (
@@ -718,8 +760,8 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             handle.attach_context(ctx)
         # Re-enter the same outer dispatch loop. The typed state is the durable
         # continuation point; no resume path silently restarts at DESIGN.
-        from agenthicc.kernel import Event  # noqa: PLC0415
-        from agenthicc.workflows.plugin import WorkflowRun  # noqa: PLC0415
+        from agenthicc.kernel import Event
+        from agenthicc.workflows.plugin import WorkflowRun
 
         wf_run = WorkflowRun(
             run_id=ctx.run_id,
@@ -903,11 +945,11 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
 
         Returns GENERATE, EXITED, or FAILED.
         """
-        from agenthicc.workflows.code_plan.phase_tools import make_questions_tool  # noqa: PLC0415
-        from agenthicc.workflows.create_workflow.inspection_tools import (  # noqa: PLC0415
+        from agenthicc.workflows.code_plan.phase_tools import make_questions_tool
+        from agenthicc.workflows.create_workflow.inspection_tools import (
             make_inspection_tools,
         )
-        from agenthicc.workflows.create_workflow.phase_tools import (  # noqa: PLC0415
+        from agenthicc.workflows.create_workflow.phase_tools import (
             make_design_tools,
         )
 
@@ -917,11 +959,12 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
         system_prompt: str = _DESIGN_PROMPT + f"\n\n[USER REQUEST]\n{ctx.intent}"
         exit_event: asyncio.Event = asyncio.Event()
 
+        mode = self._declared_mode("design")
         for attempt in range(1, self._max_attempts + 1):
             design_event: asyncio.Event = asyncio.Event()
             design_data: dict[str, object] = {}
 
-            tools: _ToolList = list(self._base_tools())
+            tools: _ToolList = list(self._base_tools(mode))
             # Build the snapshot from the complete phase surface.  The two
             # snapshot-query tools themselves are appended afterward because
             # their closures need the immutable snapshot they report; the
@@ -940,6 +983,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 phase_name="design",
                 phase_role="auto",
                 tools=tools,
+                active_mode=self._phase_mode(mode),
             )
             tools.extend(make_inspection_tools(snapshot=authoring_snapshot)[-2:])
             text: str = ctx.intent if attempt == 1 else _DESIGN_REMINDER
@@ -948,7 +992,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 await self._run_turn(
                     text,
                     tools=tools,
-                    mode=None,
+                    mode=mode,
                     system_prompt=system_prompt,
                     max_turns=self._max_phase_turns,
                     ctx=ctx,
@@ -999,15 +1043,13 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
 
     async def _generate(self, ctx: CreateWorkflowContext) -> CreateWorkflowState:
         """Loop until mark_generation_complete() fires; return VALIDATE or FAILED."""
-        from agenthicc.workflows.create_workflow.phase_tools import (  # noqa: PLC0415
+        from agenthicc.workflows.create_workflow.phase_tools import (
             make_generation_tools,
         )
-        from agenthicc.workflows.code_plan.phase_tools import make_questions_tool  # noqa: PLC0415
-        from agenthicc.workflows.create_workflow.draft import (  # noqa: PLC0415
+        from agenthicc.workflows.code_plan.phase_tools import make_questions_tool
+        from agenthicc.workflows.create_workflow.draft import (
             DraftError,
             reset_draft,
-            scan_draft,
-            stage_legacy_package,
         )
 
         self._set_phase("generate", _PHASE_INDEX["generate"], ctx)
@@ -1056,16 +1098,17 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             )
         )
 
+        mode = self._declared_mode("generate")
         for attempt in range(1, self._max_attempts + 1):
             ctx.command_outcomes.clear()
             generate_event: asyncio.Event = asyncio.Event()
             generate_data: dict[str, object] = {}
 
-            from agenthicc.workflows.create_workflow.inspection_tools import (  # noqa: PLC0415
+            from agenthicc.workflows.create_workflow.inspection_tools import (
                 make_inspection_tools,
             )
 
-            tools: _ToolList = list(self._base_tools())
+            tools: _ToolList = list(self._base_tools(mode))
             tools.extend(make_inspection_tools())
             tools.extend(make_generation_tools(generate_event, generate_data))
             tools.extend(make_questions_tool(self._cfg.approval_svc, ctx.question_metadata))
@@ -1073,6 +1116,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 phase_name="generate",
                 phase_role="auto",
                 tools=tools,
+                active_mode=self._phase_mode(mode),
             )
             tools.extend(make_inspection_tools(snapshot=authoring_snapshot)[-2:])
             text: str = first_text if attempt == 1 else _GENERATE_REMINDER
@@ -1081,7 +1125,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 await self._run_turn(
                     text,
                     tools=tools,
-                    mode="Yolo",
+                    mode=mode,
                     system_prompt=system_prompt,
                     max_turns=self._max_phase_turns,
                     ctx=ctx,
@@ -1103,27 +1147,14 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 manifest = None
                 draft_path = self._draft_path(ctx.workflow_name, ctx.run_id)
                 try:
-                    root = self._workspace_root()
-                    run_id = ctx.run_id or self._run_id or "pending"
-                    reported = Path(reported_path).expanduser()
-                    if not reported.is_absolute():
-                        reported = root / reported
-                    if reported.exists() and reported.resolve() != Path(draft_path).resolve():
-                        # Keep compatibility with older callers that reported
-                        # a direct published path, while making the draft the
-                        # only path that later phases can consume.
-                        stage_legacy_package(
-                            reported,
-                            destination=Path(draft_path),
-                            root=root,
-                        )
-                    if Path(draft_path).is_dir():
-                        manifest = scan_draft(
-                            Path(draft_path),
-                            root=root,
-                            run_id=run_id,
-                            workflow_name=ctx.workflow_name,
-                        )
+                    manifest = await asyncio.to_thread(
+                        _stage_draft,
+                        reported_path,
+                        Path(draft_path),
+                        root=self._workspace_root(),
+                        run_id=ctx.run_id or self._run_id or "pending",
+                        workflow_name=ctx.workflow_name,
+                    )
                 except (DraftError, OSError, ValueError) as exc:
                     # Leave the reported path intact so VALIDATE can show the
                     # normal workspace/missing-file diagnostic and let the
@@ -1165,26 +1196,25 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
         Returns SUMMARIZE (approved and the deterministic check passed), GENERATE
         (rejected, or approved against a failing check), or FAILED.
         """
-        from agenthicc.workflows.create_workflow.phase_tools import (  # noqa: PLC0415
+        from agenthicc.workflows.create_workflow.phase_tools import (
             make_validation_tools,
         )
-        from agenthicc.workflows.code_plan.phase_tools import make_questions_tool  # noqa: PLC0415
-        from agenthicc.workflows.create_workflow.validation import (  # noqa: PLC0415
+        from agenthicc.workflows.code_plan.phase_tools import make_questions_tool
+        from agenthicc.workflows.create_workflow.validation import (
             validate_workflow_file,
         )
-        from agenthicc.workflows.create_workflow.draft import (  # noqa: PLC0415
+        from agenthicc.workflows.create_workflow.draft import (
             DraftError,
             build_draft_path,
             publish_draft,
-            scan_draft,
-            stage_legacy_package,
         )
-        from agenthicc.workflows.create_workflow.smoke import (  # noqa: PLC0415
+        from agenthicc.workflows.create_workflow.smoke import (
             run_generated_workflow_smoke,
         )
 
         self._set_phase("validate", _PHASE_INDEX["validate"], ctx)
         ctx.command_outcomes.clear()
+        mode = self._declared_mode("validate")
 
         # Keep publication provenance complete even for embedders that replace
         # _run_turn with a deterministic test/headless adapter.  The normal
@@ -1194,7 +1224,8 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             snapshot = self._authoring_snapshot(
                 phase_name="validate",
                 phase_role="auto",
-                tools=self._base_tools(),
+                tools=self._base_tools(mode),
+                active_mode=self._phase_mode(mode),
             )
             ctx.authoring_snapshot = snapshot.checkpoint_reference()
             ctx.selected_tools = [entry.name for entry in snapshot.tools if entry.available]
@@ -1209,24 +1240,15 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             root = self._workspace_root()
             run_id = ctx.run_id or self._run_id or "pending"
             expected_draft = build_draft_path(root, run_id, ctx.workflow_name)
-            candidate: Path | None = None
-            if ctx.generated_path.strip():
-                candidate = Path(ctx.generated_path).expanduser()
-                if not candidate.is_absolute():
-                    candidate = root / candidate
-            if (
-                candidate is not None
-                and candidate.exists()
-                and candidate.resolve() != expected_draft.resolve()
-            ):
-                stage_legacy_package(candidate, destination=expected_draft, root=root)
-            if expected_draft.is_dir():
-                manifest = scan_draft(
-                    expected_draft,
-                    root=root,
-                    run_id=run_id,
-                    workflow_name=ctx.workflow_name,
-                )
+            manifest = await asyncio.to_thread(
+                _stage_draft,
+                ctx.generated_path,
+                expected_draft,
+                root=root,
+                run_id=run_id,
+                workflow_name=ctx.workflow_name,
+            )
+            if manifest is not None:
                 ctx.generated_path = str(expected_draft)
                 ctx.draft_manifest = manifest.to_dict()
                 ctx.draft_fingerprint = manifest.fingerprint
@@ -1309,7 +1331,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             validate_event: asyncio.Event = asyncio.Event()
             validate_data: dict[str, object] = {}
 
-            tools: _ToolList = list(self._base_tools()) + list(
+            tools: _ToolList = list(self._base_tools(mode)) + list(
                 make_validation_tools(validate_event, validate_data)
             )
             tools.extend(make_questions_tool(self._cfg.approval_svc, ctx.question_metadata))
@@ -1327,7 +1349,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 await self._run_turn(
                     text,
                     tools=tools,
-                    mode=None,
+                    mode=mode,
                     system_prompt=system_prompt,
                     max_turns=self._max_phase_turns,
                     ctx=ctx,
@@ -1383,6 +1405,9 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                         ),
                     }
                     return CreateWorkflowState.FAILED
+                # The user approved this workflow's design and its validated
+                # publication, so its files are trusted for loading as published.
+                _trust_published_workflow(Path(publication.published_path))
                 publication_data = publication.to_dict()
                 raw_categories = ctx.validation_evidence.get("categories", {})
                 validation_categories = (
@@ -1432,7 +1457,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
 
     async def _summarize(self, ctx: CreateWorkflowContext) -> CreateWorkflowState:
         """Run the summary turn, returning FAILED if that turn errors."""
-        from agenthicc.workflows.code_plan.phase_tools import make_questions_tool  # noqa: PLC0415
+        from agenthicc.workflows.code_plan.phase_tools import make_questions_tool
 
         self._set_phase("summarize", _PHASE_INDEX["summarize"], ctx)
         ctx.command_outcomes.clear()
@@ -1445,12 +1470,13 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             f"Validation verdict: {ctx.validation_summary or 'approved'}"
         )
         try:
-            tools = list(self._base_tools())
+            mode = self._declared_mode("summarize")
+            tools = list(self._base_tools(mode))
             tools.extend(make_questions_tool(self._cfg.approval_svc, ctx.question_metadata))
             await self._run_turn(
                 text,
                 tools=tools,
-                mode=None,
+                mode=mode,
                 system_prompt=_SUMMARIZE_PROMPT + f"\n\n[USER REQUEST]\n{ctx.intent}",
                 max_turns=min(4, self._max_phase_turns),
                 ctx=ctx,
@@ -1504,7 +1530,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
 
     def _draft_path(self, workflow_name: str, run_id: str) -> str:
         """Return the isolated run-owned generation path for a workflow."""
-        from agenthicc.workflows.create_workflow.draft import build_draft_path  # noqa: PLC0415
+        from agenthicc.workflows.create_workflow.draft import build_draft_path
 
         return str(
             build_draft_path(
@@ -1537,6 +1563,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
         phase_role: str,
         phase_capabilities: Iterable[object] | None = None,
         tools: _ToolList,
+        active_mode: RuntimeMode | None = None,
     ) -> AuthoringSnapshot:
         """Return the cached effective catalog for one authoring turn."""
         return self._authoring_snapshot_cache.get_or_build(
@@ -1545,6 +1572,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             phase_role=phase_role,
             phase_capabilities=phase_capabilities,
             tools=tools,
+            active_mode=active_mode,
         )
 
     def _set_phase(self, phase_name: str, phase_index: int, ctx: CreateWorkflowContext) -> None:
@@ -1640,16 +1668,14 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
         When *model_override* is non-empty a modified copy of ``exec_cfg`` is built
         with ``model=model_override`` so the per-phase model is picked up.
         """
-        from agenthicc.runners.agent_turn import _run_agent_turn  # noqa: PLC0415
-        from agenthicc.workflows.plugin import (  # noqa: PLC0415
+        from agenthicc.runners.agent_turn import _run_agent_turn
+        from agenthicc.workflows.plugin import (
             _WORKFLOW_USER_QUESTION_REMINDER,
             phase_transition_instruction,
         )
-        from agenthicc.runners.prompt_contract import (  # noqa: PLC0415
-            build_workflow_prompt_contract,
-            tool_name,
-        )
-        from agenthicc.tools.capabilities import ToolCapability, get_tool_capabilities  # noqa: PLC0415
+        from agenthicc.runners.prompt_contract import build_workflow_prompt_contract
+        from agenthicc.tools.base import tool_name
+        from agenthicc.tools.capabilities import ToolCapability, get_tool_capabilities
 
         original_mode = self._cfg.app_state.active_mode()
         if mode is not None and self._mode_manager is not None:
@@ -1668,7 +1694,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
         if self._cfg.approval_svc is not None and ctx.shared_memory is not None:
             ctx.shared_memory.ensure_valid()
 
-        from agenthicc.background.terminals import (  # noqa: PLC0415
+        from agenthicc.background.terminals import (
             reset_current_terminal_wait_policy,
             set_current_terminal_wait_policy,
         )
@@ -1768,13 +1794,34 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             if mode is not None and self._mode_manager is not None:
                 self._mode_manager.restore(original_mode)
 
-    def _base_tools(self) -> _ToolList:
-        """Return capability-filtered project tools for the current mode."""
-        from agenthicc.tools.capabilities import get_tool_capabilities  # noqa: PLC0415
-        from agenthicc.tools.cloakbrowser import is_browser_tool  # noqa: PLC0415
-        from agenthicc.workflows.memory_tools import make_memory_tools  # noqa: PLC0415
+    @staticmethod
+    def _declared_mode(phase_name: str) -> str | None:
+        """Return the mode override ``CreateWorkflow`` declares for *phase_name*."""
+        from agenthicc.workflows.create_workflow.definition import CreateWorkflow
 
-        mode_blocked = self._cfg.app_state.active_mode().blocked_capabilities
+        spec = next((spec for spec in CreateWorkflow.phases if spec.name == phase_name), None)
+        if spec is None:
+            raise KeyError(f"create_workflow declares no phase named {phase_name!r}")
+        return spec.mode_override
+
+    def _phase_mode(self, mode: str | None) -> RuntimeMode:
+        """Return the mode a phase declaring override *mode* runs under."""
+        from agenthicc.tui.runtime.mode_manager import phase_mode
+
+        return phase_mode(self._cfg.app_state.active_mode(), self._mode_manager, mode)
+
+    def _base_tools(self, mode: str | None = None) -> _ToolList:
+        """Return the project tools a phase running under *mode* may use.
+
+        *mode* is the phase's mode override, as passed to ``_run_turn``;
+        ``None`` means the active mode.  The override is resolved, not
+        activated, so building a bundle never publishes a mode change.
+        """
+        from agenthicc.tools.capabilities import get_tool_capabilities
+        from agenthicc.tools.cloakbrowser import is_browser_tool
+        from agenthicc.workflows.memory_tools import make_memory_tools
+
+        mode_blocked = self._phase_mode(mode).blocked_capabilities
         all_tools: _ToolList = list(self._cfg.all_plugin_tools())
         if self._cfg.mcp_registry is not None:
             try:

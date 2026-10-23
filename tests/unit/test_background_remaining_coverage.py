@@ -9,6 +9,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from agenthicc.tools.approval import ApprovalRequest
+
 from agenthicc.background import (
     BackgroundSession,
     BackgroundStore,
@@ -20,6 +22,18 @@ from agenthicc.background.worker import BackgroundApprovalService, WorkerRequest
 import agenthicc.background.worker as worker
 
 pytestmark = pytest.mark.unit
+
+
+def _approval_request(tool_name: str = "write", **fields: object) -> ApprovalRequest:
+    """A real tool approval request, as the approval gate builds them."""
+    return ApprovalRequest(
+        tool_name=tool_name,
+        tool_use_id=f"call-{tool_name}",
+        tool_input={},
+        capabilities=frozenset({"write"}),
+        event=asyncio.Event(),
+        **fields,  # type: ignore[arg-type]
+    )
 
 
 def _record(tmp_path: Path, sid: str = "remaining") -> BackgroundSession:
@@ -49,7 +63,7 @@ async def test_approval_and_input_services_accept_and_validate_values(tmp_path: 
     store.create(_record(tmp_path, "approve"))
     store.claim("approve", pid=1, lease_token="lease")
     service = BackgroundApprovalService(store, "approve")
-    task = asyncio.create_task(service.request_approval(SimpleNamespace(tool_name="write")))
+    task = asyncio.create_task(service.request_approval(_approval_request("write")))
     await _wait_for(store, "approve", SessionStatus.WAITING_APPROVAL)
     store.update("approve", approval_decision=True)
     response = await task
@@ -77,9 +91,7 @@ async def test_approval_and_input_services_accept_and_validate_values(tmp_path: 
     store.create(_record(tmp_path, "approval-race"))
     store.claim("approval-race", pid=1, lease_token="race")
     race_service = BackgroundApprovalService(store, "approval-race")
-    race_task = asyncio.create_task(
-        race_service.request_approval(SimpleNamespace(tool_name="race"))
-    )
+    race_task = asyncio.create_task(race_service.request_approval(_approval_request("race")))
     await _wait_for(store, "approval-race", SessionStatus.WAITING_APPROVAL)
     await asyncio.sleep(0.25)
     original_transition = store.transition

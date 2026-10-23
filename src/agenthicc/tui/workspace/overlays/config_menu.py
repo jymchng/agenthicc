@@ -97,8 +97,8 @@ class ConfigMenuOverlay(Overlay):
         pass
 
     def render(self) -> "RenderableType":
-        from rich.console import Group  # noqa: PLC0415
-        from rich.text import Text  # noqa: PLC0415
+        from rich.console import Group
+        from rich.text import Text
 
         rows = self._build_rows()
         visible = rows[self._scroll : self._scroll + self._MAX_VISIBLE]
@@ -151,7 +151,7 @@ class ConfigMenuOverlay(Overlay):
                 "  [dim]Start from a project directory with an agenthicc.toml[/dim]",
                 "  [dim]Press Esc to close.[/dim]",
             ]
-        from rich.markup import escape as _e  # noqa: PLC0415
+        from rich.markup import escape as _e
 
         rows: list[str] = []
         si_cur, fi_cur = self._cursor

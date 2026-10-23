@@ -12,14 +12,17 @@ import pytest
 from agenthicc.workflows.checkpoint import (
     CheckpointValidationError,
     WorkflowCheckpoint,
-    _as_dict_list,
-    _as_float,
-    _as_int,
-    _as_metadata,
     _decode_enum,
     _encode,
     context_from_payload,
     context_to_payload,
+)
+from agenthicc.workflows.payload import (
+    payload_float,
+    payload_int,
+    payload_mapping,
+    payload_mappings,
+    payload_strings,
 )
 from agenthicc.workflows.plugin import PhaseOutput, PhaseSpec, WorkflowContext, WorkflowPlugin
 
@@ -37,19 +40,24 @@ class _Data:
 
 
 def test_checkpoint_codec_primitives_and_enum_errors() -> None:
-    assert _as_int(True, 7) == 7
-    assert _as_int(2.9, 0) == 2
-    assert _as_int("3", 0) == 3
-    assert _as_int("bad", 7) == 7
-    assert _as_int(object(), 7) == 7
-    assert _as_float(2, 0.0) == 2.0
-    assert _as_float("2.5", 0.0) == 2.5
-    assert _as_float("bad", 7.0) == 7.0
-    assert _as_float(object(), 7.0) == 7.0
-    assert _as_metadata({1: "one"}) == {"1": "one"}
-    assert _as_metadata("bad") == {}
-    assert _as_dict_list("bad") == []
-    assert _as_dict_list([{"x": 1}, "bad"]) == [{"x": 1}]
+    assert payload_int(True, 7) == 7
+    assert payload_int(2.9, 0) == 2
+    assert payload_int(float("inf"), 7) == 7
+    assert payload_int(float("nan"), 7) == 7
+    assert payload_int("3", 0) == 3
+    assert payload_int("bad", 7) == 7
+    assert payload_int(object(), 7) == 7
+    assert payload_float(2, 0.0) == 2.0
+    assert payload_float(True, 7.0) == 7.0
+    assert payload_float("2.5", 0.0) == 2.5
+    assert payload_float("bad", 7.0) == 7.0
+    assert payload_float(object(), 7.0) == 7.0
+    assert payload_mapping({1: "one"}) == {"1": "one"}
+    assert payload_mapping("bad") == {}
+    assert payload_mappings("bad") == []
+    assert payload_mappings([{"x": 1}, "bad"]) == [{"x": 1}]
+    assert payload_strings(["a", 1, None, "b"]) == ["a", "b"]
+    assert payload_strings("ab") == []
     assert _encode(_State.READY) == {"__enum__": "READY"}
     assert _encode(_Data(2)) == {"number": 2, "ignored": None}
     assert _encode({1: {"values": (1, 2)}}) == {"1": {"values": [1, 2]}}
@@ -122,11 +130,11 @@ def test_workflow_context_codec_and_custom_codec_failures() -> None:
     code_plan_fallback = context_from_payload(
         {"kind": "CodePlanContext", "fields": {"state": "BAD"}}
     )
-    assert getattr(code_plan_fallback, "state").name == "PLAN"
+    assert code_plan_fallback.state.name == "PLAN"
     create_fallback = context_from_payload(
         {"kind": "CreateWorkflowContext", "fields": {"state": "BAD"}}
     )
-    assert getattr(create_fallback, "state").name == "DESIGN"
+    assert create_fallback.state.name == "DESIGN"
 
 
 def test_checkpoint_from_dict_rejects_schema_identity_and_numeric_errors() -> None:

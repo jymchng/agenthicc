@@ -68,28 +68,36 @@ package for worktree-environment command execution and its isolation tests.
 These commands fail closed when Bubblewrap is unavailable rather than falling
 back to an unrestricted shell.
 
-`noxfile.py` is the CI session definition. Every session installs only the
-declared `dev` extra: TUI and API modules ship in the base package with no
-separate extras, and the documentation toolchain (MkDocs, MkDocs Material,
-pymdown-extensions) is part of `dev`. List the real sessions with
+`noxfile.py` is the CI session definition. Every session runs on nox's uv
+backend, which installs the project and its one `dev` extra into the session's
+own virtualenv, so each tool runs at its declared version on the session's
+interpreter. TUI and API modules ship in the base package with no separate
+extras, and the documentation and release toolchain (MkDocs, MkDocs Material,
+pymdown-extensions, twine) is part of `dev`. List the real sessions with
 `uv run nox --list`:
 
 | Nox session | Runs |
 |---|---|
-| `tests` (3.12, 3.13) | Full suite, parametrised over the supported Pythons |
-| `tests_unit` | `pytest tests/unit` |
-| `tests_integration` | `pytest tests/integration` (ignores `test_cassette_replay.py`) |
+| `tests` (3.11, 3.12, 3.13) | Full suite on one supported Python, e.g. `tests-3.12` |
+| `tests_unit` (3.11, 3.12, 3.13) | `pytest tests/unit` |
+| `tests_integration` (3.11, 3.12, 3.13) | `pytest tests/integration`, including the cassette replays |
 | `tests_e2e` | `pytest tests/e2e` |
-| `coverage` | Full suite with `--cov-fail-under=90` |
+| `tests_windows` | The lock, Windows filesystem and Windows terminal tests |
+| `coverage` | Full suite with branch and subprocess coverage; floor in `[tool.coverage.report] fail_under` |
 | `lint` | `ruff check` and `ruff format --check` |
 | `format` | `ruff format`, applying changes in place |
 | `typecheck` | `mypy src/agenthicc` |
-| `typecheck_contracts` | mypy over the typing boundary and ratchet tests |
+| `typecheck_contracts` | mypy over the typing boundary tests and the ratchet script |
 | `type_audit` | `scripts/type_audit.py --check docs/reference/type-safety-baseline.json` |
+| `docs` | `mkdocs build --strict` |
 | `build` | `uv build` (wheel and sdist) |
-| `build_check` | `twine check dist/*` |
-| `llms_check` | Every `agenthicc.__all__` symbol has a `###` heading in `llms-full.txt` |
+| `build_check` | `twine check --strict dist/*` |
+| `llms_check` | Every `agenthicc.__all__` and `agenthicc.kernel.__all__` symbol has a `###` heading in `llms-full.txt` |
 | `clean` | Remove build, test, and coverage artifacts |
+
+`.github/workflows/ci.yml` runs all of these gates and ends in the aggregate
+**Required checks** job that branch protection requires; the release workflow
+re-runs it for the tagged commit before building.
 
 ## Surfaces and gates
 

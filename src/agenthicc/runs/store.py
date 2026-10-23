@@ -5,10 +5,10 @@ from __future__ import annotations
 import json
 import os
 import time
-from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator, Mapping
+from typing import Mapping
 
+from agenthicc.runners.process_lease import InterProcessLock
 from .model import GoalRun, GoalRunStatus, RunAgentRecord
 
 
@@ -28,34 +28,19 @@ class RunStore:
         self.events_path = self.root / "events.jsonl"
         self.lock_path = self.root / "runs.lock"
 
-    @contextmanager
-    def _lock(self) -> Iterator[None]:
+    def _lock(self) -> InterProcessLock:
+        """Exclusive cross-process lock; raises ``InterProcessLockError`` if unavailable."""
         self.root.mkdir(parents=True, exist_ok=True)
         try:
             os.chmod(self.root, 0o700)
         except OSError:
             pass
-        handle = self.lock_path.open("a+", encoding="utf-8")
+        self.lock_path.touch(mode=0o600, exist_ok=True)
         try:
-            try:
-                os.chmod(self.lock_path, 0o600)
-            except OSError:
-                pass
-            try:
-                import fcntl  # noqa: PLC0415
-
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-            except (ImportError, OSError):
-                pass
-            yield
-        finally:
-            try:
-                import fcntl  # noqa: PLC0415
-
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-            except (ImportError, OSError):
-                pass
-            handle.close()
+            os.chmod(self.lock_path, 0o600)
+        except OSError:
+            pass
+        return InterProcessLock(self.lock_path)
 
     def _read(self) -> list[dict[str, object]]:
         if not self.events_path.exists():

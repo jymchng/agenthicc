@@ -24,7 +24,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from agenthicc.tools.approval import ApprovalService
+    from agenthicc.tools.approval import ApprovalBroker
 
 
 _QuestionInput = dict[str, str | list[str]]
@@ -58,7 +58,7 @@ def _transition_failure(
 
 
 def make_planner_tools(
-    approval_svc: ApprovalService | None,
+    approval_svc: ApprovalBroker | None,
     plan_event: asyncio.Event,
     plan_data: dict[str, object],
     exit_event: asyncio.Event | None = None,
@@ -79,8 +79,8 @@ def make_planner_tools(
     """
     # NOTE: no ``from __future__ import annotations`` in this scope —
     # @tool() reads real annotations at decoration time.
-    from lauren_ai._tools import tool as _tool  # noqa: PLC0415
-    from agenthicc.tools.capabilities import tool_control  # noqa: PLC0415
+    from lauren_ai._tools import tool as _tool
+    from agenthicc.tools.capabilities import tool_control
 
     # Shared approval gate — updated by request_plan_approval, read by finalize_plan.
     approval_state: dict[str, object] = {"granted": False, "execute_mode": "Safe"}
@@ -116,7 +116,7 @@ def make_planner_tools(
                 "feedback": "The plan is approved. Call finalize_plan() now to hand off to the execution phase.",
             }
 
-        from agenthicc.tools.approval import ApprovalRequest  # noqa: PLC0415
+        from agenthicc.tools.approval import ApprovalRequest
 
         req = ApprovalRequest(
             tool_name="Plan Review",
@@ -225,7 +225,7 @@ def make_planner_tools(
             _exit_event.set()
             return {"accepted": True}
 
-        tools.append(exit_code_plan)  # noqa: F821
+        tools.append(exit_code_plan)
 
     return tools
 
@@ -246,8 +246,8 @@ def make_executor_tools(
     max_turns exhausted, tool error), execute_event remains unset and _run_phase
     returns approved=False, which retries the execute phase via on_reject="execute".
     """
-    from lauren_ai._tools import tool as _tool  # noqa: PLC0415
-    from agenthicc.tools.capabilities import tool_control  # noqa: PLC0415
+    from lauren_ai._tools import tool as _tool
+    from agenthicc.tools.capabilities import tool_control
 
     @tool_control
     @_tool()
@@ -296,8 +296,8 @@ def make_reviewer_tools(
       review_event — set by either tool; checked by _run_phase after the turn.
       review_data  — {"action": "approve"|"reject", "summary": str, "reason": str}.
     """
-    from lauren_ai._tools import tool as _tool  # noqa: PLC0415
-    from agenthicc.tools.capabilities import tool_control  # noqa: PLC0415
+    from lauren_ai._tools import tool as _tool
+    from agenthicc.tools.capabilities import tool_control
 
     @tool_control
     @_tool()
@@ -406,7 +406,7 @@ def _response_field(response: object, name: str, default: object = None) -> obje
 
 
 def make_questions_tool(
-    approval_svc: ApprovalService | None,
+    approval_svc: ApprovalBroker | None,
     metadata: dict[str, object] | None = None,
 ) -> list[Callable[..., object]]:
     """Return [ask_user] as a @tool()-decorated callable.
@@ -416,8 +416,8 @@ def make_questions_tool(
 
     approval_svc=None → returns a structured cancellation immediately (headless/tests).
     """
-    from lauren_ai._tools import tool as _tool  # noqa: PLC0415
-    from agenthicc.tools.capabilities import tool_control  # noqa: PLC0415
+    from lauren_ai._tools import tool as _tool
+    from agenthicc.tools.capabilities import tool_control
 
     @tool_control
     @_tool()
@@ -485,10 +485,10 @@ def make_questions_tool(
                 },
             }
 
-        import asyncio as _asyncio  # noqa: PLC0415
-        import uuid as _uuid  # noqa: PLC0415
-        import json as _json  # noqa: PLC0415
-        from agenthicc.tools.approval import ApprovalRequest  # noqa: PLC0415
+        import asyncio as _asyncio
+        import uuid as _uuid
+        import json as _json
+        from agenthicc.tools.approval import ApprovalRequest
 
         req = ApprovalRequest(
             tool_name="Questions",

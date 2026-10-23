@@ -130,7 +130,7 @@ class TestRollbackAndCompaction:
         before = mem.snapshot()
         candidate = [{"role": "user", "content": "[COMPACT SUMMARY]\nnew"}]
 
-        def fail_replace(journal_arg, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003, ARG001
+        def fail_replace(journal_arg, *args, **kwargs):
             raise OSError("simulated journal failure")
 
         monkeypatch.setattr(ConversationJournal, "replace_state", fail_replace)

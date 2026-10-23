@@ -40,7 +40,7 @@ jobs:
           enable-cache: false
 
       - name: Install package for analysis
-        run: uv sync --extra all --extra dev --active
+        run: uv sync --extra dev
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v3

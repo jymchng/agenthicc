@@ -1925,6 +1925,63 @@ async def test_generate_runs_in_yolo_mode_with_the_design_in_the_prompt() -> Non
     assert ".agenthicc/workflows/demo" in str(seen["text"])
 
 
+async def test_generate_tools_and_catalog_follow_its_declared_mode_from_plan() -> None:
+    """Generate writes under its declared Yolo mode even when entered from Plan.
+
+    Its write-capable project tools must be offered, and the authoring
+    snapshot its inspection tools report must describe Yolo, not the caller's
+    Plan ceiling. Resolving the mode for filtering must not activate it.
+    """
+    import dataclasses
+
+    from lauren_ai._tools import tool as _tool
+
+    from agenthicc.tools.capabilities import tool_write
+
+    @tool_write
+    @_tool()
+    async def writer(path: str) -> str:
+        """A write-capable tool."""
+        return path
+
+    runner = _runner()
+    runner._cfg = dataclasses.replace(runner._cfg, plugin_tools=[writer])
+    manager = ModeManager(app_state=runner._cfg.app_state, default_name="Plan")
+    runner._mode_manager = manager
+    published: list[str] = []
+    manager.set_change_callback(lambda mode: published.append(mode.name))
+    ctx = _ctx()
+    ctx.design = "the design"
+    ctx.workflow_name = "demo"
+    seen: dict[str, object] = {}
+
+    async def turn(_text: str, **kwargs: object) -> None:
+        tools = _by_name(kwargs["tools"])
+        seen["mode"] = kwargs["mode"]
+        seen["names"] = set(tools)
+        describe = tools["describe_authoring_session"]
+        seen["session"] = await describe()  # type: ignore[operator]
+        await _call(kwargs["tools"], "mark_generation_complete", "wrote it", "x/demo")
+
+    runner._run_turn = turn  # type: ignore[method-assign]
+    assert await runner._generate(ctx) is CreateWorkflowState.VALIDATE
+
+    generate_spec = next(spec for spec in CreateWorkflow.phases if spec.name == "generate")
+    assert seen["mode"] == generate_spec.mode_override == "Yolo"
+    assert "writer" in seen["names"]  # type: ignore[operator]
+    session = seen["session"]
+    assert isinstance(session, dict) and session["active_mode"] == "Yolo"
+    assert published == []
+    assert manager.active_name == "Plan"
+
+
+def test_every_phase_runs_under_the_mode_its_phasespec_declares() -> None:
+    for spec in CreateWorkflow.phases:
+        assert CreateWorkflowRunner._declared_mode(spec.name) == spec.mode_override
+    with pytest.raises(KeyError):
+        CreateWorkflowRunner._declared_mode("no_such_phase")
+
+
 async def test_generate_repair_prompt_includes_the_rejection_and_report() -> None:
     runner = _runner()
     ctx = _generated_ctx()

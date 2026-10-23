@@ -15,6 +15,7 @@ import asyncio
 import json
 import time
 import uuid
+import weakref
 from collections import defaultdict, deque
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -732,6 +733,10 @@ class PoolContinuationRegistry:
 
 
 _SESSION_REGISTRIES: dict[str, PoolContinuationRegistry] = {}
+#: Registries owned by a conversation store, released with the store.
+_STORE_REGISTRIES: weakref.WeakKeyDictionary[object, PoolContinuationRegistry] = (
+    weakref.WeakKeyDictionary()
+)
 
 
 def registry_for_session(
@@ -745,11 +750,9 @@ def registry_for_session(
     not have a reactive store while avoiding an unkeyed global pool namespace.
     """
     if conversation_store is not None:
-        existing = vars(conversation_store).get("_subagent_pool_registry")
-        if isinstance(existing, PoolContinuationRegistry):
-            return existing
-        registry = PoolContinuationRegistry()
-        setattr(conversation_store, "_subagent_pool_registry", registry)
+        registry = _STORE_REGISTRIES.get(conversation_store)
+        if registry is None:
+            registry = _STORE_REGISTRIES[conversation_store] = PoolContinuationRegistry()
         return registry
     return _SESSION_REGISTRIES.setdefault(conversation_id, PoolContinuationRegistry())
 
@@ -759,7 +762,7 @@ def make_child_communication_tools(
     worker_id: str,
 ) -> list[object]:
     """Build tools bound to one worker identity."""
-    from lauren_ai._tools import tool  # noqa: PLC0415
+    from lauren_ai._tools import tool
 
     @tool_control
     @tool()
@@ -857,7 +860,7 @@ def make_parent_communication_tools(
     conversation_id: str,
 ) -> list[object]:
     """Build tools through which the main agent controls a live pool."""
-    from lauren_ai._tools import tool  # noqa: PLC0415
+    from lauren_ai._tools import tool
 
     def _handle(pool_id: str) -> PoolHandle:
         handle = registry.get(pool_id)
@@ -905,7 +908,7 @@ def make_parent_communication_tools(
         """Collect a pool that was left running for a clarification answer."""
         _handle(pool_id)
         result = await registry.collect(pool_id)
-        from agenthicc.subagents.pool import AggregatedResult  # noqa: PLC0415
+        from agenthicc.subagents.pool import AggregatedResult
 
         if isinstance(result, AggregatedResult):
             return {

@@ -957,7 +957,7 @@ class BackgroundSupervisor:
         lease: "SessionOwnerLease | None",
     ) -> bool:
         """Verify the supplied, unreleased lease still owns this session file."""
-        from agenthicc.runners.session_lease import SessionOwnerLease  # noqa: PLC0415
+        from agenthicc.runners.session_lease import SessionOwnerLease
 
         if (
             not isinstance(lease, SessionOwnerLease)
@@ -1192,7 +1192,7 @@ class BackgroundSupervisor:
 
         if explicit_mode_name is not None:
             return explicit_mode_name
-        from agenthicc.tui.runtime.session_log import load_session_mode  # noqa: PLC0415
+        from agenthicc.tui.runtime.session_log import load_session_mode
 
         try:
             session = self.store.get(session_id, include_deleted=True)
@@ -1295,7 +1295,7 @@ class BackgroundSupervisor:
 
         # Detached terminal tools use their own process groups, so stopping
         # the worker group alone is not sufficient to release this session.
-        from .terminals import stop_persisted_session_terminals  # noqa: PLC0415
+        from .terminals import stop_persisted_session_terminals
 
         stop_persisted_session_terminals(
             session_id,
@@ -1345,7 +1345,7 @@ class BackgroundSupervisor:
         if session.status != SessionStatus.WAITING_INPUT:
             raise InvalidSessionTransition("Session is not waiting for input")
         if session.input_item_id:
-            from agenthicc.background.inbox import (  # noqa: PLC0415
+            from agenthicc.background.inbox import (
                 BackgroundInteractionInbox,
                 response_from_text,
             )
@@ -1770,7 +1770,7 @@ class BackgroundSupervisor:
         # Detached terminal tools use their own process groups.  The worker's
         # process-group signal cannot reach those child groups, so explicitly
         # clean up only records linked to this exact parent session.
-        from .terminals import stop_persisted_session_terminals  # noqa: PLC0415
+        from .terminals import stop_persisted_session_terminals
 
         stop_persisted_session_terminals(
             session_id,
@@ -1963,7 +1963,7 @@ class BackgroundSupervisor:
         if session.status != SessionStatus.WAITING_APPROVAL:
             raise InvalidSessionTransition("Session is not waiting for approval")
         if session.approval_item_id:
-            from agenthicc.background.inbox import BackgroundInteractionInbox  # noqa: PLC0415
+            from agenthicc.background.inbox import BackgroundInteractionInbox
 
             inbox = BackgroundInteractionInbox(self.store)
             item = inbox.get(session.approval_item_id)

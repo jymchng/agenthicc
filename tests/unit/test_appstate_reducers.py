@@ -9,13 +9,14 @@ from hypothesis import given, settings as h_settings
 from hypothesis import strategies as st
 
 from agenthicc.kernel import (
-    AgentStatus,
+    PROJECTION_EVENT_TYPES,
     AppState,
     Event,
     IntentStatus,
     NodeStatus,
     SecurityPolicy,
     SystemSettings,
+    UnknownEventError,
     root_reducer,
 )
 
@@ -62,219 +63,16 @@ class TestIntentReducers:
         assert s is state
         assert effects == []
 
-    def test_unknown_event_noop(self):
+    def test_unknown_event_is_rejected(self):
+        with pytest.raises(UnknownEventError, match="UnknownXYZ"):
+            root_reducer(base_state(), ev("UnknownXYZ", {}))
+
+    @pytest.mark.parametrize("event_type", sorted(PROJECTION_EVENT_TYPES))
+    def test_projection_events_leave_state_unchanged(self, event_type: str):
         state = base_state()
-        s, effects = root_reducer(state, ev("UnknownXYZ", {}))
+        s, effects = root_reducer(state, ev(event_type, {"anything": 1}))
         assert s is state
         assert effects == []
-
-
-class TestAgentReducers:
-    def test_spawn_creates_idle_agent(self):
-        s, _ = root_reducer(
-            base_state(),
-            ev(
-                "AgentSpawnRequest",
-                {
-                    "agent_id": "a1",
-                    "agent_type": "T",
-                    "config": {},
-                },
-            ),
-        )
-        assert s.agents["a1"].status == AgentStatus.idle
-
-    def test_spawn_effect_included(self):
-        _, effects = root_reducer(
-            base_state(),
-            ev(
-                "AgentSpawnRequest",
-                {
-                    "agent_id": "a1",
-                    "agent_type": "T",
-                    "config": {},
-                },
-            ),
-        )
-        spawn = [e for e in effects if e.effect_type.value == "spawn_agent"]
-        assert len(spawn) == 1
-        assert spawn[0].payload["agent_id"] == "a1"
-
-    def test_status_change(self):
-        s0, _ = root_reducer(
-            base_state(),
-            ev(
-                "AgentSpawnRequest",
-                {
-                    "agent_id": "a1",
-                    "agent_type": "T",
-                    "config": {},
-                },
-            ),
-        )
-        s1, _ = root_reducer(s0, ev("AgentStatusChanged", {"agent_id": "a1", "status": "busy"}))
-        assert s1.agents["a1"].status == AgentStatus.busy
-
-    def test_parent_agent_recorded(self):
-        s, _ = root_reducer(
-            base_state(),
-            ev(
-                "AgentSpawnRequest",
-                {
-                    "agent_id": "child",
-                    "agent_type": "T",
-                    "parent_agent_id": "parent",
-                },
-            ),
-        )
-        assert s.agents["child"].parent_agent_id == "parent"
-
-
-class TestWorkflowReducers:
-    def _state_with_workflow(self) -> AppState:
-        s, _ = root_reducer(
-            base_state(), ev("WorkflowCreated", {"workflow_id": "wf", "intent_id": "i"})
-        )
-        return s
-
-    def test_workflow_created(self):
-        s = self._state_with_workflow()
-        assert "wf" in s.workflows
-        assert s.workflows["wf"].status == NodeStatus.pending
-
-    def test_node_added(self):
-        s0 = self._state_with_workflow()
-        s1, _ = root_reducer(
-            s0,
-            ev(
-                "WorkflowNodeAdded",
-                {
-                    "workflow_id": "wf",
-                    "node_id": "n1",
-                    "task_id": "t1",
-                    "label": "do stuff",
-                    "dependencies": [],
-                },
-            ),
-        )
-        assert "n1" in s1.workflows["wf"].nodes
-
-    def test_node_added_unknown_workflow_noop(self):
-        s, effects = root_reducer(
-            base_state(),
-            ev(
-                "WorkflowNodeAdded",
-                {
-                    "workflow_id": "nope",
-                    "node_id": "n1",
-                    "task_id": "t1",
-                },
-            ),
-        )
-        assert effects == []
-
-    def test_node_removed(self):
-        s0 = self._state_with_workflow()
-        s1, _ = root_reducer(
-            s0,
-            ev(
-                "WorkflowNodeAdded",
-                {
-                    "workflow_id": "wf",
-                    "node_id": "n1",
-                    "task_id": "t1",
-                    "dependencies": [],
-                },
-            ),
-        )
-        s2, _ = root_reducer(s1, ev("WorkflowNodeRemoved", {"workflow_id": "wf", "node_id": "n1"}))
-        assert "n1" not in s2.workflows["wf"].nodes
-
-    def test_node_status_change_to_complete_emits_scheduler_effect(self):
-        s0 = self._state_with_workflow()
-        s1, _ = root_reducer(
-            s0,
-            ev(
-                "WorkflowNodeAdded",
-                {
-                    "workflow_id": "wf",
-                    "node_id": "n1",
-                    "task_id": "t1",
-                    "dependencies": [],
-                },
-            ),
-        )
-        s2, effects = root_reducer(
-            s1,
-            ev(
-                "WorkflowNodeStatusChanged",
-                {
-                    "workflow_id": "wf",
-                    "node_id": "n1",
-                    "status": "complete",
-                    "result": "done",
-                },
-            ),
-        )
-        assert s2.workflows["wf"].nodes["n1"].status == NodeStatus.complete
-        assert s2.workflows["wf"].nodes["n1"].result == "done"
-        assert any(e.effect_type.value == "start_workflow_node" for e in effects)
-
-    def test_workflow_completes_when_all_nodes_terminal(self):
-        s0 = self._state_with_workflow()
-        s1, _ = root_reducer(
-            s0,
-            ev(
-                "WorkflowNodeAdded",
-                {
-                    "workflow_id": "wf",
-                    "node_id": "n1",
-                    "task_id": "t1",
-                    "dependencies": [],
-                },
-            ),
-        )
-        s2, _ = root_reducer(
-            s1,
-            ev(
-                "WorkflowNodeStatusChanged",
-                {
-                    "workflow_id": "wf",
-                    "node_id": "n1",
-                    "status": "complete",
-                },
-            ),
-        )
-        assert s2.workflows["wf"].status == NodeStatus.complete
-
-    def test_workflow_failed_when_any_node_failed(self):
-        s0 = self._state_with_workflow()
-        s1, _ = root_reducer(
-            s0,
-            ev(
-                "WorkflowNodeAdded",
-                {
-                    "workflow_id": "wf",
-                    "node_id": "n1",
-                    "task_id": "t1",
-                    "dependencies": [],
-                },
-            ),
-        )
-        s2, _ = root_reducer(
-            s1,
-            ev(
-                "WorkflowNodeStatusChanged",
-                {
-                    "workflow_id": "wf",
-                    "node_id": "n1",
-                    "status": "failed",
-                    "error": "boom",
-                },
-            ),
-        )
-        assert s2.workflows["wf"].status == NodeStatus.failed
-        assert s2.workflows["wf"].nodes["n1"].error == "boom"
 
 
 class TestWorkflowRunReducers:
@@ -479,7 +277,7 @@ class TestWorkflowRunReducers:
         assert wf.nodes["execute"].result["role"] == "executor"
 
 
-class TestToolAndHookReducers:
+class TestToolReducers:
     def test_tool_registered(self):
         s, _ = root_reducer(
             base_state(),
@@ -494,22 +292,6 @@ class TestToolAndHookReducers:
             ),
         )
         assert "my_tool" in s.tools
-
-    def test_hook_registered(self):
-        s, _ = root_reducer(
-            base_state(),
-            ev(
-                "HookRegistered",
-                {
-                    "hook_id": "h1",
-                    "entity_type": "tool",
-                    "stage": "before",
-                    "handler_dotpath": "mymod.handler",
-                },
-            ),
-        )
-        assert "h1" in s.hooks
-        assert s.hooks["h1"]["stage"] == "before"
 
 
 class TestReducerProperties:

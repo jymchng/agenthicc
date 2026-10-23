@@ -87,8 +87,11 @@ Two behaviors worth documenting precisely:
 - `--version` and `--help` are answered **before** command discovery, so they
   never load project extensions or durable stores
   (`src/agenthicc/cli/parser.py:100-108`).
-- The version string is the literal `agenthicc 0.1.0`
-  (`src/agenthicc/cli/parser.py:44`), matching `pyproject.toml:7`.
+- The version string is `agenthicc <version>`, where `<version>` is the
+  installed distribution's version from package metadata
+  (`package_version()` in `src/agenthicc/cli/parser.py`), so it always matches
+  the wheel built from `pyproject.toml`. An uninstalled source tree reports
+  `0+unknown`.
 
 ### Subcommands
 
@@ -108,7 +111,7 @@ epilog (`src/agenthicc/cli/parser.py:160-162`) are:
 | session | `create`, `list`, `show`, `export`, `events`, `send`, `control`, `serve` | `src/agenthicc/cli/commands/session_service.py:35-205` |
 | sessions | `list`, `show`, `export`, `inspect` | `src/agenthicc/cli/commands/sessions.py:23,74,92,108` |
 | skills | `skills add` | `src/agenthicc/cli/commands/skills.py:13` |
-| trust | `trust cli` | `src/agenthicc/cli/commands/trust.py:18` |
+| trust | `trust list`, `trust add [PATH]`, `trust revoke PATH` | `src/agenthicc/cli/commands/trust.py:66,80,104` |
 | workflows | `workflows list`, `workflows run` | `src/agenthicc/cli/commands/workflows.py:71,98` |
 
 !!! note "`agents` and `jobs` are the same manager"
@@ -250,26 +253,29 @@ seven roles:
 ## Configuration sections
 
 Top-level `AgenthiccConfig` fields map one-to-one onto TOML sections
-(`src/agenthicc/config.py:1490`):
+(`src/agenthicc/config.py:1566`):
 
 | TOML section | Field | Evidence |
 |---|---|---|
-| `[execution]` | `execution` | `config.py:1491` |
-| `[providers]` | `providers` | `config.py:1492` |
-| `[behaviour]` | `behaviour` | `config.py:1493` |
-| `[hooks]` | `hooks` | `config.py:1494` |
-| `[tools]` | `tools` | `config.py:1495` |
-| `[memory]` | `memory` | `config.py:1496` |
-| `[security]` | `security` | `config.py:1497` |
-| `[api]` | `api` | `config.py:1498` |
-| `[plugins]` | `plugins` | `config.py:1499` |
-| `[skills]` | `skills` | `config.py:1500` |
-| `[agents]` | `agents` | `config.py:1501` |
-| `[storage]` | `storage` | `config.py:1502` |
-| `[workflows.<name>]` | `workflows` | `config.py:1503` |
+| `[execution]` | `execution` | `config.py:1567` |
+| `[providers]` | `providers` | `config.py:1568` |
+| `[behaviour]` | `behaviour` | `config.py:1569` |
+| `[tools]` | `tools` | `config.py:1570` |
+| `[security]` | `security` | `config.py:1571` |
+| `[plugins]` | `plugins` | `config.py:1572` |
+| `[skills]` | `skills` | `config.py:1573` |
+| `[agents]` | `agents` | `config.py:1574` |
+| `[workflows.<name>]` | `workflows` | `config.py:1575` |
+| `[loops]` | `loops` | `config.py:1580` |
+
+Two further tables are read outside these fields: `[memory.context_windows]`
+fills `execution.context_windows`, and `[background]` is read by
+`src/agenthicc/background/settings.py`. The `[api]`, `[hooks]`, `[memory]` (other
+than `context_windows`) and `[storage]` sections were removed by PRD-250 S-03
+because nothing read them.
 
 !!! danger "`[behaviour]` is spelled with a British `-our`"
-    The section key is `behaviour` in code (`config.py:1493`). This is a
+    The section key is `behaviour` in code (`config.py:1569`). This is a
     **config key**, not prose, so it must stay byte-accurate in every example,
     table, and migration note. The same rule applies to the `/compact`
     description string "Summarise conversation history…"
@@ -279,21 +285,18 @@ Top-level `AgenthiccConfig` fields map one-to-one onto TOML sections
 
 | Section | Fields | Evidence |
 |---|---|---|
-| `ExecutionSettings` (34) | `max_concurrent_intents`, `max_parallel_tasks`, `agent_pool_size`, `max_agent_turns`, `authoring_max_generation_attempts`, `authoring_max_phase_turns`, `max_output_tokens`, `turn_timeout_s`, `auto_compact`, `context_windows`, `prompt_cache`, `file_cache`, `transport_max_retries`, `transport_retry_base_delay_s`, `transport_retry_max_total_s`, `llm_sdk_max_retries`, `profile`, `provider`, `model`, `api_key`, `api_key_env`, `base_url`, `default_headers`, `default_query`, `client_options`, `request_options`, `timeout_s`, `temperature`, `top_p`, `max_completion_tokens`, `provider_capabilities`, `_resolved_profile`, `session_header`, `irrecoverable_error_max_retries` | `config.py:986` |
-| `ToolSettings` (10) | `mcp_servers`, `plugins`, `allowed`, `denied`, `max_live_tool_calls`, `group_exploratory_calls`, `http_timeout_s`, `cloakbrowser`, `playwright`, `browser_backend` | `config.py:1287` |
-| `MemorySettings` (3) | `project_memory_path`, `vector_db`, `session_ttl_seconds` | `config.py:1315` |
-| `SecuritySettings` (5) | `sandbox_mode`, `allowed_paths`, `network_allow_list`, `max_tool_cpu_seconds`, `max_tool_memory_mb` | `config.py:1322` |
-| `ApiSettings` (3) | `host`, `port`, `api_key_env` | `config.py:1331` |
-| `PluginSettings` (9) | `auto_trust`, `auto_install`, `install_target`, `allowed_modules`, `timeout_seconds`, `disabled`, `trust_file`, `audit_file`, `strict_cli_shadow` | `config.py:1338` |
-| `BehaviourSettings` (6) | `verbose`, `confirm_exits`, `resume_transcript_turns`, `resume_transcript_max_events`, `resume_transcript_max_bytes`, `resume_transcript_max_event_bytes` | `src/agenthicc/config.py` |
-| `CloakBrowserSettings` (15) | `enabled`, `transport`, `cdp_endpoint`, `allowed_domains`, `headless`, `navigation_timeout_s`, `action_timeout_s`, `max_pages`, `max_actions_per_turn`, `max_snapshot_chars`, `max_screenshot_bytes`, `allow_persistent_profiles`, `profile_root`, `license_key_env`, `allow_all_domains` | `config.py:1129` |
-| `PlaywrightSettings` (16) | `enabled`, `transport`, `browser_type`, `browser_channel`, `executable_path`, `allowed_domains`, `headless`, `navigation_timeout_s`, `action_timeout_s`, `max_pages`, `max_actions_per_turn`, `max_snapshot_chars`, `max_screenshot_bytes`, `allow_persistent_profiles`, `profile_root`, `allow_all_domains` | `config.py:1220` |
-| `SkillsSettings` (2) | `install_default_skills`, `default_skill_directory` | `config.py:1455` |
-| `StorageSettings` (2) | `s3`, `default_backend` | `config.py:1482` |
+| `ExecutionSettings` (31) | `max_parallel_tasks`, `max_agent_turns`, `authoring_max_generation_attempts`, `authoring_max_phase_turns`, `max_output_tokens`, `turn_timeout_s`, `auto_compact`, `context_windows`, `prompt_cache`, `file_cache`, `transport_max_retries`, `transport_retry_base_delay_s`, `transport_retry_max_total_s`, `llm_sdk_max_retries`, `profile`, `provider`, `model`, `api_key`, `api_key_env`, `base_url`, `default_headers`, `default_query`, `client_options`, `request_options`, `timeout_s`, `temperature`, `top_p`, `max_completion_tokens`, `_resolved_profile`, `session_header`, `irrecoverable_error_max_retries` | `config.py:1039` |
+| `ToolSettings` (11) | `mcp_servers`, `plugins`, `allowed`, `denied`, `max_live_tool_calls`, `group_exploratory_calls`, `http_timeout_s`, `question_timeout_s`, `cloakbrowser`, `playwright`, `browser_backend` | `config.py:1355` |
+| `SecuritySettings` (2) | `allowed_paths`, `network_allow_list` | `config.py:1393` |
+| `PluginSettings` (1) | `strict_cli_shadow` | `config.py:1399` |
+| `BehaviourSettings` (4) | `resume_transcript_turns`, `resume_transcript_max_events`, `resume_transcript_max_bytes`, `resume_transcript_max_event_bytes` | `config.py:1410` |
+| `CloakBrowserSettings` (15) | `enabled`, `transport`, `cdp_endpoint`, `allowed_domains`, `headless`, `navigation_timeout_s`, `action_timeout_s`, `max_pages`, `max_actions_per_turn`, `max_snapshot_chars`, `max_screenshot_bytes`, `allow_persistent_profiles`, `profile_root`, `license_key_env`, `allow_all_domains` | `config.py:1197` |
+| `PlaywrightSettings` (16) | `enabled`, `transport`, `browser_type`, `browser_channel`, `executable_path`, `allowed_domains`, `headless`, `navigation_timeout_s`, `action_timeout_s`, `max_pages`, `max_actions_per_turn`, `max_snapshot_chars`, `max_screenshot_bytes`, `allow_persistent_profiles`, `profile_root`, `allow_all_domains` | `config.py:1288` |
+| `SkillsSettings` (2) | `install_default_skills`, `default_skill_directory` | `config.py:1558` |
 
 `ExecutionSettings` also contains the naming inversion recorded in
 `docs/reference/repository-state.md`: `timeout_s` is the LLM timeout
-(`_DEFAULT_LLM_TIMEOUT_S: float = 3_600.0`, `config.py:110`) while
+(`_DEFAULT_LLM_TIMEOUT_S: float = 3_600.0`, `config.py:117`) while
 `turn_timeout_s` governs a turn.
 
 ---

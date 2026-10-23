@@ -59,7 +59,7 @@ class GraphApiOutlookBackend(OutlookBackend):
         return {"Authorization": f"Bearer {self._token}", "Content-Type": "application/json"}
 
     async def _get(self, path: str) -> object:
-        from agenthicc.tools.http import agenthicc_http_client, is_network_error  # noqa: PLC0415
+        from agenthicc.tools.http import agenthicc_http_client, is_network_error
 
         try:
             async with agenthicc_http_client() as c:
@@ -72,7 +72,7 @@ class GraphApiOutlookBackend(OutlookBackend):
             raise
 
     async def _post(self, path: str, body: dict) -> object:
-        from agenthicc.tools.http import agenthicc_http_client, is_network_error  # noqa: PLC0415
+        from agenthicc.tools.http import agenthicc_http_client, is_network_error
 
         try:
             async with agenthicc_http_client() as c:

@@ -34,11 +34,12 @@ import copy
 import inspect
 import logging
 from dataclasses import dataclass, replace
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from lauren_ai._memory import ShortTermMemory
+    from lauren_ai._transport import Transport
 
     from agenthicc.runners.usage_ledger import UsageLedger
     from agenthicc.tui.conversation_store import ConversationStore
@@ -183,7 +184,7 @@ class _InvalidCompactionCandidate(RuntimeError):
 
 async def compact_memory(
     memory: ShortTermMemory,
-    transport: object,
+    transport: Transport,
     *,
     model: str,
     conv_store: ConversationStore | None = None,
@@ -220,7 +221,7 @@ async def compact_memory(
 
 async def compact_memory_with_result(
     memory: ShortTermMemory,
-    transport: object,
+    transport: Transport,
     *,
     model: str,
     conv_store: ConversationStore | None = None,
@@ -322,7 +323,7 @@ async def compact_memory_with_result(
             {"role": "user", "content": f"[COMPACT SUMMARY]\n{summary}"},
             {"role": "assistant", "content": _ACK},
         ]
-        from lauren_ai._memory import ShortTermMemory as _ShortTermMemory  # noqa: PLC0415
+        from lauren_ai._memory import ShortTermMemory as _ShortTermMemory
 
         candidate_memory = _ShortTermMemory(max_tokens=max(1, max_input_tokens))
         candidate_memory._messages = list(candidate)
@@ -642,7 +643,7 @@ def _prepare_local_compaction_fallback(
 def _candidate_memory_tokens(
     messages: list[object], summary: str | None, max_input_tokens: int
 ) -> int:
-    from lauren_ai._memory import ShortTermMemory as _ShortTermMemory  # noqa: PLC0415
+    from lauren_ai._memory import ShortTermMemory as _ShortTermMemory
 
     candidate_memory = _ShortTermMemory(max_tokens=max(1, max_input_tokens))
     candidate_memory._messages = copy.deepcopy(messages)
@@ -656,7 +657,7 @@ def _tool_history_issue_code(
     max_tokens: int,
 ) -> str:
     """Return a bounded validator issue code without repairing or mutating state."""
-    from lauren_ai._memory import ShortTermMemory as _ShortTermMemory  # noqa: PLC0415
+    from lauren_ai._memory import ShortTermMemory as _ShortTermMemory
 
     candidate = _ShortTermMemory(max_tokens=max(1, max_tokens))
     candidate._messages = copy.deepcopy(list(messages))
@@ -820,7 +821,7 @@ def _replace_state(
     The comparison and replacement contain no await point; in the normal
     single-event-loop session this is an atomic compare-and-swap boundary.
     """
-    from lauren_ai._memory import ShortTermMemory as _ShortTermMemory  # noqa: PLC0415
+    from lauren_ai._memory import ShortTermMemory as _ShortTermMemory
 
     candidate_memory = _ShortTermMemory(max_tokens=_memory_max_tokens(memory))
     candidate_memory._messages = copy.deepcopy(list(messages))
@@ -978,7 +979,7 @@ def _format_transcript(messages: list[object]) -> str:
                 if btype == "text":
                     parts.append(block.get("text", ""))
                 elif btype == "tool_use":
-                    import json  # noqa: PLC0415
+                    import json
 
                     parts.append(
                         f"[tool_call:{block.get('name', '')}({json.dumps(block.get('input', {}))[:200]})]"
@@ -1000,7 +1001,7 @@ def _format_transcript(messages: list[object]) -> str:
 
 
 async def _summarize_text(
-    transport: object,
+    transport: Transport,
     transcript: str,
     *,
     model: str,
@@ -1018,7 +1019,7 @@ async def _summarize_text(
     with bounded prompts so a large history never becomes one oversized
     request.
     """
-    from lauren_ai._transport import Message  # noqa: PLC0415
+    from lauren_ai._transport import Message
 
     prompt_prefix = (
         "Summarise the following conversation portion concisely and factually. "
@@ -1071,7 +1072,9 @@ async def _summarize_text(
                 "temperature": 0.0,
                 "stream": False,
             }
-            complete = getattr(transport, "complete")
+            # The keyword set varies across transport versions, so the call is
+            # assembled from probed keywords rather than a fixed signature.
+            complete: Callable[..., Awaitable[object]] = transport.complete
             if _accepts_keyword(complete, "max_completion_tokens"):
                 kwargs["max_completion_tokens"] = output_limit
             if request_options is not None and _accepts_keyword(complete, "request_options"):
@@ -1189,7 +1192,7 @@ def _accepts_keyword(callable_obj: object, name: str) -> bool:
 def _resolve_request_options(value: object) -> object:
     """Resolve config-shaped request options without coupling transports to config."""
     try:
-        from agenthicc.config import RequestOptionSettings  # noqa: PLC0415
+        from agenthicc.config import RequestOptionSettings
 
         if isinstance(value, RequestOptionSettings):
             return value.resolve()

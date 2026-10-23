@@ -11,6 +11,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from agenthicc.tools.approval import ApprovalRequest
+
 from agenthicc.background import (
     BackgroundSession,
     BackgroundStore,
@@ -31,8 +33,35 @@ from agenthicc.background.worker import (
     _run_direct_turn,
     run_worker,
 )
+from tests.session_fakes import session_context
 
 pytestmark = pytest.mark.unit
+
+
+def _approval_request(tool_name: str) -> ApprovalRequest:
+    """A real tool approval request, as the approval gate builds them."""
+    return ApprovalRequest(
+        tool_name=tool_name,
+        tool_use_id=f"call-{tool_name}",
+        tool_input={},
+        capabilities=frozenset({"write"}),
+        event=asyncio.Event(),
+    )
+
+
+def _tui_session(**fields: object) -> SimpleNamespace:
+    """A stand-in TUISession carrying the handoff state TUISession declares."""
+    state: dict[str, object] = {
+        "_background_intent": "",
+        "_background_handoff_state": "idle",
+        "_background_prepared_supervisor": None,
+        "_background_prepared_session_id": None,
+        "_last_submitted_text": "",
+        "_workflow_override": "",
+        "_agent_task": None,
+    }
+    state.update(fields)
+    return SimpleNamespace(**state)
 
 
 def _record(tmp_path: Path, sid: str = "edge-session") -> BackgroundSession:
@@ -537,7 +566,7 @@ async def test_approval_service_denies_completed_or_removed_sessions(tmp_path: P
     store.transition("edge-session", SessionStatus.RUNNING)
     store.transition("edge-session", SessionStatus.COMPLETED)
     denied = await BackgroundApprovalService(store, "edge-session").request_approval(
-        SimpleNamespace(tool_name="write")
+        _approval_request("write")
     )
     assert denied.allowed is False
 
@@ -548,7 +577,7 @@ async def test_approval_service_handles_rejection_and_cancellation(tmp_path: Pat
     store.create(_record(tmp_path))
     store.claim("edge-session", pid=1, lease_token="lease")
     service = BackgroundApprovalService(store, "edge-session")
-    task = asyncio.create_task(service.request_approval(SimpleNamespace(tool_name="write")))
+    task = asyncio.create_task(service.request_approval(_approval_request("write")))
     for _ in range(100):
         if store.get("edge-session").status is SessionStatus.WAITING_APPROVAL:
             break
@@ -560,7 +589,7 @@ async def test_approval_service_handles_rejection_and_cancellation(tmp_path: Pat
     service.respond(False)
     service.reset_turn_memory()
 
-    task = asyncio.create_task(service.request_approval(SimpleNamespace(tool_name="delete")))
+    task = asyncio.create_task(service.request_approval(_approval_request("delete")))
     for _ in range(100):
         if store.get("edge-session").status is SessionStatus.WAITING_APPROVAL:
             break
@@ -588,7 +617,7 @@ async def test_approval_service_handles_missing_session(tmp_path: Path) -> None:
     monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setattr(store, "get", missing_after_claim)
     response = await BackgroundApprovalService(store, "approval-edge").request_approval(
-        SimpleNamespace(tool_name="write")
+        _approval_request("write")
     )
     assert response.allowed is False and "removed" in response.message
     monkeypatch.undo()
@@ -648,7 +677,7 @@ async def test_direct_turn_requires_runner_and_delegates_to_canonical_runner(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     request = WorkerRequest("s", "", "intent", "/tmp", None, (), False)
-    missing = SimpleNamespace(agent_runner=None)
+    missing = session_context(agent_runner=None)
     with pytest.raises(RuntimeError, match="No LLM"):
         await _run_direct_turn(missing, request)
     calls: list[str] = []
@@ -657,9 +686,9 @@ async def test_direct_turn_requires_runner_and_delegates_to_canonical_runner(
         calls.append(str(args[0]))
 
     monkeypatch.setattr("agenthicc.runners.agent_turn._run_agent_turn", runner)
-    session = SimpleNamespace(
+    session = session_context(
         agent_runner=object(),
-        app_state=SimpleNamespace(conversation=object()),
+        app_state=session_context(conversation=object()),
         cfg=SimpleNamespace(
             execution=SimpleNamespace(max_agent_turns=3),
             agents=SimpleNamespace(skill_permissions_for=lambda name: object()),
@@ -877,7 +906,7 @@ def test_foreground_handoff_extracts_latest_user_request_and_handles_missing_req
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     user_event = SimpleNamespace(kind="user_message", payload={"text": "latest request"})
-    ctx = SimpleNamespace(
+    ctx = session_context(
         session_id="foreground",
         app_state=SimpleNamespace(
             conversation=SimpleNamespace(
@@ -890,7 +919,7 @@ def test_foreground_handoff_extracts_latest_user_request_and_handles_missing_req
         cfg=SimpleNamespace(background=None),
         console=SimpleNamespace(print=lambda text: None),
     )
-    session = SimpleNamespace(
+    session = _tui_session(
         _ctx=ctx,
         _workflow_override="",
         _input_session=SimpleNamespace(),
@@ -909,7 +938,7 @@ def test_foreground_handoff_extracts_latest_user_request_and_handles_missing_req
     )
     assert _handoff(session) is True
     assert session._input_session._background_exit_requested is True
-    empty = SimpleNamespace(
+    empty = _tui_session(
         _ctx=SimpleNamespace(
             app_state=SimpleNamespace(conversation=SimpleNamespace(turns=lambda: [])),
             console=SimpleNamespace(print=lambda text: print(text)),
@@ -963,7 +992,7 @@ async def test_foreground_detach_reactivates_completed_goal_session(
     )
     input_session = SimpleNamespace()
     task = asyncio.create_task(asyncio.Event().wait()) if active_task else None
-    foreground = SimpleNamespace(
+    foreground = _tui_session(
         _ctx=ctx,
         _workflow_override="",
         _input_session=input_session,
@@ -1012,7 +1041,7 @@ async def test_foreground_handoff_reports_disabled_and_launch_failure(
         cfg=SimpleNamespace(background=BackgroundSettings(enabled=False)),
         console=console,
     )
-    session = SimpleNamespace(_ctx=ctx, _workflow_override="", _input_session=SimpleNamespace())
+    session = _tui_session(_ctx=ctx, _workflow_override="", _input_session=SimpleNamespace())
     assert _handoff(session) is True
     assert "disabled" in console.export_text()
 
@@ -1085,7 +1114,7 @@ def test_detach_after_continue_preserves_owner_and_selected_configuration(
         console=Console(record=True),
     )
     input_session = SimpleNamespace()
-    foreground = SimpleNamespace(
+    foreground = _tui_session(
         _ctx=ctx,
         _workflow_override="",
         _input_session=input_session,
@@ -1160,7 +1189,7 @@ def test_detach_reclaims_released_foreground_lease_for_proven_dead_worker(
         console=Console(record=True),
     )
     input_session = SimpleNamespace()
-    foreground = SimpleNamespace(
+    foreground = _tui_session(
         _ctx=ctx,
         _workflow_override="",
         _input_session=input_session,
@@ -1222,7 +1251,7 @@ def test_failed_worker_launch_restores_foreground_owner_for_safe_retry(
         ),
         console=Console(record=True),
     )
-    session = SimpleNamespace(
+    session = _tui_session(
         _ctx=ctx,
         _workflow_override="",
         _input_session=SimpleNamespace(),
@@ -1274,7 +1303,7 @@ def test_repeated_detach_in_one_tui_does_not_prepare_twice(
         ),
         console=SimpleNamespace(print=lambda _message: None),
     )
-    session = SimpleNamespace(
+    session = _tui_session(
         _ctx=ctx,
         _workflow_override="",
         _input_session=SimpleNamespace(),

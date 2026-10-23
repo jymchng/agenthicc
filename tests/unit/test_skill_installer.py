@@ -105,8 +105,8 @@ def test_generic_github_repository_source_clones_and_selects_skills(
     _source_skill(skills_root, "other")
 
     async def fake_clone(source: object) -> tuple[Path, Path]:
-        assert getattr(source, "url") == "https://github.com/heygen-com/hyperframes.git"
-        assert getattr(source, "revision") is None
+        assert source.url == "https://github.com/heygen-com/hyperframes.git"
+        assert source.revision is None
         return clone_root, repository
 
     monkeypatch.setattr(installer, "_clone_repository", fake_clone)

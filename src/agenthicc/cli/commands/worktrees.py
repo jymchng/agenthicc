@@ -123,7 +123,7 @@ def worktrees_dispatch(
     except KeyError:
         print(f"Orchestration not found: {orchestration_id}")
         raise SystemExit(1) from None
-    from agenthicc.cli.commands.background import _store_and_supervisor  # noqa: PLC0415
+    from agenthicc.cli.commands.background import _store_and_supervisor
 
     _, supervisor = _store_and_supervisor(ctx)
     coordinator = ParallelCoordinator(
@@ -152,7 +152,7 @@ def worktrees_dispatch(
 
 
 def _worker_session(ctx: CLIContext, session_id: str) -> BackgroundSession:
-    from agenthicc.cli.commands.background import _store_and_supervisor  # noqa: PLC0415
+    from agenthicc.cli.commands.background import _store_and_supervisor
 
     store, _ = _store_and_supervisor(ctx)
     try:
@@ -201,7 +201,7 @@ def worktrees_action(
     json: bool = False,
 ) -> None:
     _worker_session(ctx, session_id)
-    from agenthicc.cli.commands.background import _store_and_supervisor  # noqa: PLC0415
+    from agenthicc.cli.commands.background import _store_and_supervisor
 
     sessions, _ = _store_and_supervisor(ctx)
     try:
@@ -251,7 +251,7 @@ def worktrees_setup(
     json: bool = False,
 ) -> None:
     _worker_session(ctx, session_id)
-    from agenthicc.cli.commands.background import _store_and_supervisor  # noqa: PLC0415
+    from agenthicc.cli.commands.background import _store_and_supervisor
 
     sessions, _ = _store_and_supervisor(ctx)
     try:

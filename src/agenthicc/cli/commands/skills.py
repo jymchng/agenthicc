@@ -21,7 +21,7 @@ async def skills_add(
     all_: bool = False,
 ) -> None:
     """Install SOURCE into project or user-global skills."""
-    from agenthicc.skills.installer import SkillInstallError, install_skills  # noqa: PLC0415
+    from agenthicc.skills.installer import SkillInstallError, install_skills
 
     try:
         requested_skills = (

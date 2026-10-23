@@ -63,6 +63,20 @@ def _count(value: object, default: int = 0) -> int:
     return default
 
 
+def _canonical_path(path: str | Path) -> str:
+    """Resolve *path* to its canonical absolute form (touches the filesystem)."""
+    return str(Path(path).resolve())
+
+
+def _read_lines(path: Path) -> list[str] | None:
+    """Return the lines of *path*, or ``None`` when it does not exist."""
+    try:
+        with path.open(encoding="utf-8") as handle:
+            return handle.readlines()
+    except FileNotFoundError:
+        return None
+
+
 @dataclass(eq=False)
 class SessionSubscription:
     """Bounded async event subscription used by in-process and HTTP clients."""
@@ -499,7 +513,7 @@ class SessionService:
                 source="session_service",
                 kind="session_created",
                 payload={
-                    "project_root": str(Path(project_root).resolve()),
+                    "project_root": await asyncio.to_thread(_canonical_path, project_root),
                     "client_id": client_id,
                     "capabilities": sorted(caps),
                     "agent": dict(agent or {}),
@@ -548,7 +562,7 @@ class SessionService:
                 source="session_service",
                 kind="session_created",
                 payload={
-                    "project_root": str(Path(project_root).resolve()),
+                    "project_root": await asyncio.to_thread(_canonical_path, project_root),
                     "capabilities": sorted(caps),
                 },
             )
@@ -571,7 +585,11 @@ class SessionService:
     ) -> list[SessionSnapshot]:
         caps = capabilities if capabilities is not None else self.default_capabilities
         self._require(caps, "read")
-        target = str(Path(project_root).resolve()) if project_root is not None else None
+        target = (
+            await asyncio.to_thread(_canonical_path, project_root)
+            if project_root is not None
+            else None
+        )
         async with self._lock:
             # Refresh only bounded index metadata. This picks up sessions
             # created by another client without replaying their event logs.
@@ -630,7 +648,7 @@ class SessionService:
     ) -> list[dict[str, object]]:
         """List durable operator interactions under the caller's read scope."""
 
-        from agenthicc.background.inbox import BackgroundInteractionInbox  # noqa: PLC0415
+        from agenthicc.background.inbox import BackgroundInteractionInbox
 
         caps = capabilities if capabilities is not None else self.default_capabilities
         self._require(caps, "read")
@@ -667,7 +685,7 @@ class SessionService:
     ) -> dict[str, object]:
         """Commit one exact inbox response or return its current conflict view."""
 
-        from agenthicc.background.inbox import (  # noqa: PLC0415
+        from agenthicc.background.inbox import (
             BackgroundInteractionInbox,
             InboxConflict,
         )
@@ -716,7 +734,7 @@ class SessionService:
     ) -> dict[str, object]:
         """Expire one exact pending item with control-scope enforcement."""
 
-        from agenthicc.background.inbox import (  # noqa: PLC0415
+        from agenthicc.background.inbox import (
             BackgroundInteractionInbox,
             InboxConflict,
         )
@@ -878,26 +896,25 @@ class SessionService:
     async def import_kernel_log(self, session_id: str, path: str | Path) -> int:
         """Import a legacy kernel JSONL log once for compatibility attachment."""
 
-        log_path = Path(path)
-        if not log_path.exists():
+        lines = await asyncio.to_thread(_read_lines, Path(path))
+        if lines is None:
             return 0
         async with self._lock:
             runtime = await self._ensure_runtime_locked(session_id)
             if any(event.source == "kernel" for event in runtime.events):
                 return 0
-        from agenthicc.kernel import Event  # noqa: PLC0415
+        from agenthicc.kernel import Event
 
         imported = 0
-        with log_path.open(encoding="utf-8") as handle:
-            for line in handle:
-                if not line.strip():
-                    continue
-                try:
-                    kernel_event = Event.from_dict(json.loads(line))
-                except (KeyError, TypeError, ValueError, json.JSONDecodeError):
-                    continue
-                await self.publish_kernel_event(session_id, kernel_event)
-                imported += 1
+        for line in lines:
+            if not line.strip():
+                continue
+            try:
+                kernel_event = Event.from_dict(json.loads(line))
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                continue
+            await self.publish_kernel_event(session_id, kernel_event)
+            imported += 1
         return imported
 
     async def _append_locked(

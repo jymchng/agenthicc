@@ -26,7 +26,7 @@ def visible_len(markup: str) -> int:
     Strips Rich markup tags before measuring so ``[bold]Hi[/bold]`` correctly
     reports 2 columns rather than the raw string length.
     """
-    from rich.text import Text  # noqa: PLC0415
+    from rich.text import Text
 
     return Text.from_markup(markup).cell_len
 
@@ -41,8 +41,8 @@ def fit(markup: str, cols: int, ellipsis: str = "…") -> str:
     The ellipsis character ``…`` is 1 terminal column wide.  Pass a different
     string (e.g. ``"..."`` for 3 columns) for wider terminals or preferences.
     """
-    from rich.text import Text  # noqa: PLC0415
-    from rich.markup import escape  # noqa: PLC0415
+    from rich.text import Text
+    from rich.markup import escape
 
     t = Text.from_markup(markup)
     if t.cell_len <= cols:

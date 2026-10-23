@@ -12,9 +12,17 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING
 
+from agenthicc.workflows.payload import (
+    payload_float,
+    payload_int,
+    payload_mapping,
+    payload_mappings,
+    payload_strings,
+)
+
 if TYPE_CHECKING:
     from lauren_ai._memory import ShortTermMemory
-    from agenthicc.workflows.plugin import PhaseOutput
+    from agenthicc.workflows.plugin import PhaseOutput, WorkflowPlugin
 
 __all__ = [
     "CHECKPOINT_SCHEMA_VERSION",
@@ -181,7 +189,7 @@ def _normalise_topology_edge(edge: str | None, phase_names: tuple[str, ...]) -> 
 
 
 def resolve_workflow_checkpoint_topology(
-    workflow: type[object], context_payload: Mapping[str, object]
+    workflow: type[WorkflowPlugin], context_payload: Mapping[str, object]
 ) -> WorkflowCheckpointTopology:
     """Resolve the exact topology for a checkpoint context.
 
@@ -189,51 +197,16 @@ def resolve_workflow_checkpoint_topology(
     active phase graph depends on persisted context.  Fixed declarative
     workflows use the complete ``phases`` list by default.
     """
-    resolver = getattr(workflow, "resolve_checkpoint_topology", None)
-    if callable(resolver):
-        topology = resolver(dict(context_payload))
-    else:  # pragma: no cover - every WorkflowPlugin inherits the resolver
-        topology = topology_from_phase_specs(
-            str(getattr(workflow, "name", workflow.__qualname__)),
-            tuple(getattr(workflow, "phases", ())),
-        )
+    topology = workflow.resolve_checkpoint_topology(dict(context_payload))
     if not isinstance(topology, WorkflowCheckpointTopology):
         raise CheckpointValidationError(
-            f"workflow {getattr(workflow, 'name', workflow.__qualname__)!r} returned invalid "
-            "checkpoint topology metadata"
+            f"workflow {workflow.name!r} returned invalid checkpoint topology metadata"
         )
-    workflow_name = str(getattr(workflow, "name", workflow.__qualname__))
-    if topology.workflow_name != workflow_name:
+    if topology.workflow_name != workflow.name:
         raise CheckpointValidationError(
             "checkpoint topology workflow name does not match the loaded workflow"
         )
     return topology
-
-
-def _as_int(value: object, default: int) -> int:
-    if isinstance(value, bool):
-        return default
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float):
-        return int(value)
-    if isinstance(value, str):
-        try:
-            return int(value)
-        except ValueError:
-            return default
-    return default
-
-
-def _as_float(value: object, default: float) -> float:
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return float(value)
-    if isinstance(value, str):
-        try:
-            return float(value)
-        except ValueError:
-            return default
-    return default
 
 
 def _checkpoint_timestamp(value: object, *, field_name: str, default: float) -> float:
@@ -252,25 +225,6 @@ def _checkpoint_timestamp(value: object, *, field_name: str, default: float) -> 
     if not math.isfinite(timestamp):
         raise CheckpointValidationError(f"{field_name} must be a finite number")
     return timestamp
-
-
-def _as_metadata(value: object) -> dict[str, object]:
-    if not isinstance(value, dict):
-        return {}
-    return {str(key): item for key, item in value.items()}
-
-
-def _as_dict_list(value: object) -> list[dict[str, object]]:
-    if not isinstance(value, list):
-        return []
-    return [_as_metadata(item) for item in value if isinstance(item, dict)]
-
-
-def _as_string_list(value: object) -> list[str]:
-    """Return only string values from a checkpoint list field."""
-    if not isinstance(value, list):
-        return []
-    return [item for item in value if isinstance(item, str)]
 
 
 def _encode(value: object) -> object:
@@ -316,18 +270,18 @@ def _phase_output_from_payload(payload: object) -> "PhaseOutput":
         phase_name=str(data.get("phase_name", "")),
         role=str(data.get("role", "")),
         full_text=str(data.get("full_text", "")),
-        structured=_as_metadata(data.get("structured")),
+        structured=payload_mapping(data.get("structured")),
         approved=approved_value if isinstance(approved_value, bool) else None,
-        metadata=_as_metadata(metadata),
+        metadata=payload_mapping(metadata),
         agent_id=str(data.get("agent_id", "")),
-        duration_s=_as_float(data.get("duration_s"), 0.0),
+        duration_s=payload_float(data.get("duration_s"), 0.0),
     )
 
 
 def context_to_payload(
     context: object,
     *,
-    workflow: type[object] | None = None,
+    workflow: type[WorkflowPlugin] | None = None,
 ) -> dict[str, object]:
     """Encode one supported workflow context without serializing memory."""
     from agenthicc.workflows.code_plan.state import CodePlanContext
@@ -341,15 +295,12 @@ def context_to_payload(
     elif isinstance(context, CreateWorkflowContext):
         result = {"kind": "CreateWorkflowContext", "fields": _encode(context)}
     elif workflow is not None:
-        codec = getattr(workflow, "checkpoint_context_to_payload", None)
-        if callable(codec):
-            custom_fields = codec(context)
-            if isinstance(custom_fields, dict):
-                result = {"kind": "CustomContext", "fields": _encode(custom_fields)}
-            else:
-                result = {}
-        else:
-            result = {}
+        custom_fields = workflow.checkpoint_context_to_payload(context)
+        result = (
+            {"kind": "CustomContext", "fields": _encode(custom_fields)}
+            if isinstance(custom_fields, dict)
+            else {}
+        )
     else:
         result = {}
     if result:
@@ -381,7 +332,7 @@ def context_from_payload(
     payload: dict[str, object],
     *,
     memory: "ShortTermMemory | None" = None,
-    workflow: type[object] | None = None,
+    workflow: type[WorkflowPlugin] | None = None,
 ) -> object:
     """Restore one built-in workflow context and attach shared memory."""
     from agenthicc.workflows.code_plan.state import CodePlanContext, CodePlanState
@@ -405,7 +356,7 @@ def context_from_payload(
         phase_iterations: dict[str, int] = {}
         if isinstance(raw_iterations, dict):
             for name, iteration in raw_iterations.items():
-                phase_iterations[str(name)] = _as_int(iteration, 0)
+                phase_iterations[str(name)] = payload_int(iteration, 0)
         return WorkflowContext(
             intent=str(fields.get("intent", "")),
             run_id=str(fields.get("run_id", "")),
@@ -414,7 +365,7 @@ def context_from_payload(
             current_phase=(
                 str(fields["current_phase"]) if fields.get("current_phase") is not None else None
             ),
-            phase_iteration=_as_int(fields.get("phase_iteration"), 0),
+            phase_iteration=payload_int(fields.get("phase_iteration"), 0),
             phase_iterations=phase_iterations,
             next_phase=(
                 str(fields["next_phase"]) if fields.get("next_phase") is not None else None
@@ -434,10 +385,10 @@ def context_from_payload(
             review_summary=str(fields.get("review_summary", "")),
             rejection_reason=str(fields.get("rejection_reason", "")),
             fail_reason=str(fields.get("fail_reason", "")),
-            command_outcomes=(_as_dict_list(fields.get("command_outcomes"))),
+            command_outcomes=(payload_mappings(fields.get("command_outcomes"))),
             shared_memory=memory,
             state=state,
-            phase_iteration=_as_int(fields.get("phase_iteration"), 0),
+            phase_iteration=payload_int(fields.get("phase_iteration"), 0),
         )
     if kind == "CreateWorkflowContext":
         raw_artifacts = fields.get("artifacts", {})
@@ -449,8 +400,8 @@ def context_from_payload(
                         phase=str(raw.get("phase", name)),
                         kind=str(raw.get("kind", "")),
                         content=str(raw.get("content", "")),
-                        metadata=_as_metadata(raw.get("metadata")),
-                        created_at=_as_float(raw.get("created_at"), time.time()),
+                        metadata=payload_mapping(raw.get("metadata")),
+                        created_at=payload_float(raw.get("created_at"), time.time()),
                     )
         raw_state = fields.get("state", {"__enum__": "DESIGN"})
         state = _decode_enum(raw_state, CreateWorkflowState)
@@ -468,58 +419,50 @@ def context_from_payload(
             rejection_reason=str(fields.get("rejection_reason", "")),
             suggestion=str(fields.get("suggestion", "")),
             fail_reason=str(fields.get("fail_reason", "")),
-            repair_cycles=_as_int(fields.get("repair_cycles"), 0),
+            repair_cycles=payload_int(fields.get("repair_cycles"), 0),
             artifacts=artifacts,
-            command_outcomes=(_as_dict_list(fields.get("command_outcomes"))),
+            command_outcomes=(payload_mappings(fields.get("command_outcomes"))),
             shared_memory=memory,
             state=state,
-            phase_iteration=_as_int(fields.get("phase_iteration"), 0),
+            phase_iteration=payload_int(fields.get("phase_iteration"), 0),
             plan_version=str(fields.get("plan_version", "create_workflow.v1")),
             phase_attempts={
-                str(key): _as_int(value, 0)
-                for key, value in _as_metadata(fields.get("phase_attempts")).items()
+                str(key): payload_int(value, 0)
+                for key, value in payload_mapping(fields.get("phase_attempts")).items()
             },
-            completed_phases=_as_string_list(fields.get("completed_phases")),
-            phase_history=_as_dict_list(fields.get("phase_history")),
-            last_boundary=_as_metadata(fields.get("last_boundary")),
+            completed_phases=payload_strings(fields.get("completed_phases")),
+            phase_history=payload_mappings(fields.get("phase_history")),
+            last_boundary=payload_mapping(fields.get("last_boundary")),
             resume_resolution_source=str(fields.get("resume_resolution_source", "")),
             resume_resolution_reason=str(fields.get("resume_resolution_reason", "")),
             resume_reconciled=bool(fields.get("resume_reconciled", False)),
-            cache_diagnostic=_as_metadata(fields.get("cache_diagnostic")),
-            authoring_snapshot=_as_metadata(fields.get("authoring_snapshot")),
-            selected_tools=_as_string_list(fields.get("selected_tools")),
-            dependency_summary=_as_metadata(fields.get("dependency_summary")),
-            draft_manifest=_as_metadata(fields.get("draft_manifest")),
+            cache_diagnostic=payload_mapping(fields.get("cache_diagnostic")),
+            authoring_snapshot=payload_mapping(fields.get("authoring_snapshot")),
+            selected_tools=payload_strings(fields.get("selected_tools")),
+            dependency_summary=payload_mapping(fields.get("dependency_summary")),
+            draft_manifest=payload_mapping(fields.get("draft_manifest")),
             draft_fingerprint=str(fields.get("draft_fingerprint", "")),
-            validation_evidence=_as_metadata(fields.get("validation_evidence")),
-            publication=_as_metadata(fields.get("publication")),
-            question_metadata=_as_metadata(fields.get("question_metadata")),
+            validation_evidence=payload_mapping(fields.get("validation_evidence")),
+            publication=payload_mapping(fields.get("publication")),
+            question_metadata=payload_mapping(fields.get("question_metadata")),
         )
     if kind == "CustomContext" and workflow is not None:
-        codec = getattr(workflow, "checkpoint_context_from_payload", None)
-        if callable(codec):
-            custom_context = codec(fields, memory)
-            if custom_context is not None:
-                return custom_context
-        raise CheckpointValidationError(
-            f"workflow {getattr(workflow, 'name', workflow.__name__)} cannot restore custom context"
-        )
+        custom_context = workflow.checkpoint_context_from_payload(fields, memory)
+        if custom_context is not None:
+            return custom_context
+        raise CheckpointValidationError(f"workflow {workflow.name} cannot restore custom context")
     raise CheckpointValidationError(f"unsupported workflow context kind: {kind!r}")
 
 
-def workflow_fingerprint(plugin: type[object]) -> str:
+def workflow_fingerprint(plugin: type[WorkflowPlugin]) -> str:
     """Return a stable fingerprint for the declared workflow topology."""
-    name = getattr(plugin, "name", plugin.__qualname__)
-    phases = getattr(plugin, "phases", ())
     topology = [
-        {
-            "name": getattr(phase, "name", ""),
-            "next": getattr(phase, "next", None),
-            "on_reject": getattr(phase, "on_reject", None),
-        }
-        for phase in phases
+        {"name": phase.name, "next": phase.next, "on_reject": phase.on_reject}
+        for phase in plugin.phases
     ]
-    raw = json.dumps({"name": name, "phases": topology}, sort_keys=True, separators=(",", ":"))
+    raw = json.dumps(
+        {"name": plugin.name, "phases": topology}, sort_keys=True, separators=(",", ":")
+    )
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 

@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import TypeVar
 from urllib.parse import urlparse
 
-from agenthicc.tools.workspace_access import (  # noqa: E402
+from agenthicc.tools.workspace_access import (
     ResolvedWorkspacePath,
     WorkspaceAccessMode,
     WorkspaceAccessPolicy,
@@ -220,7 +220,7 @@ class ToolSandbox:
         and controlled test environments a single enforcement hook.
         """
         try:
-            import resource  # noqa: PLC0415
+            import resource
         except ImportError:
             yield
             return

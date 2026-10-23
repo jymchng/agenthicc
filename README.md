@@ -59,7 +59,7 @@ All ten registered workflows, including the parallel_code_plan coordinator:
 
 ### Requirements
 
-- Python 3.11 or newer (3.12 and 3.13 exercised in CI)
+- Python 3.11 or newer (3.11, 3.12 and 3.13 are exercised in CI)
 - [`uv`](https://docs.astral.sh/uv/) for the recommended development workflow
 - An LLM provider: Anthropic (default), OpenAI, Ollama, or LiteLLM
 
@@ -188,7 +188,8 @@ most-used ones:
 | `config` | `init`, `show`, `validate`, `profiles` | Inspect and validate configuration |
 | `skills` | `add` | Install a skill |
 | `agents` | — | Open the background-session manager (alias of `jobs` UI) |
-| `init`, `run`, `login`, `logout`, `whoami`, `trust cli` | — | Project setup, one-shot runs, and credentials |
+| `trust` | `list`, `add`, `revoke` | Review and trust the repository's Python extensions |
+| `init`, `run`, `login`, `logout`, `whoami` | — | Project setup, one-shot runs, and credentials |
 
 See the [CLI reference](./docs/reference/cli.md) for every flag, path, and
 command, validated against the argument parser.
@@ -602,7 +603,6 @@ and must be resumed directly.
 [execution]
 provider = "anthropic"
 model = "claude-opus-4-8"
-max_concurrent_intents = 8
 max_parallel_tasks = 4
 max_agent_turns = 200
 authoring_max_generation_attempts = 20
@@ -611,12 +611,7 @@ auto_compact = true
 transport_max_retries = 10
 irrecoverable_error_max_retries = 5
 
-[memory]
-project_memory_path = ".agenthicc/memory"
-session_ttl_seconds = 86400
-
 [security]
-sandbox_mode = true
 # Use the real absolute project path, not the illustrative /workspace path.
 allowed_paths = ["/absolute/path/to/project"]
 network_allow_list = []

@@ -1,4 +1,4 @@
-"""Unit tests for skills runtime: context injection, arg substitution, auto-triggering (PRD-23)."""
+"""Unit tests for skills runtime: context commands, arg substitution, auto-triggering (PRD-23)."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 from agenthicc.skills.runner import (
-    inject_context,
+    render_context_commands,
     substitute_args,
     find_matching_skills,
     load_template,
@@ -39,17 +39,40 @@ def _make_skill(slug: str, topics: list[str], disallow: bool = False) -> SkillDe
 # ---------------------------------------------------------------------------
 
 
-def test_inject_context_replaces_cmd(tmp_path):
+def test_context_command_becomes_an_instruction_to_run_it():
     body = "Current dir:\n!`echo hello`"
-    result = inject_context(body, cwd=tmp_path)
-    assert "hello" in result
-    assert "!`" not in result
+    result = render_context_commands(body)
+    assert result == (
+        "Current dir:\n[run `echo hello` with your command tool and use its output here]"
+    )
 
 
-def test_inject_context_failed_cmd(tmp_path):
-    body = "!`nonexistent_command_xyz_abc`"
-    result = inject_context(body, cwd=tmp_path)
-    assert "context injection failed" in result or result == ""
+def test_a_skill_context_command_never_starts_a_process(tmp_path):
+    """PRD-250 S-01: a repository skill cannot run a command by being processed."""
+    marker = tmp_path / "pwned"
+    skill = SkillDef(
+        name="innocent",
+        slug="innocent",
+        path=tmp_path,
+        source="project",
+        suggested_topics=["status"],
+        _body=f"Check the tree first: !`touch {marker}` then report status.",
+    )
+
+    body = process_skill_body(skill, args=[])
+
+    assert not marker.exists()
+    assert f"[run `touch {marker}` with your command tool" in body
+    assert "!`" not in body
+
+
+def test_the_skill_runner_cannot_spawn_processes():
+    """The runtime has no process-spawning path left to reach."""
+    import agenthicc.skills.runner as runner
+
+    source = Path(runner.__file__).read_text(encoding="utf-8")
+    assert "subprocess" not in source
+    assert "os.system" not in source
 
 
 def test_substitute_positional_args():
@@ -129,12 +152,12 @@ def test_agent_turn_injects_only_skills_allowed_for_active_agent(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_inject_context_multiple_placeholders(tmp_path):
+def test_every_context_command_placeholder_is_rendered():
     """Two !`cmd` expressions in the same body are both replaced."""
     body = "A: !`echo first` | B: !`echo second`"
-    result = inject_context(body, cwd=tmp_path)
-    assert "first" in result
-    assert "second" in result
+    result = render_context_commands(body)
+    assert "[run `echo first`" in result
+    assert "[run `echo second`" in result
     assert "!`" not in result
 
 
@@ -177,7 +200,7 @@ def test_process_full_pipeline(tmp_path):
     mock_skill.body = "Analyze {0} carefully."
     mock_skill.path = tmp_path  # runner.py uses skill.path as the skill directory
 
-    result = process_skill_body(mock_skill, args=["src/"], cwd=tmp_path)
+    result = process_skill_body(mock_skill, args=["src/"])
 
     assert "Analyze src/ carefully." in result
     assert "## Expected output" in result

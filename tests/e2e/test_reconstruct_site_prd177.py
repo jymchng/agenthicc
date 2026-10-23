@@ -17,6 +17,7 @@ from agenthicc.workflows.reconstruct_site import (
 )
 from agenthicc.workflows.reconstruct_site.evidence import ReconstructEvidenceStore
 from agenthicc.workflows.reconstruct_site.evidence_plan import RECONSTRUCT_PHASE_PLAN
+from tests.session_fakes import workflow_config
 
 
 def _config(tmp_path: Path, params: ReconstructSiteParams, memory: object) -> SimpleNamespace:
@@ -32,7 +33,7 @@ def _config(tmp_path: Path, params: ReconstructSiteParams, memory: object) -> Si
         active_mode=lambda: SimpleNamespace(blocked_capabilities=frozenset()),
         update_workflow_phase=lambda **_kwargs: None,
     )
-    return SimpleNamespace(
+    return workflow_config(
         app_state=app_state,
         agent_runner=SimpleNamespace(),
         cfg=SimpleNamespace(execution=execution),

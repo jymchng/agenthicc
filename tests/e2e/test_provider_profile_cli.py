@@ -7,6 +7,8 @@ import subprocess
 import sys
 import textwrap
 
+from tests.cli_process import CLI_PROCESS_TIMEOUT_S, cli_test_timeout
+
 
 def _run(tmp_path, *args: str) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
@@ -18,9 +20,11 @@ def _run(tmp_path, *args: str) -> subprocess.CompletedProcess[str]:
         check=False,
         capture_output=True,
         text=True,
+        timeout=CLI_PROCESS_TIMEOUT_S,
     )
 
 
+@cli_test_timeout(3)
 def test_profiles_validate_and_show_are_safe_cli_surfaces(tmp_path) -> None:
     (tmp_path / "agenthicc.toml").write_text(
         textwrap.dedent(
@@ -51,6 +55,7 @@ def test_profiles_validate_and_show_are_safe_cli_surfaces(tmp_path) -> None:
     assert "https://modal.example/v1" in shown.stdout
 
 
+@cli_test_timeout(1)
 def test_set_secret_cli_redacts_value_in_config_show(tmp_path) -> None:
     env = os.environ.copy()
     env["MODAL_KEY"] = "super-secret-header"
@@ -72,6 +77,7 @@ def test_set_secret_cli_redacts_value_in_config_show(tmp_path) -> None:
         check=False,
         capture_output=True,
         text=True,
+        timeout=CLI_PROCESS_TIMEOUT_S,
     )
     assert result.returncode == 0, result.stderr
     assert "MODAL_KEY" in result.stdout

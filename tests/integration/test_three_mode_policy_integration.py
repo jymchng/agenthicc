@@ -67,7 +67,7 @@ async def test_safe_read_write_and_retry_flow() -> None:
     assert read.ok and read.value == "read"
     assert not denied.ok and denied.error_kind == ToolErrorKind.denied.value
     assert allowed.ok and allowed.value == "write"
-    assert [getattr(request, "tool_name") for request in approval.requests] == [
+    assert [request.tool_name for request in approval.requests] == [
         "write_probe",
         "write_probe",
     ]
@@ -92,11 +92,7 @@ async def test_safe_malformed_metadata_is_approval_gated() -> None:
     app = AppState.create()
     app.active_mode.set(build_default_registry().get("Safe"))
     approval = ApprovalScript(True)
-    setattr(
-        unknown_probe,
-        "__lauren_ai_tool_metadata__",
-        {"capabilities": frozenset({"unknown"})},
-    )
+    unknown_probe.__lauren_ai_tool_metadata__ = {"capabilities": frozenset({"unknown"})}
     executor = AgenthiccToolExecutor(
         [unknown_probe],
         global_hooks=[ToolCapabilityGate(app), ApprovalGate(app, approval)],

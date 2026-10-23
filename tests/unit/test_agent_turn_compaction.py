@@ -19,21 +19,25 @@ from agenthicc.runners.agent_turn_context import AgentTurnContext
 from agenthicc.tools.cloakbrowser import BrowserPolicy, BrowserSessionManager
 from agenthicc.config import CloakBrowserSettings
 from tests.unit.test_cloakbrowser_tools import FakeBrowserClient
+from agenthicc.config import ExecutionSettings
 
 
-class _SmallExecutionConfig:
-    auto_compact = True
-    max_output_tokens = 100
-    transport_max_retries = 0
-    transport_retry_base_delay_s = 0.0
-    transport_retry_max_total_s = 0.0
+class _SmallExecutionConfig(ExecutionSettings):
+    """Real execution settings with a 1,000-token window and no transport retries."""
 
-    @staticmethod
-    def effective_context_window() -> int:
+    def __init__(self) -> None:
+        super().__init__(
+            auto_compact=True,
+            max_output_tokens=100,
+            transport_max_retries=0,
+            transport_retry_base_delay_s=0.0,
+            transport_retry_max_total_s=0.0,
+        )
+
+    def effective_context_window(self) -> int:
         return 1_000
 
-    @staticmethod
-    def effective_usable_budget() -> int:
+    def effective_usable_budget(self) -> int:
         return 800
 
 
@@ -42,7 +46,7 @@ class _SummaryTransport:
         self.summary = summary
         self.calls: list[dict[str, object]] = []
 
-    async def complete(self, messages, **kwargs):  # noqa: ANN001
+    async def complete(self, messages, **kwargs):
         self.calls.append({"messages": messages, **kwargs})
         return SimpleNamespace(content=self.summary)
 
@@ -56,7 +60,7 @@ def _make_context(memory: ShortTermMemory) -> AgentTurnContext:
         conversation_id="session-1",
         max_agent_turns=1,
         conv_store=MagicMock(),
-        exec_cfg=_SmallExecutionConfig(),  # type: ignore[arg-type]
+        exec_cfg=_SmallExecutionConfig(),
         skills={},
         mention_cache=MagicMock(),
         project_plugin_tools=[],
@@ -110,7 +114,7 @@ async def test_old_lauren_fallback_compacts_at_the_usable_budget() -> None:
 @pytest.mark.unit
 async def test_token_counter_error_falls_back_to_conservative_estimate() -> None:
     class _FailingCounter(_SummaryTransport):
-        async def count_tokens(self, messages, *, model, system=None):  # noqa: ANN001
+        async def count_tokens(self, messages, *, model, system=None):
             raise TimeoutError("counter unavailable")
 
     memory = ShortTermMemory(max_tokens=800)
@@ -137,7 +141,7 @@ async def test_token_counter_error_falls_back_to_conservative_estimate() -> None
 @pytest.mark.unit
 async def test_exact_token_count_can_skip_conservative_compaction() -> None:
     class _UnderBudgetCounter(_SummaryTransport):
-        async def count_tokens(self, messages, *, model, system=None):  # noqa: ANN001
+        async def count_tokens(self, messages, *, model, system=None):
             return 100
 
     memory = ShortTermMemory(max_tokens=800)
@@ -253,7 +257,7 @@ async def test_generated_output_fallback_uses_exact_request_framing_and_bounded_
             self.counts = [1_000, 700]
             self.count_calls: list[dict[str, object]] = []
 
-        async def count_tokens(self, messages, *, model, system=None, tools=None):  # noqa: ANN001
+        async def count_tokens(self, messages, *, model, system=None, tools=None):
             self.count_calls.append(
                 {"messages": messages, "model": model, "system": system, "tools": tools}
             )
@@ -308,7 +312,7 @@ async def test_still_over_budget_candidate_is_not_committed_or_sent() -> None:
             self.counts = [1_000, 950]
             self.count_calls = 0
 
-        async def count_tokens(self, messages, *, model, system=None, tools=None):  # noqa: ANN001
+        async def count_tokens(self, messages, *, model, system=None, tools=None):
             self.count_calls += 1
             return self.counts.pop(0)
 
@@ -420,7 +424,7 @@ async def test_irreducible_context_overflow_is_recoverable_not_retried_unchanged
 
     attempt = 0
 
-    async def run_stream(*args, **kwargs):  # noqa: ANN002, ANN003
+    async def run_stream(*args, **kwargs):
         nonlocal attempt
         attempt += 1
         # Lauren's real run_stream seeds the user message before the provider
@@ -472,7 +476,7 @@ async def test_failed_durable_compaction_keeps_direct_turn_discoverable(
     memory.add_user("earlier context " + "x" * 1_500)
     original_messages, original_summary = fold_path(journal.path)
 
-    def fail_replace(journal_arg, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003, ARG001
+    def fail_replace(journal_arg, *args, **kwargs):
         raise OSError("simulated durable commit failure")
 
     monkeypatch.setattr(ConversationJournal, "replace_state", fail_replace)
@@ -484,7 +488,7 @@ async def test_failed_durable_compaction_keeps_direct_turn_discoverable(
         raise overflow
         yield  # pragma: no cover
 
-    async def run_stream(*args, **kwargs):  # noqa: ANN002, ANN003
+    async def run_stream(*args, **kwargs):
         memory.add_user(args[1])
         return failed_stream()
 
@@ -605,7 +609,7 @@ async def test_context_overflow_does_not_restore_before_committed_prefix() -> No
     overflow.status_code = 400  # type: ignore[attr-defined]
     attempt = 0
 
-    async def run_stream(*args, **kwargs):  # noqa: ANN002, ANN003
+    async def run_stream(*args, **kwargs):
         nonlocal attempt
         attempt += 1
         metadata = kwargs.get("metadata", {})

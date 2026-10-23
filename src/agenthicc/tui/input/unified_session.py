@@ -69,6 +69,8 @@ class UnifiedInputSession:
         on_ready: Callable[[bool], None] | None = None,
     ) -> None:
         self._state: AppState = app_state
+        # Set by the /background handoff to end the input loop after detaching.
+        self._background_exit_requested: bool = False
         self._bus: CommandBus = command_bus
         self._registry: TriggerManager | None = trigger_registry
         self._modes: ModeManager = mode_manager or ModeManager()
@@ -121,8 +123,8 @@ class UnifiedInputSession:
 
     async def run(self) -> None:
         """Block until the user exits (Ctrl+C twice or Ctrl+D on empty)."""
-        import asyncio as _asyncio  # noqa: PLC0415
-        from agenthicc.tui.terminal.backend import get_backend  # noqa: PLC0415
+        import asyncio as _asyncio
+        from agenthicc.tui.terminal.backend import get_backend
 
         backend = get_backend()
         if not backend.is_interactive():
@@ -186,7 +188,7 @@ class UnifiedInputSession:
             self._state.conversation.notification.set("Press Ctrl+C again to exit.")
             return None  # keep looping
         self._state.conversation.notification.set(None)
-        from agenthicc.tui.input.renderer import show_exit_hint  # noqa: PLC0415
+        from agenthicc.tui.input.renderer import show_exit_hint
 
         show_exit_hint(self._state.conversation.session_id())
         return _EXIT
@@ -231,10 +233,10 @@ class UnifiedInputSession:
     async def _open_trigger_overlay_with_initial(self, initial: list[str]) -> None:
         if self._overlay is None or self._registry is None:
             return
-        from agenthicc.tui.workspace.overlays.trigger_picker import TriggerPickerOverlay  # noqa: PLC0415
+        from agenthicc.tui.workspace.overlays.trigger_picker import TriggerPickerOverlay
 
         def on_complete(result: TriggerResult | None) -> None:
-            from agenthicc.tui.trigger import TriggerResult  # noqa: PLC0415
+            from agenthicc.tui.trigger import TriggerResult
 
             # Push to InputState BEFORE hiding the overlay.  hide() triggers
             # _redraw() synchronously; if InputState is still empty at that
@@ -251,7 +253,7 @@ class UnifiedInputSession:
             if overlay_host is not None:
                 overlay_host.hide()  # _redraw fires here; InputState already correct
             if result is not None and isinstance(result, TriggerResult) and result.submit:
-                import asyncio  # noqa: PLC0415
+                import asyncio
 
                 text = "".join(result.buffer).strip()
                 if self._clear_after_acceptance:

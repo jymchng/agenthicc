@@ -15,6 +15,7 @@ from agenthicc.background.worker import (
     _finalize_worker,
 )
 from agenthicc.tui.conversation_store import ConversationStore
+from tests.session_fakes import session_context
 
 pytestmark = pytest.mark.unit
 
@@ -42,28 +43,36 @@ def _fake_context() -> SimpleNamespace:
         async def drain(self) -> None:
             return None
 
-    return SimpleNamespace(
+    from agenthicc.tui.conversation_store import AppState
+
+    return session_context(
         processor=Processor(),
-        app_state=SimpleNamespace(cli_flags=None),
+        app_state=AppState.create(),
         cfg=SimpleNamespace(),
         mode_manager=SimpleNamespace(active_name="Safe"),
     )
 
 
 def test_confirmed_idle_requires_a_closed_turn_and_rejects_pending_work() -> None:
-    conversation = ConversationStore()
+    from agenthicc.subagents.pool import SubagentPoolState, WorkerState
+    from agenthicc.tui.conversation_store import AppState
+
+    app_state = AppState.create()
+    conversation = app_state.conversation
+    session = session_context(app_state=app_state)
+    assert not _confirmed_idle_after_thinking(session)  # no closed turn yet
+
     conversation.begin_turn("default", turn_id="turn-1")
     conversation.close_turn()
-    session = SimpleNamespace(
-        app_state=SimpleNamespace(conversation=conversation, workflow_run=lambda: None)
-    )
-
     assert _confirmed_idle_after_thinking(session)
     conversation.active_tool.set("read_file")
     assert not _confirmed_idle_after_thinking(session)
     conversation.active_tool.set("")
-    conversation.subagent_pool_state.set(SimpleNamespace(total=1, done=0, workers=[]))
+    pool = SubagentPoolState(pool_id="pool", total=1, workers=[WorkerState("w", "explorer")])
+    conversation.subagent_pool_state.set(pool)
     assert not _confirmed_idle_after_thinking(session)
+    pool.workers[0].status = "done"
+    assert _confirmed_idle_after_thinking(session)
 
 
 def test_worker_request_round_trips_detached_marker() -> None:

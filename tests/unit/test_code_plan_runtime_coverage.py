@@ -214,6 +214,49 @@ async def test_run_phase_filters_tools_using_the_effective_phase_mode() -> None:
 
 
 @pytest.mark.asyncio
+async def test_execute_filters_tools_by_the_approved_execute_mode() -> None:
+    """An execute phase entered from Plan mode gets the tools its mode allows.
+
+    Plan blocks writes; the approved Safe execute mode does not. Filtering the
+    bundle by the caller's Plan mode would silently drop project write tools,
+    and in a cassette replay would expose the real built-ins behind them.
+    """
+    from lauren_ai._tools import tool
+    from agenthicc.tools.base import tool_name
+    from agenthicc.tools.capabilities import tool_write
+
+    runner = _runner()
+    manager = ModeManager(app_state=runner._cfg.app_state, default_name="Plan")
+    runner._mode_manager = manager
+    published: list[str] = []
+    manager.set_change_callback(lambda mode: published.append(mode.name))
+
+    @tool_write
+    @tool()
+    async def write_fixture(path: str) -> dict[str, str]:
+        return {"path": path}
+
+    runner._cfg.plugin_tools.append(write_fixture)  # type: ignore[union-attr]
+    offered: list[str] = []
+
+    async def execute_turn(_text: str, **kwargs: object) -> None:
+        tools = kwargs["tools"]
+        assert isinstance(tools, list)
+        offered.extend(tool_name(item) for item in tools)
+        await _complete_tools(tools)
+
+    runner._run_turn = execute_turn  # type: ignore[method-assign]
+    ctx = CodePlanContext("intent", "run", plan="plan", execute_mode="Safe")
+
+    assert await runner._execute(ctx) is CodePlanState.REVIEW
+    assert "write_fixture" in offered
+    # Resolving the execute mode for filtering never activates it.
+    assert published == []
+    assert manager.active_name == "Plan"
+    assert "write_fixture" not in {tool_name(item) for item in runner._base_tools()}
+
+
+@pytest.mark.asyncio
 async def test_resume_type_validation_and_extension_phase(monkeypatch: pytest.MonkeyPatch) -> None:
     runner = _runner()
     with pytest.raises(TypeError):

@@ -2,7 +2,7 @@
 
 ## Requirements
 
-- **Python 3.11 or newer** (3.12 and 3.13 are exercised in CI)
+- **Python 3.11 or newer** (3.11, 3.12 and 3.13 are exercised in CI)
 - [`uv`](https://docs.astral.sh/uv/) for the recommended workflow
 - An LLM provider: Anthropic (default), OpenAI, Ollama, or LiteLLM
 

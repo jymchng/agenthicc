@@ -15,23 +15,27 @@ from agenthicc.memory.journaled import JournaledShortTermMemory
 from agenthicc.runners.agent_turn import AgentTurnRunner
 from agenthicc.runners.agent_turn_context import AgentTurnContext
 from agenthicc.tui.conversation_store import ConversationStore
+from agenthicc.config import ExecutionSettings
 
 pytestmark = pytest.mark.e2e
 
 
-class _SmallExecutionConfig:
-    auto_compact = True
-    max_output_tokens = 100
-    transport_max_retries = 0
-    transport_retry_base_delay_s = 0.0
-    transport_retry_max_total_s = 0.0
+class _SmallExecutionConfig(ExecutionSettings):
+    """Real execution settings with a 1,000-token window and no transport retries."""
 
-    @staticmethod
-    def effective_context_window() -> int:
+    def __init__(self) -> None:
+        super().__init__(
+            auto_compact=True,
+            max_output_tokens=100,
+            transport_max_retries=0,
+            transport_retry_base_delay_s=0.0,
+            transport_retry_max_total_s=0.0,
+        )
+
+    def effective_context_window(self) -> int:
         return 1_000
 
-    @staticmethod
-    def effective_usable_budget() -> int:
+    def effective_usable_budget(self) -> int:
         return 800
 
 
@@ -48,7 +52,7 @@ class _SummaryTransport:
         self.summary = summary
         self.calls = 0
 
-    async def complete(self, _messages, **_kwargs):  # noqa: ANN001
+    async def complete(self, _messages, **_kwargs):
         self.calls += 1
         return SimpleNamespace(content=self.summary)
 
@@ -118,7 +122,7 @@ async def test_detached_direct_compaction_failure_is_recoverable_after_restart(
             max_agent_turns=1,
             conv_store=session.app_state.conversation,
             app_state=session.app_state,
-            exec_cfg=_SmallExecutionConfig(),  # type: ignore[arg-type]
+            exec_cfg=_SmallExecutionConfig(),
             active_agent="default",
             completed_turns=0,
             output_collector=[],
@@ -232,7 +236,7 @@ async def test_detached_empty_summary_and_irreducible_input_preserve_recovery_st
             max_agent_turns=1,
             conv_store=session.app_state.conversation,
             app_state=session.app_state,
-            exec_cfg=_SmallExecutionConfig(),  # type: ignore[arg-type]
+            exec_cfg=_SmallExecutionConfig(),
             active_agent="default",
             completed_turns=0,
             output_collector=[],

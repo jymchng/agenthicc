@@ -104,15 +104,15 @@ class TestCloseTurnElapsed:
 
 class TestTurnCompleteRenderer:
     def _make_event(self, elapsed: float) -> object:
-        from agenthicc.tui.conversation_store import ConversationEvent  # noqa: PLC0415
+        from agenthicc.tui.conversation_store import ConversationEvent
 
         return ConversationEvent(event_id="x", kind="turn_complete", payload={"elapsed_s": elapsed})
 
     def _render(self, elapsed: float) -> str:
-        from io import StringIO  # noqa: PLC0415
-        from rich.console import Console  # noqa: PLC0415
-        from unittest.mock import MagicMock  # noqa: PLC0415
-        from agenthicc.tui.workspace.appender import _render_turn_complete  # noqa: PLC0415
+        from io import StringIO
+        from rich.console import Console
+        from unittest.mock import MagicMock
+        from agenthicc.tui.workspace.appender import _render_turn_complete
 
         buf = StringIO()
         console = Console(file=buf, highlight=False, markup=False, no_color=True)
@@ -131,11 +131,11 @@ class TestTurnCompleteRenderer:
         assert "Worked for" not in out
 
     def test_total_activity_duration_is_rendered(self) -> None:
-        from io import StringIO  # noqa: PLC0415
-        from rich.console import Console  # noqa: PLC0415
-        from unittest.mock import MagicMock  # noqa: PLC0415
-        from agenthicc.tui.conversation_store import ConversationEvent  # noqa: PLC0415
-        from agenthicc.tui.workspace.appender import _render_activity_complete  # noqa: PLC0415
+        from io import StringIO
+        from rich.console import Console
+        from unittest.mock import MagicMock
+        from agenthicc.tui.conversation_store import ConversationEvent
+        from agenthicc.tui.workspace.appender import _render_activity_complete
 
         buf = StringIO()
         console = Console(file=buf, highlight=False, markup=False, no_color=True)
@@ -159,11 +159,11 @@ class TestTurnCompleteRenderer:
         assert self._render(0.3).endswith("\n")
 
     def test_no_elapsed_key_treated_as_zero(self) -> None:
-        from io import StringIO  # noqa: PLC0415
-        from rich.console import Console  # noqa: PLC0415
-        from unittest.mock import MagicMock  # noqa: PLC0415
-        from agenthicc.tui.conversation_store import ConversationEvent  # noqa: PLC0415
-        from agenthicc.tui.workspace.appender import _render_turn_complete  # noqa: PLC0415
+        from io import StringIO
+        from rich.console import Console
+        from unittest.mock import MagicMock
+        from agenthicc.tui.conversation_store import ConversationEvent
+        from agenthicc.tui.workspace.appender import _render_turn_complete
 
         ev = ConversationEvent(event_id="x", kind="turn_complete", payload={})
         buf = StringIO()
@@ -174,9 +174,9 @@ class TestTurnCompleteRenderer:
         assert "Worked for" not in buf.getvalue()
 
     def test_activity_duration_then_error_has_one_blank_line(self) -> None:
-        from rich.console import Console  # noqa: PLC0415
-        from agenthicc.tui.conversation_store import AppState, ConversationEvent  # noqa: PLC0415
-        from agenthicc.tui.workspace.appender import ScrollBufferAppender  # noqa: PLC0415
+        from rich.console import Console
+        from agenthicc.tui.conversation_store import AppState, ConversationEvent
+        from agenthicc.tui.workspace.appender import ScrollBufferAppender
 
         console = Console(record=True, markup=False, no_color=True)
         appender = ScrollBufferAppender(AppState.create(), console)

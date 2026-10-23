@@ -52,9 +52,9 @@ def get_backend() -> TerminalBackend:
     This is the only place in the codebase that may branch on ``os.name``.
     """
     if os.name == "nt":
-        from agenthicc.tui.terminal.windows_backend import WindowsBackend  # noqa: PLC0415
+        from agenthicc.tui.terminal.windows_backend import WindowsBackend
 
         return WindowsBackend()
-    from agenthicc.tui.terminal.posix_backend import PosixBackend  # noqa: PLC0415
+    from agenthicc.tui.terminal.posix_backend import PosixBackend
 
     return PosixBackend()

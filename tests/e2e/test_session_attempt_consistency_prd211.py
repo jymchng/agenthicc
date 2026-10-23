@@ -11,10 +11,12 @@ from pathlib import Path
 import pytest
 
 from agenthicc.background import BackgroundSession, BackgroundStore, SessionStatus
+from tests.cli_process import CLI_PROCESS_TIMEOUT_S, cli_test_timeout
 
 pytestmark = pytest.mark.e2e
 
 
+@cli_test_timeout(2)
 def test_jobs_status_and_agents_report_resumed_attempt_not_old_error(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
@@ -61,7 +63,7 @@ def test_jobs_status_and_agents_report_resumed_attempt_not_old_error(tmp_path: P
         env=env,
         text=True,
         capture_output=True,
-        timeout=30,
+        timeout=CLI_PROCESS_TIMEOUT_S,
         check=False,
     )
     assert status.returncode == 0, status.stderr
@@ -82,7 +84,7 @@ def test_jobs_status_and_agents_report_resumed_attempt_not_old_error(tmp_path: P
         env=env,
         text=True,
         capture_output=True,
-        timeout=30,
+        timeout=CLI_PROCESS_TIMEOUT_S,
         check=False,
     )
     assert listing.returncode == 0, listing.stderr

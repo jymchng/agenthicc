@@ -18,6 +18,8 @@ from agenthicc.tui.runtime import CommandBus, ModeManager, ModeRegistry, Runtime
 from agenthicc.tui.runtime.commands import InterruptAgentCommand, SendMessageCommand
 from agenthicc.tui.workspace.overlay import OverlayHost
 from agenthicc.workflows.registry import WorkflowRegistry
+from tests.session_fakes import session_context
+from agenthicc.workflows.plugin import WorkflowPlugin
 
 pytestmark = pytest.mark.unit
 
@@ -65,9 +67,14 @@ def _make_session(
         await asyncio.Event().wait()
 
     processor = SimpleNamespace(get_state=lambda: state, run=processor_run)
-    approval = SimpleNamespace(reset_turn_memory=lambda: None)
+    approval = SimpleNamespace(
+        reset_turn_memory=lambda: None,
+        request_approval=lambda _req: None,
+        respond=lambda *_args, **_kwargs: True,
+        respond_for_request=lambda *_args, **_kwargs: True,
+    )
     memory = SimpleNamespace(_messages=[], rollback_to=lambda count: None, close=lambda: None)
-    ctx = SimpleNamespace(
+    ctx = session_context(
         app_state=app,
         processor=processor,
         agent_runner=object(),
@@ -142,7 +149,7 @@ async def test_tui_does_not_fall_through_to_new_workflow_when_recovery_exists() 
     ctx.app_state.active_mode.set(RuntimeMode("Plan", default_workflow="demo"))
     calls: list[str] = []
 
-    class Demo:
+    class Demo(WorkflowPlugin):
         name = "demo"
         phases = ()
 
@@ -520,7 +527,7 @@ async def test_tui_workflow_selector_passes_next_input_as_exact_intent() -> None
     session, ctx, _workspace, _input = _make_session()
     intents: list[str] = []
 
-    class CreateWorkflow:
+    class CreateWorkflow(WorkflowPlugin):
         name = "create_workflow"
 
         @classmethod
@@ -613,9 +620,21 @@ async def test_workflow_startup_failure_is_visible_when_no_agent_turn_exists() -
     assert session.route("/workflow copy_website") is True
 
     class Handle:
+        run_id = "copy-run"
         workflow_name = "copy_website"
         lifecycle = "running"
+        current_phase: str | None = "build"
+        failure_kind: str | None = None
         checkpoint_supported = False
+
+        def finalize_failure(
+            self, error: object, *, kind: str = "workflow_error", recoverable: bool = True
+        ) -> None:
+            # Like WorkflowRunHandle: without checkpoint support the failure
+            # is terminal and no resumable checkpoint is returned.
+            self.lifecycle = "failed"
+            self.failure_kind = kind
+            self.error = str(error)
 
         def mark_terminal(self, status: str, *, error: str = "") -> None:
             self.lifecycle = status
@@ -667,7 +686,7 @@ async def test_tui_agent_body_workflow_resume_and_replay_edges(
     session, ctx, _workspace, _input = _make_session()
     ctx.app_state.active_mode.set(RuntimeMode("Plan", default_workflow="demo"))
 
-    class Demo:
+    class Demo(WorkflowPlugin):
         name = "demo"
 
         @classmethod
@@ -739,7 +758,7 @@ async def test_tui_resume_workflow_task_and_compact_branches(
     ctx.agent_runner = SimpleNamespace(_transport=Transport())
     await session._handle_compact_command()
 
-    class Demo:
+    class Demo(WorkflowPlugin):
         name = "demo"
 
         @classmethod
@@ -756,7 +775,7 @@ async def test_tui_resume_workflow_task_and_compact_branches(
     await session._resume_workflow_task(Demo, SimpleNamespace())  # type: ignore[arg-type]
     # The success path leaves the input session in its streaming state until
     # the resumed workflow's next turn; the exception/cancel paths reset it.
-    assert getattr(session, "_agent_task") is None
+    assert session._agent_task is None
 
 
 @pytest.mark.asyncio

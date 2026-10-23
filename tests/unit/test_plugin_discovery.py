@@ -5,13 +5,12 @@ from __future__ import annotations
 
 import pytest
 
+from agenthicc.plugins.deps import declared_dependencies, missing_requirements
 from agenthicc.plugins.discovery import (
     LoadResult,
     PluginToolSet,
-    _check_missing,
     _infer_missing_from_ast,
     _load_plugin_file,
-    _requirements_from_sidecar,
     _scan_directory,
     discover_agent_tools,
     discover_project_tools,
@@ -72,14 +71,14 @@ def test_scan_missing_directory_returns_empty(tmp_path):
     assert results == []
 
 
-def test_load_plugin_missing_dep_no_auto_install(tmp_path):
+def test_load_plugin_reports_missing_declared_dependency(tmp_path):
     f = tmp_path / "needs_dep.py"
     f.write_text(
         "DEPENDENCIES = ['this-package-does-not-exist-xyz']\n"
         "from lauren_ai._tools import tool\n"
         "@tool()\nasync def t() -> None: pass\nTOOLS = [t]\n"
     )
-    result = _load_plugin_file(f, auto_install=False)
+    result = _load_plugin_file(f)
     assert not result.ok
     assert result.missing_deps  # surfaced, not a generic error
 
@@ -91,7 +90,7 @@ def test_load_plugin_importerror_triggers_ast_scan(tmp_path):
         "from lauren_ai._tools import tool\n"
         "@tool()\nasync def t() -> None: pass\nTOOLS = [t]\n"
     )
-    result = _load_plugin_file(f, auto_install=False)
+    result = _load_plugin_file(f)
     assert not result.ok
     # AST scan should have caught "this_package_does_not_exist_xyz"
     assert "this_package_does_not_exist_xyz" in result.missing_deps
@@ -102,7 +101,7 @@ def test_sidecar_requirements_txt(tmp_path):
     req.write_text("this-package-does-not-exist-xyz\n")
     f = tmp_path / "my_tools.py"
     f.write_text("TOOLS = []\n")
-    result = _load_plugin_file(f, auto_install=False)
+    result = _load_plugin_file(f)
     assert not result.ok
     assert result.missing_deps
 
@@ -112,31 +111,36 @@ def test_sidecar_requirements_txt(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_check_missing_returns_only_absent_packages():
-    """_check_missing reports packages that are not installed."""
+def test_missing_requirements_returns_only_absent_packages():
+    """missing_requirements reports distributions that are not installed."""
     # "pytest" is definitely installed in this environment
     # "this-pkg-does-not-exist-agenthicc-test" is definitely not
-    present = ["pytest"]
+    present = ["pytest>=7"]
     absent = ["this-pkg-does-not-exist-agenthicc-test"]
-    missing = _check_missing(present + absent)
-    assert absent[0] in missing
-    assert "pytest" not in missing
+    missing = missing_requirements(present + absent)
+    assert missing == absent
 
 
-def test_requirements_from_sidecar_reads_file(tmp_path):
-    """_requirements_from_sidecar parses req lines, skips comments and blanks."""
+def test_declared_dependencies_falls_back_to_the_sidecar(tmp_path):
+    """The sidecar is parsed when DEPENDENCIES is absent; comments and blanks are skipped."""
     py_file = tmp_path / "myplugin.py"
+    py_file.write_text("TOOLS = []\n")
     req_file = tmp_path / "myplugin.requirements.txt"
     req_file.write_text("# this is a comment\n\nhttpx>=0.27\nrequests\n")
-    result = _requirements_from_sidecar(py_file)
-    assert result == ["httpx>=0.27", "requests"]
+    assert declared_dependencies(py_file) == ["httpx>=0.27", "requests"]
 
 
-def test_requirements_from_sidecar_missing_file_returns_empty(tmp_path):
-    """_requirements_from_sidecar returns [] when no sidecar file exists."""
+def test_declared_dependencies_prefers_the_literal(tmp_path):
+    py_file = tmp_path / "myplugin.py"
+    py_file.write_text("DEPENDENCIES: list[str] = ['pyyaml']\n")
+    (tmp_path / "myplugin.requirements.txt").write_text("requests\n")
+    assert declared_dependencies(py_file) == ["pyyaml"]
+
+
+def test_declared_dependencies_without_a_declaration_is_empty(tmp_path):
     py_file = tmp_path / "noreqs.py"
-    result = _requirements_from_sidecar(py_file)
-    assert result == []
+    py_file.write_text("TOOLS = []\n")
+    assert declared_dependencies(py_file) == []
 
 
 def test_infer_missing_from_ast_skips_stdlib_and_installed(tmp_path):
@@ -211,7 +215,7 @@ def test_scan_directory_continues_after_unexpected_plugin_failure(tmp_path, monk
     first.write_text("# broken\n")
     second.write_text("# usable\n")
 
-    def load(path, auto_install=False):
+    def load(path):
         if path == first:
             raise RuntimeError("loader exploded")
         return LoadResult(path=path, tools=[lambda: None])
@@ -241,3 +245,91 @@ def test_discover_agent_tools_loads_valid_file(tmp_path):
     )
     assert len(ts.all_tools) == 1
     assert ts.all_tools[0].__name__ == "check_spelling"
+
+
+# ---------------------------------------------------------------------------
+# PRD-250 D-05: plugins execute exactly once; dependencies are read statically
+# ---------------------------------------------------------------------------
+
+
+_COUNTING_TOOL = """
+import os
+from pathlib import Path
+
+counter = Path(os.environ["AGENTHICC_TEST_COUNTER"])
+counter.write_text(counter.read_text() + "x")
+
+DEPENDENCIES = []
+
+from lauren_ai._tools import tool
+
+
+@tool()
+async def counted() -> None:
+    pass
+
+
+TOOLS = [counted]
+"""
+
+
+def test_a_tool_plugin_module_executes_exactly_once(tmp_path, monkeypatch):
+    counter = tmp_path / "counter"
+    counter.write_text("")
+    monkeypatch.setenv("AGENTHICC_TEST_COUNTER", str(counter))
+    plugin = tmp_path / "counting.py"
+    plugin.write_text(_COUNTING_TOOL)
+
+    result = _load_plugin_file(plugin)
+
+    assert result.ok and len(result.tools) == 1
+    assert counter.read_text() == "x"
+
+
+def test_a_plugin_with_missing_dependencies_is_never_executed(tmp_path, monkeypatch):
+    counter = tmp_path / "counter"
+    counter.write_text("")
+    monkeypatch.setenv("AGENTHICC_TEST_COUNTER", str(counter))
+    plugin = tmp_path / "needs_dep.py"
+    plugin.write_text(
+        _COUNTING_TOOL.replace("DEPENDENCIES = []", "DEPENDENCIES = ['no-such-dist-xyz>=1']")
+    )
+
+    result = _load_plugin_file(plugin)
+
+    assert result.missing_deps == ["no-such-dist-xyz>=1"]
+    assert counter.read_text() == ""
+
+
+def test_non_literal_dependencies_are_an_explicit_error(tmp_path):
+    plugin = tmp_path / "computed.py"
+    plugin.write_text("REQS = ['a']\nDEPENDENCIES = REQS + ['b']\nTOOLS = []\n")
+
+    result = _load_plugin_file(plugin)
+
+    assert result.error is not None
+    assert "DEPENDENCIES must be a literal list" in result.error
+
+
+def test_a_command_plugin_module_executes_exactly_once(tmp_path, monkeypatch):
+    from agenthicc.commands.plugin_loader import _load_command_file
+
+    counter = tmp_path / "counter"
+    counter.write_text("")
+    monkeypatch.setenv("AGENTHICC_TEST_COUNTER", str(counter))
+    plugin = tmp_path / "counted_cmd.py"
+    plugin.write_text(
+        "import os\n"
+        "from pathlib import Path\n"
+        "counter = Path(os.environ['AGENTHICC_TEST_COUNTER'])\n"
+        "counter.write_text(counter.read_text() + 'x')\n"
+        "DEPENDENCIES = ()\n"
+        "from agenthicc.commands.command import Command\n"
+        "COMMAND = Command(name='/counted', description='Counted.', handler=lambda ctx: True)\n"
+    )
+
+    result = _load_command_file(plugin)
+
+    assert result.ok, result.error
+    assert [command.name for command in result.commands] == ["/counted"]
+    assert counter.read_text() == "x"

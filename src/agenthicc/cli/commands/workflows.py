@@ -34,7 +34,7 @@ def _() -> None: ...
 
 
 def _workflow_payload(plugin_cls: type[object], source: str) -> _WorkflowPayload:
-    from agenthicc.tui.runtime.mode_manager import canonical_mode_name  # noqa: PLC0415
+    from agenthicc.tui.runtime.mode_manager import canonical_mode_name
 
     phases = getattr(plugin_cls, "phases", [])
     phase_payload: list[_PhasePayload] = []
@@ -60,7 +60,7 @@ def _workflow_payload(plugin_cls: type[object], source: str) -> _WorkflowPayload
 
 
 def _workflow_registry() -> WorkflowRegistry:
-    from agenthicc.workflows.registry import build_workflow_registry  # noqa: PLC0415
+    from agenthicc.workflows.registry import build_workflow_registry
 
     return build_workflow_registry(
         project_dir=Path(".agenthicc"),
@@ -103,7 +103,7 @@ async def workflows_run(
     json: bool = False,
 ) -> None:
     """Run WORKFLOW_NAME with --intent TEXT and report its durable outcome."""
-    from agenthicc.runners.headless import run_headless_workflow  # noqa: PLC0415
+    from agenthicc.runners.headless import run_headless_workflow
 
     try:
         result = await run_headless_workflow(ctx, workflow_name, intent)

@@ -71,13 +71,22 @@ These commands fail closed when Bubblewrap is unavailable rather than falling
 back to an unrestricted shell.
 
 `noxfile.py` defines the CI sessions and embeds the `llms-full.txt` symbol
-check. Every session installs only the declared `dev` extra: TUI and API
-modules are base-package code with no separate extras, and the documentation
-toolchain (MkDocs, MkDocs Material, pymdown-extensions) is part of `dev`.
-Enumerate them with `uv run nox --list`: `tests` (3.12 and 3.13), `tests_unit`,
-`tests_integration`, `tests_e2e`, `coverage`, `lint`, `format`, `typecheck`,
-`typecheck_contracts`, `type_audit`, `build`, `build_check`, `llms_check`, and
-`clean`.
+check. Every session runs on nox's uv backend and installs the project and its
+one declared `dev` extra into the session's own virtualenv: TUI and API modules
+are base-package code with no separate extras, and the documentation and
+release toolchain (MkDocs, MkDocs Material, pymdown-extensions, twine) is part
+of `dev`. Enumerate them with `uv run nox --list`: `tests`, `tests_unit` and
+`tests_integration` (each on 3.11, 3.12 and 3.13), `tests_e2e`,
+`tests_windows`, `coverage`, `lint`, `format`, `typecheck`,
+`typecheck_contracts`, `type_audit`, `docs`, `build`, `build_check`,
+`llms_check`, and `clean`.
+
+`.github/workflows/ci.yml` runs every gate and ends in one aggregate
+**Required checks** job, the only status check branch protection needs
+(`scripts/apply_branch_protection.sh`). The release workflow re-runs that CI
+for the tagged commit. Quality baselines (the type-safety baseline, the
+coverage floor, the gate definitions) are owned in `.github/CODEOWNERS`, and
+the type ratchet fails when a pull request raises a baseline value.
 
 ## Surfaces and gates
 

@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import hashlib
-import json
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -323,8 +321,19 @@ def test_cli_registry_discovery_toml_and_trust_paths(
         )
         registry._load_toml_commands(cli_toml, "user")
         assert ("tool", "run") in registry._REGISTRY
-        monkeypatch.setattr("subprocess.run", lambda *args, **kwargs: calls_append(args))
+        spawned: list[tuple[object, ...]] = []
+
+        async def fake_exec(*argv: object) -> SimpleNamespace:
+            spawned.append(argv)
+
+            async def wait() -> int:
+                return 0
+
+            return SimpleNamespace(wait=wait)
+
+        monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
         asyncio.run(registry._REGISTRY[("tool", "run")].handler(value="ok"))
+        assert spawned == [("echo", "ok")]
 
         project = tmp_path / "project" / "cli"
         project.mkdir(parents=True)
@@ -335,16 +344,16 @@ def test_cli_registry_discovery_toml_and_trust_paths(
             'def hello():\n    """Project hello."""\n    return None\n',
             encoding="utf-8",
         )
-        digest = "sha256:" + hashlib.sha256(plugin.read_bytes()).hexdigest()
-        (project.parent / "trusted_cli.json").write_text(
-            json.dumps({"files": {"cli/project.py": digest}}), encoding="utf-8"
-        )
-        monkeypatch.setattr(
-            "agenthicc.cli.registry.load_config",
-            lambda: SimpleNamespace(plugins=SimpleNamespace(auto_trust=False)),
-            raising=False,
-        )
-        registry._maybe_load_trusted(project)
+        # An untrusted project plugin is skipped without being imported ...
+        from agenthicc.plugins.trust import ExtensionTrust, override_extension_trust
+
+        strict = ExtensionTrust(store_path=tmp_path / "trust.json", trusted_roots=())
+        with override_extension_trust(strict):
+            registry._discover_directory(project, "project")
+            assert ("project", "hello") not in registry._REGISTRY
+            # ... and loads once its current content is trusted.
+            strict.trust(plugin, kind="cli")
+            registry._discover_directory(project, "project")
         assert ("project", "hello") in registry._REGISTRY
 
         class DuplicateEntries(dict[tuple[str, ...], object]):
@@ -365,7 +374,3 @@ def test_cli_registry_discovery_toml_and_trust_paths(
         registry._REGISTRY = original_registry
         original_registry.clear()
         original_registry.update(old)
-
-
-def calls_append(args: object) -> object:
-    return SimpleNamespace(args=args)

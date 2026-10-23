@@ -842,9 +842,9 @@ def _load_recent_turns(
 
 async def restore_session(session_id: str, app_state: AppState) -> None:
     """Restore a previous session's metrics into ConversationStore."""
-    from agenthicc.tui.conversation_store import ConversationTurn  # noqa: PLC0415
-    from agenthicc.memory.journal import ConversationJournal, journal_path_for  # noqa: PLC0415
-    from agenthicc.runners.usage_ledger import summarize_usage_records  # noqa: PLC0415
+    from agenthicc.tui.conversation_store import ConversationTurn
+    from agenthicc.memory.journal import ConversationJournal, journal_path_for
+    from agenthicc.runners.usage_ledger import summarize_usage_records
 
     events = SessionEventLog.load(session_id)
 

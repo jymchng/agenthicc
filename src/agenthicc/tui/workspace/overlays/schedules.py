@@ -90,11 +90,11 @@ class ScheduleJobsOverlay(Overlay):
         )
 
     def render(self) -> RenderableType:
-        from rich import box  # noqa: PLC0415
-        from rich.console import Group  # noqa: PLC0415
-        from rich.panel import Panel  # noqa: PLC0415
-        from rich.table import Table  # noqa: PLC0415
-        from rich.text import Text  # noqa: PLC0415
+        from rich import box
+        from rich.console import Group
+        from rich.panel import Panel
+        from rich.table import Table
+        from rich.text import Text
 
         self._refresh()
         service_running = ScheduleServiceLease.is_running(self.store) is True

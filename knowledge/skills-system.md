@@ -33,7 +33,7 @@ maxTurnDepth: 200
 model: ""
 ---
 Body markdown with optional placeholders:
-  !`git log --oneline -5`   ← replaced with command stdout (15 s timeout)
+  !`git log --oneline -5`   ← replaced with an instruction to run it (never executed here)
   {0}, {1}                   ← positional args from /deploy arg1 arg2
   {session}                  ← current session ID
   {reference}                ← contents of reference.md
@@ -68,8 +68,8 @@ On each agent turn:
   AgentTurnRunner._inject_skills()           agent_turn.py:261–273
     → find_matching_skills(user_text, skills)
          matches suggestedTopics words against user message words
-    → process_skill_body(skill, args, cwd)
-         runs !`cmd` placeholders, substitutes {0}…
+    → process_skill_body(skill, args, session_id, effort)
+         turns !`cmd` placeholders into run-it instructions, substitutes {0}…
     → self._skill_suffix = "## Skill: …\n{body}"
 
   AgentTurnRunner._build_agent()             agent_turn.py:291–294
@@ -100,6 +100,6 @@ explicit slash-command path.
 | Missing `SKILL.md` | Skill silently skipped (`loader.py:44–46`) |
 | Invalid YAML frontmatter | Logged at WARNING, skill skipped (`loader.py:69–71`) |
 | Hidden directories | Any directory starting with `.` is excluded |
-| `!`cmd`` subprocess | 15-second timeout (`runner.py:37`) |
+| `!`cmd`` placeholder | Never executed by agenthicc (PRD-250 S-01); `render_context_commands` (`runner.py:33`) asks the agent to run it with its command tool, so approvals, the mode ceiling and the sandbox apply |
 | Body size | No explicit limit; lazy-loaded on first access (`loader.py:31–40`) |
 | `reference.md` absent | `{reference}` replaced with `"[reference.md not found]"` |

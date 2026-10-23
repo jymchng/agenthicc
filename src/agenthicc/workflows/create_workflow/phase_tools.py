@@ -25,7 +25,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from agenthicc.tools.approval import ApprovalService
+    from agenthicc.tools.approval import ApprovalBroker
 
 # A workflow name must be a python-module-safe slug so the generated package
 # can live at ``.agenthicc/workflows/<name>/`` and be importable by the loader.
@@ -56,7 +56,7 @@ def validate_workflow_name(name: object) -> str | None:
 
 
 def make_design_tools(
-    approval_svc: ApprovalService | None,
+    approval_svc: ApprovalBroker | None,
     design_event: asyncio.Event,
     design_data: dict[str, object],
     exit_event: asyncio.Event | None = None,
@@ -70,8 +70,8 @@ def make_design_tools(
 
     ``approval_svc=None`` → ``request_design_approval`` auto-approves (headless/tests).
     """
-    from lauren_ai._tools import tool as _tool  # noqa: PLC0415
-    from agenthicc.tools.capabilities import tool_control  # noqa: PLC0415
+    from lauren_ai._tools import tool as _tool
+    from agenthicc.tools.capabilities import tool_control
 
     # Shared gate — written by request_design_approval, read by finalize_design.
     approval_state: dict[str, bool] = {"granted": False}
@@ -118,7 +118,7 @@ def make_design_tools(
                 ),
             }
 
-        from agenthicc.tools.approval import ApprovalRequest  # noqa: PLC0415
+        from agenthicc.tools.approval import ApprovalRequest
 
         req = ApprovalRequest(
             tool_name="Workflow Design Review",
@@ -228,7 +228,7 @@ def make_design_tools(
             design_data["suggestion"] = suggestion.strip() if isinstance(suggestion, str) else ""
             return {"accepted": True}
 
-        tools.append(exit_create_workflow)  # noqa: F821
+        tools.append(exit_create_workflow)
 
     return tools
 
@@ -244,8 +244,8 @@ def make_generation_tools(
     deterministically after the turn returns.  If the turn ends without this tool
     firing, the generate phase retries.
     """
-    from lauren_ai._tools import tool as _tool  # noqa: PLC0415
-    from agenthicc.tools.capabilities import tool_control  # noqa: PLC0415
+    from lauren_ai._tools import tool as _tool
+    from agenthicc.tools.capabilities import tool_control
 
     @tool_control
     @_tool()
@@ -303,8 +303,8 @@ def make_validation_tools(
     additionally overrides an ``approve`` when deterministic validation failed, so
     a broken workflow can never be accepted.
     """
-    from lauren_ai._tools import tool as _tool  # noqa: PLC0415
-    from agenthicc.tools.capabilities import tool_control  # noqa: PLC0415
+    from lauren_ai._tools import tool as _tool
+    from agenthicc.tools.capabilities import tool_control
 
     @tool_control
     @_tool()

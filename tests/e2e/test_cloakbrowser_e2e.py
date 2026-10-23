@@ -40,7 +40,7 @@ def test_optional_cloakbrowser_exports_are_available() -> None:
 
 
 class _FixtureHandler(BaseHTTPRequestHandler):
-    def do_GET(self) -> None:  # noqa: N802 - stdlib handler contract
+    def do_GET(self) -> None:
         body = b"<html><body><h1>Fixture</h1><button>Continue</button></body></html>"
         self.send_response(200)
         self.send_header("Content-Type", "text/html")

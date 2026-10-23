@@ -66,7 +66,7 @@ def _highlight_block(lines: list[str], language: str) -> list[Text]:
     """
     if not lines:
         return []
-    from rich.syntax import Syntax  # noqa: PLC0415
+    from rich.syntax import Syntax
 
     buf = StringIO()
     con = Console(
@@ -106,7 +106,7 @@ def _highlight_selected_lines(
     if not selected:
         return {}
     highlighted = _highlight_block([lines[index] for index in selected], language)
-    return dict(zip(selected, highlighted))
+    return dict(zip(selected, highlighted, strict=True))
 
 
 def _line_text(
@@ -502,26 +502,26 @@ def render_file_diff(
         for index in range(len(old_lines)):
             _context_row(table, index + 1, _line_text(old_lines, old_hl, index))
     else:
+
+        def flush_change_block(change_block: list[Opcode]) -> None:
+            if change_block:
+                _render_change_block(
+                    table,
+                    change_block,
+                    old_lines,
+                    new_lines,
+                    old_hl,
+                    new_hl,
+                )
+                change_block.clear()
+
         for hunk_idx, hunk in enumerate(hunks):
             if hunk_idx > 0:
                 _gap_row(table)
             change_block: list[Opcode] = []
-
-            def flush_change_block() -> None:
-                if change_block:
-                    _render_change_block(
-                        table,
-                        change_block,
-                        old_lines,
-                        new_lines,
-                        old_hl,
-                        new_hl,
-                    )
-                    change_block.clear()
-
             for tag, i1, i2, j1, j2 in hunk:
                 if tag == "equal":
-                    flush_change_block()
+                    flush_change_block(change_block)
                     for off in range(i2 - i1):
                         _context_row(
                             table,
@@ -530,7 +530,7 @@ def render_file_diff(
                         )
                 else:
                     change_block.append((tag, i1, i2, j1, j2))
-            flush_change_block()
+            flush_change_block(change_block)
 
     return Group(
         _header(path, operation),
@@ -571,7 +571,7 @@ def render_file_create(
     table.add_column(justify="center", no_wrap=True)  # +
     table.add_column(no_wrap=False)  # code
 
-    for idx, (raw, h) in enumerate(zip(preview, hl)):
+    for idx, (raw, h) in enumerate(zip(preview, hl, strict=True)):
         _add_row(table, idx + 1, raw, h, None)  # pure add — no del pair
 
     parts: list[RenderableType] = [

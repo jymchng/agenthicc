@@ -2,8 +2,47 @@
 
 Extensions are discovered from project-local `.agenthicc/` directories and
 user-global `~/.agenthicc/` directories. Project definitions generally shadow
-user definitions with the same name. Python extensions are executable code and
-must be reviewed; trust and enforcement behavior varies by extension surface.
+user definitions with the same name. Python extensions are executable code, so
+a project extension is imported only after you have reviewed and trusted its
+exact content — see [Trust and dependencies](#trust-and-dependencies).
+
+## Trust and dependencies
+
+Every loader — tools, slash commands, workflows, modes, agents and CLI plugins
+— asks one trust service before it imports a file:
+
+- files under your own `~/.agenthicc/` are trusted by location;
+- any other file, including everything under a repository's `.agenthicc/`,
+  needs a trust record that binds its resolved path to the SHA-256 of its
+  current bytes. Editing the file revokes its trust.
+
+An untrusted file is logged — with the command that trusts it — and skipped; it
+is never imported, so opening an untrusted repository runs none of its code.
+Records live in `~/.agenthicc/trust.json`, never in the repository, which could
+otherwise forge its own trust. Review the files, then manage trust with:
+
+```bash
+agenthicc trust list            # every project extension and its status
+agenthicc trust add             # trust every project extension's current content
+agenthicc trust add .agenthicc/tools/deploy.py
+agenthicc trust revoke .agenthicc/tools
+```
+
+`trust list` counts every Python file under the extension directories,
+including private helpers a package imports, and `.agenthicc/cli.toml`, whose
+commands run shell templates. In a repository without extensions it prints:
+
+```text
+No project extensions under .agenthicc/.
+
+Trust store: /home/you/.agenthicc/trust.json (0 record(s))
+```
+
+A tool or command plugin declares the packages it needs with a module-level
+literal `DEPENDENCIES = ["package>=1.0"]` or a `<stem>.requirements.txt` file
+beside it. Agenthicc reads both without executing the plugin, never installs
+them, and skips a plugin whose requirements are missing — so a trusted plugin is
+imported exactly once, after its dependencies are known to be present.
 
 ## Tools
 
@@ -18,9 +57,8 @@ make an object discoverable from a `TOOLS` export.
 
 Use capability metadata, explicit `WorkspaceView`/`NetworkGuard` checks when
 available, the shared HTTP client, and bounded outputs. Project tool files are
-executable Python and the normal tool scanner currently does not show the
-repository's trust prompt, so review them before starting a session. See the
-[security guide](security.md).
+executable Python: they load only once trusted, and trusting a file does not
+sandbox it. See the [security guide](security.md).
 
 ## Agents
 
@@ -202,52 +240,32 @@ state, catalog revision, tool count, and redacted failures; `/mcp connect NAME`,
 session-scoped manager. `mcp doctor` never invokes a tool merely to test
 connectivity.
 
-The long-term extension SDK, generated catalog, and unified trust contract are
-PRD-138 P1.6/P2.4 work.
+The unified, digest-bound trust contract is implemented (PRD-250 S-02); the
+long-term extension SDK and generated catalog remain PRD-138 P1.6/P2.4 work.
 
 ## Try it
 
-The plugin settings that govern discovery, trust, and installation are ordinary
-configuration fields:
+Check what a repository would run before you open a session in it:
 
 ```bash
-PYTHONPATH=src python -m agenthicc config validate
+uv run agenthicc trust list
 ```
 
-```text
-Configuration is valid: legacy execution settings (anthropic/deepseek-v4.1-flash)
-```
-
-That command is the cheapest way to confirm a `[plugins]` block is at least
-syntactically acceptable before you debug discovery. To see the exact trust
-manifest path a project will use:
-
-```bash
-PYTHONPATH=src python -m agenthicc mcp list --json
-```
-
-```text
-{"path": "/root/python_projects/agenthicc/.agenthicc/agenthicc.toml", "servers": []}
-```
-
-The `path` field shows how agenthicc resolves "the project's config file" for
-the current directory, which is the same resolution rule the plugin and
-extension surfaces use.
+Each project extension is listed with `trusted`, `not trusted` or `changed
+since it was trusted`. The only `[plugins]` setting is `strict_cli_shadow`;
+validate a configuration file with `uv run agenthicc config validate`.
 
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| A project extension is never loaded | Discovery is deferred until after the first TUI frame, or `strict_cli_shadow` rejected it | Run `/commands reload` or `/tools reload` after the shell phase is `ready`; check the CLI shadow diagnostic |
+| A project extension is never loaded | It is not trusted, discovery is deferred until after the first TUI frame, or `strict_cli_shadow` rejected it | Run `agenthicc trust list`; after trusting, run `/commands reload` or `/tools reload` once the shell phase is `ready`; check the CLI shadow diagnostic |
+| An extension stopped loading after an edit or `git pull` | Its content no longer matches the trust record | Review the change, then `agenthicc trust add PATH`; a changed digest is the signal, so do not trust blindly |
 | A plugin import fails silently | Failed imports are recorded rather than raised | Read the discovery result and its recorded failure; check the module name and any missing optional dependency |
-| `allowed_modules` blocks a legitimate plugin | It is an allow-list | Add the module, or remove the restriction for that project — deliberately, not by disabling the control |
-| A trust decision is prompted on every launch | The recorded hash changed | Re-review the code; a changed hash is the signal, so do not auto-accept |
-| A plugin was installed without your intent | `auto_install` is enabled | Keep dependency auto-install disabled, especially in unattended/headless environments |
-| A plugin disappeared after an upgrade | `install_target` resolution or `timeout_seconds` interrupted discovery | Check `install_target` and raise `timeout_seconds` for a slow import |
+| A plugin is skipped for missing dependencies | Its `DEPENDENCIES` or `<stem>.requirements.txt` names a package that is not installed | Install the package yourself; agenthicc never installs plugin dependencies |
+| A plugin is rejected with `DEPENDENCIES must be a literal list` | The declaration is computed | Write a literal list of requirement strings; it is read without running the plugin |
 | A CLI shadowing conflict appears | `strict_cli_shadow` is enforcing precedence | Rename the project command or relax the setting knowingly |
-| `disabled` has no effect | It expects the exact registered name | List the plugin by its registered name and re-run discovery |
-| Diagnostics contain a credential | Bound the record yourself | Trust and audit records must never leak credentials; redact at the boundary |
-| An extension works locally but not in CI | CI has a different config or trust file | Point `trust_file` and `audit_file` at CI-appropriate paths and commit neither secrets nor an unreviewed manifest |
+| An extension works locally but not in CI | Trust records are per user and never committed, so CI skips the untrusted file | Run `agenthicc trust add PATH` as the CI user for the reviewed files, or keep the CI job independent of the extension |
 
 ### Discovery debugging
 
@@ -258,8 +276,10 @@ not load" in a scrolling log.
 
 ### Trust is not a sandbox
 
-Project-local tools, agents, modes, workflows, skills, and commands are Python
-code, so loading them is code execution. A trust manifest records a decision
-about code you already read; it does not constrain what that code can reach.
-Review before use, and keep the manifest and audit records under
-`.agenthicc/` out of version control when they contain machine-specific data.
+Project-local tools, agents, modes, workflows and commands are Python code, so
+loading them is code execution. A trust record captures a decision about code
+you already read; it does not constrain what that code can reach once
+imported. Review before trusting. Skills are prompt content: a skill's
+`` !`command` `` context placeholders are never executed by the loader — the
+agent is asked to run them through its command tool, where approvals, the
+active mode and the sandbox apply.

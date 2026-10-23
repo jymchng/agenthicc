@@ -55,7 +55,7 @@ class ToolHistoryRecoveryRequired(RuntimeError):
 
 def _integrity_error(report: ToolHistoryReport) -> Exception:
     """Build Lauren-ai's typed integrity error from its redacted report."""
-    from lauren_ai import ToolConversationIntegrityError  # noqa: PLC0415
+    from lauren_ai import ToolConversationIntegrityError
 
     issue = report.first_issue
     if issue is None:
@@ -255,7 +255,7 @@ def repair_non_adjacent_tool_history(
         raise _integrity_error(final_report)
 
     summary = memory._summary
-    from agenthicc.memory.journaled import JournaledShortTermMemory  # noqa: PLC0415
+    from agenthicc.memory.journaled import JournaledShortTermMemory
 
     if isinstance(memory, JournaledShortTermMemory):
         memory.commit_repaired_tool_history(repaired, summary)

@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 
 from lauren_ai import tool
 from lauren_ai._tools import set_metadata
+from agenthicc.supervised_tasks import SupervisedTasks
 from agenthicc.tools.capabilities import ToolCapability
 
 if TYPE_CHECKING:
@@ -80,6 +81,7 @@ class _Session:
     # PTY backend state
     proc: subprocess.Popen | None = None  # type: ignore[type-arg]
     pty_fd: int | None = None
+    reader: asyncio.Task[None] | None = None
     buffer: bytearray = field(default_factory=bytearray)
     last_snapshot: str = ""
 
@@ -89,6 +91,8 @@ class _Session:
 # state on ``self`` would lose tmux/PTY sessions between calls. A module-level
 # dict (plus tmux's own named sessions) makes the toolkit genuinely stateful.
 _SESSIONS: dict[str, _Session] = {}
+#: Background readers draining PTY sessions, owned alongside the sessions.
+_PTY_READERS = SupervisedTasks("tui_screenshot PTY readers")
 
 
 @tool_read_write_execute
@@ -421,7 +425,8 @@ class TuiScreenshotTool:
         if command:
             argv = [shell, "-lc", command]
         try:
-            proc = subprocess.Popen(  # noqa: S603
+            proc = await asyncio.to_thread(
+                subprocess.Popen,
                 argv,
                 stdin=slave_fd,
                 stdout=slave_fd,
@@ -451,7 +456,7 @@ class TuiScreenshotTool:
                     break
                 sess.buffer.extend(data)
 
-        asyncio.ensure_future(_reader())
+        sess.reader = _PTY_READERS.start(_reader(), name=f"tui-screenshot-pty-{sid}")
 
     async def _pty_send(self, sess: _Session, text: str) -> None:
         if sess.pty_fd is None:
@@ -460,6 +465,9 @@ class TuiScreenshotTool:
         os.write(sess.pty_fd, encoded)
 
     def _pty_kill(self, sess: _Session) -> None:
+        if sess.reader is not None:
+            sess.reader.cancel()
+            sess.reader = None
         if sess.proc is not None:
             try:
                 sess.proc.terminate()
@@ -572,7 +580,7 @@ class TuiScreenshotTool:
         except _RenderUnavailable as exc:
             raise _ToolError(str(exc)) from exc
 
-        if path.stat().st_size == 0:
+        if (await asyncio.to_thread(path.stat)).st_size == 0:
             raise _ToolError(f"Render produced an empty file: {path}")
         return path, fmt
 
@@ -700,7 +708,7 @@ class TuiScreenshotTool:
             f'<rect width="100%" height="100%" fill="{bg}"/>'
             f"{body}</svg>"
         )
-        path.write_text(svg, encoding="utf-8")
+        await asyncio.to_thread(path.write_text, svg, encoding="utf-8")
 
     # ------------------------------------------------------------- ansi/text
     @staticmethod

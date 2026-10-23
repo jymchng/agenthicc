@@ -439,7 +439,7 @@ def inspect_session(
     conversation_records = loaded.jsonl_artifacts["conversation_events"][0]
     journal_records = loaded.jsonl_artifacts["conversation_journal"][0]
     usage_records = _usage_records_from_journal(journal_records)
-    from agenthicc.runners.session_lease import SessionOpenCoordinator  # noqa: PLC0415
+    from agenthicc.runners.session_lease import SessionOpenCoordinator
 
     lease = SessionOpenCoordinator(source_dir).inspect(valid_id)
     owner_summary: dict[str, object] = {"state": lease.state}

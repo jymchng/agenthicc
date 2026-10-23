@@ -126,11 +126,7 @@ irrecoverable_error_max_retries = 5 # permanent provider 4xx recovery retries
 [tools]
 question_timeout_s = 300.0 # finite five-minute ask_user deadline
 
-[memory]
-project_memory_path = ".agenthicc/memory"
-
 [security]
-sandbox_mode = true
 allowed_paths = ["/absolute/path/to/project"]
 network_allow_list = []
 ```

@@ -201,7 +201,7 @@ class TestCompactMemory:
         from agenthicc.tui.conversation_store import ConversationStore
 
         class _FailTransport:
-            async def complete(self, *a, **kw):  # noqa: ANN001
+            async def complete(self, *a, **kw):
                 raise RuntimeError("network error")
 
         conv = ConversationStore()
@@ -273,7 +273,7 @@ class TestCompactMemory:
             def __init__(self) -> None:
                 self.calls = 0
 
-            async def complete(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            async def complete(self, *args, **kwargs):
                 self.calls += 1
                 return SimpleNamespace(
                     content=[{"type": "thinking", "thinking": "private reasoning payload"}]
@@ -401,7 +401,7 @@ class TestCompactMemory:
 
     async def test_summary_cancellation_propagates_without_mutating_memory(self) -> None:
         class _CancelledTransport:
-            async def complete(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            async def complete(self, *args, **kwargs):
                 raise asyncio.CancelledError
 
         mem = self._make_mem()
@@ -423,7 +423,7 @@ class TestCompactMemory:
         mem.add_user("important user request " + "history " * 500)
         before = mem.snapshot()
 
-        def fail_replace(journal_arg, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003, ARG001
+        def fail_replace(journal_arg, *args, **kwargs):
             raise OSError("disk is unavailable")
 
         monkeypatch.setattr(ConversationJournal, "replace_state", fail_replace)

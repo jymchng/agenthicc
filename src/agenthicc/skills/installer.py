@@ -149,12 +149,15 @@ def _repository_source(source: str) -> _GitRepositorySource | None:
 
 async def _clone_repository(source: _GitRepositorySource) -> tuple[Path, Path]:
     """Clone one repository into a disposable directory and return its root."""
-    if not source.url.startswith("https://") and not Path(source.url).is_dir():
+    local_source = await asyncio.to_thread(os.path.isdir, source.url)
+    if not source.url.startswith("https://") and not local_source:
         raise SkillInstallError("remote skill sources must use HTTPS")
 
-    temporary_root = Path(tempfile.mkdtemp(prefix="agenthicc-skills-source-"))
+    temporary_root = Path(
+        await asyncio.to_thread(tempfile.mkdtemp, prefix="agenthicc-skills-source-")
+    )
     repository_root = temporary_root / "repository"
-    if Path(source.url).is_dir():
+    if local_source:
         try:
             shutil.copytree(source.url, repository_root, symlinks=True)
         except OSError as exc:
@@ -328,7 +331,7 @@ async def _remote_source(source: str) -> tuple[str, str]:
         raise SkillInstallError("remote skill sources must use HTTPS")
     url = _github_raw_url(source)
 
-    from agenthicc.tools.http import agenthicc_http_client, is_network_error  # noqa: PLC0415
+    from agenthicc.tools.http import agenthicc_http_client, is_network_error
 
     try:
         async with agenthicc_http_client(timeout=30.0, follow_redirects=True) as client:

@@ -118,3 +118,36 @@ def test_fast_help_does_not_touch_home(tmp_path: Path, monkeypatch: pytest.Monke
         parser.parse_cli()
     assert exc_info.value.code == 0
     assert list(tmp_path.rglob("*")) == []
+
+
+@pytest.mark.parametrize("argv", [["--version"], ["--version", "--json"]])
+def test_version_reports_the_installed_distribution(
+    argv: list[str], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Both the fast path and argparse print the wheel's version, never a literal."""
+    import importlib.metadata
+
+    from agenthicc.cli import parser
+
+    monkeypatch.setattr(importlib.metadata, "version", lambda name: f"{name}-9.8.7")
+    monkeypatch.setattr(sys, "argv", ["agenthicc", *argv])
+    with pytest.raises(SystemExit) as exc_info:
+        parser.parse_cli()
+
+    assert exc_info.value.code == 0
+    assert capsys.readouterr().out.strip() == "agenthicc agenthicc-9.8.7"
+
+
+def test_version_of_an_uninstalled_source_tree_is_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import importlib.metadata
+
+    from agenthicc.cli import parser
+
+    def missing(name: str) -> str:
+        raise importlib.metadata.PackageNotFoundError(name)
+
+    monkeypatch.setattr(importlib.metadata, "version", missing)
+
+    assert parser.package_version() == "0+unknown"

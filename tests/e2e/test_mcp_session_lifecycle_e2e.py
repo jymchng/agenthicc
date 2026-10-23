@@ -71,4 +71,3 @@ async def test_session_switches_workflows_without_recreating_mcp_manager() -> No
     # The unrelated remote catalog remains available and unchanged.
     assert manager.get_tool("mcp:optional-remote:inspect") is not None
     await manager.shutdown()
-

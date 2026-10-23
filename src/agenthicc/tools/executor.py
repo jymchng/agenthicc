@@ -26,7 +26,7 @@ from lauren_ai._tools._executor import (
     ToolCall,
 )
 
-from agenthicc.tools.base import Tool, ToolBase, ToolResult, ToolResultEnvelope
+from agenthicc.tools.base import Tool, ToolBase, ToolResult, ToolResultEnvelope, tool_name
 from agenthicc.tools.capabilities import (
     CAPABILITIES_KEY,
     PRESENTATION_KEY,
@@ -485,7 +485,7 @@ class AgenthiccToolExecutor:
             if isinstance(tool, Tool):
                 result = tool.execute(dict(kwargs), _legacy_context(ctx))
             else:
-                from agenthicc.tools.workspace_access import (  # noqa: PLC0415
+                from agenthicc.tools.workspace_access import (
                     current_workspace_access,
                 )
 
@@ -613,7 +613,7 @@ class AgenthiccToolExecutor:
         tool_use_id: str,
         context: ToolCallContext,
     ) -> None:
-        from lauren_ai._signals import ToolCallStarted  # noqa: PLC0415
+        from lauren_ai._signals import ToolCallStarted
 
         await _emit_signal(
             self._event_sink,
@@ -626,7 +626,7 @@ class AgenthiccToolExecutor:
         )
 
     async def _emit_complete(self, result: ToolResultEnvelope) -> None:
-        from lauren_ai._signals import ToolCallComplete  # noqa: PLC0415
+        from lauren_ai._signals import ToolCallComplete
 
         await _emit_signal(
             self._event_sink,
@@ -673,7 +673,7 @@ def _make_lauren_tool(
     """
     adapter = AgenthiccToolExecutor(default_timeout_s=timeout_s)
     provider_name = tool.provider_name if isinstance(tool, Tool) else None
-    registered, metadata = adapter._prepare(  # noqa: SLF001
+    registered, metadata = adapter._prepare(
         tool,
         name=provider_name if isinstance(provider_name, str) else None,
         source=source,
@@ -695,23 +695,20 @@ def _make_lauren_tool(
     lauren_metadata: dict[str, object] = {CAPABILITIES_KEY: metadata.capabilities}
     if is_exploratory_tool(tool):
         lauren_metadata[PRESENTATION_KEY] = {"exploratory": True}
-    setattr(implementation, "__lauren_ai_tool_metadata__", lauren_metadata)
+    # Tool metadata lives on the function object; callables have no typed attributes.
+    setattr(implementation, "__lauren_ai_tool_metadata__", lauren_metadata)  # noqa: B010
     implementation.__name__ = metadata.name
     implementation.__qualname__ = metadata.name
     implementation.__doc__ = metadata.description
     canonical_name = tool.name
     if canonical_name:
-        setattr(implementation, "__agenthicc_tool_name__", canonical_name)
+        setattr(implementation, "__agenthicc_tool_name__", canonical_name)  # noqa: B010
     return implementation
 
 
 def _describe(tool: object, explicit_name: str | None) -> tuple[str, str, dict[str, object]]:
     meta = getattr(tool, TOOL_META, None)
-    name = explicit_name or str(getattr(meta, "name", "") or getattr(tool, "name", ""))
-    if not name:
-        name = getattr(tool, "__name__", "")
-    if not name:
-        raise ValueError(f"Tool has no name: {tool!r}")
+    name = explicit_name or tool_name(tool)
     doc_lines = (getattr(tool, "__doc__", "") or "").strip().splitlines()
     description = str(
         getattr(meta, "description", "")
@@ -761,7 +758,7 @@ def _legacy_context(ctx: ToolContext) -> dict[str, object]:
         "extras": ctx.extras,
     }
     context.update(ctx.extras)
-    from agenthicc.tools.workspace_access import current_workspace_access  # noqa: PLC0415
+    from agenthicc.tools.workspace_access import current_workspace_access
 
     policy = current_workspace_access()
     if policy is not None:
@@ -809,7 +806,7 @@ def _unwrap_agenthicc_result(result: object) -> object:
 
 
 def _classify_error(exc: BaseException) -> ToolErrorKind:
-    from agenthicc.tools.http import is_network_error  # noqa: PLC0415
+    from agenthicc.tools.http import is_network_error
 
     if isinstance(exc, asyncio.TimeoutError):
         return ToolErrorKind.timeout

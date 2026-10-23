@@ -184,7 +184,7 @@ def _validate_name(name: str) -> str:
 
 
 def _restricted_capabilities() -> frozenset[str]:
-    from agenthicc.tools.capabilities import ToolCapability  # noqa: PLC0415
+    from agenthicc.tools.capabilities import ToolCapability
 
     return frozenset(
         {
@@ -230,7 +230,7 @@ def build_default_registry(
     capability and approval gates.  Legacy built-in names are aliases and do
     not create additional selectable modes.
     """
-    from agenthicc.tools.capabilities import ToolCapability  # noqa: PLC0415
+    from agenthicc.tools.capabilities import ToolCapability
 
     restricted = _restricted_capabilities()
     defaults = _canonical_workflow_map(default_map or {})
@@ -333,7 +333,7 @@ def _load_legacy_plugins(
     """Adapt user mode plugins without consulting the legacy registry internals."""
     conservative_policy = _restricted_capabilities()
     try:
-        from agenthicc.modes.plugin_loader import discover_mode_plugins  # noqa: PLC0415
+        from agenthicc.modes.plugin_loader import discover_mode_plugins
 
         plugins = discover_mode_plugins()
     except Exception as exc:  # noqa: BLE001
@@ -489,18 +489,47 @@ class ModeManager:
         """Set the optional persistence/observability callback."""
         self._on_change = callback
 
-    def resolve_name(self, name: str) -> str:
-        """Return the canonical selectable name or raise ``UnknownModeError``."""
+    def resolve(self, name: str) -> RuntimeMode:
+        """Return the selectable mode *name* refers to, without activating it.
+
+        Raises ``UnknownModeError`` for unknown and internal-only names.
+        """
         mode = self._registry.resolve(name)
         if self._registry.is_internal(mode.name):
             raise UnknownModeError(name, self._registry.selectable_names())
-        return mode.name
+        return mode
+
+    def resolve_name(self, name: str) -> str:
+        """Return the canonical selectable name or raise ``UnknownModeError``."""
+        return self.resolve(name).name
 
     def _publish(self, mode: RuntimeMode) -> None:
         if self._app_state is not None:
             self._app_state.active_mode.set(mode)
         if self._on_change is not None:
             self._on_change(mode)
+
+
+def phase_mode(
+    active: RuntimeMode,
+    manager: ModeManager | None,
+    override: str | None,
+) -> RuntimeMode:
+    """Return the mode a workflow phase declaring *override* runs under.
+
+    This matches how runners apply a phase override at the turn boundary:
+    without an override, or without a mode manager to apply one, the phase
+    runs in *active*; an unknown or internal-only override raises
+    ``UnknownModeError`` rather than falling back to the caller's mode.
+
+    Filter a phase's tools with this mode before its turn switches modes.
+    Filtering by the caller's mode instead would, for example, drop from an
+    execute phase entered from Plan the write and exec tools its Yolo or
+    Safe override exists to enable.
+    """
+    if not override or manager is None:
+        return active
+    return manager.resolve(override)
 
 
 def build_mode_str(mode: RuntimeMode) -> str:

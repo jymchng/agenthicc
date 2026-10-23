@@ -52,8 +52,8 @@ def _validate_workflow_and_profile(
     *,
     config_path: str | None = None,
 ) -> None:
-    from agenthicc.config import load_config  # noqa: PLC0415
-    from agenthicc.workflows.registry import build_workflow_registry  # noqa: PLC0415
+    from agenthicc.config import load_config
+    from agenthicc.workflows.registry import build_workflow_registry
 
     registry = build_workflow_registry(
         project_dir=repository / ".agenthicc",
@@ -175,7 +175,7 @@ def schedules_create(
     repository = _repository(repository_root)
     try:
         _validate_workflow_and_profile(ctx, repository, workflow_name, profile_name)
-        from agenthicc.tui.runtime.mode_manager import canonical_mode_name  # noqa: PLC0415
+        from agenthicc.tui.runtime.mode_manager import canonical_mode_name
 
         mode = canonical_mode_name(permission_ceiling)
         if mode not in {"Safe", "Plan", "Yolo"}:
@@ -356,7 +356,7 @@ def schedules_update(
             config_path=config_path or None,
         )
         if "permission_ceiling" in changes:
-            from agenthicc.tui.runtime.mode_manager import canonical_mode_name  # noqa: PLC0415
+            from agenthicc.tui.runtime.mode_manager import canonical_mode_name
 
             mode = canonical_mode_name(str(changes["permission_ceiling"]))
             if mode not in {"Safe", "Plan", "Yolo"}:

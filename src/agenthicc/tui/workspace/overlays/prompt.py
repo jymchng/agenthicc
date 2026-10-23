@@ -37,8 +37,8 @@ class PromptOverlay(Overlay):
 
     def _render_prompt_line(self) -> str:
         """Return a Rich markup string for the prompt row: ❯ text▌."""
-        from agenthicc.tui.input.renderer import PROMPT_CHAR, CURSOR_CHAR  # noqa: PLC0415
-        from rich.markup import escape as _e  # noqa: PLC0415
+        from agenthicc.tui.input.renderer import PROMPT_CHAR, CURSOR_CHAR
+        from rich.markup import escape as _e
 
         buf = self._buf.buf
         cursor = self._buf.cursor

@@ -15,18 +15,17 @@ import json
 import os
 import re
 import secrets
-import shutil
 import signal
 import time
-from collections.abc import Iterator
-from contextlib import AbstractContextManager, contextmanager
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Mapping
 
 from agenthicc.reactive import Signal
-from agenthicc.tools.exec.outcome import resolve_deadline, validate_timeout
+from agenthicc.runners.process_lease import InterProcessLock
+from agenthicc.tools.exec.outcome import bash_executable, resolve_deadline, validate_timeout
 
 __all__ = [
     "TerminalManager",
@@ -342,6 +341,12 @@ class TerminalRecord:
         )
 
 
+def _resolved_directory(path: Path) -> tuple[str, bool]:
+    """Resolve *path* and report whether it names an existing directory."""
+    resolved = path.resolve()
+    return str(resolved), resolved.is_dir()
+
+
 class TerminalStore:
     """Small fsync'd JSONL registry for terminal lifecycle records."""
 
@@ -351,28 +356,8 @@ class TerminalStore:
         self.lock_path = self.root / "registry.lock"
 
     def _lock(self) -> AbstractContextManager[None]:
-        @contextmanager
-        def locked() -> Iterator[None]:
-            self.root.mkdir(parents=True, exist_ok=True)
-            handle = self.lock_path.open("a+", encoding="utf-8")
-            try:
-                try:
-                    import fcntl  # noqa: PLC0415
-
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-                except (ImportError, OSError):
-                    pass
-                yield
-            finally:
-                try:
-                    import fcntl  # noqa: PLC0415
-
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-                except (ImportError, OSError):
-                    pass
-                handle.close()
-
-        return locked()
+        """Exclusive cross-process lock; raises ``InterProcessLockError`` if unavailable."""
+        return InterProcessLock(self.lock_path)
 
     def _events(self) -> list[dict[str, object]]:
         if not self.events_path.exists():
@@ -674,8 +659,8 @@ class TerminalManager:
         requested_cwd = Path(cwd) if cwd is not None else Path(self.cwd)
         if not requested_cwd.is_absolute():
             requested_cwd = Path(self.cwd) / requested_cwd
-        resolved_cwd = str(requested_cwd.resolve())
-        if not Path(resolved_cwd).is_dir():
+        resolved_cwd, cwd_is_directory = await asyncio.to_thread(_resolved_directory, requested_cwd)
+        if not cwd_is_directory:
             return {
                 "ok": False,
                 "background": True,
@@ -731,11 +716,7 @@ class TerminalManager:
                     cwd=resolved_cwd,
                     env=effective_env,
                     start_new_session=True,
-                    executable=(
-                        "/bin/bash"
-                        if os.name != "nt" and os.path.exists("/bin/bash")
-                        else shutil.which("bash")
-                    ),
+                    executable=await asyncio.to_thread(bash_executable),
                 )
             else:
                 process = await asyncio.create_subprocess_exec(
@@ -1020,7 +1001,7 @@ class TerminalManager:
                     return None
         url = probe.get("url")
         if isinstance(url, str) and url:
-            from urllib.parse import urlparse  # noqa: PLC0415
+            from urllib.parse import urlparse
 
             parsed = urlparse(url)
             host = parsed.hostname
@@ -1029,7 +1010,7 @@ class TerminalManager:
             ):
                 return None
             try:
-                import httpx  # noqa: PLC0415
+                import httpx
 
                 async with httpx.AsyncClient(follow_redirects=True, timeout=0.5) as client:
                     response = await client.get(url)

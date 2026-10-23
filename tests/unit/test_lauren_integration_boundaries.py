@@ -207,8 +207,8 @@ async def test_mcp_execute_object_becomes_callable_agent_tool(tmp_path: Path):
     )
 
     assert callable(exposed)
-    assert getattr(exposed, "__lauren_ai_tool__").name == mcp_tool.provider_name
-    assert getattr(exposed, "__lauren_ai_tool__").parameters["input_schema"] == mcp_tool.parameters
+    assert exposed.__lauren_ai_tool__.name == mcp_tool.provider_name
+    assert exposed.__lauren_ai_tool__.parameters["input_schema"] == mcp_tool.parameters
 
     @agent(model="deepseek-v4-flash")
     @use_tools(exposed)

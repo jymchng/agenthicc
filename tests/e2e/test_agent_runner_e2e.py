@@ -4,11 +4,9 @@ These tests exercise the full stack the PRDs describe:
 
 * an ``@agent()``-decorated class run by ``AgentRunnerBase`` with a
   ``MockTransport`` providing scripted completions;
-* lauren-ai ``SignalBus`` lifecycle signals bridged into the agenthicc
-  ``EventProcessor`` as kernel events;
 * tool-only communication — the agent affects ``AppState`` exclusively by
-  calling a tool that emits kernel events (``AgentSpawnRequest``), never by
-  touching state directly.
+  calling a tool that emits declared kernel events (``IntentCreated``,
+  ``WorkflowPhaseCompleted``), never by touching state directly.
 
 NOTE: no ``from __future__ import annotations`` here — ``@tool()`` inspects
 real annotations at decoration time.
@@ -21,14 +19,7 @@ import pytest
 
 from lauren_ai._agents import agent, use_tools
 from lauren_ai._agents._runner import AgentRunnerBase
-from lauren_ai._signals import (
-    AgentRunComplete,
-    ModelCallComplete,
-    ModelCallStarted,
-    SignalBus,
-    ToolCallComplete,
-    ToolCallStarted,
-)
+from lauren_ai._signals import SignalBus
 from lauren_ai._tools import tool
 from lauren_ai._memory import ShortTermMemory
 from lauren_ai._transport import Completion, TokenUsage, ToolCall
@@ -60,38 +51,6 @@ def _completion(content: str, n: int = 1) -> Completion:
     )
 
 
-def _bridge_signals(bus: SignalBus, processor: EventProcessor) -> None:
-    """Bridge lauren-ai lifecycle signals into agenthicc kernel events."""
-
-    def _make_handler(event_type: str, fields: list[str]):
-        async def handler(signal) -> None:
-            payload = {f: getattr(signal, f, None) for f in fields}
-            # usage objects aren't JSON-serializable; flatten them
-            usage = payload.pop("usage", None)
-            if usage is not None:
-                payload["input_tokens"] = usage.input_tokens
-                payload["output_tokens"] = usage.output_tokens
-            await processor.emit(Event.create(event_type, payload))
-
-        return handler
-
-    bus.on(ModelCallStarted)(_make_handler("ModelCallStarted", ["model", "agent_id", "agent_name"]))
-    bus.on(ModelCallComplete)(
-        _make_handler("ModelCallComplete", ["model", "agent_id", "usage", "duration_ms"])
-    )
-    bus.on(ToolCallStarted)(
-        _make_handler("ToolCallStarted", ["tool_name", "tool_use_id", "agent_id"])
-    )
-    bus.on(ToolCallComplete)(
-        _make_handler(
-            "ToolCallComplete", ["tool_name", "tool_use_id", "agent_id", "duration_ms", "success"]
-        )
-    )
-    bus.on(AgentRunComplete)(
-        _make_handler("AgentRunComplete", ["agent_id", "agent_name", "turns", "stop_reason"])
-    )
-
-
 @pytest.fixture
 def kernel(tmp_path):
     state = AppState.create(
@@ -102,33 +61,6 @@ def kernel(tmp_path):
         policy=SecurityPolicy(),
     )
     return EventProcessor(initial_state=state, persist=False)
-
-
-async def test_agent_run_signals_land_in_kernel_event_log(kernel):
-    """A plain agent run produces ModelCall* and AgentRunComplete kernel events."""
-
-    @agent(model="mock-model", system="You are a test agent.")
-    class PlainAgent: ...
-
-    proc_task = asyncio.create_task(kernel.run())
-    bus = SignalBus()
-    _bridge_signals(bus, kernel)
-
-    mock = MockTransport()
-    mock.queue_response(_completion("Hello from the agent."))
-    runner = AgentRunnerBase(transport=mock, signals=bus)
-
-    response = await runner.run(PlainAgent(), "Say hello")
-    assert response.content == "Hello from the agent."
-    assert response.stop_reason == "end_turn"
-    await kernel.drain()
-    event_types = [e.event_type for e in kernel.event_log]
-    assert "ModelCallStarted" in event_types
-    assert "ModelCallComplete" in event_types
-    assert "AgentRunComplete" in event_types
-
-    proc_task.cancel()
-    await asyncio.gather(proc_task, return_exceptions=True)
 
 
 async def test_parent_provider_history_contains_complete_subagent_aggregate(tmp_path):
@@ -190,68 +122,56 @@ async def test_parent_provider_history_contains_complete_subagent_aggregate(tmp_
     journal.close()
 
 
-async def test_tool_only_communication_spawns_agent_in_appstate(kernel):
+async def test_tool_only_communication_changes_appstate_through_kernel_events(kernel):
     """The agent mutates AppState exclusively through a tool call.
 
-    The ``spawn_helper`` tool emits an ``AgentSpawnRequest`` kernel event; the
-    reducer creates the ``AgentInstance``. The agent itself never touches
-    state.
+    The ``record_intent`` tool emits an ``IntentCreated`` kernel event; the
+    reducer creates the intent. The agent itself never touches state.
     """
     proc_task = asyncio.create_task(kernel.run())
-
-    # Communication tool: closure over the kernel processor.
     processor = kernel
+    seen: list[str] = []
+    processor.add_sink(lambda event: seen.append(event.event_type))
 
     @tool()
-    async def spawn_helper(agent_type: str) -> dict:
-        """Spawn a helper agent of the given type.
+    async def record_intent(text: str) -> dict:
+        """Record a follow-up intent for the orchestrator.
 
         Args:
-            agent_type: The type of agent to spawn.
+            text: What needs to be done.
         """
         from uuid import uuid4
 
-        new_id = uuid4().hex
+        intent_id = uuid4().hex
         await processor.emit(
-            Event.create(
-                "AgentSpawnRequest",
-                {"agent_id": new_id, "agent_type": agent_type, "config": {}},
-            )
+            Event.create("IntentCreated", {"intent_id": intent_id, "raw_text": text})
         )
-        return {"agent_id": new_id}
+        return {"intent_id": intent_id}
 
-    @agent(model="mock-model", system="You delegate work by spawning helpers.")
-    @use_tools(spawn_helper)
+    @agent(model="mock-model", system="You delegate work by recording intents.")
+    @use_tools(record_intent)
     class OrchestratorAgent: ...
 
-    bus = SignalBus()
-    _bridge_signals(bus, kernel)
-
     mock = MockTransport()
-    mock.queue_tool_use("spawn_helper", {"agent_type": "DebuggerAgent"})
-    mock.queue_response(_completion("Spawned a debugger to handle the failure.", n=2))
+    mock.queue_tool_use("record_intent", {"text": "Debug the failing tests"})
+    mock.queue_response(_completion("Recorded a debugging intent.", n=2))
 
     orchestrator = OrchestratorAgent()
-    runner = _build_runner_for_agent(orchestrator, mock, signals=bus)
+    runner = _build_runner_for_agent(orchestrator, mock, signals=SignalBus())
     response = await runner.run(orchestrator, "The tests are failing, get help")
 
     assert response.turns == 2
     assert len(response.tool_calls_made) == 1
-    assert response.tool_calls_made[0].name == "spawn_helper"
+    assert response.tool_calls_made[0].name == "record_intent"
 
     await kernel.drain()
 
-    # The reducer created the agent from the tool-emitted event.
-    state = kernel.get_state()
-    spawned = [a for a in state.agents.values() if a.agent_type == "DebuggerAgent"]
-    assert len(spawned) == 1
-    assert spawned[0].status.value == "idle"
-
-    # Tool lifecycle was also captured via the signal bridge.
-    event_types = [e.event_type for e in kernel.event_log]
-    assert "ToolCallStarted" in event_types
-    assert "ToolCallComplete" in event_types
-    assert "AgentSpawnRequest" in event_types
+    # The reducer created the intent from the tool-emitted event.
+    intents = list(kernel.get_state().intents.values())
+    assert [intent.raw_text for intent in intents] == ["Debug the failing tests"]
+    assert intents[0].status.value == "pending"
+    assert seen == ["IntentCreated"]
+    assert kernel.rejected_count == 0
 
     proc_task.cancel()
     await asyncio.gather(proc_task, return_exceptions=True)
@@ -443,72 +363,59 @@ async def test_two_parallel_reads_are_serialized_as_one_valid_exchange(kernel):
 
 
 async def test_multi_turn_workflow_progress_via_tools(kernel):
-    """Agent advances a workflow node through tool calls across two turns."""
+    """Agent advances a workflow run through tool calls across two turns."""
     proc_task = asyncio.create_task(kernel.run())
     processor = kernel
 
-    # Seed a workflow with one node.
-    await processor.emit(Event.create("WorkflowCreated", {"workflow_id": "wf1", "intent_id": "i1"}))
     await processor.emit(
         Event.create(
-            "WorkflowNodeAdded",
-            {
-                "workflow_id": "wf1",
-                "node_id": "n1",
-                "task_id": "t1",
-                "label": "Refactor auth",
-                "dependencies": [],
-            },
+            "WorkflowRunStarted",
+            {"run_id": "wf1", "workflow_name": "refactor", "intent": "Refactor auth"},
         )
     )
     await processor.drain()
 
     @tool()
-    async def complete_node(workflow_id: str, node_id: str, result: str) -> dict:
-        """Mark a workflow node as complete.
+    async def complete_phase(run_id: str, phase_name: str, summary: str) -> dict:
+        """Record a completed workflow phase and finish the run.
 
         Args:
-            workflow_id: The workflow identifier.
-            node_id: The node to complete.
-            result: Result summary.
+            run_id: The workflow run identifier.
+            phase_name: The phase that finished.
+            summary: Result summary.
         """
         await processor.emit(
             Event.create(
-                "WorkflowNodeStatusChanged",
-                {
-                    "workflow_id": workflow_id,
-                    "node_id": node_id,
-                    "status": "complete",
-                    "result": result,
-                },
+                "WorkflowPhaseCompleted",
+                {"run_id": run_id, "phase_name": phase_name, "full_text": summary},
             )
+        )
+        await processor.emit(
+            Event.create("WorkflowRunCompleted", {"run_id": run_id, "status": "complete"})
         )
         return {"ok": True}
 
     @agent(model="mock-model")
-    @use_tools(complete_node)
+    @use_tools(complete_phase)
     class WorkerAgent: ...
 
     mock = MockTransport()
     mock.queue_tool_use(
-        "complete_node",
-        {
-            "workflow_id": "wf1",
-            "node_id": "n1",
-            "result": "Argon2 refactor done",
-        },
+        "complete_phase",
+        {"run_id": "wf1", "phase_name": "execute", "summary": "Argon2 refactor done"},
     )
-    mock.queue_response(_completion("Node complete.", n=2))
+    mock.queue_response(_completion("Phase complete.", n=2))
 
     worker = WorkerAgent()
     runner = _build_runner_for_agent(worker, mock, signals=SignalBus())
-    await runner.run(worker, "Complete your assigned node")
+    await runner.run(worker, "Complete your assigned phase")
 
     await kernel.drain()
     wf = kernel.get_state().workflows["wf1"]
-    assert wf.nodes["n1"].status.value == "complete"
-    assert wf.nodes["n1"].result == "Argon2 refactor done"
-    assert wf.status.value == "complete"  # single node => workflow complete
+    assert wf.nodes["execute"].status.value == "complete"
+    assert isinstance(wf.nodes["execute"].result, dict)
+    assert wf.nodes["execute"].result["full_text"] == "Argon2 refactor done"
+    assert wf.status.value == "complete"
 
     proc_task.cancel()
     await asyncio.gather(proc_task, return_exceptions=True)

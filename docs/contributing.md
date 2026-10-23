@@ -48,7 +48,8 @@ test(tui): cover non-TTY shutdown
 `playwright` markers. Place a test in the directory that matches the boundary
 it exercises. The Nox sessions `tests_unit`, `tests_integration`, and
 `tests_e2e` run those directories directly; `coverage` runs the whole suite
-with a 90% floor.
+with branch and subprocess coverage against the floor in
+`[tool.coverage.report] fail_under`.
 
 ## Which surface are you changing?
 
@@ -76,20 +77,29 @@ uv run pytest tests/ -q
 uv run nox -s llms_check
 ```
 
-Build the docs with `uv run mkdocs build --strict`. MkDocs and MkDocs Material
-are declared in the `dev` extra of `pyproject.toml`, which is the extra
-`.github/workflows/docs.yml` installs before building, so no separate install
-is needed.
+Build the docs with `uv run mkdocs build --strict` (or `uv run nox -s docs`).
+MkDocs and MkDocs Material are declared in the `dev` extra of `pyproject.toml`,
+so no separate install is needed.
 
-Every Nox session installs only the `dev` extra. TUI, API, and agent modules
-ship in the base package; the project declares no `tui`, `api`, or `all`
-extra. List the sessions with `uv run nox --list`: `tests`, `tests_unit`,
-`tests_integration`, `tests_e2e`, `coverage`, `lint`, `format`, `typecheck`,
-`typecheck_contracts`, `type_audit`, `build`, `build_check`, `llms_check`,
-`clean`.
+Every Nox session runs on nox's uv backend and installs the project and its one
+`dev` extra into the session's own virtualenv. TUI, API, and agent modules ship
+in the base package; the project declares no `tui`, `api`, or `all` extra. List
+the sessions with `uv run nox --list`: `tests`, `tests_unit` and
+`tests_integration` (each on Python 3.11, 3.12 and 3.13, e.g.
+`tests_unit-3.12`), `tests_e2e`, `tests_windows`, `coverage`, `lint`, `format`,
+`typecheck`, `typecheck_contracts`, `type_audit`, `docs`, `build`,
+`build_check`, `llms_check`, `clean`.
 
-`nox -s llms_check` checks that every symbol in `agenthicc.__all__` has a `###`
-heading in `llms-full.txt`; it does not generate the file or validate prose
+`.github/workflows/ci.yml` runs every gate on each push and pull request and
+ends in one aggregate **Required checks** job, which is the status check branch
+protection requires (`scripts/apply_branch_protection.sh`). The release
+workflow re-runs that CI for the tagged commit, checks that the tag names the
+package version, and checks that the built wheel's `agenthicc --version`
+reports it. `uvx pre-commit install` runs the same tools locally: ruff on
+commit; mypy, the type ratchet and the unit tests on push.
+
+`nox -s llms_check` checks that every symbol in `agenthicc.__all__` and
+`agenthicc.kernel.__all__` has a `###` heading in `llms-full.txt`; it does not generate the file or validate prose
 sections. When changing a public tool, workflow, TUI, or session-service
 symbol, add or update the corresponding `### Symbol` section by hand and verify
 the import path against `src/agenthicc/`.

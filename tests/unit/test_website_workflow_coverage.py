@@ -75,6 +75,8 @@ from agenthicc.workflows.site_imitate.runner import (
     _make_scaffold_tools as make_imitate_scaffold_tools,
     _make_verify_tools as make_imitate_verify_tools,
 )
+from tests.session_fakes import workflow_config
+from agenthicc.workflows.reconstruct_site.runner import ReconstructSiteParams
 
 pytestmark = pytest.mark.unit
 
@@ -86,19 +88,22 @@ def _write_epub(path: Path) -> None:
 
 
 def _runner_config() -> SimpleNamespace:
-    return SimpleNamespace(
+    return workflow_config(
+        agent_runner=object(),
         workflow_handle=None,
         session_memory=object(),
         cfg=SimpleNamespace(
-            execution=SimpleNamespace(effective_usable_budget=lambda: 10_000),
+            execution=SimpleNamespace(
+                effective_usable_budget=lambda: 10_000,
+                effective_model=lambda: "test-model",
+            ),
         ),
     )
 
 
 def _runner(cls: type[Any]) -> Any:
-    runner = object.__new__(cls)
-    runner._cfg = _runner_config()
-    return runner
+    """Construct *cls* through its real ``__init__`` with a minimal config."""
+    return cls(_runner_config(), None)
 
 
 def _value(tool_name: str, parameter: str) -> object:
@@ -396,15 +401,16 @@ async def test_site_imitate_dictionary_tools_and_soft_catalog_loading(
         "platform": "web",
         "api": [{"framework": "shadcn/ui", "symbol": "Sheet"}],
     }
-    ntui = SimpleNamespace(
-        lookup=lambda _description, _catalog, top=5: [record][:top],
-        list_names=lambda _catalog, platform="", query="": [{"name": "Drawer"}],
-        match_brief=lambda item: {"name": item["name"]},
-        format_matches=lambda _matches: "Drawer (Sheet)",
-        format_name_list=lambda _names: "[web] (1):\nDrawer",
-        load_catalog=lambda: [record],
-    )
-    monkeypatch.setattr(module, "_import_ntui", lambda: ntui)
+    fakes = {
+        "lookup": lambda _description, _catalog, top=5: [record][:top],
+        "list_names": lambda _catalog, platform="", query="": [{"name": "Drawer"}],
+        "match_brief": lambda item: {"name": item["name"]},
+        "format_matches": lambda _matches: "Drawer (Sheet)",
+        "format_name_list": lambda _names: "[web] (1):\nDrawer",
+        "load_catalog": lambda: [record],
+    }
+    for attribute, fake in fakes.items():
+        monkeypatch.setattr(name_that_ui, attribute, fake)
     assert module._load_ntui_catalog() == [record]
 
     event = asyncio.Event()
@@ -422,17 +428,14 @@ async def test_site_imitate_dictionary_tools_and_soft_catalog_loading(
     assert (await build_lookup("drawer"))["matches"] == [{"name": "Drawer"}]
     assert (await built())["ok"] is True
 
-    monkeypatch.setattr(module, "_import_ntui", lambda: None)
-    assert module._load_ntui_catalog() == []
+    # An empty catalog (nothing cached, nothing fetched) disables the lookups.
     unavailable_lookup = make_imitate_analyze_tools(asyncio.Event(), {}, [])[0]
     assert (await unavailable_lookup("drawer"))["ok"] is False
     unavailable_build_lookup = make_imitate_build_tools(asyncio.Event(), {}, [])[0]
     assert (await unavailable_build_lookup("drawer"))["ok"] is False
 
     monkeypatch.setattr(
-        module,
-        "_import_ntui",
-        lambda: SimpleNamespace(load_catalog=lambda: (_ for _ in ()).throw(OSError("bad cache"))),
+        name_that_ui, "load_catalog", lambda: (_ for _ in ()).throw(OSError("bad cache"))
     )
     assert module._load_ntui_catalog() == []
 
@@ -584,6 +587,8 @@ async def test_site_imitate_resume_from_analyze_and_remaining_failure_paths() ->
 @pytest.mark.asyncio
 async def test_reconstruct_site_full_driver_covers_dynamic_page_and_infrastructure() -> None:
     runner = _runner(ReconstructSiteRunner)
+    # The driver below answers every phase, so run the all-phases profile.
+    runner._cfg.params = ReconstructSiteParams(profile="production")
     runner.run_phase = lambda **kwargs: _successful_reconstruct_run_phase(runner, **kwargs)  # type: ignore[method-assign]
 
     context = await runner.run("reconstruct https://example.test")
@@ -600,6 +605,8 @@ async def test_reconstruct_site_full_driver_covers_dynamic_page_and_infrastructu
 @pytest.mark.asyncio
 async def test_reconstruct_site_resume_dispatches_every_declared_phase() -> None:
     runner = _runner(ReconstructSiteRunner)
+    # The driver below answers every phase, so run the all-phases profile.
+    runner._cfg.params = ReconstructSiteParams(profile="production")
     runner.run_phase = lambda **kwargs: _successful_reconstruct_run_phase(runner, **kwargs)  # type: ignore[method-assign]
     resumed = await runner.resume(_reconstruct_context())
     assert resumed.state is ReconstructState.COMPLETE
@@ -1224,7 +1231,7 @@ async def test_reconstruct_validation_can_reenter_an_earlier_phase() -> None:
     )
     for method, rejected_name in methods:
 
-        async def reject_to_page(**kwargs: object) -> None:
+        async def reject_to_page(rejected_name: str = rejected_name, **kwargs: object) -> None:
             tools = kwargs["tools"]
             assert isinstance(tools, list)
             rejected = next(
@@ -1262,7 +1269,11 @@ async def test_reconstruct_infrastructure_verification_retries_after_rejection()
     for method, rejected_name, verified_name in methods:
         rejected_once = False
 
-        async def reject_then_verify(**kwargs: object) -> None:
+        async def reject_then_verify(
+            rejected_name: str = rejected_name,
+            verified_name: str = verified_name,
+            **kwargs: object,
+        ) -> None:
             nonlocal rejected_once
             tools = kwargs["tools"]
             assert isinstance(tools, list)

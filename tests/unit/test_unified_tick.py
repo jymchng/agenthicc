@@ -119,7 +119,7 @@ class TestElapsedSProperty:
         assert isinstance(conv.elapsed_s, float)
 
     def test_elapsed_s_positive_during_turn(self) -> None:
-        import time  # noqa: PLC0415
+        import time
 
         conv = ConversationStore()
         conv.begin_turn("agent", "t1")
@@ -133,7 +133,7 @@ class TestElapsedSProperty:
         assert conv.elapsed_s == 0.0
 
     def test_elapsed_s_is_not_a_signal(self) -> None:
-        from agenthicc.reactive import Signal  # noqa: PLC0415
+        from agenthicc.reactive import Signal
 
         conv = ConversationStore()
         assert not isinstance(conv.elapsed_s, Signal)
@@ -145,7 +145,7 @@ class TestElapsedSProperty:
     def test_display_clock_excludes_prompt_wait_but_wall_clock_does_not(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        import agenthicc.tui.conversation_store as conversation_store_module  # noqa: PLC0415
+        import agenthicc.tui.conversation_store as conversation_store_module
 
         now = 100.0
         monkeypatch.setattr(conversation_store_module.time, "monotonic", lambda: now)
@@ -176,7 +176,7 @@ class TestElapsedSProperty:
     def test_paused_ticks_do_not_publish_activity_timer_updates(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        import agenthicc.tui.conversation_store as conversation_store_module  # noqa: PLC0415
+        import agenthicc.tui.conversation_store as conversation_store_module
 
         now = 100.0
         monkeypatch.setattr(conversation_store_module.time, "monotonic", lambda: now)
@@ -211,7 +211,7 @@ class TestElapsedSProperty:
     def test_pending_signal_controls_display_pause_without_tick_override(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        import agenthicc.tui.conversation_store as conversation_store_module  # noqa: PLC0415
+        import agenthicc.tui.conversation_store as conversation_store_module
 
         now = 100.0
         monkeypatch.setattr(conversation_store_module.time, "monotonic", lambda: now)
@@ -237,7 +237,7 @@ class TestElapsedSProperty:
     def test_turn_complete_retains_wall_clock_duration_during_prompt_wait(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        import agenthicc.tui.conversation_store as conversation_store_module  # noqa: PLC0415
+        import agenthicc.tui.conversation_store as conversation_store_module
 
         now = 200.0
         monkeypatch.setattr(conversation_store_module.time, "monotonic", lambda: now)
@@ -260,7 +260,7 @@ class TestElapsedSProperty:
     def test_activity_clock_accumulates_across_internal_turns_until_idle(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        import agenthicc.tui.conversation_store as conversation_store_module  # noqa: PLC0415
+        import agenthicc.tui.conversation_store as conversation_store_module
 
         now = 100.0
         monkeypatch.setattr(conversation_store_module.time, "monotonic", lambda: now)
@@ -299,7 +299,7 @@ class TestElapsedSProperty:
     def test_activity_clock_resets_at_the_next_idle_to_active_edge(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        import agenthicc.tui.conversation_store as conversation_store_module  # noqa: PLC0415
+        import agenthicc.tui.conversation_store as conversation_store_module
 
         now = 50.0
         monkeypatch.setattr(conversation_store_module.time, "monotonic", lambda: now)
@@ -318,7 +318,7 @@ class TestElapsedSProperty:
     def test_activity_completion_emits_total_duration_before_reset(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        import agenthicc.tui.conversation_store as conversation_store_module  # noqa: PLC0415
+        import agenthicc.tui.conversation_store as conversation_store_module
 
         now = 100.0
         monkeypatch.setattr(conversation_store_module.time, "monotonic", lambda: now)
@@ -340,13 +340,13 @@ class TestElapsedSProperty:
     def test_status_renders_total_activity_across_internal_turns(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from io import StringIO  # noqa: PLC0415
+        from io import StringIO
 
-        from rich.console import Console  # noqa: PLC0415
+        from rich.console import Console
 
-        from agenthicc.tui.workspace.components import StatusComponent  # noqa: PLC0415
+        from agenthicc.tui.workspace.components import StatusComponent
 
-        import agenthicc.tui.conversation_store as conversation_store_module  # noqa: PLC0415
+        import agenthicc.tui.conversation_store as conversation_store_module
 
         now = 10.0
         monkeypatch.setattr(conversation_store_module.time, "monotonic", lambda: now)
@@ -390,7 +390,7 @@ class TestFrameDrivesAnimation:
     """Verify StatusComponent reads frame() for all animated elements."""
 
     def _make_state(self, frame: int = 7) -> object:
-        from unittest.mock import MagicMock  # noqa: PLC0415
+        from unittest.mock import MagicMock
 
         state = MagicMock()
         state.conversation.frame.return_value = frame
@@ -414,8 +414,8 @@ class TestFrameDrivesAnimation:
 
     def test_flower_is_static_when_idle(self) -> None:
         """Flower must not change when agent is idle and compaction is off."""
-        from rich.console import Console  # noqa: PLC0415
-        from agenthicc.tui.workspace.components import StatusComponent, _FLOWERS  # noqa: PLC0415
+        from rich.console import Console
+        from agenthicc.tui.workspace.components import StatusComponent, _FLOWERS
 
         results: set[str] = set()
         for i in range(len(_FLOWERS)):
@@ -431,9 +431,9 @@ class TestFrameDrivesAnimation:
 
     def test_flower_animates_when_running(self) -> None:
         """Flower must cycle through values when the agent is running."""
-        from rich.console import Console  # noqa: PLC0415
-        from agenthicc.tui.workspace.components import StatusComponent, _FLOWERS  # noqa: PLC0415
-        from unittest.mock import MagicMock  # noqa: PLC0415
+        from rich.console import Console
+        from agenthicc.tui.workspace.components import StatusComponent, _FLOWERS
+        from unittest.mock import MagicMock
 
         results: set[str] = set()
         for i in range(len(_FLOWERS)):
@@ -451,8 +451,8 @@ class TestFrameDrivesAnimation:
         assert len(results) == len(_FLOWERS), "All flowers should appear when running"
 
     def test_compaction_spinner_changes_with_frame(self) -> None:
-        from rich.console import Console  # noqa: PLC0415
-        from agenthicc.tui.workspace.components import StatusComponent, _COMPACT_SPINNER  # noqa: PLC0415
+        from rich.console import Console
+        from agenthicc.tui.workspace.components import StatusComponent, _COMPACT_SPINNER
 
         results: set[str] = set()
         for i in range(len(_COMPACT_SPINNER)):
@@ -472,8 +472,8 @@ class TestFrameDrivesAnimation:
         assert len(results) > 1, "Spinner must cycle across frame values"
 
     def test_transcript_loading_status_has_no_spinner(self) -> None:
-        from rich.console import Console  # noqa: PLC0415
-        from agenthicc.tui.workspace.components import (  # noqa: PLC0415
+        from rich.console import Console
+        from agenthicc.tui.workspace.components import (
             StatusComponent,
             _COMPACT_SPINNER,
         )
@@ -499,9 +499,9 @@ class TestFrameDrivesAnimation:
         ],
     )
     def test_waiting_prompt_freezes_status_animation(self, kind: str, label: str) -> None:
-        from rich.console import Console  # noqa: PLC0415
-        from unittest.mock import MagicMock  # noqa: PLC0415
-        from agenthicc.tui.workspace.components import (  # noqa: PLC0415
+        from rich.console import Console
+        from unittest.mock import MagicMock
+        from agenthicc.tui.workspace.components import (
             StatusComponent,
             _FLOWERS,
         )

@@ -238,7 +238,7 @@ directly is reserved for that layer's own implementation and tests.
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | A value written in the TUI is gone in the next process | It was stored in the session tier, whose lifetime is the process | Use `scope="project"` or `scope="global"` for anything that must outlive the run |
-| A value is gone after the TTL you set | The session tier applies per-entry TTL | Re-read before use, or store in a durable tier; check `[memory] session_ttl_seconds` |
+| A value is gone after the TTL you set | The session tier honours the `ttl` passed with each write | Re-read before use, pass a longer `ttl`, or store the value in a durable tier |
 | Two projects see each other's values | It was written to the global tier | Use a namespace, or write to the project tier |
 | Artifacts appear duplicated | Artifacts are content-addressed by hash | Identical content intentionally maps to one object; do not expect a new object per publish |
 | An unrelated artifact was overwritten | You bypassed the content-addressed publish API | Publish through the router; content addressing is what prevents silent clobbering |

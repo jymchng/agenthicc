@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 
 
 def _manager(ctx: CLIContext) -> GoalRunManager:
-    from agenthicc.config import load_config  # noqa: PLC0415
+    from agenthicc.config import load_config
 
     cfg = ctx.config or load_config(
         cli_overrides=list(ctx.set_overrides),
@@ -32,7 +32,7 @@ def _manager(ctx: CLIContext) -> GoalRunManager:
         overrides=ctx.set_overrides,
         config=vars(cfg).get("background"),
     )
-    root = Path(settings.store_path).expanduser() if settings.store_path else None
+    root = settings.store_root
     background_store = BackgroundStore(root)
     supervisor = BackgroundSupervisor(
         background_store,
@@ -151,8 +151,8 @@ async def _run_attached_goal(ctx: CLIContext, manager: GoalRunManager, run: Goal
     # TUISession.run is the existing owner of command registration and first
     # frame startup.  The small adapter schedules the initial command only
     # after that boundary, avoiding a second agent loop or direct provider call.
-    from agenthicc.runners import tui_session as tui_module  # noqa: PLC0415
-    from agenthicc.tui.runtime.commands import SendMessageCommand  # noqa: PLC0415
+    from agenthicc.runners import tui_session as tui_module
+    from agenthicc.tui.runtime.commands import SendMessageCommand
 
     original_run = tui_module.TUISession.run
 
@@ -168,7 +168,7 @@ async def _run_attached_goal(ctx: CLIContext, manager: GoalRunManager, run: Goal
                     session_ctx = session._ctx
                     session_id = str(session_ctx.session_id)
                     if session_id:
-                        setattr(session_ctx, "goal_run_id", run.run_id)
+                        session_ctx.goal_run_id = run.run_id
                         effective_mode = session_ctx.mode_manager.active_name
                         manager.store.update(
                             run.run_id,
@@ -243,7 +243,7 @@ async def _run_attached_goal(ctx: CLIContext, manager: GoalRunManager, run: Goal
 
     tui_module.TUISession.run = run_with_goal  # type: ignore[assignment]
     try:
-        from agenthicc.runners.tui_session import _run_tui_session  # noqa: PLC0415
+        from agenthicc.runners.tui_session import _run_tui_session
 
         await _run_tui_session(
             cli_overrides=list(ctx.set_overrides),

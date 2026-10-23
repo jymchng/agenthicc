@@ -137,7 +137,7 @@ class CodePlan(WorkflowPlugin):
         mode_manager: ModeManager | None,
     ) -> CodePlanRunner:
         """Return a CodePlanRunner — uses its own state machine (PRD-116)."""
-        from agenthicc.workflows.code_plan.runner import CodePlanRunner  # noqa: PLC0415
+        from agenthicc.workflows.code_plan.runner import CodePlanRunner
 
         return CodePlanRunner(config, mode_manager)
 

@@ -14,23 +14,13 @@ _TEMPLATE = """\
 # Docs: https://agenthicc.dev/docs/guides/configuration
 
 [execution]
-max_concurrent_intents = 10
-max_parallel_tasks = 20
-agent_pool_size = 30
+max_parallel_tasks = 4
 
 [behaviour]
-verbose = false
-confirm_exits = true
-
-[memory]
-project_memory_path = ".agenthicc/memory"
+resume_transcript_turns = 20
 
 [security]
-default_action = "deny"
-
-[api]
-host = "127.0.0.1"
-port = 8000
+network_allow_list = []
 """
 
 
@@ -41,7 +31,7 @@ def _() -> None: ...
 @command("config", "show", help="Print the merged effective configuration")
 def config_show(ctx: CLIContext) -> None:
     """Print the merged effective configuration including all TOML layers and --set overrides."""
-    from agenthicc.config import load_config  # noqa: PLC0415
+    from agenthicc.config import load_config
 
     cfg = load_config(
         cli_overrides=list(ctx.set_overrides),
@@ -62,7 +52,7 @@ def config_show(ctx: CLIContext) -> None:
 @command("config", "validate", help="Validate the effective provider configuration")
 def config_validate(ctx: CLIContext) -> None:
     """Validate profile selection, endpoint syntax, and required env secrets."""
-    from agenthicc.config import load_config  # noqa: PLC0415
+    from agenthicc.config import load_config
 
     try:
         cfg = load_config(
@@ -82,7 +72,7 @@ def config_validate(ctx: CLIContext) -> None:
 @command("config", "profiles", help="List configured provider profiles")
 def config_profiles(ctx: CLIContext) -> None:
     """List profile names and non-secret connection metadata."""
-    from agenthicc.config import load_config  # noqa: PLC0415
+    from agenthicc.config import load_config
 
     cfg = load_config(
         cli_overrides=list(ctx.set_overrides),

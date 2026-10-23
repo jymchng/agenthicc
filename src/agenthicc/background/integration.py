@@ -17,6 +17,8 @@ from .supervisor import BackgroundSupervisor
 from .store import BackgroundStore
 
 if TYPE_CHECKING:
+    from agenthicc.runners.session_context import SessionContext
+    from agenthicc.runners.tui_session import TUISession
     from agenthicc.tui.cbreak_reader import Key
     from agenthicc.tui.input.capabilities import _ExitSentinel
     from agenthicc.tui.input.unified_session import UnifiedInputSession
@@ -26,20 +28,20 @@ if TYPE_CHECKING:
 _INSTALLED = False
 
 
-def _last_user_text(session: object) -> str:
-    remembered = getattr(session, "_background_intent", "")
-    if isinstance(remembered, str) and remembered.strip():
+def _last_user_text(session: TUISession) -> str:
+    remembered = session._background_intent
+    if remembered.strip():
         return remembered.strip()
 
     # TUISession records accepted plain submissions even when the optional
     # compatibility bridge was installed after the session was constructed.
     # This keeps /bg usable for the first active request as well as resumed
     # sessions, without treating the /bg command itself as the intent.
-    submitted = getattr(session, "_last_submitted_text", "")
-    if isinstance(submitted, str) and submitted.strip() and not submitted.lstrip().startswith("/"):
+    submitted = session._last_submitted_text
+    if submitted.strip() and not submitted.lstrip().startswith("/"):
         return submitted.strip()
 
-    conversation = getattr(getattr(session, "_ctx"), "app_state").conversation
+    conversation = session._ctx.app_state.conversation
     turns = conversation.turns()
     for turn in reversed(turns):
         for event in reversed(turn.events):
@@ -50,18 +52,16 @@ def _last_user_text(session: object) -> str:
     return ""
 
 
-def _restore_foreground_lease(ctx: object, owner_lease: object | None) -> bool:
+def _restore_foreground_lease(ctx: SessionContext, owner_lease: object | None) -> bool:
     """Reclaim the same session lease after a confirmed worker launch failure."""
-    from agenthicc.runners.session_lease import (  # noqa: PLC0415
+    from agenthicc.runners.session_lease import (
         SessionOpenCoordinator,
         SessionOwnerLease,
     )
 
     if not isinstance(owner_lease, SessionOwnerLease):
         return False
-    session_id = vars(ctx).get("session_id")
-    if not isinstance(session_id, str):
-        return False
+    session_id = ctx.session_id
 
     try:
         restored = SessionOpenCoordinator(owner_lease.path.parent.parent).acquire_existing(
@@ -70,12 +70,12 @@ def _restore_foreground_lease(ctx: object, owner_lease: object | None) -> bool:
         )
     except Exception:  # noqa: BLE001
         return False
-    setattr(ctx, "owner_lease", restored)
+    ctx.owner_lease = restored
     return True
 
 
 def _reclaim_foreground_lease(
-    ctx: object,
+    ctx: SessionContext,
     supervisor: BackgroundSupervisor,
     session_id: str,
     owner_lease: "SessionOwnerLease | None",
@@ -89,9 +89,9 @@ def _reclaim_foreground_lease(
     this function leaves the original handle untouched and the supervisor
     fails closed as before.
     """
-    from agenthicc.background.queue import is_pending_queue_record  # noqa: PLC0415
-    from agenthicc.background.supervisor import _WorkerProcessState  # noqa: PLC0415
-    from agenthicc.runners.session_lease import (  # noqa: PLC0415
+    from agenthicc.background.queue import is_pending_queue_record
+    from agenthicc.background.supervisor import _WorkerProcessState
+    from agenthicc.runners.session_lease import (
         SessionOpenCoordinator,
         SessionOwnerLease,
         default_sessions_dir,
@@ -131,25 +131,22 @@ def _reclaim_foreground_lease(
 
     if isinstance(owner_lease, SessionOwnerLease) and owner_lease.session_id == session_id:
         owner_lease.release()
-    setattr(ctx, "owner_lease", refreshed)
+    ctx.owner_lease = refreshed
     return refreshed
 
 
-def _handoff(session: object) -> bool:
-    ctx = getattr(session, "_ctx")
-    session_values = vars(session)
-    handoff_state = session_values.get("_background_handoff_state", "idle")
+def _handoff(session: TUISession) -> bool:
+    ctx = session._ctx
+    handoff_state = session._background_handoff_state
     if handoff_state in {"preparing", "started"}:
         # A repeated alias/key event must not prepare or launch another attempt.
         return True
     if handoff_state == "prepared":
         # A prepared request is durable and may be retried after a confirmed
         # launch failure without advancing the session attempt a second time.
-        prepared_supervisor = session_values.get("_background_prepared_supervisor")
-        prepared_session_id = session_values.get("_background_prepared_session_id")
-        if isinstance(prepared_supervisor, BackgroundSupervisor) and isinstance(
-            prepared_session_id, str
-        ):
+        prepared_supervisor = session._background_prepared_supervisor
+        prepared_session_id = session._background_prepared_session_id
+        if prepared_supervisor is not None and prepared_session_id is not None:
             try:
                 record = prepared_supervisor.start(prepared_session_id)
             except Exception as exc:  # noqa: BLE001
@@ -158,16 +155,16 @@ def _handoff(session: object) -> bool:
                 )
                 return True
             if record.status is SessionStatus.FAILED:
-                setattr(session, "_background_handoff_state", "idle")
+                session._background_handoff_state = "idle"
                 ctx.console.print(record.error or "Background worker launch failed.")
                 return True
-            setattr(session, "_background_handoff_state", "started")
+            session._background_handoff_state = "started"
             ctx.app_state.conversation.notify_transient(
                 f"Backgrounded session {record.session_id[:12]}… ({record.status.value})"
             )
-            setattr(session_values["_input_session"], "_background_exit_requested", True)
+            session._input_session._background_exit_requested = True
             return True
-        setattr(session, "_background_handoff_state", "idle")
+        session._background_handoff_state = "idle"
 
     intent = _last_user_text(session)
     if not intent:
@@ -181,9 +178,7 @@ def _handoff(session: object) -> bool:
     if not background_enabled(settings):
         ctx.console.print("Background sessions are disabled by configuration.")
         return True
-    root_value = settings.store_path
-    root = Path(root_value).expanduser() if isinstance(root_value, str) and root_value else None
-    store = BackgroundStore(root)
+    store = BackgroundStore(settings.store_root)
     supervisor = BackgroundSupervisor(
         store,
         max_workers=settings.max_workers,
@@ -210,7 +205,7 @@ def _handoff(session: object) -> bool:
     config_path_value = vars(ctx).get("config_path")
     config_path = config_path_value if isinstance(config_path_value, str) else None
     owner_lease = cast("SessionOwnerLease | None", vars(ctx).get("owner_lease"))
-    setattr(session, "_background_handoff_state", "preparing")
+    session._background_handoff_state = "preparing"
     owner_released = False
     try:
         goal_run_id = str(vars(ctx).get("goal_run_id", "") or "")
@@ -306,9 +301,9 @@ def _handoff(session: object) -> bool:
             # foreground lease before the worker is allowed to claim it.
             record_path = supervisor.store.root / "requests" / f"{record.session_id}.json"
             if record_path.is_file():
-                setattr(session, "_background_handoff_state", "prepared")
-                setattr(session, "_background_prepared_supervisor", supervisor)
-                setattr(session, "_background_prepared_session_id", record.session_id)
+                session._background_handoff_state = "prepared"
+                session._background_prepared_supervisor = supervisor
+                session._background_prepared_session_id = record.session_id
             if owner_lease is not None:
                 owner_lease.release()
                 owner_released = True
@@ -316,21 +311,21 @@ def _handoff(session: object) -> bool:
             if record.status is SessionStatus.FAILED:
                 restored = _restore_foreground_lease(ctx, owner_lease)
                 if restored:
-                    setattr(session, "_background_handoff_state", "idle")
-                    setattr(session, "_background_prepared_supervisor", None)
-                    setattr(session, "_background_prepared_session_id", None)
+                    session._background_handoff_state = "idle"
+                    session._background_prepared_supervisor = None
+                    session._background_prepared_session_id = None
                     ctx.console.print(record.error or "Background worker launch failed.")
                     return True
-                setattr(session, "_background_handoff_state", "started")
-                setattr(session_values["_input_session"], "_background_exit_requested", True)
+                session._background_handoff_state = "started"
+                session._input_session._background_exit_requested = True
                 ctx.console.print(
                     "Background worker launch failed and foreground ownership could not "
                     "be safely restored; reopen the same session with `agenthicc --continue`."
                 )
                 return True
         if goal_run_id and record.status in ACTIVE_STATUSES:
-            from agenthicc.runs import RunStore  # noqa: PLC0415
-            from agenthicc.runs.model import GoalRunStatus  # noqa: PLC0415
+            from agenthicc.runs import RunStore
+            from agenthicc.runs.model import GoalRunStatus
 
             try:
                 RunStore().update(
@@ -346,7 +341,7 @@ def _handoff(session: object) -> bool:
                 pass
     except Exception as exc:  # noqa: BLE001
         if not owner_released:
-            setattr(session, "_background_handoff_state", "idle")
+            session._background_handoff_state = "idle"
         else:
             current = None
             try:
@@ -355,23 +350,23 @@ def _handoff(session: object) -> bool:
                 pass
             if current is not None and current.status not in ACTIVE_STATUSES:
                 if _restore_foreground_lease(ctx, owner_lease):
-                    setattr(session, "_background_handoff_state", "idle")
+                    session._background_handoff_state = "idle"
                 else:
-                    setattr(session, "_background_handoff_state", "started")
-                    setattr(session_values["_input_session"], "_background_exit_requested", True)
+                    session._background_handoff_state = "started"
+                    session._input_session._background_exit_requested = True
             else:
                 # The child may have started but failed before its result was
                 # observed. Leave the terminal instead of retaining an
                 # unowned foreground runtime that could race the worker.
-                setattr(session, "_background_handoff_state", "started")
-                setattr(session_values["_input_session"], "_background_exit_requested", True)
+                session._background_handoff_state = "started"
+                session._input_session._background_exit_requested = True
         ctx.console.print(f"Unable to background session: {type(exc).__name__}: {exc}")
         return True
-    setattr(session, "_background_handoff_state", "started")
+    session._background_handoff_state = "started"
     ctx.app_state.conversation.notify_transient(
         f"Backgrounded session {record.session_id[:12]}… ({record.status.value})"
     )
-    setattr(getattr(session, "_input_session"), "_background_exit_requested", True)
+    session._input_session._background_exit_requested = True
     return True
 
 
@@ -381,11 +376,11 @@ def install_tui_handoff() -> None:
     global _INSTALLED
     if _INSTALLED:
         return
-    from agenthicc.runners.tui_session import TUISession  # noqa: PLC0415
-    from agenthicc.tui.input.unified_session import UnifiedInputSession  # noqa: PLC0415
-    from agenthicc.tui.input.capabilities import _EXIT  # noqa: PLC0415
-    from agenthicc.commands.builtins import BUILTIN_COMMANDS  # noqa: PLC0415
-    from agenthicc.commands.command import BusyPolicy, Command  # noqa: PLC0415
+    from agenthicc.runners.tui_session import TUISession
+    from agenthicc.tui.input.unified_session import UnifiedInputSession
+    from agenthicc.tui.input.capabilities import _EXIT
+    from agenthicc.commands.builtins import BUILTIN_COMMANDS
+    from agenthicc.commands.command import BusyPolicy, Command
 
     if not any(command.name == "/background" for command in BUILTIN_COMMANDS):
         BUILTIN_COMMANDS.append(
@@ -430,18 +425,18 @@ def install_tui_handoff() -> None:
             # TUISession emits user_message before opening the agent turn, so
             # the event is intentionally not owned by a ConversationTurn.
             # Remember the accepted input on the session for /background.
-            setattr(self, "_background_intent", text)
+            self._background_intent = text
         return await original_handle_send(self, cmd)
 
     original_dispatch_key = UnifiedInputSession._dispatch
 
     async def dispatch_key(self: UnifiedInputSession, key: Key, ch: str) -> _ExitSentinel | None:
         result = await original_dispatch_key(self, key, ch)
-        if getattr(self, "_background_exit_requested", False):
+        if self._background_exit_requested:
             return _EXIT
         return result
 
     TUISession.dispatch_slash = dispatch_slash  # type: ignore[method-assign]
     TUISession.handle_send = handle_send  # type: ignore[method-assign]
-    setattr(UnifiedInputSession, "_dispatch", dispatch_key)
+    UnifiedInputSession._dispatch = dispatch_key  # type: ignore[method-assign]
     _INSTALLED = True

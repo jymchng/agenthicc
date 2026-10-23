@@ -5,9 +5,12 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+from collections.abc import Callable
 from types import SimpleNamespace
 
 import pytest
+
+from agenthicc.tools.approval import ApprovalRequest
 
 from agenthicc.cli.context import CLIContext, CLIFlags
 from agenthicc.kernel import Event
@@ -22,16 +25,45 @@ from agenthicc.workflows.plugin import (
     WorkflowRun,
 )
 from agenthicc.workflows.registry import WorkflowRegistry
+from tests.session_fakes import session_context
 
 pytestmark = pytest.mark.unit
 
 
+def _approval_request(tool_name: str = "write", **fields: object) -> ApprovalRequest:
+    """A real tool approval request, as the approval gate builds them."""
+    return ApprovalRequest(
+        tool_name=tool_name,
+        tool_use_id=f"call-{tool_name}",
+        tool_input={},
+        capabilities=frozenset({"write"}),
+        event=asyncio.Event(),
+        **fields,  # type: ignore[arg-type]
+    )
+
+
 class _Processor:
     def __init__(self) -> None:
-        self.event_log: list[Event] = []
+        self.published: list[Event] = []
+        self._sinks: list[Callable[[Event], None]] = []
         self.running = False
         self.drained = False
         self._stop = asyncio.Event()
+
+    def add_sink(self, sink: Callable[[Event], None]) -> Callable[[], None]:
+        self._sinks.append(sink)
+
+        def remove() -> None:
+            if sink in self._sinks:
+                self._sinks.remove(sink)
+
+        return remove
+
+    def publish(self, event: Event) -> None:
+        """Stand-in for an applied kernel event: notify every sink at once."""
+        self.published.append(event)
+        for sink in list(self._sinks):
+            sink(event)
 
     async def run(self) -> None:
         self.running = True
@@ -73,7 +105,7 @@ def _make_plugin(name: str = "demo") -> type[WorkflowPlugin]:
             class _Runner:
                 async def run(self, intent: str) -> object:
                     assert config.processor.running is True
-                    run_id = f"run-{len(config.processor.event_log) + 1}"
+                    run_id = f"run-{len(config.processor.published) + 1}"
                     run = WorkflowRun(
                         run_id=run_id,
                         workflow_name=cls.name,
@@ -92,7 +124,7 @@ def _make_plugin(name: str = "demo") -> type[WorkflowPlugin]:
                         status="complete",
                     )
                     config.app_state.workflow_run.set(run)
-                    config.processor.event_log.append(
+                    config.processor.publish(
                         Event.create(
                             "WorkflowPhaseCompleted",
                             {"run_id": run_id, "phase_name": "plan"},
@@ -114,7 +146,7 @@ def _make_session(plugin: type[WorkflowPlugin]) -> SimpleNamespace:
     registry = WorkflowRegistry()
     registry.register(plugin)
     app_state = TUIAppState.create()
-    return SimpleNamespace(
+    return session_context(
         processor=processor,
         app_state=app_state,
         session_log=_SessionLog(),
@@ -449,7 +481,7 @@ async def test_headless_setup_failure_preserves_a_resumable_bootstrap_context(
 async def test_headless_approval_defaults_to_deny() -> None:
     from agenthicc.runners.headless import _HeadlessApprovalService
 
-    response = await _HeadlessApprovalService(False).request_approval(object())
+    response = await _HeadlessApprovalService(False).request_approval(_approval_request())
 
     assert response.allowed is False
     assert "dangerously-skip-permissions" in response.message
@@ -476,7 +508,7 @@ async def test_run_headless_workflow_starts_and_closes_session(monkeypatch) -> N
     assert session.session_log.closed is True
     assert session.processor.drained is True
     assert session.session_memory.closed is True
-    assert getattr(session.approval_svc, "_allow") is True
+    assert session.approval_svc._allow is True
 
 
 async def test_headless_workflow_stream_runs_each_nonempty_stdin_line(monkeypatch, capsys) -> None:

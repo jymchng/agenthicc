@@ -67,7 +67,7 @@ def _error_result(exc: BaseException) -> dict[str, object]:
 
 def _is_network_error(exc: BaseException) -> bool:
     """Use the shared classifier plus common transport-message fallbacks."""
-    from agenthicc.tools import http as http_tools  # noqa: PLC0415
+    from agenthicc.tools import http as http_tools
 
     if http_tools.is_network_error(exc):
         return True
@@ -145,7 +145,7 @@ class SearchWebTool:
         return await self._brave_search(query, min(count, _MAX_SEARCH_RESULTS))
 
     async def _brave_search(self, query: str, count: int) -> dict[str, object]:
-        from agenthicc.tools import http as http_tools  # noqa: PLC0415
+        from agenthicc.tools import http as http_tools
 
         try:
             async with http_tools.agenthicc_http_client() as client:
@@ -193,7 +193,7 @@ class FetchPageTool:
         if not url:
             return {"ok": False, "error": "url is required"}
 
-        from agenthicc.tools import http as http_tools  # noqa: PLC0415
+        from agenthicc.tools import http as http_tools
 
         try:
             async with http_tools.agenthicc_http_client() as client:

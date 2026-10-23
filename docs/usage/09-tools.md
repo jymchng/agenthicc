@@ -56,9 +56,9 @@ schema, add capability metadata, and register it. Project tools are discovered
 from `.agenthicc/tools/` after the first TUI frame.
 
 !!! warning "A project tool is code execution"
-    Review project tool files before use. The discovery path imports them
-    without a trust prompt, and `agenthicc trust cli` covers `.agenthicc/cli/`,
-    not `.agenthicc/tools/`.
+    A project tool file is imported only after you review it and run
+    `agenthicc trust add .agenthicc/tools/<file>.py`; until then, and after any
+    edit, it is skipped. Trust does not sandbox the code it admits.
 
 ## Next
 

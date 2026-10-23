@@ -30,8 +30,8 @@ def make_memory_tools(
     tools return a ``{"ok": false, "error": "memory_not_available"}`` payload
     rather than raising, so callers never need to guard.
     """
-    from lauren_ai._tools import tool as _tool  # noqa: PLC0415
-    from agenthicc.tools.capabilities import tool_read, tool_search, tool_write  # noqa: PLC0415
+    from lauren_ai._tools import tool as _tool
+    from agenthicc.tools.capabilities import tool_read, tool_search, tool_write
 
     @tool_write
     @_tool()

@@ -38,7 +38,7 @@ def _CTX() -> dict[str, object]:
 @tool()
 async def git_status() -> dict[str, object]:
     """Show working tree status: branch, staged, unstaged, and untracked files."""
-    from agenthicc.tools.git import GitStatusTool  # noqa: PLC0415
+    from agenthicc.tools.git import GitStatusTool
 
     return await GitStatusTool().execute({}, _CTX())
 
@@ -56,7 +56,7 @@ async def git_diff(
         staged: Show staged (--cached) diff instead of unstaged.
         ref: Commit or branch to diff against (optional).
     """
-    from agenthicc.tools.git import GitDiffTool  # noqa: PLC0415
+    from agenthicc.tools.git import GitDiffTool
 
     args: dict[str, object] = {"staged": staged}
     if path:
@@ -76,7 +76,7 @@ async def git_log(n: int = 10, path: str | None = None) -> dict[str, object]:
         n: Number of commits to return (default 10).
         path: Limit log to commits that touch this file (optional).
     """
-    from agenthicc.tools.git import GitLogTool  # noqa: PLC0415
+    from agenthicc.tools.git import GitLogTool
 
     args: dict[str, object] = {"n": n}
     if path:
@@ -93,7 +93,7 @@ async def git_show(ref: str = "HEAD") -> dict[str, object]:
     Args:
         ref: Commit hash, branch, or tag to show (default HEAD).
     """
-    from agenthicc.tools.git import GitShowTool  # noqa: PLC0415
+    from agenthicc.tools.git import GitShowTool
 
     return await GitShowTool().execute({"ref": ref}, _CTX())
 
@@ -106,7 +106,7 @@ async def git_add(paths: list[str]) -> dict[str, object]:
     Args:
         paths: List of file paths to stage.
     """
-    from agenthicc.tools.git import GitAddTool  # noqa: PLC0415
+    from agenthicc.tools.git import GitAddTool
 
     return await GitAddTool().execute({"paths": paths}, _CTX())
 
@@ -120,7 +120,7 @@ async def git_commit(message: str, author: str | None = None) -> dict[str, objec
         message: Commit message.
         author: Optional author string in "Name <email>" format.
     """
-    from agenthicc.tools.git import GitCommitTool  # noqa: PLC0415
+    from agenthicc.tools.git import GitCommitTool
 
     args: dict[str, object] = {"message": message}
     if author:
@@ -137,7 +137,7 @@ async def git_checkout(branch: str, create: bool = False) -> dict[str, object]:
         branch: Branch name to switch to.
         create: If True, create the branch before switching (-b).
     """
-    from agenthicc.tools.git import GitCheckoutTool  # noqa: PLC0415
+    from agenthicc.tools.git import GitCheckoutTool
 
     return await GitCheckoutTool().execute({"branch": branch, "create": create}, _CTX())
 
@@ -151,7 +151,7 @@ async def git_branch(pattern: str | None = None) -> dict[str, object]:
     Args:
         pattern: Optional pattern to filter branch names.
     """
-    from agenthicc.tools.git import GitBranchTool  # noqa: PLC0415
+    from agenthicc.tools.git import GitBranchTool
 
     args: dict[str, object] = {}
     if pattern:
@@ -168,7 +168,7 @@ async def git_stash(action: str = "push", message: str | None = None) -> dict[st
         action: One of "push" (save), "pop" (restore), "list", or "drop".
         message: Optional stash message (only for action="push").
     """
-    from agenthicc.tools.git import GitStashTool  # noqa: PLC0415
+    from agenthicc.tools.git import GitStashTool
 
     args: dict[str, object] = {"action": action}
     if message:
@@ -189,7 +189,7 @@ async def git_blame(
         start_line: First line to show (1-indexed, default 1).
         end_line: Last line to show inclusive (default: end of file).
     """
-    from agenthicc.tools.git import GitBlameTool  # noqa: PLC0415
+    from agenthicc.tools.git import GitBlameTool
 
     args: dict[str, object] = {"path": path, "start_line": start_line}
     if end_line is not None:
@@ -207,7 +207,7 @@ async def git_grep(pattern: str, ref: str = "HEAD") -> dict[str, object]:
         pattern: Regular expression or string to search for.
         ref: Git reference (commit/branch/tag) to search in (default HEAD).
     """
-    from agenthicc.tools.git import GitGrepTool  # noqa: PLC0415
+    from agenthicc.tools.git import GitGrepTool
 
     return await GitGrepTool().execute({"pattern": pattern, "ref": ref}, _CTX())
 

@@ -302,7 +302,7 @@ class WindowsBackend:
 
     def _read_key_getwch(self) -> tuple[Key, str]:
         """Legacy ``msvcrt.getwch()`` decode for non-console environments."""
-        import msvcrt  # noqa: PLC0415
+        import msvcrt
 
         ch = cast(str, msvcrt.getwch())  # type: ignore[attr-defined]
 

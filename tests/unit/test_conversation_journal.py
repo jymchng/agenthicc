@@ -80,7 +80,7 @@ class TestAppendAndFold:
         journal.append_message(_msg("user", "original"))
         original_write = ConversationJournal._write
 
-        def fail_commit(journal_arg, entry):  # noqa: ANN001, ARG001
+        def fail_commit(journal_arg, entry):
             if entry.get("kind") == "state_replace_commit":
                 raise OSError("simulated commit failure")
             original_write(journal_arg, entry)

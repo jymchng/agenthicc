@@ -3,6 +3,11 @@
 Users can extend agenthicc with custom workflows and custom modes by placing
 Python files in their project's `.agenthicc/` directory.
 
+Both loaders import a project-local file only when it is trusted
+(`agenthicc trust add`; records in `~/.agenthicc/trust.json`, bound to the
+file's SHA-256). An untrusted or edited file is logged and skipped. Files under
+`~/.agenthicc/` are trusted by location (PRD-250 S-02).
+
 ---
 
 ## Workflow plugins ✓ fully working

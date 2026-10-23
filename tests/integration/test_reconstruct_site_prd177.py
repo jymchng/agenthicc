@@ -16,6 +16,7 @@ from agenthicc.workflows.reconstruct_site import (
     ReconstructState,
 )
 from agenthicc.workflows.reconstruct_site.evidence_plan import RECONSTRUCT_PHASE_PLAN
+from tests.session_fakes import workflow_config
 
 
 def _config(tmp_path: Path, params: ReconstructSiteParams) -> SimpleNamespace:
@@ -31,7 +32,7 @@ def _config(tmp_path: Path, params: ReconstructSiteParams) -> SimpleNamespace:
         active_mode=lambda: SimpleNamespace(blocked_capabilities=frozenset()),
         update_workflow_phase=lambda **_kwargs: None,
     )
-    return SimpleNamespace(
+    return workflow_config(
         app_state=app_state,
         agent_runner=SimpleNamespace(),
         cfg=SimpleNamespace(execution=execution),
@@ -105,6 +106,43 @@ def test_params_route_infra_model_overrides_without_changing_schema() -> None:
     assert params.model_for_phase("sqlite_db", "global") == "cheap-model"
     assert params.model_for_phase("docs", "global") == "docs-model"
     assert params.model_for_phase("recon", "global") == "global"
+
+
+def test_tool_bundle_is_filtered_by_the_phase_mode_not_cached_across_modes(
+    tmp_path: Path,
+) -> None:
+    """Reconstruct phases run under a Yolo override; their bundle must follow it.
+
+    The cached bundle used to be whichever mode compiled it first, so a Plan
+    session could keep Plan's filtered tools in every Yolo phase.
+    """
+    from lauren_ai._tools import tool
+
+    from agenthicc.tools.base import tool_name
+    from agenthicc.tools.capabilities import tool_write
+    from agenthicc.tui.conversation_store import AppState
+    from agenthicc.tui.runtime.mode_manager import ModeManager
+
+    @tool_write
+    @tool()
+    async def write_fixture(path: str) -> dict[str, str]:
+        return {"path": path}
+
+    config = _config(tmp_path, ReconstructSiteParams())
+    app = AppState.create()
+    manager = ModeManager(app_state=app, default_name="Plan")
+    config.app_state = app
+    config.all_plugin_tools = lambda: [write_fixture]
+    runner = ReconstructSiteRunner(config, manager)
+
+    caller_mode = {tool_name(item) for item in runner._base_tools()}
+    phase_mode = {tool_name(item) for item in runner._base_tools("Yolo")}
+
+    assert "write_fixture" not in caller_mode
+    assert "write_fixture" in phase_mode
+    assert "record_reconstruct_screenshot" in caller_mode & phase_mode
+    assert "write_fixture" not in {tool_name(item) for item in runner._base_tools()}
+    assert manager.active_name == "Plan"
 
 
 def test_stable_tool_bundle_is_compiled_once_until_explicit_epoch_change(

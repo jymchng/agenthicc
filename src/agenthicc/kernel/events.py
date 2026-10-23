@@ -8,7 +8,48 @@ from dataclasses import dataclass, field
 from enum import Enum
 from uuid import uuid4
 
-__all__ = ["Effect", "EffectType", "Event"]
+__all__ = [
+    "PROJECTION_EVENT_TYPES",
+    "Effect",
+    "EffectType",
+    "Event",
+    "UnknownEventError",
+]
+
+#: Event types that notify subscribers but leave kernel state unchanged. The
+#: session service streams them to clients and they are persisted with every
+#: other event; the reducer accepts them without a handler. Every other event
+#: type must have a reducer handler, or the processor rejects it.
+PROJECTION_EVENT_TYPES: frozenset[str] = frozenset(
+    {
+        # The processor's own report of an event the reducer refused.
+        "KernelEventRejected",
+        "McpCatalogPublished",
+        "McpServerFailed",
+        "McpServerReady",
+        "ProviderRecoveryRetryScheduled",
+        "SubagentCompleted",
+        "SubagentFailed",
+        "SubagentPoolCompleted",
+        "SubagentPoolStarted",
+        "SubagentStarted",
+        "TransportRetryScheduled",
+        "UIAdUpdate",
+        "WorkflowCheckpointSaved",
+        "WorkflowPhaseStarted",
+    }
+)
+
+
+class UnknownEventError(ValueError):
+    """Raised by the reducer for an event type the kernel does not declare."""
+
+    def __init__(self, event_type: str) -> None:
+        self.event_type = event_type
+        super().__init__(
+            f"unknown kernel event type {event_type!r}: register a reducer handler "
+            "or add it to PROJECTION_EVENT_TYPES"
+        )
 
 
 def _payload_str(

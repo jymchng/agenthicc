@@ -13,6 +13,12 @@ run back to any earlier phase via a `target_phase` argument on their rejection
 tools (controlled re-entry).
 """
 
+# Type debt: this runner reuses CodePlanRunner's turn machinery but drives its
+# own state machine, so run(), resume() and its phase methods keep their own
+# signatures. PRD-250 WS-4.2 replaces the inheritance with a generic base.
+# type-debt: owner=PRD-250 WS-4.2; expires=2026-12-03
+# mypy: disable-error-code=override
+
 from __future__ import annotations
 
 import asyncio
@@ -25,6 +31,7 @@ from typing import TYPE_CHECKING
 from urllib.parse import urlsplit, urlunsplit
 
 from agenthicc.workflows.code_plan.runner import CodePlanRunner
+from agenthicc.workflows.payload import payload_int, payload_strings
 from agenthicc.workflows.plugin import PhaseSpec, WorkflowParams, WorkflowPlugin
 
 if TYPE_CHECKING:
@@ -161,6 +168,26 @@ class ReconstructState(Enum):
             ReconstructState.BLOCKED,
             ReconstructState.FAILED,
         )
+
+
+#: Earlier phases a validation phase may send the run back to.
+_REENTRY_STATES: Mapping[str, ReconstructState] = {
+    "init": ReconstructState.INIT,
+    "recon": ReconstructState.RECON,
+    "visual_research": ReconstructState.VISUAL_RESEARCH,
+    "interaction_analysis": ReconstructState.INTERACTION_ANALYSIS,
+    "content_assets": ReconstructState.CONTENT_ASSETS,
+    "responsive_research": ReconstructState.RESPONSIVE_RESEARCH,
+    "architecture": ReconstructState.ARCHITECTURE,
+    "design_system": ReconstructState.DESIGN_SYSTEM,
+    "research_gate": ReconstructState.RESEARCH_GATE,
+    "bootstrap": ReconstructState.BOOTSTRAP,
+    "global_shell": ReconstructState.GLOBAL_SHELL,
+    "component_system": ReconstructState.COMPONENT_SYSTEM,
+    "page": ReconstructState.PAGE,
+    "data_layer": ReconstructState.DATA_LAYER,
+    "responsive_pass": ReconstructState.RESPONSIVE_PASS,
+}
 
 
 @dataclasses.dataclass
@@ -2253,7 +2280,9 @@ class ReconstructSiteRunner(CodePlanRunner):
 
     # ── discovery / research / analysis phase methods ────────────────────────
 
-    async def _init(self, ctx: ReconstructContext, memory: object) -> ReconstructState:
+    async def _init(
+        self, ctx: ReconstructContext, memory: ShortTermMemory | None
+    ) -> ReconstructState:
         """Loop until submit_initial_state fires; return RECON or FAILED."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
@@ -2298,9 +2327,9 @@ class ReconstructSiteRunner(CodePlanRunner):
                     "reference_is_static": bool(data.get("reference_is_static", True)),
                     "reproduce_api_or_mock": str(data.get("reproduce_api_or_mock", "mock")),
                     "constraints_provided": bool(str(data.get("constraints", "")).strip()),
-                    "allowed_domains": list(data.get("allowed_domains", [])),
-                    "route_inclusion": list(data.get("route_inclusion", [])),
-                    "route_exclusion": list(data.get("route_exclusion", [])),
+                    "allowed_domains": payload_strings(data.get("allowed_domains")),
+                    "route_inclusion": payload_strings(data.get("route_inclusion")),
+                    "route_exclusion": payload_strings(data.get("route_exclusion")),
                     "dynamic_content_policy": str(data.get("dynamic_content_policy", "observe")),
                     "unavailable_behavior": str(data.get("unavailable_behavior", "report")),
                     "fidelity_exceptions": str(data.get("fidelity_exceptions", "")),
@@ -2320,7 +2349,9 @@ class ReconstructSiteRunner(CodePlanRunner):
         ctx.fail_reason = "init phase never called submit_initial_state()"
         return ReconstructState.FAILED
 
-    async def _recon(self, ctx: ReconstructContext, memory: object) -> ReconstructState:
+    async def _recon(
+        self, ctx: ReconstructContext, memory: ShortTermMemory | None
+    ) -> ReconstructState:
         """Loop until submit_route_inventory fires; return VISUAL_RESEARCH or FAILED."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
@@ -2373,7 +2404,9 @@ class ReconstructSiteRunner(CodePlanRunner):
         ctx.fail_reason = "recon phase never called submit_route_inventory()"
         return ReconstructState.FAILED
 
-    async def _visual_research(self, ctx: ReconstructContext, memory: object) -> ReconstructState:
+    async def _visual_research(
+        self, ctx: ReconstructContext, memory: ShortTermMemory | None
+    ) -> ReconstructState:
         """Loop until submit_visual_spec fires; return INTERACTION_ANALYSIS or FAILED."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
@@ -2424,7 +2457,7 @@ class ReconstructSiteRunner(CodePlanRunner):
         return ReconstructState.FAILED
 
     async def _interaction_analysis(
-        self, ctx: ReconstructContext, memory: object
+        self, ctx: ReconstructContext, memory: ShortTermMemory | None
     ) -> ReconstructState:
         """Loop until submit_interaction_inventory fires; return CONTENT_ASSETS or FAILED."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
@@ -2471,7 +2504,9 @@ class ReconstructSiteRunner(CodePlanRunner):
         ctx.fail_reason = "interaction_analysis never called submit_interaction_inventory()"
         return ReconstructState.FAILED
 
-    async def _content_assets(self, ctx: ReconstructContext, memory: object) -> ReconstructState:
+    async def _content_assets(
+        self, ctx: ReconstructContext, memory: ShortTermMemory | None
+    ) -> ReconstructState:
         """Loop until submit_asset_inventory fires; return ARCHITECTURE or FAILED."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
@@ -2516,7 +2551,7 @@ class ReconstructSiteRunner(CodePlanRunner):
         return ReconstructState.FAILED
 
     async def _responsive_research(
-        self, ctx: ReconstructContext, memory: object
+        self, ctx: ReconstructContext, memory: ShortTermMemory | None
     ) -> ReconstructState:
         """Capture breakpoint and cross-viewport behavior before planning."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
@@ -2564,7 +2599,9 @@ class ReconstructSiteRunner(CodePlanRunner):
         ctx.fail_reason = "responsive_research never called submit_responsive_research()"
         return ReconstructState.FAILED
 
-    async def _architecture(self, ctx: ReconstructContext, memory: object) -> ReconstructState:
+    async def _architecture(
+        self, ctx: ReconstructContext, memory: ShortTermMemory | None
+    ) -> ReconstructState:
         """Loop until submit_architecture fires; return DESIGN_SYSTEM or FAILED."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
@@ -2607,7 +2644,9 @@ class ReconstructSiteRunner(CodePlanRunner):
         ctx.fail_reason = "architecture phase never called submit_architecture()"
         return ReconstructState.FAILED
 
-    async def _design_system(self, ctx: ReconstructContext, memory: object) -> ReconstructState:
+    async def _design_system(
+        self, ctx: ReconstructContext, memory: ShortTermMemory | None
+    ) -> ReconstructState:
         """Loop until submit_design_system fires; return RESEARCH_GATE or FAILED."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
@@ -2654,7 +2693,9 @@ class ReconstructSiteRunner(CodePlanRunner):
         ctx.fail_reason = "design_system phase never called submit_design_system()"
         return ReconstructState.FAILED
 
-    async def _research_gate(self, ctx: ReconstructContext, memory: object) -> ReconstructState:
+    async def _research_gate(
+        self, ctx: ReconstructContext, memory: ShortTermMemory | None
+    ) -> ReconstructState:
         """Wait for the wrapper's evidence-aware gate to authorize bootstrap."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
@@ -2692,7 +2733,9 @@ class ReconstructSiteRunner(CodePlanRunner):
         ctx.fail_reason = "research_gate never called an approval or rejection tool"
         return ReconstructState.FAILED
 
-    async def _bootstrap(self, ctx: ReconstructContext, memory: object) -> ReconstructState:
+    async def _bootstrap(
+        self, ctx: ReconstructContext, memory: ShortTermMemory | None
+    ) -> ReconstructState:
         """Loop until confirm_bootstrap_healthy fires; return GLOBAL_SHELL or FAILED."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
@@ -2730,7 +2773,9 @@ class ReconstructSiteRunner(CodePlanRunner):
         ctx.fail_reason = "bootstrap phase never called confirm_bootstrap_healthy()"
         return ReconstructState.FAILED
 
-    async def _global_shell(self, ctx: ReconstructContext, memory: object) -> ReconstructState:
+    async def _global_shell(
+        self, ctx: ReconstructContext, memory: ShortTermMemory | None
+    ) -> ReconstructState:
         """Loop until confirm_global_shell fires; return COMPONENT_SYSTEM or FAILED."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
@@ -2768,7 +2813,9 @@ class ReconstructSiteRunner(CodePlanRunner):
         ctx.fail_reason = "global_shell phase never called confirm_global_shell()"
         return ReconstructState.FAILED
 
-    async def _component_system(self, ctx: ReconstructContext, memory: object) -> ReconstructState:
+    async def _component_system(
+        self, ctx: ReconstructContext, memory: ShortTermMemory | None
+    ) -> ReconstructState:
         """Loop until confirm_component_system fires; return PAGE or FAILED."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
@@ -2807,7 +2854,9 @@ class ReconstructSiteRunner(CodePlanRunner):
 
     # ── implementation phase methods ──────────────────────────────────────────
 
-    async def _page(self, ctx: ReconstructContext, memory: object) -> ReconstructState:
+    async def _page(
+        self, ctx: ReconstructContext, memory: ShortTermMemory | None
+    ) -> ReconstructState:
         """Implement one route per entry; loop until all pages done → DATA_LAYER.
 
         Re-enters PAGE once per route in ``pages_to_implement``; ``page_index``
@@ -2862,7 +2911,9 @@ class ReconstructSiteRunner(CodePlanRunner):
         ctx.fail_reason = f"page phase never completed route {route}"
         return ReconstructState.FAILED
 
-    async def _data_layer(self, ctx: ReconstructContext, memory: object) -> ReconstructState:
+    async def _data_layer(
+        self, ctx: ReconstructContext, memory: ShortTermMemory | None
+    ) -> ReconstructState:
         """Loop until confirm_data_layer fires; return RESPONSIVE_PASS or FAILED."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
@@ -2901,7 +2952,9 @@ class ReconstructSiteRunner(CodePlanRunner):
         ctx.fail_reason = "data_layer phase never called confirm_data_layer()"
         return ReconstructState.FAILED
 
-    async def _responsive_pass(self, ctx: ReconstructContext, memory: object) -> ReconstructState:
+    async def _responsive_pass(
+        self, ctx: ReconstructContext, memory: ShortTermMemory | None
+    ) -> ReconstructState:
         """Loop until confirm_responsive fires; return VISUAL_VALIDATION or FAILED."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
@@ -2940,7 +2993,9 @@ class ReconstructSiteRunner(CodePlanRunner):
 
     # ── validation phase methods (with controlled re-entry) ──────────────────
 
-    async def _visual_validation(self, ctx: ReconstructContext, memory: object) -> ReconstructState:
+    async def _visual_validation(
+        self, ctx: ReconstructContext, memory: ShortTermMemory | None
+    ) -> ReconstructState:
         """Loop until visual_approved/rejected fires; may re-enter an earlier phase."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
@@ -3004,7 +3059,7 @@ class ReconstructSiteRunner(CodePlanRunner):
         return ReconstructState.FAILED
 
     async def _interaction_validation(
-        self, ctx: ReconstructContext, memory: object
+        self, ctx: ReconstructContext, memory: ShortTermMemory | None
     ) -> ReconstructState:
         """Loop until interaction_approved/rejected fires; may re-enter earlier phase."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
@@ -3065,7 +3120,9 @@ class ReconstructSiteRunner(CodePlanRunner):
         ctx.fail_reason = "interaction_validation never reported a verdict"
         return ReconstructState.FAILED
 
-    async def _accessibility(self, ctx: ReconstructContext, memory: object) -> ReconstructState:
+    async def _accessibility(
+        self, ctx: ReconstructContext, memory: ShortTermMemory | None
+    ) -> ReconstructState:
         """Loop until a11y_approved/rejected fires; may re-enter earlier phase."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
@@ -3120,7 +3177,9 @@ class ReconstructSiteRunner(CodePlanRunner):
         ctx.fail_reason = "accessibility phase never reported a verdict"
         return ReconstructState.FAILED
 
-    async def _performance(self, ctx: ReconstructContext, memory: object) -> ReconstructState:
+    async def _performance(
+        self, ctx: ReconstructContext, memory: ShortTermMemory | None
+    ) -> ReconstructState:
         """Loop until perf_approved/rejected fires; may re-enter earlier phase."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
@@ -3174,7 +3233,9 @@ class ReconstructSiteRunner(CodePlanRunner):
         ctx.fail_reason = "performance phase never reported a verdict"
         return ReconstructState.FAILED
 
-    async def _fidelity_pass(self, ctx: ReconstructContext, memory: object) -> ReconstructState:
+    async def _fidelity_pass(
+        self, ctx: ReconstructContext, memory: ShortTermMemory | None
+    ) -> ReconstructState:
         """Loop until fidelity_approved/rejected fires; may re-enter earlier phase."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
@@ -3239,7 +3300,9 @@ class ReconstructSiteRunner(CodePlanRunner):
         ctx.fail_reason = "fidelity_pass never reported a verdict"
         return ReconstructState.FAILED
 
-    async def _final_validation(self, ctx: ReconstructContext, memory: object) -> ReconstructState:
+    async def _final_validation(
+        self, ctx: ReconstructContext, memory: ShortTermMemory | None
+    ) -> ReconstructState:
         """Loop until final_approved/final_blocked fires; return COMPLETE or BLOCKED."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
@@ -3289,7 +3352,9 @@ class ReconstructSiteRunner(CodePlanRunner):
 
     # ── infrastructure phase methods (sqlite → docs) ────────────────────
 
-    async def _sqlite_db(self, ctx: ReconstructContext, memory: object) -> ReconstructState:
+    async def _sqlite_db(
+        self, ctx: ReconstructContext, memory: ShortTermMemory | None
+    ) -> ReconstructState:
         """Loop until submit_sqlite fires; return VERIFY_SQLITE or FAILED."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
@@ -3323,7 +3388,9 @@ class ReconstructSiteRunner(CodePlanRunner):
         ctx.fail_reason = "sqlite_db phase never called submit_sqlite()"
         return ReconstructState.FAILED
 
-    async def _verify_sqlite(self, ctx: ReconstructContext, memory: object) -> ReconstructState:
+    async def _verify_sqlite(
+        self, ctx: ReconstructContext, memory: ShortTermMemory | None
+    ) -> ReconstructState:
         """Loop until sqlite_verified/rejected fires; rejection retries this phase."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
@@ -3373,7 +3440,9 @@ class ReconstructSiteRunner(CodePlanRunner):
         ctx.fail_reason = "verify_sqlite never reported a verdict"
         return ReconstructState.FAILED
 
-    async def _prisma(self, ctx: ReconstructContext, memory: object) -> ReconstructState:
+    async def _prisma(
+        self, ctx: ReconstructContext, memory: ShortTermMemory | None
+    ) -> ReconstructState:
         """Loop until submit_prisma fires; return VERIFY_PRISMA or FAILED."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
@@ -3407,7 +3476,9 @@ class ReconstructSiteRunner(CodePlanRunner):
         ctx.fail_reason = "prisma phase never called submit_prisma()"
         return ReconstructState.FAILED
 
-    async def _verify_prisma(self, ctx: ReconstructContext, memory: object) -> ReconstructState:
+    async def _verify_prisma(
+        self, ctx: ReconstructContext, memory: ShortTermMemory | None
+    ) -> ReconstructState:
         """Loop until prisma_verified/rejected fires; rejection retries this phase."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
@@ -3457,7 +3528,9 @@ class ReconstructSiteRunner(CodePlanRunner):
         ctx.fail_reason = "verify_prisma never reported a verdict"
         return ReconstructState.FAILED
 
-    async def _tanstack_query(self, ctx: ReconstructContext, memory: object) -> ReconstructState:
+    async def _tanstack_query(
+        self, ctx: ReconstructContext, memory: ShortTermMemory | None
+    ) -> ReconstructState:
         """Loop until submit_tanstack fires; return VERIFY_TANSTACK or FAILED."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
@@ -3491,7 +3564,9 @@ class ReconstructSiteRunner(CodePlanRunner):
         ctx.fail_reason = "tanstack_query phase never called submit_tanstack()"
         return ReconstructState.FAILED
 
-    async def _verify_tanstack(self, ctx: ReconstructContext, memory: object) -> ReconstructState:
+    async def _verify_tanstack(
+        self, ctx: ReconstructContext, memory: ShortTermMemory | None
+    ) -> ReconstructState:
         """Loop until tanstack_verified/rejected fires; rejection retries this phase."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
@@ -3541,7 +3616,9 @@ class ReconstructSiteRunner(CodePlanRunner):
         ctx.fail_reason = "verify_tanstack never reported a verdict"
         return ReconstructState.FAILED
 
-    async def _env_config(self, ctx: ReconstructContext, memory: object) -> ReconstructState:
+    async def _env_config(
+        self, ctx: ReconstructContext, memory: ShortTermMemory | None
+    ) -> ReconstructState:
         """Loop until submit_env fires; return VERIFY_ENV or FAILED."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
@@ -3575,7 +3652,9 @@ class ReconstructSiteRunner(CodePlanRunner):
         ctx.fail_reason = "env_config phase never called submit_env()"
         return ReconstructState.FAILED
 
-    async def _verify_env(self, ctx: ReconstructContext, memory: object) -> ReconstructState:
+    async def _verify_env(
+        self, ctx: ReconstructContext, memory: ShortTermMemory | None
+    ) -> ReconstructState:
         """Loop until env_verified/rejected fires; rejection retries this phase."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
@@ -3623,7 +3702,9 @@ class ReconstructSiteRunner(CodePlanRunner):
         ctx.fail_reason = "verify_env never reported a verdict"
         return ReconstructState.FAILED
 
-    async def _docker(self, ctx: ReconstructContext, memory: object) -> ReconstructState:
+    async def _docker(
+        self, ctx: ReconstructContext, memory: ShortTermMemory | None
+    ) -> ReconstructState:
         """Loop until submit_docker fires; return VERIFY_DOCKER or FAILED."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
@@ -3657,7 +3738,9 @@ class ReconstructSiteRunner(CodePlanRunner):
         ctx.fail_reason = "docker phase never called submit_docker()"
         return ReconstructState.FAILED
 
-    async def _verify_docker(self, ctx: ReconstructContext, memory: object) -> ReconstructState:
+    async def _verify_docker(
+        self, ctx: ReconstructContext, memory: ShortTermMemory | None
+    ) -> ReconstructState:
         """Loop until docker_verified/rejected fires; rejection retries this phase."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
@@ -3707,7 +3790,9 @@ class ReconstructSiteRunner(CodePlanRunner):
         ctx.fail_reason = "verify_docker never reported a verdict"
         return ReconstructState.FAILED
 
-    async def _netlify(self, ctx: ReconstructContext, memory: object) -> ReconstructState:
+    async def _netlify(
+        self, ctx: ReconstructContext, memory: ShortTermMemory | None
+    ) -> ReconstructState:
         """Loop until submit_netlify fires; return VERIFY_NETLIFY or FAILED."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
@@ -3741,7 +3826,9 @@ class ReconstructSiteRunner(CodePlanRunner):
         ctx.fail_reason = "netlify phase never called submit_netlify()"
         return ReconstructState.FAILED
 
-    async def _verify_netlify(self, ctx: ReconstructContext, memory: object) -> ReconstructState:
+    async def _verify_netlify(
+        self, ctx: ReconstructContext, memory: ShortTermMemory | None
+    ) -> ReconstructState:
         """Loop until netlify_verified/rejected fires; rejection retries this phase."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
@@ -3791,7 +3878,9 @@ class ReconstructSiteRunner(CodePlanRunner):
         ctx.fail_reason = "verify_netlify never reported a verdict"
         return ReconstructState.FAILED
 
-    async def _caddy(self, ctx: ReconstructContext, memory: object) -> ReconstructState:
+    async def _caddy(
+        self, ctx: ReconstructContext, memory: ShortTermMemory | None
+    ) -> ReconstructState:
         """Loop until submit_caddy fires; return VERIFY_CADDY or FAILED."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
@@ -3825,7 +3914,9 @@ class ReconstructSiteRunner(CodePlanRunner):
         ctx.fail_reason = "caddy phase never called submit_caddy()"
         return ReconstructState.FAILED
 
-    async def _verify_caddy(self, ctx: ReconstructContext, memory: object) -> ReconstructState:
+    async def _verify_caddy(
+        self, ctx: ReconstructContext, memory: ShortTermMemory | None
+    ) -> ReconstructState:
         """Loop until caddy_verified/rejected fires; rejection retries this phase."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
@@ -3873,7 +3964,9 @@ class ReconstructSiteRunner(CodePlanRunner):
         ctx.fail_reason = "verify_caddy never reported a verdict"
         return ReconstructState.FAILED
 
-    async def _package_commands(self, ctx: ReconstructContext, memory: object) -> ReconstructState:
+    async def _package_commands(
+        self, ctx: ReconstructContext, memory: ShortTermMemory | None
+    ) -> ReconstructState:
         """Loop until submit_package fires; return VERIFY_PACKAGE or FAILED."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
@@ -3907,7 +4000,9 @@ class ReconstructSiteRunner(CodePlanRunner):
         ctx.fail_reason = "package_commands phase never called submit_package()"
         return ReconstructState.FAILED
 
-    async def _verify_package(self, ctx: ReconstructContext, memory: object) -> ReconstructState:
+    async def _verify_package(
+        self, ctx: ReconstructContext, memory: ShortTermMemory | None
+    ) -> ReconstructState:
         """Loop until package_verified/rejected fires; rejection retries this phase."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
@@ -3957,7 +4052,9 @@ class ReconstructSiteRunner(CodePlanRunner):
         ctx.fail_reason = "verify_package never reported a verdict"
         return ReconstructState.FAILED
 
-    async def _scripts(self, ctx: ReconstructContext, memory: object) -> ReconstructState:
+    async def _scripts(
+        self, ctx: ReconstructContext, memory: ShortTermMemory | None
+    ) -> ReconstructState:
         """Loop until submit_scripts fires; return VERIFY_SCRIPTS or FAILED."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
@@ -3991,7 +4088,9 @@ class ReconstructSiteRunner(CodePlanRunner):
         ctx.fail_reason = "scripts phase never called submit_scripts()"
         return ReconstructState.FAILED
 
-    async def _verify_scripts(self, ctx: ReconstructContext, memory: object) -> ReconstructState:
+    async def _verify_scripts(
+        self, ctx: ReconstructContext, memory: ShortTermMemory | None
+    ) -> ReconstructState:
         """Loop until scripts_verified/rejected fires; rejection retries this phase."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
@@ -4041,7 +4140,9 @@ class ReconstructSiteRunner(CodePlanRunner):
         ctx.fail_reason = "verify_scripts never reported a verdict"
         return ReconstructState.FAILED
 
-    async def _docs(self, ctx: ReconstructContext, memory: object) -> ReconstructState:
+    async def _docs(
+        self, ctx: ReconstructContext, memory: ShortTermMemory | None
+    ) -> ReconstructState:
         """Loop until submit_docs fires; return VERIFY_DOCS or FAILED."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
@@ -4075,7 +4176,9 @@ class ReconstructSiteRunner(CodePlanRunner):
         ctx.fail_reason = "docs phase never called submit_docs()"
         return ReconstructState.FAILED
 
-    async def _verify_docs(self, ctx: ReconstructContext, memory: object) -> ReconstructState:
+    async def _verify_docs(
+        self, ctx: ReconstructContext, memory: ShortTermMemory | None
+    ) -> ReconstructState:
         """Loop until docs_verified/rejected fires; rejection retries this phase."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
@@ -4123,27 +4226,21 @@ class ReconstructSiteRunner(CodePlanRunner):
         ctx.fail_reason = "verify_docs never reported a verdict"
         return ReconstructState.FAILED
 
-    @staticmethod
-    def _reentry_state(target_phase: str) -> ReconstructState:
+    def _reentry_state(self, target_phase: str) -> ReconstructState:
         """Map a phase name back to its state for controlled re-entry."""
-        mapping = {
-            "init": ReconstructState.INIT,
-            "recon": ReconstructState.RECON,
-            "visual_research": ReconstructState.VISUAL_RESEARCH,
-            "interaction_analysis": ReconstructState.INTERACTION_ANALYSIS,
-            "content_assets": ReconstructState.CONTENT_ASSETS,
-            "responsive_research": ReconstructState.RESPONSIVE_RESEARCH,
-            "architecture": ReconstructState.ARCHITECTURE,
-            "design_system": ReconstructState.DESIGN_SYSTEM,
-            "research_gate": ReconstructState.RESEARCH_GATE,
-            "bootstrap": ReconstructState.BOOTSTRAP,
-            "global_shell": ReconstructState.GLOBAL_SHELL,
-            "component_system": ReconstructState.COMPONENT_SYSTEM,
-            "page": ReconstructState.PAGE,
-            "data_layer": ReconstructState.DATA_LAYER,
-            "responsive_pass": ReconstructState.RESPONSIVE_PASS,
-        }
-        return mapping.get(target_phase, ReconstructState.VISUAL_VALIDATION)
+        return _REENTRY_STATES.get(target_phase, ReconstructState.VISUAL_VALIDATION)
+
+    def _validate_reentry_target(self, target_phase: str) -> str | None:
+        """Return a model-safe error when *target_phase* cannot be re-entered.
+
+        The plan-driven runner in ``runner.py`` overrides both re-entry hooks
+        to resolve the target against its active phase plan and budget.
+        """
+        if target_phase in _REENTRY_STATES:
+            return None
+        return f"unknown target_phase {target_phase!r}; choose one of: " + ", ".join(
+            _REENTRY_STATES
+        )
 
 
 @dataclasses.dataclass
@@ -4920,7 +5017,7 @@ class ReconstructSiteWorkflow(WorkflowPlugin):
     def checkpoint_context_from_payload(
         cls,
         payload: dict[str, object],
-        memory: object | None = None,
+        memory: ShortTermMemory | None = None,
     ) -> ReconstructContext:
         """Restore state and attach the already-open session memory."""
         raw_state = str(payload.get("state", ReconstructState.INIT.name))
@@ -4932,7 +5029,7 @@ class ReconstructSiteWorkflow(WorkflowPlugin):
             intent=str(payload.get("intent", "")),
             run_id=str(payload.get("run_id", "")),
             state=state,
-            phase_iteration=int(payload.get("phase_iteration", 0)),
+            phase_iteration=payload_int(payload.get("phase_iteration"), 0),
             fail_reason=str(payload.get("fail_reason", "")),
             target_url=str(payload.get("target_url", "")),
             target_directory=str(payload.get("target_directory", "")),
@@ -4942,10 +5039,10 @@ class ReconstructSiteWorkflow(WorkflowPlugin):
             skipped_phases=_str_list(payload.get("skipped_phases")),
             route_inventory=_dict_list(payload.get("route_inventory")),
             pages_to_implement=_str_list(payload.get("pages_to_implement")),
-            page_index=int(payload.get("page_index", 0)),
+            page_index=payload_int(payload.get("page_index"), 0),
             asset_inventory=_dict_list(payload.get("asset_inventory")),
             component_inventory=_dict_list(payload.get("component_inventory")),
-            design_tokens=_str_dict(payload.get("design_tokens")),
+            design_tokens=_object_dict(payload.get("design_tokens")),
             architecture=str(payload.get("architecture", "")),
             research_scope=_object_dict(payload.get("research_scope")),
             interaction_inventory=_dict_list(payload.get("interaction_inventory")),
@@ -4981,7 +5078,7 @@ class ReconstructSiteWorkflow(WorkflowPlugin):
         return ReconstructSiteRunner(config, mode_manager)
 
     @classmethod
-    def build_params(cls, source: dict[str, object]) -> WorkflowParams:
+    def build_params(cls, source: Mapping[str, object]) -> WorkflowParams:
         """Build typed params from [workflows.reconstruct_site]."""
         return ReconstructSiteParams(
             init_model=str(source.get("init_model", "") or ""),

@@ -195,7 +195,7 @@ class CreateWorkflow(WorkflowPlugin):
         mode_manager: ModeManager | None,
     ) -> CreateWorkflowRunner:
         """Return a CreateWorkflowRunner — uses its own state machine."""
-        from agenthicc.workflows.create_workflow.runner import (  # noqa: PLC0415
+        from agenthicc.workflows.create_workflow.runner import (
             CreateWorkflowRunner,
         )
 

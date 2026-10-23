@@ -20,12 +20,14 @@ from agenthicc.background import (
     SessionStatus,
 )
 from agenthicc.background.supervisor import BackgroundRequest
+from tests.cli_process import CLI_PROCESS_TIMEOUT_S, cli_test_timeout
 
 pytestmark = pytest.mark.e2e
 
 
 def _wait_for_status(store: BackgroundStore, session_id: str, status: SessionStatus) -> None:
-    deadline = time.monotonic() + 10.0
+    # The worker is a fresh interpreter; the loop returns as soon as it is done.
+    deadline = time.monotonic() + CLI_PROCESS_TIMEOUT_S
     while time.monotonic() < deadline:
         try:
             if store.get(session_id).status is status:
@@ -36,6 +38,7 @@ def _wait_for_status(store: BackgroundStore, session_id: str, status: SessionSta
     raise AssertionError(f"session {session_id} did not reach {status.value}")
 
 
+@cli_test_timeout(1)
 def test_owned_worker_process_persists_completion(tmp_path: Path, monkeypatch) -> None:
     store = BackgroundStore(tmp_path / "background")
     artifact = tmp_path / "sessions" / "process-session"
@@ -78,6 +81,7 @@ def test_owned_worker_process_persists_completion(tmp_path: Path, monkeypatch) -
     assert BackgroundStore(store.root).get(session.session_id).status is SessionStatus.COMPLETED
 
 
+@cli_test_timeout(1)
 def test_completed_session_detach_starts_same_session_without_replaying_intent(
     tmp_path: Path,
 ) -> None:
@@ -130,6 +134,7 @@ def test_completed_session_detach_starts_same_session_without_replaying_intent(
 
 
 @pytest.mark.skipif(os.name == "nt", reason="process command identity recovery is POSIX-only")
+@cli_test_timeout(2)
 def test_killed_worker_continue_then_detach_uses_same_session_and_updated_config(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -202,7 +207,7 @@ def test_killed_worker_continue_then_detach_uses_same_session_and_updated_config
     assert old_worker_pid is not None
     old_process = processes[0]
     os.kill(old_worker_pid, signal.SIGKILL)
-    old_process.wait(timeout=10)
+    old_process.wait(timeout=60)
     assert old_process.returncode is not None
 
     sessions_root = tmp_path / "sessions"
@@ -249,6 +254,12 @@ def test_killed_worker_continue_then_detach_uses_same_session_and_updated_config
         _workflow_override="",
         _input_session=input_session,
         _agent_task=None,
+        # The /background handoff state TUISession declares.
+        _background_intent="",
+        _background_handoff_state="idle",
+        _background_prepared_supervisor=None,
+        _background_prepared_session_id=None,
+        _last_submitted_text="",
     )
 
     assert _handoff(foreground) is True
@@ -283,9 +294,10 @@ def test_killed_worker_continue_then_detach_uses_same_session_and_updated_config
     new_worker_pid = resumed.worker_pid
     assert new_worker_pid is not None
     os.kill(new_worker_pid, signal.SIGKILL)
-    processes[1].wait(timeout=10)
+    processes[1].wait(timeout=60)
 
 
+@cli_test_timeout(1)
 def test_foreground_takeover_stops_owned_worker_before_resume(tmp_path: Path, monkeypatch) -> None:
     """The manager handoff releases the worker before a resumed TUI can start."""
 
@@ -339,6 +351,7 @@ def test_foreground_takeover_stops_owned_worker_before_resume(tmp_path: Path, mo
     assert not supervisor._alive(worker_pid)
 
 
+@cli_test_timeout(3)
 def test_cli_manager_alias_and_background_acceptance(tmp_path: Path) -> None:
     env = dict(os.environ)
     env["HOME"] = str(tmp_path)
@@ -349,7 +362,7 @@ def test_cli_manager_alias_and_background_acceptance(tmp_path: Path) -> None:
         env=env,
         text=True,
         capture_output=True,
-        timeout=30,
+        timeout=CLI_PROCESS_TIMEOUT_S,
         check=False,
     )
     assert manager.returncode == 0
@@ -371,7 +384,7 @@ def test_cli_manager_alias_and_background_acceptance(tmp_path: Path) -> None:
         env=env,
         text=True,
         capture_output=True,
-        timeout=30,
+        timeout=CLI_PROCESS_TIMEOUT_S,
         check=False,
     )
     assert accepted.returncode == 0
@@ -385,13 +398,14 @@ def test_cli_manager_alias_and_background_acceptance(tmp_path: Path) -> None:
         env=env,
         text=True,
         capture_output=True,
-        timeout=30,
+        timeout=CLI_PROCESS_TIMEOUT_S,
         check=False,
     )
     assert status.returncode == 0
     assert json.loads(status.stdout)["session_id"] == session_id
 
 
+@cli_test_timeout(1)
 def test_jobs_cli_projects_durable_queue_state_across_processes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -438,7 +452,7 @@ def test_jobs_cli_projects_durable_queue_state_across_processes(
         env=env,
         text=True,
         capture_output=True,
-        timeout=30,
+        timeout=CLI_PROCESS_TIMEOUT_S,
         check=False,
     )
 
@@ -451,6 +465,7 @@ def test_jobs_cli_projects_durable_queue_state_across_processes(
     assert queued_item["queue_position_advisory"]
 
 
+@cli_test_timeout(5)
 def test_detached_goal_yolo_mode_is_visible_and_attested_across_cli_projections(
     tmp_path: Path,
 ) -> None:
@@ -487,7 +502,7 @@ def test_detached_goal_yolo_mode_is_visible_and_attested_across_cli_projections(
         env=env,
         text=True,
         capture_output=True,
-        timeout=30,
+        timeout=CLI_PROCESS_TIMEOUT_S,
         check=False,
     )
     assert started.returncode == 0, started.stderr + started.stdout
@@ -502,7 +517,7 @@ def test_detached_goal_yolo_mode_is_visible_and_attested_across_cli_projections(
         assert launch_payload["mode"]["effective"] is None
 
     store = BackgroundStore(tmp_path / ".agenthicc" / "background")
-    deadline = time.monotonic() + 20.0
+    deadline = time.monotonic() + CLI_PROCESS_TIMEOUT_S
     while time.monotonic() < deadline:
         session = store.get(session_id)
         if session.mode_application_status.value != "pending":
@@ -518,7 +533,7 @@ def test_detached_goal_yolo_mode_is_visible_and_attested_across_cli_projections(
         env=env,
         text=True,
         capture_output=True,
-        timeout=30,
+        timeout=CLI_PROCESS_TIMEOUT_S,
         check=False,
     )
     assert jobs_status.returncode == 0, jobs_status.stderr
@@ -533,7 +548,7 @@ def test_detached_goal_yolo_mode_is_visible_and_attested_across_cli_projections(
         env=env,
         text=True,
         capture_output=True,
-        timeout=30,
+        timeout=CLI_PROCESS_TIMEOUT_S,
         check=False,
     )
     assert run_status.returncode == 0, run_status.stderr
@@ -550,7 +565,7 @@ def test_detached_goal_yolo_mode_is_visible_and_attested_across_cli_projections(
         env=env,
         text=True,
         capture_output=True,
-        timeout=30,
+        timeout=CLI_PROCESS_TIMEOUT_S,
         check=False,
     )
     assert agents_status.returncode == 0, agents_status.stderr

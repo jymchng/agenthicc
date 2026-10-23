@@ -205,7 +205,7 @@ def test_skill_handler_passes_args():
 
     captured_args = []
 
-    def _mock_process(s, args, cwd, session_id="", effort="medium"):
+    def _mock_process(s, args, session_id="", effort="medium"):
         captured_args.extend(args)
         return "result"
 

@@ -110,5 +110,6 @@ def test_create_workflow_runner_excludes_browser_tools_from_base_tools() -> None
     )
     runner = object.__new__(CreateWorkflowRunner)
     runner._cfg = config
+    runner._mode_manager = None
     names = {tool.__name__ for tool in runner._base_tools()}
     assert not any(name.startswith("cloakbrowser_") for name in names)

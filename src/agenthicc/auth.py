@@ -233,8 +233,8 @@ class AuthClient:
     # -- internal -------------------------------------------------------------
 
     async def _exchange_code(self, code: str, code_verifier: str, redirect_uri: str) -> TokenBundle:
-        from agenthicc.tools.http import agenthicc_http_client  # noqa: PLC0415
-        import httpx  # noqa: PLC0415
+        from agenthicc.tools.http import agenthicc_http_client
+        import httpx
 
         try:
             async with agenthicc_http_client(timeout=15.0) as client:
@@ -270,8 +270,8 @@ class AuthClient:
         )
 
     async def _refresh(self, bundle: TokenBundle) -> TokenBundle:
-        from agenthicc.tools.http import agenthicc_http_client  # noqa: PLC0415
-        import httpx  # noqa: PLC0415
+        from agenthicc.tools.http import agenthicc_http_client
+        import httpx
 
         try:
             async with agenthicc_http_client(timeout=15.0) as client:
@@ -305,7 +305,7 @@ class AuthClient:
         )
 
     async def _revoke(self, access_token: str) -> None:
-        from agenthicc.tools.http import agenthicc_http_client  # noqa: PLC0415
+        from agenthicc.tools.http import agenthicc_http_client
 
         try:
             async with agenthicc_http_client(timeout=10.0) as client:

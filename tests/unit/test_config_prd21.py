@@ -28,7 +28,7 @@ try:
 except ImportError:
     _HELPERS_AVAILABLE = False
     # Provide stubs so that load_config is always importable
-    from agenthicc.config import load_config  # noqa: F811
+    from agenthicc.config import load_config
 
 # Decorator applied to whole classes that depend on the new helper functions
 _needs_helpers = pytest.mark.skipif(
@@ -331,7 +331,7 @@ class TestLoadConfigEnvOverride:
         assert config.execution.max_parallel_tasks == 5
 
     def test_env_string_field(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("AGENTHICC_API_HOST", "myhost")
+        monkeypatch.setenv("AGENTHICC_EXECUTION_MODEL", "my-model")
         try:
             config = load_config(
                 project_path=str(tmp_path / "missing.toml"),
@@ -343,7 +343,7 @@ class TestLoadConfigEnvOverride:
                 project_path=str(tmp_path / "missing.toml"),
                 user_path=str(tmp_path / "missing_user.toml"),
             )
-        assert config.api.host == "myhost"
+        assert config.execution.model == "my-model"
 
     def test_env_int_field(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("AGENTHICC_EXECUTION_MAX_PARALLEL_TASKS", "42")
@@ -401,11 +401,11 @@ class TestLoadConfigCliOverride:
     def test_multiple_cli_overrides(self, tmp_path: Path) -> None:
         config = self._load(
             tmp_path,
-            "[execution]\nmax_parallel_tasks = 5\nagent_pool_size = 10\n",
-            ["execution.max_parallel_tasks=77", "execution.agent_pool_size=3"],
+            "[execution]\nmax_parallel_tasks = 5\nmax_agent_turns = 10\n",
+            ["execution.max_parallel_tasks=77", "execution.max_agent_turns=3"],
         )
         assert config.execution.max_parallel_tasks == 77
-        assert config.execution.agent_pool_size == 3
+        assert config.execution.max_agent_turns == 3
 
     def test_malformed_cli_override_ignored(self, tmp_path: Path) -> None:
         config = self._load(

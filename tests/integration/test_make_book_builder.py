@@ -224,6 +224,9 @@ printf '%%PDF-1.7\n' > "$outdir/book.pdf"
     shutil.which("pandoc") is None or shutil.which("xelatex") is None,
     reason="the real Pandoc/XeLaTeX toolchain is not installed",
 )
+# A real PDF and EPUB build takes over a minute on a loaded host, beyond the
+# 60-second default; the bounds below only stop a hung toolchain.
+@pytest.mark.timeout(540)
 def test_generated_builder_compiles_real_toc_and_bounded_table(tmp_path) -> None:
     """Exercise the generated LaTeX header against the installed toolchain."""
 
@@ -251,6 +254,7 @@ def test_generated_builder_compiles_real_toc_and_bounded_table(tmp_path) -> None
         cwd=tmp_path,
         capture_output=True,
         text=True,
+        timeout=480,
         check=False,
     )
 

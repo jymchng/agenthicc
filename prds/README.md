@@ -117,6 +117,8 @@ against the current source before implementing them.
 - [PRD-246 — Actionable Recovery When Conversation Compaction Has No Summary (implemented)](prd-246-actionable-empty-summary-compaction-recovery.md)
 - [PRD-247 — Recover and Open Sessions When Tool-History Repair Fails (implemented)](prd-247-recover-session-when-tool-history-repair-fails.md)
 - [PRD-248 — Make Workflow Recovery Context-Identity Checks Schema-Aware (implemented)](prd-248-workflow-context-identity-semantics.md)
+- [PRD-249 — Resolve Workflow Checkpoint Phases Through Typed Context Semantics (proposed)](prd-249-workflow-phase-cursor-context-state-semantics.md)
+- [PRD-250 — Code Quality Evaluation and Improvement Programme (in progress: WS-1, WS-2 and WS-3.1–3.3 implemented)](prd-250-code-quality-evaluation-and-improvement-programme.md)
 
 ### PRD-220–239 — OpenCode, Claude Code, and Codex feature study
 
@@ -178,6 +180,12 @@ privacy, lifecycle, and rendering contract for advertisements.
 PRD-140 is the typing-focused companion to PRD-138. It records the measured
 static-analysis debt and defines the phased contract, toolchain, and CI ratchet
 for stricter type checking without changing runtime ownership boundaries.
+
+PRD-250 is the current code-quality evaluation. It measures the repository at
+`2d66765`, records which PRD-138 and PRD-140 items are still open or have
+regressed, lists the verified defects and security gaps found during the
+study, and defines enforced fitness functions and a sequenced improvement
+programme.
 
 PRD-141 defines the local-first background-session lifecycle and the TUI/CLI
 control plane for observing, cancelling, retrying, and resuming durable agent

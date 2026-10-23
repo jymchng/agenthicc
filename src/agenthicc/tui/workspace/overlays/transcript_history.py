@@ -53,9 +53,9 @@ class TranscriptHistoryOverlay(Overlay):
         self._viewport_height = max(1, height)
 
     def render(self) -> "RenderableType":
-        from rich.console import Group  # noqa: PLC0415
-        from rich.panel import Panel  # noqa: PLC0415
-        from rich.text import Text  # noqa: PLC0415
+        from rich.console import Group
+        from rich.panel import Panel
+        from rich.text import Text
 
         page = self._pages[self._page_index]
         if self._detail is not None:

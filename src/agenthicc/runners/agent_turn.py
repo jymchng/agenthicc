@@ -26,6 +26,7 @@ from agenthicc.runners.agent_turn_context import AgentTurnContext
 from agenthicc.runners.prompt_contract import PromptBlock
 from agenthicc.runners.recovery_projection import ToolRecoveryProjector
 from agenthicc.memory.tool_history import repair_non_adjacent_tool_history
+from agenthicc.tools.base import tool_name
 from agenthicc.tools.hooks import (
     AfterToolHookDecision,
     ErrorToolHookDecision,
@@ -56,7 +57,7 @@ def _conservative_message_estimate(
     messages: list[object], *, system: str = "", tools: list[object] | None = None
 ) -> int:
     """Estimate request tokens with safety headroom for provider framing."""
-    from lauren_ai._transport import ToolSchema, estimate_message_tokens  # noqa: PLC0415
+    from lauren_ai._transport import ToolSchema, estimate_message_tokens
 
     baseline = estimate_message_tokens(
         messages,
@@ -68,14 +69,13 @@ def _conservative_message_estimate(
     return max(1, (baseline * 5 + 3) // 4 + 32 * len(messages))
 
 
-def _config_value(config: object | None, name: str, default: object) -> object:
-    """Read an optional execution setting from real configs and test doubles."""
-    if config is None:
-        return default
-    try:
-        return object.__getattribute__(config, name)
-    except AttributeError:
-        return default
+def _execution(config: ExecutionSettings | None) -> ExecutionSettings:
+    """Return the turn's execution settings; a turn built without them uses the defaults."""
+    if config is not None:
+        return config
+    from agenthicc.config import ExecutionSettings
+
+    return ExecutionSettings()
 
 
 def _optional_attribute(value: object | None, name: str, default: _T) -> _T:
@@ -110,7 +110,7 @@ def _require_tool_transaction_api(memory: object | None) -> None:
     missing = [name for name in required if not callable(getattr(memory, name, None))]
     if missing:
         try:
-            import lauren_ai  # noqa: PLC0415
+            import lauren_ai
 
             installed = getattr(lauren_ai, "__version__", "unknown")
         except ImportError:
@@ -142,7 +142,7 @@ def _preserve_interrupted_memory(memory: object | None) -> bool:
     """
     if memory is None:
         return False
-    from lauren_ai._memory import ShortTermMemory as _ShortTermMemory  # noqa: PLC0415
+    from lauren_ai._memory import ShortTermMemory as _ShortTermMemory
 
     if not isinstance(memory, _ShortTermMemory):
         # Older/lightweight SessionContext implementations may expose an
@@ -152,7 +152,7 @@ def _preserve_interrupted_memory(memory: object | None) -> bool:
     if repair_non_adjacent_tool_history(memory):
         return True
     before = copy.deepcopy(memory._messages)
-    from agenthicc.memory.journaled import JournaledShortTermMemory  # noqa: PLC0415
+    from agenthicc.memory.journaled import JournaledShortTermMemory
 
     if isinstance(memory, JournaledShortTermMemory):
         return memory.ensure_valid_and_persist()
@@ -170,7 +170,7 @@ def _http_status_code(exc: BaseException) -> int | None:
     ``__context__`` — necessary for SDK wrappers like ``TransportError``
     that wrap an inner ``BadRequestError`` which holds the real status.
     """
-    for candidate in (exc, getattr(exc, "__cause__", None), getattr(exc, "__context__", None)):
+    for candidate in (exc, exc.__cause__, exc.__context__):
         if candidate is None:
             continue
         code = getattr(candidate, "status_code", None)
@@ -414,7 +414,7 @@ def _is_transient_network_error(exc: BaseException) -> bool:
         }
     )
     try:
-        from lauren_ai._exceptions import TransientTransportError  # noqa: PLC0415
+        from lauren_ai._exceptions import TransientTransportError
 
         if isinstance(exc, TransientTransportError):
             return True
@@ -423,7 +423,7 @@ def _is_transient_network_error(exc: BaseException) -> bool:
     status = _http_status_code(exc)
     if status in {408, 425, 429} or (status is not None and 500 <= status < 600):
         return True
-    for candidate in (exc, getattr(exc, "__cause__", None), getattr(exc, "__context__", None)):
+    for candidate in (exc, exc.__cause__, exc.__context__):
         if candidate is None:
             continue
         if type(candidate).__name__ in _TRANSIENT_NAMES:
@@ -455,7 +455,7 @@ def _is_permanent_error(exc: BaseException) -> bool:
     # request always fails.  Treat as permanent so the phase surfaces the
     # actionable message and exits instead of looping on the same request.
     try:
-        from lauren_ai import _exceptions  # noqa: PLC0415
+        from lauren_ai import _exceptions
 
         AgentContextOverflowError = getattr(
             _exceptions,
@@ -466,7 +466,7 @@ def _is_permanent_error(exc: BaseException) -> bool:
         AgentContextOverflowError = None
 
     try:
-        from lauren_ai._exceptions import ToolConversationIntegrityError  # noqa: PLC0415
+        from lauren_ai._exceptions import ToolConversationIntegrityError
 
         if isinstance(exc, ToolConversationIntegrityError):
             return True
@@ -509,7 +509,7 @@ def _is_context_overflow_error(exc: BaseException) -> bool:
     practice is often the only signal available at this integration boundary.
     """
     try:
-        from lauren_ai import _exceptions  # noqa: PLC0415
+        from lauren_ai import _exceptions
 
         overflow_type = getattr(_exceptions, "AgentContextOverflowError", None)
     except ImportError:
@@ -534,7 +534,7 @@ def _is_context_overflow_error(exc: BaseException) -> bool:
         description = f"{type(current).__name__}: {current}".lower()
         if any(marker in description for marker in markers):
             return True
-        current = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
+        current = current.__cause__ or current.__context__
     return False
 
 
@@ -555,7 +555,7 @@ if TYPE_CHECKING:
     from agenthicc.memory.vector import SemanticIndex
     from agenthicc.mentions.cache import MentionCache
     from agenthicc.skills.loader import SkillDef, SkillPermissionSet
-    from agenthicc.tools.approval import ApprovalService
+    from agenthicc.tools.approval import ApprovalBroker
     from agenthicc.tools.base import ToolLike
     from agenthicc.tools.mcp import McpToolRegistry
     from agenthicc.tools.mcp_manager import McpSessionManager
@@ -569,7 +569,7 @@ if TYPE_CHECKING:
 
 
 def _fmt_args(args: dict[str, object]) -> str:
-    from rich.markup import escape as _e  # noqa: PLC0415
+    from rich.markup import escape as _e
 
     items = list(args.items())
     if not items:
@@ -1020,21 +1020,21 @@ class AgentTurnRunner:
         ctx = self._ctx
         workspace_access = ctx.workspace_access
         if workspace_access is None:
-            from agenthicc.tools.workspace_access import current_workspace_access  # noqa: PLC0415
+            from agenthicc.tools.workspace_access import current_workspace_access
 
             workspace_access = current_workspace_access()
         if workspace_access is not None:
             workspace_access.reset_turn_memory()
         policy_token: object | None = None
         if ctx.workspace_access is not None:
-            from agenthicc.tools.workspace_access import set_current_workspace_access  # noqa: PLC0415
+            from agenthicc.tools.workspace_access import set_current_workspace_access
 
             policy_token = set_current_workspace_access(ctx.workspace_access)
         try:
             await self._run_impl()
         finally:
             if policy_token is not None:
-                from agenthicc.tools.workspace_access import reset_current_workspace_access  # noqa: PLC0415
+                from agenthicc.tools.workspace_access import reset_current_workspace_access
 
                 reset_current_workspace_access(
                     cast("Token[WorkspaceAccessPolicy | None]", policy_token)
@@ -1070,7 +1070,7 @@ class AgentTurnRunner:
         # the cancellation back to this task; without this scope it would turn
         # ESC into an ordinary ``cancelled`` tool result and the model would
         # continue with another turn.
-        from agenthicc.tools.exec import _PROPAGATE_TOOL_CANCELLATION  # noqa: PLC0415
+        from agenthicc.tools.exec import _PROPAGATE_TOOL_CANCELLATION
 
         cancellation_token = _PROPAGATE_TOOL_CANCELLATION.set(True)
         try:
@@ -1118,7 +1118,7 @@ class AgentTurnRunner:
         # PRD-115: exec_cfg.model carries per-phase overrides from WorkflowParams
         # (PRD-111) and CodePlanRunner class attributes / _run_turn(model_override).
         # Use it when non-empty; fall back to the transport's baked-in config.
-        override = getattr(ctx.exec_cfg, "model", "") if ctx.exec_cfg else ""
+        override = ctx.exec_cfg.model if ctx.exec_cfg is not None else ""
         if override:
             self._model_id = override
         else:
@@ -1137,7 +1137,7 @@ class AgentTurnRunner:
     # ── step 2: kernel event ──────────────────────────────────────────────────
 
     async def _emit_intent_created(self) -> None:
-        from agenthicc.kernel import Event  # noqa: PLC0415
+        from agenthicc.kernel import Event
 
         # PRD-129 Phase 3: a resumed turn reuses its original id so the durable
         # tool ledger and journal turn markers line up.
@@ -1175,7 +1175,7 @@ class AgentTurnRunner:
         if signals is None:
             return
 
-        from lauren_ai._signals import (  # noqa: PLC0415
+        from lauren_ai._signals import (
             ToolCallStarted as _TCS,
             ToolCallComplete as _TCC,
             ToolExchangeRepaired as _TER,
@@ -1290,7 +1290,7 @@ class AgentTurnRunner:
 
     async def _inject_mentions(self) -> str:
         """Resolve @mentions and emit mention chips. Returns agent_text."""
-        from agenthicc.mentions.injector import (  # noqa: PLC0415
+        from agenthicc.mentions.injector import (
             build_context_prefix,
             InjectionConfig,
         )
@@ -1298,13 +1298,10 @@ class AgentTurnRunner:
         ctx = self._ctx
         workspace_access = ctx.workspace_access
         if workspace_access is None:
-            from agenthicc.tools.workspace_access import current_workspace_access  # noqa: PLC0415
+            from agenthicc.tools.workspace_access import current_workspace_access
 
             workspace_access = current_workspace_access()
         mention_cfg = InjectionConfig(
-            mention_token_budget=getattr(ctx.exec_cfg, "mention_token_budget", 32_000),
-            max_file_chars=getattr(ctx.exec_cfg, "mention_max_file_chars", 16_000),
-            max_glob_files=getattr(ctx.exec_cfg, "mention_max_glob_files", 20),
             cwd=(
                 workspace_access.scope.primary_root
                 if workspace_access is not None
@@ -1337,11 +1334,11 @@ class AgentTurnRunner:
 
     def _inject_skills(self) -> None:
         """Find matching skills and build self._skill_suffix."""
-        from agenthicc.skills.runner import (  # noqa: PLC0415
+        from agenthicc.skills.runner import (
             find_matching_skills,
             process_skill_body,
         )
-        from agenthicc.skills.loader import filter_skills_for_agent  # noqa: PLC0415
+        from agenthicc.skills.loader import filter_skills_for_agent
 
         ctx = self._ctx
         available_skills = filter_skills_for_agent(
@@ -1352,8 +1349,7 @@ class AgentTurnRunner:
         matched = find_matching_skills(ctx.text, available_skills)
         if matched:
             self._skill_suffix = "\n\n---\n\n" + "\n\n".join(
-                f"## Skill: {s.name}\n{process_skill_body(s, args=[], cwd=Path(os.getcwd()))}"
-                for s in matched
+                f"## Skill: {s.name}\n{process_skill_body(s, args=[])}" for s in matched
             )
 
     # ── step 7: build @agent class and runner ─────────────────────────────────
@@ -1363,13 +1359,13 @@ class AgentTurnRunner:
 
         Returns (agent_instance, active_runner).
         """
-        from lauren_ai._agents import agent as agent_decorator, use_tools  # noqa: PLC0415
-        from lauren_ai._agents._runner import AgentRunnerBase as _RunnerBase  # noqa: PLC0415
-        from agenthicc.plugins.registry import build_registry  # noqa: PLC0415
-        from agenthicc.agents.plugin import BASE_SYSTEM_PROMPT as _BASE  # noqa: PLC0415
-        from agenthicc.runners.tool_populator import populate_agent_tools  # noqa: PLC0415
-        from agenthicc.runners.prompt_contract import PromptBlock  # noqa: PLC0415
-        from agenthicc.tools.capabilities import (  # noqa: PLC0415
+        from lauren_ai._agents import agent as agent_decorator, use_tools
+        from lauren_ai._agents._runner import AgentRunnerBase as _RunnerBase
+        from agenthicc.plugins.registry import build_registry
+        from agenthicc.agents.plugin import BASE_SYSTEM_PROMPT as _BASE
+        from agenthicc.runners.tool_populator import populate_agent_tools
+        from agenthicc.runners.prompt_contract import PromptBlock
+        from agenthicc.tools.capabilities import (
             get_tool_capabilities,
             is_exploratory_tool,
         )
@@ -1388,15 +1384,10 @@ class AgentTurnRunner:
         visible_tools = [
             tool
             for tool in registry.tools
-            if (
-                allowed_tool_names is None
-                or getattr(tool, "__name__", getattr(tool, "name", "")) in allowed_tool_names
-            )
+            if (allowed_tool_names is None or tool_name(tool) in allowed_tool_names)
             and not (get_tool_capabilities(tool) & excluded_capabilities)
         ]
-        visible_names = {
-            getattr(tool, "__name__", getattr(tool, "name", "")) for tool in visible_tools
-        }
+        visible_names = {tool_name(tool) for tool in visible_tools}
         excluded_names = [name for name in registry.names if name not in visible_names]
 
         prompt_contract = ctx.prompt_contract
@@ -1404,8 +1395,7 @@ class AgentTurnRunner:
             visible_tools = prompt_contract.ordered_tools(visible_tools)
 
         # System prompt
-        cfg_base = getattr(ctx.exec_cfg, "base_system_prompt", None) or ""
-        effective_base = cfg_base or _BASE
+        effective_base = _BASE
         mcp_prompt = getattr(ctx.mcp_registry, "prompt_instructions", None)
         if callable(mcp_prompt):
             prompt_text = mcp_prompt()
@@ -1481,16 +1471,14 @@ class AgentTurnRunner:
             )
         ]
         self._exploratory_tools = {
-            str(getattr(tool, "__name__", getattr(tool, "name", "")))
-            for tool in visible_tools
-            if is_exploratory_tool(tool)
+            tool_name(tool) for tool in visible_tools if is_exploratory_tool(tool)
         }
         if ctx.app_state is not None:
-            from agenthicc.tools.capability_gate import ToolCapabilityGate  # noqa: PLC0415
+            from agenthicc.tools.capability_gate import ToolCapabilityGate
 
             hooks.append(ToolCapabilityGate(ctx.app_state))
             if ctx.approval_svc is not None:
-                from agenthicc.tools.approval import ApprovalGate  # noqa: PLC0415
+                from agenthicc.tools.approval import ApprovalGate
 
                 hooks.append(ApprovalGate(ctx.app_state, ctx.approval_svc, ctx.workspace_access))
 
@@ -1543,7 +1531,7 @@ class AgentTurnRunner:
                         # the queued user message.
                         ctx.memory.commit_tool_exchange(exchange, results)
                     else:
-                        from lauren_ai._agents._runner import _complete_tool_results  # noqa: PLC0415
+                        from lauren_ai._agents._runner import _complete_tool_results
 
                         complete_results = _complete_tool_results(tool_calls, results)
                         ctx.memory.add_tool_results(complete_results)
@@ -1561,23 +1549,20 @@ class AgentTurnRunner:
         # PRD-124: inject spawn_subagents into every turn so any agent can
         # optionally spawn a concurrent subagent pool.
         if ctx.runner is not None:
-            from agenthicc.subagents.pool import _tool_name  # noqa: PLC0415
-            from agenthicc.subagents.tool import make_spawn_subagents_tool  # noqa: PLC0415
-            from agenthicc.subagents.policy import SubagentExecutionPolicy  # noqa: PLC0415
-            from agenthicc.runners.retry import RetryConfig  # noqa: PLC0415
+            from agenthicc.subagents.tool import make_spawn_subagents_tool
+            from agenthicc.subagents.policy import SubagentExecutionPolicy
+            from agenthicc.runners.retry import RetryConfig
 
-            _ec = ctx.exec_cfg
+            _ec = _execution(ctx.exec_cfg)
             _subagent_retry = RetryConfig(
-                max_retries=int(getattr(_ec, "transport_max_retries", 10)),
-                irrecoverable_error_max_retries=max(
-                    0, int(getattr(_ec, "irrecoverable_error_max_retries", 5))
-                ),
-                base_delay_s=float(getattr(_ec, "transport_retry_base_delay_s", 1.0)),
-                max_total_duration_s=float(getattr(_ec, "transport_retry_max_total_s", 0.0)),
+                max_retries=_ec.transport_max_retries,
+                irrecoverable_error_max_retries=max(0, _ec.irrecoverable_error_max_retries),
+                base_delay_s=_ec.transport_retry_base_delay_s,
+                max_total_duration_s=_ec.transport_retry_max_total_s,
             )
             _subagent_policy = SubagentExecutionPolicy.from_app_state(
                 ctx.app_state,
-                visible_tool_names=frozenset(_tool_name(item) for item in visible_tools),
+                visible_tool_names=frozenset(tool_name(item) for item in visible_tools),
                 system_prompt_suffix=ctx.system_prompt_suffix,
                 workspace_scope_identity=(
                     str(ctx.workspace_access.scope.primary_root)
@@ -1599,17 +1584,17 @@ class AgentTurnRunner:
                 tool_registry=registry,
                 retry_config=_subagent_retry,
                 provider_options={
-                    "temperature": _config_value(_ec, "temperature", 1.0),
-                    "top_p": _config_value(_ec, "top_p", None),
-                    "max_completion_tokens": _config_value(_ec, "max_completion_tokens", None),
-                    "request_options": _config_value(_ec, "request_options", None),
+                    "temperature": _ec.temperature,
+                    "top_p": _ec.top_p,
+                    "max_completion_tokens": _ec.max_completion_tokens,
+                    "request_options": _ec.request_options,
                 },
                 approval_svc=ctx.approval_svc,
                 workspace_access=ctx.workspace_access,
                 policy=_subagent_policy,
             )
             registry.register(spawn_tool, source="builtin")
-            spawn_name = _tool_name(spawn_tool)
+            spawn_name = tool_name(spawn_tool)
             if (allowed_tool_names is None or spawn_name in allowed_tool_names) and not (
                 get_tool_capabilities(spawn_tool) & excluded_capabilities
             ):
@@ -1621,7 +1606,7 @@ class AgentTurnRunner:
                 )
                 for communication_tool in communication_tools:
                     registry.register(communication_tool, source="builtin")
-                    communication_name = _tool_name(communication_tool)
+                    communication_name = tool_name(communication_tool)
                     if (
                         allowed_tool_names is None or communication_name in allowed_tool_names
                     ) and not (get_tool_capabilities(communication_tool) & excluded_capabilities):
@@ -1636,7 +1621,7 @@ class AgentTurnRunner:
                 # Rebuild the dynamic catalogue after registration.  Contract
                 # turns update their append-only AVAILABLE TOOLS block below.
                 if prompt_contract is None:
-                    from lauren_ai._agents import AGENT_META  # noqa: PLC0415
+                    from lauren_ai._agents import AGENT_META
 
                     meta = getattr(type(agent_instance), AGENT_META)
                     description = registry.describe(excluded_names=excluded_names)
@@ -1697,7 +1682,7 @@ class AgentTurnRunner:
         """
         ctx = self._ctx
         memory = ctx.session_memory
-        if not bool(getattr(ctx.exec_cfg, "auto_compact", True)) or memory is None:
+        if not _execution(ctx.exec_cfg).auto_compact or memory is None:
             return False
 
         messages = getattr(memory, "_messages", None)
@@ -1744,7 +1729,7 @@ class AgentTurnRunner:
             or projected >= max_input_tokens
             or (exact_count is not None and exact_count >= max_input_tokens)
         ):
-            from agenthicc.memory.compactor import (  # noqa: PLC0415
+            from agenthicc.memory.compactor import (
                 CompactionOutcome,
                 CompactionRecoveryRequired,
                 _emit_outcome,
@@ -1763,7 +1748,7 @@ class AgentTurnRunner:
 
         if transport is None or not callable(getattr(transport, "complete", None)):
             if force or projected >= max_input_tokens or not messages:
-                from agenthicc.memory.compactor import (  # noqa: PLC0415
+                from agenthicc.memory.compactor import (
                     CompactionOutcome,
                     CompactionRecoveryRequired,
                     _emit_outcome,
@@ -1785,7 +1770,7 @@ class AgentTurnRunner:
                 raise CompactionRecoveryRequired(outcome)
             return False
 
-        from agenthicc.memory.compactor import (  # noqa: PLC0415
+        from agenthicc.memory.compactor import (
             CompactionOutcome,
             CompactionRecoveryRequired,
             _emit_outcome,
@@ -1797,9 +1782,7 @@ class AgentTurnRunner:
             compact_memory_with_result,
         )
 
-        max_completion_tokens = _config_value(ctx.exec_cfg, "max_completion_tokens", None)
-        if not isinstance(max_completion_tokens, int):
-            max_completion_tokens = None
+        execution = _execution(ctx.exec_cfg)
 
         outcome = await compact_memory_with_result(
             memory,
@@ -1810,8 +1793,8 @@ class AgentTurnRunner:
             usage_ledger=ctx.usage_ledger,
             session_id=ctx.conversation_id,
             run_id=self._intent_id,
-            max_completion_tokens=max_completion_tokens,
-            request_options=_config_value(ctx.exec_cfg, "request_options", None),
+            max_completion_tokens=execution.max_completion_tokens,
+            request_options=execution.request_options,
             emit_result=False,
         )
         if outcome.applied:
@@ -1836,7 +1819,7 @@ class AgentTurnRunner:
         )
         fallback = prepared.outcome
         if prepared.messages is not None:
-            from dataclasses import replace  # noqa: PLC0415
+            from dataclasses import replace
 
             candidate_request = list(prepared.messages)
             if not _has_trailing_user_message(candidate_request, request_text):
@@ -1909,7 +1892,7 @@ class AgentTurnRunner:
                         )
                         _emit_outcome(ctx.conv_store, combined)
                         if force:
-                            raise CompactionRecoveryRequired(combined)
+                            raise CompactionRecoveryRequired(combined) from exc
                         return False
                     if isinstance(exc, _InvalidCompactionCandidate):
                         fallback = replace(
@@ -1941,7 +1924,7 @@ class AgentTurnRunner:
                     recovery_reason="exact_count_over_budget",
                 )
 
-        from dataclasses import replace  # noqa: PLC0415
+        from dataclasses import replace
 
         combined = replace(
             fallback,
@@ -1994,8 +1977,7 @@ class AgentTurnRunner:
 
         system = getattr(meta, "system", None)
         if not isinstance(system, str):
-            configured_system = _config_value(ctx.exec_cfg, "base_system_prompt", "")
-            system = configured_system if isinstance(configured_system, str) else ""
+            system = ""
         tools: list[object] | None = None
         if meta is not None:
             try:
@@ -2037,7 +2019,7 @@ class AgentTurnRunner:
         if not callable(count_tokens):
             return None
         try:
-            from lauren_ai._transport import ContentBlock, Message  # noqa: PLC0415
+            from lauren_ai._transport import ContentBlock, Message
 
             countable_messages = [
                 Message(
@@ -2091,7 +2073,7 @@ class AgentTurnRunner:
         memory = self._ctx.session_memory
         if memory is None:
             return False
-        from agenthicc.memory.compactor import local_compaction_fallback  # noqa: PLC0415
+        from agenthicc.memory.compactor import local_compaction_fallback
 
         outcome = local_compaction_fallback(memory, max_input_tokens=max_input_tokens)
         return outcome.applied
@@ -2138,11 +2120,11 @@ class AgentTurnRunner:
         agent_text: str,
         active_runner: AgentRunnerBase,
     ) -> None:
-        from lauren_ai._config import AgentConfig as _AgentConfig  # noqa: PLC0415
+        from lauren_ai._config import AgentConfig as _AgentConfig
 
         ctx = self._ctx
 
-        from agenthicc.memory.journaled import JournaledShortTermMemory  # noqa: PLC0415
+        from agenthicc.memory.journaled import JournaledShortTermMemory
 
         if isinstance(ctx.session_memory, JournaledShortTermMemory):
             repaired_history = ctx.session_memory.ensure_provider_ready()
@@ -2181,7 +2163,7 @@ class AgentTurnRunner:
 
         usage_tracker = None
         if ctx.usage_ledger is not None:
-            from agenthicc.runners.usage_ledger import UsageRunTracker  # noqa: PLC0415
+            from agenthicc.runners.usage_ledger import UsageRunTracker
 
             usage_tracker = UsageRunTracker(
                 ctx.usage_ledger,
@@ -2211,25 +2193,21 @@ class AgentTurnRunner:
         # at ``summarize_at`` of that live window, and the same window feeds
         # lauren-ai's hard pre-send guard via AgentConfig.context_window
         # (PRD-133 D/E) so a request can never exceed the window.
-        _auto_compact = bool(getattr(ctx.exec_cfg, "auto_compact", True))
+        _auto_compact = _execution(ctx.exec_cfg).auto_compact
         # Completion ceiling for one round-trip.  lauren-ai defaults this to 4096,
         # which silently truncates a single large tool call (e.g. write_file with a
         # whole source file): the partial call is discarded, the turn yields nothing,
         # and the calling phase retries forever.  ExecutionSettings.max_output_tokens
         # is the configurable ceiling and is what effective_usable_budget() reserves.
         if ctx.exec_cfg is None:
-            from agenthicc.config import ExecutionSettings  # noqa: PLC0415
-
-            _max_output = ExecutionSettings().max_output_tokens
+            _max_output = _execution(None).max_output_tokens
         else:
-            _max_output = int(getattr(ctx.exec_cfg, "max_output_tokens", 0) or 0) or int(
-                _AgentConfig().max_tokens_per_turn
-            )
+            _max_output = ctx.exec_cfg.max_output_tokens or int(_AgentConfig().max_tokens_per_turn)
         if ctx.exec_cfg is not None:
             _window = ctx.exec_cfg.effective_context_window()
             _window_tokens = ctx.exec_cfg.effective_usable_budget()
         else:
-            from agenthicc.config import _context_window_for  # noqa: PLC0415
+            from agenthicc.config import _context_window_for
 
             _window = _context_window_for(self._model_id)
             _window_tokens = max(1, _window - _max_output - max(4_000, _window // 25))
@@ -2252,10 +2230,10 @@ class AgentTurnRunner:
                 agent_instance=agent_instance,
             )
         except Exception as exc:
-            from agenthicc.memory.compactor import CompactionRecoveryRequired  # noqa: PLC0415
+            from agenthicc.memory.compactor import CompactionRecoveryRequired
 
             if isinstance(exc, CompactionRecoveryRequired) and _journal is not None:
-                from agenthicc.runners.workflow_execution_context import (  # noqa: PLC0415
+                from agenthicc.runners.workflow_execution_context import (
                     current_workflow_run_id,
                 )
 
@@ -2300,11 +2278,11 @@ class AgentTurnRunner:
         if ctx.resume_ledger is not None:
             turn_ledger = ctx.resume_ledger
         elif _journal is not None:
-            from agenthicc.runners.durable_ledger import DurableIdempotencyLedger  # noqa: PLC0415
+            from agenthicc.runners.durable_ledger import DurableIdempotencyLedger
 
             turn_ledger = DurableIdempotencyLedger(_journal, self._intent_id)
         else:
-            from lauren_ai import IdempotencyLedger  # noqa: PLC0415
+            from lauren_ai import IdempotencyLedger
 
             turn_ledger = IdempotencyLedger()
         self._turn_ledger = turn_ledger
@@ -2313,7 +2291,7 @@ class AgentTurnRunner:
         # On a crash the absence of a matching turn_completed (written in the
         # finally below) flags this turn for resumption.
         if _journal is not None and ctx.session_memory is not None:
-            from agenthicc.runners.workflow_execution_context import (  # noqa: PLC0415
+            from agenthicc.runners.workflow_execution_context import (
                 current_workflow_run_id,
             )
 
@@ -2367,23 +2345,20 @@ class AgentTurnRunner:
             # options into every turn, including workflow phases.  Use
             # dataclass field detection so a downstream runner double or an
             # older lauren-ai installation remains import-compatible.
-            from dataclasses import replace  # noqa: PLC0415
+            from dataclasses import replace
 
+            _ec = _execution(ctx.exec_cfg)
             provider_options: dict[str, object] = {
-                "temperature": _config_value(ctx.exec_cfg, "temperature", 1.0),
-                "top_p": _config_value(ctx.exec_cfg, "top_p", None),
-                "max_completion_tokens": _config_value(ctx.exec_cfg, "max_completion_tokens", None),
-                "request_options": _config_value(ctx.exec_cfg, "request_options", None),
-                "transport_max_retries": _config_value(ctx.exec_cfg, "transport_max_retries", 10),
-                "transport_retry_base_delay_s": _config_value(
-                    ctx.exec_cfg, "transport_retry_base_delay_s", 1.0
-                ),
-                "transport_retry_max_total_s": _config_value(
-                    ctx.exec_cfg, "transport_retry_max_total_s", 0.0
-                ),
+                "temperature": _ec.temperature,
+                "top_p": _ec.top_p,
+                "max_completion_tokens": _ec.max_completion_tokens,
+                "request_options": _ec.request_options,
+                "transport_max_retries": _ec.transport_max_retries,
+                "transport_retry_base_delay_s": _ec.transport_retry_base_delay_s,
+                "transport_retry_max_total_s": _ec.transport_retry_max_total_s,
             }
             if provider_options["request_options"] is not None:
-                from agenthicc.config import RequestOptionSettings  # noqa: PLC0415
+                from agenthicc.config import RequestOptionSettings
 
                 if isinstance(provider_options["request_options"], RequestOptionSettings):
                     provider_options["request_options"] = provider_options[
@@ -2514,7 +2489,7 @@ class AgentTurnRunner:
                     # Auto-index completed turn text for semantic search (PRD-101).
                     if turn_text and ctx.semantic_index is not None:
                         doc_id = f"{self._intent_id}_{ctx.completed_turns}"
-                        asyncio.create_task(ctx.semantic_index.add(doc_id, turn_text))
+                        ctx.semantic_index.index_in_background(doc_id, turn_text)
 
         # Snapshot after any proactive compaction, immediately before Lauren
         # adds this turn's user message.  It is the safe rollback point for the
@@ -2643,7 +2618,7 @@ class AgentTurnRunner:
                         agent_instance=agent_instance,
                     )
                 except Exception as compaction_exc:
-                    from agenthicc.memory.compactor import CompactionRecoveryRequired  # noqa: PLC0415
+                    from agenthicc.memory.compactor import CompactionRecoveryRequired
 
                     if isinstance(compaction_exc, CompactionRecoveryRequired):
                         turn_error = compaction_exc
@@ -2694,7 +2669,8 @@ class AgentTurnRunner:
                 # state cleanup idempotently, preventing the double-fail bug.
                 error_event_id: str | None = f"agent-turn-error:{self._intent_id}"
                 try:
-                    setattr(exc, "_agenthicc_error_event_id", error_event_id)
+                    # Tag an arbitrary (possibly third-party) exception object.
+                    setattr(exc, "_agenthicc_error_event_id", error_event_id)  # noqa: B010
                 except Exception:  # noqa: BLE001 - third-party exceptions may be slotted
                     error_event_id = None
                 missing_session_diagnostic = _missing_opencode_session_diagnostic(exc)
@@ -2801,22 +2777,20 @@ class AgentTurnRunner:
         ledger prevents already-completed tool side effects from running twice.
         Reads retry bounds from ``ctx.exec_cfg``.
         """
-        from agenthicc.runners.retry import RetryConfig, run_with_transport_retry  # noqa: PLC0415
+        from agenthicc.runners.retry import RetryConfig, run_with_transport_retry
 
         ctx = self._ctx
-        exec_cfg = ctx.exec_cfg
+        exec_cfg = _execution(ctx.exec_cfg)
         # agenthicc owns this boundary because lauren-ai releases without
         # provider-step retries still need to recover transient stream errors.
         # A step-aware runner supplies the latest safe snapshot; older runners
         # preserve their current projection and use the durable idempotency
         # ledger instead of rolling back to the turn start.
         config = RetryConfig(
-            max_retries=max(0, int(getattr(exec_cfg, "transport_max_retries", 10))),
-            irrecoverable_error_max_retries=max(
-                0, int(getattr(exec_cfg, "irrecoverable_error_max_retries", 5))
-            ),
-            base_delay_s=max(0.0, float(getattr(exec_cfg, "transport_retry_base_delay_s", 1.0))),
-            max_total_duration_s=float(getattr(exec_cfg, "transport_retry_max_total_s", 0.0)),
+            max_retries=max(0, exec_cfg.transport_max_retries),
+            irrecoverable_error_max_retries=max(0, exec_cfg.irrecoverable_error_max_retries),
+            base_delay_s=max(0.0, exec_cfg.transport_retry_base_delay_s),
+            max_total_duration_s=exec_cfg.transport_retry_max_total_s,
         )
 
         # On rollback, reset turn-local side effects and promote the ledger's
@@ -2829,7 +2803,7 @@ class AgentTurnRunner:
             reset_fns.append(ctx.approval_svc.reset_turn_memory)
         workspace_access = ctx.workspace_access
         if workspace_access is None:
-            from agenthicc.tools.workspace_access import current_workspace_access  # noqa: PLC0415
+            from agenthicc.tools.workspace_access import current_workspace_access
 
             workspace_access = current_workspace_access()
         if workspace_access is not None:
@@ -2876,7 +2850,7 @@ class AgentTurnRunner:
                     "status_code": _http_status_code(exc),
                 },
             )
-        import logging as _logging  # noqa: PLC0415
+        import logging as _logging
 
         # The scroll appender is the user-facing notification surface. Keep
         # the full exception for debug logs rather than printing a nested SDK
@@ -2891,7 +2865,7 @@ class AgentTurnRunner:
             exc_info=(type(exc), exc, exc.__traceback__),
         )
         if ctx.processor is not None:
-            from agenthicc.kernel import Event  # noqa: PLC0415
+            from agenthicc.kernel import Event
 
             await ctx.processor.emit(
                 Event.create(
@@ -2928,7 +2902,7 @@ class AgentTurnRunner:
                 payload,
                 event_id=f"{recovery_id}:retry:{attempt}",
             )
-        import logging as _logging  # noqa: PLC0415
+        import logging as _logging
 
         _logging.getLogger(__name__).debug(
             "Irrecoverable provider error on recovery retry %d/%d, retrying in %.1fs: %s: %s",
@@ -2940,7 +2914,7 @@ class AgentTurnRunner:
             exc_info=(type(exc), exc, exc.__traceback__),
         )
         if ctx.processor is not None:
-            from agenthicc.kernel import Event  # noqa: PLC0415
+            from agenthicc.kernel import Event
 
             await ctx.processor.emit(
                 Event.create(
@@ -2960,7 +2934,7 @@ class AgentTurnRunner:
     # ── step 9: kernel completion event ───────────────────────────────────────
 
     async def _emit_intent_complete(self, status: str = "complete") -> None:
-        from agenthicc.kernel import Event  # noqa: PLC0415
+        from agenthicc.kernel import Event
 
         await self._ctx.processor.emit(
             Event.create(
@@ -2992,7 +2966,7 @@ async def _run_agent_turn(
     mcp_registry: McpToolRegistry | McpSessionManager | None = None,
     active_agent: str | None = None,
     completed_turns: int = 0,
-    approval_svc: ApprovalService | None = None,
+    approval_svc: ApprovalBroker | None = None,
     output_collector: list[str] | None = None,
     system_prompt_suffix: str = "",
     prompt_contract: "PromptContract | None" = None,
@@ -3016,12 +2990,12 @@ async def _run_agent_turn(
     All existing call sites continue to work without modification.
     """
     if session_memory is None:
-        from lauren_ai._memory import ShortTermMemory as _ShortTermMemory  # noqa: PLC0415
+        from lauren_ai._memory import ShortTermMemory as _ShortTermMemory
 
         session_memory = _ShortTermMemory()
 
     if resume_turn_id is None and resume_ledger is None:
-        from agenthicc.runners.workflow_execution_context import (  # noqa: PLC0415
+        from agenthicc.runners.workflow_execution_context import (
             consume_workflow_resume_plan,
         )
 

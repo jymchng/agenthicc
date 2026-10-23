@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from agenthicc.tools.base import tool_name
+
 from .mode import Mode
 from .registry import ModeRegistry
 
@@ -131,9 +133,7 @@ class ModeManager:
 
         tools = registry_tools
         if mode.tool_filter is not None:
-            tools = [
-                t for t in registry_tools if mode.tool_filter(getattr(t, "__name__", str(t)), {})
-            ]
+            tools = [t for t in registry_tools if mode.tool_filter(tool_name(t), {})]
 
         return system, tools
 

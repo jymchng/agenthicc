@@ -33,13 +33,12 @@ class MockApprovalService:
     """
 
     def __init__(self, entries: list[ApprovalEntry]) -> None:
-        from agenthicc.tools.approval import ApprovalResponse  # noqa: PLC0415
-
         self._queue: deque[ApprovalEntry] = deque(entries)
         self._consumed: int = 0
+        self._unrecorded: int = 0
 
     async def request_approval(self, req: ApprovalRequest) -> ApprovalResponse:
-        from agenthicc.tools.approval import ApprovalResponse  # noqa: PLC0415
+        from agenthicc.tools.approval import ApprovalResponse
 
         if self._queue:
             entry = self._queue.popleft()
@@ -74,6 +73,7 @@ class MockApprovalService:
             )
         # Queue exhausted — auto-approve so replay completes gracefully.
         self._consumed += 1
+        self._unrecorded += 1
         try:
             request_access = object.__getattribute__(req, "workspace_access")
         except AttributeError:
@@ -101,3 +101,13 @@ class MockApprovalService:
     def consumed(self) -> int:
         """Number of approval requests consumed so far."""
         return self._consumed
+
+    @property
+    def unrecorded(self) -> int:
+        """Requests that arrived after the recorded answers ran out.
+
+        Each was decided by the exhaustion fallback rather than by a recorded
+        answer, so a replay that expects to match its recording exactly should
+        assert this is zero.
+        """
+        return self._unrecorded

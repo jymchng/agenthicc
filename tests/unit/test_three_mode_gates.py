@@ -100,7 +100,7 @@ async def test_safe_requests_approval_for_side_effecting_capability() -> None:
 
     assert not _aborted(decision)
     assert len(service.requests) == 1
-    assert getattr(service.requests[0], "capabilities") == frozenset({ToolCapability.WRITE})
+    assert service.requests[0].capabilities == frozenset({ToolCapability.WRITE})
 
 
 @pytest.mark.asyncio
@@ -112,7 +112,7 @@ async def test_safe_requests_approval_for_unannotated_capability() -> None:
     decision = await gate.before_tool_call(_context())
 
     assert not _aborted(decision)
-    assert getattr(service.requests[0], "capabilities") == frozenset({ToolCapability.UNDECLARED})
+    assert service.requests[0].capabilities == frozenset({ToolCapability.UNDECLARED})
 
 
 @pytest.mark.asyncio

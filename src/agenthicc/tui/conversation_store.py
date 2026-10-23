@@ -121,10 +121,10 @@ class ConversationStore:
 
     def __init__(self) -> None:
         # ── core signals ──────────────────────────────────────────────────────
-        self.turns: Signal[list[ConversationTurn]] = Signal([])
-        self.agent_state: Signal[AgentState] = Signal(AgentState.IDLE)
-        self.active_tool: Signal[str] = Signal("")
-        self.frame: Signal[int] = Signal(0)
+        self.turns: Signal[list[ConversationTurn]] = Signal([], name="turns")
+        self.agent_state: Signal[AgentState] = Signal(AgentState.IDLE, name="agent_state")
+        self.active_tool: Signal[str] = Signal("", name="active_tool")
+        self.frame: Signal[int] = Signal(0, name="frame")
         """Shared animation counter for active status surfaces (PRD-120/164).
 
         ``frame`` advances on active thinking/tool/recovery or compaction ticks.
@@ -134,33 +134,35 @@ class ConversationStore:
         their frame index from ``frame() % N``. The workspace subscribes once
         for animation redraws.
         """
-        self.tokens_in: Signal[int] = Signal(0)
-        self.tokens_out: Signal[int] = Signal(0)
-        self.cost_usd: Signal[float] = Signal(0.0)
-        self.usage_status: Signal[str] = Signal("unavailable")
-        self.cost_status: Signal[str] = Signal("unavailable")
-        self.usage_calls: Signal[int] = Signal(0)
-        self.session_id: Signal[str] = Signal("")
-        self.model_name: Signal[str] = Signal("")
-        self.notification: Signal[str | None] = Signal(None)
-        self.loop_status: Signal[str | None] = Signal(None)
+        self.tokens_in: Signal[int] = Signal(0, name="tokens_in")
+        self.tokens_out: Signal[int] = Signal(0, name="tokens_out")
+        self.cost_usd: Signal[float] = Signal(0.0, name="cost_usd")
+        self.usage_status: Signal[str] = Signal("unavailable", name="usage_status")
+        self.cost_status: Signal[str] = Signal("unavailable", name="cost_status")
+        self.usage_calls: Signal[int] = Signal(0, name="usage_calls")
+        self.session_id: Signal[str] = Signal("", name="session_id")
+        self.model_name: Signal[str] = Signal("", name="model_name")
+        self.notification: Signal[str | None] = Signal(None, name="notification")
+        self.loop_status: Signal[str | None] = Signal(None, name="loop_status")
         """Persistent footer projection for an active session ``/loop``."""
-        self.workflow_override: Signal[str | None] = Signal(None)
+        self.workflow_override: Signal[str | None] = Signal(None, name="workflow_override")
         """Name of the /workflow-selected override (PRD-114).  None = mode default."""
-        self.transcript_loading: Signal[bool] = Signal(False)
+        self.transcript_loading: Signal[bool] = Signal(False, name="transcript_loading")
         """True while a resumed session transcript is being replayed."""
-        self.compaction_active: Signal[bool] = Signal(False)
+        self.compaction_active: Signal[bool] = Signal(False, name="compaction_active")
         """True while a compaction LLM call is in flight (PRD-119)."""
-        self.subagent_pool_state: Signal[SubagentPoolState | None] = Signal(None)
+        self.subagent_pool_state: Signal[SubagentPoolState | None] = Signal(
+            None, name="subagent_pool_state"
+        )
         """Live state of the active SubagentPool — None when no pool is running (PRD-124)."""
         # PRD-149: owned background-terminal wait projection.  These are
         # separate signals so a live wait can refresh its elapsed/count line
         # without changing the conversation event stream.
-        self.terminal_waiting: Signal[bool] = Signal(False)
-        self.terminal_wait_id: Signal[str] = Signal("")
-        self.terminal_wait_label: Signal[str] = Signal("")
-        self.terminal_wait_elapsed_s: Signal[float] = Signal(0.0)
-        self.terminal_running_count: Signal[int] = Signal(0)
+        self.terminal_waiting: Signal[bool] = Signal(False, name="terminal_waiting")
+        self.terminal_wait_id: Signal[str] = Signal("", name="terminal_wait_id")
+        self.terminal_wait_label: Signal[str] = Signal("", name="terminal_wait_label")
+        self.terminal_wait_elapsed_s: Signal[float] = Signal(0.0, name="terminal_wait_elapsed_s")
+        self.terminal_running_count: Signal[int] = Signal(0, name="terminal_running_count")
         # Internal: per-line notification stack.
         # notify_transient() appends; each dismiss closure removes only its own
         # entry by identity, leaving other lines untouched.
@@ -172,12 +174,12 @@ class ConversationStore:
         # Counts consecutive tool_complete events in the current group.
         # Resets to 0 when a text event or turn_start arrives.
         # Drives the collapsed "…and N more" summary in the scroll buffer.
-        self.tool_group_count: Signal[int] = Signal(0)
+        self.tool_group_count: Signal[int] = Signal(0, name="tool_group_count")
         # Number of tool calls currently hidden above the scroll-buffer threshold.
         # Set live by ScrollBufferAppender as each overflow call arrives;
         # reset to 0 when the group closes (text/error event).
         # FooterComponent renders this as a live "⎿ …and N more" footer row.
-        self.live_tool_overflow: Signal[int] = Signal(0)
+        self.live_tool_overflow: Signal[int] = Signal(0, name="live_tool_overflow")
 
         # ── computed values ───────────────────────────────────────────────────
         self.is_running: Computed[bool] = Computed(
@@ -185,15 +187,18 @@ class ConversationStore:
                 self.agent_state() not in (AgentState.IDLE, AgentState.COMPLETE, AgentState.ERROR)
             ),
             self.agent_state,
+            name="is_running",
         )
         self.turn_count: Computed[int] = Computed(
             lambda: len(self.turns()),
             self.turns,
+            name="turn_count",
         )
         self.total_tokens: Computed[int] = Computed(
             lambda: self.tokens_in() + self.tokens_out(),
             self.tokens_in,
             self.tokens_out,
+            name="total_tokens",
         )
 
         # ── animation (driven by tick) ────────────────────────────────────────
@@ -201,7 +206,7 @@ class ConversationStore:
         # ``elapsed_s`` is intentionally wall-clock based for turn telemetry.
         # The status bar uses this separate cached clock so a render caused by
         # SIGWINCH cannot change a waiting modal's visible duration.
-        self.display_elapsed_s: Signal[float] = Signal(0.0)
+        self.display_elapsed_s: Signal[float] = Signal(0.0, name="display_elapsed_s")
         self._display_paused: bool = False
         self._last_display_tick: float | None = None
         # The outer activity spans all LLM turns belonging to one user request
@@ -211,7 +216,7 @@ class ConversationStore:
         # live.  This is deliberately wall-clock based: the value represents
         # the total time between the activity becoming non-idle and returning
         # to IDLE, including internal turn boundaries and user-owned waits.
-        self.activity_elapsed_s: Signal[float] = Signal(0.0)
+        self.activity_elapsed_s: Signal[float] = Signal(0.0, name="activity_elapsed_s")
         self._activity_start_time: float = 0.0
         self._activity_active: bool = False
         self._activity_external_scope: bool = False
@@ -408,7 +413,7 @@ class ConversationStore:
         Safe to call with no running event loop (headless / tests): the message
         is set persistently with no dismiss scheduled.
         """
-        import asyncio  # noqa: PLC0415
+        import asyncio
 
         entry = _NotificationEntry(text=message)
 
@@ -626,10 +631,10 @@ class InputState:
     """Reactive state for the composer (input bar)."""
 
     def __init__(self) -> None:
-        self.buf: Signal[list[str]] = Signal([])
-        self.cursor: Signal[int] = Signal(0)
-        self.paste_condensed: Signal[bool] = Signal(False)
-        self.paste_label: Signal[str] = Signal("")
+        self.buf: Signal[list[str]] = Signal([], name="buf")
+        self.cursor: Signal[int] = Signal(0, name="cursor")
+        self.paste_condensed: Signal[bool] = Signal(False, name="paste_condensed")
+        self.paste_label: Signal[str] = Signal("", name="paste_label")
 
     def update(
         self,
@@ -654,22 +659,24 @@ class AppState:
     """Root state container — single instance for the application lifetime."""
 
     def __init__(self) -> None:
-        from agenthicc.tui.runtime.mode_manager import build_safe_mode  # noqa: PLC0415
-        from agenthicc.cli.context import CLIFlags  # noqa: PLC0415
+        from agenthicc.tui.runtime.mode_manager import build_safe_mode
+        from agenthicc.cli.context import CLIFlags
 
         self.conversation = ConversationStore()
         self.input = InputState()
-        self.active_mode: Signal[RuntimeMode] = Signal(build_safe_mode())
-        self.overlay: Signal[str] = Signal("")  # active overlay name
-        self.modal_open: Signal[bool] = Signal(False)
+        self.active_mode: Signal[RuntimeMode] = Signal(build_safe_mode(), name="active_mode")
+        self.overlay: Signal[str] = Signal("", name="overlay")  # active overlay name
+        self.modal_open: Signal[bool] = Signal(False, name="modal_open")
         # PRD-78: non-None when an agent tool is paused waiting for approval.
-        self.pending_approval: Signal[ApprovalRequest | None] = Signal(None)
+        self.pending_approval: Signal[ApprovalRequest | None] = Signal(
+            None, name="pending_approval"
+        )
         # Keep the cached display clock in sync with the authoritative prompt
         # state.  This is synchronous and idempotent; rendering and resizing
         # never need to inspect a wall clock to decide whether a wait is active.
         self.pending_approval.subscribe(self._sync_display_wait_state)
         # PRD-81: holds WorkflowRun | None; set by WorkflowRunner during execution.
-        self.workflow_run: Signal[WorkflowRun | None] = Signal(None)
+        self.workflow_run: Signal[WorkflowRun | None] = Signal(None, name="workflow_run")
         # PRD-79: ephemeral CLI flags — frozen after startup, read by ApprovalGate etc.
         self.cli_flags: CLIFlags = CLIFlags()
 
@@ -708,8 +715,8 @@ class AppState:
         intent:         Original user intent string.
         model_id:       Model string shown in phase display (optional).
         """
-        import dataclasses as _dc  # noqa: PLC0415
-        from agenthicc.workflows.plugin import WorkflowRun  # noqa: PLC0415
+        import dataclasses as _dc
+        from agenthicc.workflows.plugin import WorkflowRun
 
         current = self.workflow_run()
         if current is not None and _dc.is_dataclass(current):

@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
 import pytest
+
+from agenthicc.plugins.trust import ExtensionTrust, override_extension_trust
 
 from agenthicc.kernel import (
     AppState,
@@ -76,7 +79,6 @@ def tmp_settings(tmp_path) -> SystemSettings:
         event_log_path=str(tmp_path / ".agenthicc" / "events.jsonl"),
         snapshot_path=str(tmp_path / ".agenthicc" / "snapshot.json"),
         max_parallel_tasks=5,
-        agent_pool_size=5,
         snapshot_every_n_events=1000,
     )
 
@@ -176,3 +178,25 @@ def make_mock_transport(responses: list[Any]):
 @pytest.fixture
 def mock_transport_factory():
     return make_mock_transport
+
+
+@pytest.fixture(autouse=True)
+def _trust_test_extensions(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Iterator[ExtensionTrust]:
+    """Trust extension files tests create under pytest's temporary directories.
+
+    Production trusts only ``~/.agenthicc`` by location; everything else needs
+    a digest-bound record. Tests write plugin fixtures into temporary
+    directories, so the suite's policy adds the pytest base temp directory as
+    a trusted root and keeps its records in a temporary store. Tests that
+    exercise trust itself install their own policy with
+    ``override_extension_trust``.
+    """
+    base = tmp_path_factory.getbasetemp()
+    trust = ExtensionTrust(
+        store_path=base / "extension-trust.json",
+        trusted_roots=(Path.home() / ".agenthicc", base),
+    )
+    with override_extension_trust(trust):
+        yield trust

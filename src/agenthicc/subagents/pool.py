@@ -43,6 +43,7 @@ from agenthicc.subagents.types import (
     SubagentTypeSpec,
 )
 from agenthicc.subagents.communication import AgentMessageBroker, make_child_communication_tools
+from agenthicc.tools.base import tool_name
 from agenthicc.subagents.policy import (
     SubagentExecutionPolicy,
     child_app_state,
@@ -58,7 +59,7 @@ if TYPE_CHECKING:
     from agenthicc.tui.conversation_store import AppState, ConversationStore
     from agenthicc.runners.retry import RetryConfig
     from agenthicc.runners.usage_ledger import UsageLedger
-    from agenthicc.tools.approval import ApprovalService
+    from agenthicc.tools.approval import ApprovalBroker
     from agenthicc.tools.workspace_access import WorkspaceAccessPolicy
 
 __all__ = [
@@ -147,7 +148,7 @@ def _usage_field(usage: object | None, name: str, default: object = 0) -> object
 
 def _normalise_usage(usage: object | None) -> TokenUsage:
     """Convert a provider's nullable usage object to Lauren's numeric type."""
-    from lauren_ai._transport import TokenUsage  # noqa: PLC0415
+    from lauren_ai._transport import TokenUsage
 
     metadata = _usage_field(usage, "provider_metadata", {})
     return TokenUsage(
@@ -164,7 +165,7 @@ def _normalise_usage(usage: object | None) -> TokenUsage:
 
 def _normalise_completion(value: object) -> object:
     """Replace nullable usage on a completion or stream chunk."""
-    from lauren_ai._transport import Completion, CompletionChunk  # noqa: PLC0415
+    from lauren_ai._transport import Completion, CompletionChunk
 
     if isinstance(value, Completion):
         return replace(value, usage=_normalise_usage(value.usage))
@@ -260,7 +261,7 @@ def _make_child_app_state(
 def _make_child_workspace_access(
     parent: "WorkspaceAccessPolicy | None",
     child_app_state: "AppState | None",
-    approval_service: "ApprovalService | None" = None,
+    approval_service: "ApprovalBroker | None" = None,
 ) -> "WorkspaceAccessPolicy | None":
     """Bind inherited workspace scope to the isolated child policy."""
     return child_workspace_access(
@@ -301,15 +302,6 @@ _MUTATING_TOOL_NAMES = frozenset(
 )
 
 
-def _tool_name(tool: object) -> str:
-    """Return a callable or Agenthicc tool object's provider name."""
-    name = getattr(tool, "__name__", "")
-    if isinstance(name, str) and name:
-        return name
-    name = type(tool).__dict__.get("name", "")
-    return name if isinstance(name, str) else ""
-
-
 def _is_mutating_tool(tool: object) -> bool:
     """Return whether *tool* is known to change workspace state.
 
@@ -317,7 +309,7 @@ def _is_mutating_tool(tool: object) -> bool:
     fallback preserves the contract for legacy Tool objects and for callers
     that pass a compatible callable without Agenthicc metadata.
     """
-    if _tool_name(tool) in _MUTATING_TOOL_NAMES:
+    if tool_name(tool) in _MUTATING_TOOL_NAMES:
         return True
     try:
         from agenthicc.tools.capabilities import ToolCapability, get_tool_capabilities
@@ -404,7 +396,7 @@ class SubagentWorker:
         parent_run_id: str = "",
         provider_options: Mapping[str, object] | None = None,
         timeout_s: float | None = None,
-        approval_svc: "ApprovalService | None" = None,
+        approval_svc: "ApprovalBroker | None" = None,
         workspace_access: "WorkspaceAccessPolicy | None" = None,
         policy: SubagentExecutionPolicy | None = None,
         communication: AgentMessageBroker | None = None,
@@ -420,7 +412,7 @@ class SubagentWorker:
         # an unconditional Yolo policy.
         self._policy = policy or SubagentExecutionPolicy.from_app_state(
             app_state,
-            visible_tool_names=frozenset(_tool_name(item) for item in all_tools),
+            visible_tool_names=frozenset(tool_name(item) for item in all_tools),
         )
         self._app_state = _make_child_app_state(self._policy)
         self._registry = registry
@@ -551,12 +543,12 @@ class SubagentWorker:
 
     async def _execute(self) -> str:
         """Build an isolated agent and run the task. Returns response content."""
-        from lauren_ai._agents import agent as agent_decorator, use_tools  # noqa: PLC0415
-        from lauren_ai._agents._runner import AgentRunnerBase as _RunnerBase  # noqa: PLC0415
-        from lauren_ai._memory import ShortTermMemory  # noqa: PLC0415
-        from lauren_ai import AfterToolHookDecision, ToolCallContext, ToolHook  # noqa: PLC0415
-        from lauren_ai._signals import SignalBus, ToolCallStarted  # noqa: PLC0415
-        from agenthicc.runners.tool_populator import populate_agent_tools  # noqa: PLC0415
+        from lauren_ai._agents import agent as agent_decorator, use_tools
+        from lauren_ai._agents._runner import AgentRunnerBase as _RunnerBase
+        from lauren_ai._memory import ShortTermMemory
+        from lauren_ai import AfterToolHookDecision, ToolCallContext, ToolHook
+        from lauren_ai._signals import SignalBus, ToolCallStarted
+        from agenthicc.runners.tool_populator import populate_agent_tools
 
         # Filter the full tool list to the expanded allowed set. Communication
         # tools are session-bound control-plane tools and are added separately;
@@ -565,16 +557,16 @@ class SubagentWorker:
         filtered = [
             t
             for t in self._all_tools
-            if _tool_name(t) in self._effective_allowed
+            if tool_name(t) in self._effective_allowed
             and (
                 self._policy is None
                 or not self._policy.visible_tool_names
-                or _tool_name(t) in self._policy.visible_tool_names
+                or tool_name(t) in self._policy.visible_tool_names
             )
         ]
         if self._communication is not None:
             filtered.extend(make_child_communication_tools(self._communication, self._task.task_id))
-        mutating_tools = frozenset(_tool_name(tool) for tool in filtered if _is_mutating_tool(tool))
+        mutating_tools = frozenset(tool_name(tool) for tool in filtered if _is_mutating_tool(tool))
         if self._spec.name == "implementer" and not mutating_tools:
             raise RuntimeError(
                 "implementer has no write-capable tools after session filtering; "
@@ -613,11 +605,11 @@ class SubagentWorker:
 
         hooks: list[object] = []
         if self._app_state is not None:
-            from agenthicc.tools.capability_gate import ToolCapabilityGate  # noqa: PLC0415
+            from agenthicc.tools.capability_gate import ToolCapabilityGate
 
             hooks.append(ToolCapabilityGate(self._app_state))
             if self._approval_svc is not None:
-                from agenthicc.tools.approval import ApprovalGate  # noqa: PLC0415
+                from agenthicc.tools.approval import ApprovalGate
 
                 hooks.append(
                     ApprovalGate(
@@ -666,7 +658,7 @@ class SubagentWorker:
 
         usage_tracker = None
         if self._usage_ledger is not None:
-            from agenthicc.runners.usage_ledger import UsageRunTracker  # noqa: PLC0415
+            from agenthicc.runners.usage_ledger import UsageRunTracker
 
             usage_tracker = UsageRunTracker(
                 self._usage_ledger,
@@ -677,11 +669,11 @@ class SubagentWorker:
                 agent_name=self.label,
             )
 
-        from lauren_ai._config import AgentConfig  # noqa: PLC0415
+        from lauren_ai._config import AgentConfig
 
         memory = ShortTermMemory(max_tokens=8_000)
         result: dict[str, str] = {"text": ""}
-        from dataclasses import fields as dataclass_fields  # noqa: PLC0415
+        from dataclasses import fields as dataclass_fields
 
         agent_fields = {field.name for field in dataclass_fields(AgentConfig)}
         config_options: dict[str, object] = {
@@ -691,7 +683,7 @@ class SubagentWorker:
             "request_options": self._provider_options.get("request_options"),
         }
         if config_options["request_options"] is not None:
-            from agenthicc.config import RequestOptionSettings  # noqa: PLC0415
+            from agenthicc.config import RequestOptionSettings
 
             if isinstance(config_options["request_options"], RequestOptionSettings):
                 config_options["request_options"] = config_options["request_options"].resolve()
@@ -745,7 +737,7 @@ class SubagentWorker:
                         + json.dumps(messages, ensure_ascii=False, sort_keys=True, default=str)
                     )
             if self._retry_config is not None:
-                from agenthicc.runners.retry import run_with_transport_retry  # noqa: PLC0415
+                from agenthicc.runners.retry import run_with_transport_retry
 
                 await run_with_transport_retry(
                     lambda: _do_run(message),
@@ -843,7 +835,7 @@ class SubagentPool:
         parent_run_id: str = "",
         provider_options: Mapping[str, object] | None = None,
         timeout_s: float | None = None,
-        approval_svc: "ApprovalService | None" = None,
+        approval_svc: "ApprovalBroker | None" = None,
         workspace_access: "WorkspaceAccessPolicy | None" = None,
         conversation_journal: "ConversationJournal | None" = None,
         task_fingerprint: str = "",
@@ -984,7 +976,7 @@ class SubagentPool:
 
         try:
             raw = await asyncio.gather(
-                *[_bounded(w, ws) for w, ws in zip(workers, worker_states)],
+                *[_bounded(w, ws) for w, ws in zip(workers, worker_states, strict=True)],
                 return_exceptions=True,
             )
         except asyncio.CancelledError:
@@ -1060,7 +1052,7 @@ class SubagentPool:
     async def _emit_pool_started(self) -> None:
         if self._processor is None:
             return
-        from agenthicc.kernel import Event  # noqa: PLC0415
+        from agenthicc.kernel import Event
 
         await self._processor.emit(
             Event.create(
@@ -1084,7 +1076,7 @@ class SubagentPool:
     async def _emit_worker_started(self, worker: SubagentWorker) -> None:
         if self._processor is None:
             return
-        from agenthicc.kernel import Event  # noqa: PLC0415
+        from agenthicc.kernel import Event
 
         await self._processor.emit(
             Event.create(
@@ -1102,7 +1094,7 @@ class SubagentPool:
     async def _emit_worker_done(self, result: SubagentResult) -> None:
         if self._processor is None:
             return
-        from agenthicc.kernel import Event  # noqa: PLC0415
+        from agenthicc.kernel import Event
 
         event_type = "SubagentCompleted" if result.ok else "SubagentFailed"
         await self._processor.emit(
@@ -1125,7 +1117,7 @@ class SubagentPool:
     async def _emit_pool_completed(self, agg: AggregatedResult) -> None:
         if self._processor is None:
             return
-        from agenthicc.kernel import Event  # noqa: PLC0415
+        from agenthicc.kernel import Event
 
         await self._processor.emit(
             Event.create(
@@ -1231,7 +1223,7 @@ async def run_pool(
     parent_run_id: str = "",
     provider_options: Mapping[str, object] | None = None,
     timeout_s: float | None = None,
-    approval_svc: "ApprovalService | None" = None,
+    approval_svc: "ApprovalBroker | None" = None,
     workspace_access: "WorkspaceAccessPolicy | None" = None,
     conversation_journal: "ConversationJournal | None" = None,
     task_fingerprint: str = "",

@@ -77,7 +77,7 @@ async def test_read_and_write_adapters_share_one_approved_parent_scope(
     assert write["ok"] is True
     assert target.read_text(encoding="utf-8") == "after"
     assert len(approval.requests) == 2
-    assert all(getattr(req, "workspace_access") for req in approval.requests)
+    assert all(req.workspace_access for req in approval.requests)
 
 
 @pytest.mark.asyncio
@@ -188,7 +188,7 @@ async def test_glob_pattern_escape_is_checked_before_enumeration(tmp_path: Path)
     assert result["ok"] is False
     assert "approval_denied" in str(result["error"])
     assert len(approval.requests) == 1
-    access = getattr(approval.requests[0], "workspace_access")
+    access = approval.requests[0].workspace_access
     assert access[0].canonical == outside.resolve()
 
 

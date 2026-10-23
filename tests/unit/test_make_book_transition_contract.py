@@ -20,7 +20,7 @@ def _tool(tools: list[object], name: str) -> object:
 
 
 def _schema(tool: object) -> dict[str, object]:
-    metadata = getattr(tool, "__lauren_ai_tool__")
+    metadata = tool.__lauren_ai_tool__
     return metadata.parameters["input_schema"]
 
 

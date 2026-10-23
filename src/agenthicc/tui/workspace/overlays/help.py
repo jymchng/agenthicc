@@ -111,8 +111,8 @@ class HelpOverlay(Overlay):
     # ── Rendering ─────────────────────────────────────────────────────────────
 
     def _render_list(self) -> "RenderableType":
-        from rich.console import Group  # noqa: PLC0415
-        from rich.text import Text  # noqa: PLC0415
+        from rich.console import Group
+        from rich.text import Text
 
         if not self._rows:
             return Group(
@@ -154,8 +154,8 @@ class HelpOverlay(Overlay):
         return Group(*lines)
 
     def _render_detail(self) -> "RenderableType":
-        from rich.console import Group  # noqa: PLC0415
-        from rich.text import Text  # noqa: PLC0415
+        from rich.console import Group
+        from rich.text import Text
 
         cmd = self._detail_cmd
         if cmd is None:

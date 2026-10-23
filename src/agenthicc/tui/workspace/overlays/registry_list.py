@@ -67,8 +67,8 @@ class _RegistryListOverlay(Overlay):
         pass
 
     def render(self) -> "RenderableType":
-        from rich.console import Group  # noqa: PLC0415
-        from rich.text import Text  # noqa: PLC0415
+        from rich.console import Group
+        from rich.text import Text
 
         if self._detail is not None:
             return self._render_detail(self._detail)
@@ -139,8 +139,8 @@ class _RegistryListOverlay(Overlay):
             self._scroll = self._selected - self._MAX_VISIBLE + 1
 
     def _render_detail(self, row: _ListRow) -> "RenderableType":
-        from rich.console import Group  # noqa: PLC0415
-        from rich.text import Text  # noqa: PLC0415
+        from rich.console import Group
+        from rich.text import Text
 
         separator = Text("─" * 72, style="dim")
         lines: list[RenderableType] = [
@@ -180,8 +180,8 @@ class RegistryMessageOverlay(Overlay):
         pass
 
     def render(self) -> "RenderableType":
-        from rich.console import Group  # noqa: PLC0415
-        from rich.text import Text  # noqa: PLC0415
+        from rich.console import Group
+        from rich.text import Text
 
         separator = Text("─" * 72, style="dim")
         lines: list[RenderableType] = [
@@ -322,7 +322,7 @@ class WorkflowListOverlay(_RegistryListOverlay):
         on_select: Callable[[str], None] | None = None,
     ) -> None:
         rows: list[_ListRow] = []
-        from agenthicc.tui.runtime.mode_manager import canonical_mode_name  # noqa: PLC0415
+        from agenthicc.tui.runtime.mode_manager import canonical_mode_name
 
         for workflow in sorted(workflows, key=lambda item: item.name):
             entry = registry.get_entry(workflow.name) if registry is not None else None
@@ -421,10 +421,10 @@ class WorkflowRunsOverlay(Overlay):
         pass
 
     def render(self) -> "RenderableType":
-        from rich.console import Group  # noqa: PLC0415
-        from rich.panel import Panel  # noqa: PLC0415
-        from rich.table import Table  # noqa: PLC0415
-        from rich.text import Text  # noqa: PLC0415
+        from rich.console import Group
+        from rich.panel import Panel
+        from rich.table import Table
+        from rich.text import Text
 
         separator = Text("─" * 84, style="dim")
         page = self._selected // self._PAGE_SIZE + 1

@@ -13,6 +13,8 @@ from agenthicc.config import CloakBrowserSettings
 from agenthicc.tools.sandbox import WorkspaceView
 
 from .artifacts import BrowserArtifactStore
+from agenthicc.tools.base import tool_name
+
 from .client import (
     BrowserClient,
     CdpCloakBrowserClient,
@@ -78,12 +80,12 @@ _OPERATION_CACHE_LIMIT = 256
 
 def is_cloakbrowser_tool(tool: object) -> bool:
     """Return whether a callable is one of the built-in browser tools."""
-    return str(getattr(tool, "__name__", "")) in CLOAKBROWSER_TOOL_NAMES
+    return tool_name(tool) in CLOAKBROWSER_TOOL_NAMES
 
 
 def is_browser_tool(tool: object) -> bool:
     """Return whether a callable belongs to a session-owned browser backend."""
-    name = str(getattr(tool, "__name__", ""))
+    name = tool_name(tool)
     return name in CLOAKBROWSER_TOOL_NAMES or (
         name.startswith("playwright_")
         and name.removeprefix("playwright_")

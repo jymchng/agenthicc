@@ -57,7 +57,7 @@ def fake_mcp_bridge():
 
     mock_client.list_tools = AsyncMock(return_value=schemas)
 
-    async def _call_tool(name, arguments=None):  # noqa: ANN001
+    async def _call_tool(name, arguments=None):
         result = MagicMock()
         if name == "fail_tool":
             result.isError = True

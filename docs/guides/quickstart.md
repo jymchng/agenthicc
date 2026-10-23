@@ -4,7 +4,7 @@ This guide gets a local checkout to a first TUI or headless run.
 
 ## Prerequisites
 
-- Python 3.11+; CI exercises 3.12 and 3.13.
+- Python 3.11+; CI exercises 3.11, 3.12 and 3.13.
 - `uv`.
 - An Anthropic/OpenAI/LiteLLM credential, or a running Ollama server.
 
@@ -110,11 +110,7 @@ provider = "anthropic"
 max_parallel_tasks = 4
 auto_compact = true
 
-[memory]
-project_memory_path = ".agenthicc/memory"
-
 [security]
-sandbox_mode = true
 allowed_paths = ["/absolute/path/to/this/project"]
 network_allow_list = []
 ```

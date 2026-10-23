@@ -645,7 +645,7 @@ class TestRunWithTransportRetry:
             def __init__(self) -> None:
                 self.calls = 0
 
-            async def run_stream(self, _agent, message, **kwargs):  # noqa: ANN001
+            async def run_stream(self, _agent, message, **kwargs):
                 self.calls += 1
                 kwargs["memory"].add_user(message)
 
@@ -749,7 +749,7 @@ class _FakeSubRunner:
     def __init__(self, behavior) -> None:
         self._behavior = behavior
 
-    async def run(self, agent, text, *, memory, config_override):  # noqa: ANN001
+    async def run(self, agent, text, *, memory, config_override):
         return await self._behavior(memory, text)
 
 

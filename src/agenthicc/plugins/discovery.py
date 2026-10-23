@@ -3,15 +3,20 @@
 from __future__ import annotations
 
 import ast
-import importlib.metadata
 import importlib.util
 import logging
-import re
-import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
+
+from agenthicc.plugins.deps import (
+    PluginDependencyError,
+    declared_dependencies,
+    missing_requirements,
+)
+from agenthicc.plugins.trust import current_extension_trust
+from agenthicc.tools.base import tool_name
 
 log = logging.getLogger(__name__)
 
@@ -37,10 +42,11 @@ class LoadResult:
     error: str | None = None
     missing_deps: list[str] = field(default_factory=list)
     commands: list[object] = field(default_factory=list)  # Command objects from COMMANDS export
+    untrusted: bool = False  # skipped without import: not trusted (agenthicc trust)
 
     @property
     def ok(self) -> bool:
-        return self.error is None and not self.missing_deps
+        return self.error is None and not self.missing_deps and not self.untrusted
 
 
 @dataclass
@@ -67,30 +73,6 @@ class PluginToolSet:
 # ---------------------------------------------------------------------------
 # Dependency helpers
 # ---------------------------------------------------------------------------
-
-
-def _requirements_from_sidecar(path: Path) -> list[str]:
-    """Read <stem>.requirements.txt next to *path* if it exists."""
-    req_file = path.parent / (path.stem + ".requirements.txt")
-    if req_file.exists():
-        return [
-            line.strip()
-            for line in req_file.read_text().splitlines()
-            if line.strip() and not line.startswith("#")
-        ]
-    return []
-
-
-def _check_missing(requirements: list[str]) -> list[str]:
-    """Return the subset of *requirements* that are not currently satisfied."""
-    missing: list[str] = []
-    for req in requirements:
-        try:
-            pkg = re.split(r"[>=<!~\[]", req)[0].strip()
-            importlib.metadata.version(pkg)
-        except Exception:
-            missing.append(req)
-    return missing
 
 
 def _infer_missing_from_ast(path: Path) -> list[str]:
@@ -121,50 +103,23 @@ def _infer_missing_from_ast(path: Path) -> list[str]:
     return missing
 
 
-def _install_deps(requirements: list[str], target: str = "venv") -> None:
-    """Install *requirements* via pip into the current environment."""
-    flags = ["--user"] if target == "user" else []
-    subprocess.check_call(
-        [sys.executable, "-m", "pip", "install", "--quiet", *flags, *requirements]
-    )
-
-
 # ---------------------------------------------------------------------------
 # Core loader
 # ---------------------------------------------------------------------------
 
 
-def _load_plugin_file(path: Path, auto_install: bool = False) -> LoadResult:
-    """Import a single plugin file; check/install deps first, then extract TOOLS."""
-
-    # ── Step 1: probe-import to read DEPENDENCIES ─────────────────────────
-    declared_deps: list[str] = []
+def _load_plugin_file(path: Path) -> LoadResult:
+    """Check trust and declared dependencies, then import the plugin exactly once."""
+    if not current_extension_trust().permits(path, kind="tool"):
+        return LoadResult(path=path, untrusted=True)
     try:
-        probe_spec = importlib.util.spec_from_file_location("_dep_probe", path)
-        if probe_spec and probe_spec.loader:
-            probe_mod = importlib.util.module_from_spec(probe_spec)
-            probe_spec.loader.exec_module(probe_mod)
-            declared_deps = list(getattr(probe_mod, "DEPENDENCIES", []))
-    except Exception:
-        pass  # will be caught properly in Step 3
-
-    if not declared_deps:
-        declared_deps = _requirements_from_sidecar(path)
-
-    # ── Step 2: check / install missing deps ─────────────────────────────
-    missing = _check_missing(declared_deps)
+        missing = missing_requirements(declared_dependencies(path))
+    except PluginDependencyError as exc:
+        return LoadResult(path=path, error=str(exc))
     if missing:
-        if auto_install:
-            log.info("Auto-installing missing deps for %s: %s", path, missing)
-            try:
-                _install_deps(missing)
-                missing = _check_missing(missing)  # verify install succeeded
-            except Exception as exc:
-                log.error("Auto-install failed for %s: %s", path, exc)
-        if missing:
-            return LoadResult(path=path, missing_deps=missing)
+        return LoadResult(path=path, missing_deps=missing)
 
-    # ── Step 3: full import ───────────────────────────────────────────────
+    # Import the plugin, once.
     module_name = f"_agenthicc_plugin_{path.stem}_{abs(hash(str(path)))}"
     try:
         spec = importlib.util.spec_from_file_location(module_name, path)
@@ -211,7 +166,7 @@ def _load_plugin_file(path: Path, auto_install: bool = False) -> LoadResult:
     # to register custom subagent types into the global DEFAULT_REGISTRY.
     raw_sa_types = getattr(module, "SUBAGENT_TYPES", None)
     if raw_sa_types is not None:
-        from agenthicc.subagents.types import SubagentTypeSpec, DEFAULT_REGISTRY  # noqa: PLC0415
+        from agenthicc.subagents.types import SubagentTypeSpec, DEFAULT_REGISTRY
 
         for spec in raw_sa_types if isinstance(raw_sa_types, (list, tuple)) else []:
             if isinstance(spec, SubagentTypeSpec):
@@ -230,7 +185,7 @@ def _load_plugin_file(path: Path, auto_install: bool = False) -> LoadResult:
 # ---------------------------------------------------------------------------
 
 
-def _scan_directory(root: Path, auto_install: bool = False) -> list[LoadResult]:
+def _scan_directory(root: Path) -> list[LoadResult]:
     """Recursively load all *.py files under *root*."""
     if not root.is_dir():
         return []
@@ -242,7 +197,7 @@ def _scan_directory(root: Path, auto_install: bool = False) -> list[LoadResult]:
         # must not prevent later files from being attempted; the caller can
         # publish successful results and report this file as failed.
         try:
-            result = _load_plugin_file(py_file, auto_install=auto_install)
+            result = _load_plugin_file(py_file)
         except Exception as exc:  # noqa: BLE001
             result = LoadResult(path=py_file, error=f"{type(exc).__name__}: {exc}")
             log.error(
@@ -253,9 +208,7 @@ def _scan_directory(root: Path, auto_install: bool = False) -> list[LoadResult]:
         if result.missing_deps:
             deps_str = " ".join(result.missing_deps)
             log.warning(
-                "Plugin %s skipped — missing dependencies: %s\n"
-                "  Fix: pip install %s\n"
-                "  Or set [plugins] auto_install = true in agenthicc.toml",
+                "Plugin %s skipped — missing dependencies: %s\n  Fix: pip install %s",
                 py_file,
                 result.missing_deps,
                 deps_str,
@@ -299,9 +252,9 @@ def warn_conflicts(plugin_set: PluginToolSet) -> None:
     """Warn if any plugin tool shadows a built-in tool name."""
     from agenthicc.agent_tools import AGENT_TOOLS as _BUILTIN
 
-    builtins = frozenset(getattr(t, "__name__", "") for t in _BUILTIN)
+    builtins = frozenset(map(tool_name, _BUILTIN))
     for tool in plugin_set.all_tools:
-        name = getattr(tool, "__name__", "")
+        name = tool_name(tool)
         if name in builtins:
             log.warning("Plugin tool %r shadows built-in; plugin version used.", name)
 

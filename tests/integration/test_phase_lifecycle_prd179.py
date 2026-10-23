@@ -20,6 +20,7 @@ from agenthicc.workflows.reconstruct_site import (
     ReconstructState,
 )
 from agenthicc.workflows.reconstruct_site.evidence_plan import RECONSTRUCT_PHASE_PLAN
+from tests.session_fakes import workflow_config
 
 pytestmark = pytest.mark.integration
 
@@ -116,7 +117,7 @@ def _reconstruct_config(tmp_path: Path) -> SimpleNamespace:
         profile="",
         base_url="",
     )
-    return SimpleNamespace(
+    return workflow_config(
         app_state=SimpleNamespace(update_workflow_phase=lambda **_kwargs: None),
         agent_runner=SimpleNamespace(),
         cfg=SimpleNamespace(execution=execution),

@@ -13,6 +13,20 @@ if TYPE_CHECKING:
     from agenthicc.config import AgenthiccConfig
 
 
+def package_version() -> str:
+    """Return the installed distribution's version, which is the wheel's version.
+
+    An uninstalled source tree (``PYTHONPATH=src``) has no distribution
+    metadata, so it reports ``0+unknown`` instead of a version it cannot know.
+    """
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        return version("agenthicc")
+    except PackageNotFoundError:
+        return "0+unknown"
+
+
 def _add_global_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--goal",
@@ -69,7 +83,7 @@ def _add_global_flags(parser: argparse.ArgumentParser) -> None:
         default=None,
         help="Path to agenthicc.toml.",
     )
-    parser.add_argument("--version", action="version", version="agenthicc 0.1.0")
+    parser.add_argument("--version", action="version", version=f"agenthicc {package_version()}")
     parser.add_argument(
         "--continue",
         dest="continue_session",
@@ -135,13 +149,13 @@ def parse_cli() -> tuple[CLIContext, argparse.Namespace]:
     # extension code, optional integrations, and durable stores from loading
     # just to answer a process-local question.
     if argv == ["--version"]:
-        print("agenthicc 0.1.0")
+        print(f"agenthicc {package_version()}")
         raise SystemExit(0)
     if argv in (["--help"], ["-h"]):
         _fast_help_parser().parse_args(argv)
         raise AssertionError("argparse help should terminate")
 
-    from agenthicc.cli.registry import _discover, _as_tree, _wire  # noqa: PLC0415
+    from agenthicc.cli.registry import _discover, _as_tree, _wire
 
     # Parse only global options first.  This gives trusted project-command
     # discovery the same configuration snapshot later consumed by the runner,
@@ -151,7 +165,7 @@ def parse_cli() -> tuple[CLIContext, argparse.Namespace]:
     bootstrap_ns, _ = bootstrap_parser.parse_known_args(argv)
     config = None
     try:
-        from agenthicc.config import load_config  # noqa: PLC0415
+        from agenthicc.config import load_config
 
         config = load_config(
             cli_overrides=list(getattr(bootstrap_ns, "set_overrides", [])),
@@ -165,7 +179,6 @@ def parse_cli() -> tuple[CLIContext, argparse.Namespace]:
         strict_cli_shadow=bool(
             getattr(getattr(config, "plugins", None), "strict_cli_shadow", False)
         ),
-        config=config,
     )
 
     parser = argparse.ArgumentParser(

@@ -28,7 +28,7 @@ __all__ = [
 def _CTX() -> dict[str, object]:
     """Build a tool context with the session-owned terminal manager, if any."""
 
-    from agenthicc.background.terminals import (  # noqa: PLC0415
+    from agenthicc.background.terminals import (
         get_current_terminal_manager,
         get_current_terminal_wait_policy,
     )
@@ -69,7 +69,7 @@ async def shell(
         lifecycle: ``oneshot`` or owned ``service``.
         readiness: Optional URL, TCP, or output-marker readiness probe.
     """
-    from agenthicc.tools.exec import RunBashTool  # noqa: PLC0415
+    from agenthicc.tools.exec import RunBashTool
 
     return await RunBashTool().execute(
         {
@@ -110,7 +110,7 @@ async def run_bash(
         lifecycle: ``oneshot`` or owned ``service``.
         readiness: Optional URL, TCP, or output-marker readiness probe.
     """
-    from agenthicc.tools.exec import RunBashTool  # noqa: PLC0415
+    from agenthicc.tools.exec import RunBashTool
 
     return await RunBashTool().execute(
         {
@@ -151,7 +151,7 @@ async def run_command(
         lifecycle: ``oneshot`` or owned ``service``.
         readiness: Optional URL, TCP, or output-marker readiness probe.
     """
-    from agenthicc.tools.exec import RunCommandTool  # noqa: PLC0415
+    from agenthicc.tools.exec import RunCommandTool
 
     return await RunCommandTool().execute(
         {
@@ -177,7 +177,7 @@ async def run_python(code: str, timeout: float = 30.0) -> dict[str, object]:
         code: Python source code to execute.
         timeout: Maximum seconds to wait (default 30).
     """
-    from agenthicc.tools.exec import RunPythonTool  # noqa: PLC0415
+    from agenthicc.tools.exec import RunPythonTool
 
     return await RunPythonTool().execute({"code": code, "timeout": timeout}, _CTX())
 
@@ -191,7 +191,7 @@ async def run_python_expr(expression: str, timeout: float = 10.0) -> dict[str, o
         expression: Python expression to evaluate, e.g. "2 ** 10".
         timeout: Maximum seconds to wait (default 10).
     """
-    from agenthicc.tools.exec import RunPythonExprTool  # noqa: PLC0415
+    from agenthicc.tools.exec import RunPythonExprTool
 
     return await RunPythonExprTool().execute({"expression": expression, "timeout": timeout}, _CTX())
 
@@ -212,7 +212,7 @@ async def run_tests(
         args: Additional CLI arguments passed to the test runner.
         timeout: Maximum seconds to wait (default 120).
     """
-    from agenthicc.tools.exec import RunTestsTool  # noqa: PLC0415
+    from agenthicc.tools.exec import RunTestsTool
 
     return await RunTestsTool().execute(
         {"path": path, "framework": framework, "args": args or [], "timeout": timeout},
@@ -229,7 +229,7 @@ async def wait_terminal(terminal_id: str, timeout: float = 0.0) -> dict[str, obj
         terminal_id: Handle returned by a background run_bash/run_command call.
         timeout: Optional observer timeout in seconds. It never stops the process.
     """
-    from agenthicc.tools.exec import WaitTerminalTool  # noqa: PLC0415
+    from agenthicc.tools.exec import WaitTerminalTool
 
     return await WaitTerminalTool().execute(
         {"terminal_id": terminal_id, "timeout": timeout}, _CTX()
@@ -241,7 +241,7 @@ async def wait_terminal(terminal_id: str, timeout: float = 0.0) -> dict[str, obj
 async def inspect_terminal(terminal_id: str) -> dict[str, object]:
     """Inspect one owned terminal and its bounded output tail."""
 
-    from agenthicc.tools.exec import InspectTerminalTool  # noqa: PLC0415
+    from agenthicc.tools.exec import InspectTerminalTool
 
     return await InspectTerminalTool().execute({"terminal_id": terminal_id}, _CTX())
 
@@ -254,7 +254,7 @@ async def wait_terminal_ready(
 ) -> dict[str, object]:
     """Wait for an owned service readiness probe without stopping it."""
 
-    from agenthicc.tools.exec import WaitTerminalReadinessTool  # noqa: PLC0415
+    from agenthicc.tools.exec import WaitTerminalReadinessTool
 
     return await WaitTerminalReadinessTool().execute(
         {"terminal_id": terminal_id, "readiness": readiness}, _CTX()
@@ -266,7 +266,7 @@ async def wait_terminal_ready(
 async def stop_terminal(terminal_id: str, force: bool = False) -> dict[str, object]:
     """Stop one exact owned terminal, escalating only when needed."""
 
-    from agenthicc.tools.exec import StopTerminalTool  # noqa: PLC0415
+    from agenthicc.tools.exec import StopTerminalTool
 
     return await StopTerminalTool().execute({"terminal_id": terminal_id, "force": force}, _CTX())
 

@@ -68,7 +68,7 @@ async def test_agent_can_write_and_read_file(tmp_path):
             path: Absolute file path.
             content: Text to write.
         """
-        from agenthicc.tools.fs import WriteFileTool  # noqa: PLC0415
+        from agenthicc.tools.fs import WriteFileTool
 
         return await WriteFileTool().execute(
             {"path": path, "content": content}, {"workspace_root": workspace}
@@ -81,7 +81,7 @@ async def test_agent_can_write_and_read_file(tmp_path):
         Args:
             path: Absolute file path.
         """
-        from agenthicc.tools.fs import ReadFileTool  # noqa: PLC0415
+        from agenthicc.tools.fs import ReadFileTool
 
         return await ReadFileTool().execute({"path": path}, {"workspace_root": workspace})
 
@@ -233,7 +233,7 @@ async def test_agent_checksum_verification(tmp_path):
             path: File path.
             content: New file content.
         """
-        from pathlib import Path as P  # noqa: PLC0415
+        from pathlib import Path as P
 
         P(path).write_text(content)
         return {"ok": True}

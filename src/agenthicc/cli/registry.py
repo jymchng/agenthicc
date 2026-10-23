@@ -38,6 +38,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, TypeAlias, TypedDict
 
+from agenthicc.plugins.trust import current_extension_trust
+
 Handler: TypeAlias = Callable[..., object]
 
 
@@ -120,7 +122,8 @@ def optional_positionals(*names: str) -> Callable[[Handler], Handler]:
     """
 
     def decorator(fn: Handler) -> Handler:
-        setattr(fn, "_optional_positionals", frozenset(names))
+        # Metadata on a function object; callables have no typed attributes.
+        setattr(fn, "_optional_positionals", frozenset(names))  # noqa: B010
         return fn
 
     return decorator
@@ -131,7 +134,7 @@ def optional_positionals(*names: str) -> Callable[[Handler], Handler]:
 
 def _add_params(parser: argparse.ArgumentParser, fn: Handler) -> None:
     """Add argparse arguments inferred from the function signature."""
-    from agenthicc.cli.context import CLIContext  # noqa: PLC0415
+    from agenthicc.cli.context import CLIContext
 
     hints = typing.get_type_hints(fn)
     sig = inspect.signature(fn)
@@ -220,7 +223,7 @@ def _wire(parser: argparse.ArgumentParser, tree: Tree) -> None:
 
 def _call(entry: _Entry, ctx: object, ns: argparse.Namespace) -> None:
     """Invoke an entry's handler, injecting CLIContext by annotation type."""
-    from agenthicc.cli.context import CLIContext  # noqa: PLC0415
+    from agenthicc.cli.context import CLIContext
 
     hints = typing.get_type_hints(entry.handler)
     kwargs: dict[str, object] = {}
@@ -259,10 +262,11 @@ def _discover_directory(directory: Path, source: str) -> None:
     if not directory.is_dir():
         return
 
+    trust = current_extension_trust()
     token = _LOADING_SOURCE.set(source)
     try:
         for py in sorted(directory.glob("*.py")):
-            if py.name.startswith("_"):
+            if py.name.startswith("_") or not trust.permits(py, kind="cli"):
                 continue
             mod_name = f"agenthicc._cli_plugin.{source}.{py.stem}"
             spec = importlib.util.spec_from_file_location(mod_name, py)
@@ -278,9 +282,10 @@ def _discover_directory(directory: Path, source: str) -> None:
                     stacklevel=2,
                 )
 
-        # Optional TOML shorthand: cli.toml sits beside the cli/ directory
+        # Optional TOML shorthand: cli.toml sits beside the cli/ directory.
+        # Its commands run shell templates, so it needs trust like Python.
         toml_file = directory.parent / "cli.toml"
-        if toml_file.exists():
+        if toml_file.exists() and trust.permits(toml_file, kind="cli"):
             _load_toml_commands(toml_file, source=source)
     finally:
         _LOADING_SOURCE.reset(token)
@@ -288,9 +293,9 @@ def _discover_directory(directory: Path, source: str) -> None:
 
 def _load_toml_commands(toml_file: Path, source: str) -> None:
     """Synthesise handlers from a TOML shorthand file."""
-    import tomllib  # noqa: PLC0415
-    import shlex  # noqa: PLC0415
-    import subprocess  # noqa: PLC0415
+    import tomllib
+    import shlex
+    import subprocess
 
     try:
         with open(toml_file, "rb") as fh:
@@ -310,12 +315,17 @@ def _load_toml_commands(toml_file: Path, source: str) -> None:
             run_tmpl = spec.get("run", "")
             arg_specs = spec.get("args", [])
 
-            def _make_handler(tmpl: str, args: list[dict[str, object]], h: str) -> Handler:
+            def _make_handler(
+                tmpl: str, args: list[dict[str, object]], h: str, handler_name: str
+            ) -> Handler:
                 async def handler(**kwargs: object) -> None:
-                    cmd_str = tmpl.format(**kwargs)
-                    subprocess.run(shlex.split(cmd_str), check=True)
+                    argv = shlex.split(tmpl.format(**kwargs))
+                    process = await asyncio.create_subprocess_exec(*argv)
+                    returncode = await process.wait()
+                    if returncode != 0:
+                        raise subprocess.CalledProcessError(returncode, argv)
 
-                handler.__name__ = "_".join(path_list)
+                handler.__name__ = handler_name
                 handler.__doc__ = h
                 annotations: dict[str, object] = {}
                 defaults: dict[str, object] = {}
@@ -333,7 +343,7 @@ def _load_toml_commands(toml_file: Path, source: str) -> None:
             _REGISTRY[path] = _Entry(
                 path=path,
                 help=help_str,
-                handler=_make_handler(run_tmpl, arg_specs, help_str),
+                handler=_make_handler(run_tmpl, arg_specs, help_str, "_".join(path_list)),
                 is_async=True,
                 source=source,
             )
@@ -361,72 +371,21 @@ def _discover(
     project_dir: Path | None = None,
     user_dir: Path | None = None,
     strict_cli_shadow: bool = False,
-    config: object | None = None,
 ) -> None:
-    """Discover commands from all three layers in precedence order."""
+    """Discover commands from all three layers in precedence order.
+
+    Every plugin file must be trusted (``agenthicc trust``); files in the
+    user's own ``~/.agenthicc`` are trusted by location.
+    """
     # 1. Built-in (lowest priority)
     _discover_package("agenthicc.cli.commands")
 
-    # 2. User-global — implicit trust (same as ~/.bashrc)
+    # 2. User-global
     user_cli = (user_dir or Path.home() / ".agenthicc") / "cli"
     _discover_directory(user_cli, source="user")
 
-    # 3. Project-local — highest priority; requires trust manifest
+    # 3. Project-local — highest priority
     project_cli = (project_dir or Path(".agenthicc")) / "cli"
-    _maybe_load_trusted(project_cli, config=config)
+    _discover_directory(project_cli, source="project")
 
     _check_shadows(strict=strict_cli_shadow)
-
-
-def _maybe_load_trusted(project_cli: Path, *, config: object | None = None) -> None:
-    """Load project-local CLI plugins only if the trust manifest is valid."""
-    if not project_cli.is_dir():
-        return
-
-    trust_file = project_cli.parent / "trusted_cli.json"
-
-    # PluginSettings.auto_trust bypasses the check for CI/CD environments.
-    if config is None:
-        try:
-            from agenthicc.config import load_config  # noqa: PLC0415
-
-            config = load_config()
-        except Exception:  # noqa: BLE001
-            config = None
-    plugins = getattr(config, "plugins", None)
-    if getattr(plugins, "auto_trust", False):
-        _discover_directory(project_cli, source="project")
-        return
-
-    if not trust_file.exists():
-        warnings.warn(
-            f"[agenthicc] ⚠  {project_cli}/ has untrusted files.\n"
-            f"   Run `agenthicc trust cli` to allow loading.",
-            stacklevel=2,
-        )
-        return
-
-    import hashlib  # noqa: PLC0415
-    import json  # noqa: PLC0415
-
-    try:
-        manifest = json.loads(trust_file.read_text())
-    except Exception:  # noqa: BLE001
-        warnings.warn(f"[agenthicc] Could not read {trust_file}.", stacklevel=2)
-        return
-
-    recorded: dict[str, str] = manifest.get("files", {})
-    for py in sorted(project_cli.glob("*.py")):
-        if py.name.startswith("_"):
-            continue
-        rel = str(py.relative_to(project_cli.parent))
-        digest = f"sha256:{hashlib.sha256(py.read_bytes()).hexdigest()}"
-        if recorded.get(rel) != digest:
-            warnings.warn(
-                f"[agenthicc] ⚠  {py} has changed since `agenthicc trust cli` was run.\n"
-                f"   Re-run `agenthicc trust cli` to allow loading.",
-                stacklevel=2,
-            )
-            return
-
-    _discover_directory(project_cli, source="project")

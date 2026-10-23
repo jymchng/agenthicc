@@ -8,17 +8,24 @@ write the final report. All phase transitions happen only through explicit
 transition-tool calls; prose never advances the workflow.
 """
 
+# Type debt: this runner reuses CodePlanRunner's turn machinery but drives its
+# own state machine, so run(), resume() and its phase methods keep their own
+# signatures. PRD-250 WS-4.2 replaces the inheritance with a generic base.
+# type-debt: owner=PRD-250 WS-4.2; expires=2026-12-03
+# mypy: disable-error-code=override
+
 from __future__ import annotations
 
 import asyncio
 import dataclasses
 import logging
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from enum import Enum, auto
 from typing import TYPE_CHECKING
 
 from agenthicc.workflows.code_plan.runner import CodePlanRunner
+from agenthicc.workflows.payload import payload_int
 from agenthicc.workflows.plugin import PhaseSpec, WorkflowParams, WorkflowPlugin
 
 if TYPE_CHECKING:
@@ -58,7 +65,7 @@ class CopyWebsiteState(Enum):
     PARITY_VERIFY = auto()
     FINAL_REPORT = auto()
     COMPLETE = auto()  # terminal
-    FAILED = auto()    # terminal
+    FAILED = auto()  # terminal
 
     @property
     def is_terminal(self) -> bool:
@@ -97,7 +104,6 @@ class CopyContext:
     # Session memory is injected by the session and deliberately excluded from
     # the checkpoint payload. The restore hook reattaches the supplied object.
     shared_memory: ShortTermMemory | None = dataclasses.field(default=None, repr=False)
-
 
 
 def _make_extract_tools(
@@ -211,7 +217,6 @@ def _make_design_tools(
     return [submit_design_spec]
 
 
-
 def _make_scaffold_tools(
     event: asyncio.Event,
     data: dict[str, object],
@@ -323,7 +328,10 @@ def _make_data_tools(
             }
         data["hooks"] = hooks.strip()
         event.set()
-        return {"ok": True, "message": "Data layer recorded. The responsive_pass phase starts next."}
+        return {
+            "ok": True,
+            "message": "Data layer recorded. The responsive_pass phase starts next.",
+        }
 
     return [submit_data_layer]
 
@@ -352,10 +360,12 @@ def _make_responsive_tools(
             }
         data["verified"] = verified.strip()
         event.set()
-        return {"ok": True, "message": "Responsive pass recorded. The parity_verify phase starts next."}
+        return {
+            "ok": True,
+            "message": "Responsive pass recorded. The parity_verify phase starts next.",
+        }
 
     return [submit_responsive]
-
 
 
 def _make_parity_tools(
@@ -395,7 +405,6 @@ def _make_parity_tools(
     return [approve_parity, reject_parity]
 
 
-
 # Phase prompts.  Each names its exact transition tool(s) and states that only
 # a successful transition-tool call changes phase; prose never advances.
 PHASE_PROMPTS = {
@@ -404,7 +413,6 @@ Parse the target website URL from the intent (e.g. `/workflow copy_website https
 If the URL is missing or ambiguous, ask the user through the existing `ask_user` tool and wait.
 Record the target and any known pages by calling submit_target(url, scope, pages).
 Only a successful submit_target(url, scope, pages) call changes phase; prose such as 'done' never advances the workflow. Do not study the site yet.""",
-
     "site_study": """You are in the SITE_STUDY phase of copy_website.
 Use the Playwright browser tools to visit the target URL and study the site carefully:
 - open the site and take snapshots at desktop (1440x900) and mobile (390x844) viewports
@@ -414,7 +422,6 @@ Use the Playwright browser tools to visit the target URL and study the site care
 Write fresh observations (do not copy the site's text verbatim — we will write original copy later).
 Call submit_study_report(report, pages, screenshots) when done.
 Only a successful submit_study_report() call changes phase; prose such as 'done' never advances the workflow.""",
-
     "design_spec": """You are in the DESIGN_SPEC phase of copy_website.
 Turn the study report into a complete design specification:
 - design tokens: colors, fonts, radii, shadows, spacing scale, breakpoints
@@ -423,7 +430,6 @@ Turn the study report into a complete design specification:
 - TanStack Query data plan: query keys, fetch sources, loading/error states
 Call submit_design_spec(spec, tokens, components, data_plan) when complete.
 Only a successful submit_design_spec() call changes phase; prose such as 'done' never advances the workflow.""",
-
     "scaffold": """You are in the SCAFFOLD phase of copy_website.
 Scaffold the project with the stack: Next.js (App Router), Tailwind CSS, shadcn/ui, @tanstack/react-query.
 - create the Next.js app (e.g. create-next-app) with TypeScript and Tailwind
@@ -431,7 +437,6 @@ Scaffold the project with the stack: Next.js (App Router), Tailwind CSS, shadcn/
 - install @tanstack/react-query and set up the directory structure
 Call submit_scaffold(project_path) with the project location when done.
 Only a successful submit_scaffold() call changes phase; prose such as 'done' never advances the workflow.""",
-
     "implement_layout": """You are in the IMPLEMENT_LAYOUT phase of copy_website.
 Build the application shell per the design spec:
 - root layout, theme provider, global styles and Tailwind theme from the design tokens
@@ -439,7 +444,6 @@ Build the application shell per the design spec:
 {fix_context}
 Call submit_layout(files) with the layout files written when done.
 Only a successful submit_layout() call changes phase; prose such as 'done' never advances the workflow.""",
-
     "implement_pages": """You are in the IMPLEMENT_PAGES phase of copy_website.
 Build every page route from the design spec using the shadcn/ui components and Tailwind utilities:
 - replicate layout, spacing, and visual style to match the original's taste
@@ -447,14 +451,12 @@ Build every page route from the design spec using the shadcn/ui components and T
 {fix_context}
 Call submit_pages(pages_built) with the routes built when done.
 Only a successful submit_pages() call changes phase; prose such as 'done' never advances the workflow.""",
-
     "implement_data": """You are in the IMPLEMENT_DATA phase of copy_website.
 Wire the TanStack Query data layer per the data plan:
 - QueryClientProvider setup, query hooks, query keys, data sources
 - loading / error / empty states wired into the pages
 Call submit_data_layer(hooks) with the hooks/providers written when done.
 Only a successful submit_data_layer() call changes phase; prose such as 'done' never advances the workflow.""",
-
     "responsive_pass": """You are in the RESPONSIVE_PASS phase of copy_website.
 Make sure the site is genuinely mobile-friendly:
 - verify every page at mobile viewports (e.g. 390x844) with Playwright screenshots
@@ -462,7 +464,6 @@ Make sure the site is genuinely mobile-friendly:
 - check breakpoint behavior between mobile and desktop
 Call submit_responsive(verified) with a summary when done.
 Only a successful submit_responsive() call changes phase; prose such as 'done' never advances the workflow.""",
-
     "parity_verify": """You are in the PARITY_VERIFY phase of copy_website.
 Verify the copy matches the original in taste and style:
 - run `npm run build` in the project and fix build errors
@@ -472,7 +473,6 @@ Verify the copy matches the original in taste and style:
 - confirm as many pages as the sitemap revealed are covered
 Call approve_parity(summary) if the copy passes, or reject_parity(reason) with the concrete gap.
 Only a successful call to approve_parity() or reject_parity() changes phase; prose never advances the workflow.""",
-
     "final_report": """You are in the FINAL_REPORT phase of copy_website.
 Write the completion summary: what was studied, what was built, the project path,
 pages covered, and the parity result. No phase-transition tool is available in
@@ -512,7 +512,9 @@ class CopyWebsiteRunner(CodePlanRunner):
             ctx.phase_iteration += 1
             if handle is not None:
                 handle.attach_context(ctx)
-                handle.update_phase(state.name.lower(), self._phase_index(state), ctx.phase_iteration)
+                handle.update_phase(
+                    state.name.lower(), self._phase_index(state), ctx.phase_iteration
+                )
             match state:
                 case CopyWebsiteState.EXTRACT_TARGET:
                     state = await self._extract_target(ctx, memory)
@@ -553,9 +555,7 @@ class CopyWebsiteRunner(CodePlanRunner):
             else context.shared_memory
         )
         if memory is None:
-            memory = ShortTermMemory(
-                max_tokens=self._cfg.cfg.execution.effective_usable_budget()
-            )
+            memory = ShortTermMemory(max_tokens=self._cfg.cfg.execution.effective_usable_budget())
         context.shared_memory = memory
         handle = self._cfg.workflow_handle
         if handle is not None:
@@ -566,7 +566,9 @@ class CopyWebsiteRunner(CodePlanRunner):
             context.phase_iteration += 1
             if handle is not None:
                 handle.attach_context(context)
-                handle.update_phase(state.name.lower(), self._phase_index(state), context.phase_iteration)
+                handle.update_phase(
+                    state.name.lower(), self._phase_index(state), context.phase_iteration
+                )
             match state:
                 case CopyWebsiteState.EXTRACT_TARGET:
                     state = await self._extract_target(context, memory)
@@ -617,7 +619,9 @@ class CopyWebsiteRunner(CodePlanRunner):
             )
         return ""
 
-    async def _extract_target(self, ctx: CopyContext, memory: object) -> CopyWebsiteState:
+    async def _extract_target(
+        self, ctx: CopyContext, memory: ShortTermMemory | None
+    ) -> CopyWebsiteState:
         """Loop until submit_target fires; return SITE_STUDY or FAILED."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
@@ -642,7 +646,9 @@ class CopyWebsiteRunner(CodePlanRunner):
         ctx.fail_reason = "extract_target phase never called submit_target()"
         return CopyWebsiteState.FAILED
 
-    async def _site_study(self, ctx: CopyContext, memory: object) -> CopyWebsiteState:
+    async def _site_study(
+        self, ctx: CopyContext, memory: ShortTermMemory | None
+    ) -> CopyWebsiteState:
         """Loop until submit_study_report fires; return DESIGN_SPEC or FAILED."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
@@ -675,7 +681,9 @@ class CopyWebsiteRunner(CodePlanRunner):
         ctx.fail_reason = "site_study phase never called submit_study_report()"
         return CopyWebsiteState.FAILED
 
-    async def _design_spec(self, ctx: CopyContext, memory: object) -> CopyWebsiteState:
+    async def _design_spec(
+        self, ctx: CopyContext, memory: ShortTermMemory | None
+    ) -> CopyWebsiteState:
         """Loop until submit_design_spec fires; return SCAFFOLD or FAILED."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
@@ -704,7 +712,7 @@ class CopyWebsiteRunner(CodePlanRunner):
         ctx.fail_reason = "design_spec phase never called submit_design_spec()"
         return CopyWebsiteState.FAILED
 
-    async def _scaffold(self, ctx: CopyContext, memory: object) -> CopyWebsiteState:
+    async def _scaffold(self, ctx: CopyContext, memory: ShortTermMemory | None) -> CopyWebsiteState:
         """Loop until submit_scaffold fires; return IMPLEMENT_LAYOUT or FAILED."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
@@ -730,7 +738,9 @@ class CopyWebsiteRunner(CodePlanRunner):
         ctx.fail_reason = "scaffold phase never called submit_scaffold()"
         return CopyWebsiteState.FAILED
 
-    async def _implement_layout(self, ctx: CopyContext, memory: object) -> CopyWebsiteState:
+    async def _implement_layout(
+        self, ctx: CopyContext, memory: ShortTermMemory | None
+    ) -> CopyWebsiteState:
         """Loop until submit_layout fires; return IMPLEMENT_PAGES or FAILED."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
@@ -758,7 +768,9 @@ class CopyWebsiteRunner(CodePlanRunner):
         ctx.fail_reason = "implement_layout phase never called submit_layout()"
         return CopyWebsiteState.FAILED
 
-    async def _implement_pages(self, ctx: CopyContext, memory: object) -> CopyWebsiteState:
+    async def _implement_pages(
+        self, ctx: CopyContext, memory: ShortTermMemory | None
+    ) -> CopyWebsiteState:
         """Loop until submit_pages fires; return IMPLEMENT_DATA or FAILED."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
@@ -787,7 +799,9 @@ class CopyWebsiteRunner(CodePlanRunner):
         ctx.fail_reason = "implement_pages phase never called submit_pages()"
         return CopyWebsiteState.FAILED
 
-    async def _implement_data(self, ctx: CopyContext, memory: object) -> CopyWebsiteState:
+    async def _implement_data(
+        self, ctx: CopyContext, memory: ShortTermMemory | None
+    ) -> CopyWebsiteState:
         """Loop until submit_data_layer fires; return RESPONSIVE_PASS or FAILED."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
@@ -813,7 +827,9 @@ class CopyWebsiteRunner(CodePlanRunner):
         ctx.fail_reason = "implement_data phase never called submit_data_layer()"
         return CopyWebsiteState.FAILED
 
-    async def _responsive_pass(self, ctx: CopyContext, memory: object) -> CopyWebsiteState:
+    async def _responsive_pass(
+        self, ctx: CopyContext, memory: ShortTermMemory | None
+    ) -> CopyWebsiteState:
         """Loop until submit_responsive fires; return PARITY_VERIFY or FAILED."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
@@ -839,7 +855,9 @@ class CopyWebsiteRunner(CodePlanRunner):
         ctx.fail_reason = "responsive_pass phase never called submit_responsive()"
         return CopyWebsiteState.FAILED
 
-    async def _parity_verify(self, ctx: CopyContext, memory: object) -> CopyWebsiteState:
+    async def _parity_verify(
+        self, ctx: CopyContext, memory: ShortTermMemory | None
+    ) -> CopyWebsiteState:
         """Loop until a verdict tool fires; return FINAL_REPORT or IMPLEMENT_LAYOUT."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
@@ -874,13 +892,17 @@ class CopyWebsiteRunner(CodePlanRunner):
                         ctx.fix_reason,
                     )
                     if ctx.fix_iterations >= _MAX_FIX_ITERATIONS:
-                        ctx.fail_reason = f"parity rejected {ctx.fix_iterations} times: {ctx.fix_reason}"
+                        ctx.fail_reason = (
+                            f"parity rejected {ctx.fix_iterations} times: {ctx.fix_reason}"
+                        )
                         return CopyWebsiteState.FAILED
                     return CopyWebsiteState.IMPLEMENT_LAYOUT
         ctx.fail_reason = "parity_verify phase never reported a verdict"
         return CopyWebsiteState.FAILED
 
-    async def _final_report(self, ctx: CopyContext, memory: object) -> CopyWebsiteState:
+    async def _final_report(
+        self, ctx: CopyContext, memory: ShortTermMemory | None
+    ) -> CopyWebsiteState:
         """Single turn; always returns COMPLETE."""
         await self.run_phase(
             intent=ctx.intent,
@@ -895,7 +917,6 @@ class CopyWebsiteRunner(CodePlanRunner):
             shared_memory=memory,
         )
         return CopyWebsiteState.COMPLETE
-
 
 
 @dataclasses.dataclass
@@ -1051,7 +1072,7 @@ class CopyWebsiteWorkflow(WorkflowPlugin):
     def checkpoint_context_from_payload(
         cls,
         payload: dict[str, object],
-        memory: object | None = None,
+        memory: ShortTermMemory | None = None,
     ) -> CopyContext:
         """Restore state and attach the already-open session memory."""
         raw_state = str(payload.get("state", CopyWebsiteState.EXTRACT_TARGET.name))
@@ -1066,22 +1087,16 @@ class CopyWebsiteWorkflow(WorkflowPlugin):
             else {}
         )
         raw_pages = payload.get("target_pages", [])
-        target_pages = (
-            [str(item) for item in raw_pages] if isinstance(raw_pages, list) else []
-        )
+        target_pages = [str(item) for item in raw_pages] if isinstance(raw_pages, list) else []
         raw_shots = payload.get("screenshots", [])
-        screenshots = (
-            [str(item) for item in raw_shots] if isinstance(raw_shots, list) else []
-        )
+        screenshots = [str(item) for item in raw_shots] if isinstance(raw_shots, list) else []
         raw_built = payload.get("pages_built", [])
-        pages_built = (
-            [str(item) for item in raw_built] if isinstance(raw_built, list) else []
-        )
+        pages_built = [str(item) for item in raw_built] if isinstance(raw_built, list) else []
         return CopyContext(
             intent=str(payload.get("intent", "")),
             run_id=str(payload.get("run_id", "")),
             state=state,
-            phase_iteration=int(payload.get("phase_iteration", 0)),
+            phase_iteration=payload_int(payload.get("phase_iteration"), 0),
             target_url=str(payload.get("target_url", "")),
             target_pages=target_pages,
             study_report=str(payload.get("study_report", "")),
@@ -1097,7 +1112,7 @@ class CopyWebsiteWorkflow(WorkflowPlugin):
             responsive_verified=str(payload.get("responsive_verified", "")),
             parity_summary=str(payload.get("parity_summary", "")),
             fix_reason=str(payload.get("fix_reason", "")),
-            fix_iterations=int(payload.get("fix_iterations", 0)),
+            fix_iterations=payload_int(payload.get("fix_iterations"), 0),
             fail_reason=str(payload.get("fail_reason", "")),
             artifacts=artifacts,
             shared_memory=memory,
@@ -1113,7 +1128,7 @@ class CopyWebsiteWorkflow(WorkflowPlugin):
         return CopyWebsiteRunner(config, mode_manager)
 
     @classmethod
-    def build_params(cls, source: dict[str, object]) -> WorkflowParams:
+    def build_params(cls, source: Mapping[str, object]) -> WorkflowParams:
         """Build typed params from [workflows.copy_website]."""
         return CopyWebsiteParams(
             study_model=str(source.get("study_model", "") or ""),

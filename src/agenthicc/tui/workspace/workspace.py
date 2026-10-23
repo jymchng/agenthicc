@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 
 
 def _border(cols: int) -> RenderableType:
-    from rich.text import Text  # noqa: PLC0415
+    from rich.text import Text
 
     return Text("─" * cols, style="yellow dim")
 
@@ -94,7 +94,7 @@ class Workspace:
 
     def start(self) -> None:
         """Start the always-on Live block. Call ONCE at application startup."""
-        from rich.live import Live  # noqa: PLC0415
+        from rich.live import Live
 
         self.overlays.set_redraw_callback(self._redraw)
         self.scroll.mount()
@@ -162,7 +162,7 @@ class Workspace:
 
         # SIGWINCH handler
         try:
-            import signal  # noqa: PLC0415
+            import signal
 
             signal.signal(signal.SIGWINCH, self._on_sigwinch)
         except (AttributeError, OSError):
@@ -171,7 +171,7 @@ class Workspace:
     def stop(self) -> None:
         """Stop the Live block. Call ONCE at application shutdown."""
         try:
-            import signal  # noqa: PLC0415
+            import signal
 
             signal.signal(signal.SIGWINCH, signal.SIG_DFL)
         except (AttributeError, OSError):
@@ -247,8 +247,8 @@ class Workspace:
     # ── rendering ─────────────────────────────────────────────────────────────
 
     def _build(self) -> RenderableType:
-        from rich.console import Group  # noqa: PLC0415
-        from rich.text import Text  # noqa: PLC0415
+        from rich.console import Group
+        from rich.text import Text
 
         cols = _get_cols()
 
@@ -317,7 +317,7 @@ class Workspace:
         if self._redraw_scheduled:
             return
         try:
-            import asyncio  # noqa: PLC0415
+            import asyncio
 
             loop = asyncio.get_event_loop()
             if loop.is_running():
@@ -339,7 +339,7 @@ class Workspace:
         except OSError:
             pass  # not a TTY
         except Exception:
-            import traceback  # noqa: PLC0415
+            import traceback
 
             traceback.print_exc(file=sys.stderr)
 

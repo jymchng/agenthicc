@@ -8,7 +8,7 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from agenthicc.runners.session_conversation import SessionConversation
 from agenthicc.runners.workflow_checkpoint_store import WorkflowCheckpointStore
@@ -22,6 +22,9 @@ from agenthicc.workflows.checkpoint import (
     resolve_workflow_checkpoint_topology,
     workflow_fingerprint,
 )
+
+if TYPE_CHECKING:
+    from agenthicc.workflows.plugin import WorkflowPlugin
 
 __all__ = ["WorkflowFailureKind", "WorkflowRunHandle", "WorkflowLifecycle"]
 
@@ -284,7 +287,7 @@ class WorkflowRunHandle:
     original_intent: str
     plugin_fingerprint: str
     checkpoint_store: WorkflowCheckpointStore
-    workflow: type[object] | None = None
+    workflow: type[WorkflowPlugin] | None = None
     context: object | None = None
     lifecycle: WorkflowLifecycle = "running"
     current_phase: str | None = None
@@ -331,7 +334,7 @@ class WorkflowRunHandle:
         cls,
         *,
         run_id: str,
-        workflow: type[object],
+        workflow: type[WorkflowPlugin],
         conversation: SessionConversation,
         intent: str,
         checkpoint_store: WorkflowCheckpointStore,
@@ -642,13 +645,15 @@ class WorkflowRunHandle:
         state_type = type(current_state)
         members = _optional_attribute(state_type, "__members__", {})
         candidate = members.get(phase.upper()) if isinstance(members, Mapping) else None
+        # Workflow contexts are plugin-defined types; mirror the phase only
+        # where the context declares and accepts these attributes.
         if candidate is not None:
             try:
-                setattr(context, "state", candidate)
+                setattr(context, "state", candidate)  # noqa: B010
             except (AttributeError, TypeError):
                 pass
         try:
-            setattr(context, "current_phase", phase)
+            setattr(context, "current_phase", phase)  # noqa: B010
         except (AttributeError, TypeError):
             pass
 
@@ -904,7 +909,7 @@ class WorkflowRunHandle:
         cls,
         checkpoint: WorkflowCheckpoint,
         *,
-        workflow: type[object],
+        workflow: type[WorkflowPlugin],
         conversation: SessionConversation,
         checkpoint_store: WorkflowCheckpointStore,
         browser_manager: object | None = None,

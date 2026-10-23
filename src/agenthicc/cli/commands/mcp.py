@@ -31,7 +31,7 @@ def mcp_add(
     reconnect_delay_seconds: float = 1.0,
 ) -> None:
     """Persist NAME and URL as one ``[[tools.mcp_servers]]`` entry."""
-    from agenthicc.cli.mcp_config import McpConfigError, add_mcp_server  # noqa: PLC0415
+    from agenthicc.cli.mcp_config import McpConfigError, add_mcp_server
 
     try:
         result = add_mcp_server(
@@ -54,7 +54,7 @@ def mcp_add(
 
 
 def _selected_path(ctx: CLIContext, global_: bool, project: bool) -> Path:
-    from agenthicc.cli.mcp_config import mcp_config_path  # noqa: PLC0415
+    from agenthicc.cli.mcp_config import mcp_config_path
 
     return mcp_config_path(
         global_scope=global_,
@@ -66,8 +66,8 @@ def _selected_path(ctx: CLIContext, global_: bool, project: bool) -> Path:
 
 
 def _redacted_servers(path: Path) -> list[dict[str, object]]:
-    from agenthicc.cli.mcp_config import read_mcp_servers  # noqa: PLC0415
-    from agenthicc.tools.mcp import McpServerConfig  # noqa: PLC0415
+    from agenthicc.cli.mcp_config import read_mcp_servers
+    from agenthicc.tools.mcp import McpServerConfig
 
     result: list[dict[str, object]] = []
     for raw in read_mcp_servers(path):
@@ -86,7 +86,7 @@ def mcp_list(
     json_: bool = False,
 ) -> None:
     """List configuration without starting any MCP server."""
-    from agenthicc.cli.mcp_config import McpConfigError  # noqa: PLC0415
+    from agenthicc.cli.mcp_config import McpConfigError
 
     path = _selected_path(ctx, global_, project)
     try:
@@ -121,7 +121,11 @@ def mcp_get(
     if result is None:
         print(f"error: MCP server not found: {name}")
         return
-    print(json.dumps(result, sort_keys=True) if json_ else json.dumps(result, indent=2, sort_keys=True))
+    print(
+        json.dumps(result, sort_keys=True)
+        if json_
+        else json.dumps(result, indent=2, sort_keys=True)
+    )
 
 
 @command("mcp", "remove", help="Remove one configured MCP server")
@@ -131,7 +135,7 @@ def mcp_remove(
     global_: bool = False,
     project: bool = False,
 ) -> None:
-    from agenthicc.cli.mcp_config import McpConfigError, remove_mcp_server  # noqa: PLC0415
+    from agenthicc.cli.mcp_config import McpConfigError, remove_mcp_server
 
     try:
         result = remove_mcp_server(
@@ -150,11 +154,11 @@ def mcp_remove(
 
 async def _live_cli_manager(ctx: CLIContext) -> "McpSessionManager":
     """Build a short-lived manager for explicit CLI diagnostics/actions."""
-    from agenthicc.cli.mcp_config import mcp_config_path, read_mcp_servers  # noqa: PLC0415
-    from agenthicc.config import load_config  # noqa: PLC0415
-    from agenthicc.tools.mcp import McpServerConfig  # noqa: PLC0415
-    from agenthicc.tools.mcp_manager import McpSessionManager  # noqa: PLC0415
-    from agenthicc.tools.sandbox import NetworkGuard  # noqa: PLC0415
+    from agenthicc.cli.mcp_config import mcp_config_path, read_mcp_servers
+    from agenthicc.config import load_config
+    from agenthicc.tools.mcp import McpServerConfig
+    from agenthicc.tools.mcp_manager import McpSessionManager
+    from agenthicc.tools.sandbox import NetworkGuard
 
     path = mcp_config_path(
         project_dir=Path.cwd(),
@@ -203,7 +207,11 @@ async def mcp_refresh(ctx: CLIContext, name: str) -> None:
     try:
         manager = await _live_cli_manager(ctx)
         snapshot = await manager.refresh_server(name)
-        print(json.dumps(snapshot.to_dict() if snapshot else {"status": "unavailable"}, sort_keys=True))
+        print(
+            json.dumps(
+                snapshot.to_dict() if snapshot else {"status": "unavailable"}, sort_keys=True
+            )
+        )
     except Exception as exc:  # noqa: BLE001
         print(f"error: MCP refresh failed for {name!r}: {type(exc).__name__}: {exc}")
     finally:
@@ -219,10 +227,18 @@ async def mcp_doctor(ctx: CLIContext, name: str = "", json_: bool = False) -> No
     try:
         manager = await _live_cli_manager(ctx)
         result = await manager.doctor(name or None)
-        print(json.dumps(result, sort_keys=True) if json_ else json.dumps(result, indent=2, sort_keys=True))
+        print(
+            json.dumps(result, sort_keys=True)
+            if json_
+            else json.dumps(result, indent=2, sort_keys=True)
+        )
     except Exception as exc:  # noqa: BLE001
         result = {"status": "invalid", "error": f"{type(exc).__name__}: {exc}"}
-        print(json.dumps(result, sort_keys=True) if json_ else json.dumps(result, indent=2, sort_keys=True))
+        print(
+            json.dumps(result, sort_keys=True)
+            if json_
+            else json.dumps(result, indent=2, sort_keys=True)
+        )
     finally:
         if manager is not None:
             await manager.shutdown()
@@ -230,7 +246,7 @@ async def mcp_doctor(ctx: CLIContext, name: str = "", json_: bool = False) -> No
 
 @command("mcp", "auth", help="Check configured MCP authentication")
 def mcp_auth(ctx: CLIContext, name: str) -> None:
-    from agenthicc.cli.mcp_config import mcp_config_path, read_mcp_servers  # noqa: PLC0415
+    from agenthicc.cli.mcp_config import mcp_config_path, read_mcp_servers
 
     path = mcp_config_path(
         project_dir=Path.cwd(),
@@ -252,4 +268,6 @@ def mcp_auth(ctx: CLIContext, name: str) -> None:
 @command("mcp", "logout", help="Remove stored MCP authentication")
 def mcp_logout(ctx: CLIContext, name: str) -> None:
     # Environment-backed credentials are intentionally not mutated by the CLI.
-    print(f"No persisted MCP credential was removed for {name!r}; environment-backed credentials remain unchanged.")
+    print(
+        f"No persisted MCP credential was removed for {name!r}; environment-backed credentials remain unchanged."
+    )

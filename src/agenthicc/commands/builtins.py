@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import shlex
 from typing import TYPE_CHECKING
@@ -22,7 +21,7 @@ __all__ = ["BUILTIN_COMMANDS", "build_builtin_registry", "_make_skill_handler"]
 
 def _cmd_replay(ctx: CommandContext) -> bool:
     """Replay a previous session's conversation in the scroll buffer."""
-    from agenthicc.tui.runtime.session_log import (  # noqa: PLC0415
+    from agenthicc.tui.runtime.session_log import (
         get_session_log_path,
         find_latest_session_for_cwd,
     )
@@ -91,7 +90,7 @@ def _cmd_loops(ctx: CommandContext) -> bool:
         ctx.console.print("Usage: /loops", markup=False)
         return True
     if ctx.set_pending_menu is not None:
-        from agenthicc.tui.workspace.overlays.loops import LoopJobsOverlay  # noqa: PLC0415
+        from agenthicc.tui.workspace.overlays.loops import LoopJobsOverlay
 
         on_close = ctx.close_overlay if ctx.close_overlay is not None else (lambda: None)
         ctx.set_pending_menu(
@@ -108,15 +107,15 @@ def _cmd_loops(ctx: CommandContext) -> bool:
     # Command-dispatch tests and non-interactive embedders may not provide an
     # overlay host. Keep the same data visible as a bounded Rich table.
     try:
-        from rich import box as _rbox  # noqa: PLC0415
-        from rich.table import Table  # noqa: PLC0415
+        from rich import box as _rbox
+        from rich.table import Table
 
         table = Table(title="Scheduled Loops", box=_rbox.SIMPLE)
         table.add_column("Job ID", no_wrap=True)
         table.add_column("State", no_wrap=True)
         table.add_column("Session", no_wrap=True)
         table.add_column("Payload")
-        from agenthicc.runners.loop_scheduler import _redacted_preview  # noqa: PLC0415
+        from agenthicc.runners.loop_scheduler import _redacted_preview
 
         records = manager.list_jobs()
         for record in records:
@@ -145,7 +144,7 @@ def _cmd_schedules(ctx: CommandContext) -> bool:
         ctx.console.print("Repository schedule management is unavailable.", markup=False)
         return True
     if ctx.set_pending_menu is not None:
-        from agenthicc.tui.workspace.overlays.schedules import (  # noqa: PLC0415
+        from agenthicc.tui.workspace.overlays.schedules import (
             ScheduleJobsOverlay,
         )
 
@@ -176,14 +175,14 @@ def _cmd_schedules(ctx: CommandContext) -> bool:
 def _cmd_schedule(ctx: CommandContext) -> bool:
     """Create or control one repository-scoped schedule."""
 
-    import shlex as _shlex  # noqa: PLC0415
+    import shlex as _shlex
 
-    from agenthicc.schedules import (  # noqa: PLC0415
+    from agenthicc.schedules import (
         CoalescePolicy,
         format_timestamp,
         parse_recurrence,
     )
-    from agenthicc.tui.runtime.mode_manager import canonical_mode_name  # noqa: PLC0415
+    from agenthicc.tui.runtime.mode_manager import canonical_mode_name
 
     manager = ctx.schedule_manager
     if manager is None:
@@ -269,7 +268,7 @@ def _cmd_schedule(ctx: CommandContext) -> bool:
 def _cmd_inbox(ctx: CommandContext) -> bool:
     """Open or print the durable background interaction inbox."""
 
-    from agenthicc.background.inbox import (  # noqa: PLC0415
+    from agenthicc.background.inbox import (
         BackgroundInboxItem,
         BackgroundInteractionInbox,
     )
@@ -311,7 +310,7 @@ def _cmd_inbox(ctx: CommandContext) -> bool:
         )
 
     if ctx.set_pending_menu is not None:
-        from agenthicc.tui.workspace.overlays.background_inbox import (  # noqa: PLC0415
+        from agenthicc.tui.workspace.overlays.background_inbox import (
             BackgroundInboxOverlay,
         )
 
@@ -329,7 +328,7 @@ def _cmd_inbox(ctx: CommandContext) -> bool:
             "No pending background approvals, questions, or input requests.", markup=False
         )
         return True
-    from rich.table import Table  # noqa: PLC0415
+    from rich.table import Table
 
     table = Table(title="Background Inbox")
     for column in ("ID", "Type", "Status", "Version", "Workspace", "Session", "Target"):
@@ -391,7 +390,7 @@ def _cmd_expand(ctx: CommandContext) -> bool:
 
 
 def _help_menu(ctx: CommandContext) -> "Overlay":
-    from agenthicc.tui.workspace.overlays.help import HelpOverlay  # noqa: PLC0415
+    from agenthicc.tui.workspace.overlays.help import HelpOverlay
 
     on_close = ctx.close_overlay if ctx.close_overlay is not None else (lambda: None)
     registry = ctx.command_registry or UnifiedCommandRegistry()
@@ -448,7 +447,7 @@ def _cmd_history(ctx: CommandContext) -> bool:
     if not ctx.session_id:
         ctx.console.print("Transcript history is unavailable without a session ID.", markup=False)
         return True
-    from agenthicc.tui.runtime.session_log import load_recent_transcript_page  # noqa: PLC0415
+    from agenthicc.tui.runtime.session_log import load_recent_transcript_page
 
     behavior = ctx.config.behaviour
     try:
@@ -463,7 +462,7 @@ def _cmd_history(ctx: CommandContext) -> bool:
         ctx.console.print(f"Unable to load transcript history: {type(exc).__name__}.", markup=False)
         return True
     if ctx.set_pending_menu is not None:
-        from agenthicc.tui.workspace.overlays.transcript_history import (  # noqa: PLC0415
+        from agenthicc.tui.workspace.overlays.transcript_history import (
             TranscriptHistoryOverlay,
         )
 
@@ -484,9 +483,9 @@ def _cmd_history(ctx: CommandContext) -> bool:
 
 def _cmd_init(ctx: CommandContext) -> bool:
     """Preview or explicitly write project guidance in ``AGENTS.md``."""
-    from pathlib import Path  # noqa: PLC0415
+    from pathlib import Path
 
-    from agenthicc.project_bootstrap import (  # noqa: PLC0415
+    from agenthicc.project_bootstrap import (
         BootstrapError,
         BootstrapWriteError,
         build_bootstrap_plan,
@@ -583,7 +582,7 @@ def _cmd_mcp(ctx: CommandContext) -> bool:
         except Exception as exc:  # noqa: BLE001
             ctx.console.print(f"/mcp {action} failed: {type(exc).__name__}: {exc}", markup=False)
 
-    asyncio.create_task(_run(), name=f"mcp-{action}")
+    manager.start_action(_run(), name=f"mcp-{action}")
     ctx.console.print(f"/mcp {action} scheduled{f' for {name}' if name else ''}.", markup=False)
     return True
 
@@ -622,7 +621,7 @@ def _history_busy_policy(args: str) -> BusyPolicy:
 def _present_registry_result(ctx: CommandContext, title: str, message: str) -> None:
     """Show registry command output in the live overlay when available."""
     if ctx.set_pending_menu is not None:
-        from agenthicc.tui.workspace.overlays.registry_list import RegistryMessageOverlay  # noqa: PLC0415
+        from agenthicc.tui.workspace.overlays.registry_list import RegistryMessageOverlay
 
         on_close = ctx.close_overlay if ctx.close_overlay is not None else (lambda: None)
         ctx.set_pending_menu(RegistryMessageOverlay(title, message, on_close))
@@ -632,15 +631,15 @@ def _present_registry_result(ctx: CommandContext, title: str, message: str) -> N
 
 def _cmd_model(ctx: CommandContext) -> bool:
     try:
-        from rich.table import Table  # noqa: PLC0415
-        from rich.text import Text  # noqa: PLC0415
-        from rich import box as _rbox  # noqa: PLC0415
-        from agenthicc.config import (  # noqa: PLC0415
+        from rich.table import Table
+        from rich.text import Text
+        from rich import box as _rbox
+        from agenthicc.config import (
             SUPPORTED_PROVIDERS,
             PROVIDER_API_KEY_ENVVAR,
             PROVIDER_DEFAULT_MODELS,
         )
-        import os  # noqa: PLC0415
+        import os
     except ImportError:
         ctx.console.print(f"  Model: {ctx.model}")
         return True
@@ -769,7 +768,7 @@ def _cmd_skills(ctx: CommandContext) -> bool:
         slug: skill for slug, skill in ctx.skills.items() if _skill_allowed_for_context(ctx, skill)
     }
     if ctx.set_pending_menu is not None:
-        from agenthicc.tui.workspace.overlays.registry_list import SkillListOverlay  # noqa: PLC0415
+        from agenthicc.tui.workspace.overlays.registry_list import SkillListOverlay
 
         on_close = ctx.close_overlay if ctx.close_overlay is not None else (lambda: None)
         ctx.set_pending_menu(
@@ -782,8 +781,8 @@ def _cmd_skills(ctx: CommandContext) -> bool:
         return True
 
     try:
-        from rich.table import Table  # noqa: PLC0415
-        from rich import box as _rbox  # noqa: PLC0415
+        from rich.table import Table
+        from rich import box as _rbox
 
         table = Table(title="Available Skills", box=_rbox.SIMPLE)
         table.add_column("Command", style="bold cyan")
@@ -792,7 +791,7 @@ def _cmd_skills(ctx: CommandContext) -> bool:
         if not visible_skills:
             table.add_row("—", "(no skills found)", "")
         else:
-            for slug, skill in sorted(visible_skills.items()):
+            for _slug, skill in sorted(visible_skills.items()):
                 command_names = ", ".join(f"${name}" for name in skill.command_names)
                 table.add_row(
                     command_names,
@@ -801,7 +800,7 @@ def _cmd_skills(ctx: CommandContext) -> bool:
                 )
         ctx.console.print(table)
     except ImportError:
-        for slug, skill in sorted(visible_skills.items()):
+        for _slug, skill in sorted(visible_skills.items()):
             command_names = ", ".join(f"${name}" for name in skill.command_names)
             ctx.console.print(f"  {command_names}  {skill.name}")
     return True
@@ -845,7 +844,7 @@ def _cmd_ps(ctx: CommandContext) -> bool:
         return True
     args = ctx.args.strip().split()
     if "--json" in args:
-        import json  # noqa: PLC0415
+        import json
 
         ctx.console.print(
             json.dumps([record.to_dict() for record in manager.list_records()], sort_keys=True),
@@ -854,7 +853,7 @@ def _cmd_ps(ctx: CommandContext) -> bool:
         return True
     selected = next((item for item in args if not item.startswith("-")), "")
     if ctx.set_pending_menu is not None:
-        from agenthicc.tui.workspace.overlays.terminals import TerminalListOverlay  # noqa: PLC0415
+        from agenthicc.tui.workspace.overlays.terminals import TerminalListOverlay
 
         on_close = ctx.close_overlay if ctx.close_overlay is not None else (lambda: None)
         ctx.set_pending_menu(TerminalListOverlay(manager, on_close, selected_id=selected))
@@ -865,8 +864,8 @@ def _cmd_ps(ctx: CommandContext) -> bool:
         ctx.console.print("[dim]No background terminals for this session.[/dim]")
         return True
     try:
-        from rich import box as _rbox  # noqa: PLC0415
-        from rich.table import Table  # noqa: PLC0415
+        from rich import box as _rbox
+        from rich.table import Table
 
         table = Table(title="Background Terminals", box=_rbox.SIMPLE)
         table.add_column("ID", style="bold")
@@ -890,7 +889,7 @@ def _cmd_ps(ctx: CommandContext) -> bool:
 def _cmd_workers(ctx: CommandContext) -> bool:
     """Show durable parallel worker tasks owned by this session."""
 
-    from agenthicc.worktrees import ManifestStore  # noqa: PLC0415
+    from agenthicc.worktrees import ManifestStore
 
     manifests = ManifestStore().list()
     visible = [
@@ -899,7 +898,7 @@ def _cmd_workers(ctx: CommandContext) -> bool:
         if not ctx.session_id or manifest.parent_session_id == ctx.session_id
     ]
     if "--json" in ctx.args.split():
-        import json  # noqa: PLC0415
+        import json
 
         ctx.console.print(
             json.dumps([manifest.to_dict() for manifest in visible], sort_keys=True),
@@ -907,8 +906,8 @@ def _cmd_workers(ctx: CommandContext) -> bool:
         )
         return True
     try:
-        from rich import box as _rbox  # noqa: PLC0415
-        from rich.table import Table  # noqa: PLC0415
+        from rich import box as _rbox
+        from rich.table import Table
 
         table = Table(title="Parallel Workers", box=_rbox.SIMPLE)
         table.add_column("Orchestration", style="bold")
@@ -996,15 +995,15 @@ def _cmd_commands(ctx: CommandContext) -> bool:
         return True
     commands = [cmd for cmd in registry.all_commands() if not cmd.is_skill]
     if ctx.set_pending_menu is not None:
-        from agenthicc.tui.workspace.overlays.registry_list import CommandListOverlay  # noqa: PLC0415
+        from agenthicc.tui.workspace.overlays.registry_list import CommandListOverlay
 
         on_close = ctx.close_overlay if ctx.close_overlay is not None else (lambda: None)
         ctx.set_pending_menu(CommandListOverlay(commands, on_close, ctx.set_input_text))
         return True
 
     try:
-        from rich.table import Table  # noqa: PLC0415
-        from rich import box as _rbox  # noqa: PLC0415
+        from rich.table import Table
+        from rich import box as _rbox
 
         table = Table(title="Registered Commands", box=_rbox.SIMPLE)
         table.add_column("Command", style="bold")
@@ -1044,21 +1043,21 @@ def _cmd_tools(ctx: CommandContext) -> bool:
     tools = ctx.tools
     tool_sources = ctx.tool_sources
     if tools is None:
-        from agenthicc.plugins.registry import build_registry  # noqa: PLC0415
+        from agenthicc.plugins.registry import build_registry
 
         registry = build_registry()
         tools = registry.tools
         tool_sources = registry.sources
     if ctx.set_pending_menu is not None:
-        from agenthicc.tui.workspace.overlays.registry_list import ToolListOverlay  # noqa: PLC0415
+        from agenthicc.tui.workspace.overlays.registry_list import ToolListOverlay
 
         on_close = ctx.close_overlay if ctx.close_overlay is not None else (lambda: None)
         ctx.set_pending_menu(ToolListOverlay(list(tools), on_close, tool_sources))
         return True
 
     try:
-        from rich import box as _rbox  # noqa: PLC0415
-        from rich.table import Table  # noqa: PLC0415
+        from rich import box as _rbox
+        from rich.table import Table
 
         table = Table(title="Available Tools", box=_rbox.SIMPLE)
         table.add_column("Tool", style="bold cyan")
@@ -1115,7 +1114,7 @@ def _cmd_workflows(ctx: CommandContext) -> bool:
                 )
                 return True
             if ctx.set_pending_menu is not None:
-                from agenthicc.tui.workspace.overlays.registry_list import (  # noqa: PLC0415
+                from agenthicc.tui.workspace.overlays.registry_list import (
                     WorkflowRunsOverlay,
                 )
 
@@ -1132,8 +1131,8 @@ def _cmd_workflows(ctx: CommandContext) -> bool:
                 return True
 
             try:
-                from rich import box as _rbox  # noqa: PLC0415
-                from rich.table import Table  # noqa: PLC0415
+                from rich import box as _rbox
+                from rich.table import Table
 
                 table = Table(title="Paused Workflow Runs", box=_rbox.SIMPLE)
                 table.add_column("Workflow", style="bold cyan")
@@ -1181,20 +1180,20 @@ def _cmd_workflows(ctx: CommandContext) -> bool:
 
     registry = ctx.workflow_registry
     if registry is None:
-        from agenthicc.workflows.registry import build_workflow_registry  # noqa: PLC0415
+        from agenthicc.workflows.registry import build_workflow_registry
 
         registry = build_workflow_registry()
     workflows = registry.all()
     if ctx.set_pending_menu is not None:
-        from agenthicc.tui.workspace.overlays.registry_list import WorkflowListOverlay  # noqa: PLC0415
+        from agenthicc.tui.workspace.overlays.registry_list import WorkflowListOverlay
 
         on_close = ctx.close_overlay if ctx.close_overlay is not None else (lambda: None)
         ctx.set_pending_menu(WorkflowListOverlay(workflows, registry, on_close, ctx.set_input_text))
         return True
 
     try:
-        from rich import box as _rbox  # noqa: PLC0415
-        from rich.table import Table  # noqa: PLC0415
+        from rich import box as _rbox
+        from rich.table import Table
 
         table = Table(title="Registered Workflows", box=_rbox.SIMPLE)
         table.add_column("Workflow", style="bold cyan")
@@ -1217,7 +1216,7 @@ def _cmd_workflows(ctx: CommandContext) -> bool:
 
 
 def _menu_config(ctx: CommandContext) -> "Overlay":
-    from agenthicc.tui.workspace.overlays.config_menu import ConfigMenuOverlay  # noqa: PLC0415
+    from agenthicc.tui.workspace.overlays.config_menu import ConfigMenuOverlay
 
     on_close = ctx.close_overlay if ctx.close_overlay is not None else (lambda: None)
     return ConfigMenuOverlay(ctx.config, on_close)
@@ -1231,8 +1230,8 @@ def _cmd_mode(ctx: CommandContext) -> bool:
     args = (ctx.args or "").strip()
     if not args:
         try:
-            from rich.table import Table  # noqa: PLC0415
-            from rich import box as _rbox  # noqa: PLC0415
+            from rich.table import Table
+            from rich import box as _rbox
 
             table = Table(title="Modes", box=_rbox.SIMPLE)
             table.add_column("Mode")
@@ -1268,7 +1267,7 @@ def _cmd_mode(ctx: CommandContext) -> bool:
 def _skill_allowed_for_context(ctx: CommandContext, skill: "SkillDef") -> bool:
     """Apply frontmatter and configured per-agent skill permissions."""
 
-    from agenthicc.skills.loader import SkillPermissionSet  # noqa: PLC0415
+    from agenthicc.skills.loader import SkillPermissionSet
 
     permissions = None
     agents = getattr(ctx.config, "agents", None)
@@ -1282,12 +1281,9 @@ def _skill_allowed_for_context(ctx: CommandContext, skill: "SkillDef") -> bool:
 
 def _make_skill_handler(slug: str, skill: "SkillDef") -> CommandHandler:
     """Return a CommandHandler that invokes a skill via the pending-skill mechanism."""
-    from agenthicc.skills.runner import process_skill_body  # noqa: PLC0415
+    from agenthicc.skills.runner import process_skill_body
 
     def _handler(ctx: CommandContext) -> bool:
-        import os  # noqa: PLC0415
-        from pathlib import Path  # noqa: PLC0415
-
         if not _skill_allowed_for_context(ctx, skill):
             ctx.console.print(
                 f"Skill ${slug} is not permitted for agent {ctx.active_agent!r}.",
@@ -1296,12 +1292,7 @@ def _make_skill_handler(slug: str, skill: "SkillDef") -> CommandHandler:
             return True
 
         args = ctx.args.split() if ctx.args.strip() else []
-        body = process_skill_body(
-            skill,
-            args=args,
-            cwd=Path(os.getcwd()),
-            session_id=ctx.session_id,
-        )
+        body = process_skill_body(skill, args=args, session_id=ctx.session_id)
         framed = f"[Skill ${slug} — execute the following instructions:]\n\n{body}"
         if ctx.set_pending_skill is not None:
             ctx.set_pending_skill(framed)

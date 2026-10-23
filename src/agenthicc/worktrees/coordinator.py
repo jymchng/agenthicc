@@ -448,7 +448,7 @@ class ParallelCoordinator:
                     )
                     return result
         result = self.manager.complete(record, worker_session_id=task.worker_session_id)
-        from .model import TaskStatus, WorktreeStatus  # noqa: PLC0415
+        from .model import TaskStatus, WorktreeStatus
 
         if result.status == "complete":
             status = TaskStatus.COMPLETED

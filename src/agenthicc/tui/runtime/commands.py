@@ -63,7 +63,7 @@ class CommandBus:
         return handler(command)
 
     async def dispatch_async(self, command: Command) -> object:
-        import inspect  # noqa: PLC0415
+        import inspect
 
         handler = self._handlers.get(type(command))
         if handler is None:

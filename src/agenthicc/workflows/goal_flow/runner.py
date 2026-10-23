@@ -11,11 +11,10 @@ Transitions happen only because a phase tool was called — the state methods
 check an ``asyncio.Event`` after the turn and never parse the agent's prose.
 """
 
-# GoalFlowRunner deliberately provides a more specific state-machine API than
-# CodePlanRunner's extension hooks.  The return types and phase signatures are
-# intentionally different even though the session/turn wiring is inherited.
-# Keep that architectural override explicit for mypy without scattering
-# per-method suppression comments through the implementation.
+# Type debt: this runner reuses CodePlanRunner's turn machinery but drives its
+# own state machine, so run(), resume() and its phase methods keep their own
+# signatures. PRD-250 WS-4.2 replaces the inheritance with a generic base.
+# type-debt: owner=PRD-250 WS-4.2; expires=2026-12-03
 # mypy: disable-error-code=override
 
 from __future__ import annotations
@@ -2299,7 +2298,7 @@ class GoalFlowWorkflow(WorkflowPlugin):
     def checkpoint_context_from_payload(
         cls,
         payload: dict[str, object],
-        memory: object | None = None,
+        memory: ShortTermMemory | None = None,
     ) -> GoalContext:
         """Restore state and attach the already-open session memory."""
         raw_state = str(payload.get("state", GoalState.CLARIFY.name))
@@ -2612,7 +2611,7 @@ class GoalFlowWorkflow(WorkflowPlugin):
             summary=str(payload.get("summary", "")),
             files_affected=_str_list(payload.get("files_affected")),
             fail_reason=str(payload.get("fail_reason", "")),
-            shared_memory=cast("ShortTermMemory | None", memory),
+            shared_memory=memory,
             goal_records=records,
             active_goal_id=active_goal_id,
             goal_list_revision=goal_list_revision,

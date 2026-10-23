@@ -16,28 +16,32 @@ from agenthicc.memory.journaled import JournaledShortTermMemory
 from agenthicc.runners.agent_turn import AgentTurnRunner
 from agenthicc.runners.agent_turn_context import AgentTurnContext
 from agenthicc.runners.session_conversation import SessionConversation
+from agenthicc.config import ExecutionSettings
 
 pytestmark = pytest.mark.integration
 
 
 class _SummaryTransport:
-    async def complete(self, _messages, **_kwargs):  # noqa: ANN001
+    async def complete(self, _messages, **_kwargs):
         return SimpleNamespace(content="A concise summary of decisions and unfinished work.")
 
 
-class _CompactBeforeSendConfig:
-    auto_compact = True
-    max_output_tokens = 100
-    transport_max_retries = 0
-    transport_retry_base_delay_s = 0.0
-    transport_retry_max_total_s = 0.0
+class _CompactBeforeSendConfig(ExecutionSettings):
+    """Real execution settings with a fixed small window and no transport retries."""
 
-    @staticmethod
-    def effective_context_window() -> int:
+    def __init__(self) -> None:
+        super().__init__(
+            auto_compact=True,
+            max_output_tokens=100,
+            transport_max_retries=0,
+            transport_retry_base_delay_s=0.0,
+            transport_retry_max_total_s=0.0,
+        )
+
+    def effective_context_window(self) -> int:
         return 1_000
 
-    @staticmethod
-    def effective_usable_budget() -> int:
+    def effective_usable_budget(self) -> int:
         return 800
 
 
@@ -124,7 +128,7 @@ async def test_inflight_compaction_cannot_replace_a_newer_tool_history_projectio
     release_summary = asyncio.Event()
 
     class _BlockingSummaryTransport:
-        async def complete(self, _messages, **_kwargs):  # noqa: ANN001
+        async def complete(self, _messages, **_kwargs):
             summary_started.set()
             await release_summary.wait()
             return SimpleNamespace(content="Summary of the pre-turn conversation.")
@@ -211,7 +215,7 @@ async def test_compaction_refuses_invalid_source_history_without_mutating_journa
     original_journal = journal_path.read_bytes()
 
     class _MustNotSummarize:
-        async def complete(self, *_args, **_kwargs):  # noqa: ANN001
+        async def complete(self, *_args, **_kwargs):
             raise AssertionError("invalid source history must be rejected before summarization")
 
     summary_outcome = await compact_memory_with_result(

@@ -49,8 +49,8 @@ def make_spawn_worker_agents_tool(
     explicit context boundary.
     """
 
-    from lauren_ai._tools import tool as _tool  # noqa: PLC0415
-    from agenthicc.tools.capabilities import tool_control  # noqa: PLC0415
+    from lauren_ai._tools import tool as _tool
+    from agenthicc.tools.capabilities import tool_control
 
     effective_limit = max(1, int(max_parallel_tasks))
     manifest_store = store or ManifestStore()
@@ -59,14 +59,14 @@ def make_spawn_worker_agents_tool(
         repository = workspace_access.scope.primary_root
 
     if supervisor is None:
-        from agenthicc.background import BackgroundStore as _BackgroundStore  # noqa: PLC0415
-        from agenthicc.background import BackgroundSupervisor as _BackgroundSupervisor  # noqa: PLC0415
-        from agenthicc.background.settings import (  # noqa: PLC0415
+        from agenthicc.background import BackgroundStore as _BackgroundStore
+        from agenthicc.background import BackgroundSupervisor as _BackgroundSupervisor
+        from agenthicc.background.settings import (
             load_background_settings,
         )
 
         settings = load_background_settings(cwd=Path(repository))
-        background_root = Path(settings.store_path).expanduser() if settings.store_path else None
+        background_root = settings.store_root
         supervisor = _BackgroundSupervisor(
             _BackgroundStore(background_root),
             max_workers=settings.max_workers,

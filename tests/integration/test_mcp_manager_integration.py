@@ -97,4 +97,3 @@ async def test_tools_changed_callback_refreshes_the_shared_surface() -> None:
     assert manager.get_tool("mcp:demo:echo") is None
     assert manager.get_tool("mcp:demo:new") is not None
     await manager.shutdown()
-

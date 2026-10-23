@@ -26,8 +26,8 @@ def populate_agent_tools(agent_instance: object, tools: Sequence[object]) -> Non
         The tool class list — typically ``registry.tools`` or
         ``meta.tool_classes`` of the agent class.
     """
-    from lauren_ai._agents import AGENT_META  # noqa: PLC0415
-    from lauren_ai._tools import TOOL_META, _add_to_tool_map  # noqa: PLC0415
+    from lauren_ai._agents import AGENT_META
+    from lauren_ai._tools import TOOL_META, _add_to_tool_map
 
     meta = getattr(type(agent_instance), AGENT_META, None)
     if meta is None:

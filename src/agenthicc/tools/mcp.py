@@ -142,7 +142,9 @@ class McpServerConfig:
 
     @property
     def normalized_transport(self) -> str:
-        return _TRANSPORT_ALIASES.get(self.transport.strip().lower(), self.transport.strip().lower())
+        return _TRANSPORT_ALIASES.get(
+            self.transport.strip().lower(), self.transport.strip().lower()
+        )
 
     @property
     def effective_startup_timeout_s(self) -> float:
@@ -238,7 +240,10 @@ class McpServerConfig:
             "url": _redacted_url(self.url) if self.normalized_transport != "stdio" else "<stdio>",
             "command": safe_command,
             "cwd": self.cwd,
-            "env": {key: "<redacted>" if _looks_secret(key) else value for key, value in self.env.items()},
+            "env": {
+                key: "<redacted>" if _looks_secret(key) else value
+                for key, value in self.env.items()
+            },
             "env_vars": list(self.env_vars),
             "headers": {key: "<redacted>" for key in self.headers},
             "env_headers": dict(self.env_headers),
@@ -254,7 +259,9 @@ class McpServerConfig:
     def validate(self, *, workspace_root: Path | None = None) -> None:
         """Validate fields that can be checked before opening a connection."""
         if not self.name.strip() or ":" in self.name or any(ch.isspace() for ch in self.name):
-            raise McpConfigurationError("MCP server name must be non-empty and contain no spaces or ':'")
+            raise McpConfigurationError(
+                "MCP server name must be non-empty and contain no spaces or ':'"
+            )
         transport = self.normalized_transport
         if transport not in _SUPPORTED_TRANSPORTS:
             raise McpConfigurationError(f"unsupported MCP transport: {self.transport!r}")
@@ -264,12 +271,12 @@ class McpServerConfig:
             raise McpConfigurationError("MCP reconnect delay cannot be negative")
         for label, value in (("startup", self.startup_timeout_s), ("tool", self.tool_timeout_s)):
             if not math.isfinite(value) or value <= 0:
-                raise McpConfigurationError(f"MCP {label} timeout must be finite and greater than zero")
+                raise McpConfigurationError(
+                    f"MCP {label} timeout must be finite and greater than zero"
+                )
         for env_name in (*self.env, *self.env_vars, *self.env_headers.values()):
             if not _ENV_NAME_RE.fullmatch(env_name):
-                raise McpConfigurationError(
-                    f"invalid MCP environment variable name: {env_name!r}"
-                )
+                raise McpConfigurationError(f"invalid MCP environment variable name: {env_name!r}")
         secret_headers = sorted(header for header in self.headers if _looks_secret(header))
         if secret_headers:
             raise McpConfigurationError(
@@ -688,7 +695,11 @@ class McpToolBridge:
             value = await value
         if isinstance(value, Mapping):
             value = value.get("prompts", [])
-        return list(value) if isinstance(value, Sequence) and not isinstance(value, (str, bytes)) else []
+        return (
+            list(value)
+            if isinstance(value, Sequence) and not isinstance(value, (str, bytes))
+            else []
+        )
 
     async def list_resources(self) -> list[object]:
         """Feature-detect the optional MCP resources primitive."""
@@ -702,7 +713,11 @@ class McpToolBridge:
             value = await value
         if isinstance(value, Mapping):
             value = value.get("resources", [])
-        return list(value) if isinstance(value, Sequence) and not isinstance(value, (str, bytes)) else []
+        return (
+            list(value)
+            if isinstance(value, Sequence) and not isinstance(value, (str, bytes))
+            else []
+        )
 
     def set_change_callback(self, callback: object) -> None:
         """Install a best-effort callback for SDK list-change notifications."""
@@ -738,7 +753,7 @@ class McpToolBridge:
     async def _invoke_tool(
         self, tool_name: str, args: dict[str, object], tool_call_id: str
     ) -> object:
-        call = getattr(self._client, "call_tool")
+        call = self._client.call_tool
         try:
             return await call(tool_name, args, tool_call_id=tool_call_id)
         except TypeError as exc:

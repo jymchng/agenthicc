@@ -80,10 +80,10 @@ A named connection is a `ProviderProfile` (`src/agenthicc/config.py:723`):
 !!! warning "Do not confuse profile fields with execution fields"
     `timeout_s` on a **profile** has no default of its own; the
     `[execution]` table carries `timeout_s = 3600.0` plus
-    `provider_capabilities`, `transport_max_retries`, and
-    `irrecoverable_error_max_retries`. A profile's `capabilities` are copied into
-    `execution.provider_capabilities` when the profile is resolved. Set a value
-    in the table that actually owns it.
+    `transport_max_retries` and `irrecoverable_error_max_retries`. A profile's
+    `capabilities` stay on the resolved profile, where a session that needs
+    tools or streaming checks them. Set a value in the table that actually owns
+    it.
 
 !!! danger "`timeout_s` is the LLM timeout, not the turn timeout"
     `timeout_s` governs the provider request; `turn_timeout_s` governs a turn

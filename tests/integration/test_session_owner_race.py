@@ -5,9 +5,12 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
+
+from tests.cli_process import CLI_PROCESS_TIMEOUT_S, cli_test_timeout
 
 pytestmark = pytest.mark.integration
 
@@ -23,6 +26,7 @@ from agenthicc.runners.session_lease import SessionOpenCoordinator
 root = pathlib.Path(sys.argv[1])
 cwd = pathlib.Path(sys.argv[2])
 start = pathlib.Path(sys.argv[3])
+pathlib.Path(sys.argv[4]).touch()  # imported and waiting: ready to race
 while not start.exists():
     time.sleep(0.005)
 try:
@@ -31,7 +35,7 @@ try:
         raise RuntimeError("no session selected")
     session_id, lease = selected
     print(json.dumps({"result": "winner", "session_id": session_id}), flush=True)
-    time.sleep(0.75)
+    time.sleep(2.0)
     lease.release()
 except Exception as exc:
     print(
@@ -49,9 +53,9 @@ except Exception as exc:
 """
 
 
-def _start_owner(root: Path, cwd: Path, start: Path) -> subprocess.Popen[str]:
+def _start_owner(root: Path, cwd: Path, start: Path, ready: Path) -> subprocess.Popen[str]:
     return subprocess.Popen(
-        [sys.executable, "-c", _OWNER_PROGRAM, str(root), str(cwd), str(start)],
+        [sys.executable, "-c", _OWNER_PROGRAM, str(root), str(cwd), str(start), str(ready)],
         cwd=cwd,
         text=True,
         stdout=subprocess.PIPE,
@@ -59,6 +63,7 @@ def _start_owner(root: Path, cwd: Path, start: Path) -> subprocess.Popen[str]:
     )
 
 
+@cli_test_timeout(3)
 def test_two_processes_racing_for_latest_session_have_one_owner(tmp_path: Path) -> None:
     root = tmp_path / "sessions"
     cwd = tmp_path / "project"
@@ -71,11 +76,20 @@ def test_two_processes_racing_for_latest_session_have_one_owner(tmp_path: Path) 
         encoding="utf-8",
     )
 
-    first = _start_owner(root, cwd, start)
-    second = _start_owner(root, cwd, start)
+    first_ready = tmp_path / "first-ready"
+    second_ready = tmp_path / "second-ready"
+    first = _start_owner(root, cwd, start, first_ready)
+    second = _start_owner(root, cwd, start, second_ready)
+    # Start the race only once both interpreters have imported and are
+    # waiting; otherwise a slow start lets the first winner release its lease
+    # before the second process even asks for it.
+    deadline = time.monotonic() + CLI_PROCESS_TIMEOUT_S
+    while not (first_ready.exists() and second_ready.exists()):
+        assert time.monotonic() < deadline, "the owner processes never became ready"
+        time.sleep(0.01)
     start.touch()
-    first_out, first_err = first.communicate(timeout=10)
-    second_out, second_err = second.communicate(timeout=10)
+    first_out, first_err = first.communicate(timeout=CLI_PROCESS_TIMEOUT_S)
+    second_out, second_err = second.communicate(timeout=CLI_PROCESS_TIMEOUT_S)
     assert first_err == "" or "RuntimeWarning" not in first_err
     assert second_err == "" or "RuntimeWarning" not in second_err
 
@@ -90,6 +104,7 @@ def test_two_processes_racing_for_latest_session_have_one_owner(tmp_path: Path) 
     assert not (root / session_id / ".owner").exists()
 
 
+@cli_test_timeout(1)
 def test_sigkill_owner_is_reclaimable_without_timeout(tmp_path: Path) -> None:
     root = tmp_path / "sessions"
     session_id = "crashed-session"

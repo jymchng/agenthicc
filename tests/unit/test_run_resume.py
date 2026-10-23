@@ -23,6 +23,7 @@ from agenthicc.runners.durable_ledger import DurableIdempotencyLedger
 from agenthicc.runners.run_coordinator import RunCoordinator
 from agenthicc.runners.agent_turn import _preserve_interrupted_memory
 from agenthicc.runners.agent_turn_context import AgentTurnContext
+from agenthicc.config import ExecutionSettings
 
 pytestmark = pytest.mark.unit
 
@@ -367,19 +368,22 @@ async def test_failed_turn_marker_retains_prior_context(
     memory.add_user("earlier request")
     memory.add_assistant({"role": "assistant", "content": "completed step"})
 
-    class ExecutionConfig:
-        auto_compact = True
-        max_output_tokens = 512
-        transport_max_retries = 0
-        transport_retry_base_delay_s = 0.0
-        transport_retry_max_total_s = 0.0
+    class ExecutionConfig(ExecutionSettings):
+        """Real execution settings with a fixed small window and no transport retries."""
 
-        @staticmethod
-        def effective_context_window() -> int:
+        def __init__(self) -> None:
+            super().__init__(
+                auto_compact=True,
+                max_output_tokens=512,
+                transport_max_retries=0,
+                transport_retry_base_delay_s=0.0,
+                transport_retry_max_total_s=0.0,
+            )
+
+        def effective_context_window(self) -> int:
             return 8_192
 
-        @staticmethod
-        def effective_usable_budget() -> int:
+        def effective_usable_budget(self) -> int:
             return 7_000
 
     ctx = AgentTurnContext(
@@ -441,19 +445,22 @@ async def test_agent_turn_cancellation_preserves_context_for_the_next_prompt(tmp
     memory.add_user("inspect the test runner")
     memory.add_assistant({"role": "assistant", "content": "I was checking pytest setup."})
 
-    class ExecutionConfig:
-        auto_compact = True
-        max_output_tokens = 512
-        transport_max_retries = 0
-        transport_retry_base_delay_s = 0.0
-        transport_retry_max_total_s = 0.0
+    class ExecutionConfig(ExecutionSettings):
+        """Real execution settings with a fixed small window and no transport retries."""
 
-        @staticmethod
-        def effective_context_window() -> int:
+        def __init__(self) -> None:
+            super().__init__(
+                auto_compact=True,
+                max_output_tokens=512,
+                transport_max_retries=0,
+                transport_retry_base_delay_s=0.0,
+                transport_retry_max_total_s=0.0,
+            )
+
+        def effective_context_window(self) -> int:
             return 8_192
 
-        @staticmethod
-        def effective_usable_budget() -> int:
+        def effective_usable_budget(self) -> int:
             return 7_000
 
     ctx = AgentTurnContext(

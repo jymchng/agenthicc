@@ -82,23 +82,25 @@ matches those fields exactly and rejects a different outside target.
 
 ## Plugin trust
 
-Project-local tools, agents, modes, workflows, skills, and commands are Python
-code. Loading them is code execution. Review them before use. The repository
-has a trust helper and trust-aware paths for some extension surfaces, but the
-normal `.agenthicc/tools/` discovery path currently imports project tool files
-without calling that helper or showing a prompt. A trust manifest is not an
-automatic boundary for user-defined tools today.
+Project-local tools, agents, modes, workflows, commands and CLI plugins are
+Python code, and loading them is code execution. One trust service gates every
+one of those loaders: a project file is imported only when a trust record binds
+its resolved path to the SHA-256 of its current bytes. Records live in
+`~/.agenthicc/trust.json`, outside any repository, so a repository cannot forge
+its own trust; editing a file revokes it. Untrusted files are logged and
+skipped, never imported — opening an unfamiliar repository runs none of its
+code. Only files under your own `~/.agenthicc/` are trusted by location.
+Review with `agenthicc trust list`, then `agenthicc trust add`; see
+[Trust and dependencies](plugins.md#trust-and-dependencies).
 
-Plugin dependency auto-install is a separate risk and should remain disabled
-in unattended/headless environments. The normal session tool scanner currently
-skips missing dependencies rather than installing them.
+Agenthicc never installs plugin dependencies. A plugin declares them statically
+(`DEPENDENCIES` or a `<stem>.requirements.txt` file); they are read without
+running the plugin, and a plugin with missing requirements is skipped.
 
-Trust manifests and audit records live under `.agenthicc/`; do not commit
-secrets or accept a changed hash without review. See the [user-defined tools
-guide](tools.md) for the exact current tool-loading path and its limitations.
-The same manual-review warning applies to `.agenthicc/commands/`; the
-`agenthicc trust cli` manifest protects `.agenthicc/cli/` plugins, not normal
-TUI slash-command plugins. See the [user-defined commands guide](commands.md).
+Skills are prompt content, but a skill body can contain `` !`command` ``
+context placeholders. The loader never executes them: each becomes an
+instruction for the agent to run the command through its command tool, so the
+approval policy, the active mode's ceiling and the workspace sandbox all apply.
 
 ## Security checklist for a new integration
 
@@ -155,10 +157,10 @@ Configuration is valid: legacy execution settings (anthropic/deepseek-v4.1-flash
 | An absolute or symlinked path escapes the workspace | Correct rejection | All modes reject `..` traversal, absolute paths outside the workspace, and symlinks resolving outside it, and revalidate the canonical target immediately before I/O |
 | A browser tool reaches an arbitrary host | `allow_all_domains` defaults to true for this local profile | Set `[tools] browser_backend` appropriately and `allow_all_domains = false` with `allowed_domains` to restore hostname and private-address restrictions |
 | A browser tool tries to fill a password field | Refused by design | Browser tools cannot execute raw JavaScript, select a proxy, read cookies/storage, or fill password/token/card-like fields |
-| A project tool file ran without a trust prompt | The `.agenthicc/tools/` discovery path imports project tool files without calling the trust helper | This is a known gap. Review project tool files before use; a trust manifest is not an automatic boundary for user-defined tools today |
-| Plugin dependencies were installed unexpectedly | `auto_install` enabled | Keep dependency auto-install disabled in unattended/headless environments; the normal tool scanner skips missing dependencies rather than installing them |
-| `agenthicc trust cli` did not protect a slash-command plugin | It protects `.agenthicc/cli/` plugins, not normal TUI slash-command plugins | For `.agenthicc/commands/` apply the same manual review you apply to any project Python code |
-| A denial is invisible during debugging | Denials should be observable | Check the approval overlay and the audit record under `.agenthicc/`; enable verbose behaviour output if you need the decision trail |
+| A project extension is skipped as untrusted | It has no trust record, or its content changed since it was trusted | Review it, then `agenthicc trust add PATH`; never trust a changed file without reading the change |
+| A plugin is skipped for missing dependencies | Its declared requirements are not installed | Install them yourself after review; agenthicc never installs plugin dependencies |
+| A skill's `` !`command` `` did not run when the skill loaded | Context commands are never executed by the loader | The agent runs the command through its command tool, where approvals and the mode apply |
+| A denial is invisible during debugging | Denials should be observable | Check the approval overlay and the session's durable event and conversation logs under `.agenthicc/` |
 
 ### Which layer actually decides
 

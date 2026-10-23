@@ -190,6 +190,7 @@ def _fake_config() -> SimpleNamespace:
             self.run_id = "smoke-run"
             self.calls: list[tuple[str, object]] = []
             self.checkpoint_supported = True
+            self.phase_index = 0
 
         def attach_context(self, context: object) -> None:
             self.calls.append(("attach", context))
@@ -203,6 +204,7 @@ def _fake_config() -> SimpleNamespace:
             persist: bool = True,
         ) -> None:
             self.calls.append(("update", (phase, index, iteration, persist)))
+            self.phase_index = index
 
         def save_checkpoint(self, *, reason: str = "") -> SimpleNamespace:
             self.calls.append(("checkpoint", reason))
@@ -256,11 +258,11 @@ def _tool_arguments(tool: object) -> dict[str, object]:
 
 async def _exercise_custom_runner(plugin: _SmokePlugin) -> tuple[object, object, bool, str]:
     """Run a custom runner against fake turns and return context/checkpoint data."""
-    from agenthicc.tools.capabilities import ToolCapability, get_tool_capabilities  # noqa: PLC0415
-    from agenthicc.runners.prompt_contract import tool_name  # noqa: PLC0415
+    from agenthicc.tools.capabilities import ToolCapability, get_tool_capabilities
+    from agenthicc.tools.base import tool_name
 
     config = _fake_config()
-    build_runner = getattr(plugin, "build_runner")
+    build_runner = plugin.build_runner
     runner = build_runner(config, None)
     calls: dict[str, int] = {}
 
@@ -310,12 +312,12 @@ async def _exercise_custom_runner(plugin: _SmokePlugin) -> tuple[object, object,
             "fake handle observed no completed-phase boundary checkpoint; "
             "phase-entry persistence alone is insufficient"
         )
-    codec = getattr(plugin, "checkpoint_context_to_payload")
+    codec = plugin.checkpoint_context_to_payload
     payload = codec(context)
     json.dumps(payload, ensure_ascii=False, sort_keys=True)
     if not isinstance(payload, dict) or "shared_memory" in payload:
         raise ValueError("checkpoint payload contains runtime session memory")
-    restored = getattr(plugin, "checkpoint_context_from_payload")(
+    restored = plugin.checkpoint_context_from_payload(
         payload,
         memory=config.session_memory,
     )
@@ -334,7 +336,7 @@ async def _exercise_custom_runner(plugin: _SmokePlugin) -> tuple[object, object,
 async def _exercise_error_propagation(plugin: _SmokePlugin) -> bool:
     """Verify an injected phase error is not converted into success."""
     config = _fake_config()
-    runner = getattr(plugin, "build_runner")(config, None)
+    runner = plugin.build_runner(config, None)
 
     async def fail_run_phase(**_kwargs: object) -> None:
         raise RuntimeError("smoke injected provider failure")
@@ -354,7 +356,7 @@ def run_generated_workflow_smoke(
     root: Path | None = None,
 ) -> SmokeReport:
     """Run a bounded executable-shape smoke check without external effects."""
-    from agenthicc.workflows.create_workflow.validation import validate_workflow_file  # noqa: PLC0415
+    from agenthicc.workflows.create_workflow.validation import validate_workflow_file
 
     candidate = Path(path).expanduser()
     if not candidate.is_absolute():
@@ -496,8 +498,8 @@ def run_generated_workflow_smoke(
         checks.append(SmokeCheck("static_validation", "pass", "deterministic validator passed"))
     runtime_errors: list[str] = []
     if not errors:
-        from agenthicc.workflows.loader import load_python_workflows  # noqa: PLC0415
-        from agenthicc.workflows.plugin import WorkflowPlugin  # noqa: PLC0415
+        from agenthicc.workflows.loader import load_python_workflows
+        from agenthicc.workflows.plugin import WorkflowPlugin
 
         try:
             plugins = load_python_workflows(resolved, source="smoke")

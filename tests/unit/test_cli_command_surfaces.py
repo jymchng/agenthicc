@@ -66,13 +66,19 @@ def test_sessions_trust_and_inspection_handlers(
     sessions.sessions_inspect(ctx, "s")
     sessions.sessions_inspect(ctx, "s", json=True)
 
-    trust.trust_cli(ctx)
+    from agenthicc.plugins.trust import current_extension_trust
+
+    trust.trust_add(ctx)  # nothing to trust yet
     cli_dir = tmp_path / ".agenthicc" / "cli"
     cli_dir.mkdir(parents=True)
     (cli_dir / "plugin.py").write_text("# plugin\n", encoding="utf-8")
     (cli_dir / "_private.py").write_text("# private\n", encoding="utf-8")
-    trust.trust_cli(ctx)
-    assert (tmp_path / ".agenthicc" / "trusted_cli.json").exists()
+    trust.trust_add(ctx)
+    trust.trust_list(ctx)
+    recorded = {Path(record.path).name for record in current_extension_trust().records()}
+    assert {"plugin.py", "_private.py"} <= recorded
+    assert not (tmp_path / ".agenthicc" / "trusted_cli.json").exists()
+    trust.trust_revoke(ctx, str(cli_dir))
 
 
 def test_workflow_list_and_run_handlers(monkeypatch: pytest.MonkeyPatch) -> None:

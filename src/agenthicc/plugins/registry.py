@@ -2,19 +2,21 @@
 
 from __future__ import annotations
 
+import contextvars
 import logging
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from agenthicc.tools.base import Tool, ToolBase, ToolLike
+from agenthicc.tools.base import Tool, ToolBase, ToolLike, tool_name
 
 log = logging.getLogger(__name__)
 
 PluginTool = Callable[..., object]
 
-__all__ = ["ToolGroup", "ToolRegistry", "build_registry"]
+__all__ = ["ToolGroup", "ToolRegistry", "build_registry", "override_builtin_tools"]
 
 
 @dataclass
@@ -90,10 +92,10 @@ class ToolRegistry:
         # cannot become opaque entries in @use_tools(...).
         canonical_name = tool.name if isinstance(tool, (Tool, ToolBase)) else None
         if isinstance(tool, (Tool, ToolBase)):
-            from agenthicc.tools.executor import _make_lauren_tool  # noqa: PLC0415
+            from agenthicc.tools.executor import _make_lauren_tool
 
             tool = _make_lauren_tool(tool, source=source)
-        name = getattr(tool, "__name__", repr(tool))
+        name = tool_name(tool)
         if name in self._by_name:
             existing_group = self._tool_groups.get(name, "")
             if existing_group and group and existing_group != group:
@@ -206,10 +208,9 @@ class ToolRegistry:
 
         for grp in sorted(self._groups, key=lambda g: -g.priority):
             group_names = [
-                getattr(t, "__name__", "")
-                for t in grp.tools
-                if getattr(t, "__name__", "") in self._by_name
-                and getattr(t, "__name__", "") not in excluded
+                name
+                for name in map(tool_name, grp.tools)
+                if name in self._by_name and name not in excluded
             ]
             if not group_names:
                 continue
@@ -237,6 +238,37 @@ class ToolRegistry:
         return {"total_tools": len(self._by_name), "names": self.names}
 
 
+#: Built-in catalog installed by :func:`override_builtin_tools`, if any.
+_BUILTIN_OVERRIDE: contextvars.ContextVar[tuple[ToolGroup, ...] | None] = contextvars.ContextVar(
+    "agenthicc_builtin_tool_override", default=None
+)
+
+
+@contextmanager
+def override_builtin_tools(groups: Sequence[ToolGroup]) -> Iterator[None]:
+    """Replace the built-in tool catalog for registries built in this context.
+
+    While the block is active, :func:`build_registry` registers *groups*
+    instead of ``BUILTIN_GROUPS``, never discovers plugins from disk, and
+    registers only the project tools its caller passes explicitly. The
+    override's owner therefore controls every tool a turn can execute.
+
+    The override lives in the current :mod:`contextvars` context, so an
+    ``asyncio`` task created inside the block keeps it for the task's whole
+    lifetime, including the subagent turns it starts.
+
+    The cassette replay harness uses this to swap side-effecting built-ins for
+    schema-identical stubs. Replacing them inside the registry, rather than
+    shadowing them with same-named plugin tools, means no capability filter
+    can drop a stub and leave the real tool behind it reachable.
+    """
+    token = _BUILTIN_OVERRIDE.set(tuple(groups))
+    try:
+        yield
+    finally:
+        _BUILTIN_OVERRIDE.reset(token)
+
+
 def build_registry(
     agent_name: str | None = None,
     project_plugin_tools: Sequence[ToolLike] | None = None,
@@ -257,26 +289,36 @@ def build_registry(
         user_dir: Override for the user's ~/.agenthicc/ root.
     """
     registry = ToolRegistry()
+    override = _BUILTIN_OVERRIDE.get()
 
     # 1. Built-ins — registered via ToolGroup so describe() can group them.
-    from agenthicc.agent_tools import BUILTIN_GROUPS  # noqa: PLC0415
+    builtin_groups: Sequence[ToolGroup]
+    if override is None:
+        from agenthicc.agent_tools import BUILTIN_GROUPS
 
-    for grp in BUILTIN_GROUPS:
+        builtin_groups = BUILTIN_GROUPS
+    else:
+        builtin_groups = override
+    for grp in builtin_groups:
         registry.register_group(grp, source="builtin")
 
     # 2. Project-wide plugins (cached at session start via session context)
     if project_plugin_tools is None:
-        from agenthicc.plugins.discovery import discover_project_tools  # noqa: PLC0415
+        if override is None:
+            from agenthicc.plugins.discovery import discover_project_tools
 
-        project_plugin_tools = discover_project_tools(
-            project_dir=project_dir,
-            user_dir=user_dir,
-        ).all_tools
+            project_plugin_tools = discover_project_tools(
+                project_dir=project_dir,
+                user_dir=user_dir,
+            ).all_tools
+        else:
+            project_plugin_tools = []
     registry.register_many(project_plugin_tools, source="project-plugin")
 
-    # 3. Agent-specific plugins (highest precedence, loaded per-turn)
-    if agent_name:
-        from agenthicc.plugins.discovery import discover_agent_tools  # noqa: PLC0415
+    # 3. Agent-specific plugins (highest precedence, loaded per-turn). They are
+    #    local code the override's owner did not supply, so never under one.
+    if agent_name and override is None:
+        from agenthicc.plugins.discovery import discover_agent_tools
 
         agent_set = discover_agent_tools(
             agent_name=agent_name,

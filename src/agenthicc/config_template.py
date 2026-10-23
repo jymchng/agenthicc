@@ -209,7 +209,6 @@ def build_commented_config_template() -> str:
                 "default_query",
                 "client_options",
                 "request_options",
-                "provider_capabilities",
             }
         ),
     )
@@ -226,12 +225,9 @@ def build_commented_config_template() -> str:
         "behaviour",
         "loops",
         "tools",
-        "memory",
         "security",
-        "api",
         "plugins",
         "skills",
-        "storage",
     ):
         value = object.__getattribute__(cfg, name)
         if name == "tools":
@@ -244,23 +240,13 @@ def build_commented_config_template() -> str:
             _browser_section(lines, "cloakbrowser", value.cloakbrowser)
             _browser_section(lines, "playwright", value.playwright)
             _mcp_server(lines)
-        elif name == "memory":
-            _section(lines, "memory")
-            _dataclass_fields(lines, value)
-            _section(lines, "memory.context_windows")
-            _comment(lines, "default = 200000  # fallback for unknown model IDs")
-            _comment(lines, '"model-id" = 200000')
-        elif name == "storage":
-            _section(lines, "storage")
-            _dataclass_fields(lines, value, skip=frozenset({"s3"}))
-            _section(lines, "storage.s3")
-            _dataclass_fields(lines, value.s3, skip=frozenset({"mounts"}))
-            _section(lines, 'storage.s3.mounts."mount-name"')
-            _comment(lines, 'bucket = "bucket-name"')
-            _comment(lines, 'prefix = "optional/prefix"')
         else:
             _section(lines, name)
             _dataclass_fields(lines, value)
+
+    _section(lines, "memory.context_windows")
+    _comment(lines, "default = 200000  # fallback for unknown model IDs")
+    _comment(lines, '"model-id" = 200000')
 
     _section(lines, "background")
     _field(lines, "enabled", True)
@@ -318,9 +304,6 @@ def build_commented_config_template() -> str:
         lines,
         'events = ["completed", "failed", "waiting_approval", "waiting_input", "recovery_required"]',
     )
-
-    _section(lines, "hooks")
-    _comment(lines, '"intent.pre_validate" = ["module:function"]')
 
     _section(lines, "agents")
     _comment(lines, 'Use one [agents."agent-name"] table per configured agent role.')

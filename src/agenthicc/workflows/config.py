@@ -15,7 +15,7 @@ if TYPE_CHECKING:
     from agenthicc.tools.base import ToolLike
     from agenthicc.skills.loader import SkillDef
     from agenthicc.tui.conversation_store import ConversationStore, AppState
-    from agenthicc.tools.approval import ApprovalService
+    from agenthicc.tools.approval import ApprovalBroker
     from agenthicc.tools.mcp import McpToolRegistry
     from agenthicc.tools.mcp_manager import McpSessionManager
     from agenthicc.mentions.cache import MentionCache
@@ -43,7 +43,7 @@ class WorkflowConfig:
     app_state: "AppState"
     processor: "EventProcessor"
     agent_runner: "AgentRunnerBase"
-    approval_svc: "ApprovalService | None"
+    approval_svc: "ApprovalBroker | None"
     cfg: "AgenthiccConfig"
     skills: "dict[str, SkillDef]"
     plugin_tools: "PluginToolSet | list[ToolLike]"

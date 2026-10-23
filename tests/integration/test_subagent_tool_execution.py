@@ -383,7 +383,7 @@ async def test_subagent_can_pause_for_parent_clarification_and_resume() -> None:
     )
     assert pending["status"] == "awaiting_clarification"
     question = pending["pending_questions"][0]
-    communication_tools = getattr(spawn, "__agenthicc_subagent_communication_tools__")
+    communication_tools = spawn.__agenthicc_subagent_communication_tools__
     answer_tool = next(tool for tool in communication_tools if tool.__name__ == "answer_subagent")
     collect_tool = next(
         tool for tool in communication_tools if tool.__name__ == "collect_subagent_results"

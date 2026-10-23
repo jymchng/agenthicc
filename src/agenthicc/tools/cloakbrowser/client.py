@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Protocol, cast
 
 from agenthicc.config import CloakBrowserSettings
+from agenthicc.supervised_tasks import SupervisedTasks
 
 from .errors import BrowserErrorKind, BrowserToolError
 from .policy import BrowserPolicy, redact_link, redact_url
@@ -222,6 +223,7 @@ class LocalCloakBrowserClient:
         self._context: object | None = None
         self._pages: dict[tuple[str, str], object] = {}
         self._package_error: BrowserToolError | None = None
+        self._popup_closers = SupervisedTasks("cloakbrowser popup cleanup")
 
     def rebind_session(self, session_id: str) -> None:
         """Reattach a not-yet-launched client to a persisted opaque session id."""
@@ -370,9 +372,7 @@ class LocalCloakBrowserClient:
                     log.debug("blocked browser popup cleanup failed", exc_info=True)
 
             def popup_handler(popup: object) -> None:
-                import asyncio  # noqa: PLC0415
-
-                asyncio.create_task(reject_popup(popup))
+                self._popup_closers.start(reject_popup(popup), name="cloakbrowser-reject-popup")
 
             await _invoke(page, "on", "popup", popup_handler)
 
@@ -525,6 +525,7 @@ class LocalCloakBrowserClient:
                 await _invoke(page, "close")
             except Exception:  # noqa: BLE001 — best-effort shutdown
                 log.debug("browser page cleanup failed", exc_info=True)
+        await self._popup_closers.wait(timeout=2.0)
         if self._context is not None:
             try:
                 await _invoke(self._context, "close")

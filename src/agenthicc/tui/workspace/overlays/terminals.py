@@ -126,7 +126,7 @@ class TerminalListOverlay(Overlay):
         return self._shorten(preview, self._MAX_OUTPUT_CHARS)
 
     def _text_line(self, value: str, *, style: str = "") -> "RenderableType":
-        from rich.text import Text  # noqa: PLC0415
+        from rich.text import Text
 
         text = Text(value, style=style, no_wrap=True, overflow="crop")
         text.truncate(self._viewport_width, overflow="crop")
@@ -136,7 +136,7 @@ class TerminalListOverlay(Overlay):
     def _cell(value: str, *, style: str = "") -> "RenderableType":
         """Render manager data literally so Rich markup is never evaluated."""
 
-        from rich.text import Text  # noqa: PLC0415
+        from rich.text import Text
 
         return Text(value, style=style, no_wrap=True, overflow="crop")
 
@@ -150,9 +150,9 @@ class TerminalListOverlay(Overlay):
         return self._text_line(hint, style="dim")
 
     def render(self) -> "RenderableType":
-        from rich.console import Group  # noqa: PLC0415
-        from rich.table import Table  # noqa: PLC0415
-        from rich import box  # noqa: PLC0415
+        from rich.console import Group
+        from rich.table import Table
+        from rich import box
 
         records = self._records()
         self._select_requested(records)

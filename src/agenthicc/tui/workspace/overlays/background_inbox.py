@@ -115,12 +115,12 @@ class BackgroundInboxOverlay(PromptOverlay):
         self._refresh()
 
     def render(self) -> "RenderableType":
-        from rich import box  # noqa: PLC0415
-        from rich.console import Group  # noqa: PLC0415
-        from rich.panel import Panel  # noqa: PLC0415
-        from rich.table import Table  # noqa: PLC0415
-        from rich.text import Text  # noqa: PLC0415
-        from rich.markup import escape  # noqa: PLC0415
+        from rich import box
+        from rich.console import Group
+        from rich.panel import Panel
+        from rich.table import Table
+        from rich.text import Text
+        from rich.markup import escape
 
         self._refresh()
         page = self._selected // self._PAGE_SIZE + 1

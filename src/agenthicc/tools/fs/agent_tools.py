@@ -16,7 +16,7 @@ from agenthicc.tools.capabilities import (
     tool_read_search,
     tool_exploratory,
 )
-from agenthicc.tools.workspace_access import current_workspace_access
+from agenthicc.tools.workspace_access import WorkspaceAccessPolicy, current_workspace_access
 
 if TYPE_CHECKING:
     from agenthicc.tools.fs.backend import FilesystemBackend
@@ -80,7 +80,8 @@ class _BatchMoveFile(TypedDict):
 
 
 def _get_backend(path: str = ".", context: dict[str, object] | None = None) -> "FilesystemBackend":
-    policy = (context or {}).get("workspace_access") or current_workspace_access()
+    supplied = (context or {}).get("workspace_access")
+    policy = supplied if isinstance(supplied, WorkspaceAccessPolicy) else current_workspace_access()
     if policy is not None:
         # The mode-aware policy is the authoritative boundary for local
         # session tools.  A legacy router may still point at a root-scoped
@@ -90,12 +91,12 @@ def _get_backend(path: str = ".", context: dict[str, object] | None = None) -> "
             routed = _router.resolve(path)
             if routed is not _router.default:
                 return routed
-        from agenthicc.tools.fs.linux import LinuxFilesystemBackend  # noqa: PLC0415
+        from agenthicc.tools.fs.linux import LinuxFilesystemBackend
 
         return LinuxFilesystemBackend(policy.scope.primary_root, enforce_root=False)
     if _router is not None:
         return _router.resolve(path)
-    from agenthicc.tools.fs.linux import LinuxFilesystemBackend  # noqa: PLC0415
+    from agenthicc.tools.fs.linux import LinuxFilesystemBackend
 
     return LinuxFilesystemBackend(os.getcwd())
 
@@ -116,7 +117,7 @@ async def read_file(path: str, encoding: str = "utf-8") -> dict[str, object]:
         path: File path to read (relative to workspace root).
         encoding: Text encoding (default utf-8).
     """
-    from agenthicc.tools.fs import ReadFileTool  # noqa: PLC0415
+    from agenthicc.tools.fs import ReadFileTool
 
     return await ReadFileTool().execute({"path": path, "encoding": encoding}, _CTX())
 
@@ -131,7 +132,7 @@ async def write_file(path: str, content: str, create_parents: bool = True) -> di
         content: Text content to write.
         create_parents: Create missing parent directories (default True).
     """
-    from agenthicc.tools.fs import WriteFileTool  # noqa: PLC0415
+    from agenthicc.tools.fs import WriteFileTool
 
     return await WriteFileTool().execute(
         {"path": path, "content": content, "create_parents": create_parents}, _CTX()
@@ -147,7 +148,7 @@ async def append_file(path: str, content: str) -> dict[str, object]:
         path: File path to append to.
         content: Text to append.
     """
-    from agenthicc.tools.fs import AppendFileTool  # noqa: PLC0415
+    from agenthicc.tools.fs import AppendFileTool
 
     return await AppendFileTool().execute({"path": path, "content": content}, _CTX())
 
@@ -160,7 +161,7 @@ async def delete_file(path: str) -> dict[str, object]:
     Args:
         path: File path to delete.
     """
-    from agenthicc.tools.fs import DeleteFileTool  # noqa: PLC0415
+    from agenthicc.tools.fs import DeleteFileTool
 
     return await DeleteFileTool().execute({"path": path}, _CTX())
 
@@ -174,7 +175,7 @@ async def move_file(source: str, destination: str) -> dict[str, object]:
         source: Source file path.
         destination: Destination file path.
     """
-    from agenthicc.tools.fs import MoveFileTool  # noqa: PLC0415
+    from agenthicc.tools.fs import MoveFileTool
 
     return await MoveFileTool().execute({"source": source, "destination": destination}, _CTX())
 
@@ -188,7 +189,7 @@ async def copy_file(source: str, destination: str) -> dict[str, object]:
         source: Source file path.
         destination: Destination file path.
     """
-    from agenthicc.tools.fs import CopyFileTool  # noqa: PLC0415
+    from agenthicc.tools.fs import CopyFileTool
 
     return await CopyFileTool().execute({"source": source, "destination": destination}, _CTX())
 
@@ -206,7 +207,7 @@ async def list_directory(
         pattern: Glob pattern to filter entries (default: all).
         recursive: If True, traverse subdirectories recursively.
     """
-    from agenthicc.tools.fs import ListDirectoryTool  # noqa: PLC0415
+    from agenthicc.tools.fs import ListDirectoryTool
 
     return await ListDirectoryTool().execute(
         {"path": path, "pattern": pattern, "recursive": recursive}, _CTX()
@@ -221,7 +222,7 @@ async def make_directory(path: str) -> dict[str, object]:
     Args:
         path: Directory path to create.
     """
-    from agenthicc.tools.fs import MakeDirectoryTool  # noqa: PLC0415
+    from agenthicc.tools.fs import MakeDirectoryTool
 
     return await MakeDirectoryTool().execute({"path": path}, _CTX())
 
@@ -235,7 +236,7 @@ async def file_exists(path: str) -> dict[str, object]:
     Args:
         path: Path to check.
     """
-    from agenthicc.tools.fs import FileExistsTool  # noqa: PLC0415
+    from agenthicc.tools.fs import FileExistsTool
 
     return await FileExistsTool().execute({"path": path}, _CTX())
 
@@ -251,7 +252,7 @@ async def search_files(pattern: str, path: str = ".", recursive: bool = True) ->
         path: Root directory to search (default: current directory).
         recursive: Search subdirectories recursively (default True).
     """
-    from agenthicc.tools.fs import SearchFilesTool  # noqa: PLC0415
+    from agenthicc.tools.fs import SearchFilesTool
 
     return await SearchFilesTool().execute(
         {"pattern": pattern, "path": path, "recursive": recursive}, _CTX()
@@ -269,7 +270,7 @@ async def grep_files(pattern: str, path: str = ".", max_results: int = 50) -> di
         path: Directory to search (default: current directory).
         max_results: Maximum number of matches to return (default 50).
     """
-    from agenthicc.tools.fs import GrepFilesTool  # noqa: PLC0415
+    from agenthicc.tools.fs import GrepFilesTool
 
     return await GrepFilesTool().execute(
         {"pattern": pattern, "path": path, "recursive": True, "max_results": max_results},
@@ -286,7 +287,7 @@ async def get_file_info(path: str) -> dict[str, object]:
     Args:
         path: File or directory path.
     """
-    from agenthicc.tools.fs import GetFileInfoTool  # noqa: PLC0415
+    from agenthicc.tools.fs import GetFileInfoTool
 
     return await GetFileInfoTool().execute({"path": path}, _CTX())
 
@@ -302,7 +303,7 @@ async def read_lines(path: str, start: int = 1, end: int | None = None) -> dict[
         start: First line to read (1-indexed, default 1).
         end: Last line to read inclusive (default: end of file).
     """
-    from agenthicc.tools.fs import ReadLinesTool  # noqa: PLC0415
+    from agenthicc.tools.fs import ReadLinesTool
 
     args: dict[str, object] = {"path": path, "start": start}
     if end is not None:
@@ -320,7 +321,7 @@ async def patch_file(path: str, old_content: str, new_content: str) -> dict[str,
         old_content: Exact string to find and replace.
         new_content: Replacement string.
     """
-    from agenthicc.tools.fs import PatchFileTool  # noqa: PLC0415
+    from agenthicc.tools.fs import PatchFileTool
 
     return await PatchFileTool().execute(
         {"path": path, "old_content": old_content, "new_content": new_content}, _CTX()
@@ -344,7 +345,7 @@ async def grep_file(
         case_sensitive: Whether the match is case-sensitive (default True).
         context_lines: Number of surrounding lines to include with each match (default 0).
     """
-    from agenthicc.tools.fs import _authorized_path  # noqa: PLC0415
+    from agenthicc.tools.fs import _authorized_path
 
     context = _CTX()
     try:
@@ -389,7 +390,7 @@ async def apply_diff(path: str, diff: str, allow_partial: bool = False) -> dict[
         diff: Unified diff string (output of ``diff -u`` or similar).
         allow_partial: If True, apply successfully-matched hunks even when some fail (default False).
     """
-    from agenthicc.tools.fs import _authorized_path  # noqa: PLC0415
+    from agenthicc.tools.fs import _authorized_path
 
     context = _CTX()
     try:
@@ -479,7 +480,7 @@ async def checksum_file(path: str, algorithm: str = "sha256") -> dict[str, objec
         path: File path to checksum (relative to workspace root).
         algorithm: Hash algorithm name accepted by ``hashlib`` (default ``sha256``).
     """
-    from agenthicc.tools.fs import _authorized_path  # noqa: PLC0415
+    from agenthicc.tools.fs import _authorized_path
 
     context = _CTX()
     try:
@@ -508,7 +509,7 @@ async def truncate_file(path: str, size: int = 0) -> dict[str, object]:
         path: File path to truncate (relative to workspace root).
         size: Target size in bytes (default 0 — empties the file).
     """
-    from agenthicc.tools.fs import _authorized_path  # noqa: PLC0415
+    from agenthicc.tools.fs import _authorized_path
 
     context = _CTX()
     try:
@@ -540,7 +541,7 @@ async def touch_file(path: str, create: bool = True) -> dict[str, object]:
         create: Create the file when it does not exist (default True).
                 If False and the file is missing, returns an error.
     """
-    from agenthicc.tools.fs import _authorized_path  # noqa: PLC0415
+    from agenthicc.tools.fs import _authorized_path
 
     context = _CTX()
     try:
@@ -576,7 +577,7 @@ async def batch_read(paths: list[str], encoding: str = "utf-8") -> dict[str, obj
         paths: List of file paths to read (relative to workspace root).
         encoding: Text encoding for all files (default utf-8).
     """
-    from agenthicc.tools.fs import _authorize_tool  # noqa: PLC0415
+    from agenthicc.tools.fs import _authorize_tool
 
     context = _CTX()
     try:
@@ -619,7 +620,7 @@ async def batch_write(
                 "succeeded": 0,
                 "failed": len(files),
             }
-    from agenthicc.tools.fs import _authorize_tool  # noqa: PLC0415
+    from agenthicc.tools.fs import _authorize_tool
 
     context = _CTX()
     try:
@@ -631,8 +632,8 @@ async def batch_write(
     b = _get_backend(context=context)
     backend_files: list[dict[str, object]] = [dict(item) for item in files]
     if authorized:
-        for item, path in zip(backend_files, authorized, strict=False):
-            item["path"] = str(path)
+        for entry, path in zip(backend_files, authorized, strict=False):
+            entry["path"] = str(path)
     results = b.batch_write(backend_files, create_parents)
     for original, result in zip(files, results, strict=False):
         result["path"] = original["path"]
@@ -654,7 +655,7 @@ async def batch_delete(paths: list[str]) -> dict[str, object]:
     Args:
         paths: List of file paths to delete (relative to workspace root).
     """
-    from agenthicc.tools.fs import _authorize_tool  # noqa: PLC0415
+    from agenthicc.tools.fs import _authorize_tool
 
     context = _CTX()
     try:
@@ -686,7 +687,7 @@ async def batch_move(moves: list[_BatchMoveFile]) -> dict[str, object]:
     Args:
         moves: List of ``{"source": str, "destination": str}`` dicts.
     """
-    from agenthicc.tools.fs import _authorize_tool  # noqa: PLC0415
+    from agenthicc.tools.fs import _authorize_tool
 
     context = _CTX()
     try:
@@ -736,7 +737,7 @@ async def batch_copy(copies: list[_BatchMoveFile]) -> dict[str, object]:
     Args:
         copies: List of ``{"source": str, "destination": str}`` dicts.
     """
-    from agenthicc.tools.fs import _authorize_tool  # noqa: PLC0415
+    from agenthicc.tools.fs import _authorize_tool
 
     context = _CTX()
     try:

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 from agenthicc.runners.workflow_checkpoint_store import (
     WorkflowCheckpointStore,
@@ -463,7 +463,7 @@ class WorkflowRecoveryCoordinator:
         self,
         record: WorkflowRecoveryRecord,
         *,
-        workflow: type[object],
+        workflow: type[WorkflowPlugin],
         conversation: "SessionConversation",
         browser_manager: object | None = None,
         owner_id: str | None = None,
@@ -510,7 +510,7 @@ class WorkflowRecoveryCoordinator:
             from agenthicc.workflows.registry import WorkflowRegistry
 
             latest_registry = WorkflowRegistry()
-            latest_registry.register(cast("type[WorkflowPlugin]", workflow))
+            latest_registry.register(workflow)
             validation_code, validation_error = self._validate_recovery(
                 checkpoint,
                 workflow_registry=latest_registry,

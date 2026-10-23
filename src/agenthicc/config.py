@@ -41,13 +41,11 @@ __all__ = [
     "AgenthiccConfig",
     "AgentSettings",
     "AgentsSettings",
-    "ApiSettings",
     "BehaviourSettings",
     "CloakBrowserSettings",
     "PlaywrightSettings",
     "ExecutionSettings",
     "LoopSettings",
-    "MemorySettings",
     "PluginSettings",
     "ProviderProfile",
     "ResolvedProviderProfile",
@@ -58,8 +56,6 @@ __all__ = [
     "PROVIDER_ENV_SHORTCUTS",
     "SecuritySettings",
     "SkillsSettings",
-    "StorageS3Settings",
-    "StorageSettings",
     "SUPPORTED_PROVIDERS",
     "ToolSettings",
     "DEFAULT_QUESTION_TIMEOUT_S",
@@ -151,7 +147,7 @@ def _context_window_for(model: str, *, default: int = _DEFAULT_CONTEXT_WINDOW) -
     ids.
     """
     try:
-        from lauren_ai import _config as lauren_config  # noqa: PLC0415
+        from lauren_ai import _config as lauren_config
 
         context_window_for = getattr(lauren_config, "context_window_for", None)
     except ImportError:
@@ -194,7 +190,7 @@ def _call_lauren_context_window(
     if not callable(resolver):
         return None
 
-    import inspect  # noqa: PLC0415
+    import inspect
 
     try:
         signature = inspect.signature(resolver)
@@ -651,7 +647,7 @@ class SecretReference:
         return cls(_validate_env_name(env, path=f"{path}.env"))
 
     def resolve(self, environ: Mapping[str, str] | None = None) -> str:
-        import os  # noqa: PLC0415
+        import os
 
         value = (environ if environ is not None else os.environ).get(self.env, "")
         if not value:
@@ -742,7 +738,7 @@ class RequestOptionSettings:
         )
 
     def resolve(self, environ: Mapping[str, str] | None = None) -> object:
-        from lauren_ai._transport import RequestOptions  # noqa: PLC0415
+        from lauren_ai._transport import RequestOptions
 
         headers = {
             name: _resolve_header_value(
@@ -879,7 +875,6 @@ class ProviderProfile:
             "openai-compatible",
             "opencode-go",
             "anthropic",
-            "ollama",
             "litellm",
         }:
             raise ValueError(f"providers.{name}.protocol is not supported")
@@ -971,7 +966,7 @@ class ProviderProfile:
         }
 
     def resolve(self, environ: Mapping[str, str] | None = None) -> "ResolvedProviderProfile":
-        import os  # noqa: PLC0415
+        import os
 
         env = environ if environ is not None else os.environ
         api_key: str | None
@@ -1042,9 +1037,7 @@ class ResolvedProviderProfile:
 
 @dataclass
 class ExecutionSettings:
-    max_concurrent_intents: int = 8
     max_parallel_tasks: int = 4
-    agent_pool_size: int = 16
     max_agent_turns: int = 200  # max agentic-loop iterations per intent
     authoring_max_generation_attempts: int = 20
     """Maximum complete source-generation attempts for ``create_*`` workflows."""
@@ -1114,7 +1107,6 @@ class ExecutionSettings:
     temperature: float = 1.0
     top_p: float | None = None
     max_completion_tokens: int | None = None
-    provider_capabilities: dict[str, bool] = field(default_factory=dict, repr=False)
     _resolved_profile: ResolvedProviderProfile | None = field(
         default=None, repr=False, compare=False
     )
@@ -1144,7 +1136,7 @@ class ExecutionSettings:
         return self.model or PROVIDER_DEFAULT_MODELS.get(self.provider, self.model)
 
     def effective_api_key(self) -> str | None:
-        import os  # noqa: PLC0415
+        import os
 
         if self._resolved_profile is not None:
             return self._resolved_profile.api_key
@@ -1398,40 +1390,19 @@ class ToolSettings:
 
 
 @dataclass
-class MemorySettings:
-    project_memory_path: str = ".agenthicc/memory"
-    vector_db: str = "sqlite-vec"
-    session_ttl_seconds: int = 86400
-
-
-@dataclass
 class SecuritySettings:
-    sandbox_mode: bool = True
     allowed_paths: list[str] = field(default_factory=lambda: ["/workspace"])
     network_allow_list: list[str] = field(default_factory=list)
-    max_tool_cpu_seconds: int = 30
-    max_tool_memory_mb: int = 512
-
-
-@dataclass
-class ApiSettings:
-    host: str = "127.0.0.1"
-    port: int = 8000
-    api_key_env: str = "AGENTHICC_API_KEY"
 
 
 @dataclass
 class PluginSettings:
-    """[plugins] section — tool plugin security and dependency settings."""
+    """[plugins] section.
 
-    auto_trust: bool = False
-    auto_install: bool = False
-    install_target: str = "venv"
-    allowed_modules: list[str] = field(default_factory=list)
-    timeout_seconds: float = 30.0
-    disabled: list[str] = field(default_factory=list)
-    trust_file: str = ".agenthicc/trusted_plugins.json"
-    audit_file: str = ".agenthicc/plugin_audit.jsonl"
+    Whether a project extension may load is decided by ``agenthicc trust``
+    records in the user's home directory, never by project configuration.
+    """
+
     strict_cli_shadow: bool = False
 
 
@@ -1444,8 +1415,6 @@ class BehaviourSettings:
     persisted across invocations.
     """
 
-    verbose: bool = False
-    confirm_exits: bool = True
     resume_transcript_turns: int = 20
     """Maximum newest turn groups attempted in the initial resume preview.
 
@@ -1594,46 +1563,15 @@ class SkillsSettings:
 
 
 @dataclass
-class StorageS3Settings:
-    """S3/S3-compatible storage credentials and configuration."""
-
-    bucket: str = ""
-    region: str = "us-east-1"
-    prefix: str = ""
-    access_key_id: str = ""
-    secret_access_key: str = ""
-    endpoint_url: str = ""
-    profile: str = ""
-    path_style: bool = False
-    mounts: dict[str, dict[str, str]] = field(default_factory=dict)
-
-    @property
-    def configured(self) -> bool:
-        return bool(self.bucket)
-
-
-@dataclass
-class StorageSettings:
-    """Top-level storage configuration (S3 and future backends)."""
-
-    s3: StorageS3Settings = field(default_factory=StorageS3Settings)
-    default_backend: str = "linux"
-
-
-@dataclass
 class AgenthiccConfig:
     execution: ExecutionSettings = field(default_factory=ExecutionSettings)
     providers: dict[str, ProviderProfile] = field(default_factory=dict)
     behaviour: BehaviourSettings = field(default_factory=BehaviourSettings)
-    hooks: dict[str, list[str]] = field(default_factory=dict)
     tools: ToolSettings = field(default_factory=ToolSettings)
-    memory: MemorySettings = field(default_factory=MemorySettings)
     security: SecuritySettings = field(default_factory=SecuritySettings)
-    api: ApiSettings = field(default_factory=ApiSettings)
     plugins: PluginSettings = field(default_factory=PluginSettings)
     skills: SkillsSettings = field(default_factory=SkillsSettings)
     agents: AgentsSettings = field(default_factory=AgentsSettings)
-    storage: StorageSettings = field(default_factory=StorageSettings)
     workflows: dict[str, dict[str, object]] = field(default_factory=dict)
     """Per-workflow tunable parameter overrides loaded from ``[workflows.<name>]``
     TOML sections (PRD-111).  E.g. ``cfg.workflows["code_plan"]["execute_model"]``."""
@@ -1643,11 +1581,7 @@ class AgenthiccConfig:
 
     def to_system_settings(self) -> SystemSettings:
         """Reflect execution settings into the kernel ``SystemSettings``."""
-        return SystemSettings(
-            max_concurrent_intents=self.execution.max_concurrent_intents,
-            max_parallel_tasks=self.execution.max_parallel_tasks,
-            agent_pool_size=self.execution.agent_pool_size,
-        )
+        return SystemSettings(max_parallel_tasks=self.execution.max_parallel_tasks)
 
     def to_security_policy(self) -> SecurityPolicy:
         """Build a kernel ``SecurityPolicy`` from this config (fail-closed)."""
@@ -1670,7 +1604,7 @@ class AgenthiccConfig:
         object; the environment is consulted again when a session is resumed.
         """
         profile_name = self.execution.profile.strip()
-        import os  # noqa: PLC0415
+        import os
 
         env = environ if environ is not None else os.environ
         if not profile_name:
@@ -1701,7 +1635,7 @@ class AgenthiccConfig:
                 f"Unknown provider profile {profile_name!r}; available profiles: {available}"
             )
         resolved = profile.resolve(environ)
-        from dataclasses import replace  # noqa: PLC0415
+        from dataclasses import replace
 
         if profile.api_key is None and not profile.api_key_env:
             if isinstance(self.execution.api_key, SecretReference):
@@ -1791,7 +1725,6 @@ class AgenthiccConfig:
         self.execution.default_headers = dict(resolved.default_headers)
         self.execution.default_query = dict(resolved.default_query)
         self.execution.client_options = dict(resolved.client_options)
-        self.execution.provider_capabilities = dict(resolved.capabilities)
         self.execution.request_options = resolved.request_options
         if strict and not resolved.model:
             raise ValueError(f"Provider profile {profile_name!r} did not resolve a model")
@@ -1828,9 +1761,7 @@ class AgenthiccConfig:
             "execution": execution,
             "providers": {name: profile.redacted() for name, profile in self.providers.items()},
             "behaviour": vars(self.behaviour).copy(),
-            "memory": vars(self.memory).copy(),
             "security": vars(self.security).copy(),
-            "api": vars(self.api).copy(),
             "tools": tool_values,
             "plugins": vars(self.plugins).copy(),
         }
@@ -1839,7 +1770,7 @@ class AgenthiccConfig:
 def _parse_mcp_servers(raw_list: list[dict[str, object]]) -> list[McpServerConfig]:
     """Convert raw TOML dicts to McpServerConfig objects (graceful if mcp.py unavailable)."""
     try:
-        from agenthicc.tools.mcp import McpServerConfig  # noqa: PLC0415
+        from agenthicc.tools.mcp import McpServerConfig
 
         servers = [McpServerConfig.from_dict(d) for d in raw_list]
         names = [server.name for server in servers]
@@ -1978,18 +1909,6 @@ def _as_string_list(value: object, default: tuple[str, ...] = ()) -> list[str]:
     return list(default)
 
 
-def _flatten_hooks(data: dict[str, object], prefix: str = "") -> dict[str, list[str]]:
-    """Flatten nested hook tables into ``{"intent.pre_validate": [...]}`` form."""
-    flat: dict[str, list[str]] = {}
-    for key, value in data.items():
-        dotted = f"{prefix}.{key}" if prefix else key
-        if isinstance(value, dict):
-            flat.update(_flatten_hooks(value, dotted))
-        else:
-            flat[dotted] = [str(v) for v in value] if isinstance(value, list) else [str(value)]
-    return flat
-
-
 # ── config file discovery helpers ─────────────────────────────────────────
 
 
@@ -2003,7 +1922,7 @@ def _find_config_file(candidates: list[Path]) -> Path | None:
 
 def _load_toml_safe(path: Path) -> dict[str, object]:
     """Load TOML file; return {} on error, warn on invalid syntax."""
-    import warnings  # noqa: PLC0415
+    import warnings
 
     try:
         with open(path, "rb") as f:
@@ -2041,7 +1960,7 @@ def _apply_env_overrides(config: dict[str, object]) -> dict[str, object]:
     Env vars always override both user-global and per-project config files.
     Within env vars, ``AGENTHICC_*`` takes priority over provider shorthands.
     """
-    import os  # noqa: PLC0415
+    import os
 
     # 1. AGENTHICC_* namespace — highest env priority, always overrides config files.
     agenthicc_set: set[tuple[str, str]] = set()
@@ -2203,7 +2122,7 @@ def _resolve_extends(
     elif isinstance(extends_raw, list):
         parents = [str(e) for e in extends_raw]
     else:
-        import warnings  # noqa: PLC0415
+        import warnings
 
         warnings.warn(
             f"Invalid 'extends' value in {path}: expected str or list, "
@@ -2234,7 +2153,7 @@ def _load_toml_with_extends(path: Path) -> dict[str, object]:
     Returns ``{}`` on ``FileNotFoundError`` / ``PermissionError``; warns on
     invalid TOML syntax.  Propagates ``ConfigExtendsCycleError``.
     """
-    import warnings  # noqa: PLC0415
+    import warnings
 
     try:
         return _resolve_extends(path)
@@ -2278,9 +2197,7 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
     if execution_request_raw is not None and execution_request_options is None:
         raise ValueError("execution.request_options must be a table")
     execution = ExecutionSettings(
-        max_concurrent_intents=_as_int(ex.get("max_concurrent_intents"), 8),
         max_parallel_tasks=_as_int(ex.get("max_parallel_tasks"), 4),
-        agent_pool_size=_as_int(ex.get("agent_pool_size"), 16),
         max_agent_turns=_as_int(ex.get("max_agent_turns"), 200),
         authoring_max_generation_attempts=_as_int(ex.get("authoring_max_generation_attempts"), 20),
         authoring_max_phase_turns=_as_int(ex.get("authoring_max_phase_turns"), 20),
@@ -2336,8 +2253,6 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
         raise ValueError("execution.top_p must be between 0 and 1")
     if execution.max_completion_tokens is not None and execution.max_completion_tokens < 0:
         raise ValueError("execution.max_completion_tokens must be non-negative")
-
-    hooks = _flatten_hooks(_section(data.get("hooks")))
 
     to = _section(data.get("tools"))
     tools_raw = to.get("mcp_servers")
@@ -2435,59 +2350,14 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
         ),
     )
 
-    memory = MemorySettings(
-        project_memory_path=_as_str(me.get("project_memory_path"), ".agenthicc/memory"),
-        vector_db=_as_str(me.get("vector_db"), "sqlite-vec"),
-        session_ttl_seconds=_as_int(me.get("session_ttl_seconds"), 86400),
-    )
-
     se = _section(data.get("security"))
     security = SecuritySettings(
-        sandbox_mode=_as_bool(se.get("sandbox_mode"), True),
         allowed_paths=_as_string_list(se.get("allowed_paths"), ("/workspace",)),
         network_allow_list=_as_string_list(se.get("network_allow_list")),
-        max_tool_cpu_seconds=_as_int(se.get("max_tool_cpu_seconds"), 30),
-        max_tool_memory_mb=_as_int(se.get("max_tool_memory_mb"), 512),
-    )
-
-    ap = _section(data.get("api"))
-    api = ApiSettings(
-        host=_as_str(ap.get("host"), "127.0.0.1"),
-        port=_as_int(ap.get("port"), 8000),
-        api_key_env=_as_str(ap.get("api_key_env"), "AGENTHICC_API_KEY"),
-    )
-
-    # Parse [storage] and [storage.s3] sections
-    raw_storage = _section(data.get("storage"))
-    raw_s3 = _section(raw_storage.pop("s3", {}))
-    raw_mounts = _section(raw_s3.pop("mounts", {}))
-    s3_settings = StorageS3Settings(
-        bucket=_as_str(raw_s3.get("bucket"), ""),
-        region=_as_str(raw_s3.get("region"), "us-east-1"),
-        prefix=_as_str(raw_s3.get("prefix"), ""),
-        access_key_id=_as_str(raw_s3.get("access_key_id"), ""),
-        secret_access_key=_as_str(raw_s3.get("secret_access_key"), ""),
-        endpoint_url=_as_str(raw_s3.get("endpoint_url"), ""),
-        profile=_as_str(raw_s3.get("profile"), ""),
-        path_style=_as_bool(raw_s3.get("path_style"), False),
-        mounts={
-            str(name): {
-                str(field_name): _as_str(field_value, "")
-                for field_name, field_value in _section(mount).items()
-            }
-            for name, mount in raw_mounts.items()
-            if isinstance(mount, Mapping)
-        },
-    )
-    storage_settings = StorageSettings(
-        s3=s3_settings,
-        default_backend=_as_str(raw_storage.get("default_backend"), "linux"),
     )
 
     beh = _section(data.get("behaviour"))
     behaviour = BehaviourSettings(
-        verbose=_as_bool(beh.get("verbose"), False),
-        confirm_exits=_as_bool(beh.get("confirm_exits"), True),
         resume_transcript_turns=max(0, _as_int(beh.get("resume_transcript_turns"), 20)),
         resume_transcript_max_events=min(
             1024, max(1, _as_int(beh.get("resume_transcript_max_events"), 128))
@@ -2519,14 +2389,6 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
 
     plugin_data = _section(data.get("plugins"))
     plugins = PluginSettings(
-        auto_trust=_as_bool(plugin_data.get("auto_trust"), False),
-        auto_install=_as_bool(plugin_data.get("auto_install"), False),
-        install_target=_as_str(plugin_data.get("install_target"), "venv"),
-        allowed_modules=_as_string_list(plugin_data.get("allowed_modules")),
-        timeout_seconds=_as_float(plugin_data.get("timeout_seconds"), 30.0),
-        disabled=_as_string_list(plugin_data.get("disabled")),
-        trust_file=_as_str(plugin_data.get("trust_file"), ".agenthicc/trusted_plugins.json"),
-        audit_file=_as_str(plugin_data.get("audit_file"), ".agenthicc/plugin_audit.jsonl"),
         strict_cli_shadow=_as_bool(plugin_data.get("strict_cli_shadow"), False),
     )
 
@@ -2563,13 +2425,9 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
         providers=providers,
         behaviour=behaviour,
         loops=loops,
-        hooks=hooks,
         tools=tools,
-        memory=memory,
         security=security,
-        api=api,
         plugins=plugins,
-        storage=storage_settings,
         skills=skills,
         agents=agents,
         workflows=workflows,
@@ -2616,7 +2474,7 @@ def load_config(
     # PRD-113: --config / AGENTHICC_CONFIG override the auto-discovered project file.
     # Priority: explicit config_path arg > AGENTHICC_CONFIG env var > auto-discovery.
     if config_path is None:
-        import os as _os  # noqa: PLC0415
+        import os as _os
 
         _env_cfg = _os.environ.get("AGENTHICC_CONFIG", "").strip()
         if _env_cfg:
@@ -2678,10 +2536,10 @@ def build_llm_config(
     :raises ValueError: When the provider string is not recognised.
     :returns: A ``LLMConfig`` instance ready to pass to ``_build_transport()``.
     """
-    import dataclasses  # noqa: PLC0415
-    import os  # noqa: PLC0415
-    from lauren_ai._config import LLMConfig  # noqa: PLC0415
-    from lauren_ai._transport import RequestOptions  # noqa: PLC0415
+    import dataclasses
+    import os
+    from lauren_ai._config import LLMConfig
+    from lauren_ai._transport import RequestOptions
 
     llm_fields = {field.name for field in dataclasses.fields(LLMConfig)}
     required_fields = {

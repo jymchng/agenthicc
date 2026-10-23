@@ -72,7 +72,7 @@ import asyncio
 import dataclasses
 import logging
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from enum import Enum, auto
 from typing import TYPE_CHECKING
 
@@ -658,7 +658,7 @@ class ReleaseCheckWorkflow(WorkflowPlugin):
         return ReleaseCheckRunner(config, mode_manager)
 
     @classmethod
-    def build_params(cls, source: dict[str, object]) -> WorkflowParams:
+    def build_params(cls, source: Mapping[str, object]) -> WorkflowParams:
         """Build typed params from [workflows.release_check]."""
         return ReleaseCheckParams(
             plan_model=str(source.get("plan_model", "") or ""),
@@ -720,8 +720,8 @@ def make_inspection_tools(
     design phase.  Keep this list in one place so the authoring prompt and its
     tests cannot accidentally describe a stale subset of the tools.
     """
-    from lauren_ai._tools import set_metadata, tool as _tool  # noqa: PLC0415
-    from agenthicc.tools.capabilities import (  # noqa: PLC0415
+    from lauren_ai._tools import set_metadata, tool as _tool
+    from agenthicc.tools.capabilities import (
         CAPABILITIES_KEY,
         ToolCapability,
         tool_read,
@@ -739,9 +739,9 @@ def make_inspection_tools(
         factory: Callable[..., Iterable[object]],
     ) -> list[dict[str, object]]:
         """Extract schemas from browser tool factories without starting a browser."""
-        from types import SimpleNamespace  # noqa: PLC0415
+        from types import SimpleNamespace
 
-        from agenthicc.workflows.create_workflow.catalog import (  # noqa: PLC0415
+        from agenthicc.workflows.create_workflow.catalog import (
             build_tool_catalog,
         )
 
@@ -763,9 +763,9 @@ def make_inspection_tools(
         read live from the running code so it never drifts from the real API.
         Use it to decide which fields each phase of your new workflow needs.
         """
-        import dataclasses  # noqa: PLC0415
+        import dataclasses
 
-        from agenthicc.workflows.plugin import PhaseSpec  # noqa: PLC0415
+        from agenthicc.workflows.plugin import PhaseSpec
 
         fields: list[dict[str, str]] = []
         for spec_field in dataclasses.fields(PhaseSpec):
@@ -797,7 +797,7 @@ def make_inspection_tools(
         enum.  Use these when reasoning about mode_override (which unlocks write /
         execute / network tools) and allowed_capabilities.
         """
-        from agenthicc.tools.capabilities import ToolCapability  # noqa: PLC0415
+        from agenthicc.tools.capabilities import ToolCapability
 
         descriptions: dict[str, str] = {
             "read": "Reads files / data — no persistent side effects.",
@@ -827,8 +827,8 @@ def make_inspection_tools(
         Returns the PhaseRole constants read live from the code.  Most phases use
         'auto'; the others map to role-specific default prompts and capabilities.
         """
-        from agenthicc.agents.plugin import ROLE_DEFAULT_ALLOWED  # noqa: PLC0415
-        from agenthicc.workflows.plugin import PhaseRole  # noqa: PLC0415
+        from agenthicc.agents.plugin import ROLE_DEFAULT_ALLOWED
+        from agenthicc.workflows.plugin import PhaseRole
 
         roles = [
             value
@@ -856,8 +856,8 @@ def make_inspection_tools(
     @_tool()
     async def describe_cloakbrowser_tools() -> dict[str, object]:
         """Describe the optional, session-scoped browser tool contract."""
-        from agenthicc.config import CloakBrowserSettings, ToolSettings  # noqa: PLC0415
-        from agenthicc.tools.cloakbrowser.agent_tools import (  # noqa: PLC0415
+        from agenthicc.config import CloakBrowserSettings, ToolSettings
+        from agenthicc.tools.cloakbrowser.agent_tools import (
             CLOAKBROWSER_AGENT_TOOLS,
             make_cloakbrowser_tools,
         )
@@ -920,8 +920,8 @@ def make_inspection_tools(
     @_tool()
     async def describe_playwright_tools() -> dict[str, object]:
         """Describe the optional, session-scoped Playwright browser contract."""
-        from agenthicc.config import PlaywrightSettings, ToolSettings  # noqa: PLC0415
-        from agenthicc.tools.playwright.agent_tools import (  # noqa: PLC0415
+        from agenthicc.config import PlaywrightSettings, ToolSettings
+        from agenthicc.tools.playwright.agent_tools import (
             PLAYWRIGHT_AGENT_TOOLS,
             make_playwright_tools,
         )
@@ -1265,7 +1265,7 @@ def make_inspection_tools(
     async def describe_prompt_cache_contract() -> dict[str, object]:
         """Describe the cache-stable prompt and user-questioning contract."""
 
-        from agenthicc.runners.prompt_contract import (  # noqa: PLC0415
+        from agenthicc.runners.prompt_contract import (
             CACHE_CONTRACT_VERSION,
             DEFAULT_WORKFLOW_CACHE_POLICY,
         )
@@ -1379,8 +1379,8 @@ def make_inspection_tools(
         execute-gated even though its intended result is a read-only report.
         """
 
-        from pathlib import Path  # noqa: PLC0415
-        from agenthicc.workflows.create_workflow.validation import validate_workflow_file  # noqa: PLC0415
+        from pathlib import Path
+        from agenthicc.workflows.create_workflow.validation import validate_workflow_file
 
         report = validate_workflow_file(
             path,
@@ -1420,7 +1420,7 @@ def make_inspection_tools(
     ]
 
     if snapshot is not None:
-        from agenthicc.workflows.create_workflow.catalog import explain_tool_access as _explain  # noqa: PLC0415
+        from agenthicc.workflows.create_workflow.catalog import explain_tool_access as _explain
 
         @tool_read
         @_tool()

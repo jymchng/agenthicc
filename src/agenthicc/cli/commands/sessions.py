@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 from collections.abc import Mapping
 from pathlib import Path
@@ -23,9 +24,9 @@ def _() -> None: ...
 @command("sessions", "list", help="Open the paginated saved-session selector")
 def sessions_list(ctx: CLIContext, page: int = 1, page_size: int = 0) -> None:
     """Open the session selector, or print a deterministic list when piped."""
-    from agenthicc.sessions import _do_sessions  # noqa: PLC0415
+    from agenthicc.sessions import _do_sessions
 
-    from agenthicc.tui.terminal.backend import get_backend  # noqa: PLC0415
+    from agenthicc.tui.terminal.backend import get_backend
 
     if not get_backend().is_interactive():
         _do_sessions(page=page, page_size=page_size or 50)
@@ -41,10 +42,10 @@ def sessions_list(ctx: CLIContext, page: int = 1, page_size: int = 0) -> None:
 
 
 async def _open_selected_session(ctx: CLIContext, *, page: int, page_size: int) -> None:
-    from rich.console import Console  # noqa: PLC0415
+    from rich.console import Console
 
-    from agenthicc.sessions import _load_all_session_indexes  # noqa: PLC0415
-    from agenthicc.tui.workspace.session_manager import run_session_manager  # noqa: PLC0415
+    from agenthicc.sessions import _load_all_session_indexes
+    from agenthicc.tui.workspace.session_manager import run_session_manager
 
     result = await run_session_manager(
         Console(highlight=False),
@@ -56,8 +57,12 @@ async def _open_selected_session(ctx: CLIContext, *, page: int, page_size: int) 
 
     record = _load_all_session_indexes().get(result.session_id, {})
     cwd_value = record.get("cwd")
-    cwd = cwd_value if isinstance(cwd_value, str) and Path(cwd_value).is_dir() else None
-    from agenthicc.runners.tui_session import _run_tui_session  # noqa: PLC0415
+    cwd = (
+        cwd_value
+        if isinstance(cwd_value, str) and await asyncio.to_thread(os.path.isdir, cwd_value)
+        else None
+    )
+    from agenthicc.runners.tui_session import _run_tui_session
 
     await _run_tui_session(
         resume_id=result.session_id,
@@ -74,8 +79,8 @@ async def _open_selected_session(ctx: CLIContext, *, page: int, page_size: int) 
 @command("sessions", "show", help="Show detail for one session")
 def sessions_show(ctx: CLIContext, session_id: str) -> None:
     """Print stored events for SESSION_ID."""
-    import json  # noqa: PLC0415
-    from agenthicc.sessions import _get_session_log_path  # noqa: PLC0415
+    import json
+    from agenthicc.sessions import _get_session_log_path
 
     log_path = _get_session_log_path(session_id)
     if log_path is None or not log_path.exists():
@@ -92,9 +97,8 @@ def sessions_show(ctx: CLIContext, session_id: str) -> None:
 @command("sessions", "export", help="Export one session as a redacted JSON document")
 def sessions_export(ctx: CLIContext, session_id: str, output: str = "") -> None:
     """Export SESSION_ID and its durable artifacts to OUTPUT or SESSION_ID.json."""
-    from pathlib import Path  # noqa: PLC0415
 
-    from agenthicc.tui.runtime.session_export import export_session  # noqa: PLC0415
+    from agenthicc.tui.runtime.session_export import export_session
 
     destination = Path(output) if output else Path(f"{session_id}.json")
     try:
@@ -108,9 +112,9 @@ def sessions_export(ctx: CLIContext, session_id: str, output: str = "") -> None:
 @command("sessions", "inspect", help="Inspect one session's durable state")
 def sessions_inspect(ctx: CLIContext, session_id: str, json: bool = False) -> None:
     """Summarize SESSION_ID, including artifacts, usage, workflows, and resume state."""
-    import json as json_module  # noqa: PLC0415
+    import json as json_module
 
-    from agenthicc.tui.runtime.session_export import inspect_session  # noqa: PLC0415
+    from agenthicc.tui.runtime.session_export import inspect_session
 
     try:
         summary = inspect_session(session_id)

@@ -67,7 +67,7 @@ def _cached_elapsed(conv: object, *, total_activity: bool = True) -> float:
 
 
 def _fit(markup: str, cols: int) -> str:
-    from agenthicc.tui.rendering import fit, visible_len  # noqa: PLC0415
+    from agenthicc.tui.rendering import fit, visible_len
 
     if visible_len(markup) > cols:
         return fit(markup, cols)
@@ -119,7 +119,7 @@ class StatusComponent:
         """Render non-ready startup work without exposing exception details."""
         if self._startup is None:
             return None
-        from rich.text import Text  # noqa: PLC0415
+        from rich.text import Text
 
         reports = self._startup.snapshot()
         pending = [report for report in reports if report.state.value != "ready"]
@@ -131,9 +131,9 @@ class StatusComponent:
         return Text.from_markup(_fit(f"[dim]Startup: {labels}[/dim]", cols))
 
     def render(self) -> RenderableType:
-        from rich.text import Text  # noqa: PLC0415
-        from rich.console import Group  # noqa: PLC0415
-        from rich.markup import escape as _e  # noqa: PLC0415
+        from rich.text import Text
+        from rich.console import Group
+        from rich.markup import escape as _e
 
         conv = self._state.conversation
         cols = _get_cols()
@@ -153,7 +153,7 @@ class StatusComponent:
                 f"({_fmt_elapsed(float(elapsed_value))} • Esc to interrupt) · "
                 f"{int(running_count)} background terminals running · /ps to view · /stop to stop all"
             )
-            from agenthicc.tui.rendering import visible_len  # noqa: PLC0415
+            from agenthicc.tui.rendering import visible_len
 
             if visible_len(wait_message) > cols:
                 wait_message = (
@@ -292,7 +292,7 @@ class StatusComponent:
             lines.append(startup_line)
         return Group(*lines)
 
-    def height(self, cols: int) -> int:  # noqa: ARG002
+    def height(self, cols: int) -> int:
         """Return the total terminal rows this component occupies.
 
         Counts the blank separator line (rendered by Workspace._build before
@@ -324,9 +324,9 @@ def _render_multiline(buf: list[str], cursor: int) -> RenderableType:
     Used by ComposerComponent.render() when the buffer contains '\\n'.
     No _fit call — Rich handles terminal-width soft-wrapping per line.
     """
-    from rich.text import Text  # noqa: PLC0415
-    from rich.console import Group  # noqa: PLC0415
-    from agenthicc.tui.input.renderer import PROMPT_CHAR, CURSOR_CHAR  # noqa: PLC0415
+    from rich.text import Text
+    from rich.console import Group
+    from agenthicc.tui.input.renderer import PROMPT_CHAR, CURSOR_CHAR
 
     # Split on '\n' into logical lines.
     lines: list[list[str]] = []
@@ -376,8 +376,8 @@ class ComposerComponent:
         self._state = app_state
 
     def render(self) -> RenderableType:
-        from rich.text import Text  # noqa: PLC0415
-        from agenthicc.tui.input.renderer import build_prompt  # noqa: PLC0415
+        from rich.text import Text
+        from agenthicc.tui.input.renderer import build_prompt
 
         inp = self._state.input
 
@@ -398,7 +398,7 @@ class ComposerComponent:
         # at terminal width instead of truncating with "…".
         return _render_multiline(inp.buf(), inp.cursor())
 
-    def height(self, cols: int) -> int:  # noqa: ARG002
+    def height(self, cols: int) -> int:
         inp = self._state.input
         buf = inp.buf()
         if inp.paste_condensed():
@@ -407,7 +407,7 @@ class ComposerComponent:
                 return 1
         lines = "".join(buf).split("\n") if buf else [""]
         total = 0
-        for i, line in enumerate(lines):
+        for line in lines:
             overhead = 2  # "❯ " or "  "
             usable = max(1, cols - overhead)
             total += max(1, (len(line) + usable - 1) // usable)
@@ -424,16 +424,16 @@ class FooterComponent:
         self._state = app_state
 
     def render(self) -> RenderableType:
-        from rich.text import Text  # noqa: PLC0415
-        from rich.console import Group  # noqa: PLC0415
+        from rich.text import Text
+        from rich.console import Group
 
         conv = self._state.conversation
         cols = _get_cols()
 
         # Row 1: mode string — derived from AppState.active_mode (PRD-75).
         # When a /workflow override is active, append ⬡ workflow-name indicator.
-        from agenthicc.tui.runtime.mode_manager import build_mode_str  # noqa: PLC0415
-        from rich.markup import escape as _e_m  # noqa: PLC0415
+        from agenthicc.tui.runtime.mode_manager import build_mode_str
+        from rich.markup import escape as _e_m
 
         mode = self._state.active_mode()
         _wf_ovr_raw = conv.workflow_override()
@@ -472,7 +472,7 @@ class FooterComponent:
         extra: list[RenderableType] = []
         # Extra notification lines from stacked notify_transient() calls.
         extra.extend(_extra_notif_lines)
-        from rich.markup import escape as _e  # noqa: PLC0415
+        from rich.markup import escape as _e
 
         _wf = self._state.workflow_run()
         if _wf is not None and _wf.status == "running":
@@ -501,7 +501,7 @@ class FooterComponent:
             *extra,
         )
 
-    def height(self, cols: int) -> int:  # noqa: ARG002
+    def height(self, cols: int) -> int:
         extra = 0
         # Extra notification lines (stacked notify_transient calls or \n in message)
         try:
@@ -540,7 +540,7 @@ _WORKER_STATUS_COLORS = {
 
 def _build_worker_grid(pool: object, cols: int) -> str:
     """Render a compact one-line worker grid for the footer."""
-    from rich.markup import escape as _e  # noqa: PLC0415
+    from rich.markup import escape as _e
 
     workers = getattr(pool, "workers", [])
     cells: list[str] = []
@@ -554,7 +554,7 @@ def _build_worker_grid(pool: object, cols: int) -> str:
 
 
 def _vlen(markup: str) -> int:
-    from agenthicc.tui.rendering import visible_len  # noqa: PLC0415
+    from agenthicc.tui.rendering import visible_len
 
     return visible_len(markup)
 
@@ -585,8 +585,8 @@ def _wrap_notification(message: str, cols: int) -> list["Text"]:
     long IDs when a single token is wider than the terminal.
     """
 
-    from rich.console import Console  # noqa: PLC0415
-    from rich.text import Text  # noqa: PLC0415
+    from rich.console import Console
+    from rich.text import Text
 
     width = max(1, cols)
     return list(

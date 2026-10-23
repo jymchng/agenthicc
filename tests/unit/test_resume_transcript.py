@@ -6,6 +6,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
+from agenthicc.supervised_tasks import SupervisedTasks
 from rich.console import Console
 
 from agenthicc.config import AgenthiccConfig
@@ -222,6 +224,7 @@ async def test_resumed_tui_replays_transcript_before_accepting_input(
     session._input_session = input_session
     session._agent_task = None
     session._msg_queue = []
+    session._tasks = SupervisedTasks("test tui session")
     session._wire_approval_overlay = lambda: None
     session._notify_incomplete_workflow = lambda: None
     session._maybe_resume_interrupted_turn = lambda: None

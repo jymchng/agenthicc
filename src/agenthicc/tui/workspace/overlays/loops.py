@@ -91,12 +91,12 @@ class LoopJobsOverlay(Overlay):
             self._selected = min(self._selected, max(0, len(self._records) - 1))
 
     def render(self) -> "RenderableType":
-        from rich import box  # noqa: PLC0415
-        from rich.console import Group  # noqa: PLC0415
-        from rich.panel import Panel  # noqa: PLC0415
-        from rich.table import Table  # noqa: PLC0415
-        from rich.text import Text  # noqa: PLC0415
-        from agenthicc.runners.loop_scheduler import (  # noqa: PLC0415
+        from rich import box
+        from rich.console import Group
+        from rich.panel import Panel
+        from rich.table import Table
+        from rich.text import Text
+        from agenthicc.runners.loop_scheduler import (
             _redacted_preview,
             format_loop_duration,
         )

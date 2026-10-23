@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from agenthicc.tui.conversation_store import AppState
     from agenthicc.tui.runtime.mode_manager import RuntimeMode
-    from agenthicc.tools.approval import ApprovalService
+    from agenthicc.tools.approval import ApprovalBroker
     from agenthicc.tools.workspace_access import WorkspaceAccessPolicy
 
 __all__ = [
@@ -105,7 +105,7 @@ class SubagentExecutionPolicy:
 
     def runtime_mode(self) -> "RuntimeMode":
         """Build an isolated canonical ``RuntimeMode`` value for one worker."""
-        from agenthicc.tui.runtime.mode_manager import RuntimeMode  # noqa: PLC0415
+        from agenthicc.tui.runtime.mode_manager import RuntimeMode
 
         return RuntimeMode(
             name=self.mode_name,
@@ -157,7 +157,7 @@ def child_app_state(policy: SubagentExecutionPolicy | None) -> "AppState | None"
     """Create isolated child state from a policy snapshot."""
     if policy is None:
         return None
-    from agenthicc.tui.conversation_store import AppState  # noqa: PLC0415
+    from agenthicc.tui.conversation_store import AppState
 
     child = AppState.create()
     child.active_mode.set(policy.runtime_mode())
@@ -167,12 +167,12 @@ def child_app_state(policy: SubagentExecutionPolicy | None) -> "AppState | None"
 def child_workspace_access(
     parent: "WorkspaceAccessPolicy | None",
     child_state: "AppState | None",
-    approval_service: "ApprovalService | None" = None,
+    approval_service: "ApprovalBroker | None" = None,
 ) -> "WorkspaceAccessPolicy | None":
     """Copy workspace scope while binding the child-local policy and approval."""
     if parent is None or child_state is None:
         return parent
-    from agenthicc.tools.workspace_access import WorkspaceAccessPolicy  # noqa: PLC0415
+    from agenthicc.tools.workspace_access import WorkspaceAccessPolicy
 
     return WorkspaceAccessPolicy(
         parent.scope,

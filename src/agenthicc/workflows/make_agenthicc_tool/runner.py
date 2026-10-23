@@ -25,17 +25,24 @@ The declarative ``phases`` list is a static 4-node skeleton; the custom
 runner owns the validate → generate retry loop.
 """
 
+# Type debt: this runner reuses CodePlanRunner's turn machinery but drives its
+# own state machine, so run(), resume() and its phase methods keep their own
+# signatures. PRD-250 WS-4.2 replaces the inheritance with a generic base.
+# type-debt: owner=PRD-250 WS-4.2; expires=2026-12-03
+# mypy: disable-error-code=override
+
 from __future__ import annotations
 
 import asyncio
 import dataclasses
 import logging
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from enum import Enum, auto
 from typing import TYPE_CHECKING
 
 from agenthicc.workflows.code_plan.runner import CodePlanRunner
+from agenthicc.workflows.payload import payload_int, payload_mappings, payload_strings
 from agenthicc.workflows.plugin import PhaseSpec, WorkflowParams, WorkflowPlugin
 
 # Cache-contract boundary: the inherited ``run_phase`` calls
@@ -454,7 +461,7 @@ class MakeToolRunner(CodePlanRunner):
     async def _analyze(
         self,
         ctx: MakeToolContext,
-        memory: object,
+        memory: ShortTermMemory | None,
     ) -> MakeToolState:
         """Loop until submit_tool_plan fires; return GENERATE or FAILED."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
@@ -510,8 +517,8 @@ class MakeToolRunner(CodePlanRunner):
             if event.is_set():
                 ctx.tool_name = str(data.get("tool_name", ""))
                 ctx.tool_description = str(data.get("description", ""))
-                ctx.capabilities = list(data.get("capabilities", []))
-                ctx.dependencies = list(data.get("dependencies", []))
+                ctx.capabilities = payload_strings(data.get("capabilities"))
+                ctx.dependencies = payload_strings(data.get("dependencies"))
                 ctx.requires_confirmation = bool(data.get("requires_confirmation", False))
                 ctx.class_form = bool(data.get("class_form", False))
                 ctx.parameters = [
@@ -521,8 +528,7 @@ class MakeToolRunner(CodePlanRunner):
                         default=str(p.get("default", "")),
                         description=str(p.get("description", "")),
                     )
-                    for p in data.get("parameters", [])
-                    if isinstance(p, dict)
+                    for p in payload_mappings(data.get("parameters"))
                 ]
                 ctx.plan = (
                     f"Tool: {ctx.tool_name}\n"
@@ -542,7 +548,7 @@ class MakeToolRunner(CodePlanRunner):
     async def _generate(
         self,
         ctx: MakeToolContext,
-        memory: object,
+        memory: ShortTermMemory | None,
     ) -> MakeToolState:
         """Loop until confirm_generation_complete fires; return VALIDATE or FAILED."""
         params_block = (
@@ -645,7 +651,7 @@ class MakeToolRunner(CodePlanRunner):
     async def _validate(
         self,
         ctx: MakeToolContext,
-        memory: object,
+        memory: ShortTermMemory | None,
     ) -> MakeToolState:
         """Loop until a verdict tool fires; return FINALIZE or GENERATE or FAILED."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
@@ -720,7 +726,7 @@ class MakeToolRunner(CodePlanRunner):
     async def _finalize(
         self,
         ctx: MakeToolContext,
-        memory: object,
+        memory: ShortTermMemory | None,
     ) -> MakeToolState:
         """Single turn; always returns COMPLETE."""
         await self.run_phase(
@@ -878,7 +884,7 @@ class MakeAgenthiccToolWorkflow(WorkflowPlugin):
     def checkpoint_context_from_payload(
         cls,
         payload: dict[str, object],
-        memory: object | None = None,
+        memory: ShortTermMemory | None = None,
     ) -> MakeToolContext:
         """Restore state and attach the already-open session memory."""
         raw_state = str(payload.get("state", MakeToolState.ANALYZE.name))
@@ -910,16 +916,12 @@ class MakeAgenthiccToolWorkflow(WorkflowPlugin):
             intent=str(payload.get("intent", "")),
             run_id=str(payload.get("run_id", "")),
             state=state,
-            phase_iteration=int(payload.get("phase_iteration", 0)),
+            phase_iteration=payload_int(payload.get("phase_iteration"), 0),
             tool_name=str(payload.get("tool_name", "")),
             tool_description=str(payload.get("tool_description", "")),
             parameters=parameters,
-            capabilities=[str(c) for c in payload.get("capabilities", [])]
-            if isinstance(payload.get("capabilities", []), list)
-            else [],
-            dependencies=[str(d) for d in payload.get("dependencies", [])]
-            if isinstance(payload.get("dependencies", []), list)
-            else [],
+            capabilities=payload_strings(payload.get("capabilities")),
+            dependencies=payload_strings(payload.get("dependencies")),
             requires_confirmation=bool(payload.get("requires_confirmation", False)),
             class_form=bool(payload.get("class_form", False)),
             plan=str(payload.get("plan", "")),
@@ -942,7 +944,7 @@ class MakeAgenthiccToolWorkflow(WorkflowPlugin):
         return MakeToolRunner(config, mode_manager)
 
     @classmethod
-    def build_params(cls, source: dict[str, object]) -> WorkflowParams:
+    def build_params(cls, source: Mapping[str, object]) -> WorkflowParams:
         """Build typed params from [workflows.make_agenthicc_tool]."""
         return MakeToolParams(
             analyze_model=str(source.get("analyze_model", "") or ""),

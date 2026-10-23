@@ -447,7 +447,7 @@ class TestSubagentWorkerTimeout:
 
 class TestSpawnSubagentsTool:
     def _make_tool(self) -> object:
-        from agenthicc.subagents.tool import make_spawn_subagents_tool  # noqa: PLC0415
+        from agenthicc.subagents.tool import make_spawn_subagents_tool
 
         class FakeRunner:
             _transport = None
@@ -467,7 +467,7 @@ class TestSpawnSubagentsTool:
         assert "unicorn" in result["error"]
 
     async def test_research_alias_resolves_to_researcher(self) -> None:
-        from agenthicc.subagents.pool import SubagentPool  # noqa: PLC0415
+        from agenthicc.subagents.pool import SubagentPool
 
         fn = self._make_tool()
         captured_tasks: list[list[SubagentTask]] = []
@@ -512,7 +512,7 @@ class TestSpawnSubagentsTool:
         assert timeout_schema["default"] == 3_600.0
 
     async def test_timeout_override_is_forwarded_to_pool(self) -> None:
-        from agenthicc.subagents.pool import SubagentPool  # noqa: PLC0415
+        from agenthicc.subagents.pool import SubagentPool
 
         fn = self._make_tool()
         captured: dict[str, object] = {}
@@ -552,8 +552,8 @@ class TestSpawnSubagentsTool:
         assert "timeout_s" in result["error"]
 
     def test_tool_schema_uses_dynamic_registry_names(self) -> None:
-        from agenthicc.subagents.tool import make_spawn_subagents_tool  # noqa: PLC0415
-        from agenthicc.subagents.types import SubagentTypeRegistry, SubagentTypeSpec  # noqa: PLC0415
+        from agenthicc.subagents.tool import make_spawn_subagents_tool
+        from agenthicc.subagents.types import SubagentTypeRegistry, SubagentTypeSpec
 
         registry = SubagentTypeRegistry()
         registry.register(
@@ -573,7 +573,7 @@ class TestSpawnSubagentsTool:
         assert type_schema["enum"] == ["security_researcher"]
 
     async def test_executor_role_is_accepted(self) -> None:
-        from agenthicc.subagents.tool import make_spawn_subagents_tool  # noqa: PLC0415
+        from agenthicc.subagents.tool import make_spawn_subagents_tool
 
         class FakeRunner:
             _transport = None
@@ -597,8 +597,8 @@ class TestSpawnSubagentsTool:
         assert result["results"] == "compiled"
 
     async def test_failed_pool_is_not_reported_as_success_or_cached(self) -> None:
-        from agenthicc.subagents.tool import make_spawn_subagents_tool  # noqa: PLC0415
-        from agenthicc.tui.conversation_store import ConversationStore  # noqa: PLC0415
+        from agenthicc.subagents.tool import make_spawn_subagents_tool
+        from agenthicc.tui.conversation_store import ConversationStore
 
         class FakeRunner:
             _transport = None

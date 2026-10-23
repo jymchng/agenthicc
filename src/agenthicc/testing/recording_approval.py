@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from agenthicc.tools.approval import ApprovalRequest, ApprovalResponse, ApprovalService
+    from agenthicc.tools.approval import ApprovalRequest, ApprovalResponse, InteractiveApprovals
 
 
 class RecordingApprovalService:
@@ -34,7 +34,7 @@ class RecordingApprovalService:
     (which calls ``respond()``) continues to work normally.
     """
 
-    def __init__(self, inner: ApprovalService, approvals_path: Path) -> None:
+    def __init__(self, inner: InteractiveApprovals, approvals_path: Path) -> None:
         self._inner = inner
         self._path = approvals_path
         self._index = 0
@@ -59,29 +59,17 @@ class RecordingApprovalService:
         scope_grant: str | None = None,
         request_id: str | None = None,
         outcome: str | None = None,
-    ) -> None:
-        if scope_grant is None and request_id is None and outcome is None:
-            # Keep the pre-timeout adapter call shape for existing recording
-            # consumers and strict mocks; optional lifecycle fields are only
-            # forwarded when the caller actually supplied them.
-            self._inner.respond(
-                allowed,
-                remember=remember,
-                remember_all=remember_all,
-                message=message,
-                mode=mode,
-            )
-        else:
-            self._inner.respond(
-                allowed,
-                remember=remember,
-                remember_all=remember_all,
-                message=message,
-                mode=mode,
-                scope_grant=scope_grant,
-                request_id=request_id,
-                outcome=outcome,
-            )
+    ) -> bool:
+        return self._inner.respond(
+            allowed,
+            remember=remember,
+            remember_all=remember_all,
+            message=message,
+            mode=mode,
+            scope_grant=scope_grant,
+            request_id=request_id,
+            outcome=outcome,
+        )
 
     def respond_for_request(
         self,

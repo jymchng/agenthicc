@@ -113,7 +113,7 @@ async def attach(ctx: CLIContext, session_id: str = "", run: str = "", json: boo
         else:
             print(message)
         raise SystemExit(2)
-    from agenthicc.cli.commands.background import attach_background_session  # noqa: PLC0415
+    from agenthicc.cli.commands.background import attach_background_session
 
     await attach_background_session(ctx, session_id, json_output=json)
 
@@ -146,7 +146,7 @@ async def _attach_goal_run(ctx: CLIContext, run_id: str, *, json_output: bool = 
         return
 
     try:
-        from agenthicc.runners.tui_session import _run_tui_session  # noqa: PLC0415
+        from agenthicc.runners.tui_session import _run_tui_session
 
         await _run_tui_session(
             resume_id=foreground.session_id,

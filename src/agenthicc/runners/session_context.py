@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from agenthicc.tui.runtime.session_log import SessionEventLog
     from agenthicc.workflows.registry import WorkflowRegistry
     from agenthicc.agents.registry import AgentsRegistry
-    from agenthicc.tools.approval import ApprovalService
+    from agenthicc.tools.approval import ApprovalBroker
     from agenthicc.mentions.cache import MentionCache
     from agenthicc.config import AgenthiccConfig
     from agenthicc.tui.trigger import TriggerManager
@@ -57,7 +57,7 @@ class SessionContext:
     session_log: "SessionEventLog"
 
     # ── services ──────────────────────────────────────────────────────────────
-    approval_svc: "ApprovalService"
+    approval_svc: "ApprovalBroker"
     mode_manager: "ModeManager"
     command_bus: "CommandBus"
 
@@ -142,6 +142,8 @@ class SessionContext:
     #: The outer lease for every durable session attachment.  It is released
     #: by the owning runner after all session resources have been closed.
     owner_lease: "SessionOwnerLease | None" = None
+    #: Goal run this session executes, when started by ``agenthicc run``.
+    goal_run_id: str = ""
 
     # PRD-176: readiness/timing state shared by the TUI, headless runner, and
     # deferred optional integrations.  It is observational only; runtime

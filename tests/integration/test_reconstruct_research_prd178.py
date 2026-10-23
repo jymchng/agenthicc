@@ -20,6 +20,7 @@ from agenthicc.workflows.reconstruct_site.evidence_plan import (
     LEGACY_PHASE_PLAN_VERSION,
     RECONSTRUCT_PHASE_PLAN,
 )
+from tests.session_fakes import workflow_config
 
 
 def _config(
@@ -37,7 +38,7 @@ def _config(
         active_mode=lambda: SimpleNamespace(blocked_capabilities=frozenset()),
         update_workflow_phase=lambda **_kwargs: None,
     )
-    return SimpleNamespace(
+    return workflow_config(
         app_state=app_state,
         agent_runner=SimpleNamespace(),
         cfg=SimpleNamespace(execution=execution),

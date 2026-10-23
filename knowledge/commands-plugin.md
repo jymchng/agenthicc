@@ -15,6 +15,11 @@ End users can register custom slash commands by placing `.py` files in
 
 Files starting with `_` are skipped (private helpers).
 
+A project-local file is imported only when it is trusted: `agenthicc trust add`
+records its SHA-256 in `~/.agenthicc/trust.json`, and an untrusted or edited
+file is logged and skipped (PRD-250 S-02, `plugins/trust.py`). Files under
+`~/.agenthicc/commands/` are trusted by location.
+
 ---
 
 ## File format
@@ -108,9 +113,12 @@ A plugin can declare required packages:
 DEPENDENCIES = ["boto3>=1.0"]
 ```
 
-Before import, `_check_missing_deps()` validates against installed packages
-(`plugin_loader.py:59–71`).  If any dependency is missing, the file is
-skipped with a warning and the command is not registered.
+`DEPENDENCIES` (a literal list) or a `<stem>.requirements.txt` sidecar is read
+statically by `plugins/deps.declared_dependencies()` — the file is not executed
+to learn its dependencies — and checked with `missing_requirements()`. If any
+dependency is missing, the file is skipped with a warning and the command is not
+registered; agenthicc never installs it. A trusted file is therefore imported
+exactly once.
 
 ---
 
@@ -122,6 +130,8 @@ skipped with a warning and the command is not registered.
 | `COMMAND` is not a `Command` instance | File skipped, warning logged |
 | Syntax error in file | File skipped, error logged |
 | Missing `DEPENDENCIES` package | File skipped, warning logged |
+| Computed (non-literal) `DEPENDENCIES` | File skipped with `PluginDependencyError` |
+| Untrusted or edited project file | File skipped, warning names `agenthicc trust add PATH` |
 | Duplicate command name | Last-write-wins (project overrides user) |
 
 Source: `commands/plugin_loader.py:79–196`

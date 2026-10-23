@@ -11,6 +11,7 @@ from agenthicc.tools.cloakbrowser.session import (
     BrowserSessionManager,
     UnavailableBrowserClient,
 )
+from agenthicc.tools.base import tool_name
 from agenthicc.tools.cloakbrowser.errors import BrowserErrorKind
 
 from .client import PlaywrightBrowserClient
@@ -44,7 +45,7 @@ _PLAYWRIGHT_ALLOWED_PORTS = frozenset(range(1, 65_536))
 
 def is_playwright_tool(tool: object) -> bool:
     """Return whether a callable is one of the built-in Playwright tools."""
-    return str(getattr(tool, "__name__", "")) in PLAYWRIGHT_TOOL_NAMES
+    return tool_name(tool) in PLAYWRIGHT_TOOL_NAMES
 
 
 def create_playwright_session(

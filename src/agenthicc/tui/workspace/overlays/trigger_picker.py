@@ -48,7 +48,7 @@ class TriggerPickerOverlay(Overlay):
         busy: bool = False,
         paste_state: "PasteState | None" = None,
     ) -> None:
-        from agenthicc.tui.trigger import TriggerContext  # noqa: PLC0415
+        from agenthicc.tui.trigger import TriggerContext
 
         self._buf = InputBuffer(initial_buf)
         self._registry = registry
@@ -114,9 +114,9 @@ class TriggerPickerOverlay(Overlay):
         pass
 
     def render(self) -> "RenderableType":
-        from rich.console import Group  # noqa: PLC0415
-        from rich.text import Text  # noqa: PLC0415
-        from agenthicc.tui.input.renderer import build_prompt  # noqa: PLC0415
+        from rich.console import Group
+        from rich.text import Text
+        from agenthicc.tui.input.renderer import build_prompt
 
         frag = self._trigger.fragment if self._trigger else ""
         tchar = self._trigger.char if self._trigger else ""

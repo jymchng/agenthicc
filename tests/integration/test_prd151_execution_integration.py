@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -22,20 +23,29 @@ pytestmark = pytest.mark.integration
 async def test_cancelled_foreground_command_returns_cancelled_and_keeps_output(
     tmp_path: Path,
 ) -> None:
+    # The child touches *printed* only after flushing its output, so the test
+    # cancels once that output exists instead of guessing how long a fresh
+    # interpreter takes to start on a loaded host or under coverage.
+    printed = tmp_path / "printed"
     task = asyncio.create_task(
         RunCommandTool().execute(
             {
                 "argv": [
                     sys.executable,
                     "-c",
-                    "print('before-cancel', flush=True); import time; time.sleep(30)",
+                    "import pathlib, sys, time; print('before-cancel', flush=True); "
+                    "pathlib.Path(sys.argv[1]).touch(); time.sleep(30)",
+                    str(printed),
                 ],
                 "timeout": 0,
             },
             {"workspace_root": str(tmp_path)},
         )
     )
-    await asyncio.sleep(0.1)
+    deadline = time.monotonic() + 30
+    while not printed.exists():
+        assert time.monotonic() < deadline, "the command never started"
+        await asyncio.sleep(0.05)
     task.cancel()
     result = await task
 
@@ -82,7 +92,10 @@ async def test_background_timeout_is_distinct_from_observer_timeout(tmp_path: Pa
                     "print('tail-before-timeout', flush=True); import time; time.sleep(30)",
                 ],
                 "background": True,
-                "timeout": 0.5,
+                # Long enough for the interpreter to start and print even under
+                # coverage on a loaded machine; the observer timeout below is
+                # what must stay short.
+                "timeout": 5.0,
             },
             {"workspace_root": str(tmp_path), "terminal_manager": manager},
         )

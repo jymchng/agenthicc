@@ -14,6 +14,7 @@ from agenthicc.workflows.reconstruct_site import (
     ReconstructSiteRunner,
     ReconstructState,
 )
+from tests.session_fakes import workflow_config
 
 
 def _config(tmp_path: Path) -> SimpleNamespace:
@@ -25,7 +26,7 @@ def _config(tmp_path: Path) -> SimpleNamespace:
         profile="",
         base_url="",
     )
-    return SimpleNamespace(
+    return workflow_config(
         app_state=SimpleNamespace(
             active_mode=lambda: SimpleNamespace(blocked_capabilities=frozenset()),
             update_workflow_phase=lambda **_kwargs: None,

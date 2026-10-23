@@ -13,7 +13,6 @@ from agenthicc.config import (
     CloakBrowserSettings,
     ExecutionSettings,
     PlaywrightSettings,
-    StorageS3Settings,
     ToolSettings,
     build_llm_config,
 )
@@ -81,9 +80,7 @@ def test_agent_settings_parse_legacy_skill_shapes_and_fallbacks() -> None:
     assert parsed.skill_permissions_for("default").denied_skills == frozenset({"two"})
 
 
-def test_storage_and_tool_settings_validate_configuration_boundaries() -> None:
-    assert StorageS3Settings().configured is False
-    assert StorageS3Settings(bucket="bucket").configured is True
+def test_tool_settings_validate_configuration_boundaries() -> None:
     assert ToolSettings(browser_backend="NONE").browser_backend == "none"
     with pytest.raises(ValueError, match="browser_backend"):
         ToolSettings(browser_backend="unsupported")

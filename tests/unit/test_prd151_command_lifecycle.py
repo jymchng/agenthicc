@@ -26,7 +26,8 @@ pytestmark = pytest.mark.unit
 
 async def test_nonzero_foreground_command_is_authoritative_failure(tmp_path: Path) -> None:
     result = await RunCommandTool().execute(
-        {"argv": [sys.executable, "-c", "print('diagnostic'); raise SystemExit(7)"], "timeout": 2},
+        # The command exits at once; the deadline only bounds interpreter start-up.
+        {"argv": [sys.executable, "-c", "print('diagnostic'); raise SystemExit(7)"], "timeout": 30},
         {"workspace_root": str(tmp_path)},
     )
 
@@ -44,7 +45,9 @@ async def test_timeout_is_seconds_and_preserves_diagnostic_tail(tmp_path: Path) 
                 "-c",
                 "import sys,time; print('before-timeout', flush=True); time.sleep(30)",
             ],
-            "timeout": 0.2,
+            # Long enough for the interpreter to start and print even under
+            # coverage on a loaded machine; the command still times out.
+            "timeout": 5.0,
         },
         {"workspace_root": str(tmp_path)},
     )
@@ -133,7 +136,7 @@ async def test_lauren_wrapper_and_agenthicc_executor_propagate_command_failure(
     tmp_path: Path,
 ) -> None:
     wrapped = await run_command(
-        [sys.executable, "-c", "raise SystemExit(7)"], cwd=str(tmp_path), timeout=2
+        [sys.executable, "-c", "raise SystemExit(7)"], cwd=str(tmp_path), timeout=30
     )
     assert wrapped["ok"] is False
     assert wrapped["state"] == "failed"
@@ -164,7 +167,8 @@ async def test_service_marker_readiness_keeps_process_owned_and_blocks_duplicate
                 "command": command,
                 "background": True,
                 "lifecycle": "service",
-                "readiness": {"marker": "READY", "timeout": 2},
+                # READY prints at start-up; the timeout only bounds a slow start.
+                "readiness": {"marker": "READY", "timeout": 30},
             },
             {"workspace_root": str(tmp_path), "terminal_manager": manager},
         )
@@ -227,7 +231,7 @@ async def test_service_record_survives_restart_without_duplicate_start(tmp_path:
             "command": command,
             "background": True,
             "lifecycle": "service",
-            "readiness": {"marker": "READY", "timeout": 2},
+            "readiness": {"marker": "READY", "timeout": 30},
         },
         {"workspace_root": str(tmp_path), "terminal_manager": first},
     )

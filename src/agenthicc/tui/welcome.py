@@ -66,7 +66,7 @@ async def fetch_changelog(url: str = CHANGELOG_URL) -> list[str]:
     ``description``.
     """
     try:
-        from agenthicc.tools.http import agenthicc_http_client  # noqa: PLC0415
+        from agenthicc.tools.http import agenthicc_http_client
 
         async with asyncio.timeout(_CHANGELOG_TIMEOUT_S):
             async with agenthicc_http_client(

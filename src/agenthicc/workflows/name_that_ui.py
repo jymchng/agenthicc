@@ -12,6 +12,7 @@ empty catalog so callers (site_imitate) proceed without the dictionary.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 import os
 import re
 import tempfile
@@ -58,17 +59,18 @@ def js_unescape(s: str) -> str:
 
 def _fetch_html() -> str:
     req = urllib.request.Request(URL, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310
-        return resp.read().decode("utf-8", "ignore")
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        body: bytes = resp.read()
+    return body.decode("utf-8", "ignore")
 
 
-def fetch_catalog() -> list[dict]:
+def fetch_catalog() -> list[dict[str, object]]:
     """Fetch the homepage and pull every element record out of the RSC payload."""
     raw = _fetch_html()
     chunks = re.findall(r'self\.__next_f\.push\(\[1,"(.*?)"\]\)', raw, re.S)
     payload = "".join(js_unescape(c) for c in chunks)
 
-    records: list[dict] = []
+    records: list[dict[str, object]] = []
     pos = 0
     while True:
         i = payload.find('{"slug":', pos)
@@ -101,14 +103,16 @@ def fetch_catalog() -> list[dict]:
         if end is None:
             break
         try:
-            records.append(json.loads(payload[i:end]))
+            record = json.loads(payload[i:end])
         except json.JSONDecodeError:
-            pass
+            record = None
+        if isinstance(record, dict):
+            records.append(record)
         pos = end
     return records
 
 
-def load_catalog(cache_path: str | None = None, ttl: int = DEFAULT_TTL) -> list[dict]:
+def load_catalog(cache_path: str | None = None, ttl: int = DEFAULT_TTL) -> list[dict[str, object]]:
     """Return the catalog, from cache when fresh, otherwise fetched and cached.
 
     Fails soft: any error returns ``[]``.
@@ -145,23 +149,38 @@ def _norm(s: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", s).strip()
 
 
-def lookup(query: str, records: list[dict], top: int = 5) -> list[dict]:
+# Catalog records are scraped JSON; these accessors narrow one field at a time.
+def _text(record: Mapping[str, object], key: str) -> str:
+    value = record.get(key)
+    return value if isinstance(value, str) else ""
+
+
+def _texts(record: Mapping[str, object], key: str) -> list[str]:
+    value = record.get(key)
+    return [item for item in value if isinstance(item, str)] if isinstance(value, list) else []
+
+
+def _entries(record: Mapping[str, object], key: str) -> list[dict[str, object]]:
+    value = record.get(key)
+    return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+
+
+def lookup(query: str, records: list[dict[str, object]], top: int = 5) -> list[dict[str, object]]:
     """Rank the catalog against a sloppy description, like the site's search."""
     q = _norm(query)
     qwords = set(q.split())
-    scored: list[tuple[float, dict]] = []
+    scored: list[tuple[float, dict[str, object]]] = []
     for r in records:
-        hay = [r.get("name", ""), r.get("tagline", ""), r.get("description", "")]
-        hay += list(r.get("aka") or [])
-        hay += list(r.get("fuzzy") or [])
+        aliases = _texts(r, "fuzzy") + _texts(r, "aka")
+        hay = [_text(r, "name"), _text(r, "tagline"), _text(r, "description"), *aliases]
         blob = _norm(" ".join(hay))
         score = 0.0
-        for field in list(r.get("fuzzy") or []) + list(r.get("aka") or []):
+        for field in aliases:
             if q and q in _norm(field):
                 score += 3.0
-        if q and q in _norm(r.get("name", "")):
+        if q and q in _norm(_text(r, "name")):
             score += 3.0
-        if q and q in _norm(r.get("description", "")):
+        if q and q in _norm(_text(r, "description")):
             score += 2.0
         score += len(qwords & set(blob.split())) * 0.5
         if score > 0:
@@ -173,44 +192,41 @@ def lookup(query: str, records: list[dict], top: int = 5) -> list[dict]:
 # --------------------------------------------------------------------------- #
 # Formatting
 # --------------------------------------------------------------------------- #
-def shadcn_symbols(record: dict) -> list[str]:
+def shadcn_symbols(record: dict[str, object]) -> list[str]:
     """Return the shadcn/ui symbols for a record, if any."""
     return [
-        a.get("symbol")
-        for a in (record.get("api") or [])
-        if isinstance(a, dict) and "shadcn" in str(a.get("framework", "")).lower()
+        _text(api, "symbol")
+        for api in _entries(record, "api")
+        if "shadcn" in _text(api, "framework").lower() and _text(api, "symbol")
     ]
 
 
-def match_brief(record: dict) -> dict[str, object]:
+def match_brief(record: dict[str, object]) -> dict[str, object]:
     """Compact, JSON-safe summary of a match for tool results."""
     apis = [
-        {"framework": a.get("framework"), "symbol": a.get("symbol")}
-        for a in (record.get("api") or [])
-        if isinstance(a, dict)
+        {"framework": api.get("framework"), "symbol": api.get("symbol")}
+        for api in _entries(record, "api")
     ]
     return {
         "name": record.get("name"),
         "platform": record.get("platform"),
         "api": apis,
         "shadcn": shadcn_symbols(record),
-        "prompt": (record.get("prompt") or "")[:600],
+        "prompt": _text(record, "prompt")[:600],
     }
 
 
-def format_matches(matches: list[dict]) -> str:
+def format_matches(matches: list[dict[str, object]]) -> str:
     """Human-readable match list for the agent's context."""
     lines = []
     for r in matches:
-        name = r.get("name") or "?"
-        platform = r.get("platform") or "?"
+        name = _text(r, "name") or "?"
+        platform = _text(r, "platform") or "?"
         symbols = ", ".join(
-            str(a.get("symbol"))
-            for a in (r.get("api") or [])
-            if isinstance(a, dict) and a.get("symbol")
+            _text(api, "symbol") for api in _entries(r, "api") if _text(api, "symbol")
         )
         shad = ", ".join(shadcn_symbols(r)) or "-"
-        prompt = (r.get("prompt") or "").strip() or "-"
+        prompt = _text(r, "prompt").strip() or "-"
         lines.append(
             f"* {name} ({platform})\n"
             f"  api symbols: {symbols or '-'}\n"
@@ -220,15 +236,19 @@ def format_matches(matches: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def inventory_line(record: dict) -> str:
+def inventory_line(record: dict[str, object]) -> str:
     """One compact inventory line: observed -> Canonical Name (symbol)."""
     shad = shadcn_symbols(record)
-    symbol = shad[0] if shad else None
+    symbol = shad[0] if shad else ""
     if not symbol:
-        for a in record.get("api") or []:
-            if isinstance(a, dict) and a.get("symbol") and "ARIA" in str(a.get("framework", "")):
-                symbol = a.get("symbol")
-                break
+        symbol = next(
+            (
+                _text(api, "symbol")
+                for api in _entries(record, "api")
+                if _text(api, "symbol") and "ARIA" in _text(api, "framework")
+            ),
+            "",
+        )
     suffix = f" ({symbol})" if symbol else ""
     return f"{record.get('name')}{suffix}"
 
@@ -237,11 +257,11 @@ def inventory_line(record: dict) -> str:
 # Catalog listing
 # --------------------------------------------------------------------------- #
 def list_names(
-    records: list[dict],
+    records: list[dict[str, object]],
     platform: str = "",
     query: str = "",
     top: int | None = None,
-) -> list[dict]:
+) -> list[dict[str, object]]:
     """Return a compact, sorted list of catalog component names.
 
     Args:
@@ -253,7 +273,7 @@ def list_names(
     """
     platform = (platform or "").strip().lower()
     q = _norm(query)
-    out: list[dict] = []
+    out: list[dict[str, object]] = []
     for r in records:
         name = r.get("name")
         if not isinstance(name, str) or not name:
@@ -264,11 +284,9 @@ def list_names(
         if q:
             hay = _norm(
                 " ".join(
-                    [name]
-                    + [str(r.get("tagline") or "")]
-                    + [str(r.get("description") or "")]
-                    + [str(a) for a in (r.get("aka") or [])]
-                    + [str(f) for f in (r.get("fuzzy") or [])]
+                    [name, _text(r, "tagline"), _text(r, "description")]
+                    + _texts(r, "aka")
+                    + _texts(r, "fuzzy")
                 )
             )
             if q not in hay and not any(q in _norm(w) for w in [name]):
@@ -286,7 +304,7 @@ def list_names(
     return out
 
 
-def format_name_list(names: list[dict]) -> str:
+def format_name_list(names: list[dict[str, object]]) -> str:
     """Human-readable, platform-grouped listing of component names."""
     if not names:
         return "(no components match the filter)"

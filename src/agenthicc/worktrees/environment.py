@@ -22,9 +22,11 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import BinaryIO, Callable, Mapping, Protocol, cast
+from typing import BinaryIO, Callable, Mapping, cast
 
 import tomllib
+
+from agenthicc.runners.process_lease import InterProcessLock, InterProcessLockBusy
 
 MANIFEST_RELATIVE_PATH = Path(".agenthicc") / "environment.toml"
 MAX_MANIFEST_BYTES = 256 * 1024
@@ -53,13 +55,6 @@ class EnvironmentManifestError(EnvironmentError):
 
 class EnvironmentTrustRequired(EnvironmentError):
     """A manifest needs explicit trust before setup is allowed to run."""
-
-
-class _MsvcrtLocking(Protocol):
-    LK_NBLCK: int
-    LK_UNLCK: int
-
-    def locking(self, file_descriptor: int, mode: int, byte_count: int) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -780,6 +775,8 @@ def _repository_identity(repository: Path) -> str:
 
 
 class _CacheLocks:
+    """Acquire several shared-cache locks in a fixed order, cancellably."""
+
     def __init__(
         self,
         paths: list[Path],
@@ -787,51 +784,29 @@ class _CacheLocks:
     ) -> None:
         self.paths = sorted(paths, key=str)
         self.cancel_event = cancel_event
-        self.handles: list[BinaryIO] = []
+        self.held: list[InterProcessLock] = []
 
     def __enter__(self) -> "_CacheLocks":
-        for path in self.paths:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            handle = path.open("a+b")
-            try:
+        try:
+            for path in self.paths:
+                lock = InterProcessLock(path, blocking=False)
                 while True:
                     if self.cancel_event is not None and self.cancel_event.is_set():
                         raise EnvironmentError("cancelled while waiting for a shared cache lock")
                     try:
-                        if os.name == "nt":
-                            import importlib
-
-                            msvcrt = cast(_MsvcrtLocking, importlib.import_module("msvcrt"))
-                            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-                        else:
-                            import fcntl
-
-                            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        lock.__enter__()
                         break
-                    except BlockingIOError:
+                    except InterProcessLockBusy:
                         time.sleep(0.05)
-            except BaseException:
-                handle.close()
-                self.__exit__(None, None, None)
-                raise
-            self.handles.append(handle)
+                self.held.append(lock)
+        except BaseException:
+            self.__exit__(None, None, None)
+            raise
         return self
 
     def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
-        for handle in reversed(self.handles):
-            try:
-                if os.name == "nt":
-                    import importlib
-
-                    msvcrt = cast(_MsvcrtLocking, importlib.import_module("msvcrt"))
-                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-                else:
-                    import fcntl
-
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-            finally:
-                handle.close()
-        self.handles.clear()
+        while self.held:
+            self.held.pop().__exit__(None, None, None)
 
 
 def _cache_locks(

@@ -75,9 +75,9 @@ class WorkflowRunner(BaseWorkflowRunner):
         ``ctx = await super().run(intent)`` and continue with additional phases
         (PRD-114 composite workflow pattern).
         """
-        from agenthicc.workflows.plugin import WorkflowContext, WorkflowRun  # noqa: PLC0415
-        from lauren_ai._memory import ShortTermMemory  # noqa: PLC0415
-        from agenthicc.kernel import Event  # noqa: PLC0415
+        from agenthicc.workflows.plugin import WorkflowContext, WorkflowRun
+        from lauren_ai._memory import ShortTermMemory
+        from agenthicc.kernel import Event
 
         self._shared_memory = (
             self._cfg.session_memory
@@ -132,8 +132,8 @@ class WorkflowRunner(BaseWorkflowRunner):
         Phases already present in ``context.phase_outputs`` are skipped;
         execution continues from the first incomplete phase.
         """
-        from agenthicc.workflows.plugin import WorkflowContext, WorkflowRun, PhaseRunRecord  # noqa: PLC0415
-        from lauren_ai._memory import ShortTermMemory  # noqa: PLC0415
+        from agenthicc.workflows.plugin import WorkflowContext, WorkflowRun, PhaseRunRecord
+        from lauren_ai._memory import ShortTermMemory
 
         if not isinstance(context, WorkflowContext):
             raise TypeError("workflow resume requires a WorkflowContext")
@@ -203,8 +203,8 @@ class WorkflowRunner(BaseWorkflowRunner):
         run_id: str,
         start_phase: str | None,
     ) -> None:
-        from agenthicc.workflows.plugin import PhaseRunRecord  # noqa: PLC0415
-        from agenthicc.kernel import Event  # noqa: PLC0415
+        from agenthicc.workflows.plugin import PhaseRunRecord
+        from agenthicc.kernel import Event
 
         iteration_counts: dict[str, int] = dict(context.phase_iterations)
         _processed_parallel: set[str] = set()
@@ -298,7 +298,7 @@ class WorkflowRunner(BaseWorkflowRunner):
                         *[self._run_phase(ps, intent, context) for ps in peer_specs],
                     )
                     parallel_gate_error: str | None = None
-                    for ps, output in zip(peer_specs, outputs):
+                    for ps, output in zip(peer_specs, outputs, strict=True):
                         gate_error = self._command_gate_error(ps, output)
                         if gate_error is not None:
                             parallel_gate_error = gate_error
@@ -489,14 +489,14 @@ class WorkflowRunner(BaseWorkflowRunner):
     ) -> None:
         """Run one phase turn with its declared terminal wait policy."""
 
-        from agenthicc.background.terminals import (  # noqa: PLC0415
+        from agenthicc.background.terminals import (
             reset_current_terminal_wait_policy,
             set_current_terminal_wait_policy,
         )
 
         token = set_current_terminal_wait_policy(spec.terminal_wait_policy)
         try:
-            from agenthicc.runners.agent_turn import _run_agent_turn  # noqa: PLC0415
+            from agenthicc.runners.agent_turn import _run_agent_turn
 
             await _run_agent_turn(text, **options)
         finally:
@@ -536,8 +536,8 @@ class WorkflowRunner(BaseWorkflowRunner):
             _parse_output_schema,
             _WORKFLOW_USER_QUESTION_REMINDER,
             phase_transition_instruction,
-        )  # noqa: PLC0415
-        from agenthicc.runners.prompt_contract import (  # noqa: PLC0415
+        )
+        from agenthicc.runners.prompt_contract import (
             build_workflow_prompt_contract,
         )
 
@@ -564,7 +564,7 @@ class WorkflowRunner(BaseWorkflowRunner):
         review_event: asyncio.Event | None = None
         review_data: dict[str, object] = {}
         if self._cfg.approval_svc is not None:
-            from agenthicc.workflows.code_plan.phase_tools import (  # noqa: PLC0415
+            from agenthicc.workflows.code_plan.phase_tools import (
                 make_planner_tools,
                 make_executor_tools,
                 make_reviewer_tools,
@@ -613,7 +613,7 @@ class WorkflowRunner(BaseWorkflowRunner):
 
         # PRD-111: per-phase model override from WorkflowParams.
         # Empty model_for_phase() falls back to the global model_id.
-        import dataclasses as _dataclasses  # noqa: PLC0415
+        import dataclasses as _dataclasses
 
         _phase_model = (
             self._cfg.params.model_for_phase(spec.name, self._model_id)
@@ -901,7 +901,7 @@ class WorkflowRunner(BaseWorkflowRunner):
         )
 
     async def _run_human_phase(self, spec: PhaseSpec, context: WorkflowContext) -> PhaseOutput:
-        from agenthicc.workflows.plugin import PhaseOutput  # noqa: PLC0415
+        from agenthicc.workflows.plugin import PhaseOutput
 
         if self._cfg.approval_svc is None:
             log.warning("Human phase %r in headless mode — auto-approving", spec.name)
@@ -919,8 +919,8 @@ class WorkflowRunner(BaseWorkflowRunner):
             last_output = context.phase_outputs[last_name]
             prior_text = last_output.full_text[:2000]
 
-        import asyncio as _asyncio  # noqa: PLC0415
-        from agenthicc.tools.approval import ApprovalRequest  # noqa: PLC0415
+        import asyncio as _asyncio
+        from agenthicc.tools.approval import ApprovalRequest
 
         req = ApprovalRequest(
             tool_name=f"Review: {spec.name}",
@@ -981,9 +981,18 @@ class WorkflowRunner(BaseWorkflowRunner):
     # ── helpers ───────────────────────────────────────────────────────────────
 
     def _filter_tools(self, spec: PhaseSpec) -> list[ToolLike]:
-        from agenthicc.tools.capabilities import get_tool_capabilities  # noqa: PLC0415
+        """Return the project tools *spec*'s phase may use under its own mode.
 
-        mode_blocked = self._cfg.app_state.active_mode().blocked_capabilities
+        The tools are filtered before the phase switches to
+        ``spec.mode_override``, so the override is resolved here rather than
+        filtering by the caller's mode.
+        """
+        from agenthicc.tools.capabilities import get_tool_capabilities
+        from agenthicc.tui.runtime.mode_manager import phase_mode
+
+        mode_blocked = phase_mode(
+            self._cfg.app_state.active_mode(), self._mode_manager, spec.mode_override
+        ).blocked_capabilities
         phase_allowed = spec.resolved_allowed_caps
 
         all_tools: list[ToolLike] = list(self._cfg.all_plugin_tools())
@@ -1004,10 +1013,10 @@ class WorkflowRunner(BaseWorkflowRunner):
         # Reuse the existing interactive question tool in every generic
         # workflow phase. It remains safe in headless runs, where the factory
         # returns a cancelled result, and mode policy still gates CONTROL.
-        from agenthicc.tools.capabilities import ToolCapability  # noqa: PLC0415
+        from agenthicc.tools.capabilities import ToolCapability
 
         if ToolCapability.CONTROL not in mode_blocked:
-            from agenthicc.workflows.code_plan.phase_tools import make_questions_tool  # noqa: PLC0415
+            from agenthicc.workflows.code_plan.phase_tools import make_questions_tool
 
             result.extend(make_questions_tool(self._cfg.approval_svc))
         return result

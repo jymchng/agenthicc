@@ -56,7 +56,7 @@ _MIN_EXEC_WINDOW_S: float = 2.0
 
 def _retry_after_seconds(exc: BaseException) -> float | None:
     """Return a finite, non-negative provider retry-after hint, if present."""
-    for candidate in (exc, getattr(exc, "__cause__", None), getattr(exc, "__context__", None)):
+    for candidate in (exc, exc.__cause__, exc.__context__):
         if candidate is None:
             continue
         value = getattr(candidate, "retry_after", None)
@@ -192,7 +192,7 @@ async def run_with_transport_retry(
                 # backoff remains the fallback for errors without a hint.
                 delay = max(delay, retry_after)
             if config.jitter and delay > 0:
-                jittered = delay * random.uniform(0.75, 1.25)  # noqa: S311 — not security-sensitive
+                jittered = delay * random.uniform(0.75, 1.25)
                 delay = max(retry_after or 0.0, jittered)
 
             now = time.monotonic()

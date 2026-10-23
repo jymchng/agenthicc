@@ -54,7 +54,7 @@ def _make_runner(mock: MockTransport) -> AgentRunnerBase:
 
 async def _run_turn(runner, conv_store, tmp_path):
     """Run _run_agent_turn with minimal wiring."""
-    from agenthicc.runners.agent_turn import _run_agent_turn  # noqa: PLC0415
+    from agenthicc.runners.agent_turn import _run_agent_turn
 
     k_state = AppState.create(
         settings=SystemSettings(
@@ -123,7 +123,7 @@ async def test_single_turn_correct_counts(tmp_path):
 
 async def test_no_modelcallcomplete_handler_registered(tmp_path):
     """_run_agent_turn must NOT register a ModelCallComplete handler on the bus."""
-    from lauren_ai._signals import ModelCallComplete  # noqa: PLC0415
+    from lauren_ai._signals import ModelCallComplete
 
     tui = TUIAppState.create()
     conv = tui.conversation
@@ -145,7 +145,7 @@ async def test_no_modelcallcomplete_handler_registered(tmp_path):
 
 async def test_no_handler_accumulation_across_turns(tmp_path):
     """Running N turns must not grow the ModelCallComplete handler list."""
-    from lauren_ai._signals import ModelCallComplete  # noqa: PLC0415
+    from lauren_ai._signals import ModelCallComplete
 
     tui = TUIAppState.create()
     conv = tui.conversation

@@ -9,7 +9,7 @@ import sys
 import uuid
 from dataclasses import dataclass, field, is_dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 from agenthicc.runners.session_lease import (
     SessionAlreadyActiveError,
@@ -20,6 +20,8 @@ from agenthicc.runners.workflow_handle import classify_workflow_failure
 
 if TYPE_CHECKING:
     from agenthicc.cli.context import CLIContext
+    from agenthicc.kernel.events import Event
+    from agenthicc.tools.approval import ApprovalRequest, ApprovalResponse
     from agenthicc.runners.run_coordinator import ResumePlan
     from agenthicc.runners.session_context import SessionContext
     from agenthicc.runners.session_lease import SessionOwnerLease
@@ -92,26 +94,22 @@ class _HeadlessApprovalService:
     def __init__(self, allow: bool) -> None:
         self._allow = allow
 
-    async def request_approval(self, req: object) -> object:
-        from agenthicc.tools.approval import ApprovalResponse  # noqa: PLC0415
+    async def request_approval(self, req: ApprovalRequest) -> ApprovalResponse:
+        from agenthicc.tools.approval import ApprovalResponse
 
-        if _optional_request_field(req, "kind", "tool") == "questions":
+        if req.kind == "questions":
             return ApprovalResponse(
                 allowed=False,
                 outcome="cancelled",
                 message="headless mode has no interactive question adapter",
-                request_id=str(_optional_request_field(req, "request_id", "") or ""),
+                request_id=req.request_id,
             )
 
         # A dangerous-permissions flag is an explicit capability approval for
         # automation, not an implicit expansion of the workspace boundary.
         # Outside-workspace access needs a caller-provided approval adapter so
         # headless runs never silently exfiltrate or mutate parent paths.
-        try:
-            workspace_access = object.__getattribute__(req, "workspace_access")
-        except AttributeError:
-            workspace_access = None
-        if workspace_access:
+        if req.workspace_access:
             return ApprovalResponse(
                 allowed=False,
                 message="headless workspace access is denied without an explicit scope policy",
@@ -137,7 +135,7 @@ def _resolve_headless_session(
 
     if ctx.resume_id is not None or not ctx.continue_session:
         return ctx.resume_id, None
-    from agenthicc.runners.session_lease import SessionOpenCoordinator  # noqa: PLC0415
+    from agenthicc.runners.session_lease import SessionOpenCoordinator
 
     selected = SessionOpenCoordinator().select_latest_for_cwd(Path.cwd(), entrypoint="headless")
     if selected is None:
@@ -158,19 +156,19 @@ def _select_headless_workflow_resume(
     ``None`` means there is no workflow recovery record and a caller that
     explicitly requested a new run may use ``runner.run(intent)``.
     """
-    from agenthicc.runners.workflow_recovery import WorkflowRecoveryCoordinator  # noqa: PLC0415
+    from agenthicc.runners.workflow_recovery import WorkflowRecoveryCoordinator
 
-    conversation = getattr(session, "session_conversation", None)
+    conversation = session.session_conversation
     if conversation is None:
         return None
-    from agenthicc.memory.tool_history import ToolHistoryRecoveryRequired  # noqa: PLC0415
+    from agenthicc.memory.tool_history import ToolHistoryRecoveryRequired
 
     retry_recovery = getattr(conversation, "retry_tool_history_recovery", None)
     if callable(retry_recovery):
         recovery = retry_recovery()
         if not recovery.provider_ready:
             raise ToolHistoryRecoveryRequired(recovery)
-    workspace_scope = getattr(session, "workspace_scope", None)
+    workspace_scope = session.workspace_scope
     workspace_root = str(getattr(workspace_scope, "primary_root", "") or "")
     coordinator = WorkflowRecoveryCoordinator(session.session_id)
     record = coordinator.select_for_resume(
@@ -203,9 +201,9 @@ async def execute_workflow(
     ``code_plan`` and user-defined runners share the same construction path as
     the TUI.
     """
-    from agenthicc.workflows.config import WorkflowConfig  # noqa: PLC0415
-    from agenthicc.runners.workflow_checkpoint_store import WorkflowCheckpointStore  # noqa: PLC0415
-    from agenthicc.runners.workflow_handle import WorkflowRunHandle  # noqa: PLC0415
+    from agenthicc.workflows.config import WorkflowConfig
+    from agenthicc.runners.workflow_checkpoint_store import WorkflowCheckpointStore
+    from agenthicc.runners.workflow_handle import WorkflowRunHandle
 
     workflow_cls = session.workflow_registry.get(workflow_name)
     if workflow_cls is None:
@@ -220,8 +218,8 @@ async def execute_workflow(
 
     workflow_handle = None
     resuming = resume_run_id is not None
-    session_conversation = getattr(session, "session_conversation", None)
-    session_service = getattr(session, "session_service", None)
+    session_conversation = session.session_conversation
+    session_service = session.session_service
     if resuming and session_conversation is None:
         raise ValueError("workflow resume requires the durable session conversation")
     if session_conversation is not None:
@@ -247,7 +245,7 @@ async def execute_workflow(
             )
         checkpoint_store = WorkflowCheckpointStore(session.session_id)
         if resuming:
-            from agenthicc.runners.workflow_recovery import WorkflowRecoveryCoordinator  # noqa: PLC0415
+            from agenthicc.runners.workflow_recovery import WorkflowRecoveryCoordinator
 
             coordinator = WorkflowRecoveryCoordinator(
                 session.session_id,
@@ -257,9 +255,7 @@ async def execute_workflow(
                 workflow_registry=session.workflow_registry,
                 conversation=session_conversation,
                 provider_profile=session.cfg.execution.profile,
-                workspace_root=str(
-                    getattr(getattr(session, "workspace_scope", None), "primary_root", "") or ""
-                ),
+                workspace_root=str(getattr(session.workspace_scope, "primary_root", "") or ""),
             )
             record = next(
                 (candidate for candidate in records if candidate.run_id == resume_run_id),
@@ -277,7 +273,7 @@ async def execute_workflow(
                 record,
                 workflow=workflow_cls,
                 conversation=session_conversation,
-                browser_manager=getattr(session, "browser_manager", None),
+                browser_manager=session.browser_manager,
                 owner_id=f"headless:{os.getpid()}:{resume_run_id}",
             )
         else:
@@ -287,11 +283,9 @@ async def execute_workflow(
                 conversation=session_conversation,
                 intent=intent,
                 checkpoint_store=checkpoint_store,
-                browser_manager=getattr(session, "browser_manager", None),
+                browser_manager=session.browser_manager,
                 provider_profile=session.cfg.execution.profile,
-                workspace_root=str(
-                    getattr(getattr(session, "workspace_scope", None), "primary_root", "") or ""
-                ),
+                workspace_root=str(getattr(session.workspace_scope, "primary_root", "") or ""),
             )
     effective_intent = (
         workflow_handle.original_intent if resuming and workflow_handle is not None else intent
@@ -299,13 +293,20 @@ async def execute_workflow(
     error: str | None = None
     failure_category = ""
     runner_result: object | None = None
+    completed_phases: list[Event] = []
+
+    def _record_completed_phase(event: Event) -> None:
+        if event.event_type == "WorkflowPhaseCompleted":
+            completed_phases.append(event)
+
+    remove_phase_sink = session.processor.add_sink(_record_completed_phase)
     try:
         # Establish a durable identity before any plugin setup.  A generic
         # bootstrap context is deliberately diagnostic-only until the runner
         # attaches its typed context, but it lets build_params/build_runner
         # failures retain a run id and a durable explanation.
         if workflow_handle is not None and not resuming:
-            from agenthicc.workflows.plugin import WorkflowContext  # noqa: PLC0415
+            from agenthicc.workflows.plugin import WorkflowContext
 
             _phase_specs = getattr(workflow_cls, "phases", ())
             workflow_handle.attach_bootstrap_context(
@@ -339,7 +340,7 @@ async def execute_workflow(
             workflow_handle.persist_checkpoint(reason="resuming")
             memory = session.session_memory
             if memory is not None:
-                from agenthicc.runners.agent_turn import (  # noqa: PLC0415
+                from agenthicc.runners.agent_turn import (
                     _preserve_interrupted_memory,
                 )
 
@@ -383,10 +384,10 @@ async def execute_workflow(
             completed_turns=completed_turns,
             session_memory=session.session_memory,
             conversation_id=session.session_id,
-            usage_ledger=getattr(session, "usage_ledger", None),
+            usage_ledger=session.usage_ledger,
             workflow_handle=workflow_handle,
-            browser_manager=getattr(session, "browser_manager", None),
-            browser_tools=list(getattr(session, "browser_tools", [])),
+            browser_manager=session.browser_manager,
+            browser_tools=list(session.browser_tools),
             workspace_scope=workspace_scope,
             workspace_access=workspace_access,
             params=workflow_cls.build_params(session.cfg.workflows.get(workflow_name, {})),
@@ -403,7 +404,7 @@ async def execute_workflow(
                 payload={"workflow": workflow_name, "intent": effective_intent},
             )
         if workflow_handle is not None:
-            from agenthicc.runners.workflow_execution_context import (  # noqa: PLC0415
+            from agenthicc.runners.workflow_execution_context import (
                 bind_workflow_execution,
             )
 
@@ -458,13 +459,14 @@ async def execute_workflow(
                 if workflow_handle.checkpoint_supported:
                     workflow_handle.save_checkpoint(reason="complete")
     except (asyncio.CancelledError, KeyboardInterrupt):
+        remove_phase_sink()
         if workflow_handle is not None:
             workflow_handle.finalize_failure("cancelled", kind="user_cancelled")
             workflow_handle.release_claim()
         raise
     except Exception as exc:  # noqa: BLE001
         error = f"{type(exc).__name__}: {exc}"
-        from agenthicc.memory.compactor import CompactionRecoveryRequired  # noqa: PLC0415
+        from agenthicc.memory.compactor import CompactionRecoveryRequired
 
         if isinstance(exc, CompactionRecoveryRequired):
             failure_category = exc.failure_category
@@ -497,8 +499,10 @@ async def execute_workflow(
             )
             workflow_handle.release_claim()
         raise
+    finally:
+        remove_phase_sink()
     workflow_run = session.app_state.workflow_run()
-    status = str(getattr(workflow_run, "status", "failed") or "failed")
+    status = (workflow_run.status if workflow_run is not None else "") or "failed"
     if error is None and status == "failed":
         fail_reason = getattr(runner_result, "fail_reason", "")
         if isinstance(fail_reason, str) and fail_reason:
@@ -525,28 +529,25 @@ async def execute_workflow(
         # provider exception's raw request dump in the JSON result.
         if workflow_handle.last_error:
             error = workflow_handle.last_error
-    run_id = str(
-        getattr(workflow_run, "run_id", "") or getattr(workflow_handle, "run_id", "") or ""
+    run_id = (workflow_run.run_id if workflow_run is not None else "") or (
+        workflow_handle.run_id if workflow_handle is not None else ""
     )
     phases: list[str] = []
     phase_metadata: dict[str, object] = {}
-    for event in getattr(session.processor, "event_log", []):
-        if getattr(event, "event_type", "") != "WorkflowPhaseCompleted":
-            continue
-        payload = getattr(event, "payload", {})
-        event_run_id = payload.get("run_id") if isinstance(payload, dict) else None
+    for event in completed_phases:
+        event_run_id = event.payload.get("run_id")
         if run_id and event_run_id != run_id:
             continue
-        phase_name = payload.get("phase_name") if isinstance(payload, dict) else None
+        phase_name = event.payload.get("phase_name")
         if isinstance(phase_name, str) and phase_name:
             phases.append(phase_name)
-            if isinstance(payload, dict) and isinstance(payload.get("metadata"), dict):
-                phase_metadata[phase_name] = dict(payload["metadata"])
-        if not run_id:
-            if isinstance(event_run_id, str):
-                run_id = event_run_id
+            metadata = event.payload.get("metadata")
+            if isinstance(metadata, dict):
+                phase_metadata[phase_name] = dict(metadata)
+        if not run_id and isinstance(event_run_id, str):
+            run_id = event_run_id
     if not phases and workflow_run is not None:
-        phases = [str(record.phase_name) for record in getattr(workflow_run, "phase_history", [])]
+        phases = [str(record.phase_name) for record in workflow_run.phase_history]
     result = WorkflowExecutionResult(
         session_id=session.session_id,
         workflow_name=workflow_name,
@@ -557,6 +558,8 @@ async def execute_workflow(
         phase_metadata=phase_metadata,
         failure_category=failure_category,
     )
+    handle_phase = (workflow_handle.current_phase if workflow_handle is not None else None) or ""
+    handle_failure_kind = workflow_handle.failure_kind if workflow_handle is not None else None
     if session_service is not None:
         try:
             if result.status == "paused":
@@ -567,11 +570,15 @@ async def execute_workflow(
                     payload={
                         "workflow": result.workflow_name,
                         "run_id": result.run_id,
-                        "phase": getattr(workflow_handle, "current_phase", None) or "",
-                        "failure_kind": getattr(workflow_handle, "failure_kind", None)
+                        "phase": handle_phase,
+                        "failure_kind": handle_failure_kind
                         or result.failure_category
                         or "workflow_error",
-                        "revision": getattr(workflow_handle, "checkpoint_revision", 0),
+                        "revision": (
+                            workflow_handle.checkpoint_revision
+                            if workflow_handle is not None
+                            else 0
+                        ),
                         "resumable": True,
                     },
                 )
@@ -583,9 +590,8 @@ async def execute_workflow(
                     payload={
                         "workflow": result.workflow_name,
                         "run_id": result.run_id,
-                        "phase": getattr(workflow_handle, "current_phase", None) or "",
-                        "failure_kind": getattr(workflow_handle, "failure_kind", None)
-                        or "workflow_error",
+                        "phase": handle_phase,
+                        "failure_kind": handle_failure_kind or "workflow_error",
                         "resumable": False,
                     },
                 )
@@ -618,7 +624,7 @@ async def run_headless_workflow(
     intent: str,
 ) -> WorkflowExecutionResult:
     """Build a durable session, run one workflow, and close its resources."""
-    from agenthicc.runners.tui_session import _build_session_context  # noqa: PLC0415
+    from agenthicc.runners.tui_session import _build_session_context
 
     cassette_base = Path(ctx.record_cassette) if ctx.record_cassette else None
     resume_id, owner_lease = _resolve_headless_session(ctx)
@@ -638,16 +644,14 @@ async def run_headless_workflow(
     processor_task: asyncio.Task[object] | None = None
     try:
         session.app_state.cli_flags = ctx.flags
-        session.approval_svc = _HeadlessApprovalService(  # type: ignore[assignment]
-            ctx.flags.dangerously_skip_permissions
-        )
+        session.approval_svc = _HeadlessApprovalService(ctx.flags.dangerously_skip_permissions)
         try:
             workspace_access = session.workspace_access
         except AttributeError:
             workspace_access = None
         if workspace_access is not None:
             workspace_access.set_approval_service(session.approval_svc)
-        from agenthicc.background.terminals import (  # noqa: PLC0415
+        from agenthicc.background.terminals import (
             reset_current_terminal_manager,
             set_current_terminal_manager,
         )
@@ -681,7 +685,7 @@ async def run_headless_workflow(
 
 async def _run_headless_workflow_stream(ctx: "CLIContext") -> None:
     """Run one workflow for every non-empty stdin line and emit JSON results."""
-    from agenthicc.runners.tui_session import _build_session_context  # noqa: PLC0415
+    from agenthicc.runners.tui_session import _build_session_context
 
     workflow_name = ctx.workflow_name
     if not workflow_name:
@@ -704,16 +708,14 @@ async def _run_headless_workflow_stream(ctx: "CLIContext") -> None:
     processor_task: asyncio.Task[object] | None = None
     try:
         session.app_state.cli_flags = ctx.flags
-        session.approval_svc = _HeadlessApprovalService(  # type: ignore[assignment]
-            ctx.flags.dangerously_skip_permissions
-        )
+        session.approval_svc = _HeadlessApprovalService(ctx.flags.dangerously_skip_permissions)
         try:
             workspace_access = session.workspace_access
         except AttributeError:
             workspace_access = None
         if workspace_access is not None:
             workspace_access.set_approval_service(session.approval_svc)
-        from agenthicc.background.terminals import (  # noqa: PLC0415
+        from agenthicc.background.terminals import (
             reset_current_terminal_manager,
             set_current_terminal_manager,
         )
@@ -769,7 +771,7 @@ async def _run_headless_workflow_stream(ctx: "CLIContext") -> None:
                     resume_run_id=resume_run_id,
                 )
             except Exception as exc:  # noqa: BLE001
-                from agenthicc.memory.tool_history import ToolHistoryRecoveryRequired  # noqa: PLC0415
+                from agenthicc.memory.tool_history import ToolHistoryRecoveryRequired
 
                 if isinstance(exc, ToolHistoryRecoveryRequired):
                     result = WorkflowExecutionResult(
@@ -808,37 +810,43 @@ async def _close_headless_session(
     cassette_base: Path | None,
 ) -> None:
     """Close durable handles and background services for a headless session."""
-    session_service = getattr(session, "session_service", None)
+    session_service = session.session_service
     try:
-        projection_task = getattr(session, "kernel_projection_task", None)
+        projection_task = session.kernel_projection_task
         if projection_task is not None:
             projection_task.cancel()
             await asyncio.gather(projection_task, return_exceptions=True)
         await session.processor.drain()
         await session.processor.stop()
         if processor_task is not None:
-            processor_task.cancel()
+            # A stopped processor finishes its effects and flushes its log
+            # before run() returns; cancel only one that does not stop.
+            await asyncio.wait({processor_task}, timeout=10)
+            if not processor_task.done():
+                processor_task.cancel()
             await asyncio.gather(processor_task, return_exceptions=True)
+        if session.semantic_index is not None:
+            await session.semantic_index.aclose()
         session.session_log.close()
         close_memory = getattr(session.session_memory, "close", None)
         if callable(close_memory):
             close_memory()
         if session.mcp_registry is not None:
             await session.mcp_registry.shutdown()
-        browser_manager = getattr(session, "browser_manager", None)
+        browser_manager = session.browser_manager
         if browser_manager is not None:
             await browser_manager.close_session()
-        terminal_manager = getattr(session, "terminal_manager", None)
+        terminal_manager = session.terminal_manager
         if terminal_manager is not None:
             await terminal_manager.close()
         if session_service is not None:
             await session_service.close()
         if cassette_base is not None:
-            from agenthicc.runners.tui_session import _write_cassette_meta  # noqa: PLC0415
+            from agenthicc.runners.tui_session import _write_cassette_meta
 
             _write_cassette_meta(cassette_base / session.session_id, session.session_id)
     finally:
-        owner_lease = cast(SessionOwnerLease | None, vars(session).get("owner_lease"))
+        owner_lease = session.owner_lease
         if owner_lease is not None:
             owner_lease.release()
 
@@ -872,7 +880,7 @@ async def _run_headless(ctx: CLIContext | None = None) -> None:
     if ctx is not None and (ctx.resume_id is not None or ctx.continue_session):
         try:
             durable_session_id, owner_lease = _resolve_headless_session(ctx)
-            from agenthicc.runners.session_lease import SessionOpenCoordinator  # noqa: PLC0415
+            from agenthicc.runners.session_lease import SessionOpenCoordinator
 
             coordinator = SessionOpenCoordinator()
             if durable_session_id is None:

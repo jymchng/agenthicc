@@ -23,7 +23,7 @@ import uuid
 from dataclasses import dataclass, field
 from dataclasses import replace
 from collections.abc import Callable, Mapping
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from agenthicc.config import DEFAULT_QUESTION_TIMEOUT_S
 from agenthicc.tools.context import ToolCallContext
@@ -33,10 +33,12 @@ if TYPE_CHECKING:
     from agenthicc.tools.workspace_access import WorkspaceAccessPolicy, WorkspaceAccessRequest
 
 __all__ = [
+    "ApprovalBroker",
     "ApprovalRequest",
     "ApprovalResponse",
     "ApprovalService",
     "ApprovalGate",
+    "InteractiveApprovals",
 ]
 
 
@@ -76,6 +78,50 @@ class ApprovalResponse:
     request_id: str | None = None
     timeout_s: float | None = None
     repeated_timeout: bool = False
+
+
+class ApprovalBroker(Protocol):
+    """The approval surface agent turns, workflows and subagents depend on.
+
+    :class:`ApprovalService` is the interactive implementation. Headless,
+    background-worker and cassette-replay sessions supply adapters with the
+    same two methods; only the TUI overlays need the full service.
+    """
+
+    async def request_approval(self, req: ApprovalRequest) -> ApprovalResponse: ...
+
+    def reset_turn_memory(self) -> None: ...
+
+
+@runtime_checkable
+class InteractiveApprovals(ApprovalBroker, Protocol):
+    """An approval broker whose pending request the TUI overlays can answer."""
+
+    def respond(
+        self,
+        allowed: bool,
+        *,
+        remember: bool = False,
+        remember_all: bool = False,
+        message: str = "",
+        mode: str | None = None,
+        scope_grant: str | None = None,
+        request_id: str | None = None,
+        outcome: str | None = None,
+    ) -> bool: ...
+
+    def respond_for_request(
+        self,
+        request_id: str,
+        allowed: bool,
+        *,
+        remember: bool = False,
+        remember_all: bool = False,
+        message: str = "",
+        mode: str | None = None,
+        scope_grant: str | None = None,
+        outcome: str | None = None,
+    ) -> bool: ...
 
 
 class ApprovalService:
@@ -472,7 +518,7 @@ class ApprovalGate:
     def __init__(
         self,
         app_state: AppState,
-        service: ApprovalService,
+        service: ApprovalBroker,
         workspace_access: "WorkspaceAccessPolicy | None" = None,
     ) -> None:
         self._app_state = app_state
@@ -480,8 +526,8 @@ class ApprovalGate:
         self._workspace_access = workspace_access
 
     async def before_tool_call(self, ctx: ToolCallContext) -> object:
-        from lauren_ai._tools._hooks import BeforeToolHookDecision  # noqa: PLC0415
-        from agenthicc.tools.capabilities import (  # noqa: PLC0415
+        from lauren_ai._tools._hooks import BeforeToolHookDecision
+        from agenthicc.tools.capabilities import (
             CAPABILITIES_KEY,
             classify_tool_capabilities,
         )
@@ -494,7 +540,7 @@ class ApprovalGate:
 
         policy = self._workspace_access
         if policy is None:
-            from agenthicc.tools.workspace_access import current_workspace_access  # noqa: PLC0415
+            from agenthicc.tools.workspace_access import current_workspace_access
 
             policy = current_workspace_access()
         if policy is not None:
@@ -547,11 +593,11 @@ class ApprovalGate:
         )
 
     async def after_tool_call(self, result: object, ctx: ToolCallContext) -> object:
-        from lauren_ai._tools._hooks import AfterToolHookDecision  # noqa: PLC0415
+        from lauren_ai._tools._hooks import AfterToolHookDecision
 
         return AfterToolHookDecision.proceed()
 
     async def on_tool_error(self, exc: Exception, ctx: ToolCallContext) -> object:
-        from lauren_ai._tools._hooks import ErrorToolHookDecision  # noqa: PLC0415
+        from lauren_ai._tools._hooks import ErrorToolHookDecision
 
         return ErrorToolHookDecision.reraise()

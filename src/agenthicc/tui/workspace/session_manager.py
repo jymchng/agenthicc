@@ -110,11 +110,11 @@ class SessionManager:
         return start, min(len(self._records), start + self.page_size)
 
     def render(self, *, all_records: bool = False) -> RenderableType:
-        from rich.console import Group  # noqa: PLC0415
-        from rich.panel import Panel  # noqa: PLC0415
-        from rich.table import Table  # noqa: PLC0415
-        from rich.text import Text  # noqa: PLC0415
-        from agenthicc.runners.session_lease import (  # noqa: PLC0415
+        from rich.console import Group
+        from rich.panel import Panel
+        from rich.table import Table
+        from rich.text import Text
+        from agenthicc.runners.session_lease import (
             SessionLeaseInspection,
             SessionOpenCoordinator,
         )
@@ -240,8 +240,8 @@ class SessionManager:
     async def run(self) -> SessionManagerResult:
         """Run the selector until the user opens a session or exits."""
 
-        from agenthicc.tui.terminal.backend import get_backend  # noqa: PLC0415
-        from rich.live import Live  # noqa: PLC0415
+        from agenthicc.tui.terminal.backend import get_backend
+        from rich.live import Live
 
         backend = get_backend()
         if not backend.is_interactive():
@@ -267,7 +267,7 @@ async def run_session_manager(
 ) -> SessionManagerResult:
     """Open the saved-session selector used by ``sessions list``."""
 
-    from agenthicc.sessions import _ordered_session_records  # noqa: PLC0415
+    from agenthicc.sessions import _ordered_session_records
 
     manager = SessionManager(
         console,

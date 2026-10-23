@@ -1,29 +1,19 @@
-"""Cassette-based regression tests — verifies workflow orchestration.
+"""Hermetic replay of a recorded code_plan session.
 
-How to create a cassette
-------------------------
-Run a session with ``--record-cassette`` pointing to a directory::
+The fixture in ``tests/fixtures/plan_mode/`` is a real 76-request recording of
+a code_plan run: a rejected and then an approved plan review, an execution
+phase that edits files and runs tests, a review, and a summary. Replaying it
+drives the *current* code_plan state machine, agent turn, tool routing,
+capability metadata and approval handling with the exact recorded model
+responses, while every side-effecting built-in tool is replaced by a
+schema-identical stub. A change to the phase graph, a transition tool, the tool
+catalog, or a tool's accepted arguments makes the replay diverge from the
+recording, and this test fails.
 
-    uv run agenthicc --record-cassette ~/.agenthicc/sessions/<id>/cassette/
+See the fixture README for the shape of the recording. Recording a new
+cassette::
 
-Or specify any directory you like::
-
-    uv run agenthicc --record-cassette /tmp/my-cassette/
-
-Three files are written:
-- ``cassette.jsonl``  — one JSON line per LLM call (request summary + response)
-- ``approvals.jsonl`` — one JSON line per approval gate (allowed/rejected + message)
-- ``meta.json``       — session_id, recorded_at
-
-Copy those files into ``tests/fixtures/<scenario>/`` and reference them in
-the tests below.  The cassette is fully self-contained — no live API keys
-are needed to run the tests.
-
-Skipping when fixtures are absent
-----------------------------------
-The tests in this file are decorated with a path-existence check so they
-skip cleanly when the fixture directory does not yet exist (e.g. in CI
-before the first cassette is recorded).
+    uv run agenthicc --record-cassette tests/fixtures/<scenario>/
 """
 
 from __future__ import annotations
@@ -33,148 +23,175 @@ from pathlib import Path
 
 import pytest
 
-from agenthicc.testing import (
-    ReplayResult,
-    SessionCassette,
-    run_headless_replay,
-)
+from agenthicc.config import AgenthiccConfig
+from agenthicc.testing import SessionCassette, run_headless_replay
 
 pytestmark = pytest.mark.integration
 
-# ── fixture paths — copy your cassette files here ────────────────────────────
+FIXTURE = Path(__file__).parent.parent / "fixtures" / "plan_mode"
+CASSETTE = FIXTURE / "cassette.jsonl"
+APPROVALS = FIXTURE / "approvals.jsonl"
 
-FIXTURES = Path(__file__).parent.parent / "fixtures"
+#: The recording did not store its intent.
+INTENT = "enhance this repo"
 
-PLAN_MODE_CASSETTE = FIXTURES / "plan_mode" / "cassette.jsonl"
-PLAN_MODE_APPROVALS = FIXTURES / "plan_mode" / "approvals.jsonl"
-PLAN_MODE_META = FIXTURES / "plan_mode" / "meta.json"
+#: code_plan's transition tools, in the order an accepted run calls them.
+ACCEPTED_TRANSITIONS = [
+    "request_plan_approval",
+    "finalize_plan",
+    "mark_execute_complete",
+    "approve_review",
+]
 
-
-def _intent_from_meta(meta_path: Path, fallback: str = "enhance this repo") -> str:
-    if meta_path.exists():
-        try:
-            return str(json.loads(meta_path.read_text())["intent"]) or fallback
-        except Exception:  # noqa: BLE001
-            pass
-    return fallback
-
-
-# ── tests ─────────────────────────────────────────────────────────────────────
-
-
-@pytest.mark.cassette
-@pytest.mark.skipif(
-    not PLAN_MODE_CASSETTE.exists(),
-    reason=(
-        "Plan-mode cassette not found.  Record one with:\n"
-        "  uv run agenthicc --record-cassette tests/fixtures/plan_mode/\n"
-        "Then re-run: uv run pytest tests/integration/test_cassette_replay.py"
-    ),
+#: Recorded calls that were already invalid when recorded (see fixture README).
+KNOWN_RECORDED_MODEL_ERRORS = (
+    "entry 30: read_file:",
+    "entry 51: patch_file:",
+    "entry 71: read_file:",
 )
-@pytest.mark.timeout(600)
-async def test_plan_mode_end_to_end_orchestration(tmp_path, monkeypatch) -> None:
-    """Verify that code_plan fails closed when a recorded command fails.
 
-    What this catches:
-    - Missing tools (finalize_plan removed from plan phase tool list)
-    - Broken command completion gate (failed command still reaches review)
-    - Approval gate removed (workflow skips plan approval)
-    - Max-iterations regression (phase hits cap before calling completion tool)
-    """
-    cassette = SessionCassette.from_path(
-        cassette_path=PLAN_MODE_CASSETTE,
-        approvals_path=PLAN_MODE_APPROVALS if PLAN_MODE_APPROVALS.exists() else None,
-        intent=_intent_from_meta(PLAN_MODE_META),
-    )
-
-    monkeypatch.chdir(tmp_path)  # ensure no local files are read/written during replay
-    result: ReplayResult = await run_headless_replay(cassette)
-
-    # The historical recording contains a smoke-test command that exits 1.
-    # PRD-151 intentionally makes that outcome authoritative: the execution
-    # phase must stop instead of claiming a completed workflow.
-    assert result.status == "failed", (
-        f"Workflow unexpectedly reached completion. Status: {result.status!r}. "
-        f"Error: {result.error!r}. Phases completed: {result.phases}"
-    )
-    assert result.phases == ["plan", "execute"], (
-        f"Fail-closed phase sequence mismatch: {result.phases}"
-    )
-
-    # ── tool-call assertions ──────────────────────────────────────────────────
-    assert "finalize_plan" in result.tools_called, (
-        "finalize_plan was not called — plan approval gate may be broken or tool missing"
-    )
-    assert "mark_execute_complete" in result.tools_called, (
-        "mark_execute_complete was not called — execute phase may not be completing"
-    )
-    # The replay transport still contains the historical review requests, but
-    # no review phase completion event is emitted after the execute gate fails.
-
-    # ── approval-gate assertions ──────────────────────────────────────────────
-    assert result.approvals_consumed >= 1, (
-        "No approval gates were consumed — plan approval overlay may be broken"
-    )
-
-    # ── transport-call sanity ─────────────────────────────────────────────────
-    assert result.transport_calls == len(cassette.entries), (
-        f"Transport call count mismatch: made {result.transport_calls} calls, "
-        f"cassette has {len(cassette.entries)} entries.  "
-        "The orchestration is doing a different number of LLM calls than when recorded."
-    )
-
-    # Summarise what happened (always printed, useful on CI)
-    print(
-        f"\n  phases={result.phases}"
-        f"\n  tools_called={result.tools_called}"
-        f"\n  approvals_consumed={result.approvals_consumed}"
-        f"\n  transport_calls={result.transport_calls}"
-    )
+#: Write and exec calls made during execution. Each raises an approval prompt
+#: in today's default Safe execute mode; the recording never raised them (see
+#: the fixture README), so the replay's fallback answers them.
+EXECUTE_PHASE_APPROVALS = 14
 
 
-@pytest.mark.cassette
-@pytest.mark.skipif(
-    not PLAN_MODE_CASSETTE.exists(),
-    reason="Plan-mode cassette not found — see test_plan_mode_end_to_end_orchestration.",
-)
-@pytest.mark.timeout(30)
-async def test_plan_mode_cassette_integrity() -> None:
-    """Verify the cassette file itself is well-formed before running the main test."""
-    cassette = SessionCassette.from_path(cassette_path=PLAN_MODE_CASSETTE)
+def _cassette() -> SessionCassette:
+    return SessionCassette.from_path(CASSETTE, APPROVALS, intent=INTENT)
 
-    assert len(cassette.entries) > 0, "cassette.jsonl is empty"
 
-    # All four stop reasons defined by the Transport protocol are valid.
-    valid_stop_reasons = {"end_turn", "tool_use", "max_tokens", "stop_sequence"}
-    bad = [
-        f"  index={e.index}  stop_reason={e.response_stop_reason!r}"
-        for e in cassette.entries
-        if e.response_stop_reason not in valid_stop_reasons
+def test_recording_has_the_documented_shape() -> None:
+    cassette = _cassette()
+
+    assert len(cassette.entries) == 76
+    assert [entry.index for entry in cassette.entries] == list(range(76))
+    assert not any(entry.is_tool_free for entry in cassette.entries)
+    valid_stops = {"end_turn", "tool_use", "max_tokens", "stop_sequence"}
+    assert all(entry.response_stop_reason in valid_stops for entry in cassette.entries)
+    assert cassette.entries[0].response_stop_reason == "tool_use"
+
+    assert [(approval.kind, approval.allowed) for approval in cassette.approvals] == [
+        ("plan_review", False),
+        ("plan_review", True),
     ]
-    assert not bad, f"{len(bad)} entries have unrecognised stop_reason:\n" + "\n".join(bad)
+    assert all(approval.mode is None for approval in cassette.approvals)
+    meta = json.loads((FIXTURE / "meta.json").read_text(encoding="utf-8"))
+    assert meta["session_id"] == "cd1ba304-3ea8-47c7-bada-189462799692"
 
-    # The first response should be a tool use (LLM calls request_plan_approval or similar)
-    first = cassette.entries[0]
-    assert first.response_stop_reason == "tool_use", (
-        f"Expected first response to be tool_use, got {first.response_stop_reason!r}"
+
+@pytest.mark.timeout(300)
+async def test_code_plan_session_replays_hermetically(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    cassette = _cassette()
+
+    result = await run_headless_replay(
+        cassette,
+        workflow="code_plan",
+        cfg=AgenthiccConfig(),
+        hermetic=True,
+        mode="Yolo",
+        timeout_s=240,
     )
 
+    # Every recorded response was consumed by exactly the recorded phases.
+    assert result.error is None
+    assert result.status == "complete", result
+    assert result.phases == ["plan", "execute", "review", "summarize"]
+    assert result.transport_calls == len(cassette.entries) == 76
+    assert result.skipped_entries == 0
 
-# ── custom cassette path example ──────────────────────────────────────────────
-#
-# The pattern below shows how to reference a cassette by an explicit path.
-# Duplicate / rename this block for each scenario you want to regression-test.
-#
-# @pytest.mark.skipif(
-#     not Path("tests/fixtures/my_scenario/cassette.jsonl").exists(),
-#     reason="my_scenario cassette not found",
-# )
-# async def test_my_scenario() -> None:
-#     cassette = SessionCassette.from_path(
-#         cassette_path="tests/fixtures/my_scenario/cassette.jsonl",
-#         approvals_path="tests/fixtures/my_scenario/approvals.jsonl",
-#         intent="refactor the auth module",
-#     )
-#     result = await run_headless_replay(cassette)
-#     assert result.status == "complete"
-#     assert "finalize_plan" in result.tools_called
+    # The state machine accepted the recorded transitions in recorded order.
+    accepted = [
+        exchange.name
+        for exchange in result.tool_exchanges
+        if exchange.name in ACCEPTED_TRANSITIONS and exchange.accepted
+    ]
+    assert accepted == ACCEPTED_TRANSITIONS
+
+    # Both recorded plan reviews were delivered, in order: the rejection with
+    # its feedback, then the approval. The three other rejected requests are
+    # the recorded calls that omitted the plan (entries 29, 32 and 33).
+    reviews = [
+        exchange for exchange in result.tool_exchanges if exchange.name == "request_plan_approval"
+    ]
+    assert [exchange.accepted for exchange in reviews] == [False, False, False, False, True]
+    first, approved = reviews[0].result, reviews[-1].result
+    assert isinstance(first, dict) and first["feedback"] == "be more extensive"
+    assert isinstance(approved, dict) and str(approved["feedback"]).startswith("Looks beautiful!")
+    assert all("missing 1 required positional argument" in str(r.result) for r in reviews[1:4])
+
+    # Plan reviews came from the recording; only execution prompts did not.
+    assert result.approvals_consumed == len(cassette.approvals) + EXECUTE_PHASE_APPROVALS
+    assert result.approvals_unrecorded == EXECUTE_PHASE_APPROVALS
+
+    # No recorded call was blocked by the replay's capability policy.
+    assert not any(
+        "blocked in" in str(exchange.result)
+        for exchange in result.tool_exchanges
+        if not exchange.accepted
+    )
+
+    # Every recorded call still routes to an offered tool with arguments its
+    # current signature accepts, except the model errors made when recorded.
+    assert len(result.contract_violations) == len(KNOWN_RECORDED_MODEL_ERRORS), (
+        result.contract_violations
+    )
+    for violation, known in zip(
+        sorted(result.contract_violations), sorted(KNOWN_RECORDED_MODEL_ERRORS), strict=True
+    ):
+        assert violation.startswith(known), violation
+
+    # Hermetic: the recorded edits and test runs never touched the filesystem.
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.timeout(300)
+async def test_plan_mode_replay_keeps_execution_inside_the_hermetic_catalog(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A Plan-mode session still executes only stubs after its mode switch.
+
+    The execute phase switches from the caller's Plan mode to the approved
+    Safe mode. Its write and exec tools must be offered under that mode, and
+    must be the replay stubs, never the real built-ins behind them.
+    """
+    monkeypatch.chdir(tmp_path)
+    cassette = _cassette()
+
+    result = await run_headless_replay(
+        cassette,
+        workflow="code_plan",
+        cfg=AgenthiccConfig(),
+        hermetic=True,
+        mode="Plan",
+        timeout_s=240,
+    )
+
+    assert result.status == "complete", result
+    assert result.phases == ["plan", "execute", "review", "summarize"]
+    side_effecting = {
+        "write_file",
+        "patch_file",
+        "apply_diff",
+        "append_file",
+        "run_tests",
+        "run_bash",
+    }
+    execute_calls = [
+        exchange
+        for exchange in result.tool_exchanges
+        if exchange.name in side_effecting and exchange.accepted
+    ]
+    assert execute_calls
+    assert all(
+        isinstance(exchange.result, dict) and exchange.result.get("replayed") is True
+        for exchange in execute_calls
+    )
+    assert list(tmp_path.iterdir()) == []
+
+
+async def test_unknown_workflow_is_rejected_before_any_request() -> None:
+    with pytest.raises(ValueError, match="unknown workflow"):
+        await run_headless_replay(_cassette(), workflow="no_such_workflow", cfg=AgenthiccConfig())

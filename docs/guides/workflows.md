@@ -1147,10 +1147,11 @@ directory workflow is discovered when it contains `runner.py`; its sibling
 Python modules are loaded as the same temporary package, so relative imports
 for workflow-specific tools work during startup and `/workflows reload`.
 
-Workflow files are imported as Python code during discovery. There is no
-workflow-specific trust prompt at import time, so only place code there that
-you trust. Tool capabilities, modes, and approvals still apply when phases
-run.
+Workflow files are Python code, so a project workflow is imported only after
+`agenthicc trust add` records trust for its exact content — every Python file
+in a workflow package counts, because the package imports them. An untrusted or
+edited workflow is skipped with a warning. Tool capabilities, modes, and
+approvals still apply when phases run.
 
 The registry is built once per session by default. Editing a workflow file can
 be picked up with `/workflows reload`; a session restart remains appropriate
@@ -1252,7 +1253,7 @@ phase-transition-tool instructions
 ```
 
 The override replaces only the role-specific prompt. It does not replace the
-global `base_system_prompt`, remove security/capability enforcement, or remove
+global base contract (`BASE_SYSTEM_PROMPT`), remove security/capability enforcement, or remove
 the framework instructions that tell the agent to ask questions and use
 transition tools. The current phase task, original intent, phase artifacts,
 and retry context are separate dynamic context supplied by the runner. A

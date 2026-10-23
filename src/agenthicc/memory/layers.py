@@ -25,6 +25,8 @@ import json
 import sqlite3
 import time
 from collections import OrderedDict
+from collections.abc import Iterator
+from contextlib import closing, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -230,8 +232,18 @@ class ProjectMemoryLayer:
         conn.execute("PRAGMA journal_mode=WAL")
         return conn
 
+    @contextmanager
+    def _transaction(self) -> Iterator[sqlite3.Connection]:
+        """Run one transaction on a fresh connection, then close it.
+
+        A ``sqlite3.Connection`` used as a context manager commits or rolls
+        back but does not close; ``closing`` releases the connection.
+        """
+        with closing(self._connect()) as conn, conn:
+            yield conn
+
     def _init_schema(self) -> None:
-        with self._connect() as conn:
+        with self._transaction() as conn:
             conn.executescript(_KV_SCHEMA + _ARTIFACT_SCHEMA)
 
     # -- key-value API ----------------------------------------------------------
@@ -240,7 +252,7 @@ class ProjectMemoryLayer:
         """Return ``(found, value)`` with the value JSON-decoded."""
 
         def _read() -> tuple[bool, object]:
-            with self._connect() as conn:
+            with self._transaction() as conn:
                 row = conn.execute(
                     "SELECT value FROM kv WHERE namespace = ? AND key = ?",
                     (namespace, key),
@@ -257,7 +269,7 @@ class ProjectMemoryLayer:
         now = time.time()
 
         def _write() -> None:
-            with self._connect() as conn:
+            with self._transaction() as conn:
                 conn.execute(
                     """
                     INSERT INTO kv (namespace, key, value, created_at)
@@ -273,7 +285,7 @@ class ProjectMemoryLayer:
 
     async def delete(self, key: str, *, namespace: str = "default") -> None:
         def _delete() -> None:
-            with self._connect() as conn:
+            with self._transaction() as conn:
                 conn.execute(
                     "DELETE FROM kv WHERE namespace = ? AND key = ?",
                     (namespace, key),
@@ -297,7 +309,7 @@ class ProjectMemoryLayer:
         now = time.time()
 
         def _write() -> None:
-            with self._connect() as conn:
+            with self._transaction() as conn:
                 conn.execute(
                     """
                     INSERT INTO artifacts
@@ -320,7 +332,7 @@ class ProjectMemoryLayer:
 
     async def get_artifact(self, artifact_id: str) -> ArtifactRecord | None:
         def _read() -> ArtifactRecord | None:
-            with self._connect() as conn:
+            with self._transaction() as conn:
                 row = conn.execute(
                     "SELECT * FROM artifacts WHERE artifact_id = ?",
                     (artifact_id,),
@@ -338,8 +350,13 @@ class ProjectMemoryLayer:
         return await asyncio.to_thread(_read)
 
     async def vacuum(self) -> None:
+        def _vacuum() -> None:
+            # VACUUM cannot run inside a transaction, so no ``with conn``.
+            with closing(self._connect()) as conn:
+                conn.execute("VACUUM")
+
         async with self._write_lock:
-            await asyncio.to_thread(lambda: self._connect().execute("VACUUM").connection.close())
+            await asyncio.to_thread(_vacuum)
 
 
 class GlobalMemoryLayer(ProjectMemoryLayer):

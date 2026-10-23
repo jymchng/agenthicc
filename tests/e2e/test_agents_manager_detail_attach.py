@@ -319,8 +319,8 @@ async def test_completed_details_input_opens_and_starts_new_background_attempt(
     assert result.ok
     assert len(launches) == 1
     request, starting = launches[0]
-    assert getattr(request, "run_id") == ""
-    assert not getattr(request, "detached_goal")
+    assert request.run_id == ""
+    assert not request.detached_goal
     assert starting.status is SessionStatus.STARTING
     assert starting.session_id == session.session_id
     assert starting.resume_marker.startswith("input:")

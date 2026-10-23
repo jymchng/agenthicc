@@ -15,6 +15,8 @@ import math
 import re
 from typing import Protocol, cast
 
+from agenthicc.supervised_tasks import SupervisedTasks
+
 __all__ = ["SemanticIndex"]
 
 _LaurenStore: type[object] | None
@@ -58,7 +60,7 @@ class _FallbackStore:
         content: str,
         *,
         id: str,
-        metadata: dict[str, object] | None = None,  # noqa: ARG002
+        metadata: dict[str, object] | None = None,
         embedding: list[float] | None = None,
     ) -> str:
         if embedding is not None:
@@ -115,6 +117,15 @@ class SemanticIndex:
         self._store: _VectorStore = (
             cast(_VectorStore, _LaurenStore()) if _LaurenStore is not None else _FallbackStore()
         )
+        self._indexing = SupervisedTasks("semantic index")
+
+    def index_in_background(self, doc_id: str, text: str) -> None:
+        """Index *text* without making the caller wait; a failure is logged."""
+        self._indexing.start(self.add(doc_id, text), name=f"semantic-index-{doc_id}")
+
+    async def aclose(self, timeout: float = 5.0) -> None:
+        """Finish or cancel background indexing; the index stays searchable."""
+        await self._indexing.aclose(timeout=timeout)
 
     async def add(
         self,

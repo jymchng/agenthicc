@@ -82,7 +82,7 @@ class AgentsRegistry:
         Reads from the @agent(system=...) metadata on the registered class.
         Returns an empty string for unknown types (base prompt still applies).
         """
-        from lauren_ai._agents import AGENT_META  # noqa: PLC0415
+        from lauren_ai._agents import AGENT_META
 
         defn = self.get(agent_type) or self.get("auto")
         if defn is None:
@@ -103,15 +103,15 @@ class AgentsRegistry:
         and prepends base_system_prompt (the universal operating contract) to it.
         Creates a fresh class per turn so the shared base class is never mutated.
 
-        base_system_prompt defaults to BASE_SYSTEM_PROMPT; callers may pass a
-        custom value from cfg.execution.base_system_prompt when set.
+        base_system_prompt defaults to BASE_SYSTEM_PROMPT; a caller may pass a
+        different contract.
         """
-        from lauren_ai._agents import agent as agent_decorator, use_tools, AGENT_META  # noqa: PLC0415
-        from agenthicc.agents.plugin import BASE_SYSTEM_PROMPT  # noqa: PLC0415
+        from lauren_ai._agents import agent as agent_decorator, use_tools, AGENT_META
+        from agenthicc.agents.plugin import BASE_SYSTEM_PROMPT
 
         defn = self.get(agent_type) or self.get("auto")
         if defn is None:
-            from agenthicc.agents.builtin import AutoAgent  # noqa: PLC0415
+            from agenthicc.agents.builtin import AutoAgent
 
             defn = AgentDefinition(name="auto", agent_class=AutoAgent)
 
@@ -171,7 +171,7 @@ def _make_builtin_loader(name: str) -> Callable[[], AgentDefinition]:
     """Return a zero-argument loader for one built-in role."""
 
     def load() -> AgentDefinition:
-        from agenthicc.agents.builtin import BUILTIN_AGENT_DEFINITIONS  # noqa: PLC0415
+        from agenthicc.agents.builtin import BUILTIN_AGENT_DEFINITIONS
 
         for definition in BUILTIN_AGENT_DEFINITIONS:
             if definition.name == name:
@@ -194,6 +194,10 @@ def _scan_agents_dir(directory: Path, source: str, registry: AgentsRegistry) -> 
 
 
 def _load_agent_file(path: Path, source: str, registry: AgentsRegistry) -> None:
+    from agenthicc.plugins.trust import current_extension_trust
+
+    if not current_extension_trust().permits(path, kind="agent"):
+        return
     module_name = f"_agenthicc_agent_{path.stem}"
     spec = importlib.util.spec_from_file_location(module_name, path)
     if spec is None or spec.loader is None:

@@ -20,11 +20,12 @@ import asyncio
 import dataclasses
 import logging
 import uuid
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, TypedDict
 
 from agenthicc.workflows.base_runner import BaseWorkflowRunner
 from agenthicc.workflows.code_plan.state import CodePlanContext, CodePlanState
-from agenthicc.tools.base import ToolLike
+from agenthicc.tools.base import ToolLike, tool_name
 
 if TYPE_CHECKING:
     from lauren_ai._memory import ShortTermMemory
@@ -196,9 +197,9 @@ class CodePlanRunner(BaseWorkflowRunner):
     # ── public entry points ───────────────────────────────────────────────────
 
     async def run(self, intent: str) -> CodePlanContext:
-        from lauren_ai._memory import ShortTermMemory  # noqa: PLC0415
-        from agenthicc.kernel import Event  # noqa: PLC0415
-        from agenthicc.workflows.plugin import WorkflowRun  # noqa: PLC0415
+        from lauren_ai._memory import ShortTermMemory
+        from agenthicc.kernel import Event
+        from agenthicc.workflows.plugin import WorkflowRun
 
         session_memory = (
             self._cfg.session_memory
@@ -392,8 +393,8 @@ class CodePlanRunner(BaseWorkflowRunner):
 
     async def resume(self, context: object) -> None:
         """Resume a typed checkpoint context or the legacy generic context."""
-        from lauren_ai._memory import ShortTermMemory  # noqa: PLC0415
-        from agenthicc.workflows.plugin import WorkflowContext, WorkflowRun  # noqa: PLC0415
+        from lauren_ai._memory import ShortTermMemory
+        from agenthicc.workflows.plugin import WorkflowContext, WorkflowRun
 
         handle = self._cfg.workflow_handle
         session_memory = (
@@ -484,7 +485,7 @@ class CodePlanRunner(BaseWorkflowRunner):
 
     async def _plan(self, ctx: CodePlanContext) -> CodePlanState:
         """Loop until finalize_plan() or exit_code_plan() fires; return EXECUTE, EXITED, or FAILED."""
-        from agenthicc.workflows.code_plan.phase_tools import (  # noqa: PLC0415
+        from agenthicc.workflows.code_plan.phase_tools import (
             make_planner_tools,
             make_questions_tool,
         )
@@ -554,7 +555,7 @@ class CodePlanRunner(BaseWorkflowRunner):
 
     async def _execute(self, ctx: CodePlanContext) -> CodePlanState:
         """Loop until mark_execute_complete() fires; return REVIEW or FAILED."""
-        from agenthicc.workflows.code_plan.phase_tools import (  # noqa: PLC0415
+        from agenthicc.workflows.code_plan.phase_tools import (
             make_executor_tools,
             make_questions_tool,
         )
@@ -575,7 +576,7 @@ class CodePlanRunner(BaseWorkflowRunner):
             execute_event: asyncio.Event = asyncio.Event()
             execute_data: dict[str, object] = {}
 
-            tools: _ToolList = list(self._base_tools()) + list(
+            tools: _ToolList = list(self._base_tools(ctx.execute_mode)) + list(
                 make_executor_tools(execute_event, execute_data)
             )
             tools.extend(make_questions_tool(self._cfg.approval_svc))
@@ -617,7 +618,7 @@ class CodePlanRunner(BaseWorkflowRunner):
 
     async def _review(self, ctx: CodePlanContext) -> CodePlanState:
         """Loop until approve_review() or reject_review() fires; return SUMMARIZE, EXECUTE, or FAILED."""
-        from agenthicc.workflows.code_plan.phase_tools import (  # noqa: PLC0415
+        from agenthicc.workflows.code_plan.phase_tools import (
             make_reviewer_tools,
             make_questions_tool,
         )
@@ -691,7 +692,7 @@ class CodePlanRunner(BaseWorkflowRunner):
 
     async def _summarize(self, ctx: CodePlanContext) -> CodePlanState:
         """Run the summary turn, returning FAILED if that turn errors."""
-        from agenthicc.workflows.code_plan.phase_tools import make_questions_tool  # noqa: PLC0415
+        from agenthicc.workflows.code_plan.phase_tools import make_questions_tool
 
         self._set_phase("summarize", 3, ctx)
         ctx.command_outcomes.clear()
@@ -733,7 +734,7 @@ class CodePlanRunner(BaseWorkflowRunner):
         mode: str | None = None,
         max_turns: int = 10,
         shared_memory: "ShortTermMemory | None" = None,
-        tools: _ToolList | None = None,
+        tools: Sequence[ToolLike] | None = None,
         model_override: str = "",
     ) -> None:
         """Execute one additional agent phase using this runner's tool set.
@@ -790,8 +791,8 @@ class CodePlanRunner(BaseWorkflowRunner):
             the ``@tool()`` closures that end this phase.  ``None`` uses the
             session tools alone.
         """
-        from lauren_ai._memory import ShortTermMemory as _STM  # noqa: PLC0415
-        from agenthicc.workflows.code_plan.state import CodePlanContext  # noqa: PLC0415
+        from lauren_ai._memory import ShortTermMemory as _STM
+        from agenthicc.workflows.code_plan.state import CodePlanContext
 
         # Build a minimal CodePlanContext so the turn has a shared_memory.
         _sm = (
@@ -804,28 +805,12 @@ class CodePlanRunner(BaseWorkflowRunner):
             run_id=self._run_id or "extension",
             shared_memory=_sm,
         )
-        from agenthicc.workflows.code_plan.phase_tools import make_questions_tool  # noqa: PLC0415
+        from agenthicc.workflows.code_plan.phase_tools import make_questions_tool
 
-        # Capability filtering must use the phase's effective mode.  The
-        # actual mode switch also happens inside _run_turn, but constructing
-        # the base bundle before that switch would filter Yolo write tools out
-        # while the caller is still in Safe/Plan mode.  Set the mode only for
-        # this synchronous bundle compilation, restore it before awaiting, and
-        # let _run_turn own the normal async lifetime/restore boundary.
-        bundle_mode = None
-        if mode is not None and self._mode_manager is not None:
-            original_bundle_mode = self._cfg.app_state.active_mode()
-            bundle_mode = original_bundle_mode
-            override_name = self._mode_manager.resolve_name(mode)
-            self._mode_manager.set_by_name(override_name)
-        try:
-            phase_tools: _ToolList = list(self._base_tools())
-            phase_tools.extend(make_questions_tool(self._cfg.approval_svc))
-            if tools:
-                phase_tools.extend(tools)
-        finally:
-            if bundle_mode is not None and self._mode_manager is not None:
-                self._mode_manager.restore(bundle_mode)
+        phase_tools: _ToolList = list(self._base_tools(mode))
+        phase_tools.extend(make_questions_tool(self._cfg.approval_svc))
+        if tools:
+            phase_tools.extend(tools)
         active_phase = getattr(self, "_active_phase_name", "")
         active_model = model_override or (self._phase_model(active_phase) if active_phase else "")
         turn_options: _TurnOptions = {}
@@ -919,16 +904,16 @@ class CodePlanRunner(BaseWorkflowRunner):
         built with ``model=model_override`` so that ``AgentTurnRunner._resolve_model()``
         picks up the per-phase model (PRD-115).
         """
-        from agenthicc.runners.agent_turn import _run_agent_turn  # noqa: PLC0415
-        from agenthicc.workflows.plugin import (  # noqa: PLC0415
+        from agenthicc.runners.agent_turn import _run_agent_turn
+        from agenthicc.workflows.plugin import (
             _WORKFLOW_USER_QUESTION_REMINDER,
             phase_transition_instruction,
         )
-        from agenthicc.runners.prompt_contract import (  # noqa: PLC0415
+        from agenthicc.runners.prompt_contract import (
             build_workflow_prompt_contract,
             tool_name,
         )
-        from agenthicc.tools.capabilities import ToolCapability, get_tool_capabilities  # noqa: PLC0415
+        from agenthicc.tools.capabilities import ToolCapability, get_tool_capabilities
 
         original_mode = self._cfg.app_state.active_mode()
         if mode is not None and self._mode_manager is not None:
@@ -948,7 +933,7 @@ class CodePlanRunner(BaseWorkflowRunner):
         if self._cfg.approval_svc is not None and ctx.shared_memory is not None:
             ctx.shared_memory.ensure_valid()
 
-        from agenthicc.background.terminals import (  # noqa: PLC0415
+        from agenthicc.background.terminals import (
             reset_current_terminal_wait_policy,
             set_current_terminal_wait_policy,
         )
@@ -1037,12 +1022,20 @@ class CodePlanRunner(BaseWorkflowRunner):
                 return f"required command did not succeed ({state}): {reason[:400]}"
         return None
 
-    def _base_tools(self) -> _ToolList:
-        """Return capability-filtered project tools for the current mode."""
-        from agenthicc.tools.capabilities import get_tool_capabilities  # noqa: PLC0415
-        from agenthicc.workflows.memory_tools import make_memory_tools  # noqa: PLC0415
+    def _base_tools(self, mode: str | None = None) -> _ToolList:
+        """Return the project tools a phase running under *mode* may use.
 
-        mode_blocked = self._cfg.app_state.active_mode().blocked_capabilities
+        *mode* is the phase's mode override, as passed to ``_run_turn``;
+        ``None`` means the active mode.  The override is resolved, not
+        activated, so building a bundle never publishes a mode change.
+        """
+        from agenthicc.tools.capabilities import get_tool_capabilities
+        from agenthicc.tui.runtime.mode_manager import phase_mode
+        from agenthicc.workflows.memory_tools import make_memory_tools
+
+        mode_blocked = phase_mode(
+            self._cfg.app_state.active_mode(), self._mode_manager, mode
+        ).blocked_capabilities
         blocked_key = tuple(sorted(str(item) for item in mode_blocked))
         if self._tool_bundle_cache is None:
             all_tools: _ToolList = list(self._cfg.all_plugin_tools())
@@ -1059,9 +1052,7 @@ class CodePlanRunner(BaseWorkflowRunner):
             # order rather than a contractually sorted order.  Canonicalize it
             # once at the epoch boundary so every phase sees the same schema
             # sequence and provider cache key.
-            all_tools.sort(
-                key=lambda tool: str(getattr(tool, "name", getattr(tool, "__name__", "")))
-            )
+            all_tools.sort(key=tool_name)
             self._tool_bundle_cache = all_tools
         if self._tool_bundle_cache_key == blocked_key and self._filtered_tool_cache is not None:
             return list(self._filtered_tool_cache)

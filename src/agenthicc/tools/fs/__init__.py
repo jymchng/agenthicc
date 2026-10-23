@@ -33,7 +33,7 @@ def _git_keep_filter(root: Path) -> "Callable[[str], bool] | None":
     when *root* is not inside a git repo (or git is unavailable), so the caller
     falls back to reading everything (capped + backstopped by Layer C).
     """
-    import subprocess  # noqa: PLC0415
+    import subprocess
 
     try:
         proc = subprocess.run(
@@ -95,7 +95,7 @@ async def _authorize_glob_pattern(
     policy = _policy(context)
     if policy is None:
         return
-    from agenthicc.tools.workspace_access import (  # noqa: PLC0415
+    from agenthicc.tools.workspace_access import (
         _combine_pattern_path,
         _pattern_can_escape,
     )
@@ -266,7 +266,7 @@ class ReadFileTool(Tool):
             return {"ok": False, "error": f"file_too_large: {resolved.stat().st_size} bytes"}
         # PRD-132 L1: serve from the durable file cache when the file is
         # unchanged (mtime/size/encoding match); otherwise read and record.
-        from agenthicc.tools.fs.file_cache import get_file_cache  # noqa: PLC0415
+        from agenthicc.tools.fs.file_cache import get_file_cache
 
         _fc = get_file_cache()
         _abspath = str(resolved)
@@ -934,6 +934,6 @@ class FsToolKit:
 
     def all_agent_tools(self) -> list[Callable[..., object]]:
         """Return all 24 @tool()-decorated agent tools (14 original + 10 new)."""
-        from agenthicc.tools.fs.agent_tools import FS_AGENT_TOOLS  # noqa: PLC0415
+        from agenthicc.tools.fs.agent_tools import FS_AGENT_TOOLS
 
         return FS_AGENT_TOOLS

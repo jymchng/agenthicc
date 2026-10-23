@@ -8,23 +8,32 @@ bounded async method per non-terminal state, an explicit
 only because a phase tool was called.
 """
 
+# Type debt: this runner reuses CodePlanRunner's turn machinery but drives its
+# own state machine, so run(), resume() and its phase methods keep their own
+# signatures. PRD-250 WS-4.2 replaces the inheritance with a generic base.
+# type-debt: owner=PRD-250 WS-4.2; expires=2026-12-03
+# mypy: disable-error-code=override
+
 from __future__ import annotations
 
 import asyncio
 import dataclasses
 import logging
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from enum import Enum, auto
 from typing import TYPE_CHECKING
 
 from agenthicc.workflows.code_plan.runner import CodePlanRunner
+from agenthicc.workflows.payload import payload_int, payload_mappings
 from agenthicc.workflows.plugin import PhaseSpec, WorkflowParams, WorkflowPlugin
 
 if TYPE_CHECKING:
     from lauren_ai._memory import ShortTermMemory
     from agenthicc.tui.runtime.mode_manager import ModeManager
     from agenthicc.workflows.config import WorkflowConfig
+
+from agenthicc.workflows import name_that_ui
 
 log = logging.getLogger(__name__)
 
@@ -73,30 +82,10 @@ def _mobile_verification_error(summary: str) -> str | None:
 # ---------------------------------------------------------------------------
 
 
-def _import_ntui():
-    """Import the NameThatUI helper (package copy first, then a sibling)."""
-    try:
-        from agenthicc.workflows import name_that_ui as _ntui
-
-        return _ntui
-    except Exception:  # noqa: BLE001 - helper is optional
-        pass
-    try:
-        import name_that_ui as _ntui  # type: ignore[no-redef]
-
-        return _ntui
-    except Exception:  # noqa: BLE001 - helper is optional
-        return None
-
-
-def _load_ntui_catalog() -> list[dict]:
+def _load_ntui_catalog() -> list[dict[str, object]]:
     """Load the cached/fetched NameThatUI catalog; [] when unavailable."""
-    ntui = _import_ntui()
-    if ntui is None:
-        log.info("name_that_ui helper unavailable - proceeding without the dictionary")
-        return []
     try:
-        catalog = ntui.load_catalog()
+        catalog = name_that_ui.load_catalog()
         if catalog:
             log.info("name_that_ui catalog loaded: %d elements", len(catalog))
         return catalog or []
@@ -105,13 +94,13 @@ def _load_ntui_catalog() -> list[dict]:
         return []
 
 
-def _parse_component_plan(components: object) -> list[dict]:
+def _parse_component_plan(components: object) -> list[dict[str, object]]:
     """Turn the PLAN phase's component list into structured component specs.
 
     Each entry is one line:  "NAME | BUILD SPEC | VERIFY CHECK".
     Missing sections fall back to the name alone.
     """
-    plan: list[dict] = []
+    plan: list[dict[str, object]] = []
     if not isinstance(components, (list, tuple)):
         return plan
     for item in components:
@@ -175,9 +164,9 @@ class SiteImitateContext:
     analysis: str = ""
     plan: str = ""
     component_inventory: str = ""
-    component_plan: list[dict] = dataclasses.field(default_factory=list)
+    component_plan: list[dict[str, object]] = dataclasses.field(default_factory=list)
     component_index: int = 0
-    catalog: list[dict] = dataclasses.field(default_factory=list, repr=False)
+    catalog: list[dict[str, object]] = dataclasses.field(default_factory=list, repr=False)
     artifacts: dict[str, str] = dataclasses.field(default_factory=dict)
     # Session memory is injected by the session and deliberately excluded from
     # the checkpoint payload. The restore hook reattaches the supplied object.
@@ -187,7 +176,7 @@ class SiteImitateContext:
 def _make_analyze_tools(
     event: asyncio.Event,
     data: dict[str, str],
-    catalog: list[dict],
+    catalog: list[dict[str, object]],
 ) -> list[Callable[..., object]]:
     """Return the tools that can end or enrich the analyze phase."""
     from lauren_ai._tools import tool
@@ -201,14 +190,13 @@ def _make_analyze_tools(
                 (e.g. "the three lines that open a side panel", "the gray text
                 inside the box that disappears when you type").
         """
-        ntui = _import_ntui()
-        if ntui is None or not catalog:
+        if not catalog:
             return {
                 "ok": False,
                 "error": "The NameThatUI dictionary is unavailable.",
                 "fix": "Describe this element from scratch in the analysis.",
             }
-        matches = ntui.lookup(description, catalog, top=5)
+        matches = name_that_ui.lookup(description, catalog, top=5)
         if not matches:
             return {
                 "ok": True,
@@ -217,8 +205,8 @@ def _make_analyze_tools(
             }
         return {
             "ok": True,
-            "matches": [ntui.match_brief(m) for m in matches],
-            "message": ntui.format_matches(matches),
+            "matches": [name_that_ui.match_brief(m) for m in matches],
+            "message": name_that_ui.format_matches(matches),
         }
 
     @tool()
@@ -233,19 +221,18 @@ def _make_analyze_tools(
             query: Optional keyword to narrow the list (matched against the
                 name and its aliases), e.g. "menu", "field", "scroll".
         """
-        ntui = _import_ntui()
-        if ntui is None or not catalog:
+        if not catalog:
             return {
                 "ok": False,
                 "error": "The NameThatUI dictionary is unavailable.",
                 "fix": "Describe observed elements from scratch in the analysis.",
             }
-        names = ntui.list_names(catalog, platform=platform, query=query)
+        names = name_that_ui.list_names(catalog, platform=platform, query=query)
         return {
             "ok": True,
             "total": len(names),
             "components": names,
-            "message": ntui.format_name_list(names),
+            "message": name_that_ui.format_name_list(names),
         }
 
     @tool()
@@ -277,13 +264,13 @@ def _make_analyze_tools(
 
 def _make_plan_tools(
     event: asyncio.Event,
-    data: dict[str, str],
+    data: dict[str, object],
 ) -> list[Callable[..., object]]:
     """Return tools that can end or redirect the plan phase."""
     from lauren_ai._tools import tool
 
     @tool()
-    async def submit_plan(plan: str, components: list[str] = []) -> dict[str, object]:
+    async def submit_plan(plan: str, components: list[str] | None = None) -> dict[str, object]:
         """Record the architecture and build plan, then advance to scaffold.
 
         Args:
@@ -363,7 +350,7 @@ def _make_scaffold_tools(
 def _make_build_tools(
     event: asyncio.Event,
     data: dict[str, str],
-    catalog: list[dict],
+    catalog: list[dict[str, object]],
 ) -> list[Callable[..., object]]:
     """Return the tools that can end or enrich the build phase."""
     from lauren_ai._tools import tool
@@ -375,14 +362,13 @@ def _make_build_tools(
         Args:
             description: How the element looks or where it sits, in plain words.
         """
-        ntui = _import_ntui()
-        if ntui is None or not catalog:
+        if not catalog:
             return {
                 "ok": False,
                 "error": "The NameThatUI dictionary is unavailable.",
                 "fix": "Build this component from the plan and your best judgment.",
             }
-        matches = ntui.lookup(description, catalog, top=5)
+        matches = name_that_ui.lookup(description, catalog, top=5)
         if not matches:
             return {
                 "ok": True,
@@ -391,8 +377,8 @@ def _make_build_tools(
             }
         return {
             "ok": True,
-            "matches": [ntui.match_brief(m) for m in matches],
-            "message": ntui.format_matches(matches),
+            "matches": [name_that_ui.match_brief(m) for m in matches],
+            "message": name_that_ui.format_matches(matches),
         }
 
     @tool()
@@ -646,7 +632,9 @@ class SiteImitateRunner(CodePlanRunner):
             return 3 + 2 * n
         return 0
 
-    async def _analyze(self, ctx: SiteImitateContext, memory: object) -> SiteImitateState:
+    async def _analyze(
+        self, ctx: SiteImitateContext, memory: ShortTermMemory | None
+    ) -> SiteImitateState:
         """Loop until submit_analysis fires; return PLAN or FAILED."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
@@ -708,11 +696,13 @@ class SiteImitateRunner(CodePlanRunner):
         ctx.fail_reason = "analyze phase never called submit_analysis()"
         return SiteImitateState.FAILED
 
-    async def _plan(self, ctx: SiteImitateContext, memory: object) -> SiteImitateState:
+    async def _plan(
+        self, ctx: SiteImitateContext, memory: ShortTermMemory | None
+    ) -> SiteImitateState:
         """Loop until submit_plan fires; parse the component list; return SCAFFOLD, ANALYZE, or FAILED."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
-            data: dict[str, str] = {}
+            data: dict[str, object] = {}
             await self.run_phase(
                 intent=ctx.intent,
                 text=(
@@ -763,21 +753,12 @@ class SiteImitateRunner(CodePlanRunner):
                 tools=_make_plan_tools(event, data),
             )
             if event.is_set():
-                action = data.get("action", "")
-                if action == "reanalyze":
-                    ctx.artifacts["reanalysis_question"] = data.get("question", "")
+                if data.get("action") == "reanalyze":
+                    ctx.artifacts["reanalysis_question"] = str(data.get("question", ""))
                     return SiteImitateState.ANALYZE
-                ctx.plan = data.get("plan", "")
+                ctx.plan = str(data.get("plan", ""))
                 ctx.artifacts["plan"] = ctx.plan
-                raw_components = data.get("components", "")
-                if isinstance(raw_components, str) and raw_components:
-                    import json as _json
-
-                    try:
-                        raw_components = _json.loads(raw_components)
-                    except Exception:  # noqa: BLE001 - fall back to splitting lines
-                        raw_components = [ln for ln in raw_components.splitlines() if ln.strip()]
-                ctx.component_plan = _parse_component_plan(raw_components)
+                ctx.component_plan = _parse_component_plan(data.get("components"))
                 if not ctx.component_plan:
                     # No structured list - treat the plan itself as one component.
                     ctx.component_plan = [{"name": "The Website", "build": ctx.plan, "verify": ""}]
@@ -794,7 +775,9 @@ class SiteImitateRunner(CodePlanRunner):
         ctx.fail_reason = "plan phase never called submit_plan() or request_reanalysis()"
         return SiteImitateState.FAILED
 
-    async def _scaffold(self, ctx: SiteImitateContext, memory: object) -> SiteImitateState:
+    async def _scaffold(
+        self, ctx: SiteImitateContext, memory: ShortTermMemory | None
+    ) -> SiteImitateState:
         """Loop until scaffold_complete fires; return BUILD (or FINAL_VERIFY) or FAILED."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
@@ -835,13 +818,15 @@ class SiteImitateRunner(CodePlanRunner):
         ctx.fail_reason = "scaffold phase never called scaffold_complete()"
         return SiteImitateState.FAILED
 
-    def _current_component(self, ctx: SiteImitateContext) -> dict:
+    def _current_component(self, ctx: SiteImitateContext) -> dict[str, object]:
         """Return the component spec for the current component index."""
         if ctx.component_plan and 0 <= ctx.component_index < len(ctx.component_plan):
             return ctx.component_plan[ctx.component_index]
         return {"name": "component", "build": "", "verify": ""}
 
-    async def _build_component(self, ctx: SiteImitateContext, memory: object) -> SiteImitateState:
+    async def _build_component(
+        self, ctx: SiteImitateContext, memory: ShortTermMemory | None
+    ) -> SiteImitateState:
         """Build the current component; return VERIFY or FAILED."""
         comp = self._current_component(ctx)
         label = f"{ctx.component_index + 1}/{len(ctx.component_plan)} - {comp.get('name') or 'component'}"
@@ -890,7 +875,9 @@ class SiteImitateRunner(CodePlanRunner):
         ctx.fail_reason = f"build phase never called component_built() for {label}"
         return SiteImitateState.FAILED
 
-    async def _verify_component(self, ctx: SiteImitateContext, memory: object) -> SiteImitateState:
+    async def _verify_component(
+        self, ctx: SiteImitateContext, memory: ShortTermMemory | None
+    ) -> SiteImitateState:
         """Verify the current component; pass advances, fail re-enters its build."""
         comp = self._current_component(ctx)
         label = f"{ctx.component_index + 1}/{len(ctx.component_plan)} - {comp.get('name') or 'component'}"
@@ -940,7 +927,9 @@ class SiteImitateRunner(CodePlanRunner):
         ctx.fail_reason = f"verify phase never reported a verdict for {label}"
         return SiteImitateState.FAILED
 
-    async def _final_verify(self, ctx: SiteImitateContext, memory: object) -> SiteImitateState:
+    async def _final_verify(
+        self, ctx: SiteImitateContext, memory: ShortTermMemory | None
+    ) -> SiteImitateState:
         """Whole-site build + route check; pass -> COMPLETE, fail -> last component build."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
@@ -1133,7 +1122,7 @@ class SiteImitateWorkflow(WorkflowPlugin):
     def checkpoint_context_from_payload(
         cls,
         payload: dict[str, object],
-        memory: object | None = None,
+        memory: ShortTermMemory | None = None,
     ) -> SiteImitateContext:
         """Restore state and attach the already-open session memory."""
         raw_state = str(payload.get("state", SiteImitateState.ANALYZE.name))
@@ -1153,17 +1142,16 @@ class SiteImitateWorkflow(WorkflowPlugin):
             new_purpose=str(payload.get("new_purpose", "")),
             run_id=str(payload.get("run_id", "")),
             state=state,
-            phase_iteration=int(payload.get("phase_iteration", 0)),
+            phase_iteration=payload_int(payload.get("phase_iteration"), 0),
             fail_reason=str(payload.get("fail_reason", "")),
             analysis=str(payload.get("analysis", "")),
             plan=str(payload.get("plan", "")),
             component_inventory=str(payload.get("component_inventory", "")),
             component_plan=[
-                {str(k): str(v) for k, v in item.items()}
-                for item in payload.get("component_plan", [])
-                if isinstance(item, dict)
+                {key: str(value) for key, value in item.items()}
+                for item in payload_mappings(payload.get("component_plan"))
             ],
-            component_index=int(payload.get("component_index", 0)),
+            component_index=payload_int(payload.get("component_index"), 0),
             artifacts=artifacts,
             shared_memory=memory,
         )
@@ -1178,7 +1166,7 @@ class SiteImitateWorkflow(WorkflowPlugin):
         return SiteImitateRunner(config, mode_manager)
 
     @classmethod
-    def build_params(cls, source: dict[str, object]) -> WorkflowParams:
+    def build_params(cls, source: Mapping[str, object]) -> WorkflowParams:
         """Build typed params from [workflows.site_imitate]."""
         return SiteImitateParams(
             analyze_model=str(source.get("analyze_model", "") or ""),

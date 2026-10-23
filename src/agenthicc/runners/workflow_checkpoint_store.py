@@ -423,7 +423,7 @@ class WorkflowCheckpointStore:
                     owner_id=self._string_value(existing.get("owner_id")),
                     pid=self._int_value(existing.get("pid")),
                     host=self._string_value(existing.get("host")),
-                )
+                ) from None
             self._fsync_directory(path.parent)
             return WorkflowClaim(run_id, owner_id, path)
 

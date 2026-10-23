@@ -51,7 +51,6 @@ def tmp_settings(tmp_path) -> SystemSettings:
         event_log_path=str(tmp_path / ".agenthicc" / "events.jsonl"),
         snapshot_path=str(tmp_path / ".agenthicc" / "snapshot.json"),
         max_parallel_tasks=5,
-        agent_pool_size=5,
         snapshot_every_n_events=1000,
     )
 ```
@@ -324,6 +323,7 @@ written alongside so `from_path` can recover it.
 | Assuming a reducer has no effects | `assert effects == []` fails | Assert on `effect_type` values |
 | Too few mock transport entries | `IndexError` mid-test | Add one response per provider round trip |
 | Writing to the real `.agenthicc/` | Polluted project state | Pass `persist=False` (as the fixtures do) |
+| A short ceiling on a `python -m agenthicc` subprocess | `TimeoutExpired` or `pytest-timeout` only under coverage on a loaded host | `timeout=CLI_PROCESS_TIMEOUT_S` per wait and `@cli_test_timeout(n)` from `tests/cli_process.py` |
 
 ---
 

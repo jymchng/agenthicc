@@ -32,7 +32,7 @@ def _jobs_inbox_group() -> None: ...
 def _config(ctx: CLIContext) -> object:
     if ctx.config is not None:
         return ctx.config
-    from agenthicc.config import load_config  # noqa: PLC0415
+    from agenthicc.config import load_config
 
     return load_config(
         cli_overrides=list(ctx.set_overrides),
@@ -49,10 +49,8 @@ def _store_and_supervisor(
     settings = settings or _background_settings(ctx)
     if not background_enabled(settings):
         raise RuntimeError("Background sessions are disabled by configuration")
-    root_value = settings.store_path
-    root = Path(root_value).expanduser() if isinstance(root_value, str) and root_value else None
     store = BackgroundStore(
-        root,
+        settings.store_root,
         projection_batch_size=settings.manager.projection_batch_size,
     )
     supervisor = BackgroundSupervisor(
@@ -87,7 +85,7 @@ def _public_session(
     *,
     queue_position: int | None = None,
 ) -> dict[str, object]:
-    from agenthicc.tui.runtime.session_export import _Redactor  # noqa: PLC0415
+    from agenthicc.tui.runtime.session_export import _Redactor
 
     raw = session.to_dict()
     if isinstance(raw, dict):
@@ -157,9 +155,9 @@ def _queue_positions(supervisor: BackgroundSupervisor) -> dict[str, int]:
 
 
 async def _open_manager(ctx: CLIContext) -> None:
-    from rich.console import Console  # noqa: PLC0415
+    from rich.console import Console
 
-    from agenthicc.tui.workspace.background_manager import run_background_manager  # noqa: PLC0415
+    from agenthicc.tui.workspace.background_manager import run_background_manager
 
     settings = _background_settings(ctx)
     store, supervisor = _store_and_supervisor(ctx)
@@ -195,7 +193,7 @@ async def attach_background_session(
     or an accidental goal-run/last-session fallback.
     """
 
-    from rich.console import Console  # noqa: PLC0415
+    from rich.console import Console
 
     if store is None or supervisor is None:
         store, supervisor = _store_and_supervisor(ctx)
@@ -230,7 +228,7 @@ async def attach_background_session(
         )
         return True
 
-    from agenthicc.runners.tui_session import _run_tui_session  # noqa: PLC0415
+    from agenthicc.runners.tui_session import _run_tui_session
 
     try:
         await _run_tui_session(
@@ -257,10 +255,10 @@ async def attach_background_session(
 async def _open_goal_manager(ctx: CLIContext, run_id: str) -> None:
     """Open the run projection while preserving the existing attach path."""
 
-    from rich.console import Console  # noqa: PLC0415
+    from rich.console import Console
 
-    from agenthicc.runs.cli import _manager  # noqa: PLC0415
-    from agenthicc.tui.workspace.goal_run_manager import (  # noqa: PLC0415
+    from agenthicc.runs.cli import _manager
+    from agenthicc.tui.workspace.goal_run_manager import (
         run_goal_run_manager,
     )
 
@@ -276,7 +274,7 @@ async def _open_goal_manager(ctx: CLIContext, run_id: str) -> None:
         return
     try:
         foreground = manager.attach(run_id)
-        from agenthicc.runners.tui_session import _run_tui_session  # noqa: PLC0415
+        from agenthicc.runners.tui_session import _run_tui_session
 
         await _run_tui_session(
             resume_id=foreground.session_id,
@@ -303,7 +301,7 @@ async def agents(
     """Open the manager, or inspect agents linked to one goal run."""
 
     if run:
-        from agenthicc.runs.cli import _manager  # noqa: PLC0415
+        from agenthicc.runs.cli import _manager
 
         try:
             payload = _manager(ctx).projection(run).to_dict()
@@ -580,7 +578,7 @@ def jobs_inbox_list(
 ) -> None:
     """List durable inbox metadata without exposing submitted answers."""
 
-    from agenthicc.background.inbox import BackgroundInteractionInbox  # noqa: PLC0415
+    from agenthicc.background.inbox import BackgroundInteractionInbox
 
     store, _supervisor = _store_and_supervisor(ctx)
     inbox = BackgroundInteractionInbox(store)
@@ -628,7 +626,7 @@ def jobs_inbox_answer(
 ) -> None:
     """Answer exact inbox item; multi-question response must be a JSON object."""
 
-    from agenthicc.background.inbox import (  # noqa: PLC0415
+    from agenthicc.background.inbox import (
         BackgroundInteractionInbox,
         response_from_text,
     )
@@ -666,7 +664,7 @@ def _resolve_inbox_approval(
     remember_all: bool = False,
     scope_grant: str = "",
 ) -> None:
-    from agenthicc.background.inbox import BackgroundInteractionInbox  # noqa: PLC0415
+    from agenthicc.background.inbox import BackgroundInteractionInbox
 
     store, _supervisor = _store_and_supervisor(ctx)
     inbox = BackgroundInteractionInbox(store)
@@ -751,7 +749,7 @@ def jobs_inbox_expire(
     idempotency_key: str,
     reason: str = "expired by operator",
 ) -> None:
-    from agenthicc.background.inbox import BackgroundInteractionInbox  # noqa: PLC0415
+    from agenthicc.background.inbox import BackgroundInteractionInbox
 
     store, _supervisor = _store_and_supervisor(ctx)
     inbox = BackgroundInteractionInbox(store)
@@ -778,7 +776,7 @@ def jobs_notifications(
 ) -> None:
     """Show safe delivery receipts without payloads, targets, or secret values."""
 
-    from agenthicc.background.notifications import BackgroundNotificationOutbox  # noqa: PLC0415
+    from agenthicc.background.notifications import BackgroundNotificationOutbox
 
     if status and status not in {"pending", "sending", "delivered", "failed"}:
         raise SystemExit("status must be pending, sending, delivered, or failed")

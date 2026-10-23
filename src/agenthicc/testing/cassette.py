@@ -21,10 +21,15 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Mapping, cast
+from collections.abc import Mapping
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from lauren_ai import CompletionChunk
     from lauren_ai._transport._mock import MockTransport
+
+    from agenthicc.testing.mock_approval import MockApprovalService
+    from agenthicc.testing.replay_transport import ReplayTransport
 
 _SESSIONS_DIR = Path.home() / ".agenthicc" / "sessions"
 
@@ -53,6 +58,22 @@ class CassetteEntry:
     response_stop_reason: str
     response_tool_calls: list[dict[str, object]]  # [{"name", "tool_use_id", "input"}]
     response_reasoning_content: str | None = None
+
+    @property
+    def is_tool_free(self) -> bool:
+        """True when the recorded request offered no tools at all.
+
+        In agenthicc recordings every agent turn offers the session's tool
+        catalog, so a tool-free request is a conversation-summary call made by
+        auto-compaction.  A hermetic replay disables compaction, so it skips
+        these entries rather than serving a summary to an ordinary turn.
+        """
+        return not self.tool_names_available
+
+    @property
+    def called_tool_names(self) -> tuple[str, ...]:
+        """Names of the tools this recorded response called, in order."""
+        return tuple(str(call.get("name", "")) for call in self.response_tool_calls)
 
     @classmethod
     def from_dict(cls, d: dict[str, object]) -> CassetteEntry:
@@ -240,80 +261,57 @@ class SessionCassette:
         :class:`~lauren_ai._transport.CompletionChunk` objects so that the
         streaming agent runner receives proper tool-call deltas.
         """
-        from lauren_ai._transport import (  # noqa: PLC0415
-            CompletionChunk,
-            ToolCallDelta,
-            TokenUsage,
-        )
-        from lauren_ai._transport._mock import MockTransport  # noqa: PLC0415
+        from lauren_ai._transport._mock import MockTransport
 
         mock = MockTransport()
         for entry in sorted(self.entries, key=lambda e: e.index):
-            chunks: list[CompletionChunk] = []
-
-            if entry.response_reasoning_content is not None:
-                try:
-                    chunks.append(
-                        cast(Any, CompletionChunk)(
-                            reasoning_content_delta=entry.response_reasoning_content,
-                        )
-                    )
-                except TypeError as exc:
-                    raise RuntimeError(
-                        "reasoning-enabled cassette replay requires a lauren-ai release "
-                        "with CompletionChunk.reasoning_content_delta"
-                    ) from exc
-
-            if entry.response_tool_calls:
-                for tc in entry.response_tool_calls:
-                    name = str(tc.get("name", ""))
-                    tid = str(tc.get("tool_use_id", f"tu_{entry.index}"))
-                    inp = tc.get("input", {})
-
-                    # First chunk: announce tool name
-                    chunks.append(
-                        CompletionChunk(
-                            tool_call_delta=ToolCallDelta(
-                                tool_use_id=tid,
-                                name=name,
-                                input_delta="",
-                            )
-                        )
-                    )
-                    # Second chunk: full input JSON
-                    chunks.append(
-                        CompletionChunk(
-                            tool_call_delta=ToolCallDelta(
-                                tool_use_id=tid,
-                                name=None,
-                                input_delta=json.dumps(inp, ensure_ascii=False),
-                            )
-                        )
-                    )
-                # Terminal chunk
-                chunks.append(
-                    CompletionChunk(
-                        stop_reason="tool_use",
-                        usage=TokenUsage(input_tokens=0, output_tokens=0),
-                    )
-                )
-            else:
-                # Plain text response
-                if entry.response_content:
-                    chunks.append(CompletionChunk(delta=entry.response_content))
-                chunks.append(
-                    CompletionChunk(
-                        stop_reason=entry.response_stop_reason,
-                        usage=TokenUsage(input_tokens=0, output_tokens=0),
-                    )
-                )
-
-            mock.queue_stream(chunks)
+            mock.queue_stream(_entry_chunks(entry))
         return mock
+
+    def slice(self, start_index: int, *, skip_approvals: int = 0) -> SessionCassette:
+        """Return the recording from entry *start_index* onward.
+
+        A long recording can begin with the tail of an earlier workflow run —
+        for example when a session was resumed mid-campaign before a fresh run
+        started.  Slicing at the first request of the run under test lets a
+        replay start that run from its first phase.  *skip_approvals* drops the
+        recorded approval answers that belong to the discarded entries; approval
+        records do not name the request that consumed them, so the caller states
+        the count explicitly.
+        """
+        if start_index < 0:
+            raise ValueError("start_index must be non-negative")
+        if skip_approvals < 0 or skip_approvals > len(self.approvals):
+            raise ValueError("skip_approvals must be between 0 and the number of approvals")
+        ordered_approvals = sorted(self.approvals, key=lambda e: e.index)
+        return SessionCassette(
+            entries=[entry for entry in self.entries if entry.index >= start_index],
+            approvals=ordered_approvals[skip_approvals:],
+            intent=self.intent,
+        )
+
+    def replay_entries(self, *, skip_tool_free: bool) -> list[CassetteEntry]:
+        """Return the entries a replay serves, in recorded order.
+
+        ``skip_tool_free=True`` drops conversation-summary (auto-compaction)
+        calls; use it whenever the replay runs with compaction disabled.
+        """
+        ordered = sorted(self.entries, key=lambda e: e.index)
+        return [entry for entry in ordered if not (skip_tool_free and entry.is_tool_free)]
+
+    def to_replay_transport(self, *, skip_tool_free: bool) -> "ReplayTransport":
+        """Return a :class:`ReplayTransport` that parks after the last response."""
+        from agenthicc.testing.replay_transport import ReplayTransport
+
+        entries = self.replay_entries(skip_tool_free=skip_tool_free)
+        return ReplayTransport(
+            [_entry_chunks(entry) for entry in entries],
+            [entry.index for entry in entries],
+        )
 
     def to_mock_approval_service(self) -> MockApprovalService:
         """Return a :class:`MockApprovalService` pre-loaded with recorded responses."""
-        from agenthicc.testing.mock_approval import MockApprovalService  # noqa: PLC0415
+        from agenthicc.testing.mock_approval import MockApprovalService
 
         return MockApprovalService(list(self.approvals))
 
@@ -350,5 +348,45 @@ class SessionCassette:
         return sorted(approvals, key=lambda e: e.index)
 
 
-# Circular-import guard: only import for type annotation.
-from agenthicc.testing.mock_approval import MockApprovalService  # noqa: E402
+def _entry_chunks(entry: CassetteEntry) -> list[CompletionChunk]:
+    """Convert one recorded response into the streamed chunks a provider sends.
+
+    Assistant text precedes tool calls, exactly as a provider streams a turn
+    that both comments and calls tools; each tool call is announced by name and
+    then completed with its full JSON input.
+    """
+    from lauren_ai import CompletionChunk, TokenUsage
+    from lauren_ai._transport import ToolCallDelta
+
+    chunks: list[CompletionChunk] = []
+    if entry.response_reasoning_content is not None:
+        chunks.append(CompletionChunk(reasoning_content_delta=entry.response_reasoning_content))
+    if entry.response_content:
+        chunks.append(CompletionChunk(delta=entry.response_content))
+    for call in entry.response_tool_calls:
+        tool_use_id = str(call.get("tool_use_id", f"tu_{entry.index}"))
+        chunks.append(
+            CompletionChunk(
+                tool_call_delta=ToolCallDelta(
+                    tool_use_id=tool_use_id,
+                    name=str(call.get("name", "")),
+                    input_delta="",
+                )
+            )
+        )
+        chunks.append(
+            CompletionChunk(
+                tool_call_delta=ToolCallDelta(
+                    tool_use_id=tool_use_id,
+                    name=None,
+                    input_delta=json.dumps(call.get("input", {}), ensure_ascii=False),
+                )
+            )
+        )
+    chunks.append(
+        CompletionChunk(
+            stop_reason="tool_use" if entry.response_tool_calls else entry.response_stop_reason,
+            usage=TokenUsage(input_tokens=0, output_tokens=0),
+        )
+    )
+    return chunks

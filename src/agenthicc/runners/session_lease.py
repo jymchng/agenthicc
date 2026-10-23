@@ -422,12 +422,12 @@ class SessionOwnerStore:
                         raise SessionAlreadyActiveError(
                             session_id,
                             reason="owner_unverifiable",
-                        )
+                        ) from None
                     if owner_alive(
                         existing_payload,
                         identity_resolver=self._identity_resolver,
                     ):
-                        raise SessionAlreadyActiveError(session_id, owner=existing)
+                        raise SessionAlreadyActiveError(session_id, owner=existing) from None
                     # The compare and unlink are serialized relative to every
                     # other acquisition and release for this session.
                     if not remove_if_owner(path, existing.owner_id):

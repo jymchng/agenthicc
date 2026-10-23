@@ -21,6 +21,7 @@ __all__ = [
     "arg_float",
     "arg_int",
     "arg_str",
+    "tool_name",
 ]
 
 
@@ -130,6 +131,29 @@ class Tool(abc.ABC):
 
 
 ToolLike: TypeAlias = Callable[..., object] | Tool | ToolBase
+
+
+def tool_name(tool: object) -> str:
+    """Return the provider-facing name of *tool*.
+
+    ``@tool(name=...)`` keeps the function's ``__name__`` and records the
+    declared name in lauren-ai's tool metadata, which is the name the provider
+    sees, so the metadata wins. Other tools fall back to ``__name__``, then a
+    ``name`` or ``provider_name`` attribute (``Tool`` objects, MCP tools), then
+    the type's qualified name. This is the one place tool names are derived;
+    registries, mode filters, allow-lists and prompt fingerprints all use it.
+    """
+    from lauren_ai._tools import TOOL_META
+
+    for value in (
+        getattr(getattr(tool, TOOL_META, None), "name", None),
+        getattr(tool, "__name__", None),
+        getattr(tool, "name", None),
+        getattr(tool, "provider_name", None),
+    ):
+        if isinstance(value, str) and value:
+            return value
+    return type(tool).__qualname__
 
 
 def arg_str(args: Mapping[str, object], key: str, default: str | None = None) -> str:

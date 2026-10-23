@@ -30,16 +30,16 @@ __all__ = [
 
 def _backend():
     """Return the appropriate OutlookBackend for the current platform."""
-    import sys  # noqa: PLC0415
+    import sys
 
     if sys.platform == "win32":
         try:
-            from agenthicc.tools.outlook.win32_backend import Win32OutlookBackend  # noqa: PLC0415
+            from agenthicc.tools.outlook.win32_backend import Win32OutlookBackend
 
             return Win32OutlookBackend()
         except ImportError:
             pass
-    from agenthicc.tools.outlook import GraphApiOutlookBackend  # noqa: PLC0415
+    from agenthicc.tools.outlook import GraphApiOutlookBackend
 
     return GraphApiOutlookBackend(token=os.getenv("MSGRAPH_TOKEN", ""))
 
@@ -52,7 +52,7 @@ async def _safe_call(coro):
     turn.  The agent receives {"ok": False, "error": "...", "recoverable": True}
     and can decide how to proceed.
     """
-    from agenthicc.tools.outlook import _OutlookNetworkError  # noqa: PLC0415
+    from agenthicc.tools.outlook import _OutlookNetworkError
 
     try:
         return await coro

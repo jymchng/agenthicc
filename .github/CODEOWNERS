@@ -1,0 +1,9 @@
+# Quality gates and their baselines change only with a code owner's review
+# (PRD-250 WS-1.9). Branch protection enforces this when "Require review from
+# Code Owners" is on; see scripts/apply_branch_protection.sh.
+/docs/reference/type-safety-baseline.json  @jymchng
+/scripts/type_audit.py                     @jymchng
+/pyproject.toml                            @jymchng
+/noxfile.py                                @jymchng
+/.pre-commit-config.yaml                   @jymchng
+/.github/                                  @jymchng

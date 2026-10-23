@@ -1,17 +1,23 @@
-"""Nox sessions for agenthicc."""
+"""Nox sessions for agenthicc.
+
+Every session runs on nox's uv backend, which points ``UV_PROJECT_ENVIRONMENT``
+at the session's own virtualenv: ``uv sync --extra dev`` installs the project
+and its one ``dev`` extra there, so each tool runs at the declared version on
+the session's interpreter, never a copy that happens to be on ``PATH``.
+"""
 
 from __future__ import annotations
 
-import os
 import pathlib
 import shutil
 
 import nox
 
 PRIMARY_PYTHON = "3.12"
-SUPPORTED_PYTHONS = ["3.12", "3.13"]
+SUPPORTED_PYTHONS = ["3.11", "3.12", "3.13"]
 
-nox.options.sessions = ["lint", "tests_unit", "tests_integration", "tests_e2e", "coverage"]
+nox.options.default_venv_backend = "uv"
+nox.options.sessions = ["lint", "typecheck", "type_audit", "tests_unit", "coverage"]
 nox.options.reuse_venv = "yes"
 
 
@@ -21,36 +27,7 @@ nox.options.reuse_venv = "yes"
 
 
 def _install_dev(session: nox.Session) -> None:
-    # All nox session venvs in this repo may be root-owned, preventing uv from
-    # installing into them.  Sync into the project .venv (no --active) so all
-    # tools (ruff, mypy, twine, …) are available in .venv/bin/.
-    # Sessions use external=True to find tools there via PATH, and pytest
-    # sessions use pythonpath=["src"] in pyproject.toml to import agenthicc.
-    session.run(
-        "uv",
-        "sync",
-        "--extra",
-        "dev",
-        "--no-install-project",
-        "--inexact",
-        external=True,
-    )
-
-
-def _install_all(session: nox.Session) -> None:
-    # TUI and API code are part of the base package; the project does not
-    # declare separate ``tui`` or ``api`` optional-dependency groups.
-    _install_dev(session)
-
-
-def _writable_python_files() -> list[str]:
-    """Return Python files the current checkout user can format in place."""
-    return sorted(
-        str(path)
-        for root in (pathlib.Path("src"), pathlib.Path("tests"), pathlib.Path("scripts"))
-        for path in root.rglob("*.py")
-        if os.access(path, os.W_OK)
-    )
+    session.run_install("uv", "sync", "--extra", "dev", external=True)
 
 
 # ---------------------------------------------------------------------------
@@ -60,36 +37,50 @@ def _writable_python_files() -> list[str]:
 
 @nox.session(python=SUPPORTED_PYTHONS, name="tests")
 def tests(session: nox.Session) -> None:
-    """Run full test suite (parametrised across supported Python versions)."""
-    _install_all(session)
+    """Run the full test suite on one supported Python version."""
+    _install_dev(session)
     session.run("pytest", "-W", "ignore", *session.posargs)
 
 
-@nox.session(python=PRIMARY_PYTHON, name="tests_unit")
+@nox.session(python=SUPPORTED_PYTHONS, name="tests_unit")
 def tests_unit(session: nox.Session) -> None:
-    """Run only unit tests on the primary Python version."""
+    """Run the unit tests on one supported Python version."""
     _install_dev(session)
     session.run("pytest", "tests/unit", *session.posargs)
 
 
-@nox.session(python=PRIMARY_PYTHON, name="tests_integration")
+@nox.session(python=SUPPORTED_PYTHONS, name="tests_integration")
 def tests_integration(session: nox.Session) -> None:
-    """Run integration tests with the complete development environment."""
-    _install_all(session)
-    session.run(
-        "pytest",
-        "tests/integration",
-        "--ignore",
-        "tests/integration/test_cassette_replay.py",
-        *session.posargs,
-    )
+    """Run the integration tests on one supported Python version."""
+    _install_dev(session)
+    session.run("pytest", "tests/integration", *session.posargs)
 
 
 @nox.session(python=PRIMARY_PYTHON, name="tests_e2e")
 def tests_e2e(session: nox.Session) -> None:
-    """Run end-to-end tests (PTY renderer and session integrations)."""
-    _install_all(session)
+    """Run end-to-end tests (PTY renderer, cassette replay, session integrations)."""
+    _install_dev(session)
     session.run("pytest", "tests/e2e", *session.posargs)
+
+
+@nox.session(python=PRIMARY_PYTHON, name="tests_performance")
+def tests_performance(session: nox.Session) -> None:
+    """Run the performance budgets (never under coverage, which slows every call)."""
+    _install_dev(session)
+    session.run("pytest", "tests/performance", *session.posargs)
+
+
+@nox.session(python=PRIMARY_PYTHON, name="tests_windows")
+def tests_windows(session: nox.Session) -> None:
+    """Run the platform-sensitive lock, filesystem and terminal tests (Windows CI)."""
+    _install_dev(session)
+    session.run(
+        "pytest",
+        "tests/unit/test_interprocess_lock.py",
+        "tests/unit/test_windows_backend.py",
+        "tests/unit/test_windows_terminal_backend.py",
+        *session.posargs,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -99,15 +90,25 @@ def tests_e2e(session: nox.Session) -> None:
 
 @nox.session(python=PRIMARY_PYTHON, name="coverage")
 def coverage(session: nox.Session) -> None:
-    """Run the full suite with coverage and enforce the 90% floor."""
-    _install_all(session)
+    """Run the unit, integration and E2E suites with branch and subprocess coverage.
+
+    The floor is ``[tool.coverage.report] fail_under`` in ``pyproject.toml``.
+    ``tests/performance`` is excluded: tracing invalidates its timing budgets,
+    so ``tests_performance`` runs it uninstrumented. Tracing also roughly
+    triples CPU time, so a test without its own ``timeout`` mark gets three
+    times the 60-second ``pytest-timeout`` default here.
+    """
+    _install_dev(session)
     session.run(
         "pytest",
+        "tests/unit",
+        "tests/integration",
+        "tests/e2e",
+        "--timeout=180",
         "--cov=agenthicc",
         "--cov-report=xml",
         "--cov-report=html",
-        "--cov-report=term-missing",
-        "--cov-fail-under=90",
+        "--cov-report=term-missing:skip-covered",
         *session.posargs,
     )
 
@@ -121,47 +122,43 @@ def coverage(session: nox.Session) -> None:
 def lint(session: nox.Session) -> None:
     """Run ruff linter and format checker (no auto-fix)."""
     _install_dev(session)
-    session.run("ruff", "check", "src/", "tests/", "scripts/", *session.posargs, external=True)
-    session.run(
-        "ruff",
-        "format",
-        "--check",
-        *_writable_python_files(),
-        *session.posargs,
-        external=True,
-    )
+    session.run("ruff", "check", "src/", "tests/", "scripts/", *session.posargs)
+    session.run("ruff", "format", "--check", "src/", "tests/", "scripts/", *session.posargs)
 
 
 @nox.session(python=PRIMARY_PYTHON, name="format")
 def format_(session: nox.Session) -> None:
     """Auto-format with ruff (applies changes in place)."""
     _install_dev(session)
-    session.run("ruff", "format", *_writable_python_files(), *session.posargs, external=True)
+    session.run("ruff", "format", "src/", "tests/", "scripts/", *session.posargs)
 
 
 @nox.session(python=PRIMARY_PYTHON, name="typecheck")
 def typecheck(session: nox.Session) -> None:
     """Run the declared mypy type-checker over src/agenthicc."""
     _install_dev(session)
-    session.run("mypy", "src/agenthicc", *session.posargs, external=True)
+    session.run("mypy", "src/agenthicc", *session.posargs)
 
 
 @nox.session(python=PRIMARY_PYTHON, name="typecheck_contracts")
 def typecheck_contracts(session: nox.Session) -> None:
-    """Type-check the focused boundary and ratchet tests."""
+    """Type-check the focused boundary tests and the ratchet script."""
     _install_dev(session)
     session.run(
         "mypy",
         "tests/unit/test_kernel_event_typing.py",
         "tests/unit/test_type_audit.py",
+        "scripts/type_audit.py",
         *session.posargs,
-        external=True,
     )
 
 
 @nox.session(python=PRIMARY_PYTHON, name="type_audit")
 def type_audit(session: nox.Session) -> None:
-    """Check source typing hygiene against the checked-in ratchet baseline."""
+    """Check source typing hygiene against the checked-in ratchet baseline.
+
+    Pass ``-- --baseline-ref origin/main`` to also reject a raised baseline.
+    """
     _install_dev(session)
     session.run(
         "python",
@@ -170,6 +167,13 @@ def type_audit(session: nox.Session) -> None:
         "docs/reference/type-safety-baseline.json",
         *session.posargs,
     )
+
+
+@nox.session(python=PRIMARY_PYTHON, name="docs")
+def docs(session: nox.Session) -> None:
+    """Build the documentation site, failing on any warning."""
+    _install_dev(session)
+    session.run("mkdocs", "build", "--strict", *session.posargs)
 
 
 # ---------------------------------------------------------------------------
@@ -191,7 +195,7 @@ def build(session: nox.Session) -> None:
 def build_check(session: nox.Session) -> None:
     """Check the built distributions with twine."""
     _install_dev(session)
-    session.run("twine", "check", "dist/*", *session.posargs, external=True)
+    session.run("twine", "check", "--strict", "dist/*", *session.posargs)
 
 
 # ---------------------------------------------------------------------------

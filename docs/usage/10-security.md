@@ -79,21 +79,30 @@ stricter one:
 Configure real project paths in `[security].allowed_paths`. The illustrative
 `/workspace` default may not match your checkout.
 
-## Plugin trust
+## Extension trust
 
-`agenthicc trust cli` hashes and trusts the Python files under
-`.agenthicc/cli/` for this project. It is deliberately narrow:
+A repository's Python extensions — `.agenthicc/tools/`, `commands/`,
+`workflows/`, `modes/`, `agents/`, `cli/` and `cli.toml` — are imported only
+after you trust their exact content. A trust record binds a file's path to the
+SHA-256 of its bytes and lives in `~/.agenthicc/trust.json`, never in the
+repository; editing the file revokes it. Untrusted files are logged and
+skipped, so opening an unfamiliar repository runs none of its code.
+
+```bash
+agenthicc trust list      # what this repository would run, and its status
+agenthicc trust add       # trust the reviewed project extensions
+agenthicc trust revoke .agenthicc/tools
+```
 
 !!! danger "Trust is not a sandbox"
-    Project-local tools, agents, modes, workflows, skills, and commands are
-    Python code, so loading them is code execution. The normal
-    `.agenthicc/tools/` discovery path currently imports project tool files
-    **without** calling the trust helper or prompting. A trust manifest is not
-    an automatic boundary for user-defined tools today. Review before use.
+    Trusting a file records that you reviewed it; once imported it runs with
+    your permissions. Review before you trust, and re-review after every
+    change that revokes trust.
 
-Keep plugin dependency auto-install disabled in unattended or headless
-environments; the normal session tool scanner skips missing dependencies
-rather than installing them.
+Skill `` !`command` `` placeholders are never executed when a skill loads: the
+agent is asked to run each command through its command tool, so approvals, the
+active mode and the sandbox apply. Agenthicc never installs plugin
+dependencies; a plugin whose declared requirements are missing is skipped.
 
 ## Next
 

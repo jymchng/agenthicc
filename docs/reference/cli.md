@@ -152,7 +152,9 @@ help string the command registers.
 | `session control SESSION_ID KIND [--payload JSON]` | Submit a JSON session control command |
 | `session serve [--host HOST] [--port PORT] [--auth-token TOKEN]` | Serve local session snapshots and events over HTTP/SSE |
 | `skills add SOURCE [--project \| --global] [--name NAME] [--skill NAME[,NAME]] [--all]` | Download and install a skill |
-| `trust cli` | Trust `.agenthicc/cli/` Python plugins for this project |
+| `trust list` | Show this project's Python extensions under `.agenthicc/` and whether each is trusted |
+| `trust add [PATH]` | Trust the current content of PATH (a file, or every Python file under a directory); without PATH, every project extension |
+| `trust revoke PATH` | Revoke trust for a file or every file under a directory |
 | `workflows list [--json]` | List available workflow plugins |
 | `workflows run WORKFLOW_NAME --intent TEXT [--json]` | Run a workflow headlessly for one intent |
 | `worktrees trust [REPOSITORY] [--confirm]` | Preview or trust the current worktree environment manifest digest |

@@ -19,8 +19,8 @@ def make_task_graph_tools(
     event: asyncio.Event,
     data: dict[str, object],
 ) -> list[Callable[..., object]]:
-    from lauren_ai._tools import tool as _tool  # noqa: PLC0415
-    from agenthicc.tools.capabilities import tool_control  # noqa: PLC0415
+    from lauren_ai._tools import tool as _tool
+    from agenthicc.tools.capabilities import tool_control
 
     @tool_control
     @_tool()
@@ -74,8 +74,8 @@ def make_dispatch_tools(
     event: asyncio.Event,
     data: dict[str, object],
 ) -> list[Callable[..., object]]:
-    from lauren_ai._tools import tool as _tool  # noqa: PLC0415
-    from agenthicc.tools.capabilities import tool_control  # noqa: PLC0415
+    from lauren_ai._tools import tool as _tool
+    from agenthicc.tools.capabilities import tool_control
 
     @tool_control
     @_tool()
@@ -105,7 +105,7 @@ def make_collect_tools(
     event: asyncio.Event,
     data: dict[str, object],
 ) -> list[Callable[..., object]]:
-    from lauren_ai._tools import tool as _tool  # noqa: PLC0415
+    from lauren_ai._tools import tool as _tool
     from agenthicc.tools.capabilities import tool_control
 
     @tool_control
@@ -165,7 +165,7 @@ def make_integrate_tools(
     event: asyncio.Event,
     data: dict[str, object],
 ) -> list[Callable[..., object]]:
-    from lauren_ai._tools import tool as _tool  # noqa: PLC0415
+    from lauren_ai._tools import tool as _tool
     from agenthicc.tools.capabilities import tool_control
 
     @tool_control
@@ -205,7 +205,7 @@ def make_complete_tool(
     event: asyncio.Event,
     data: dict[str, object],
 ) -> list[Callable[..., object]]:
-    from lauren_ai._tools import tool as _tool  # noqa: PLC0415
+    from lauren_ai._tools import tool as _tool
     from agenthicc.tools.capabilities import tool_control
 
     @tool_control

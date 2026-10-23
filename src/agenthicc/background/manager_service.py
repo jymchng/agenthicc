@@ -20,7 +20,7 @@ from .supervisor import BackgroundSupervisor
 def _redacted_error(exc: Exception) -> str:
     """Return a bounded operation error with credential-shaped values masked."""
 
-    from agenthicc.tui.runtime.session_export import _Redactor  # noqa: PLC0415
+    from agenthicc.tui.runtime.session_export import _Redactor
 
     value = _Redactor().value(f"{type(exc).__name__}: {exc}", "message")
     return str(value)[:2_000]
@@ -314,7 +314,7 @@ class BackgroundManagerService:
                 try:
                     self.supervisor.delete(session_id)
                 except Exception as exc:  # noqa: BLE001
-                    from .deletion import DeleteFailure  # noqa: PLC0415
+                    from .deletion import DeleteFailure
 
                     failures.append(
                         DeleteFailure(

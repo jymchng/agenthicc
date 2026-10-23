@@ -552,7 +552,7 @@ def _render_turn_start(self: ScrollBufferAppender, ev: ConversationEvent) -> Non
 
 @register_renderer("user_message")
 def _render_user_message(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
-    from rich.markup import escape as _e  # noqa: PLC0415
+    from rich.markup import escape as _e
 
     text = _text(ev.payload, "text")
     self._console.print(
@@ -589,7 +589,7 @@ def _render_text(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
     self._flush_group_summary()
     text = _text(ev.payload, "text")
     if text.strip():
-        from rich.markdown import Markdown  # noqa: PLC0415
+        from rich.markdown import Markdown
 
         self._console.print(Markdown(text), end="")
         # Keep each LLM response visually separated from the next event.
@@ -600,7 +600,7 @@ def _render_text(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
 
 @register_renderer("thinking_step")
 def _render_thinking_step(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
-    from rich.markup import escape as _e  # noqa: PLC0415
+    from rich.markup import escape as _e
 
     step = _text(ev.payload, "step")
     done = ev.payload.get("done", False)
@@ -614,7 +614,7 @@ def _render_thinking_step(self: ScrollBufferAppender, ev: ConversationEvent) -> 
 
 @register_renderer("file_modified")
 def _render_file_modified(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
-    from agenthicc.tui.diff_renderer import render_file_diff, render_file_create  # noqa: PLC0415
+    from agenthicc.tui.diff_renderer import render_file_diff, render_file_create
 
     path = _text(ev.payload, "path")
     old_lines = ev.payload.get("old_lines")
@@ -638,7 +638,7 @@ def _render_file_modified(self: ScrollBufferAppender, ev: ConversationEvent) -> 
                 highlight=False,
             )
     else:
-        from rich.markup import escape as _e  # noqa: PLC0415
+        from rich.markup import escape as _e
 
         op = _TOOL_OP.get(tool, "Update")
         self._console.print(
@@ -651,7 +651,7 @@ def _render_file_modified(self: ScrollBufferAppender, ev: ConversationEvent) -> 
 @register_renderer("error")
 def _render_error(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
     self._flush_group_summary()
-    from rich.markup import escape as _e  # noqa: PLC0415
+    from rich.markup import escape as _e
 
     msg = _text(ev.payload, "message")
     detail = _text(ev.payload, "detail")
@@ -705,7 +705,7 @@ def _render_activity_complete(self: ScrollBufferAppender, ev: ConversationEvent)
 
 @register_renderer("mention_chips")
 def _render_mention_chips(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
-    from rich.markup import escape as _e  # noqa: PLC0415
+    from rich.markup import escape as _e
 
     for chip in _mapping_list(ev.payload.get("chips", [])):
         raw = _text(chip, "raw")
@@ -738,7 +738,7 @@ def _render_mention_chips(self: ScrollBufferAppender, ev: ConversationEvent) -> 
 
 @register_renderer("system")
 def _render_system(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
-    from rich.markup import escape as _e  # noqa: PLC0415
+    from rich.markup import escape as _e
 
     text = str(ev.payload.get("text", ""))
     if text:
@@ -749,7 +749,7 @@ def _render_system(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
 @register_renderer("tool_recovery")
 def _render_tool_recovery(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
     """Render one concise, redacted interrupted-exchange notice."""
-    from rich.markup import escape as _e  # noqa: PLC0415
+    from rich.markup import escape as _e
 
     text = _text(
         ev.payload,
@@ -763,7 +763,7 @@ def _render_tool_recovery(self: ScrollBufferAppender, ev: ConversationEvent) -> 
 @register_renderer("mcp_server_failure")
 def _render_mcp_server_failure(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
     """Render one generation-scoped, redacted MCP startup outcome."""
-    from rich.markup import escape as _e  # noqa: PLC0415
+    from rich.markup import escape as _e
 
     text = _text(ev.payload, "text", "MCP server is unavailable; continuing without its tools.")
     style = "red" if bool(ev.payload.get("required", False)) else "yellow"
@@ -780,7 +780,7 @@ def _render_network_retry(self: ScrollBufferAppender, ev: ConversationEvent) -> 
     useful in debug logs but makes the scroll buffer noisy and hard to scan.
     The retry producer supplies already-bounded, user-facing fields instead.
     """
-    from rich.markup import escape as _e  # noqa: PLC0415
+    from rich.markup import escape as _e
 
     attempt = max(1, int(_number(ev.payload, "attempt", 1)))
     max_retries = max(attempt, int(_number(ev.payload, "max_retries", attempt)))
@@ -815,7 +815,7 @@ def _render_network_retry(self: ScrollBufferAppender, ev: ConversationEvent) -> 
 @register_renderer("provider_recovery_retry")
 def _render_provider_recovery_retry(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
     """Render a compact retry notice for a provider-rejected request."""
-    from rich.markup import escape as _e  # noqa: PLC0415
+    from rich.markup import escape as _e
 
     attempt = max(1, int(_number(ev.payload, "attempt", 1)))
     max_retries = max(attempt, int(_number(ev.payload, "max_retries", attempt)))
@@ -940,7 +940,7 @@ def _render_phase_control_rejected(self: ScrollBufferAppender, ev: ConversationE
 
 @register_renderer("subagent_pool_started")
 def _render_subagent_pool_started(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
-    from rich.markup import escape as _e  # noqa: PLC0415
+    from rich.markup import escape as _e
 
     total = ev.payload.get("total", 0)
     workers = _mapping_list(ev.payload.get("workers", []))
@@ -961,7 +961,7 @@ def _render_subagent_pool_started(self: ScrollBufferAppender, ev: ConversationEv
 
 @register_renderer("subagent_worker_done")
 def _render_subagent_worker_done(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
-    from rich.markup import escape as _e  # noqa: PLC0415
+    from rich.markup import escape as _e
 
     ok = bool(ev.payload.get("ok", True))
     label = _e(str(ev.payload.get("label", "")))

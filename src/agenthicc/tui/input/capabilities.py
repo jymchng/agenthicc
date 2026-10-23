@@ -164,7 +164,7 @@ class InterruptCapability:
     ) -> CapabilityResult:
         if key not in (Key.CTRL_C, Key.ESC):
             return _PASS
-        from agenthicc.tui.runtime.commands import InterruptAgentCommand  # noqa: PLC0415
+        from agenthicc.tui.runtime.commands import InterruptAgentCommand
 
         session._buf.clear()
         session._paste.condensed = False
@@ -231,7 +231,7 @@ class PasteCapability:
         session: UnifiedInputSession,
     ) -> CapabilityResult:
         if key == Key.PASTE and ch:
-            import shutil  # noqa: PLC0415
+            import shutil
 
             cols = shutil.get_terminal_size((80, 24)).columns
             session._paste.apply(session._buf, ch, cols)
@@ -265,7 +265,7 @@ class SubmitCapability:
     ) -> CapabilityResult:
         if key != Key.ENTER:
             return _PASS
-        from agenthicc.tui.runtime.commands import SendMessageCommand  # noqa: PLC0415
+        from agenthicc.tui.runtime.commands import SendMessageCommand
 
         raw_text = session._buf.text
         has_text = bool(raw_text.strip())

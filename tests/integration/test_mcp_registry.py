@@ -43,7 +43,7 @@ def fake_bridge_factory():
         mock_client = AsyncMock()
         mock_client.list_tools = AsyncMock(return_value=schemas)
 
-        async def _call_tool(name, arguments=None):  # noqa: ANN001
+        async def _call_tool(name, arguments=None):
             result = MagicMock()
             result.isError = False
             block = MagicMock()

@@ -302,7 +302,9 @@ class ReconstructPhasePlan:
                 "reconstruct PhaseSpec registry does not match the authoritative plan: "
                 f"expected {self.names!r}, got {names!r}"
             )
-        for index, (spec, definition) in enumerate(zip(materialized, self._definitions)):
+        for index, (spec, definition) in enumerate(
+            zip(materialized, self._definitions, strict=True)
+        ):
             if getattr(spec, "max_turns", None) != definition.max_turns:
                 raise PhasePlanError(
                     f"phase {definition.name!r} max_turns differs between plan and registry"

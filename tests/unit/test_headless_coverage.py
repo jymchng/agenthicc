@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import io
 from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
+
+from agenthicc.tools.approval import ApprovalRequest
 
 from agenthicc.cli.context import CLIContext
 from agenthicc.runners.headless import (
@@ -17,6 +21,19 @@ from agenthicc.runners.headless import (
     _workflow_failure_kind,
     execute_workflow,
 )
+from tests.session_fakes import session_context
+
+
+def _approval_request(tool_name: str = "write", **fields: object) -> ApprovalRequest:
+    """A real tool approval request, as the approval gate builds them."""
+    return ApprovalRequest(
+        tool_name=tool_name,
+        tool_use_id=f"call-{tool_name}",
+        tool_input={},
+        capabilities=frozenset({"write"}),
+        event=asyncio.Event(),
+        **fields,  # type: ignore[arg-type]
+    )
 
 
 def _workflow_session(plugin: type[object], tmp_path: object) -> tuple[object, object, object]:
@@ -38,19 +55,19 @@ def _workflow_session(plugin: type[object], tmp_path: object) -> tuple[object, o
 
 @pytest.mark.asyncio
 async def test_headless_approval_policy_and_result_serialization() -> None:
-    denied = await _HeadlessApprovalService(False).request_approval(object())
+    denied = await _HeadlessApprovalService(False).request_approval(_approval_request())
     assert denied.allowed is False
     assert "dangerously-skip-permissions" in denied.message
     questions = await _HeadlessApprovalService(True).request_approval(
-        SimpleNamespace(kind="questions", request_id="question-1")
+        _approval_request("ask_user", kind="questions", request_id="question-1")
     )
     assert questions.allowed is False
     assert questions.outcome == "cancelled"
     workspace = await _HeadlessApprovalService(True).request_approval(
-        SimpleNamespace(workspace_access=object())
+        _approval_request(workspace_access=(object(),))
     )
     assert workspace.allowed is False
-    allowed = await _HeadlessApprovalService(True).request_approval(object())
+    allowed = await _HeadlessApprovalService(True).request_approval(_approval_request())
     assert allowed.allowed is True
     assert _HeadlessApprovalService(True).respond(True) is None
     assert _HeadlessApprovalService(True).reset_turn_memory() is None
@@ -111,7 +128,7 @@ def test_headless_session_and_workflow_resume_selection(monkeypatch: pytest.Monk
     monkeypatch.setattr(
         "agenthicc.runners.workflow_recovery.WorkflowRecoveryCoordinator", _Recovery
     )
-    session = SimpleNamespace(
+    session = session_context(
         session_id="selected-session",
         session_conversation=SimpleNamespace(
             retry_tool_history_recovery=lambda: SimpleNamespace(provider_ready=True)
@@ -149,7 +166,7 @@ async def test_execute_workflow_rejects_invalid_requests_before_provider_calls()
         def names(self) -> tuple[str, ...]:
             return ("available",)
 
-    session = SimpleNamespace(workflow_registry=_Registry(), agent_runner=None)
+    session = session_context(workflow_registry=_Registry(), agent_runner=None)
     with pytest.raises(ValueError, match="Unknown workflow"):
         await execute_workflow(session, "missing", "intent")
 
@@ -253,11 +270,14 @@ async def test_headless_close_releases_optional_session_resources(
             self.released = True
 
     class _Processor:
+        def __init__(self) -> None:
+            self.stopped = __import__("asyncio").Event()
+
         async def drain(self) -> None:
             return None
 
         async def stop(self) -> None:
-            return None
+            self.stopped.set()
 
     class _Closable:
         def __init__(self) -> None:
@@ -284,8 +304,9 @@ async def test_headless_close_releases_optional_session_resources(
 
     import asyncio
 
+    processor = _Processor()
     projection_task = asyncio.create_task(never())
-    processor_task = asyncio.create_task(never())
+    processor_task = asyncio.create_task(processor.stopped.wait())
     log = _Closable()
     memory = _Closable()
     mcp = _AsyncClosable()
@@ -293,9 +314,10 @@ async def test_headless_close_releases_optional_session_resources(
     terminal = _AsyncClosable()
     service = _AsyncClosable()
     owner = _TaskOwner()
-    session = SimpleNamespace(
+    session = session_context(
         kernel_projection_task=projection_task,
-        processor=_Processor(),
+        processor=processor,
+        semantic_index=None,
         session_log=log,
         session_memory=memory,
         mcp_registry=mcp,

@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Iterable, Mapping
 
 if TYPE_CHECKING:
-    from agenthicc.tools.approval import ApprovalResponse, ApprovalService
+    from agenthicc.tools.approval import ApprovalBroker, ApprovalRequest, ApprovalResponse
 
 __all__ = [
     "WorkspaceAccessMode",
@@ -375,7 +375,7 @@ class WorkspaceAccessPolicy:
         scope: WorkspaceScope,
         *,
         mode_provider: Callable[[], object] | None = None,
-        approval_service: "ApprovalService | None" = None,
+        approval_service: "ApprovalBroker | None" = None,
     ) -> None:
         self.scope = scope
         self._mode_provider = mode_provider
@@ -383,7 +383,7 @@ class WorkspaceAccessPolicy:
         self._turn_grants: set[tuple[str, str]] = set()
         self._session_grants: set[tuple[str, str]] = set()
 
-    def set_approval_service(self, service: "ApprovalService | None") -> None:
+    def set_approval_service(self, service: "ApprovalBroker | None") -> None:
         """Replace the session approval adapter when the client changes.
 
         Headless entry points swap the interactive adapter for a deterministic
@@ -574,8 +574,8 @@ class WorkspaceAccessPolicy:
                 "outside_workspace access requires an interactive approval service",
             )
 
-        import asyncio  # noqa: PLC0415
-        from agenthicc.tools.approval import ApprovalRequest  # noqa: PLC0415
+        import asyncio
+        from agenthicc.tools.approval import ApprovalRequest
 
         req = ApprovalRequest(
             tool_name=tool_name,
@@ -622,7 +622,7 @@ class WorkspaceAccessPolicy:
             code="approved",
         )
 
-    async def _await_scope_approval(self, request: object) -> "ApprovalResponse":
+    async def _await_scope_approval(self, request: "ApprovalRequest") -> "ApprovalResponse":
         """Await approval while observing a live runtime-mode signal.
 
         ``AppState.active_mode`` is a subscribable signal.  If a pending Safe
@@ -632,8 +632,8 @@ class WorkspaceAccessPolicy:
         notification contract.
         """
 
-        import asyncio  # noqa: PLC0415
-        from contextlib import suppress  # noqa: PLC0415
+        import asyncio
+        from contextlib import suppress
 
         provider = self._mode_provider
         subscribe = None
@@ -660,7 +660,7 @@ class WorkspaceAccessPolicy:
                 approval_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await approval_task
-                from agenthicc.tools.approval import ApprovalResponse  # noqa: PLC0415
+                from agenthicc.tools.approval import ApprovalResponse
 
                 is_yolo = self.mode_name.casefold() == "yolo"
                 return ApprovalResponse(
@@ -675,7 +675,7 @@ class WorkspaceAccessPolicy:
                 await mode_task
             unsubscribe()
 
-    async def _request_approval(self, request: object) -> "ApprovalResponse":
+    async def _request_approval(self, request: "ApprovalRequest") -> "ApprovalResponse":
         service = self._approval_service
         if service is None:
             raise RuntimeError("workspace approval service is unavailable")

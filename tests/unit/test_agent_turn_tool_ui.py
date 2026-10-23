@@ -16,6 +16,7 @@ from agenthicc.runners.agent_turn import (
     _tool_output_preview,
 )
 from agenthicc.tools.hooks import AfterToolHookDecision, ToolCallContext
+from agenthicc.config import ExecutionSettings
 
 pytestmark = pytest.mark.unit
 
@@ -41,7 +42,7 @@ def test_phase_allowlist_builds_agent_with_write_file_but_not_shell() -> None:
         text="write the workflow",
         runner=SimpleNamespace(_transport=MagicMock(), _signals=None),
         processor=MagicMock(),
-        exec_cfg=SimpleNamespace(base_system_prompt=""),
+        exec_cfg=ExecutionSettings(),
         active_agent="executor",
         project_plugin_tools=[],
         mcp_registry=None,
@@ -70,7 +71,7 @@ def test_default_turn_prompt_mentions_injected_spawn_subagents(tmp_path: Path) -
         text="delegate repository research",
         runner=SimpleNamespace(_transport=MagicMock(), _signals=None),
         processor=MagicMock(),
-        exec_cfg=SimpleNamespace(base_system_prompt=""),
+        exec_cfg=ExecutionSettings(),
         active_agent="default",
         project_plugin_tools=[],
         mcp_registry=None,

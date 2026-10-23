@@ -9,11 +9,11 @@ import threading
 import time
 import uuid
 from bisect import bisect_left, bisect_right
-from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Iterable, Iterator, List, Mapping
 
+from agenthicc.runners.process_lease import InterProcessLock
 from .model import (
     ACTIVE_STATUSES,
     ATTEMPT_HISTORY_LIMIT,
@@ -199,26 +199,9 @@ class BackgroundStore:
             next_cursor = ids[-1] if ids and start + len(ids) < len(self._session_ids) else ""
             return tuple(projection[session_id] for session_id in ids), next_cursor
 
-    @contextmanager
-    def _lock(self) -> Iterator[None]:
-        self.root.mkdir(parents=True, exist_ok=True)
-        handle = self.lock_path.open("a+", encoding="utf-8")
-        try:
-            try:
-                import fcntl  # noqa: PLC0415
-
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-            except (ImportError, OSError):
-                pass
-            yield
-        finally:
-            try:
-                import fcntl  # noqa: PLC0415
-
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-            except (ImportError, OSError):
-                pass
-            handle.close()
+    def _lock(self) -> InterProcessLock:
+        """Exclusive cross-process lock; raises ``InterProcessLockError`` if unavailable."""
+        return InterProcessLock(self.lock_path)
 
     def _iter_events(self) -> Iterator[dict[str, object]]:
         """Yield authoritative lifecycle events without retaining the log."""
@@ -255,7 +238,7 @@ class BackgroundStore:
         desktop or HTTP delivery implementations.
         """
 
-        from .settings import BackgroundNotificationSettings  # noqa: PLC0415
+        from .settings import BackgroundNotificationSettings
 
         if not isinstance(settings, BackgroundNotificationSettings):
             raise TypeError("settings must be BackgroundNotificationSettings")
@@ -266,7 +249,7 @@ class BackgroundStore:
         if existing is not None and existing.settings == settings:
             existing.reconcile(self)
             return existing
-        from .notifications import BackgroundNotificationCoordinator  # noqa: PLC0415
+        from .notifications import BackgroundNotificationCoordinator
 
         coordinator = BackgroundNotificationCoordinator(
             self.root,
@@ -1022,7 +1005,7 @@ class BackgroundStore:
                     except Exception as exc:  # noqa: BLE001
                         # Notification policy may not break a durable session
                         # lifecycle update. The source event still commits.
-                        import logging  # noqa: PLC0415
+                        import logging
 
                         logging.getLogger(__name__).warning(
                             "notification descriptor omitted (%s)", type(exc).__name__
@@ -1035,7 +1018,7 @@ class BackgroundStore:
                 except Exception as exc:  # noqa: BLE001
                     # The redacted descriptor is already journaled and will
                     # be re-enqueued on the next coordinator startup.
-                    import logging  # noqa: PLC0415
+                    import logging
 
                     logging.getLogger(__name__).warning(
                         "notification enqueue deferred (%s)", type(exc).__name__

@@ -105,7 +105,7 @@ class WebSearchSkill(SkillBundle):
         )
 
     def tools(self, config: dict[str, object]) -> list[object]:
-        from agenthicc.skills.web_search import FetchPageTool, SearchWebTool  # noqa: PLC0415
+        from agenthicc.skills.web_search import FetchPageTool, SearchWebTool
 
         raw_api_key = config.get("api_key", "")
         api_key = raw_api_key if isinstance(raw_api_key, str) else ""

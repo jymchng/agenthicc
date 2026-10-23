@@ -35,10 +35,11 @@ class CommandLoadResult:
     commands: list[Command] = field(default_factory=list)
     error: str | None = None
     missing_deps: list[str] = field(default_factory=list)
+    untrusted: bool = False  # skipped without import: not trusted (agenthicc trust)
 
     @property
     def ok(self) -> bool:
-        return self.error is None and not self.missing_deps
+        return self.error is None and not self.missing_deps and not self.untrusted
 
 
 @dataclass
@@ -58,38 +59,6 @@ class CommandPluginSet:
 
 
 # ---------------------------------------------------------------------------
-# Dependency helpers
-# ---------------------------------------------------------------------------
-
-
-def _check_missing_deps(requirements: list[str]) -> list[str]:
-    """Return the subset of *requirements* whose package is not importable."""
-    import importlib.metadata  # noqa: PLC0415
-    import re  # noqa: PLC0415
-
-    missing: list[str] = []
-    for req in requirements:
-        pkg = re.split(r"[>=<!~\[]", req)[0].strip()
-        try:
-            importlib.metadata.version(pkg)
-        except Exception:
-            missing.append(req)
-    return missing
-
-
-def _requirements_from_sidecar(path: Path) -> list[str]:
-    """Read the optional ``<stem>.requirements.txt`` next to *path*."""
-    req_file = path.parent / f"{path.stem}.requirements.txt"
-    if not req_file.exists():
-        return []
-    return [
-        line.strip()
-        for line in req_file.read_text(encoding="utf-8").splitlines()
-        if line.strip() and not line.lstrip().startswith("#")
-    ]
-
-
-# ---------------------------------------------------------------------------
 # Core loader
 # ---------------------------------------------------------------------------
 
@@ -98,37 +67,35 @@ def _load_command_file(path: Path) -> CommandLoadResult:
     """Import a single command plugin file and extract COMMAND / COMMANDS.
 
     Steps:
-    1. Probe-import to read the DEPENDENCIES list (same as PRD-24 tool plugins).
-    2. Check for missing deps; bail early if any are absent.
-    3. Full import via importlib.util.
+    1. Skip an untrusted file without importing it.
+    2. Read the declared dependencies statically and bail if any are missing.
+    3. Import the file, once.
     4. Extract COMMAND (single) and/or COMMANDS (list).
     5. Validate types; set source_id when the author left it at the default.
     """
-    # Imports from agenthicc.commands.command are done lazily here to avoid
+    from agenthicc.plugins.deps import (
+        PluginDependencyError,
+        declared_dependencies,
+        missing_requirements,
+    )
+    from agenthicc.plugins.trust import current_extension_trust
+
+    if not current_extension_trust().permits(path, kind="command"):
+        return CommandLoadResult(path=path, untrusted=True)
+
+    # ── Step 2: check declared dependencies without executing the plugin ──────
+    try:
+        missing = missing_requirements(declared_dependencies(path))
+    except PluginDependencyError as exc:
+        return CommandLoadResult(path=path, error=str(exc))
+    if missing:
+        return CommandLoadResult(path=path, missing_deps=missing)
+
+    # ── Step 3: import, once ──────────────────────────────────────────────────
+    # Imports from agenthicc.commands.command are done lazily below to avoid
     # circular imports: a loaded plugin imports Command from agenthicc.commands,
     # not from this loader module itself.
     module_name = f"_agenthicc_cmd_{path.stem}_{abs(hash(str(path)))}"
-
-    # ── Step 1: probe-import to read DEPENDENCIES ─────────────────────────────
-    declared_deps: list[str] = []
-    try:
-        probe_spec = importlib.util.spec_from_file_location(f"{module_name}_probe", path)
-        if probe_spec and probe_spec.loader:
-            probe = importlib.util.module_from_spec(probe_spec)
-            probe_spec.loader.exec_module(probe)
-            declared_deps = list(getattr(probe, "DEPENDENCIES", []))
-    except Exception:
-        pass  # syntax errors surface properly in Step 3 below
-
-    # ── Step 2: check missing deps ────────────────────────────────────────────
-    if not declared_deps:
-        declared_deps = _requirements_from_sidecar(path)
-    if declared_deps:
-        missing = _check_missing_deps(declared_deps)
-        if missing:
-            return CommandLoadResult(path=path, missing_deps=missing)
-
-    # ── Step 3: full import ───────────────────────────────────────────────────
     try:
         spec = importlib.util.spec_from_file_location(module_name, path)
         if spec is None or spec.loader is None:
@@ -141,7 +108,7 @@ def _load_command_file(path: Path) -> CommandLoadResult:
 
     # ── Step 4: extract exported commands ─────────────────────────────────────
     # Lazy import to avoid circular dependency (plugin files import Command too).
-    from agenthicc.commands.command import Command  # noqa: PLC0415
+    from agenthicc.commands.command import Command
 
     single = getattr(module, "COMMAND", None)
     multi = getattr(module, "COMMANDS", None)

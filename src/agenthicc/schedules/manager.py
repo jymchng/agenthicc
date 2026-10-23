@@ -54,7 +54,7 @@ class ScheduleManager:
     ) -> Schedule:
         now = self.clock()
         root = str(Path(repository_root).expanduser().resolve())
-        from agenthicc.tui.runtime.mode_manager import canonical_mode_name  # noqa: PLC0415
+        from agenthicc.tui.runtime.mode_manager import canonical_mode_name
 
         permission_ceiling = canonical_mode_name(permission_ceiling)
         if permission_ceiling not in {"Safe", "Plan", "Yolo"}:
@@ -103,7 +103,7 @@ class ScheduleManager:
         confirm_next_run: str,
         actor: str = "cli",
     ) -> Schedule:
-        from agenthicc.schedules.recurrence import format_timestamp  # noqa: PLC0415
+        from agenthicc.schedules.recurrence import format_timestamp
 
         schedule = self.store.get(schedule_id)
         if schedule.recurrence_kind is RecurrenceKind.ONCE and schedule.next_run_at is None:
@@ -180,7 +180,7 @@ class ScheduleManager:
             raise ValueError("invalid recurrence update")
         validate_recurrence(kind, spec, zone)
         if "permission_ceiling" in normalized_changes:
-            from agenthicc.tui.runtime.mode_manager import canonical_mode_name  # noqa: PLC0415
+            from agenthicc.tui.runtime.mode_manager import canonical_mode_name
 
             mode = canonical_mode_name(str(normalized_changes["permission_ceiling"]))
             if mode not in {"Safe", "Plan", "Yolo"}:

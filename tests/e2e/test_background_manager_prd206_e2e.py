@@ -11,10 +11,12 @@ from pathlib import Path
 import pytest
 
 from agenthicc.background import BackgroundSession, BackgroundStore
+from tests.cli_process import CLI_PROCESS_TIMEOUT_S, cli_test_timeout
 
 pytestmark = pytest.mark.e2e
 
 
+@cli_test_timeout(3)
 def test_attach_json_targets_each_session_in_one_workspace(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
@@ -43,7 +45,7 @@ def test_attach_json_targets_each_session_in_one_workspace(tmp_path: Path) -> No
         env=env,
         text=True,
         capture_output=True,
-        timeout=30,
+        timeout=CLI_PROCESS_TIMEOUT_S,
         check=False,
     )
     assert listing.returncode == 0, listing.stderr
@@ -56,7 +58,7 @@ def test_attach_json_targets_each_session_in_one_workspace(tmp_path: Path) -> No
             env=env,
             text=True,
             capture_output=True,
-            timeout=30,
+            timeout=CLI_PROCESS_TIMEOUT_S,
             check=False,
         )
         assert result.returncode == 0, result.stderr
@@ -65,6 +67,7 @@ def test_attach_json_targets_each_session_in_one_workspace(tmp_path: Path) -> No
         assert payload["status"] == "handoff_ready"
 
 
+@cli_test_timeout(1)
 def test_goal_run_id_is_rejected_from_positional_attach(tmp_path: Path) -> None:
     env = dict(os.environ)
     env["HOME"] = str(tmp_path / "home")
@@ -75,7 +78,7 @@ def test_goal_run_id_is_rejected_from_positional_attach(tmp_path: Path) -> None:
         env=env,
         text=True,
         capture_output=True,
-        timeout=30,
+        timeout=CLI_PROCESS_TIMEOUT_S,
         check=False,
     )
 

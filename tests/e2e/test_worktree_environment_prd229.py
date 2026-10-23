@@ -6,11 +6,14 @@ import subprocess
 import sys
 from pathlib import Path
 
+from tests.cli_process import CLI_PROCESS_TIMEOUT_S, cli_test_timeout
+
 
 def _git(path: Path, *args: str) -> None:
     subprocess.run(["git", *args], cwd=path, check=True, capture_output=True, text=True)
 
 
+@cli_test_timeout(3)
 def test_cli_trust_is_explicit_digest_bound_and_prints_execution_preview(tmp_path: Path) -> None:
     repository = tmp_path / "project"
     repository.mkdir()
@@ -41,7 +44,7 @@ def test_cli_trust_is_explicit_digest_bound_and_prints_execution_preview(tmp_pat
         env=environment,
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=CLI_PROCESS_TIMEOUT_S,
         check=False,
     )
     assert preview.returncode == 0
@@ -65,7 +68,7 @@ def test_cli_trust_is_explicit_digest_bound_and_prints_execution_preview(tmp_pat
         env=environment,
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=CLI_PROCESS_TIMEOUT_S,
         check=False,
     )
     assert confirmed.returncode == 0, confirmed.stderr
@@ -82,7 +85,7 @@ def test_cli_trust_is_explicit_digest_bound_and_prints_execution_preview(tmp_pat
         env=environment,
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=CLI_PROCESS_TIMEOUT_S,
         check=False,
     )
     assert changed.returncode == 0

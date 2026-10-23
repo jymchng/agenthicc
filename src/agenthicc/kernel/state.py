@@ -7,8 +7,6 @@ from enum import Enum
 from uuid import uuid4
 
 __all__ = [
-    "AgentInstance",
-    "AgentStatus",
     "AppState",
     "Intent",
     "IntentStatus",
@@ -16,7 +14,6 @@ __all__ = [
     "PermissionRule",
     "SecurityPolicy",
     "SystemSettings",
-    "Task",
     "ToolRegistration",
     "Workflow",
     "WorkflowNode",
@@ -41,12 +38,6 @@ class NodeStatus(str, Enum):
     failed = "failed"
     skipped = "skipped"
     discarded = "discarded"
-
-
-class AgentStatus(str, Enum):
-    idle = "idle"
-    busy = "busy"
-    terminated = "terminated"
 
 
 @dataclass(frozen=True)
@@ -84,29 +75,6 @@ class Workflow:
 
 
 @dataclass(frozen=True)
-class Task:
-    task_id: str
-    workflow_id: str
-    node_id: str
-    description: str
-    status: NodeStatus
-    assigned_agent_id: str | None
-    created_at: float
-    result: object = None
-
-
-@dataclass(frozen=True)
-class AgentInstance:
-    agent_id: str
-    agent_type: str
-    status: AgentStatus
-    current_task_id: str | None
-    parent_agent_id: str | None
-    created_at: float
-    metadata: dict[str, object] = field(default_factory=dict)
-
-
-@dataclass(frozen=True)
 class ToolRegistration:
     tool_id: str
     name: str
@@ -131,9 +99,7 @@ class SecurityPolicy:
 
 @dataclass(frozen=True)
 class SystemSettings:
-    max_concurrent_intents: int = 10
     max_parallel_tasks: int = 20
-    agent_pool_size: int = 30
     snapshot_every_n_events: int = 100
     event_log_path: str = ".agenthicc/events.jsonl"
     snapshot_path: str = ".agenthicc/snapshot.json"
@@ -148,10 +114,7 @@ class AppState:
     run_id: str
     intents: dict[str, Intent]
     workflows: dict[str, Workflow]
-    tasks: dict[str, Task]
-    agents: dict[str, AgentInstance]
     tools: dict[str, ToolRegistration]
-    hooks: dict[str, dict[str, object]]
     snapshot_index: int
     settings: SystemSettings
     policy: SecurityPolicy
@@ -168,10 +131,7 @@ class AppState:
             run_id=uuid4().hex,
             intents={},
             workflows={},
-            tasks={},
-            agents={},
             tools={},
-            hooks={},
             snapshot_index=0,
             settings=settings or SystemSettings(),
             policy=policy or SecurityPolicy(),
@@ -185,14 +145,5 @@ class AppState:
     def with_workflow(self, workflow: Workflow) -> AppState:
         return replace(self, workflows={**self.workflows, workflow.workflow_id: workflow})
 
-    def with_task(self, task: Task) -> AppState:
-        return replace(self, tasks={**self.tasks, task.task_id: task})
-
-    def with_agent(self, agent: AgentInstance) -> AppState:
-        return replace(self, agents={**self.agents, agent.agent_id: agent})
-
     def with_tool(self, tool: ToolRegistration) -> AppState:
         return replace(self, tools={**self.tools, tool.name: tool})
-
-    def with_hook(self, hook_id: str, hook_spec: dict[str, object]) -> AppState:
-        return replace(self, hooks={**self.hooks, hook_id: hook_spec})

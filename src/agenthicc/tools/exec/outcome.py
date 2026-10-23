@@ -8,6 +8,8 @@ mapping with ``returncode=1`` from being mistaken for a successful coroutine.
 from __future__ import annotations
 
 import math
+import os
+import shutil
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Mapping
@@ -17,10 +19,21 @@ __all__ = [
     "CommandOutcome",
     "CommandState",
     "Deadline",
+    "bash_executable",
     "invalid_timeout_result",
     "resolve_deadline",
     "validate_timeout",
 ]
+
+
+def bash_executable() -> str | None:
+    """The shell for shell-mode commands: /bin/bash, else bash on PATH.
+
+    This touches the filesystem; call it from a worker thread in async code.
+    """
+    if os.name != "nt" and os.path.exists("/bin/bash"):
+        return "/bin/bash"
+    return shutil.which("bash")
 
 
 class CommandState(StrEnum):

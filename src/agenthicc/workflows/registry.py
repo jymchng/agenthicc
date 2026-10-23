@@ -32,7 +32,7 @@ class WorkflowRegistry:
         source: str = "builtin",
         path: str | None = None,
     ) -> None:
-        from agenthicc.workflows.plugin import WorkflowEntry  # noqa: PLC0415
+        from agenthicc.workflows.plugin import WorkflowEntry
 
         name = plugin_cls.name
         if not name:
@@ -115,7 +115,7 @@ class WorkflowRegistry:
 
     def mode_default_map(self) -> dict[str, str]:
         """Return ``{mode_name: workflow_name}`` for the first binding per mode."""
-        from agenthicc.tui.runtime.mode_manager import canonical_mode_name  # noqa: PLC0415
+        from agenthicc.tui.runtime.mode_manager import canonical_mode_name
 
         result: dict[str, str] = {}
         for name in self.names():
@@ -127,7 +127,7 @@ class WorkflowRegistry:
 
     def mode_available_map(self) -> dict[str, list[str]]:
         """Return ``{mode_name: [workflow_name, …]}`` for all bindings per mode."""
-        from agenthicc.tui.runtime.mode_manager import canonical_mode_name  # noqa: PLC0415
+        from agenthicc.tui.runtime.mode_manager import canonical_mode_name
 
         result: dict[str, list[str]] = {}
         for name in self.names():
@@ -172,7 +172,7 @@ def _make_builtin_loader(
     """Create a typed zero-argument loader without importing a workflow."""
 
     def load() -> type[WorkflowPlugin]:
-        from agenthicc.workflows.loader import load_builtin_workflow  # noqa: PLC0415
+        from agenthicc.workflows.loader import load_builtin_workflow
 
         return load_builtin_workflow(descriptor)
 
@@ -197,7 +197,7 @@ def build_workflow_registry(
     if user_dir is None:
         user_dir = Path.home() / ".agenthicc"
 
-    from agenthicc.workflows.loader import builtin_workflow_descriptors  # noqa: PLC0415
+    from agenthicc.workflows.loader import builtin_workflow_descriptors
 
     registry = WorkflowRegistry()
 
@@ -223,7 +223,7 @@ def _scan_workflow_dir(
 ) -> None:
     if not directory.exists():
         return
-    from agenthicc.workflows.loader import load_python_workflows  # noqa: PLC0415
+    from agenthicc.workflows.loader import load_python_workflows
 
     paths = sorted(directory.iterdir(), key=lambda item: item.name)
     # A newly published package may coexist with a legacy ``name.py`` path

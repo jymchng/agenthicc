@@ -95,8 +95,9 @@ and returns a bounded recoverable status object.
 ```
 
 The skill guides the agent to generate a complete raw Python module, including
-the `@tool` decorator and a literal `TOOLS` export. Review the generated code
-and run `/tools reload` after placing it in the trusted project tools directory.
+the `@tool` decorator and a literal `TOOLS` export. Review the generated code,
+trust it with `agenthicc trust add .agenthicc/tools/<file>.py`, and run
+`/tools reload`.
 
 Use `/tools` in the interactive session to inspect the effective tool catalog,
 or `/tools reload` to rescan project and user-global tool plugins without
@@ -279,23 +280,26 @@ secrets at import time. Put operational work inside the tool entry point.
 
 ## Trust and configuration: current status
 
-Tool plugin files are executable Python. Review them before starting a
-session, especially when they come from another repository. The repository
-contains a `plugins.trust.check_trust()` helper, but the normal project-tool
-discovery path does not currently call it and does not show a trust prompt.
-`trusted_plugins.json` is therefore not an automatic permission boundary for
-`.agenthicc/tools/` today.
+Tool plugin files are executable Python. A project tool file under
+`.agenthicc/tools/` is imported only after you review it and record trust for
+its exact content with `agenthicc trust add` — the record binds the file's path
+to its SHA-256 and lives in `~/.agenthicc/trust.json`, so editing the file
+revokes it. An untrusted or edited tool is logged and skipped. Tools under your
+own `~/.agenthicc/tools/` are trusted by location. Declare dependencies with a
+literal `DEPENDENCIES = [...]` or a `<stem>.requirements.txt` file; agenthicc
+reads them without importing the plugin, never installs them, and skips a tool
+whose requirements are missing. See
+[Trust and dependencies](plugins.md#trust-and-dependencies).
 
-The following settings and helpers exist, but should not be treated as proof
-that a user plugin is isolated in the current TUI path:
+Trust admits code; it does not isolate it. The following settings exist, but
+should not be treated as proof that a trusted plugin is isolated in the current
+TUI path:
 
 | Surface | Current behavior |
 |---|---|
 | `[tools].allowed` / `denied` | Parsed and available to policy-building code; not wired into the TUI's direct plugin registry path. |
 | `[security].allowed_paths` | Parsed configuration and `WorkspaceView` input; not automatically injected into project callables. |
 | `[security].network_allow_list` | Used by an explicit `NetworkGuard`; not automatically applied by `agenthicc_http_client()`. |
-| `[plugins].auto_install` | A loader option exists, but normal session discovery calls the scanner with auto-install disabled. |
-| Plugin trust manifest | The trust helper exists, but normal tool discovery does not invoke it. |
 
 Use capability decorators, mode restrictions, approval prompts, explicit
 resource boundaries, and tests together. The [security guide](security.md)
@@ -399,8 +403,8 @@ For the prompt-driven authoring skill, submit its instructions directly:
 
 The `/create-tools` skill is independent of `create_workflow`; it gives the
 agent project-specific guidance for producing a Lauren `@tool`-decorated
-`TOOLS` export. Review generated code and reload the tool registry after
-placing a trusted plugin in `.agenthicc/tools/`.
+`TOOLS` export. Review the generated code, trust it with `agenthicc trust add`,
+and reload the tool registry.
 
 ## Try it
 

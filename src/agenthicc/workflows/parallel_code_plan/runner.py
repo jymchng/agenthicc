@@ -53,7 +53,7 @@ class ParallelCodePlanRunner(BaseWorkflowRunner):
         goal_run_id = ""
         if self._cfg.conversation_id:
             try:
-                from agenthicc.runs import RunStore  # noqa: PLC0415
+                from agenthicc.runs import RunStore
 
                 goal_run_id = next(
                     (
@@ -112,7 +112,7 @@ class ParallelCodePlanRunner(BaseWorkflowRunner):
         )
 
     async def run(self, intent: str) -> ParallelCodePlanContext:
-        from lauren_ai._memory import ShortTermMemory  # noqa: PLC0415
+        from lauren_ai._memory import ShortTermMemory
 
         memory = self._cfg.session_memory or ShortTermMemory(
             max_tokens=self._cfg.cfg.execution.effective_usable_budget()

@@ -26,7 +26,7 @@ def current_owner_id() -> str:
     try:
         return f"uid:{os.getuid()}"
     except AttributeError:  # pragma: no cover - Windows
-        import getpass  # noqa: PLC0415
+        import getpass
 
         return f"user:{getpass.getuser()}"
 

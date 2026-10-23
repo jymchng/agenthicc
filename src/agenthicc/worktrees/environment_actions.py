@@ -82,7 +82,7 @@ def append_environment_receipt(
 ) -> BackgroundSession:
     """Persist only the safe bounded receipt on the worker session record."""
 
-    from agenthicc.background import BackgroundStore as _BackgroundStore  # noqa: PLC0415
+    from agenthicc.background import BackgroundStore as _BackgroundStore
 
     session_store = store or _BackgroundStore()
     current = session_store.get(session_id, include_deleted=True)

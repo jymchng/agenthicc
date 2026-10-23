@@ -113,7 +113,7 @@ async def test_safe_outside_preflight_does_not_probe_target_metadata(
 
     assert result.allowed is True
     assert probed == []
-    assert getattr(approval.requests[0], "workspace_access")[0].exists is None
+    assert approval.requests[0].workspace_access[0].exists is None
 
 
 @pytest.mark.asyncio
@@ -136,7 +136,7 @@ async def test_safe_approval_is_exact_and_target_turn_grant_resets(tmp_path: Pat
     assert first == target.resolve() == second == third
     assert len(approval.requests) == 2
     request = approval.requests[0]
-    access = getattr(request, "workspace_access")
+    access = request.workspace_access
     assert access[0].canonical == target.resolve()
     assert access[0].operation == "read"
 
@@ -377,4 +377,4 @@ async def test_mention_injection_uses_the_same_outside_scope_policy(
     assert "parent report" in prefix
     assert injected[0].ok is True
     assert len(approval.requests) == 1
-    assert getattr(approval.requests[0], "workspace_access")[0].operation == "read"
+    assert approval.requests[0].workspace_access[0].operation == "read"

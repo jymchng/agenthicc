@@ -340,11 +340,7 @@ def remove_mcp_server(
         raise McpConfigError(f"MCP server not found: {clean_name}")
 
     lines = existing.splitlines(keepends=True)
-    starts = [
-        index
-        for index, line in enumerate(lines)
-        if line.strip() == "[[tools.mcp_servers]]"
-    ]
+    starts = [index for index, line in enumerate(lines) if line.strip() == "[[tools.mcp_servers]]"]
     remove_start = remove_end = None
     for position, start in enumerate(starts):
         end = starts[position + 1] if position + 1 < len(starts) else len(lines)
@@ -376,4 +372,6 @@ def remove_mcp_server(
         except OSError:
             pass
         raise McpConfigError(f"could not write {path}: {exc}") from exc
-    return McpConfigResult(name=clean_name, path=path, scope="global" if global_scope else "project")
+    return McpConfigResult(
+        name=clean_name, path=path, scope="global" if global_scope else "project"
+    )

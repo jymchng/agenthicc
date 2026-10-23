@@ -131,7 +131,7 @@ class TestPluginSubagentTypesLoading:
             "    )\n"
             "]\n"
         )
-        from agenthicc.plugins.discovery import _load_plugin_file  # noqa: PLC0415
+        from agenthicc.plugins.discovery import _load_plugin_file
 
         result = _load_plugin_file(plugin)
         assert result.error is None
@@ -141,7 +141,7 @@ class TestPluginSubagentTypesLoading:
     def test_load_plugin_file_non_spec_in_subagent_types_is_skipped(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
         plugin = tmp_path / "bad_plugin.py"
         plugin.write_text("TOOLS = []\nSUBAGENT_TYPES = ['not_a_spec', 42]\n")
-        from agenthicc.plugins.discovery import _load_plugin_file  # noqa: PLC0415
+        from agenthicc.plugins.discovery import _load_plugin_file
 
         # Should not raise; invalid entries are skipped with a warning
         result = _load_plugin_file(plugin)
@@ -151,35 +151,54 @@ class TestPluginSubagentTypesLoading:
 # ── Example plugin: security_checker ─────────────────────────────────────────
 
 
+_SECURITY_CHECKER_PLUGIN = """
+from agenthicc.subagents.types import SubagentAggregator, SubagentTypeSpec
+
+security_checker_spec = SubagentTypeSpec(
+    name="security_checker",
+    allowed_tools=frozenset({"read_file", "grep_files", "read_lines", "file_exists"}),
+    max_turns=8,
+    system_prompt="Review the code for security issues.",
+    max_turn_time_s=90.0,
+)
+
+
+class SecurityCheckerAggregator(SubagentAggregator):
+    agent_type = "security_checker"
+
+    def aggregate(self, results: list) -> str:
+        return "## Security Review Summary"
+
+
+TOOLS = []
+SUBAGENT_TYPES = [security_checker_spec]
+
+from agenthicc.subagents.types import DEFAULT_REGISTRY  # noqa: E402
+
+DEFAULT_REGISTRY.register_aggregator(SecurityCheckerAggregator())
+"""
+
+
 class TestExampleSecurityCheckerPlugin:
-    def test_security_checker_type_registered_after_load(self) -> None:
-        """Load the example plugin and verify the type is registered."""
-        from pathlib import Path  # noqa: PLC0415
-        from agenthicc.plugins.discovery import _load_plugin_file  # noqa: PLC0415
+    """A tool plugin can register a read-only subagent type and its aggregator."""
 
-        plugin_path = Path(
-            "/root/python_projects/python-password-generator/.agenthicc/tools/security_checker.py"
-        )
-        if not plugin_path.exists():
-            pytest.skip("Example plugin not found")
+    @staticmethod
+    def _load(tmp_path):  # type: ignore[no-untyped-def]
+        from agenthicc.plugins.discovery import _load_plugin_file
 
-        result = _load_plugin_file(plugin_path)
-        assert result.error is None
+        plugin_path = tmp_path / "security_checker.py"
+        plugin_path.write_text(_SECURITY_CHECKER_PLUGIN, encoding="utf-8")
+        return _load_plugin_file(plugin_path)
+
+    def test_security_checker_type_registered_after_load(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        result = self._load(tmp_path)
+        assert result.ok, result.error
         assert "security_checker" in DEFAULT_REGISTRY
         spec = DEFAULT_REGISTRY.get("security_checker")
         assert spec is not None
         assert "write_file" not in spec.allowed_tools  # read-only type
 
-    def test_security_checker_aggregator_registered(self) -> None:
-        from pathlib import Path  # noqa: PLC0415
-        from agenthicc.plugins.discovery import _load_plugin_file  # noqa: PLC0415
-
-        plugin_path = Path(
-            "/root/python_projects/python-password-generator/.agenthicc/tools/security_checker.py"
-        )
-        if not plugin_path.exists():
-            pytest.skip("Example plugin not found")
-
-        _load_plugin_file(plugin_path)
+    def test_security_checker_aggregator_registered(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        self._load(tmp_path)
         agg = DEFAULT_REGISTRY.get_aggregator("security_checker")
         assert agg is not None

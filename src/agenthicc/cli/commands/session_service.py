@@ -211,9 +211,9 @@ async def session_serve(
 ) -> None:
     """Run the local attachment transport until interrupted."""
 
-    from agenthicc.background.inbox import BackgroundInteractionInbox  # noqa: PLC0415
-    from agenthicc.background.settings import load_background_settings  # noqa: PLC0415
-    from agenthicc.background.store import BackgroundStore  # noqa: PLC0415
+    from agenthicc.background.inbox import BackgroundInteractionInbox
+    from agenthicc.background.settings import load_background_settings
+    from agenthicc.background.store import BackgroundStore
 
     settings = load_background_settings(
         config_path=getattr(ctx, "config_path", None),
@@ -222,9 +222,8 @@ async def session_serve(
             vars(ctx.config).get("background") if getattr(ctx, "config", None) is not None else None
         ),
     )
-    root = Path(settings.store_path).expanduser() if settings.store_path else None
     background_store = BackgroundStore(
-        root, projection_batch_size=settings.manager.projection_batch_size
+        settings.store_root, projection_batch_size=settings.manager.projection_batch_size
     )
     inbox = BackgroundInteractionInbox(background_store)
     service = SessionService(background_inbox=inbox)
@@ -239,8 +238,8 @@ async def session_serve(
     scheduler_stop = asyncio.Event()
     scheduler_enabled = False
     if settings.enabled:
-        from agenthicc.cli.commands.background import _store_and_supervisor  # noqa: PLC0415
-        from agenthicc.schedules import (  # noqa: PLC0415
+        from agenthicc.cli.commands.background import _store_and_supervisor
+        from agenthicc.schedules import (
             ScheduleScheduler,
             ScheduleStore,
             background_lookup,

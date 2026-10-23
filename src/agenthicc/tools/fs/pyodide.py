@@ -40,7 +40,7 @@ class PyodideFilesystemBackend(FilesystemBackend):  # type: ignore[misc]
         try:
             import pyodide  # noqa: F401
         except ImportError:
-            raise ImportError("PyodideFilesystemBackend requires Pyodide environment")
+            raise ImportError("PyodideFilesystemBackend requires Pyodide environment") from None
 
         import pyodide.FS as _FS  # type: ignore[import]
 

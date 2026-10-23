@@ -78,10 +78,10 @@ class TestEventKindAdditions:
 
 class TestScrollBufferRenderers:
     def _render_event(self, kind: str, payload: dict) -> str:
-        from io import StringIO  # noqa: PLC0415
-        from rich.console import Console  # noqa: PLC0415
-        from agenthicc.tui.workspace.appender import _RENDERERS  # noqa: PLC0415
-        from agenthicc.tui.conversation_store import ConversationEvent  # noqa: PLC0415
+        from io import StringIO
+        from rich.console import Console
+        from agenthicc.tui.workspace.appender import _RENDERERS
+        from agenthicc.tui.conversation_store import ConversationEvent
 
         ev = ConversationEvent(event_id="x", kind=kind, payload=payload)
         renderer = _RENDERERS.get(kind)
@@ -222,8 +222,8 @@ class TestStatusComponentSubagentCounter:
         return state
 
     def test_no_counter_when_pool_is_none(self) -> None:
-        from rich.console import Console  # noqa: PLC0415
-        from agenthicc.tui.workspace.components import StatusComponent  # noqa: PLC0415
+        from rich.console import Console
+        from agenthicc.tui.workspace.components import StatusComponent
 
         state = self._make_state(pool_state=None)
         comp = StatusComponent(state)
@@ -233,8 +233,8 @@ class TestStatusComponentSubagentCounter:
         assert "subagents" not in cap.get().lower()
 
     def test_counter_shown_when_pool_active(self) -> None:
-        from rich.console import Console  # noqa: PLC0415
-        from agenthicc.tui.workspace.components import StatusComponent  # noqa: PLC0415
+        from rich.console import Console
+        from agenthicc.tui.workspace.components import StatusComponent
 
         workers = [
             WorkerState("explorer #1", "explorer", "done"),
@@ -257,8 +257,8 @@ class TestStatusComponentSubagentCounter:
 
 class TestFooterComponentWorkerGrid:
     def _render_footer(self, pool_state=None) -> str:
-        from rich.console import Console  # noqa: PLC0415
-        from agenthicc.tui.workspace.components import FooterComponent  # noqa: PLC0415
+        from rich.console import Console
+        from agenthicc.tui.workspace.components import FooterComponent
 
         state = MagicMock()
         state.conversation.notification.return_value = None
@@ -291,7 +291,7 @@ class TestFooterComponentWorkerGrid:
         assert "tester #1" in out
 
     def test_footer_height_increases_with_pool(self) -> None:
-        from agenthicc.tui.workspace.components import FooterComponent  # noqa: PLC0415
+        from agenthicc.tui.workspace.components import FooterComponent
 
         state = MagicMock()
         state.conversation.notification.return_value = None

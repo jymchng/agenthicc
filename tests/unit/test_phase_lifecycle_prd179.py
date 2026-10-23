@@ -26,6 +26,7 @@ class _Handle:
         self.calls: list[tuple[str, object]] = []
         self.fail = fail
         self.checkpoint_supported = checkpoint_supported
+        self.phase_index = 0
 
     def attach_context(self, context: object) -> None:
         self.calls.append(("attach", context))
@@ -39,6 +40,7 @@ class _Handle:
         persist: bool = True,
     ) -> None:
         self.calls.append(("update", (phase, index, iteration, persist)))
+        self.phase_index = index
 
     def save_checkpoint(self, *, reason: str = "") -> object:
         self.calls.append(("checkpoint", reason))
