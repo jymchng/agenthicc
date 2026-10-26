@@ -314,7 +314,7 @@ A session detached from the terminal and driven by a separate worker process.
 It is addressed by an id and inspected later, so it needs an approval path and
 a durable status that do not depend on a TUI being open.
 
-**Provenance:** `agenthicc.background.model.BackgroundSession` · `src/agenthicc/background/model.py:117`
+**Provenance:** `agenthicc.background.model.BackgroundSession` · `src/agenthicc/background/model.py:356`
 
 ### SessionStatus
 
@@ -324,7 +324,7 @@ The background lifecycle: `QUEUED`, `STARTING`, `RUNNING`, `WAITING_APPROVAL`,
 `agenthicc.background.model` — there is no `SessionStatus` in
 `agenthicc.sessions`.
 
-**Provenance:** `agenthicc.background.model.SessionStatus` · `src/agenthicc/background/model.py:11`
+**Provenance:** `agenthicc.background.model.SessionStatus` · `src/agenthicc/background/model.py:13`
 
 ### Worker
 
@@ -332,14 +332,25 @@ The child process that runs one background session: `main()` is its entry
 point, and `BackgroundApprovalService` is how it asks for a decision when one
 is needed.
 
-**Provenance:** `agenthicc.background.worker.BackgroundApprovalService` · `src/agenthicc/background/worker.py:93`
+**Provenance:** `agenthicc.background.worker.BackgroundApprovalService` · `src/agenthicc/background/worker.py:504`
 
 ### Supervisor
 
 The parent-side component that starts, tracks, and reaps workers, and that owns
 the queue of `BackgroundRequest`s.
 
-**Provenance:** `agenthicc.background.supervisor.BackgroundSupervisor` · `src/agenthicc/background/supervisor.py:50`
+**Provenance:** `agenthicc.background.supervisor.BackgroundSupervisor` · `src/agenthicc/background/supervisor.py:247`
+
+### Agents hub
+
+The one screen for every agent (AGX-05): background sessions, goal runs and
+their workers, pending approvals and questions, saved sessions and agent
+definitions, in the tabs Running, Needs you, History and Library. It opens full
+screen with `agenthicc agents` and over the conversation with `/agents`, Ctrl+G
+or ← on an empty prompt. Each status has one glyph and label everywhere
+(`status_look`).
+
+**Provenance:** `agenthicc.tui.workspace.agents_hub.AgentsHub` · `src/agenthicc/tui/workspace/agents_hub/hub.py:205`
 
 ### Terminal
 
@@ -467,13 +478,22 @@ logging, and replay — live under `agenthicc.tui.runtime`.
 
 **Provenance:** `agenthicc.runners.tui_session` · `src/agenthicc/runners/tui_session.py`
 
+### Key map
+
+The registry that turns a key into a named action for the screen's context
+(`composer`, `agents.list`, `agents.detail` …), with the context's conditions
+deciding between actions that share a key (AGX-13). Footer hints and `?` help
+are read from it, and `~/.agenthicc/keybindings.toml` rebinds it.
+
+**Provenance:** `agenthicc.tui.keymap.Keymap` · `src/agenthicc/tui/keymap.py:237`
+
 ### Slash command
 
 A `/name` command entered in the prompt. The built-ins live in
 `BUILTIN_COMMANDS`; project and skill-provided commands join the same
 `UnifiedCommandRegistry`.
 
-**Provenance:** `agenthicc.commands.builtins.BUILTIN_COMMANDS` · `src/agenthicc/commands/builtins.py:892`
+**Provenance:** `agenthicc.commands.builtins.BUILTIN_COMMANDS` · `src/agenthicc/commands/builtins.py:1353`
 
 ### Command dispatcher
 

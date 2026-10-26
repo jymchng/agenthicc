@@ -200,3 +200,49 @@ def _trust_test_extensions(
     )
     with override_extension_trust(trust):
         yield trust
+
+
+@pytest.fixture(scope="session")
+def _signed_out_account_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """A token-store directory whose cached account tier is a fresh ``signed_out``."""
+    from agenthicc.auth import TokenStore
+
+    directory = tmp_path_factory.mktemp("account")
+    store = TokenStore()
+    store._fallback_path = directory / "tokens.json"
+    store._remember_tier("signed_out")
+    return directory
+
+
+@pytest.fixture(autouse=True)
+def _isolate_keybindings(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Point the key-bindings and hub state files away from the developer's home."""
+    monkeypatch.setenv(
+        "AGENTHICC_KEYBINDINGS", str(tmp_path_factory.mktemp("keys") / "keybindings.toml")
+    )
+    # The agents hub's remembered sort, grouping and seen marks (AGX-06).
+    monkeypatch.setenv(
+        "AGENTHICC_AGENTS_HUB_STATE", str(tmp_path_factory.mktemp("hub") / "agents-hub.json")
+    )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_account_tokens(_signed_out_account_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the token store away from the developer's keyring and home directory.
+
+    In-process TUI sessions check the account tier after their first frame
+    (AGX-02). Here that check answers ``signed_out`` from a temporary cache, so
+    a test never reads real tokens or leaves a cached tier behind. Tests of the
+    token store point ``_fallback_path`` at their own directory.
+    """
+    from agenthicc.auth import TokenStore
+
+    original = TokenStore.__init__
+
+    def isolated(self: TokenStore) -> None:
+        original(self)
+        self._fallback_path = _signed_out_account_dir / "tokens.json"
+
+    monkeypatch.setattr(TokenStore, "__init__", isolated)

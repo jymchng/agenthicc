@@ -59,7 +59,7 @@ def test_cli_lists_and_answers_exact_persisted_question(tmp_path: Path) -> None:
     env["HOME"] = str(home)
     env["PYTHONPATH"] = str(Path(__file__).parents[2] / "src")
     listing = subprocess.run(
-        [sys.executable, "-m", "agenthicc", "jobs", "inbox", "list", "--json"],
+        [sys.executable, "-m", "agenthicc", "agents", "inbox", "list", "--json"],
         cwd=tmp_path,
         env=env,
         text=True,
@@ -78,7 +78,7 @@ def test_cli_lists_and_answers_exact_persisted_question(tmp_path: Path) -> None:
             sys.executable,
             "-m",
             "agenthicc",
-            "jobs",
+            "agents",
             "inbox",
             "answer",
             item.item_id,

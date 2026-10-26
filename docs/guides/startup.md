@@ -40,10 +40,43 @@ commands are loaded after the first frame for a fresh interactive session.
 Built-in workflow and agent descriptors remain available for safe metadata and
 are materialized only when selected.
 
+The initial composer footer uses the standard default key hints, so it can be
+drawn before the key-action registry is imported. Immediately after that frame,
+the keymap service loads the user's bindings and installs the active map before
+the input reader starts. Other callers still construct `AppState` with its
+default keymap eagerly; only interactive startup uses this deferred path.
+
+The agent runtime itself also loads after the first frame. Building the
+provider configuration and folding the conversation journal into provider
+memory both import lauren-ai, so the TUI starts an `agent_runtime` phase as soon
+as the frame is drawn. On worker threads it folds the journal
+(`provider_journal_restore`) and then builds the provider (`provider`). Input
+keeps working meanwhile: read-only and control commands such as `/startup`
+answer at once, and a message is queued, with a "loading agent runtime" notice,
+until the runtime is ready. A paused or interrupted workflow and an interrupted
+turn are recovered once the conversation has loaded, before queued input runs.
+If the journal cannot be folded or the provider configuration is invalid, the
+failed phase is shown in `/startup` and each queued request reports it.
+Headless runs load the runtime before their first turn, as before.
+
+The account check that decides whether to show sponsored messages runs on a
+worker thread after the first frame. It reads a cached account tier
+(`~/.agenthicc/account-tier.json`, owner-only, no token material) that stays
+fresh for 24 hours and is rewritten on login, token refresh and logout, so an
+ordinary start never touches the OS keyring, whose first use can block on
+backend discovery and D-Bus.
+
+The session's SQLite stores — project and global memory, the background
+operator inbox and the workspace file cache — create their databases on first
+use rather than while the session is assembled.
+
 The TUI status bar shows a compact Startup indicator while work is pending.
 /startup prints the complete bounded phase report, including whether the phase
 was deferred and its elapsed duration. It is safe to use while startup is in
-progress.
+progress. Above the phases it prints three milestones: process start → first
+frame (measured from the moment the process first imported agenthicc), first
+frame → agent runtime ready, and the number of Python modules loaded when the
+first frame was drawn.
 
 The important boundaries are:
 
@@ -52,7 +85,8 @@ The important boundaries are:
 | Bootstrap | configuration snapshot, workspace/policy, owner lease | none |
 | Session | metadata index, selected journal/kernel restore, event processor | unrelated session replay |
 | Shell | built-in commands, triggers, workspace, input panel | project command/skill/tool discovery |
-| Agent operation | selected workflow/agent, provider, required MCP | none of the selected operation's dependencies |
+| Agent runtime | conversation journal opened | provider configuration and runner, journal fold into provider memory, account tier |
+| Agent operation | selected workflow/agent, required MCP | none of the selected operation's dependencies |
 | Optional integrations | validated configuration and policy | MCP connections, browser runtime, semantic index, changelog refresh |
 
 Deferred tasks belong to the same session coordinator and are cancelled and
@@ -159,6 +193,7 @@ when a project extension is broken.
 |---|---|---|
 | `agenthicc --version` is slow | A project extension or durable store is being loaded | It should not be: `--version` and `--help` are answered before command discovery (`src/agenthicc/cli/parser.py:100-108`). Check for a shell alias or wrapper that runs something else first |
 | A new TUI shows a `Startup` indicator that never clears | A deferred phase is still `loading`, or one reached `failed` | Run `/startup` for the bounded phase report; a failed *optional* phase renders as `degraded` and does not block local work |
+| A message shows `Queued #1 … — loading agent runtime…` right after launch | The conversation memory and provider load after the first frame | Expected; it runs as soon as `agent_runtime` is ready. If `provider_journal_restore` or `provider` failed, `/startup` shows why |
 | An operation blocks waiting for a dependency | It declared a required-resource dependency, such as the MCP catalogue | That is correct fail-closed behavior. Fix the dependency rather than retrying the operation |
 | A project tool or slash command is missing right after launch | Project extension discovery is deferred until after the first frame | Wait for the shell phase to become `ready`, then `/tools reload` or `/commands reload` |
 | Listing sessions replays a large history | A missing, stale, or incompatible `index.json` forced a rebuild | Expected after an upgrade. The index is a projection, never a second source of truth; the JSONL files stay authoritative |

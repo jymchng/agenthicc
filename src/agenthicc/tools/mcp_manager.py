@@ -33,13 +33,13 @@ from agenthicc.kernel import Event
 from agenthicc.supervised_tasks import SupervisedTasks
 from agenthicc.tools.mcp import (
     AgenthiccMcpTool,
-    McpServerConfig,
     McpToolBridge,
     McpToolCallError,
     McpStaleCatalogError,
     McpToolSchema,
     _provider_safe_tool_name,
 )
+from agenthicc.tools.mcp_server_config import McpServerConfig
 
 if TYPE_CHECKING:
     from agenthicc.kernel.processor import EventProcessor

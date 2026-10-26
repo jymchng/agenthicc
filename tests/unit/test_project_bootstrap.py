@@ -189,10 +189,10 @@ class TestBootstrapWrite:
 
 class TestCliInit:
     def test_cli_parser_registers_init_and_flags(self):
-        from agenthicc.cli.parser import _parse_args
+        from agenthicc.cli.parser import parse_cli
 
         with patch("sys.argv", ["agenthicc", "init", "--write", "--force"]):
-            args = _parse_args()
+            _, args = parse_cli()
 
         assert args._entry.path == ("init",)
         assert args.write is True

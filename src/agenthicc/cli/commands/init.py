@@ -5,11 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 
 from agenthicc.cli.context import CLIContext
-from agenthicc.cli.registry import command
 from agenthicc.project_bootstrap import BootstrapError, initialize_project
 
 
-@command("init", help="Create AGENTS.md and a commented .agenthicc configuration template")
 def init_project(ctx: CLIContext, write: bool = False, force: bool = False) -> None:
     """Create the project scaffold; preserve existing files unless forced.
 

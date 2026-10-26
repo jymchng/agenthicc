@@ -67,16 +67,8 @@ def make_spawn_worker_agents_tool(
 
         settings = load_background_settings(cwd=Path(repository))
         background_root = settings.store_root
-        supervisor = _BackgroundSupervisor(
-            _BackgroundStore(background_root),
-            max_workers=settings.max_workers,
-            max_workers_per_project=settings.max_workers_per_project,
-            max_workers_per_user=settings.max_workers_per_user,
-            queue_enabled=settings.queue_enabled,
-            max_queue_length=settings.max_queue_length,
-            priority_aging_interval_s=settings.priority_aging_interval_s,
-            dispatch_lease_s=settings.dispatch_lease_s,
-            notification_settings=settings.notifications,
+        supervisor = _BackgroundSupervisor.from_settings(
+            _BackgroundStore(background_root), settings
         )
 
     @tool_control

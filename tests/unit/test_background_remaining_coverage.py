@@ -14,12 +14,15 @@ from agenthicc.tools.approval import ApprovalRequest
 from agenthicc.background import (
     BackgroundSession,
     BackgroundStore,
+    BackgroundSupervisor,
     InvalidSessionTransition,
     SessionStatus,
 )
 from agenthicc.background.settings import BackgroundSettings
 from agenthicc.background.worker import BackgroundApprovalService, WorkerRequest, _load_request
 import agenthicc.background.worker as worker
+from agenthicc.tui.conversation_store import ConversationStore
+from tests.session_fakes import session_context
 
 pytestmark = pytest.mark.unit
 
@@ -187,9 +190,9 @@ async def test_worker_cancel_path_cleans_up_without_resurrecting_session(
         async def drain(self) -> None:
             return None
 
-    session = SimpleNamespace(
+    session = session_context(
         processor=Processor(),
-        app_state=SimpleNamespace(conversation=SimpleNamespace(cli_flags=None), cli_flags=None),
+        app_state=SimpleNamespace(conversation=ConversationStore(), cli_flags=None),
         mode_manager=SimpleNamespace(active_name="Safe", resolve_name=lambda name: name),
         agent_runner=object(),
         cfg=SimpleNamespace(
@@ -326,8 +329,13 @@ def test_store_recovery_and_artifact_kernel_paths(
     def bad_from_mapping(_cls: type[BackgroundSession], _value: object) -> BackgroundSession:
         raise TypeError("bad record")
 
+    def rebuild_index() -> None:
+        store._index.discard()
+        store.invalidate_index()
+        store._sync()
+
     monkeypatch.setattr(BackgroundSession, "from_mapping", classmethod(bad_from_mapping))
-    store._fold()
+    rebuild_index()
     monkeypatch.setattr(BackgroundSession, "from_mapping", original_from_mapping)
 
     original_evolve = BackgroundSession.evolve
@@ -338,7 +346,7 @@ def test_store_recovery_and_artifact_kernel_paths(
         raise ValueError("bad update")
 
     monkeypatch.setattr(BackgroundSession, "evolve", bad_evolve)
-    store._fold()
+    rebuild_index()
     monkeypatch.setattr(BackgroundSession, "evolve", original_evolve)
 
 
@@ -382,31 +390,35 @@ def test_cli_background_config_mutations_and_redaction(
     store.create(session)
     monkeypatch.setattr(background, "_store_and_supervisor", lambda _ctx: (store, fake_supervisor))
     for operation in (
-        background.jobs_cancel,
-        background.jobs_resume,
-        background.jobs_retry,
-        background.jobs_archive,
-        background.jobs_delete,
-        background.jobs_restore,
+        background.agents_cancel,
+        background.agents_resume,
+        background.agents_retry,
+        background.agents_archive,
+        background.agents_delete,
+        background.agents_restore,
     ):
         try:
             operation(CLIContext(), "public")
         except SystemExit:
             pass
     asyncio.run(background.run(CLIContext(), False, "", "", ""))
-    background.jobs_approve(CLIContext(), "public")
-    background.jobs_reject(CLIContext(), "public")
-    background.jobs_input(CLIContext(), "public", "answer")
-    background.jobs_rename(CLIContext(), "public", "new title")
-    background.jobs_labels(CLIContext(), "public", "one,two")
-    background.jobs_purge(CLIContext())
+    background.agents_approve(CLIContext(), "public")
+    background.agents_reject(CLIContext(), "public")
+    background.agents_input(CLIContext(), "public", "answer")
+    background.agents_rename(CLIContext(), "public", "new title")
+    background.agents_labels(CLIContext(), "public", "one,two")
+    background.agents_purge(CLIContext())
     assert "public" in capsys.readouterr().out
 
 
 @pytest.mark.asyncio
-async def test_manager_bulk_activity_and_interactive_action_edges(tmp_path: Path) -> None:
+async def test_hub_bulk_actions_report_failures_and_survive_a_bad_journal(tmp_path: Path) -> None:
     from rich.console import Console
-    from agenthicc.tui.workspace.background_manager import BackgroundManager
+
+    from agenthicc.tui.cbreak_reader import Key
+    from agenthicc.tui.workspace.agents_hub import AgentsHub
+    from agenthicc.tui.workspace.agents_hub.prefs import HubPrefs
+    from agenthicc.background.vocabulary import status_look
 
     store = BackgroundStore(tmp_path / "background")
     record = _record(tmp_path, "manager-remaining")
@@ -416,6 +428,8 @@ async def test_manager_bulk_activity_and_interactive_action_edges(tmp_path: Path
     store.transition(record.session_id, SessionStatus.COMPLETED)
     activity = Path(record.artifact_dir) / "conversation.jsonl"
     activity.write_text("not-json\n{\n", encoding="utf-8")
+
+    real = BackgroundSupervisor(store)
 
     class Supervisor:
         def __init__(self) -> None:
@@ -433,15 +447,35 @@ async def test_manager_bulk_activity_and_interactive_action_edges(tmp_path: Path
             self.calls.append(sid)
             raise RuntimeError("delete failure")
 
+        def queue_positions(self) -> dict[str, int]:
+            return real.queue_positions()
+
     supervisor = Supervisor()
-    console = Console(record=True)
-    manager = BackgroundManager(console, store=store, supervisor=supervisor, refresh_s=0.0)
-    assert manager._activity_lines(store.get(record.session_id)) == []
-    manager.toggle_mark_selected()
-    manager.bulk_cancel()
-    manager.marked_ids.add(record.session_id)
-    manager.bulk_archive()
-    assert "failure" in console.export_text()
-    for status in SessionStatus:
-        manager._status_style(status)
-    assert manager.handle_key("CHAR", "q").action == "exit"
+    hub = AgentsHub(
+        Console(record=True),
+        store=store,
+        supervisor=supervisor,  # type: ignore[arg-type]
+        prefs=HubPrefs(path=tmp_path / "hub.json"),
+    )
+    await hub.start()
+    try:
+        await hub.settle()
+        hub.handle_key(Key.CHAR, " ")  # peek reads the unparsable journal
+        await hub.settle()
+        assert hub._details[record.session_id].transcript == ()
+        hub.handle_key(Key.ESC, "")
+        hub.handle_key(Key.CHAR, "v")
+        assert hub.marked_ids == {record.session_id}
+        hub.handle_key(Key.CHAR, "c")  # stop every marked agent
+        await hub.settle()
+        assert "bulk failure" in hub.notice
+        hub.marked_ids.add(record.session_id)
+        hub.handle_key(Key.CHAR, "A")
+        await hub.settle()
+        assert "archive failure" in hub.notice
+        assert supervisor.calls == [record.session_id, record.session_id]
+        for status in SessionStatus:
+            assert status_look(status).label
+        assert hub.handle_key(Key.CHAR, "q") is not None
+    finally:
+        await hub.stop()

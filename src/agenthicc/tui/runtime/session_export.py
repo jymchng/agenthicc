@@ -50,6 +50,13 @@ _SECRET_PATTERNS = (
     re.compile(r"\bsk-(?:ant-)?[A-Za-z0-9_-]{16,}\b"),
     re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{16,}\b"),
 )
+#: ``token=…``, ``API_KEY: …``, ``password = "…"`` in free text: the value is
+#: masked and the name kept, so the text still says what was there.
+_SECRET_ASSIGNMENT = re.compile(
+    r"(?i)\b((?:access|auth|refresh|client|private|api)?[_-]?"
+    r"(?:token|password|passwd|secret|api[_-]?key|apikey))"
+    r"(\s*[=:]\s*)(['\"]?)[^\s'\"&,;]+"
+)
 
 
 class _Redactor:
@@ -84,6 +91,9 @@ class _Redactor:
         redacted = value
         for pattern in _SECRET_PATTERNS:
             redacted = pattern.sub(_REDACTED, redacted)
+        redacted = _SECRET_ASSIGNMENT.sub(
+            lambda match: f"{match.group(1)}{match.group(2)}{match.group(3)}{_REDACTED}", redacted
+        )
         if redacted != value:
             self.count += 1
         return redacted

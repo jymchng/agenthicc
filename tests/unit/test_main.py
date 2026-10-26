@@ -173,30 +173,30 @@ class TestSessionIndex:
 class TestMainParseArgs:
     def test_headless_flag(self):
         with patch("sys.argv", ["agenthicc", "--headless"]):
-            from agenthicc.cli.parser import _parse_args
+            from agenthicc.cli.parser import parse_cli
 
-            args = _parse_args()
+            _, args = parse_cli()
         assert args.headless is True
 
     def test_continue_flag(self):
         with patch("sys.argv", ["agenthicc", "--continue"]):
-            from agenthicc.cli.parser import _parse_args
+            from agenthicc.cli.parser import parse_cli
 
-            args = _parse_args()
+            _, args = parse_cli()
         assert args.continue_session is True
 
     def test_resume_flag(self):
         with patch("sys.argv", ["agenthicc", "--resume", "abc123"]):
-            from agenthicc.cli.parser import _parse_args
+            from agenthicc.cli.parser import parse_cli
 
-            args = _parse_args()
+            _, args = parse_cli()
         assert args.resume == "abc123"
 
     def test_mode_flag(self):
         with patch("sys.argv", ["agenthicc", "--mode", "Plan"]):
-            from agenthicc.cli.parser import _parse_args
+            from agenthicc.cli.parser import parse_cli
 
-            args = _parse_args()
+            _, args = parse_cli()
         assert args.mode_name == "Plan"
 
     def test_startup_selection_reaches_cli_context(self):
@@ -212,49 +212,49 @@ class TestMainParseArgs:
 
     def test_version(self):
         with patch("sys.argv", ["agenthicc", "--version"]):
-            from agenthicc.cli.parser import _parse_args
+            from agenthicc.cli.parser import parse_cli
 
             with pytest.raises(SystemExit) as exc_info:
-                _parse_args()
+                parse_cli()
         assert exc_info.value.code == 0
 
     def test_login_command(self):
         with patch("sys.argv", ["agenthicc", "login"]):
-            from agenthicc.cli.parser import _parse_args
+            from agenthicc.cli.parser import parse_cli
 
-            args = _parse_args()
+            _, args = parse_cli()
         assert getattr(args, "_entry", None) is not None
         assert args._entry.path == ("login",)
 
     def test_logout_command(self):
         with patch("sys.argv", ["agenthicc", "logout"]):
-            from agenthicc.cli.parser import _parse_args
+            from agenthicc.cli.parser import parse_cli
 
-            args = _parse_args()
+            _, args = parse_cli()
         assert getattr(args, "_entry", None) is not None
         assert args._entry.path == ("logout",)
 
     def test_whoami_command(self):
         with patch("sys.argv", ["agenthicc", "whoami"]):
-            from agenthicc.cli.parser import _parse_args
+            from agenthicc.cli.parser import parse_cli
 
-            args = _parse_args()
+            _, args = parse_cli()
         assert getattr(args, "_entry", None) is not None
         assert args._entry.path == ("whoami",)
 
     def test_sessions_list_command(self):
         with patch("sys.argv", ["agenthicc", "sessions", "list"]):
-            from agenthicc.cli.parser import _parse_args
+            from agenthicc.cli.parser import parse_cli
 
-            args = _parse_args()
+            _, args = parse_cli()
         assert getattr(args, "_entry", None) is not None
         assert args._entry.path == ("sessions", "list")
 
     def test_no_args_default_values(self):
         with patch("sys.argv", ["agenthicc"]):
-            from agenthicc.cli.parser import _parse_args
+            from agenthicc.cli.parser import parse_cli
 
-            args = _parse_args()
+            _, args = parse_cli()
         assert args.headless is False
         assert args.continue_session is False
         assert args.resume is None
@@ -334,7 +334,7 @@ class TestMainDispatching:
             coro.close()
 
         with patch("sys.argv", ["agenthicc", "--headless"]):
-            with patch("agenthicc.__main__.asyncio.run", side_effect=capturing_asyncio_run):
+            with patch("asyncio.run", side_effect=capturing_asyncio_run):
                 m.main()
         assert len(coroutines_run) == 1
 
@@ -806,6 +806,10 @@ class TestRunHeadless:
             return next(input_lines, "")
 
         async def instant_timeout(coro, timeout):
+            # The real asyncio.wait_for owns and cancels this coroutine. The
+            # immediate test double must close it explicitly to avoid leaking
+            # the Queue.get() coroutine passed by the headless runner.
+            coro.close()
             raise asyncio.TimeoutError()
 
         loop.run_in_executor = fake_executor

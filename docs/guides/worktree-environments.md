@@ -91,10 +91,10 @@ approve dispatch explicitly or trust the digest and retry.
 
 ## Running actions
 
-The background-session detail page exposes actions for worker sessions: press
-`x`, select an action, review its exact command/cwd/network declaration/timeout,
-then press `y` to approve and run it. `Esc` exits the list or preview without
-running anything. CLI equivalents are:
+The agents hub's detail view exposes actions for worker sessions: press `x`,
+select an action with ↑/↓ and Enter, review its exact command/cwd/network
+declaration/timeout, then press `y` to approve and run it. `Esc` exits the
+list or preview without running anything. CLI equivalents are:
 
 ```bash
 agenthicc worktrees actions WORKER_SESSION_ID

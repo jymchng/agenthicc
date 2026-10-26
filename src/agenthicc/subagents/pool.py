@@ -33,7 +33,8 @@ import math
 import time
 import uuid
 from collections.abc import AsyncIterator, Callable, Mapping
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, cast
 
 from agenthicc.subagents.types import (
@@ -49,6 +50,7 @@ from agenthicc.subagents.policy import (
     child_app_state,
     child_workspace_access,
 )
+from agenthicc.subagents.transcripts import TranscriptEvent, TranscriptWriter, WorkerRecord
 
 if TYPE_CHECKING:
     from lauren_ai._agents._runner import AgentRunnerBase
@@ -59,10 +61,17 @@ if TYPE_CHECKING:
     from agenthicc.tui.conversation_store import AppState, ConversationStore
     from agenthicc.runners.retry import RetryConfig
     from agenthicc.runners.usage_ledger import UsageLedger
-    from agenthicc.tools.approval import ApprovalBroker
+    from agenthicc.tools.approval import (
+        ApprovalBroker,
+        ApprovalRequest,
+        ApprovalRequester,
+        ApprovalResponse,
+    )
     from agenthicc.tools.workspace_access import WorkspaceAccessPolicy
+    from agenthicc.tui.runtime.session_export import _Redactor
 
 __all__ = [
+    "FINISHED_ROW_S",
     "WorkerState",
     "SubagentPoolState",
     "SubagentTask",
@@ -70,6 +79,7 @@ __all__ = [
     "AggregatedResult",
     "SubagentWorker",
     "SubagentPool",
+    "active_pool",
     "run_pool",
     "_make_child_app_state",
     "_make_child_workspace_access",
@@ -201,26 +211,94 @@ class _UsageNormalisingTransport:
 # ── TUI state models ──────────────────────────────────────────────────────────
 
 
-@dataclass
+#: A finished worker's row stays this long in the subagent panel (AGX-08 §5.1);
+#: a failed row stays until it is dismissed.
+FINISHED_ROW_S = 30.0
+
+_LIVE_STATUSES = frozenset({"pending", "running", "waiting"})
+
+
+@dataclass(frozen=True, slots=True)
 class WorkerState:
-    """Live status of one worker — used to drive the footer worker grid."""
+    """One worker as the subagent panel shows it (AGX-08 §5.1)."""
 
     label: str  # "explorer #1"
     agent_type: str
-    status: str = "pending"  # pending | running | done | failed
+    status: str = "pending"  # pending | running | waiting | done | failed | stopped
+    worker_id: str = ""
+    #: The current tool and its target, a pending approval, the latest text or
+    #: the result — redacted.
+    activity: str = ""
+    started_at: float | None = None
+    finished_at: float | None = None
+    tokens: int = 0
+    #: A failed row the user dismissed with ``x``.
+    dismissed: bool = False
+
+    @property
+    def live(self) -> bool:
+        """Whether the worker has not finished."""
+        return self.status in _LIVE_STATUSES
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class SubagentPoolState:
-    """Live summary of an active SubagentPool — stored on ConversationStore signal."""
+    """An immutable snapshot of a pool, published on ``subagent_pool_state``.
+
+    The pool publishes a new snapshot for every change, so a subscriber of
+    the signal is told about each one. A finished pool stays published (with
+    ``finished_at``) while :meth:`shown` has rows left.
+    """
 
     pool_id: str
     total: int
-    workers: list[WorkerState] = field(default_factory=list)
+    workers: tuple[WorkerState, ...] = ()
+    #: How many workers may run at once.
+    limit: int = 0
+    finished_at: float | None = None
+    #: Where this pool's transcripts are, or ``None`` without a session directory.
+    transcripts: Path | None = None
 
     @property
     def done(self) -> int:
-        return sum(1 for w in self.workers if w.status in ("done", "failed"))
+        return sum(1 for w in self.workers if not w.live)
+
+    @property
+    def active(self) -> bool:
+        """Whether any worker has not finished."""
+        return any(worker.live for worker in self.workers)
+
+    def worker(self, worker_id: str) -> WorkerState | None:
+        return next((w for w in self.workers if w.worker_id == worker_id), None)
+
+    def with_worker(self, worker: WorkerState) -> SubagentPoolState:
+        """This snapshot with *worker* replacing the worker with its ID."""
+        return replace(
+            self,
+            workers=tuple(worker if w.worker_id == worker.worker_id else w for w in self.workers),
+        )
+
+    def shown(self, now: float) -> tuple[WorkerState, ...]:
+        """The rows the panel lists at *now*.
+
+        Unfinished workers, failures until they are dismissed, and other
+        finished workers for :data:`FINISHED_ROW_S`.
+        """
+        return tuple(
+            worker
+            for worker in self.workers
+            if worker.live
+            or (worker.status == "failed" and not worker.dismissed)
+            or (
+                worker.status != "failed"
+                and worker.finished_at is not None
+                and now - worker.finished_at < FINISHED_ROW_S
+            )
+        )
+
+    def expired(self, now: float) -> bool:
+        """A finished pool with no row left to show."""
+        return self.finished_at is not None and not self.shown(now)
 
 
 # ── task / result data models ─────────────────────────────────────────────────
@@ -351,6 +429,167 @@ def _tool_call_summary(
     return summary
 
 
+# ── progress: the panel and transcripts (AGX-08) ────────────────────────────
+
+#: Tool arguments that best describe what a call is working on, in order.
+_TARGET_KEYS = ("path", "file_path", "command", "pattern", "query", "url", "source", "name")
+
+
+def _tool_target(tool_input: Mapping[str, object]) -> str:
+    """A short description of what a tool call works on (``src/app.py``)."""
+    for key in _TARGET_KEYS:
+        value = tool_input.get(key)
+        if isinstance(value, str) and value.strip():
+            return " ".join(value.split())[:120]
+    for value in tool_input.values():
+        if isinstance(value, str) and value.strip():
+            return " ".join(value.split())[:120]
+    return ""
+
+
+def _first_line(text: str, limit: int = 160) -> str:
+    line = next((part.strip() for part in text.splitlines() if part.strip()), "")
+    return line if len(line) <= limit else line[: limit - 1] + "…"
+
+
+class _WorkerProgress:
+    """Carries one worker's activity into its pool's snapshot and transcript."""
+
+    def __init__(self, pool: SubagentPool, worker_id: str, label: str, agent_type: str) -> None:
+        self._pool = pool
+        self.worker_id = worker_id
+        self.label = label
+        self.agent_type = agent_type
+        self._tokens = 0
+        self._tool = ""
+
+    @property
+    def pool_id(self) -> str:
+        return self._pool.pool_id
+
+    def requester(self) -> ApprovalRequester:
+        from agenthicc.tools.approval import ApprovalRequester
+
+        return ApprovalRequester(self.label, self.agent_type, self.pool_id, self.worker_id)
+
+    def started(self, task: str) -> None:
+        self._pool._update(
+            self.worker_id, status="running", started_at=time.time(), activity="starting"
+        )
+        self._pool._record(self.worker_id, TranscriptEvent("prompt", time.time(), text=task))
+
+    def tool_started(self, tool: str, tool_input: Mapping[str, object]) -> None:
+        target = self._pool._redact(_tool_target(tool_input))
+        self._tool = tool
+        self._pool._update(self.worker_id, activity=f"{tool} {target}".strip())
+        self._pool._record(
+            self.worker_id, TranscriptEvent("tool_started", time.time(), text=target, tool=tool)
+        )
+
+    def tool_finished(self, tool: str, ok: bool, error: str, duration_ms: float) -> None:
+        summary = error if not ok and error else f"{duration_ms / 1_000:.1f}s"
+        self._pool._record(
+            self.worker_id,
+            TranscriptEvent("tool_finished", time.time(), text=summary, tool=tool, ok=ok),
+        )
+
+    def text(self, text: str) -> None:
+        if not text.strip():
+            return
+        self._pool._update(self.worker_id, activity=self._pool._redact(_first_line(text)))
+        self._pool._record(self.worker_id, TranscriptEvent("text", time.time(), text=text))
+
+    def usage(self, tokens: int) -> None:
+        self._tokens += max(0, tokens)
+        self._pool._update(self.worker_id, tokens=self._tokens)
+
+    def approval_requested(self, tool: str, tool_input: Mapping[str, object]) -> None:
+        target = self._pool._redact(_tool_target(tool_input))
+        self._pool._update(
+            self.worker_id,
+            status="waiting",
+            activity=f"needs approval: {tool} {target}".strip(),
+        )
+        self._pool._record(
+            self.worker_id,
+            TranscriptEvent("approval_requested", time.time(), text=target, tool=tool),
+        )
+
+    def approval_resolved(self, tool: str, approved: bool) -> None:
+        self._pool._update(
+            self.worker_id,
+            status="running",
+            activity=f"{tool} approved" if approved else f"{tool} denied",
+        )
+        self._pool._record(
+            self.worker_id,
+            TranscriptEvent("approval_resolved", time.time(), tool=tool, ok=approved),
+        )
+
+    def finished(self, result: SubagentResult, *, stopped: bool) -> None:
+        status = "done" if result.ok else "stopped" if stopped else "failed"
+        summary = _first_line(result.text) if result.ok else result.error
+        self._pool._update(
+            self.worker_id,
+            status=status,
+            finished_at=time.time(),
+            activity=self._pool._redact(summary),
+        )
+        self._pool._record(
+            self.worker_id,
+            TranscriptEvent(
+                "finished",
+                time.time(),
+                text=result.text if result.ok else result.error,
+                ok=result.ok,
+            ),
+        )
+
+
+class _RequesterApprovals:
+    """A worker's view of the session's approvals (AGX-08 §5.5).
+
+    Every request it forwards names the worker, and while one waits the
+    worker's row says what it needs. The decision is still the session's.
+    """
+
+    def __init__(self, inner: ApprovalBroker, progress: _WorkerProgress) -> None:
+        self._inner = inner
+        self._progress = progress
+
+    async def request_approval(self, req: ApprovalRequest) -> ApprovalResponse:
+        if req.requester is None:
+            req = replace(req, requester=self._progress.requester())
+        self._progress.approval_requested(req.tool_name, req.tool_input)
+        response = await self._inner.request_approval(req)
+        self._progress.approval_resolved(req.tool_name, response.allowed)
+        return response
+
+    def reset_turn_memory(self) -> None:
+        self._inner.reset_turn_memory()
+
+
+def _completion_text(completion: object) -> str:
+    """The text of an assistant completion (an object or a message dict)."""
+    if isinstance(completion, Mapping):
+        content = completion.get("content")
+    else:
+        try:
+            content = object.__getattribute__(completion, "content")
+        except AttributeError:
+            return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            text = block.get("text") if isinstance(block, Mapping) else None
+            if isinstance(text, str):
+                parts.append(text)
+        return "\n".join(parts)
+    return ""
+
+
 # ── worker ────────────────────────────────────────────────────────────────────
 
 
@@ -400,6 +639,7 @@ class SubagentWorker:
         workspace_access: "WorkspaceAccessPolicy | None" = None,
         policy: SubagentExecutionPolicy | None = None,
         communication: AgentMessageBroker | None = None,
+        progress: _WorkerProgress | None = None,
     ) -> None:
         self._task = task
         self._spec = spec
@@ -422,11 +662,16 @@ class SubagentWorker:
         self._parent_run_id = parent_run_id
         self._provider_options = dict(provider_options or {})
         self._timeout_s = None if timeout_s is None else _validate_timeout_s(timeout_s)
-        self._approval_svc = approval_svc
+        self._progress = progress
+        # Approvals this worker asks for name it and show on its panel row.
+        approvals: ApprovalBroker | None = approval_svc
+        if approval_svc is not None and progress is not None:
+            approvals = _RequesterApprovals(approval_svc, progress)
+        self._approval_svc = approvals
         self._workspace_access = _make_child_workspace_access(
             workspace_access,
             self._app_state,
-            approval_svc,
+            approvals,
         )
         self._communication = communication
         self.label = f"{spec.name} #{index}"
@@ -547,7 +792,12 @@ class SubagentWorker:
         from lauren_ai._agents._runner import AgentRunnerBase as _RunnerBase
         from lauren_ai._memory import ShortTermMemory
         from lauren_ai import AfterToolHookDecision, ToolCallContext, ToolHook
-        from lauren_ai._signals import SignalBus, ToolCallStarted
+        from lauren_ai._signals import (
+            ModelCallComplete,
+            SignalBus,
+            ToolCallComplete,
+            ToolCallStarted,
+        )
         from agenthicc.runners.tool_populator import populate_agent_tools
 
         # Filter the full tool list to the expanded allowed set. Communication
@@ -640,12 +890,35 @@ class SubagentWorker:
 
         signals = SignalBus()
 
+        progress = self._progress
+
         @signals.on(ToolCallStarted)
         async def _record_tool_started(event: ToolCallStarted) -> None:
             name = str(event.tool_name)
             self._tool_calls.append(name)
             if name in mutating_tools:
                 self._changed_paths.extend(_paths_from_tool_input(name, event.input))
+            if progress is not None:
+                progress.tool_started(name, event.input)
+
+        if progress is not None:
+
+            @signals.on(ToolCallComplete)
+            async def _record_tool_finished(event: ToolCallComplete) -> None:
+                progress.tool_finished(
+                    str(event.tool_name),
+                    bool(event.success),
+                    str(event.error or ""),
+                    event.duration_ms,
+                )
+
+            @signals.on(ModelCallComplete)
+            async def _record_usage(event: ModelCallComplete) -> None:
+                usage = event.usage
+                progress.usage(
+                    _token_count(_usage_field(usage, "input_tokens"))
+                    + _token_count(_usage_field(usage, "output_tokens"))
+                )
 
         runner = _RunnerBase(
             # OpenAI-compatible endpoints may return nullable usage fields.
@@ -671,7 +944,20 @@ class SubagentWorker:
 
         from lauren_ai._config import AgentConfig
 
-        memory = ShortTermMemory(max_tokens=8_000)
+        memory: ShortTermMemory
+        if progress is not None:
+            observer = progress
+
+            class _ObservedMemory(ShortTermMemory):
+                """Reports each assistant message to the panel and transcript."""
+
+                def add_assistant(self, completion: object) -> None:
+                    super().add_assistant(completion)
+                    observer.text(_completion_text(completion))
+
+            memory = _ObservedMemory(max_tokens=8_000)
+        else:
+            memory = ShortTermMemory(max_tokens=8_000)
         result: dict[str, str] = {"text": ""}
         from dataclasses import fields as dataclass_fields
 
@@ -760,7 +1046,7 @@ class SubagentWorker:
             communication = self._communication
             for _ in range(3):
                 pending = (
-                    communication.pending_questions(sender=self._task.task_id)
+                    communication.open_questions(sender=self._task.task_id)
                     if communication is not None
                     else []
                 )
@@ -809,6 +1095,14 @@ class SubagentWorker:
 
 # ── pool ──────────────────────────────────────────────────────────────────────
 
+#: Pools that are running, by ID, so the TUI can stop one of their workers.
+_ACTIVE_POOLS: dict[str, SubagentPool] = {}
+
+
+def active_pool(pool_id: str) -> SubagentPool | None:
+    """The running pool with *pool_id*, if there is one (AGX-08 §5.4)."""
+    return _ACTIVE_POOLS.get(pool_id)
+
 
 class SubagentPool:
     """Runs a set of SubagentTasks concurrently bounded by *max_concurrent*.
@@ -841,6 +1135,7 @@ class SubagentPool:
         task_fingerprint: str = "",
         policy: SubagentExecutionPolicy | None = None,
         communication: AgentMessageBroker | None = None,
+        transcript_root: Path | None = None,
     ) -> None:
         self.pool_id = uuid.uuid4().hex
         self._tasks = tasks
@@ -875,6 +1170,44 @@ class SubagentPool:
             if conversation_id
             else None
         )
+        # Worker transcripts sit beside the session's journal (AGX-08 §5.3).
+        if transcript_root is None and conversation_journal is not None:
+            transcript_root = conversation_journal.path.parent / "subagents"
+        self._transcript_root = transcript_root
+        self._transcripts: TranscriptWriter | None = None
+        self._state = SubagentPoolState(self.pool_id, len(tasks), limit=max_concurrent)
+        self._worker_tasks: dict[str, asyncio.Task[SubagentResult]] = {}
+        self._stopped: set[str] = set()
+        self._redactor: _Redactor | None = None
+
+    @property
+    def state(self) -> SubagentPoolState:
+        """The pool's latest snapshot."""
+        return self._state
+
+    def stop_worker(self, worker_id: str) -> bool:
+        """Stop one worker; the others and the parent turn go on (AGX-08 §5.4).
+
+        A running worker is cancelled and a waiting one never starts; either
+        is recorded as failed with ``stopped by user``.
+        """
+        worker = self._state.worker(worker_id)
+        if worker is None or not worker.live:
+            return False
+        self._stopped.add(worker_id)
+        self._update(worker_id, activity="stopping")
+        running = self._worker_tasks.get(worker_id)
+        if running is not None and not running.done():
+            running.cancel()
+        return True
+
+    def dismiss_worker(self, worker_id: str) -> bool:
+        """Remove a failed worker's row from the panel."""
+        worker = self._state.worker(worker_id)
+        if worker is None or worker.status != "failed":
+            return False
+        self._update(worker_id, dismissed=True)
+        return True
 
     @property
     def communication(self) -> AgentMessageBroker | None:
@@ -888,18 +1221,21 @@ class SubagentPool:
 
         workers: list[SubagentWorker] = []
         worker_states: list[WorkerState] = []
+        progress: dict[str, _WorkerProgress] = {}
         for task in self._tasks:
             if self._communication is not None:
                 self._communication.register_worker(task.task_id)
             spec = self._registry.get(task.agent_type)
             if spec is None:
+                label = f"{task.agent_type} #?"
                 workers.append(_UnknownTypeWorker(task))  # type: ignore[arg-type]
-                worker_states.append(
-                    WorkerState(f"{task.agent_type} #?", task.agent_type, "pending")
-                )
+                worker_states.append(WorkerState(label, task.agent_type, worker_id=task.task_id))
+                progress[task.task_id] = _WorkerProgress(self, task.task_id, label, task.agent_type)
                 continue
             type_indices[task.agent_type] = type_indices.get(task.agent_type, 0) + 1
             idx = type_indices[task.agent_type]
+            label = f"{spec.name} #{idx}"
+            progress[task.task_id] = _WorkerProgress(self, task.task_id, label, task.agent_type)
             w = SubagentWorker(
                 task=task,
                 spec=spec,
@@ -919,18 +1255,45 @@ class SubagentPool:
                 workspace_access=self._workspace_access,
                 policy=self._policy,
                 communication=self._communication,
+                progress=progress[task.task_id],
             )
             workers.append(w)
-            worker_states.append(WorkerState(w.label, task.agent_type, "pending"))
+            worker_states.append(WorkerState(w.label, task.agent_type, worker_id=task.task_id))
 
-        # Initialise TUI pool-state signal.
-        pool_state = SubagentPoolState(
+        if self._transcript_root is not None:
+            self._transcripts = TranscriptWriter(self._transcript_root, self.pool_id)
+            self._transcripts.start(
+                [
+                    WorkerRecord(
+                        state.worker_id, state.label, state.agent_type, task.task_description
+                    )
+                    for state, task in zip(worker_states, self._tasks, strict=True)
+                ],
+                time.time(),
+            )
+        self._state = SubagentPoolState(
             pool_id=self.pool_id,
             total=len(workers),
-            workers=worker_states,
+            workers=tuple(worker_states),
+            limit=self._max_concurrent,
+            transcripts=self._transcripts.directory if self._transcripts is not None else None,
         )
-        self._set_pool_state(pool_state)
+        self._publish()
+        _ACTIVE_POOLS[self.pool_id] = self
+        try:
+            return await self._run(workers, worker_states, progress)
+        finally:
+            _ACTIVE_POOLS.pop(self.pool_id, None)
+            if self._transcripts is not None:
+                self._transcripts.finish(time.time())
+                await self._transcripts.aclose()
 
+    async def _run(
+        self,
+        workers: list[SubagentWorker],
+        worker_states: list[WorkerState],
+        progress: Mapping[str, _WorkerProgress],
+    ) -> AggregatedResult:
         # Emit pool-started kernel + scroll-buffer events.
         await self._emit_pool_started()
         self._append_scroll_event(
@@ -946,13 +1309,32 @@ class SubagentPool:
         semaphore = asyncio.Semaphore(self._max_concurrent)
 
         async def _bounded(worker: SubagentWorker, ws: WorkerState) -> SubagentResult:
+            worker_id = ws.worker_id
             async with semaphore:
-                ws.status = "running"
-                self._set_pool_state(pool_state)
-                await self._emit_worker_started(worker)
-                result = await worker.run()
-                ws.status = "done" if result.ok else "failed"
-                self._set_pool_state(pool_state)
+                if worker_id in self._stopped:
+                    result = SubagentResult(
+                        task_id=worker._task.task_id,
+                        agent_type=worker._task.agent_type,
+                        label=worker.label,
+                        ok=False,
+                        text="",
+                        error="stopped by user",
+                    )
+                else:
+                    progress[worker_id].started(worker._task.task_description)
+                    await self._emit_worker_started(worker)
+                    running = asyncio.create_task(worker.run(), name=f"subagent-{worker_id}")
+                    self._worker_tasks[worker_id] = running
+                    try:
+                        result = await running
+                    except asyncio.CancelledError:
+                        running.cancel()
+                        raise
+                    finally:
+                        self._worker_tasks.pop(worker_id, None)
+                    if worker_id in self._stopped and not result.ok:
+                        result = replace(result, error="stopped by user")
+                progress[worker_id].finished(result, stopped=worker_id in self._stopped)
                 # Persist before publishing the user-facing completion event.
                 # The parent tool exchange is committed later by lauren-ai;
                 # this ordering closes the cancellation window in between.
@@ -968,8 +1350,8 @@ class SubagentPool:
                         "summary": result.text[:_MAX_DISPLAY_RESULT_CHARS],
                         "tool_calls": list(result.tool_calls),
                         "changed_paths": list(result.changed_paths),
-                        "done": pool_state.done,
-                        "total": pool_state.total,
+                        "done": self._state.done,
+                        "total": self._state.total,
                     },
                 )
                 return result
@@ -1013,8 +1395,9 @@ class SubagentPool:
                 "failed": aggregated.failed,
             },
         )
-        # Clear the TUI pool-state so the footer hides.
-        self._set_pool_state(None)
+        # The finished pool stays on the panel while it has rows to show.
+        self._state = replace(self._state, finished_at=time.time())
+        self._publish()
         if self._communication is not None:
             await self._communication.close(reason="pool_completed")
         return aggregated
@@ -1024,6 +1407,51 @@ class SubagentPool:
     def _set_pool_state(self, state: SubagentPoolState | None) -> None:
         if self._conv_store is not None and hasattr(self._conv_store, "subagent_pool_state"):
             self._conv_store.subagent_pool_state.set(state)
+
+    def _publish(self) -> None:
+        self._set_pool_state(self._state)
+
+    def _update(
+        self,
+        worker_id: str,
+        *,
+        status: str | None = None,
+        activity: str | None = None,
+        started_at: float | None = None,
+        finished_at: float | None = None,
+        tokens: int | None = None,
+        dismissed: bool | None = None,
+    ) -> None:
+        """Publish a snapshot with one worker's fields changed."""
+        current = self._state.worker(worker_id)
+        if current is None:
+            return
+        updated = replace(
+            current,
+            status=current.status if status is None else status,
+            activity=current.activity if activity is None else activity,
+            started_at=current.started_at if started_at is None else started_at,
+            finished_at=current.finished_at if finished_at is None else finished_at,
+            tokens=current.tokens if tokens is None else tokens,
+            dismissed=current.dismissed if dismissed is None else dismissed,
+        )
+        if updated != current:
+            self._state = self._state.with_worker(updated)
+            self._publish()
+
+    def _record(self, worker_id: str, event: TranscriptEvent) -> None:
+        if self._transcripts is not None:
+            self._transcripts.append(worker_id, event)
+
+    def _redact(self, text: str) -> str:
+        """*text* for the panel: secrets masked, as in the transcripts."""
+        if not text:
+            return ""
+        if self._redactor is None:
+            from agenthicc.tui.runtime.session_export import _Redactor
+
+            self._redactor = _Redactor()
+        return str(self._redactor.value(text, "text"))
 
     def _append_scroll_event(self, kind: str, payload: dict[str, object]) -> None:
         if self._conv_store is not None and hasattr(self._conv_store, "append_event"):

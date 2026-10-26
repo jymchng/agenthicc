@@ -6,7 +6,7 @@ from pathlib import Path
 
 from agenthicc.background import BackgroundSession, BackgroundStore, SessionStatus
 from agenthicc.background.model import BackgroundAttempt
-from agenthicc.runs.manager import GoalRunManager
+from agenthicc.runs.manager import GoalRunService
 from agenthicc.runs.model import GoalRun, GoalRunStatus, RunAgentRecord
 from agenthicc.runs.store import RunStore
 
@@ -66,7 +66,7 @@ def test_run_reconciliation_uses_current_main_and_worker_attempts(
 
     supervisor = _Supervisor(tmp_path)
     runs = RunStore(tmp_path / "runs")
-    manager = GoalRunManager(store=runs, supervisor=supervisor, require_git=False)
+    manager = GoalRunService(store=runs, supervisor=supervisor, require_git=False)
     run = runs.create(
         GoalRun.create("Keep session state current", repository=str(tmp_path), run_id="run_211")
     )

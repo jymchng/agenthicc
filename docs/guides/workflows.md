@@ -66,6 +66,33 @@ contains `run_already_claimed`, another live agenthicc owner still has the run;
 close that process or resume the run there before retrying. The protection is
 intentional: forcibly taking a live claim could duplicate tool side effects.
 
+#### Provider profile selection during resume
+
+A workflow checkpoint records the non-secret provider profile used when the
+run was created. `/workflow resume` inherits that saved profile even if the
+session's current default has changed. To deliberately switch the connection
+for this run, use `/workflow resume <run-id> --profile <name>`; use `none` to
+explicitly select the legacy execution settings. The same option works without
+a run ID for the latest eligible checkpoint. An invocation-level
+`--set execution.profile=<name>` is also treated as an explicit resume choice.
+
+Agenthicc resolves the current profile and its current environment-backed
+secrets before provider work. Secret rotation does not invalidate a run. A
+same-name change to the provider, model, endpoint, protocol, or routing-field
+shape requires an explicit profile acknowledgement so a saved workflow is not
+silently redirected. The selected profile and a credential-free binding hash
+are persisted with the `resuming` checkpoint before dispatch. If that write
+fails, the checkpoint remains paused and no provider call is made. A profile
+resolution error likewise leaves the saved run and phase available for retry.
+
+If the saved profile has been removed, resume intentionally fails before any
+provider request. Restore that profile in the active configuration, or select
+an available connection explicitly with
+`/workflow resume <run-id> --profile <name>`; use `none` to choose the current
+legacy execution settings. `agenthicc config profiles` lists the configured
+names without displaying credential values. The failed attempt does not
+modify or discard the checkpoint.
+
 When multiple workflows are recoverable, omitted-ID resume selects the newest
 durable checkpoint by activity time, checkpoint revision, and a stable run-ID
 tie-breaker. The TUI recovery notice still wraps the complete run IDs instead
@@ -297,11 +324,17 @@ XeLaTeX for at least two PDF passes, invokes Pandoc again for EPUB output, and
 can be rerun later without an agent session:
 
 ```bash
-python3 <output_dir>/build_book.py --out dist/my-book.pdf
-# Produces dist/my-book.pdf and dist/my-book.epub
+python3 <output_dir>/build_book.py
+# Produces a unique, timestamped PDF and matching EPUB under dist/
 ```
 
-It accepts `--out`/`-o` for a custom PDF path and
+The default filename includes a microsecond-resolution timestamp and avoids
+collisions with an existing PDF or its matching EPUB. The compile agent must
+never delete, prune, or overwrite outputs that were already in `dist/`; cleanup
+is limited to intermediate files produced outside `dist/`. Completion checks
+validate the new pair from the current compile while preserving older builds.
+An explicit `--out`/`-o` path is also accepted for a custom PDF path; choose a
+new timestamped basename when using it. The builder also accepts
 `--keep-intermediates`/`--keep` for debugging. It uses an 8×11.5-inch page with
 0.75-inch margins, so the content width is 6.5 inches and the image/table
 target width is 95% of that content width (6.175 inches). It generates the
@@ -366,6 +399,20 @@ kept for reproducibility and are resolution-independent themselves; any
 rasterized derivative must meet the 600-DPI minimum. This is an authoring
 requirement rather than an additional artifact-verification or mutation step
 in `confirm_assets_ready`.
+
+Every Matplotlib graph made in the asset or chapter phase must omit legends,
+annotations, callout boxes, and floating in-plot labels. Keep the chart title,
+axis labels, ticks, and category labels readable and non-overlapping; explain
+series and takeaways in the surrounding figure caption or prose. Chapter
+writing uses a sustained first-person author voice: the agent should use “I”
+for its explanations and address you directly as “you” or “your” throughout
+the chapter, without inventing personal experience. It should also use a rich,
+varied selection of connective words and transitional phrases to link ideas and
+paragraphs into a cohesive flow; transitions should be frequent and natural,
+never repetitive or forced. Chapter, preface, and index Markdown must also
+avoid the em dash character (U+2014), using commas, parentheses, colons,
+semicolons, or separate sentences instead. Hyphens and en dashes remain valid
+where appropriate.
 
 Two layout-review phases run around front/back matter. They inspect every
 Markdown source that will be compiled, including image references and pipe

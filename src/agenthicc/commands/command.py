@@ -25,6 +25,9 @@ if TYPE_CHECKING:
     from agenthicc.background.terminals import TerminalManager
     from agenthicc.tools.mcp_manager import McpSessionManager
     from agenthicc.runners.loop_scheduler import LoopManager
+    from agenthicc.runners.startup import StartupCoordinator
+    from agenthicc.tui.keymap_service import KeymapService
+    from agenthicc.tui.workspace.frames import FrameStats
     from agenthicc.schedules.manager import ScheduleManager
     from agenthicc.memory.tool_history import ToolHistoryRecoveryState
 
@@ -99,7 +102,9 @@ class CommandContext:
     mcp_manager: "McpSessionManager | None" = None
     mode_manager: "ModeManager | None" = None
     terminal_manager: "TerminalManager | None" = None
-    startup: object | None = None
+    startup: "StartupCoordinator | None" = None
+    frame_stats: "Callable[[], FrameStats | None] | None" = None
+    keymap_service: "KeymapService | None" = None
     set_pending_skill: "Callable[[str], None] | None" = None
     set_pending_menu: "Callable[[Overlay], None] | None" = None
     close_overlay: "Callable[[], None] | None" = None
@@ -121,7 +126,10 @@ class CommandContext:
     schedule_manager: "ScheduleManager | None" = None
     schedule_repository_root: str = ""
     schedule_config_path: str = ""
-    background_inbox: object | None = None
+    # Shows the agents hub over the conversation (AGX-05): a tab name or "".
+    open_agents_hub: "Callable[[str], None] | None" = None
+    #: Moves focus to the subagent panel (AGX-08); ``None`` outside the TUI.
+    open_subagents: "Callable[[], None] | None" = None
 
 
 # A handler takes a CommandContext and returns True if it handled the command.

@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import asyncio
+import sys
 from collections.abc import Callable, Coroutine
 from typing import TYPE_CHECKING, cast
-
-from agenthicc.cli.parser import parse_cli
 
 if TYPE_CHECKING:
     from agenthicc.cli.context import CLIContext
@@ -35,6 +33,14 @@ def _run_tui(ctx: object) -> None:
 
 
 def main() -> None:
+    if sys.argv[1:] == ["--version"]:
+        # Answer before importing the parser: only package metadata is needed.
+        from agenthicc.cli.version import package_version
+
+        print(f"agenthicc {package_version()}")
+        return
+    from agenthicc.cli.parser import parse_cli
+
     ctx, ns = parse_cli()
     if ctx.goal is not None:
         from agenthicc.runs.cli import run_goal_cli
@@ -46,6 +52,8 @@ def main() -> None:
         dispatch(entry, ctx, ns)
         return
     if ctx.headless:
+        import asyncio
+
         asyncio.run(_run_headless(ctx))
     else:
         _run_tui(ctx)

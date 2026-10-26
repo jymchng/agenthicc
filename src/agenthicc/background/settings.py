@@ -214,19 +214,24 @@ class BackgroundNotificationSettings:
 
 
 @dataclass(frozen=True)
-class BackgroundManagerSettings:
-    """Latency and resource limits for the interactive agents manager."""
+class AgentsHubSettings:
+    """Latency and resource limits for the agents hub (``[background.manager]``).
+
+    The hub is event-driven (AGX-04). ``refresh_interval_s`` is how often
+    it stats the files it watches when native change notification is
+    unavailable; ``maintenance_interval_s`` is how often it probes a worker
+    whose exit it cannot watch and, without inotify, rescans the input inbox.
+    """
 
     refresh_interval_s: float = 0.25
     maintenance_interval_s: float = 5.0
-    projection_batch_size: int = 256
     activity_tail_bytes: int = 64_000
     frame_debounce_ms: int = 16
     max_in_flight_operations: int = 4
     metrics: bool = False
 
     @classmethod
-    def from_mapping(cls, raw: Mapping[str, object]) -> "BackgroundManagerSettings":
+    def from_mapping(cls, raw: Mapping[str, object]) -> "AgentsHubSettings":
         def number(name: str, default: float, minimum: float, maximum: float) -> float:
             value = raw.get(name, default)
             if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -256,7 +261,6 @@ class BackgroundManagerSettings:
         return cls(
             refresh_interval_s=number("refresh_interval_s", 0.25, 0.05, 60.0),
             maintenance_interval_s=number("maintenance_interval_s", 5.0, 0.5, 3_600.0),
-            projection_batch_size=integer("projection_batch_size", 256, 1, 10_000),
             activity_tail_bytes=integer("activity_tail_bytes", 64_000, 1_024, 4_000_000),
             frame_debounce_ms=integer("frame_debounce_ms", 16, 0, 1_000),
             max_in_flight_operations=integer("max_in_flight_operations", 4, 1, 64),
@@ -284,7 +288,7 @@ class BackgroundSettings:
     terminal_wall_timeout_s: float = 0.0
     terminal_cancel_grace_s: float = 5.0
     terminal_retention_days: int = 30
-    manager: BackgroundManagerSettings = BackgroundManagerSettings()
+    manager: AgentsHubSettings = AgentsHubSettings()
     # PRD-225 is opt-in while the durable scheduler receives broader rollout.
     queue_enabled: bool = False
     max_queue_length: int = 100
@@ -384,7 +388,7 @@ class BackgroundSettings:
             terminal_wall_timeout_s=nonnegative_float("terminal_wall_timeout_s", 0.0),
             terminal_cancel_grace_s=nonnegative_float("terminal_cancel_grace_s", 5.0),
             terminal_retention_days=positive_int("terminal_retention_days", 30, allow_zero=True),
-            manager=BackgroundManagerSettings.from_mapping(manager_raw),
+            manager=AgentsHubSettings.from_mapping(manager_raw),
             queue_enabled=queue_enabled,
             max_queue_length=positive_int("max_queue_length", 100, maximum=100_000),
             max_workers_per_user=max_workers_per_user,

@@ -9,6 +9,158 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — agents experience (AGX series)
+
+- **CLI start-up (AGX-01).** Built-in commands are declared in
+  `src/agenthicc/cli/manifest.py`; an invocation imports only the command it
+  runs instead of every command module, and help and "unknown command" errors
+  import none. `agenthicc agents --json` loads 169 modules instead of 457,
+  `agenthicc --help` 111 instead of 211. The `kernel` and `background` packages
+  resolve their public names lazily, MCP server configuration moved to
+  `agenthicc.tools.mcp_server_config` so reading configuration no longer
+  imports the MCP client, and `--version` reads package metadata only when it
+  is requested. `/background`, `/bg` and `/detach` are now ordinary built-in
+  commands intercepted by `TUISession`, instead of being patched in when the
+  background CLI module was imported. A project CLI plugin that shadows a user
+  plugin now actually produces the shadowing warning.
+- **Interactive start-up (AGX-02).** The TUI draws its first frame without
+  lauren-ai, the OS keyring or Rich's emoji table: 363 modules instead of 665,
+  and about 60% less CPU before the prompt accepts input. The provider config,
+  runner and the conversation-journal fold now run in an `agent_runtime`
+  phase on worker threads after the first frame; a message sent while it loads
+  is queued with a "loading agent runtime" notice and runs once it is ready,
+  and workflow and interrupted-turn recovery wait for it. Whether to show
+  sponsored messages is decided off the event loop from a cached account tier
+  (`~/.agenthicc/account-tier.json`, owner-only, no token material, fresh for a
+  day), so an ordinary start never touches the keyring; `AuthClient.get_token()`
+  also reads the keyring on a worker thread. Memory layers, the background
+  inbox and the workspace file cache open their SQLite databases on first use;
+  the agents hub prepares its inbox on a worker thread as it opens.
+  `/startup` prints process start → first frame, first frame → agent runtime
+  ready and the module count at the first frame. Extension discovery no longer
+  fingerprints every session journal under `~/.agenthicc`, and the dead
+  `agenthicc.cli.auth` module is gone.
+- **Session index for the agents screen (AGX-03).** The background registry is
+  read through a derived SQLite index, `~/.agenthicc/background/index.sqlite3`,
+  instead of folding `events.jsonl` into memory: a fresh process shows its
+  first page in milliseconds at 10,000 sessions, and status counts, filters and
+  search are indexed queries. Search now also matches intent, labels and latest
+  activity. The first open imports the old `projection-v1.json` snapshot and
+  deletes it; when the index must be rebuilt from the log, the screen shows
+  progress and recent sessions, and leaving it cancels the rebuild. The
+  scheduler's capacity and queue checks read only active sessions. The
+  `background.manager.projection_batch_size` setting is gone; a configuration
+  that still sets it loads and the value is ignored.
+- **Event-driven agents screen (AGX-04).** The agents screen no longer
+  refreshes four times a second or runs maintenance on a five-second timer: it
+  wakes when `events.jsonl`, the input inbox or the selected session's journal
+  changes (inotify on Linux, kqueue on macOS/BSD, a stat fallback elsewhere)
+  or when a worker process exits (`pidfd_open` on Linux), so an idle screen at
+  10,000 sessions uses about 0.03% of a core, and a change made by another
+  process appears within 200 ms (p95). Maintenance probes a worker only when it
+  is first seen, exits, misses its heartbeat deadline or cannot be watched,
+  reads only input-inbox files that changed, and dispatches the queue only when
+  queued work exists and the registry changed; with nothing due it probes and
+  writes nothing. `updated` events now carry only the changed fields (a
+  single-field update is about 170 bytes instead of 1.7 KB), and existing
+  full-record logs replay unchanged. Fixed along the way: flagging a stale
+  heartbeat no longer counts as activity, so the flag no longer clears itself
+  on the next pass; the Windows worker probe no longer calls `os.kill(pid, 0)`,
+  which sends CTRL_C_EVENT there; and `background.stale_after_s` is now
+  applied — every supervisor is built with `BackgroundSupervisor.from_settings()`,
+  which also gives worker, parallel-plan and worktree-tool supervisors the
+  configured cancel grace and wall timeout. `background.manager.refresh_interval_s`
+  is now the stat interval used without native change notification, and
+  `maintenance_interval_s` the probe interval for workers whose exit cannot be
+  watched.
+- **The agents hub (AGX-05, AGX-06, AGX-07).** One screen now shows every
+  agent: `agenthicc agents` opens it full screen, and `/agents`, Ctrl+G or ← on
+  an empty prompt open it over the conversation. It replaces the background
+  manager, the `agents --run` goal-run screen, the `sessions list` selector and
+  the `/inbox` overlay with four tabs — Running (active, queued, pinned and
+  recently finished agents, goal runs with their workers nested), Needs you
+  (pending approvals, questions and lost workers, oldest first), History
+  (finished agents and saved sessions, newest first, read in windows as you
+  scroll) and Library. Rows lead with the status in one vocabulary shared with
+  `agenthicc agents list` (`◆ needs approval`, `⚠ worker lost`, `queued #3` …),
+  drop columns rather than squeezing them as the terminal narrows, keep the
+  selection on the same agent as the list changes, mark agents whose state
+  changed since you last looked, and can be searched with words plus
+  `status:`, `project:`, `agent:`, `label:` and `run:`. Space opens a peek
+  panel with the exact pending request; Enter opens the detail view: the
+  request card (`y`/`n` resolve exactly that inbox item), progress, a live
+  redacted transcript tail, a worktree agent's diff summary, its attempts, and
+  only the fields that have a value. `+` starts a new background agent.
+  Attaching from inside a session switches to that agent and returns to your
+  session when it ends; `/background` now hands the conversation off and opens
+  the hub with the new agent selected. Workers record each agent's report
+  line — the first sentence of its latest message, redacted — and its tokens
+  and cost after each completed provider call, shown in the list and the
+  detail header. The `jobs` command group moved under `agents`
+  (`agents list`, `agents status`, `agents cancel`, …) and `jobs` is gone;
+  `sessions list` on a terminal opens the History tab. `BackgroundManager`,
+  `GoalRunManager`, `SessionManager` and `BackgroundInboxOverlay` are removed,
+  `BackgroundManagerService` is now `AgentsService`, `BackgroundManagerSettings`
+  is `AgentsHubSettings` (still configured under `[background.manager]`), and
+  the store reads `BackgroundWindow`s with `query_window`, `select` and
+  `count` instead of `BackgroundPage`s. The export redactor now also masks
+  secret assignments such as `token=…`, `API_KEY: …` and `password = "…"`.
+- **Subagent panel (AGX-08).** While a turn's subagents run, a panel under the
+  prompt shows each worker's status, what it is doing now (its current tool and
+  target, the approval it waits for or its latest message), how long it has run
+  and its tokens; finished rows fold away after 30 seconds and failures stay
+  until dismissed. Ctrl+O or `/subagents` focuses the panel, Enter opens a
+  worker's transcript (←/→ for its siblings), and `x` stops one worker while
+  the others and the turn go on. Transcripts are kept per worker under the
+  session's `subagents/` directory, redacted and bounded to 2 MiB, and stay
+  available after the turn and across resumes; the parent agent never reads
+  them. A worker's approval prompt now names it, `o` opens its transcript and
+  Esc denies only that call; background sessions record the requester in the
+  inbox. In a session, the agents hub's Running tab lists the turn's workers.
+  Fixed along the way: an answer to a worker's clarification question that
+  arrived before the worker looked for it was lost, so the worker finished
+  without it; and the pool's progress updates never reached signal
+  subscribers, because it re-published the same mutated object. Backgrounding
+  a running fan-out (the PRD's phase 2) is not implemented: the PRD gates it on
+  its own replay-safety review.
+- **Key bindings and accessibility (AGX-13).** Keys resolve to named actions
+  from one registry, which also produces the footer hints, so hints can no
+  longer advertise keys that do nothing (the old `R Retry`, `Esc Dismiss` and
+  `Ctrl+L Clear` hints did). Bindings can be changed in
+  `~/.agenthicc/keybindings.toml` and apply at once; `/keybindings` shows the
+  effective bindings and `agenthicc keybindings edit` opens the file. The key
+  decoder now knows Ctrl+A–Z, Alt combinations, modified arrows, Home and End,
+  Delete, Insert, F1–F12, focus and mouse reports on POSIX and Windows;
+  Ctrl+letters, Alt combinations and unknown escape sequences no longer arrive
+  as Esc (which could pause a running turn). A new `[ui]` section adds
+  `screen_reader` (no spinners or box drawing, state changes printed as
+  sentences), `reduced_motion` (a static `●` instead of animation) and `mouse`
+  (`auto`, `on`, `off`). The agents hub's keys use the same registry, in the
+  `agents`, `agents.list`, `agents.peek` and `agents.detail` contexts, which
+  inherit one another's actions so an operation such as stop works wherever an
+  agent is selected; its footer hints and `?` help come from it.
+- **TUI render pipeline (AGX-11).** The live block is no longer rebuilt and
+  rewritten whole on every change. A frame scheduler merges redraw requests
+  into at most one frame per `[behaviour] frame_interval_ms` (16 ms) while
+  typing still echoes at once, and the spinner runs at 10 Hz instead of 20.
+  Status and footer rows are rendered once per distinct row, and a new
+  line-diffing writer rewrites only the rows that changed: a spinner frame is
+  one row of about 50 bytes, and an idle TUI draws nothing. The prompt folds
+  each line at the terminal width (continuation rows are indented under `❯`),
+  re-folds only the line being edited, and shows at most
+  `[behaviour] composer_max_rows` rows (12) around the cursor, with
+  `↑ N more lines` / `↓ N more lines` for the rest — typing in a 10,000-character
+  or 200-line prompt costs about 1 ms of CPU per frame instead of up to 83 ms.
+  On terminals that report support for synchronized output (mode 2026), every
+  frame is written atomically. `/perf` shows frame counts and render and
+  write cost.
+- **Agent-turn bookkeeping (AGX-12).** The session memory no longer copies the
+  conversation on every provider step: `ensure_valid_and_persist()` returns
+  before copying when the tool history is valid, and rollback snapshots keep
+  message references instead of deep copies. On the 510-step `goal_flow`
+  replay, full-history copies fall from 2,245 to 35 and validation scans from
+  2,935 to 1,771, with byte-identical provider requests and journal records.
+
 ### Changed — required quality gates (PRD-250 WS-1)
 
 - One CI workflow, `.github/workflows/ci.yml`, runs every gate — lint and

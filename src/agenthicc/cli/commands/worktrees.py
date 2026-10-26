@@ -6,7 +6,7 @@ import json as json_module
 
 from agenthicc.background.model import BackgroundSession
 from agenthicc.cli.context import CLIContext
-from agenthicc.cli.registry import command, group, optional_positionals
+from agenthicc.cli.registry import optional_positionals
 from agenthicc.worktrees import (
     ManifestStore,
     ParallelCoordinator,
@@ -25,10 +25,6 @@ from agenthicc.worktrees.environment_actions import (
 )
 
 
-@group("worktrees", help="Inspect and recover parallel worker orchestration")
-def _worktrees_group() -> None: ...
-
-
 def _store(ctx: CLIContext) -> ManifestStore:
     del ctx
     return ManifestStore()
@@ -38,7 +34,6 @@ def _payload(manifest: ParallelManifest) -> dict[str, object]:
     return manifest.to_dict()
 
 
-@command("worktrees", "list", help="List durable parallel orchestrations")
 def worktrees_list(ctx: CLIContext, json: bool = False) -> None:
     manifests = _store(ctx).list()
     payload = [_payload(item) for item in manifests]
@@ -58,7 +53,6 @@ def worktrees_list(ctx: CLIContext, json: bool = False) -> None:
         )
 
 
-@command("worktrees", "show", help="Show one orchestration manifest")
 def worktrees_show(ctx: CLIContext, orchestration_id: str, json: bool = False) -> None:
     try:
         manifest = _store(ctx).get(orchestration_id)
@@ -72,7 +66,6 @@ def worktrees_show(ctx: CLIContext, orchestration_id: str, json: bool = False) -
         print(json_module.dumps(payload, indent=2, sort_keys=True))
 
 
-@command("worktrees", "recover", help="Reconcile one orchestration with Git worktrees")
 def worktrees_recover(ctx: CLIContext, orchestration_id: str, repository: str = ".") -> None:
     try:
         manifest = _store(ctx).get(orchestration_id)
@@ -88,7 +81,6 @@ def worktrees_recover(ctx: CLIContext, orchestration_id: str, repository: str = 
     print(json_module.dumps(_payload(recovered), indent=2, sort_keys=True))
 
 
-@command("worktrees", "integrate", help="Integrate a completed worker task")
 def worktrees_integrate(
     ctx: CLIContext,
     orchestration_id: str,
@@ -109,7 +101,6 @@ def worktrees_integrate(
     print(json_module.dumps(result.__dict__, indent=2, sort_keys=True))
 
 
-@command("worktrees", "dispatch", help="Dispatch one task, approving its setup for this run")
 def worktrees_dispatch(
     ctx: CLIContext,
     orchestration_id: str,
@@ -162,7 +153,6 @@ def _worker_session(ctx: CLIContext, session_id: str) -> BackgroundSession:
         raise SystemExit(1) from None
 
 
-@command("worktrees", "actions", help="List named actions available in one worker worktree")
 def worktrees_actions(ctx: CLIContext, session_id: str, json: bool = False) -> None:
     session = _worker_session(ctx, session_id)
     try:
@@ -192,7 +182,6 @@ def worktrees_actions(ctx: CLIContext, session_id: str, json: bool = False) -> N
             )
 
 
-@command("worktrees", "action", help="Run one approved named worker action")
 def worktrees_action(
     ctx: CLIContext,
     session_id: str,
@@ -243,7 +232,6 @@ def worktrees_action(
             print("  [captured output truncated]")
 
 
-@command("worktrees", "setup", help="Run trusted or explicitly approved worker setup")
 def worktrees_setup(
     ctx: CLIContext,
     session_id: str,
@@ -288,7 +276,6 @@ def worktrees_setup(
 
 
 @optional_positionals("repository")
-@command("worktrees", "trust", help="Trust the current environment manifest digest")
 def worktrees_trust(ctx: CLIContext, repository: str = ".", confirm: bool = False) -> None:
     del ctx
     environment = WorktreeEnvironment(repository, "trust-preview")
@@ -304,12 +291,10 @@ def worktrees_trust(ctx: CLIContext, repository: str = ".", confirm: bool = Fals
     print("Trusted this exact manifest digest for this Git repository.")
 
 
-@command("agents", "actions", help="List actions declared for one worker session")
 def agents_actions(ctx: CLIContext, session_id: str, json: bool = False) -> None:
     worktrees_actions(ctx, session_id, json=json)
 
 
-@command("agents", "action", help="Run one explicitly approved worker action")
 def agents_action(
     ctx: CLIContext,
     session_id: str,

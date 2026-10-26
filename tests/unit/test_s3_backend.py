@@ -384,6 +384,16 @@ class TestS3StatFields:
         assert st.is_file is True
         assert st.is_dir is False
 
+    def test_missing_last_modified_uses_timezone_aware_fallback(self):
+        backend, mock_client = _build_backend()
+        mock_client.head_object.return_value = {"ContentLength": 42, "ETag": '"deadbeef"'}
+        before = datetime.datetime.now(datetime.UTC).timestamp()
+
+        stat = backend.stat("stat.bin")
+
+        after = datetime.datetime.now(datetime.UTC).timestamp()
+        assert before <= stat.modified_at <= after
+
 
 class TestS3ListDir:
     def test_s3_list_dir(self):

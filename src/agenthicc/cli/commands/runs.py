@@ -5,12 +5,8 @@ from __future__ import annotations
 import json as json_module
 
 from agenthicc.cli.context import CLIContext
-from agenthicc.cli.registry import command, group, optional_positionals
+from agenthicc.cli.registry import optional_positionals
 from agenthicc.runs.cli import _manager
-
-
-@group("runs", help="Inspect and control durable goal runs")
-def _runs_group() -> None: ...
 
 
 def _payload(ctx: CLIContext, run_id: str) -> dict[str, object]:
@@ -18,7 +14,6 @@ def _payload(ctx: CLIContext, run_id: str) -> dict[str, object]:
     return run.to_dict()
 
 
-@command("runs", help="List durable goal runs")
 def runs(ctx: CLIContext, status: str = "", json: bool = False) -> None:
     """List goal runs; ``runs`` is an alias of ``runs list``."""
 
@@ -45,12 +40,10 @@ def runs(ctx: CLIContext, status: str = "", json: bool = False) -> None:
         )
 
 
-@command("runs", "list", help="List durable goal runs")
 def runs_list(ctx: CLIContext, status: str = "", json: bool = False) -> None:
     runs(ctx, status=status, json=json)
 
 
-@command("runs", "show", help="Show one durable goal run")
 def runs_show(ctx: CLIContext, run_id: str, json: bool = False) -> None:
     try:
         payload = _payload(ctx, run_id)
@@ -63,7 +56,6 @@ def runs_show(ctx: CLIContext, run_id: str, json: bool = False) -> None:
         print(json_module.dumps(payload, indent=2, sort_keys=True))
 
 
-@command("runs", "cancel", help="Cancel a goal run and its active main session")
 def runs_cancel(ctx: CLIContext, run_id: str) -> None:
     try:
         run = _manager(ctx).cancel(run_id)
@@ -73,7 +65,6 @@ def runs_cancel(ctx: CLIContext, run_id: str) -> None:
     print(f"cancel: {run.run_id} → {run.status.value}")
 
 
-@command("runs", "resume", help="Resume a recoverable goal run")
 def runs_resume(ctx: CLIContext, run_id: str) -> None:
     manager = _manager(ctx)
     try:
@@ -88,7 +79,6 @@ def runs_resume(ctx: CLIContext, run_id: str) -> None:
     print(f"resume: {resumed.main_session_id} → {resumed.status.value}")
 
 
-@command("attach", help="Attach the TUI to one exact background session")
 @optional_positionals("session_id")
 async def attach(ctx: CLIContext, session_id: str = "", run: str = "", json: bool = False) -> None:
     """Attach an exact session; goal runs require the explicit ``--run`` form."""

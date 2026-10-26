@@ -302,6 +302,9 @@ class WorkflowRunHandle:
     created_at: float = field(default_factory=time.time)
     browser_manager: object | None = None
     provider_profile: str = ""
+    provider_profile_fingerprint: str = ""
+    provider_profile_origin: str = ""
+    provider_profile_history: tuple[str, ...] = ()
     workspace_root: str = ""
     cache_contract_version: str = ""
     cache_epoch: str = ""
@@ -340,6 +343,7 @@ class WorkflowRunHandle:
         checkpoint_store: WorkflowCheckpointStore,
         browser_manager: object | None = None,
         provider_profile: str = "",
+        provider_profile_fingerprint: str = "",
         workspace_root: str = "",
     ) -> "WorkflowRunHandle":
         """Create a handle for a new workflow run."""
@@ -353,8 +357,36 @@ class WorkflowRunHandle:
             workflow=workflow,
             browser_manager=browser_manager,
             provider_profile=provider_profile,
+            provider_profile_fingerprint=provider_profile_fingerprint,
+            provider_profile_origin=provider_profile or "<legacy execution settings>",
+            provider_profile_history=(provider_profile,) if provider_profile else (),
             workspace_root=workspace_root,
         )
+
+    def apply_provider_profile(
+        self,
+        profile_name: str,
+        binding_fingerprint: str,
+        *,
+        record_switch: bool,
+    ) -> None:
+        """Bind the resolved profile before persisting the resume transition."""
+
+        previous = self.provider_profile
+        if not self.provider_profile_origin:
+            self.provider_profile_origin = previous or "<legacy execution settings>"
+        if record_switch:
+            history = self.provider_profile_history or (
+                (previous or "<legacy execution settings>",)
+            )
+            self.provider_profile_history = (
+                *history,
+                profile_name or "<legacy execution settings>",
+            )[-8:]
+        elif not self.provider_profile_history and (previous or profile_name):
+            self.provider_profile_history = (previous or profile_name,)
+        self.provider_profile = profile_name
+        self.provider_profile_fingerprint = binding_fingerprint
 
     def attach_context(self, context: object) -> None:
         """Attach the typed context created by a runner."""
@@ -814,6 +846,9 @@ class WorkflowRunHandle:
             reason=reason or self.last_error,
             browser=browser_payload,
             provider_profile=self.provider_profile,
+            provider_profile_fingerprint=self.provider_profile_fingerprint,
+            provider_profile_origin=self.provider_profile_origin,
+            provider_profile_history=self.provider_profile_history,
             workspace_root=self.workspace_root,
             cache_contract_version=self.cache_contract_version,
             cache_epoch=self.cache_epoch,
@@ -950,6 +985,14 @@ class WorkflowRunHandle:
             ),
             browser_manager=browser_manager,
             provider_profile=checkpoint.provider_profile,
+            provider_profile_fingerprint=checkpoint.provider_profile_fingerprint,
+            provider_profile_origin=(
+                checkpoint.provider_profile_origin or checkpoint.provider_profile
+            ),
+            provider_profile_history=(
+                checkpoint.provider_profile_history
+                or ((checkpoint.provider_profile,) if checkpoint.provider_profile else ())
+            ),
             workspace_root=checkpoint.workspace_root,
             cache_contract_version=checkpoint.cache_contract_version,
             cache_epoch=checkpoint.cache_epoch,

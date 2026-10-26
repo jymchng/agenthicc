@@ -23,6 +23,7 @@ import enum
 import hashlib
 import json
 import sqlite3
+import threading
 import time
 from collections import OrderedDict
 from collections.abc import Iterator
@@ -212,13 +213,16 @@ class ProjectMemoryLayer:
     event loop never blocks on disk I/O.  Writes are additionally serialised
     through a per-layer ``asyncio.Lock``; SQLite WAL mode lets readers
     proceed concurrently with the single writer.
+
+    The database and its schema are created on first use, on a worker thread,
+    so constructing a session's layers does no disk I/O (AGX-02).
     """
 
     def __init__(self, db_path: str | Path) -> None:
         self._db_path = str(db_path)
-        Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
         self._write_lock = asyncio.Lock()
-        self._init_schema()
+        self._schema_lock = threading.Lock()
+        self._schema_ready = False
 
     @property
     def db_path(self) -> str:
@@ -227,6 +231,11 @@ class ProjectMemoryLayer:
     # -- connection helpers (called on worker threads) -------------------------
 
     def _connect(self) -> sqlite3.Connection:
+        if not self._schema_ready:
+            self._init_schema()
+        return self._open()
+
+    def _open(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._db_path, timeout=10.0)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
@@ -243,8 +252,13 @@ class ProjectMemoryLayer:
             yield conn
 
     def _init_schema(self) -> None:
-        with self._transaction() as conn:
-            conn.executescript(_KV_SCHEMA + _ARTIFACT_SCHEMA)
+        with self._schema_lock:
+            if self._schema_ready:
+                return
+            Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
+            with closing(self._open()) as conn, conn:
+                conn.executescript(_KV_SCHEMA + _ARTIFACT_SCHEMA)
+            self._schema_ready = True
 
     # -- key-value API ----------------------------------------------------------
 

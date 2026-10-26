@@ -11,6 +11,7 @@ from rich.console import Console
 
 from agenthicc.tui.conversation_store import AppState
 from agenthicc.tui.workspace import Workspace
+from tests.tui_frames import settle_frames
 
 pytestmark = pytest.mark.integration
 
@@ -48,11 +49,12 @@ async def test_active_animation_ticks_reach_live_update() -> None:
 
     try:
         state.conversation.begin_turn("agent", "turn-1")
-        await asyncio.sleep(0)
+        await settle_frames(workspace)
         live.update.reset_mock()
 
         state.conversation.tick()
-        await asyncio.sleep(0)
+        # Animation frames are drawn within one frame interval.
+        await settle_frames(workspace)
 
         assert state.conversation.frame() == 1
         live.update.assert_called_once()

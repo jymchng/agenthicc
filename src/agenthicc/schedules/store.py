@@ -32,6 +32,79 @@ class ScheduleConflict(ScheduleStoreError):
 
 
 _SCHEMA_VERSION = 1
+
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS schedules (
+    schedule_id TEXT PRIMARY KEY,
+    repository_root TEXT NOT NULL,
+    workflow_name TEXT NOT NULL,
+    prompt TEXT NOT NULL,
+    profile_name TEXT NOT NULL,
+    permission_ceiling TEXT NOT NULL,
+    recurrence_kind TEXT NOT NULL,
+    recurrence_spec TEXT NOT NULL,
+    timezone TEXT NOT NULL,
+    coalesce_policy TEXT NOT NULL,
+    max_in_flight INTEGER NOT NULL,
+    next_run_at REAL,
+    enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+    creator TEXT NOT NULL,
+    revision INTEGER NOT NULL CHECK (revision > 0),
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    config_path TEXT NOT NULL DEFAULT '',
+    deleted_at REAL
+);
+CREATE INDEX IF NOT EXISTS schedules_due_idx
+    ON schedules(enabled, deleted_at, next_run_at);
+CREATE INDEX IF NOT EXISTS schedules_repository_idx
+    ON schedules(repository_root, deleted_at, updated_at);
+CREATE TABLE IF NOT EXISTS schedule_revisions (
+    schedule_id TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    action TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    definition_json TEXT NOT NULL,
+    PRIMARY KEY(schedule_id, revision),
+    FOREIGN KEY(schedule_id) REFERENCES schedules(schedule_id)
+);
+CREATE TABLE IF NOT EXISTS schedule_occurrences (
+    occurrence_id TEXT PRIMARY KEY,
+    schedule_id TEXT NOT NULL,
+    schedule_revision INTEGER NOT NULL,
+    occurrence_key TEXT NOT NULL UNIQUE,
+    kind TEXT NOT NULL,
+    scheduled_for REAL NOT NULL,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    state TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    worktree_json TEXT,
+    base_commit TEXT NOT NULL DEFAULT '',
+    retry_of TEXT NOT NULL DEFAULT '',
+    coalesced_count INTEGER NOT NULL DEFAULT 0,
+    attempt INTEGER NOT NULL DEFAULT 1,
+    receipt_json TEXT,
+    outcome_json TEXT,
+    error TEXT NOT NULL DEFAULT '',
+    FOREIGN KEY(schedule_id) REFERENCES schedules(schedule_id)
+);
+CREATE INDEX IF NOT EXISTS occurrences_schedule_idx
+    ON schedule_occurrences(schedule_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS occurrences_dispatch_idx
+    ON schedule_occurrences(state, scheduled_for);
+CREATE TABLE IF NOT EXISTS schedule_audit (
+    event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    schedule_id TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    action TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    details_json TEXT NOT NULL
+);
+"""
+
 _ACTIVE_OCCURRENCE_STATES = (
     OccurrenceState.AWAITING_SERVICE.value,
     OccurrenceState.QUEUED.value,
@@ -89,80 +162,12 @@ class ScheduleStore:
                     raise ScheduleStoreError(
                         f"schedule database schema {current} is newer than supported {_SCHEMA_VERSION}"
                     )
-                connection.executescript(
-                    """
-                    CREATE TABLE IF NOT EXISTS schedules (
-                        schedule_id TEXT PRIMARY KEY,
-                        repository_root TEXT NOT NULL,
-                        workflow_name TEXT NOT NULL,
-                        prompt TEXT NOT NULL,
-                        profile_name TEXT NOT NULL,
-                        permission_ceiling TEXT NOT NULL,
-                        recurrence_kind TEXT NOT NULL,
-                        recurrence_spec TEXT NOT NULL,
-                        timezone TEXT NOT NULL,
-                        coalesce_policy TEXT NOT NULL,
-                        max_in_flight INTEGER NOT NULL,
-                        next_run_at REAL,
-                        enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
-                        creator TEXT NOT NULL,
-                        revision INTEGER NOT NULL CHECK (revision > 0),
-                        created_at REAL NOT NULL,
-                        updated_at REAL NOT NULL,
-                        config_path TEXT NOT NULL DEFAULT '',
-                        deleted_at REAL
-                    );
-                    CREATE INDEX IF NOT EXISTS schedules_due_idx
-                        ON schedules(enabled, deleted_at, next_run_at);
-                    CREATE INDEX IF NOT EXISTS schedules_repository_idx
-                        ON schedules(repository_root, deleted_at, updated_at);
-                    CREATE TABLE IF NOT EXISTS schedule_revisions (
-                        schedule_id TEXT NOT NULL,
-                        revision INTEGER NOT NULL,
-                        action TEXT NOT NULL,
-                        actor TEXT NOT NULL,
-                        created_at REAL NOT NULL,
-                        definition_json TEXT NOT NULL,
-                        PRIMARY KEY(schedule_id, revision),
-                        FOREIGN KEY(schedule_id) REFERENCES schedules(schedule_id)
-                    );
-                    CREATE TABLE IF NOT EXISTS schedule_occurrences (
-                        occurrence_id TEXT PRIMARY KEY,
-                        schedule_id TEXT NOT NULL,
-                        schedule_revision INTEGER NOT NULL,
-                        occurrence_key TEXT NOT NULL UNIQUE,
-                        kind TEXT NOT NULL,
-                        scheduled_for REAL NOT NULL,
-                        created_at REAL NOT NULL,
-                        updated_at REAL NOT NULL,
-                        state TEXT NOT NULL,
-                        session_id TEXT NOT NULL,
-                        worktree_json TEXT,
-                        base_commit TEXT NOT NULL DEFAULT '',
-                        retry_of TEXT NOT NULL DEFAULT '',
-                        coalesced_count INTEGER NOT NULL DEFAULT 0,
-                        attempt INTEGER NOT NULL DEFAULT 1,
-                        receipt_json TEXT,
-                        outcome_json TEXT,
-                        error TEXT NOT NULL DEFAULT '',
-                        FOREIGN KEY(schedule_id) REFERENCES schedules(schedule_id)
-                    );
-                    CREATE INDEX IF NOT EXISTS occurrences_schedule_idx
-                        ON schedule_occurrences(schedule_id, created_at DESC);
-                    CREATE INDEX IF NOT EXISTS occurrences_dispatch_idx
-                        ON schedule_occurrences(state, scheduled_for);
-                    CREATE TABLE IF NOT EXISTS schedule_audit (
-                        event_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        schedule_id TEXT NOT NULL,
-                        revision INTEGER NOT NULL,
-                        action TEXT NOT NULL,
-                        actor TEXT NOT NULL,
-                        created_at REAL NOT NULL,
-                        details_json TEXT NOT NULL
-                    );
-                    """
-                )
-                connection.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
+                if current < _SCHEMA_VERSION:
+                    # A database already at this version is only read: every
+                    # command and the agents hub open the store, and rewriting
+                    # the schema cost two synchronous commits each time.
+                    connection.executescript(_SCHEMA)
+                    connection.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
             except sqlite3.Error as exc:
                 raise ScheduleStoreError(f"cannot initialize schedule database: {exc}") from exc
         try:

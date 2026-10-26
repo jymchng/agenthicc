@@ -130,6 +130,8 @@ class _QuestionRecord:
     status: str = "pending"
     answer: str = ""
     future: asyncio.Future[str] | None = None
+    #: The asker has received the answer from :meth:`AgentMessageBroker.wait_for_answer`.
+    delivered: bool = False
 
 
 @dataclass
@@ -359,6 +361,7 @@ class AgentMessageBroker:
             raise CommunicationError("unknown question_id")
         if record.status != "pending":
             if record.status == "answered":
+                record.delivered = True
                 return record.answer
             raise CommunicationError(f"question is {record.status}")
         if record.future is None:
@@ -368,6 +371,7 @@ class AgentMessageBroker:
                 record.future,
                 timeout=timeout_s if timeout_s is not None else self._message_timeout_s,
             )
+            record.delivered = True
             return answer
         except asyncio.TimeoutError as exc:
             async with self._lock:
@@ -436,6 +440,22 @@ class AgentMessageBroker:
             if self._closed:
                 raise CommunicationError("pool communication is closed")
             await self._pending_event.wait()
+
+    def open_questions(self, *, sender: str) -> list[dict[str, object]]:
+        """Questions *sender* asked whose answer it has not received yet.
+
+        That includes a question answered before its asker looked for it: the
+        asker still collects that answer with :meth:`wait_for_answer`, so an
+        answer that arrives early is not lost.
+        """
+        now = self._clock()
+        return [
+            self._question_projection(item)
+            for item in self._questions.values()
+            if item.envelope.sender == sender
+            and (item.status == "pending" or (item.status == "answered" and not item.delivered))
+            and (item.envelope.expires_at is None or item.envelope.expires_at > now)
+        ]
 
     def pending_questions(
         self,

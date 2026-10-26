@@ -6,7 +6,9 @@ from dataclasses import dataclass
 
 import pytest
 
-from agenthicc.tools.mcp import McpServerConfig, McpToolSchema
+from agenthicc.tools.mcp import McpToolSchema
+
+from agenthicc.tools.mcp_server_config import McpServerConfig
 from agenthicc.tools.mcp_manager import McpServerState, McpSessionManager
 
 pytestmark = pytest.mark.integration

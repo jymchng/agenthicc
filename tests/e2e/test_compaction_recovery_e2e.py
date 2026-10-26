@@ -16,6 +16,7 @@ from agenthicc.runners.agent_turn import AgentTurnRunner
 from agenthicc.runners.agent_turn_context import AgentTurnContext
 from agenthicc.tui.conversation_store import ConversationStore
 from agenthicc.config import ExecutionSettings
+from tests.session_fakes import session_context
 
 pytestmark = pytest.mark.e2e
 
@@ -90,7 +91,7 @@ async def test_detached_direct_compaction_failure_is_recoverable_after_restart(
             workflow_run=lambda: None,
             cli_flags=None,
         )
-        session = SimpleNamespace(
+        session = session_context(
             session_id=session_id,
             processor=_Processor(),
             session_memory=memory,
@@ -207,7 +208,7 @@ async def test_detached_empty_summary_and_irreducible_input_preserve_recovery_st
             workflow_run=lambda: None,
             cli_flags=None,
         )
-        session = SimpleNamespace(
+        session = session_context(
             session_id=session_id,
             processor=_Processor(),
             session_memory=memory,

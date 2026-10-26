@@ -112,7 +112,7 @@ def test_windows_decoder_and_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
         Key.CTRL_ENTER,
         "",
     )
-    for vk, expected in win._VK_KEYS.items():
+    for vk, (expected, _name) in win._VK_KEYS.items():
         assert win._decode_key_event(vk, "", 0) == (expected, "")
     for char, expected in (
         ("\x03", Key.CTRL_C),

@@ -232,27 +232,31 @@ turns to the canonical agent-turn runner or workflows to
 
 `BackgroundStore` owns only the rebuildable lifecycle index. Kernel events,
 conversation events, workflow phase state, approvals, and memory remain under
-their existing owners. The manager TUI reads the index and renders safe
-metadata; it does not mutate frozen kernel state directly. `/bg`, `/background`,
-`agenthicc jobs`, and `agenthicc agents` all enter this same boundary.
+their existing owners. The agents hub reads the index and renders safe
+metadata; it does not mutate frozen kernel state directly. `/bg`,
+`/background`, `/agents`, and `agenthicc agents` all enter this same boundary.
 
 ### Background-session projection boundary
 
-`agenthicc agents` is a projection over the existing `BackgroundStore` and
-session journals, not a second registry. `BackgroundStore` keeps a rebuildable
-process-local cache keyed by the append-only `events.jsonl` fingerprint; local
-writes invalidate it and external writes are detected by inode/size/mtime.
-The interactive manager consumes a filtered snapshot, computes a terminal
-`ViewportBudget`, and stores the selected session by durable ID.
+The agents hub (`agenthicc agents`, `/agents`) is a projection over the
+existing `BackgroundStore`, the session journals, the inbox, saved foreground
+sessions and agent definitions, not a second registry. It reads the derived
+SQLite index (`index.sqlite3`) through `AgentsService`'s bounded executor in
+windows (`query_window`, `select`, `count`), so a keypress never waits on a
+read and a tab with ten thousand agents costs one window of rows. Rows are
+keyed by durable ID, so the selection stays on the same agent while the list
+changes.
 
-Selected activity is a separate bounded projection: it reads only the tail of
+The detail view is a separate bounded projection: it reads only the tail of
 `conversation.jsonl`, allows text events, redacts them, and caches the result
 by file fingerprint. Rendering is side-effect-free; stale-process recovery
-runs through the manager's rate-limited maintenance cadence instead of from
+runs through the hub's rate-limited maintenance pass instead of from
 `render()`. An unchanged repaint therefore performs no complete event-log
-fold, journal read, or recovery scan. Enter and `agenthicc attach SESSION_ID`
-share the same supervisor handoff and normal TUI construction path, preserving
-the session owner lease and avoiding duplicate runtimes.
+fold, journal read, or recovery scan. Enter in the detail view and `agenthicc
+attach SESSION_ID` share the same supervisor handoff and normal TUI
+construction path, preserving the session owner lease and avoiding duplicate
+runtimes; from inside a session the hub hands back a `SessionSwitch` and the
+driver returns to the original session afterwards.
 
 ### Detached goal finalization
 

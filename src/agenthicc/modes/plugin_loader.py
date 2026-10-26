@@ -28,7 +28,6 @@ last (and therefore wins in :class:`~agenthicc.modes.ModeRegistry`).
 
 from __future__ import annotations
 
-import importlib.metadata
 import importlib.util
 import logging
 import sys

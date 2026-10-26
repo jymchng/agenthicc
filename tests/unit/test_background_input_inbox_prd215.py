@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from agenthicc.background.input_inbox import BackgroundInputInbox, MAX_INPUT_CHARS
+from agenthicc.background.maintenance import MaintenanceScheduler, MaintenanceTrigger
 from agenthicc.background.model import BackgroundSession, SessionStatus
 from agenthicc.background.store import BackgroundStore, InvalidSessionTransition
 from agenthicc.background.supervisor import BackgroundSupervisor
@@ -495,7 +496,7 @@ def test_maintenance_recovers_pending_input_left_on_completed_session(
 
     monkeypatch.setattr(supervisor, "_launch", capture_launch)
 
-    changed = supervisor.recover_stale_batch(max_sessions=100)
+    changed = MaintenanceScheduler(supervisor).run(MaintenanceTrigger()).changed
 
     assert len(launched) == 1
     assert launched[0].status is SessionStatus.STARTING
@@ -1229,6 +1230,7 @@ async def test_background_workflow_resume_accepts_an_explicit_run_id(
         resume_run_id: str | None = None,
         continuation: str | None = None,
         resume_plan: object | None = None,
+        profile_override: str | None = None,
     ) -> object:
         assert (workflow_name, intent, resume_run_id, continuation) == (
             "goal_flow",
@@ -1237,6 +1239,7 @@ async def test_background_workflow_resume_accepts_an_explicit_run_id(
             None,
         )
         assert resume_plan is None
+        assert profile_override == "replacement"
         return SimpleNamespace(status="complete", error=None)
 
     registry = Workflows()
@@ -1256,7 +1259,7 @@ async def test_background_workflow_resume_accepts_an_explicit_run_id(
 
     result = await _handle_background_workflow_command(
         session,
-        "resume explicit-run-id",
+        "resume explicit-run-id --profile replacement",
         store=store,
         attempt=session_record.attempt,
         lease_token=session_record.lease_token,
@@ -1378,7 +1381,7 @@ async def test_target_trigger_submission_retains_draft_when_owner_rejects() -> N
     from agenthicc.tui.runtime.commands import CommandBus, SendMessageCommand
     from agenthicc.tui.trigger import TriggerManager, TriggerResult
     from agenthicc.tui.workspace.overlay import OverlayHost
-    from agenthicc.background.manager_service import ManagerOperationResult
+    from agenthicc.background.agents_service import ManagerOperationResult
 
     state = AppState.create()
     bus = CommandBus()

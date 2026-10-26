@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from agenthicc.background import BackgroundSession
-from agenthicc.runs.manager import GoalRunManager, RepositoryValidationError
+from agenthicc.runs.manager import GoalRunService, RepositoryValidationError
 from agenthicc.runs.model import (
     GoalRun,
     GoalRunStatus,
@@ -225,7 +225,7 @@ def test_manager_starts_detached_run_through_supervisor(tmp_path: Path) -> None:
     repository.mkdir()
     _git_repo(repository)
     supervisor = _FakeSupervisor(tmp_path)
-    manager = GoalRunManager(
+    manager = GoalRunService(
         store=RunStore(tmp_path / "runs"), supervisor=supervisor, require_git=True
     )
 
@@ -240,7 +240,7 @@ def test_manager_starts_detached_run_through_supervisor(tmp_path: Path) -> None:
 
 
 def test_manager_rejects_non_repository(tmp_path: Path) -> None:
-    manager = GoalRunManager(
+    manager = GoalRunService(
         store=RunStore(tmp_path / "runs"), supervisor=_FakeSupervisor(tmp_path)
     )
     with pytest.raises(RepositoryValidationError):

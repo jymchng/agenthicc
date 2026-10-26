@@ -119,6 +119,33 @@ against the current source before implementing them.
 - [PRD-248 — Make Workflow Recovery Context-Identity Checks Schema-Aware (implemented)](prd-248-workflow-context-identity-semantics.md)
 - [PRD-249 — Resolve Workflow Checkpoint Phases Through Typed Context Semantics (proposed)](prd-249-workflow-phase-cursor-context-state-semantics.md)
 - [PRD-250 — Code Quality Evaluation and Improvement Programme (in progress: WS-1, WS-2 and WS-3.1–3.3 implemented)](prd-250-code-quality-evaluation-and-improvement-programme.md)
+- [PRD-251 — Provider-Profile-Aware Workflow Resume (implemented)](prd-251-provider-profile-aware-workflow-resume.md)
+- [PRD-252 — `make_book` Chart Clarity, Chapter Voice, and Punctuation (implemented)](prd-252-make-book-chart-clarity-and-chapter-voice.md)
+- [PRD-253 — Preserve Timestamped `make_book` Build Outputs (implemented)](prd-253-make-book-preserve-timestamped-build-outputs.md)
+- [PRD-254 — Recover Background Registry Schema Before `/detach` (implemented)](prd-254-recover-background-index-schema-on-detach.md)
+
+### AGX series — Agents experience (in progress)
+
+The AGX PRDs (prefix `agx-`, separate from the numbered sequence) come from a
+study of `agenthicc agents` and of how OpenCode, Claude Code, Codex and Grok
+Build present their agents. AGX-00 holds the measurements, the comparison and
+the roadmap; the others each own one improvement.
+
+- [AGX-00 — Agents Experience Programme: study, measurements and roadmap](agx-00-agents-experience-programme.md)
+- [AGX-01 — Lazy CLI command manifest and import budgets (implemented)](agx-01-lazy-cli-command-manifest.md)
+- [AGX-02 — Fast interactive startup: time to first prompt (implemented)](agx-02-fast-interactive-startup.md)
+- [AGX-03 — Indexed session registry for O(page) open and search (implemented)](agx-03-indexed-session-registry.md)
+- [AGX-04 — Event-driven live updates and targeted maintenance (implemented)](agx-04-event-driven-agents-updates.md)
+- [AGX-05 — Agents hub: one surface for running work, attention, history and library (implemented)](agx-05-agents-hub-information-architecture.md)
+- [AGX-06 — Agents list redesign: status-first rows, attention grouping, search (implemented)](agx-06-agents-list-redesign.md)
+- [AGX-07 — Agent detail, live transcript and actions (implemented)](agx-07-agent-detail-and-live-transcript.md)
+- [AGX-08 — Subagent panel and child-session navigation (implemented: phase 1)](agx-08-subagent-panel-and-navigation.md)
+- [AGX-09 — Agent library: Markdown definitions, management and switching](agx-09-agent-library-and-switching.md)
+- [AGX-10 — Attention routing: badges, notifications and cross-session approvals](agx-10-attention-routing-and-notifications.md)
+- [AGX-11 — TUI render pipeline: frame scheduling, render caches and synchronized output (implemented)](agx-11-tui-render-pipeline.md)
+- [AGX-12 — Agent-turn hot path: copy-on-write memory and incremental validation (implemented: agenthicc side)](agx-12-agent-turn-hot-path.md)
+- [AGX-13 — Unified keymap, generated help, mouse and accessibility (implemented)](agx-13-unified-keymap-and-accessibility.md)
+- [AGX-14 — CPU-time performance budgets in CI and perf diagnostics](agx-14-performance-budgets-and-diagnostics.md)
 
 ### PRD-220–239 — OpenCode, Claude Code, and Codex feature study
 
@@ -610,6 +637,32 @@ ID supplied during implementation showed a separate `goal_flow` cancellation
 in its readable event projection and did not reproduce this identity error;
 the PRD records that evidence limitation rather than attributing the bug to
 that session.
+
+PRD-252 is implemented: both the asset and chapter prompts forbid Matplotlib
+legends, annotations, callouts, and floating data-label overlays while keeping
+axis/category labels readable; chapter prompts consistently require natural
+first-person “I”, direct “you”/“your” voice, and varied connective phrases.
+Chapter, front-matter, and back-matter prompts ban em dashes in generated
+Markdown. Static metadata and live phase prompts share the same policy text.
+Prompt-contract tests cover the static metadata and runtime prompt paths; the
+make_book unit/integration/E2E suites passed (20 tests), and Ruff, mypy, and
+the strict docs build passed. See
+[PRD-252](prd-252-make-book-chart-clarity-and-chapter-voice.md).
+
+PRD-253 is implemented: the compile prompt explicitly requires unique
+timestamped deliverables and forbids pruning or overwriting prior `dist/`
+outputs. The generated builder defaults to collision-safe microsecond-stamped
+names, and the completion gate distinguishes the current output pair from
+historical builds while checking that older files remain unchanged. See
+[PRD-253](prd-253-make-book-preserve-timestamped-build-outputs.md).
+
+PRD-254 fixes `/detach` failures caused by an existing background SQLite index
+whose `sessions` table lacks `idempotency_key`. The index validates actual
+schema shape, transactionally migrates and backfills the known additive column,
+and rebuilds unsupported layouts from the authoritative event log. Unit,
+multiprocess, and real detach/resume regression tests cover migration recovery.
+See
+[PRD-254](prd-254-recover-background-index-schema-on-detach.md).
 
 PRD-218 fixes foreground `/detach` when the prior background attempt is
 completed. It reactivates the same session for eligible work, preserves the

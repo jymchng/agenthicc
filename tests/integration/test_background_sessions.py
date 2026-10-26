@@ -27,6 +27,7 @@ from agenthicc.background.worker import (
 )
 from agenthicc.background.settings import BackgroundSettings
 from agenthicc.kernel import Event
+from agenthicc.tui.conversation_store import ConversationEvent
 from tests.session_fakes import session_context
 
 pytestmark = pytest.mark.integration
@@ -83,6 +84,7 @@ class _Conversation:
     def __init__(self) -> None:
         self.cli_flags = None
         self.events: list[tuple[str, dict[str, object], str | None]] = []
+        self.subscribers: list[Callable[[ConversationEvent], None]] = []
 
     def append_event(
         self,
@@ -91,6 +93,15 @@ class _Conversation:
         event_id: str | None = None,
     ) -> None:
         self.events.append((kind, payload, event_id))
+        event = ConversationEvent(
+            event_id=event_id or str(len(self.events)), kind=kind, payload=payload
+        )
+        for subscriber in list(self.subscribers):
+            subscriber(event)
+
+    def on_event(self, fn: Callable[[ConversationEvent], None]) -> Callable[[], None]:
+        self.subscribers.append(fn)
+        return lambda: self.subscribers.remove(fn)
 
 
 class _AppState:
@@ -2258,7 +2269,7 @@ def test_cli_handlers_return_redacted_status(monkeypatch, tmp_path: Path, capsys
     )
     store.create(session)
     monkeypatch.setattr(background, "_store_and_supervisor", lambda ctx: (store, object()))
-    background.jobs_status(CLIContext(), "cli-session", True)
+    background.agents_status(CLIContext(), "cli-session", True)
     output = capsys.readouterr().out
     assert "cli-session" in output
     assert "private prompt" not in output
@@ -2279,7 +2290,7 @@ def test_cli_status_redacts_secret_patterns(monkeypatch, tmp_path: Path, capsys)
         ).evolve(error="Bearer sk-ant-1234567890123456")
     )
     monkeypatch.setattr(background, "_store_and_supervisor", lambda ctx: (store, object()))
-    background.jobs_status(CLIContext(), "secret-session", True)
+    background.agents_status(CLIContext(), "secret-session", True)
     output = capsys.readouterr().out
     assert "sk-ant-1234567890123456" not in output
     assert "<redacted>" in output

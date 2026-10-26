@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import json
 import time
 from pathlib import Path
 
 import pytest
 from rich.console import Console
+
+from agenthicc.tui.workspace.agents_hub import AgentsHub
+from agenthicc.tui.workspace.agents_hub.prefs import HubPrefs
 
 import agenthicc.background.supervisor as supervisor_module
 from agenthicc.background import (
@@ -17,9 +22,49 @@ from agenthicc.background import (
     SessionStatus,
 )
 from agenthicc.background.model import BackgroundAttempt
-from agenthicc.tui.workspace.background_manager import BackgroundManager
 
 pytestmark = pytest.mark.unit
+
+
+async def _open_hub(store: BackgroundStore, tmp_path: Path) -> AgentsHub:
+    hub = AgentsHub(
+        Console(width=120, height=40, record=True),
+        store=store,
+        supervisor=BackgroundSupervisor(store),
+        prefs=HubPrefs(path=tmp_path / "hub.json"),
+    )
+    await hub.start()
+    await hub.settle()
+    return hub
+
+
+def _frame(hub: AgentsHub) -> str:
+    console = Console(width=120, height=60, record=True)
+    console.print(hub.render(120, 60))
+    return console.export_text()
+
+
+async def _detail_text(store: BackgroundStore, tmp_path: Path, session_id: str) -> str:
+    hub = await _open_hub(store, tmp_path)
+    try:
+        hub._open_detail(session_id)
+        await hub.settle()
+        return _frame(hub)
+    finally:
+        await hub.stop()
+
+
+async def _list_and_detail(
+    store: BackgroundStore, tmp_path: Path, session_id: str
+) -> tuple[str, str]:
+    hub = await _open_hub(store, tmp_path)
+    try:
+        listing = _frame(hub)
+        hub._open_detail(session_id)
+        await hub.settle()
+        return listing, _frame(hub)
+    finally:
+        await hub.stop()
 
 
 def _session(tmp_path: Path, *, session_id: str = "session-211") -> BackgroundSession:
@@ -276,18 +321,13 @@ def test_manager_shows_current_activity_and_labels_previous_attempt_error(
     )
     store = BackgroundStore(tmp_path / "background")
     store.create(session)
-    console = Console(width=120, height=30, record=True)
-    manager = BackgroundManager(console, store=store)
-    manager.refresh(force=True)
-    manager._detail_session_id = session.session_id
-    console.print(manager.render())
+    output = asyncio.run(_detail_text(store, tmp_path, session.session_id))
 
-    output = console.export_text()
     assert "running" in output
     assert "Attempt two is executing" in output
-    assert "Previous attempt 1 (failed)" in output
+    assert "#1 failed" in output
     assert "Attempt one provider error" in output
-    assert "Error Attempt one provider error" not in output
+    assert "Error ─" not in output  # no current-error section for a running agent
 
 
 def test_active_legacy_error_does_not_override_fresh_activity(tmp_path: Path) -> None:
@@ -304,11 +344,7 @@ def test_active_legacy_error_does_not_override_fresh_activity(tmp_path: Path) ->
     )
     store = BackgroundStore(tmp_path / "background")
     store.create(session)
-    console = Console(width=120, height=30, record=True)
-    manager = BackgroundManager(console, store=store)
-    manager.refresh(force=True)
-    console.print(manager.render())
-    output = console.export_text()
-    assert "Current active attempt" in output
-    assert "legacy stale failure" not in output.split("Latest text", maxsplit=1)[0]
-    assert "Legacy prior error" in output
+    listing, detail = asyncio.run(_list_and_detail(store, tmp_path, session.session_id))
+    assert "Current active attempt" in listing
+    assert "legacy stale failure" not in listing
+    assert "Earlier error" in detail and "legacy stale failure" in detail

@@ -136,14 +136,14 @@ def test_export_replaces_destination_atomically(tmp_path: Path) -> None:
 
 
 def test_sessions_export_cli_command_accepts_output_option(monkeypatch) -> None:
-    from agenthicc.cli.parser import _parse_args
+    from agenthicc.cli.parser import parse_cli
 
     monkeypatch.setattr(
         "sys.argv",
         ["agenthicc", "sessions", "export", "session-123", "--output", "bundle.json"],
     )
 
-    args = _parse_args()
+    _, args = parse_cli()
 
     assert args._entry.path == ("sessions", "export")
     assert args.session_id == "session-123"

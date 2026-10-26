@@ -111,13 +111,14 @@ uv run agenthicc runs show RUN_ID
 uv run agenthicc attach SESSION_ID
 ```
 
-`agenthicc agents` opens the paginated background-session manager. It keeps
-the controls visible, marks the selected row with `▶`, and shows only the
-newest meaningful text activity. The interactive table shows at most ten
-sessions per page and omits deleted sessions. Press Enter to inspect a
-session's details, then press Enter again there to attach that exact session;
-press `i` to send input to its live worker or recover a stale session in the
-background without attaching it.
+`agenthicc agents` opens the agents hub: Running, Needs you, History and
+Library tabs, with each agent's status, title and report line — the first
+sentence of its latest message. Inside a session, `/agents`, Ctrl+G or ← on an
+empty prompt open the same hub over the conversation. Press Space to peek at
+an agent's pending request or progress, Enter for its detail view (live
+transcript, changes, attempts), and Enter again there to attach that exact
+session; press `i` to send input to its live worker or recover a stale session
+in the background without attaching it.
 Use `agenthicc agents --run RUN_ID` for goal-run discovery; positional
 `agenthicc attach` arguments are session IDs and never select a workspace's
 most recent session. `agenthicc attach --run RUN_ID` is the explicit goal-run
@@ -144,7 +145,7 @@ it as pending until normal session initialization resolves and durably applies
 the canonical mode. For example, `YOLO` is displayed as effective `Yolo` only
 after application. Startup fails closed if mode resolution or its durable
 attestation fails. Inspect the requested/effective/status fields with
-`agenthicc jobs status SESSION_ID --json` or `agenthicc runs show RUN_ID --json`.
+`agenthicc agents status SESSION_ID --json` or `agenthicc runs show RUN_ID --json`.
 On retry, an unconsumed explicit mode is retained even if startup created
 placeholder Safe metadata. After successful initialization, the persisted
 session mode is used unless another `--mode` is explicitly supplied. Choosing
@@ -183,11 +184,10 @@ most-used ones:
 | `workflows` | `list`, `run` | List registered workflows and run one against an intent |
 | `sessions` | `list`, `show`, `inspect`, `export` | Browse and export local session records |
 | `session` | `create`, `list`, `show`, `events`, `send`, `control`, `export`, `serve` | Drive the client-neutral session projection |
-| `jobs` | `list`, `status`, `resume`, `retry`, `cancel`, `approve`, `reject`, `input`, `inbox`, `notifications`, `rename`, `archive`, `restore`, `delete`, `purge`, `labels` | Manage background sessions, typed interaction inbox, and notification receipts |
 | `mcp` | `list`, `get`, `add`, `remove`, `connect`, `disconnect`, `refresh`, `auth`, `logout`, `doctor` | Configure and diagnose MCP servers |
 | `config` | `init`, `show`, `validate`, `profiles` | Inspect and validate configuration |
 | `skills` | `add` | Install a skill |
-| `agents` | — | Open the background-session manager (alias of `jobs` UI) |
+| `agents` | `list`, `status`, `resume`, `retry`, `cancel`, `priority`, `approve`, `reject`, `input`, `inbox`, `notifications`, `rename`, `labels`, `archive`, `restore`, `delete`, `purge`, `actions`, `action` | Open the agents hub, or manage background agents, the typed interaction inbox and notification receipts from scripts |
 | `trust` | `list`, `add`, `revoke` | Review and trust the repository's Python extensions |
 | `init`, `run`, `login`, `logout`, `whoami` | — | Project setup, one-shot runs, and credentials |
 
@@ -398,14 +398,14 @@ diagnostics, never credentials, headers, prompts, or raw request bodies.
 
 ## Background sessions
 
-Long-running work can be detached from an active session with `/bg` or `/background`. Run `agenthicc agents` (or `agenthicc jobs`) to open the background-session manager, where you can inspect, follow, resume, retry, cancel, and safely delete sessions. Its interactive table shows at most ten sessions per page and hides deleted sessions. On a session's details page, `i` sends input to its live worker or queues it before recovering a stale session in the background; workflow recovery resumes a saved checkpoint and never attaches to the foreground. `Ctrl+X` immediately deletes the selected or marked sessions to recoverable trash; deletion remains responsive while worker cleanup completes. Restore deleted sessions with `agenthicc jobs restore SESSION_ID`. See the [background sessions guide](./docs/guides/background-sessions.md) for workflow support, approvals, input requests, retention, and privacy details.
+Long-running work can be detached from an active session with `/bg` or `/background`; the agents hub then opens with the new agent selected. Run `agenthicc agents` — or `/agents`, Ctrl+G or ← on an empty prompt inside a session — to open the hub, where you can inspect, follow, answer, resume, retry, stop, and safely delete agents. Its list fills the terminal, groups agents by what needs you, and hides deleted sessions. In an agent's detail view, `i` sends input to its live worker or queues it before recovering a stale session in the background; workflow recovery resumes a saved checkpoint and never attaches to the foreground. `Ctrl+X` immediately deletes the selected or marked agents to recoverable trash; deletion remains responsive while worker cleanup completes. Restore deleted sessions with `agenthicc agents restore SESSION_ID`. See the [background sessions guide](./docs/guides/background-sessions.md) for workflow support, approvals, input requests, retention, and privacy details.
 
-Use `/inbox` or `agenthicc jobs inbox list` for typed tool approvals and
-`ask_user` requests. CLI writes require the listed item version and an
-idempotency key. This is distinct from `i` in session details, which forwards
-arbitrary text unchanged.
+Use the hub's Needs you tab (`/inbox`) or `agenthicc agents inbox list` for
+typed tool approvals and `ask_user` requests. CLI writes require the listed
+item version and an idempotency key. This is distinct from `i` in an agent's
+detail view, which forwards arbitrary text unchanged.
 
-Background notifications are opt-in. The `agenthicc jobs notifications` command
+Background notifications are opt-in. The `agenthicc agents notifications` command
 shows durable delivery attempts and retry status without printing webhook
 payloads, URLs, or secrets. See the [notification configuration guide](./docs/guides/background-sessions.md#background-notifications-and-webhooks)
 for endpoint trust, HMAC signatures, and SSRF controls.
@@ -701,6 +701,12 @@ model = "moonshotai/Kimi-K3"
 base_url = "https://your-endpoint.modal.run/v1"
 api_key_env = "MODAL_API_KEY"
 ```
+
+When resuming a saved workflow, Agenthicc inherits the profile recorded by
+that run, even if the configured default has changed. To intentionally switch
+profiles for one resume, use `/workflow resume <run-id> --profile <name>` (or
+`none` for legacy execution settings); see the
+[workflow recovery guide](docs/guides/workflows.md#provider-profile-selection-during-resume).
 
 For the official OpenCode Go endpoint, agenthicc automatically sends
 `x-opencode-session` with the stable session conversation ID on every request,

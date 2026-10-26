@@ -7,7 +7,6 @@ import os
 from pathlib import Path
 
 from agenthicc.cli.context import CLIContext
-from agenthicc.cli.registry import command, group
 from agenthicc.schedules import (
     CoalescePolicy,
     OccurrenceState,
@@ -20,10 +19,6 @@ from agenthicc.schedules import (
     parse_recurrence,
 )
 from agenthicc.schedules.manager import occurrence_status_payload
-
-
-@group("schedules", help="Manage repository-scoped scheduled workflows")
-def _schedules_group() -> None: ...
 
 
 def _store() -> ScheduleStore:
@@ -79,12 +74,10 @@ def _parse_recurrence(value: str) -> tuple[RecurrenceKind, str]:
     return parse_recurrence(value)
 
 
-@command("schedules", help="List repository schedules; use subcommands to manage them")
 def schedules_root(ctx: CLIContext) -> None:
     schedules_list(ctx)
 
 
-@command("schedules", "list", help="List schedules for a repository")
 def schedules_list(
     ctx: CLIContext,
     repository_root: str = ".",
@@ -152,7 +145,6 @@ def schedules_list(
         print("Scheduler service is not running; enabled schedules are awaiting service.")
 
 
-@command("schedules", "create", help="Create a disabled repository schedule")
 def schedules_create(
     ctx: CLIContext,
     workflow_name: str,
@@ -212,7 +204,6 @@ def schedules_create(
         print("Mutating-capable runs will use a fresh isolated worktree and will never auto-merge.")
 
 
-@command("schedules", "show", help="Inspect a schedule and its recent run history")
 def schedules_show(ctx: CLIContext, schedule_id: str, json: bool = False) -> None:
     store = _store()
     try:
@@ -247,7 +238,6 @@ def schedules_show(ctx: CLIContext, schedule_id: str, json: bool = False) -> Non
         )
 
 
-@command("schedules", "pause", help="Pause future occurrences")
 def schedules_pause(ctx: CLIContext, schedule_id: str) -> None:
     try:
         schedule = ScheduleManager(_store()).pause(schedule_id)
@@ -256,7 +246,6 @@ def schedules_pause(ctx: CLIContext, schedule_id: str) -> None:
     print(f"Schedule {schedule.schedule_id} paused at revision {schedule.revision}.")
 
 
-@command("schedules", "resume", help="Resume after confirming its next execution time")
 def schedules_resume(ctx: CLIContext, schedule_id: str, confirm_next_run: str = "") -> None:
     manager = ScheduleManager(_store())
     try:
@@ -272,7 +261,6 @@ def schedules_resume(ctx: CLIContext, schedule_id: str, confirm_next_run: str = 
     print(f"Schedule {resumed.schedule_id} enabled at revision {resumed.revision}.")
 
 
-@command("schedules", "run-now", help="Queue an auditable immediate occurrence")
 def schedules_run_now(ctx: CLIContext, schedule_id: str, json: bool = False) -> None:
     try:
         occurrence = ScheduleManager(_store()).run_now(schedule_id)
@@ -288,7 +276,6 @@ def schedules_run_now(ctx: CLIContext, schedule_id: str, json: bool = False) -> 
         )
 
 
-@command("schedules", "retry", help="Retry a failed occurrence as a new auditable attempt")
 def schedules_retry(
     ctx: CLIContext, schedule_id: str, occurrence_id: str, json: bool = False
 ) -> None:
@@ -306,7 +293,6 @@ def schedules_retry(
         )
 
 
-@command("schedules", "update", help="Revise a schedule after explicit confirmation")
 def schedules_update(
     ctx: CLIContext,
     schedule_id: str,
@@ -372,7 +358,6 @@ def schedules_update(
     print("The edited schedule is paused. Review the preview, then resume with confirmation.")
 
 
-@command("schedules", "delete", help="Stop future occurrences and tombstone the definition")
 def schedules_delete(ctx: CLIContext, schedule_id: str, confirm: bool = False) -> None:
     if not confirm:
         raise SystemExit("Schedule deletion requires --confirm; no changes were made.")
@@ -386,7 +371,6 @@ def schedules_delete(ctx: CLIContext, schedule_id: str, confirm: bool = False) -
     )
 
 
-@command("schedules", "service-status", help="Show whether schedule execution is armed")
 def schedules_service_status(ctx: CLIContext) -> None:
     running = ScheduleServiceLease.is_running(_store())
     if running is True:
@@ -398,7 +382,6 @@ def schedules_service_status(ctx: CLIContext) -> None:
         print("Schedule service ownership could not be verified; schedules remain unarmed.")
 
 
-@command("schedules", "history", help="Show bounded occurrence history")
 def schedules_history(ctx: CLIContext, schedule_id: str, limit: int = 50) -> None:
     store = _store()
     try:

@@ -17,9 +17,11 @@ agenthicc sessions export <id>       # export a session
 agenthicc sessions inspect <id>      # inspect internals
 ```
 
-`sessions list` opens a paginated selector in a terminal and prints a
-deterministic page when output is redirected. Use
-`--page`/`--page-size` to control paging.
+In a terminal, `sessions list` opens the agents hub's History tab
+(`agenthicc agents --tab history`): saved sessions and finished background
+agents, newest first, loaded in windows as you scroll. Enter on a saved session
+resumes it in its own project directory. When output is redirected it prints a
+deterministic page; use `--page`/`--page-size` to control that paging.
 
 !!! note "Singular versus plural"
     New adapters should use the singular `session` group, which reads the

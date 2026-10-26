@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from rich.console import Console
     from lauren_ai._agents._runner import AgentRunnerBase
-    from lauren_ai._memory import ShortTermMemory
+    from agenthicc.memory.journaled import JournaledShortTermMemory
     from agenthicc.runners.session_conversation import SessionConversation
     from agenthicc.kernel.processor import EventProcessor
     from agenthicc.memory.router import MemoryRouter
@@ -69,7 +69,7 @@ class SessionContext:
 
     # ── resources ─────────────────────────────────────────────────────────────
     agent_runner: "AgentRunnerBase"
-    session_memory: "ShortTermMemory"
+    session_conversation: "SessionConversation"
     mention_cache: "MentionCache"
     skills: "dict[str, SkillDef]"
     project_plugins: "PluginToolSet"
@@ -89,8 +89,6 @@ class SessionContext:
     # PRD-172: compatibility alias points at the one session-scoped manager;
     # no workflow or turn is allowed to create its own MCP registry.
     mcp_manager: "McpSessionManager | None" = None
-
-    session_conversation: "SessionConversation | None" = None
 
     # ── memory (PRD-101) ──────────────────────────────────────────────────────
     memory_router: "MemoryRouter | None" = None
@@ -149,3 +147,12 @@ class SessionContext:
     # deferred optional integrations.  It is observational only; runtime
     # resources retain their existing ownership boundaries.
     startup: "StartupCoordinator | None" = None
+
+    @property
+    def session_memory(self) -> "JournaledShortTermMemory":
+        """The session's provider memory, folded from its journal on first use.
+
+        The TUI loads it on a worker thread after the first frame (AGX-02);
+        reading it earlier blocks until that fold completes.
+        """
+        return self.session_conversation.memory

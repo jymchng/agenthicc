@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import errno
 import json
 import logging
@@ -16,7 +15,7 @@ import uuid
 from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Literal, TypedDict
 from .deletion import DeleteFailure, DeleteResult
 from .input_inbox import BackgroundInput, BackgroundInputInbox
@@ -49,7 +48,7 @@ _MAX_ASK_USER_INPUT_CHARS = 8_000
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from .settings import BackgroundNotificationSettings
+    from .settings import BackgroundNotificationSettings, BackgroundSettings
     from agenthicc.runners.session_lease import SessionOwnerLease
 
 
@@ -100,6 +99,23 @@ class _WorkerProcessState(str, Enum):
     DEAD = "dead"
     MISMATCHED = "mismatched"
     UNKNOWN = "unknown"
+
+
+def reconciles_worker(session: BackgroundSession) -> bool:
+    """Whether maintenance reconciles *session* against a worker process.
+
+    A durable queue reservation has no worker identity yet and must stay
+    eligible for dispatch; a claimed reservation without a PID belongs to the
+    scheduler's dispatch lease, not to heartbeat age.
+    """
+
+    if session.status not in ACTIVE_STATUSES or is_pending_queue_record(session):
+        return False
+    return not (
+        session.status is SessionStatus.STARTING
+        and session.dispatch_state is QueueDispatchState.CLAIMED
+        and session.worker_pid is None
+    )
 
 
 @dataclass(frozen=True)
@@ -247,6 +263,7 @@ class BackgroundSupervisor:
         max_workers_per_user: int | None = None,
         priority_aging_interval_s: float = 900.0,
         dispatch_lease_s: float = 30.0,
+        stale_after_s: float = 30.0,
         notification_settings: BackgroundNotificationSettings | None = None,
     ) -> None:
         if (
@@ -299,6 +316,14 @@ class BackgroundSupervisor:
             or not 0.1 <= dispatch_lease_s <= 3_600.0
         ):
             raise ValueError("dispatch_lease_s must be between 0.1 and 3600")
+        if (
+            isinstance(stale_after_s, bool)
+            or not isinstance(stale_after_s, (int, float))
+            or not math.isfinite(float(stale_after_s))
+            or stale_after_s < 0
+        ):
+            raise ValueError("stale_after_s must be a non-negative number of seconds")
+        self.stale_after_s = float(stale_after_s)
         self.queue_enabled = queue_enabled
         self.max_queue_length = max_queue_length
         self.max_workers_per_user = max_workers_per_user
@@ -311,7 +336,29 @@ class BackgroundSupervisor:
             raise ValueError("trash_retention_days must be non-negative")
         self.trash_retention_days = trash_retention_days
         self.artifact_root = (artifact_root or Path.home() / ".agenthicc" / "sessions").expanduser()
-        self._recovery_cursor = ""
+
+    @classmethod
+    def from_settings(
+        cls, store: BackgroundStore, settings: BackgroundSettings
+    ) -> "BackgroundSupervisor":
+        """Return a supervisor for *store* that applies every configured limit."""
+
+        return cls(
+            store,
+            max_workers=settings.max_workers,
+            max_workers_per_project=settings.max_workers_per_project,
+            cancel_grace_s=settings.cancel_grace_s,
+            wall_timeout_s=settings.wall_timeout_s,
+            max_activity_bytes=settings.max_activity_bytes,
+            trash_retention_days=settings.trash_retention_days,
+            queue_enabled=settings.queue_enabled,
+            max_queue_length=settings.max_queue_length,
+            max_workers_per_user=settings.max_workers_per_user,
+            priority_aging_interval_s=settings.priority_aging_interval_s,
+            dispatch_lease_s=settings.dispatch_lease_s,
+            stale_after_s=settings.stale_after_s,
+            notification_settings=settings.notifications,
+        )
 
     @property
     def _scheduler_state_path(self) -> Path:
@@ -356,10 +403,19 @@ class BackgroundSupervisor:
                 return False
         return True
 
+    def has_input_capacity(self, cwd: str, active: Sequence[BackgroundSession]) -> bool:
+        """Whether an input-driven attempt in *cwd* fits the worker limits."""
+
+        running = [item for item in active if item.status in ACTIVE_STATUSES]
+        return (
+            len(running) < self.max_workers
+            and sum(item.cwd == cwd for item in running) < self.max_workers_per_project
+        )
+
     def _active_count(self, cwd: str | None = None) -> int:
         return sum(
             item.status in ACTIVE_STATUSES and (cwd is None or item.cwd == cwd)
-            for item in self.store.list(include_archived=False)
+            for item in self.store.active_sessions()
         )
 
     def _request_path(self, session_id: str) -> Path:
@@ -460,11 +516,7 @@ class BackgroundSupervisor:
         return request
 
     def _queued_records(self) -> list[BackgroundSession]:
-        return [
-            item
-            for item in self.store.list(include_archived=False)
-            if is_pending_queue_record(item)
-        ]
+        return [item for item in self.store.active_sessions() if is_pending_queue_record(item)]
 
     def _scheduler_last_project(self) -> str:
         value = self._scheduler_state().get("last_project", "")
@@ -474,7 +526,7 @@ class BackgroundSupervisor:
         """Recover a claimed dispatch lease after a crash around subprocess start."""
 
         changed: list[BackgroundSession] = []
-        for session in self.store.list(include_archived=False):
+        for session in self.store.active_sessions():
             if (
                 session.status is not SessionStatus.STARTING
                 or session.dispatch_state is not QueueDispatchState.CLAIMED
@@ -548,7 +600,7 @@ class BackgroundSupervisor:
         changed = self._start_claimed_reservations(now=timestamp)
         last_project = self._scheduler_last_project()
         while True:
-            sessions = self.store.list(include_archived=False)
+            sessions = self.store.active_sessions()
             running = [item for item in sessions if occupies_worker_slot(item)]
             if len(running) >= self.max_workers:
                 break
@@ -657,7 +709,7 @@ class BackgroundSupervisor:
         timestamp = time.time() if now is None else now
         with self._scheduler_lock():
             return queue_position_map(
-                self.store.list(include_archived=False),
+                self.store.active_sessions(),
                 now=timestamp,
                 aging_interval_s=self.priority_aging_interval_s,
                 last_project=self._scheduler_last_project(),
@@ -676,8 +728,8 @@ class BackgroundSupervisor:
     ) -> BackgroundSession | None:
         if not key:
             return None
-        for existing in self.store.list(include_archived=True):
-            if existing.idempotency_key != key or existing.owner_id != owner_id:
+        for existing in self.store.with_idempotency_key(key):
+            if existing.owner_id != owner_id:
                 continue
             if (
                 existing.cwd != project
@@ -762,7 +814,7 @@ class BackgroundSupervisor:
             else:
                 raise ValueError(f"Background session already exists: {sid}")
 
-            current_sessions = self.store.list(include_archived=False)
+            current_sessions = self.store.active_sessions()
             has_capacity = self._has_capacity(
                 current_sessions,
                 project=project,
@@ -1142,9 +1194,7 @@ class BackgroundSupervisor:
         with self._scheduler_lock():
             session = self.store.get(session_id, include_deleted=True)
             sessions = [
-                item
-                for item in self.store.list(include_archived=False)
-                if item.session_id != session_id
+                item for item in self.store.active_sessions() if item.session_id != session_id
             ]
             if not self._has_capacity(
                 sessions,
@@ -1854,6 +1904,11 @@ class BackgroundSupervisor:
         pid = session.worker_pid
         if pid is None:
             return _WorkerProcessState.UNKNOWN
+        if os.name == "nt":
+            # Signal 0 is CTRL_C_EVENT on Windows, so os.kill is no liveness
+            # probe there, and PID existence would not prove identity anyway.
+            # Keep it unknown until a platform identity adapter exists.
+            return _WorkerProcessState.UNKNOWN
         try:
             os.kill(pid, 0)
         except ProcessLookupError:
@@ -1866,10 +1921,6 @@ class BackgroundSupervisor:
                 if exc.errno == errno.ESRCH
                 else _WorkerProcessState.UNKNOWN
             )
-        if os.name == "nt":
-            # PID existence alone does not prove this is the worker for this
-            # session. Keep it unknown until a platform identity adapter exists.
-            return _WorkerProcessState.UNKNOWN
         try:
             stat = Path(f"/proc/{pid}/stat").read_text(encoding="ascii")
             end_comm = stat.rfind(")")
@@ -2014,6 +2065,7 @@ class BackgroundSupervisor:
         async boundary.  Targets are processed serially: this preserves the
         store's append ordering and makes partial success/retry deterministic.
         """
+        import asyncio  # only interactive deletion needs it (AGX-01)
 
         target_ids = tuple(dict.fromkeys(item for item in session_ids if item))
         if not target_ids:
@@ -2146,30 +2198,30 @@ class BackgroundSupervisor:
 
     def _recover_stale_records(
         self,
-        sessions: tuple[BackgroundSession, ...] | list[BackgroundSession],
+        sessions: Sequence[BackgroundSession],
         stale_after_s: float,
+        *,
+        process_states: Mapping[str, _WorkerProcessState] | None = None,
     ) -> list[BackgroundSession]:
+        """Reconcile active records with their workers.
+
+        ``process_states`` supplies probe results the caller already has, so
+        a worker is not probed twice in one maintenance pass.
+        """
+
         now = time.time()
         changed: list[BackgroundSession] = []
         for session in sessions:
-            if session.status not in ACTIVE_STATUSES:
-                continue
-            if is_pending_queue_record(session):
-                # A durable queue reservation has no worker identity yet; it
-                # is not a dead process and must remain eligible for dispatch.
-                continue
-            if (
-                session.status is SessionStatus.STARTING
-                and session.dispatch_state is QueueDispatchState.CLAIMED
-                and session.worker_pid is None
-            ):
-                # The scheduler lease, not heartbeat age, owns recovery of
-                # the narrow reservation-before-Popen crash window.
+            if not reconciles_worker(session):
                 continue
             heartbeat_expired = bool(
                 session.last_active and now - session.last_active > stale_after_s
             )
-            process_state = self._worker_process_state(session)
+            process_state = (
+                None if process_states is None else process_states.get(session.session_id)
+            )
+            if process_state is None:
+                process_state = self._worker_process_state(session)
             if process_state in {_WorkerProcessState.DEAD, _WorkerProcessState.MISMATCHED}:
                 try:
                     changed.append(
@@ -2214,6 +2266,10 @@ class BackgroundSupervisor:
                                 expected_lease_token=session.lease_token or None,
                                 expected_status=session.status,
                                 expected_last_active=session.last_active,
+                                # Flagging is not activity: keep the heartbeat
+                                # age, or the next pass would see it fresh and
+                                # clear the flag again.
+                                last_active=session.last_active,
                                 heartbeat_stale=True,
                             )
                         )
@@ -2243,7 +2299,7 @@ class BackgroundSupervisor:
 
     def _recover_pending_input_records(
         self,
-        sessions: tuple[BackgroundSession, ...] | list[BackgroundSession],
+        sessions: Sequence[BackgroundSession],
     ) -> list[BackgroundSession]:
         """Restart only sessions with an accepted, unconsumed deferred input."""
 
@@ -2254,85 +2310,91 @@ class BackgroundSupervisor:
                 current = self.store.get(snapshot.session_id, include_deleted=True)
             except SessionNotFound:
                 continue
-            legacy_workflow_recovery_wait = (
-                current.status in {SessionStatus.FAILED, SessionStatus.ORPHANED}
-                and current.worker_exit_reason == "workflow_recovery_waiting"
-                and not current.resume_marker.startswith("input:")
-            )
-            if current.status is SessionStatus.COMPLETED:
-                input_start_recovery = True
-            elif current.status in {SessionStatus.FAILED, SessionStatus.ORPHANED}:
-                # Retry a worker startup interrupted after input acceptance.
-                # A legacy workflow-recovery wait gets one startup retry after
-                # upgrade. The input marker plus receipt error then prevents
-                # maintenance from repeatedly launching an unresolved worker.
-                input_start_recovery = (
-                    current.resume_marker.startswith("input:") or legacy_workflow_recovery_wait
-                )
-            else:
-                input_start_recovery = False
-            if not input_start_recovery or current.cancellation_reason:
+            message_id = self._pending_input_message(current, inbox)
+            if message_id is None:
                 continue
-            pending = tuple(
-                item
-                for item in inbox.receipts(current.session_id)
-                if item.state == "accepted"
-                and item.deferred
-                and (legacy_workflow_recovery_wait or not item.recovery_error)
-            )
-            if not pending:
+            if not self.has_input_capacity(current.cwd, self.store.active_sessions()):
                 continue
-            if (
-                self._active_count() >= self.max_workers
-                or self._active_count(current.cwd) >= self.max_workers_per_project
-            ):
-                continue
-            try:
-                self._start_deferred_input_attempt(
-                    current,
-                    message_id=pending[0].message_id,
-                    expected_attempt=current.attempt,
-                    expected_lease_token=current.lease_token,
-                )
-            except (InvalidSessionTransition, OSError, RuntimeError, ValueError):
-                # The inbox is the durable record. A later maintenance pass
-                # retries after a competing owner, capacity, or launch issue.
-                continue
-            try:
-                updated = self.store.get(current.session_id, include_deleted=True)
-            except SessionNotFound:
-                continue
-            if (
-                updated.status != current.status
-                or updated.attempt != current.attempt
-                or updated.worker_pid != current.worker_pid
-            ):
-                changed[updated.session_id] = updated
+            started = self._try_start_deferred_input(current, message_id)
+            if started is not None:
+                changed[started.session_id] = started
         return list(changed.values())
 
-    def recover_stale(self, *, stale_after_s: float = 30.0) -> list[BackgroundSession]:
-        """Reconcile stale workers and resume accepted deferred input records."""
+    def _pending_input_message(
+        self, current: BackgroundSession, inbox: BackgroundInputInbox
+    ) -> str | None:
+        """Return the deferred input a new attempt for *current* should take, if any."""
 
-        sessions = self.store.list(include_archived=True)
-        changed = self._recover_stale_records(sessions, stale_after_s)
-        changed.extend(self._recover_pending_input_records(sessions))
-        changed.extend(self.dispatch_pending())
-        return list({item.session_id: item for item in changed}.values())
-
-    def recover_stale_batch(
-        self, *, stale_after_s: float = 30.0, max_sessions: int = 1_024
-    ) -> list[BackgroundSession]:
-        """Inspect one bounded stable-ID slice for periodic TUI maintenance."""
-
-        if max_sessions < 1:
-            raise ValueError("max_sessions must be at least 1")
-        sessions, self._recovery_cursor = self.store._lifecycle_page_after(
-            self._recovery_cursor, max_sessions
+        legacy_workflow_recovery_wait = (
+            current.status in {SessionStatus.FAILED, SessionStatus.ORPHANED}
+            and current.worker_exit_reason == "workflow_recovery_waiting"
+            and not current.resume_marker.startswith("input:")
         )
-        changed = self._recover_stale_records(sessions, stale_after_s)
-        changed.extend(self._recover_pending_input_records(sessions))
-        changed.extend(self.dispatch_pending())
-        return list({item.session_id: item for item in changed}.values())
+        if current.status is SessionStatus.COMPLETED:
+            input_start_recovery = True
+        elif current.status in {SessionStatus.FAILED, SessionStatus.ORPHANED}:
+            # Retry a worker startup interrupted after input acceptance.
+            # A legacy workflow-recovery wait gets one startup retry after
+            # upgrade. The input marker plus receipt error then prevents
+            # maintenance from repeatedly launching an unresolved worker.
+            input_start_recovery = (
+                current.resume_marker.startswith("input:") or legacy_workflow_recovery_wait
+            )
+        else:
+            input_start_recovery = False
+        if not input_start_recovery or current.cancellation_reason:
+            return None
+        pending = tuple(
+            item
+            for item in inbox.receipts(current.session_id)
+            if item.state == "accepted"
+            and item.deferred
+            and (legacy_workflow_recovery_wait or not item.recovery_error)
+        )
+        return pending[0].message_id if pending else None
+
+    def _try_start_deferred_input(
+        self, current: BackgroundSession, message_id: str
+    ) -> BackgroundSession | None:
+        """Start an attempt for deferred input; return the record if that changed it."""
+
+        try:
+            self._start_deferred_input_attempt(
+                current,
+                message_id=message_id,
+                expected_attempt=current.attempt,
+                expected_lease_token=current.lease_token,
+            )
+        except (InvalidSessionTransition, OSError, RuntimeError, ValueError):
+            # The inbox is the durable record. A later maintenance pass
+            # retries after a competing owner, capacity, or launch issue.
+            return None
+        try:
+            updated = self.store.get(current.session_id, include_deleted=True)
+        except SessionNotFound:
+            return None
+        if (
+            updated.status != current.status
+            or updated.attempt != current.attempt
+            or updated.worker_pid != current.worker_pid
+        ):
+            return updated
+        return None
+
+    def recover_stale(self, *, stale_after_s: float | None = None) -> list[BackgroundSession]:
+        """Reconcile every active worker, resume deferred input and dispatch the queue.
+
+        This is one full maintenance pass; the agents screen instead keeps a
+        :class:`~agenthicc.background.maintenance.MaintenanceScheduler` that
+        does only the work that is due.
+        """
+
+        from .maintenance import MaintenanceScheduler, MaintenanceTrigger
+
+        scheduler = MaintenanceScheduler(
+            self, stale_after_s=self.stale_after_s if stale_after_s is None else stale_after_s
+        )
+        return list(scheduler.run(MaintenanceTrigger(full=True)).changed)
 
     def purge_expired_trash(self) -> list[str]:
         """Apply the configured recoverable-trash retention policy."""

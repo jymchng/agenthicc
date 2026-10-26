@@ -6,9 +6,12 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+from rich.console import Console
 
-from agenthicc.tui.workspace import components
 from agenthicc.runners.startup import StartupCoordinator
+from agenthicc.tui.actions import DEFAULT_ACTIONS
+from agenthicc.tui.keymap import Keymap
+from agenthicc.tui.workspace import components
 
 pytestmark = pytest.mark.unit
 
@@ -41,6 +44,7 @@ def _state() -> MagicMock:
     conv.workflow_override.return_value = "daily [safe]"
     conv.notification.return_value = "first\nsecond"
     state.active_mode.return_value = SimpleNamespace(name="Auto", badge="A", color="green")
+    state.keymap.return_value = Keymap.build(DEFAULT_ACTIONS)
     state.input.paste_condensed.return_value = False
     state.input.paste_label.return_value = ""
     state.input.buf.return_value = list("one\ntwo")
@@ -64,8 +68,7 @@ def test_status_running_compacting_and_helper_variants() -> None:
     assert status.height(80) == 4
     assert components._fmt_elapsed(61.2) == "1m 1s"
     assert "bold" in components._thinking_markup(10)
-    assert components._build_hints("X  one word", 10)
-    assert "five" in components._build_worker_grid(state.conversation.subagent_pool_state(), 200)
+    assert components._hint_row((("X", "one word"),), 10)
 
 
 def test_status_reports_deferred_startup_without_claiming_readiness() -> None:
@@ -83,15 +86,16 @@ def test_composer_condensed_multiline_and_height() -> None:
     composer = components.ComposerComponent(state)
     state.input.paste_condensed.return_value = True
     state.input.paste_label.return_value = "pasted content"
-    assert composer.render().plain
+    console = Console(width=80, record=True, color_system=None)
+    console.print(composer.render())
+    assert "pasted content" in console.export_text()
     assert composer.height(80) == 1
     state.input.paste_condensed.return_value = False
     state.input.buf.return_value = list("a\nb")
     state.input.cursor.return_value = 1
-    group = composer.render()
-    assert len(group.renderables) == 2
-    assert composer.height(4) >= 2
-    assert components._render_multiline(list("abc"), 99)
+    assert len(composer.lines(80)) == 2
+    # At four columns each row holds two cells after the prompt.
+    assert composer.height(4) == 2
 
 
 def test_footer_notification_paste_hints_workflow_and_pool() -> None:
@@ -99,17 +103,20 @@ def test_footer_notification_paste_hints_workflow_and_pool() -> None:
     footer = components.FooterComponent(state)
     rendered = footer.render()
     assert len(rendered.renderables) >= 4
-    assert footer.height(80) == 5
+    assert footer.height(80) == 4  # the workers are the subagent panel's (AGX-08)
 
     state.conversation.notification.return_value = None
     state.input.paste_condensed.return_value = True
     state.conversation.subagent_pool_state.return_value = None
     state.workflow_run.return_value = None
-    assert "Expand" in footer.render().renderables[1].plain
+    assert footer.render().renderables[1].plain.startswith("Ctrl+V expand paste")
 
+    # Hints are the composer bindings that apply now (AGX-13).
     state.input.paste_condensed.return_value = False
-    state.conversation.agent_state.return_value = SimpleNamespace(name="ERROR")
-    assert "Retry" in footer.render().renderables[1].plain
+    running = footer.render().renderables[1].plain
+    assert "Esc pause" in running and "expand paste" not in running
+    state.conversation.is_running.return_value = False
+    assert "pause" not in footer.render().renderables[1].plain
 
 
 def test_footer_wraps_complete_workflow_run_ids_instead_of_ellipsizing(

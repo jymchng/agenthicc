@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from agenthicc.background import BackgroundSession
-from agenthicc.runs.manager import GoalRunManager
+from agenthicc.runs.manager import GoalRunService
 from agenthicc.runs.model import GoalRunStatus
 from agenthicc.runs.store import RunStore
 from agenthicc.worktrees import (
@@ -24,7 +24,7 @@ def test_projection_joins_worker_session_by_parent_session(tmp_path: Path) -> No
     repository.mkdir()
     _git_repo(repository)
     supervisor = _FakeSupervisor(tmp_path)
-    manager = GoalRunManager(
+    manager = GoalRunService(
         store=RunStore(tmp_path / "runs"), supervisor=supervisor, require_git=True
     )
     run = manager.start_detached("Implement the API", repository=repository)
@@ -57,7 +57,7 @@ def test_projection_reconciles_manifest_tasks_worktrees_and_conflicts(
     repository.mkdir()
     _git_repo(repository)
     supervisor = _FakeSupervisor(tmp_path)
-    manager = GoalRunManager(
+    manager = GoalRunService(
         store=RunStore(tmp_path / "runs"), supervisor=supervisor, require_git=True
     )
     run = manager.start_detached("Implement the API", repository=repository)

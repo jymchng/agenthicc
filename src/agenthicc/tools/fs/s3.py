@@ -250,7 +250,9 @@ class S3FilesystemBackend:
         self._check_escape(path)
         key = self._key(path)
         resp = self._s3.head_object(Bucket=self._bucket, Key=key)
-        last_modified: datetime.datetime = resp.get("LastModified", datetime.datetime.utcnow())
+        last_modified: datetime.datetime = resp.get(
+            "LastModified", datetime.datetime.now(datetime.UTC)
+        )
         etag = resp.get("ETag", "").strip('"')
         ts = self._dt_to_timestamp(last_modified)
         return FileStat(

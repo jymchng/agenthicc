@@ -56,7 +56,7 @@ newer attempt's mode.
 
 The launch JSON and run/session projections distinguish `requested`,
 `effective`, and `status`; a pending startup is never shown as though Safe or
-Yolo were already active. The `jobs status`, `agents`, `runs show`, and
+Yolo were already active. The `agents status`, `agents`, `runs show`, and
 `agents --run` surfaces use this same durable state. Omitting `--mode` keeps
 the existing persisted-mode-or-Safe resolution. On resume, an explicit mode
 for that invocation takes precedence; without one, the persisted canonical
@@ -115,9 +115,11 @@ uv run agenthicc runs resume RUN_ID
 uv run agenthicc attach --run RUN_ID
 ```
 
-`runs` is the goal-level projection. `jobs` remains the lower-level
-background-session manager, and `agents` without `--run` continues to open the
-existing interactive background manager.
+`runs` is the goal-level projection. `agents --run RUN_ID` opens the agents
+hub's Running tab filtered to that run, with the run's agents nested under its
+main session; `agents` without `--run` opens the whole hub, and the `agents`
+subcommands (`agents status`, `agents cancel`, …) are the lower-level
+per-session controls.
 
 Run inspection reconciles the main background session before rendering it.
 Missing processes, stale sessions, waiting approvals/input, and failures are

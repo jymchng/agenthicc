@@ -216,14 +216,14 @@ def test_sessions_inspect_cli_supports_json_output(tmp_path: Path, monkeypatch, 
 def test_sessions_inspect_cli_human_output_and_parser(monkeypatch, capsys, tmp_path: Path) -> None:
     from agenthicc.cli.commands.sessions import sessions_inspect
     from agenthicc.cli.context import CLIContext
-    from agenthicc.cli.parser import _parse_args
+    from agenthicc.cli.parser import parse_cli
 
     session_id = "session-cli-human"
     _write_jsonl(tmp_path / f"{session_id}.jsonl", [{"event_type": "IntentCreated"}])
     monkeypatch.setattr(session_export, "_SESSIONS_DIR", tmp_path)
     monkeypatch.setattr("sys.argv", ["agenthicc", "sessions", "inspect", session_id, "--json"])
 
-    args = _parse_args()
+    _, args = parse_cli()
 
     assert args._entry.path == ("sessions", "inspect")
     assert args.session_id == session_id

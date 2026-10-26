@@ -7,6 +7,7 @@ import asyncio
 import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 import zipfile
 
 import pytest
@@ -84,6 +85,29 @@ def test_generated_builder_is_valid_python_and_contains_pipeline() -> None:
     assert "--toc" in source
 
 
+def test_default_output_is_timestamped_unique_and_collision_safe(tmp_path: Path) -> None:
+    script = write_build_book_script(tmp_path, title="Timestamped Book", author="Author")
+    spec = importlib.util.spec_from_file_location("timestamped_book_builder", script)
+    assert spec is not None and spec.loader is not None
+    builder = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(builder)
+
+    with patch.object(builder, "datetime") as clock:
+        clock.now.return_value.strftime.return_value = "20261025-120000-123456"
+        first = builder.default_output()
+        assert first.parent == tmp_path / "dist"
+        assert first.name == "timestamped-book 20261025-120000-123456.pdf"
+        first.parent.mkdir(parents=True)
+        first.write_bytes(b"previous PDF")
+        first.with_suffix(".epub").write_bytes(b"previous EPUB")
+
+        second = builder.default_output()
+
+    assert second == first.with_name("timestamped-book 20261025-120000-123456-1.pdf")
+    assert first.read_bytes() == b"previous PDF"
+    assert first.with_suffix(".epub").read_bytes() == b"previous EPUB"
+
+
 def test_write_build_book_script_is_executable_and_refreshable(tmp_path) -> None:
     destination = write_build_book_script(tmp_path, title="First Edition", author="Author")
 
@@ -131,22 +155,34 @@ async def test_mark_book_complete_verifies_existing_pdf_and_epub(tmp_path) -> No
         author="Author",
     )
 
-    pdf = tmp_path / "dist" / "a-technical-book.pdf"
-    pdf.parent.mkdir()
-    pdf.write_bytes(b"%PDF-1.7\nvalid test fixture\n")
-    _write_epub(tmp_path / "dist" / "a-technical-book.epub")
-
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    old_pdf = dist / "previous-edition.pdf"
+    old_epub = dist / "previous-edition.epub"
+    old_pdf.write_bytes(b"%PDF-1.7\nold edition\n")
+    _write_epub(old_epub)
     await _named_tool(tools, "create_build_book")()
+    ignored_old = await _named_tool(tools, "mark_book_complete")(
+        summary="A previous build is present."
+    )
+    assert ignored_old["ok"] is False
+    assert "new PDF" in ignored_old["error"]
+
+    pdf = dist / "a-technical-book 20261025-120000-123456.pdf"
+    pdf.write_bytes(b"%PDF-1.7\nvalid test fixture\n")
+    _write_epub(pdf.with_suffix(".epub"))
     result = await _named_tool(tools, "mark_book_complete")(
-        summary="The existing PDF was compiled and validated."
+        summary="The new timestamped PDF and EPUB were compiled and validated."
     )
 
     assert result["ok"] is True
     assert event.is_set() is True
     assert (tmp_path / "build_book.py").is_file()
     assert data["build_script_path"] == str(tmp_path / "build_book.py")
-    assert data["pdf_path"] == "dist/a-technical-book.pdf"
-    assert data["epub_path"] == "dist/a-technical-book.epub"
+    assert data["pdf_path"] == "dist/a-technical-book 20261025-120000-123456.pdf"
+    assert data["epub_path"] == "dist/a-technical-book 20261025-120000-123456.epub"
+    assert old_pdf.read_bytes() == b"%PDF-1.7\nold edition\n"
+    assert old_epub.is_file()
 
 
 @pytest.mark.asyncio
@@ -154,17 +190,51 @@ async def test_mark_book_complete_rejects_an_unmatched_epub(tmp_path) -> None:
     event = asyncio.Event()
     data: dict[str, object] = {}
     tools = _make_compile_tools(event, data, output_dir=str(tmp_path))
+    await _named_tool(tools, "create_build_book")()
     dist = tmp_path / "dist"
     dist.mkdir()
     (dist / "book.pdf").write_bytes(b"%PDF-1.7\nvalid test fixture\n")
     _write_epub(dist / "different-book.epub")
 
-    await _named_tool(tools, "create_build_book")()
     result = await _named_tool(tools, "mark_book_complete")(summary="Compiled outputs")
 
     assert result["ok"] is False
     assert "does not match" in result["error"]
     assert event.is_set() is False
+
+
+@pytest.mark.parametrize("mutation", ["removed", "overwritten"])
+@pytest.mark.asyncio
+async def test_mark_book_complete_rejects_changes_to_preexisting_outputs(
+    tmp_path: Path, mutation: str
+) -> None:
+    event = asyncio.Event()
+    data: dict[str, object] = {}
+    tools = _make_compile_tools(event, data, output_dir=str(tmp_path))
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    old_pdf = dist / "previous.pdf"
+    old_epub = dist / "previous.epub"
+    old_pdf.write_bytes(b"%PDF-1.7\nold")
+    _write_epub(old_epub)
+    await _named_tool(tools, "create_build_book")()
+
+    if mutation == "removed":
+        old_epub.unlink()
+    else:
+        old_pdf.write_bytes(b"%PDF-1.7\nchanged")
+    new_pdf = dist / "new-build 20261025-120000-123456.pdf"
+    new_pdf.write_bytes(b"%PDF-1.7\nnew")
+    _write_epub(new_pdf.with_suffix(".epub"))
+
+    result = await _named_tool(tools, "mark_book_complete")(summary="New build finished")
+
+    assert result["ok"] is False
+    assert "pre-existing dist outputs" in result["error"]
+    assert event.is_set() is False
+    assert "build_script_path" in data
+    assert "pdf_path" not in data
+    assert "epub_path" not in data
 
 
 @pytest.mark.asyncio

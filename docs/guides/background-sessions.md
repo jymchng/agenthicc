@@ -121,10 +121,10 @@ agenthicc attach SESSION_ID
 ## Background interaction inbox
 
 Pending background tool approvals, `ask_user` questions, and explicit input
-requests are available from `/inbox` in the TUI and through `agenthicc jobs
-inbox` in scripts. These are typed responses to an exact pending operation;
-they are separate from arbitrary text submitted to a session from the
-`agenthicc agents` details view. Session-detail input is still forwarded
+requests are listed in the agents hub's Needs you tab (`/inbox` in the TUI)
+and through `agenthicc agents inbox` in scripts. These are typed responses to an
+exact pending operation; they are separate from arbitrary text submitted to an
+agent from the hub's composer. That input is still forwarded
 unchanged to the owning session, whose normal command/router path may handle
 commands such as `/workflow resume` or `/workflow reset`.
 
@@ -144,11 +144,12 @@ restores that run first, then delivers the queued input unchanged. If the
 identity does not match exactly or more than one run qualifies, the worker
 does not guess or reject accepted input. It leaves the session recoverable and
 the inbox receipt as `waiting for recovery`, with a bounded reason and relevant
-workflow run ID in the details view. Use an explicit target-side command from
-the selected session's details page, for example:
+workflow run ID in the agent's detail view. Send an explicit target-side
+command from that detail view with `i`, for example:
 
 ```text
 /workflow resume <run-id>
+/workflow resume <run-id> --profile <name|none>
 /workflow reset <run-id>
 ```
 
@@ -178,12 +179,12 @@ First list CLI items to get the current version, then use it and a
 caller-generated idempotency key for each write:
 
 ```bash
-agenthicc jobs inbox list --json
-agenthicc jobs inbox answer ITEM_ID 'answer text' VERSION request-uuid
-agenthicc jobs inbox answer ITEM_ID '{"runtime":"Python"}' VERSION request-uuid
-agenthicc jobs inbox approve ITEM_ID VERSION request-uuid
-agenthicc jobs inbox reject ITEM_ID VERSION request-uuid --message 'Not approved'
-agenthicc jobs inbox expire ITEM_ID VERSION request-uuid
+agenthicc agents inbox list --json
+agenthicc agents inbox answer ITEM_ID 'answer text' VERSION request-uuid
+agenthicc agents inbox answer ITEM_ID '{"runtime":"Python"}' VERSION request-uuid
+agenthicc agents inbox approve ITEM_ID VERSION request-uuid
+agenthicc agents inbox reject ITEM_ID VERSION request-uuid --message 'Not approved'
+agenthicc agents inbox expire ITEM_ID VERSION request-uuid
 ```
 
 The JSON answer form is required only for multiple question IDs. Approval
@@ -215,15 +216,16 @@ position is advisory and can change as capacity or priority changes.
 ```bash
 agenthicc run --background --priority urgent --intent "Fix the release blocker"
 agenthicc --priority low --goal "Update generated API docs" --detach
-agenthicc jobs priority SESSION_ID normal
-agenthicc jobs list --json
-agenthicc jobs status SESSION_ID
+agenthicc agents priority SESSION_ID normal
+agenthicc agents list --json
+agenthicc agents status SESSION_ID
 ```
 
 An optional `--idempotency-key KEY` on `agenthicc run --background` makes a
 repeat submission by the same local user return the existing request. Reusing
 the key for different intent, workspace, workflow, mode, or profile is rejected.
-Changing priority with `jobs priority` writes a bounded audit event; it never
+Changing priority with `agents priority` (or `P` in the hub) writes a bounded
+audit event; it never
 restarts a running worker.
 
 Cancelling a request whose dispatch state is still `pending` changes its
@@ -236,8 +238,8 @@ scheduler reservation is fenced by a durable dispatch token and the worker's
 existing session claim, so duplicate child launches cannot both execute the
 accepted request.
 
-The lower-level `jobs`/`agents` manager remains available for ordinary
-background sessions that do not belong to a goal run.
+The agents hub lists ordinary background agents and goal runs together; a
+goal run's workers are nested under its main agent.
 
 `agenthicc attach SESSION_ID` is deliberately session-only. `SESSION_ID` is an
 exact durable background-session ID, not a workspace-relative lookup and not a
@@ -267,10 +269,10 @@ The worker must durably attest that mode before dispatching a provider turn,
 workflow phase, tool, or subagent. If resolution or the durable attestation
 fails, the attempt is marked failed and agent work is not started. Application
 updates are checked against the current session lease and attempt so that a
-late worker cannot replace newer state. `jobs status SESSION_ID --json`, the
-interactive `agents` manager, `agenthicc runs show RUN_ID --json`, and
+late worker cannot replace newer state. `agents status SESSION_ID --json`, the
+agents hub's detail view, `agenthicc runs show RUN_ID --json`, and
 `agenthicc agents --run RUN_ID --json` expose the requested/effective/status
-fields. The manager shows `pending: YOLO`, for example, instead of presenting
+fields. The hub shows `pending (requested YOLO)`, for example, instead of presenting
 the unvalidated value as an active mode. A no-explicit-mode launch reports
 pending default/persisted resolution until normal session construction
 completes.
@@ -296,35 +298,112 @@ the recorded PID must match the Agenthicc worker module and the exact request
 file/store identity for the session; an unmatchable or reused PID is treated as
 orphaned and surfaced for reconciliation.
 
-## Open and inspect the manager
+## The agents hub
 
-`agenthicc agents` and `agenthicc jobs` open the same manager TUI. The manager
-is viewport-aware and paginates the session table, keeping the selected
-summary and controls visible even on a short terminal. The header reports the
-current page and visible range; selection is stored by session ID, so refreshes
-cannot retarget an action to a different row. The selected row is marked with
-`▶` and the details panel is labelled `Details · selected`.
-The table's `WS` value and the selected-session details' `Dir:` value contain
-only the workspace directory name, not its full path. Press Enter on a row to
-open a dedicated details page; it shows the workspace directory name, lifecycle
-timestamps, workflow and phase history, provider/model, recent activity, and
-failure information. Press Enter again there to attach that exact session.
-Press Esc to return to the table. The detail frame stays sized to its visible
-fields so its navigation/action hints remain on-screen. Use `↑`/`↓` or `j`/`k`,
-`PageUp`/`PageDown`, `Home`/`End`, or `[`/`]` to scroll without changing the
-selected session; the view does not dump the session's complete tool history.
+`agenthicc agents` opens the agents hub full screen; inside a session,
+`/agents`, Ctrl+G or ← on an empty prompt opens the same hub over the
+conversation, and Esc returns to it exactly as it was (AGX-05). One component
+shows every agent:
 
-Press `i` on a live, stale-but-recoverable, or completed session's detail page
-to open a target-pinned composer.
+| Tab | Shows | Order |
+|---|---|---|
+| **Running** | Active background agents, queued ones, pinned ones, and those that finished in the last 30 minutes; a goal run's workers nest under its main agent; the next scheduled occurrences | Grouped: Pinned, Needs you, Ready for review, Running, Queued, Recently finished |
+| **Needs you** | Every pending approval, question and input request (the operator inbox), plus waiting or lost agents without one | Oldest first |
+| **History** | Finished, failed, cancelled and archived agents, and saved foreground sessions | Most recent first |
+| **Library** | Agent definitions by source: project, user, built-in | Source, then name |
+
+The tab bar carries live counts and highlights **Needs you** when it is not
+empty. Open a tab directly with `agenthicc agents --tab needs-you` (or
+`running`, `history`, `library`), one agent's detail view with
+`agenthicc agents SESSION_ID`, and one goal run's agents with
+`agenthicc agents --run RUN_ID`. `/inbox` opens the Needs you tab and
+`/workers` the Running tab. `agenthicc sessions list` on a terminal opens the
+History tab; piped, it prints the saved sessions as before.
+
+### The list
+
+Each row is the agent's status, title, report line, project, agent or workflow,
+age and cost, in that priority: columns are dropped from the right as the
+terminal narrows (activity from 90 columns, project from 100, agent from 110,
+cost from 120) and a shown column is never narrower than its minimum, so
+statuses stay readable at any width. The report line is the first sentence of
+the agent's latest message, redacted, which the worker records as it works; a
+completed agent keeps it as its summary, and a failed one shows its error.
+One vocabulary is used by the hub, `agenthicc agents list` and these docs:
+
+| Status | Glyph | Label | Group |
+|---|---|---|---|
+| `waiting_approval` | `◆` | needs approval | Needs you |
+| `waiting_input` | `◆` | needs input | Needs you |
+| `orphaned` | `⚠` | worker lost | Needs you |
+| `running` | `●` | running | Running |
+| `starting` | `◐` | starting | Running |
+| `retrying` | `↻` | retrying | Running |
+| `cancelling` | `⊘` | stopping | Running |
+| `queued` | `◌` | queued #N | Queued |
+| `completed` | `✓` | done | Ready for review (with a worktree branch) or Recently finished |
+| `failed` | `✗` | failed | Recently finished |
+| `cancelled` | `⊘` | cancelled | Recently finished |
+| `archived` | `▫` | archived | History |
+
+The list fills the terminal and scrolls; the selection is marked by `▸` and
+stays on the same agent when an update moves it to another group. A `•` marks
+an agent whose state or report changed since you last opened it (remembered in
+`~/.agenthicc/state/agents-hub.json`). `s` cycles the order within the Running
+tab's groups (attention, recent activity, created, title), `g` groups it by
+project instead, Shift+↑/↓ reorders pinned agents and →/← expand and collapse a
+goal run's workers. History reads 200 agents at a time and reads more as you
+scroll.
+
+`/` filters the tab as you type: every word must match, in any order, across
+the title, intent, labels, report, ID and project. Tokens narrow further:
+`status:failed` (or a label such as `status:needs-approval`), `project:app-0`,
+`agent:reviewer`, `label:release` and `run:RUN_ID`. Esc clears the search and
+restores the previous selection.
+
+`+` opens the dispatch line at the bottom of the Running tab. Enter starts a
+background agent as `agenthicc run --background` would, in the selected
+agent's project (or the current directory); `@DIR` targets another project,
+`/workflow NAME` picks a workflow and `/mode NAME` or `/model ID` set them for
+this agent — alone on the line they set the default for the next ones. A
+project whose extensions are not trusted asks for the `agenthicc trust`
+confirmation first.
+
+### Peek, detail and input
+
+Space opens a peek panel under the selected agent: the exact pending request,
+or its latest report line and current tool, with the keys that answer it. Enter
+opens the detail view (a right-hand pane at 140 columns and wider). Its
+sections answer four questions:
+
+| Section | Shown when | Content |
+|---|---|---|
+| Needs you | The agent waits or its worker was lost | The inbox request's canonical target — tool, input, workspace paths, mode — redacted; `y`/`n` resolve that exact item |
+| Now | The agent is active | Phase progress, queue position, the latest activity |
+| Transcript | Always | The last 50 journal events, redacted with the export redactor, one line each; `f` toggles following new events, `t` the whole transcript |
+| Changes | A worktree agent | `git diff --stat` from its base commit including uncommitted work; `d` shows the full diff |
+| Attempts | More than one attempt | Each attempt's outcome and error |
+| Details | Always | Only fields that have a value |
+
+The title and the Needs you card stay at the top while the rest scrolls.
+The header shows the agent's tokens and cost across all its attempts. The
+worker records them from the session's usage ledger (PRD-157) once per
+completed provider call — never streamed, provisional values — and writes them
+with its next heartbeat as a delta update, so they appear within a second or
+two; `agents status --json` and `agents list --json` include `tokens_in`,
+`tokens_out` and `cost_usd`.
+
+Press `i` on a live, stale-but-recoverable, or completed agent (in the list, the peek
+panel or the detail view) to open a target-pinned composer.
 It uses the normal `UnifiedInputSession` editing and trigger pipeline, with
 mentions rooted at the target workspace and command/skill suggestions built
 from that session's launch configuration and project. Submitting ordinary text
-does not attach to the foreground. For a live worker, the manager durably queues
+does not attach to the foreground. For a live worker, the hub durably queues
 it for the exact owner attempt; the worker consumes it at an agent-safe
 boundary, or runs it as a follow-up turn if it arrived after the previous turn's
 last tool boundary. For an orphaned, failed, cancelled, or archived recoverable
-session, the manager persists the exact input first, then resumes that same
-session in the background. The manager does not infer whether the text is a
+session, the hub persists the exact input first, then resumes that same
+session in the background. The hub does not infer whether the text is a
 continuation, a new task, or a command. The target session routes it as though
 it arrived through that session's own input path. Ordinary text always becomes
 a normal turn in the existing target conversation. Even when the session has
@@ -342,7 +421,7 @@ transaction or uniquely identified workflow that owns the saved turn, then
 processes the accepted message; it does not replay the completed attempt's
 original launch intent or detached goal-run bookkeeping. The session's
 effective configuration and security settings are retained, and the new worker
-is subject to the normal background concurrency limits. If the manager exits
+is subject to the normal background concurrency limits. If the hub closes
 after persisting the message but before launch, background maintenance finds
 the still-pending receipt and starts recovery when capacity is available.
 Slash commands, including `/workflow ...`, are still forwarded unchanged and
@@ -359,16 +438,16 @@ session workflow, conversation ID, and original intent. Ambiguous cases remain
 recoverable for explicit resolution; the worker never runs direct-turn and
 workflow recovery concurrently.
 
-The detail page's `Latest input` field shows the newest receipt (`queued`,
+The detail view's `Latest input` line shows the newest receipt (`queued`,
 `waiting for recovery`, `delivered`, `processed`, or `not delivered`) and a
 short message ID, never the message body. The same message ID fences retries
 and duplicate Enter events.
 
-The manager treats `/workflow` like any other submitted text: it forwards the
+The hub treats `/workflow` like any other submitted text: it forwards the
 unchanged input to the target. The target session's command router applies the
 same workflow controls as the foreground TUI. Other commands and skills also
 use the target's registries; no submitted command is evaluated by the
-manager's own session. Accepted composer payloads, including whitespace and
+hub's own session. Accepted composer payloads, including whitespace and
 newlines, are preserved exactly; blank or oversized input is rejected rather
 than silently modified.
 
@@ -379,7 +458,7 @@ text is sent as a direct target-session turn. Recovery does not synthesize a
 “Workflow continuation” message, select a checkpoint, or resume a workflow.
 Only an explicit command submitted by the user—such as `/workflow resume`—is
 handled as a workflow command by the target session. Inbox retries retain the
-same message ID and body, so an uncertain manager response does not require
+same message ID and body, so an uncertain hub response does not require
 resending or create a duplicate turn.
 
 This is intentionally distinct from the attached foreground TUI's ordinary
@@ -397,108 +476,165 @@ assuming it was inserted by the input transport.
 - `/workflow` and `/workflow reset` restore the active mode's default workflow.
 - `/workflow resume [run-id]` validates and resumes a saved checkpoint through
   the normal recovery coordinator and ownership claim path.
+- `/workflow resume [run-id] --profile <name|none>` resumes with the checkpoint's
+  saved profile by default, or explicitly selects another configured provider
+  profile (`none` selects legacy execution settings). The target validates the
+  profile and persists the choice before dispatching provider work; the hub
+  forwards this command unchanged like any other input.
 - `/workflow reset <run-id>` marks that checkpoint discarded through the
   checkpoint store's guarded discard path, then restores the mode default.
 
 Target-side command feedback (including an invalid name, unknown subcommand,
 missing checkpoint, or unsafe resume) is the result of delivered input. It must
 not fail the background session merely because the target router displayed a
-warning. The manager forwards every input unchanged and does not infer intent;
+warning. The hub forwards every input unchanged and does not infer intent;
 the target's normal input/command path decides what it means. In particular,
 ordinary text never implicitly resumes or starts a workflow. Only
 transport/owner-fencing failures mean the target did not receive the input.
 Commands that need an interactive overlay may explain that the target has no
-interactive surface; the manager still forwards them unchanged. A text entry
+interactive surface; the hub still forwards them unchanged. A text entry
 sent while the worker is running is not an approval: use the existing `y`/`n`
-controls for approval requests.
+controls for approval requests. `/stop` as the whole reply stops the agent
+instead of sending text.
 
-The manager paints a loading viewport immediately, then loads a page through a
-bounded background service. Navigation and lifecycle operations do not wait
-for registry reads, process checks, artifact moves, or journal parsing. Its
-projection uses an atomic versioned snapshot and incrementally replays newer
-JSONL events; the event log remains authoritative and malformed or incompatible
-snapshots are rebuilt. The selected activity tail is read asynchronously and
-redacted before it reaches the details panel. Long activity is shortened to one
-visible line so `Updated` and identity details remain visible. Refreshes and
-terminal frames are coalesced, and stale worker recovery runs independently of
-the repaint cadence. Projection folding is serialized per store so refresh and
-maintenance threads cannot race while rebuilding shared indexes. Startup
-maintenance waits until the first session page is ready. If an index read
-fails, the manager shows the error and retry hint; automatic retries back off
-instead of repeatedly hammering the store. The non-TTY listing and JSON output
-remain complete.
+### Keys
 
-Useful keys:
+Keys come from the key map (`agents`, `agents.list`, `agents.peek` and
+`agents.detail` contexts, rebindable in `~/.agenthicc/keybindings.toml`); the
+footer shows only the keys valid for the selected agent and `?` lists them all.
 
-| Key | Action |
+| Key | Action | Valid when |
+|---|---|---|
+| `↑`/`k`, `↓`/`j`, `PageUp`/`PageDown`, `Home`/`End` | Move the selection (scroll the detail view) | |
+| `Alt+↑`/`Alt+↓` | Jump between groups | |
+| `Enter` | Open the agent; in the detail view, attach it | |
+| `Space` | Peek (Space or Esc closes it) | An agent row |
+| `y` / `n` | Approve / reject the exact pending request | It needs approval |
+| `i` | Reply: answer the question, or send input through the target-pinned composer | It accepts input |
+| `r` / `R` | Resume / retry, as `agenthicc agents resume`/`retry` | Orphaned, failed, cancelled or archived / failed or cancelled |
+| `c` | Stop (every marked agent, if any are marked) | Active |
+| `A` | Archive (every marked agent, if any are marked) | Finished |
+| `p`, `e`, `l`, `P` | Pin, rename, labels, queue priority | |
+| `v` / `m` | Mark for stop, archive or delete | |
+| `Ctrl+X` | Delete to recoverable trash (every marked agent, if any are marked) | |
+| `x` | Expire the request (Needs you); worktree environment actions (detail of a worker) | |
+| `/`, `s`, `g` | Search, sort, group | |
+| `Tab`/`Shift+Tab`, `1`–`4` | Switch tab | |
+| `+` | Start a new agent | Running tab |
+| `Ctrl+R` / `F5` | Reload and check workers | |
+| `z` | Pause live updates | |
+| `o`, `d`, `t`, `f` | Show the request in the transcript, the full diff, the full transcript, follow | Detail view |
+| `?` | Every key | |
+| `q`, `Esc` | Leave the hub (Esc first clears a search, marks, a peek or the detail view) | |
+
+With `[ui] mouse = "on"` (or `"auto"`, which applies to the full-screen hub
+only) a click selects a row or tab, a second click opens it, the wheel scrolls
+and a click on a footer hint runs it.
+
+### Live updates and maintenance
+
+The hub paints its frame immediately and loads rows through a bounded
+background service; navigation and operations never wait for registry reads,
+process checks, artifact moves or journal parsing. Rows, counts and search are
+queries against the derived SQLite index (`index.sqlite3`): a reader applies
+only the events appended since the index's recorded position, and the event
+log remains authoritative. On open, its actual schema is checked even when
+the version marker is absent or claims to be current. A missing
+`sessions.idempotency_key` column is transactionally added and backfilled from
+the stored records before its index is created; interruption rolls the
+migration back for a safe retry. Unsupported layouts reset only the derived
+SQLite schema and are replayed from `events.jsonl`. SQLite busy/locked errors
+remain contention rather than triggering schema repair, while unrelated I/O
+errors are surfaced. When the index has to be built from the log — its
+first use, or after corruption — a progress line shows and the Running tab
+lists recent agents read from the end of the log; leaving the hub cancels the
+rebuild. If a read fails the hub says so, with Ctrl+R to retry; automatic
+retries back off. Without a terminal, `agenthicc agents` prints the tab as
+plain lines (ID, status, title, project, age).
+
+The first rows come first. Everything else the hub shows is read just after
+them: the next scheduled runs, saved sessions (which complete the History
+count) and, in a session, agent definitions; the shell reads definitions when
+the Library tab is first shown, and its tab label has no count until then. The
+first maintenance pass starts at the same point, so a store busy with process
+checks never delays the list. Inside a session the hub's store and worker
+threads are kept from its first opening until the session ends, and its
+modules are imported in the background once the agent runtime is ready, so
+`/agents`, Ctrl+G and ← open it without setup work.
+`scripts/benchmark_agents_manager.py` measures an opening as `overlay_open`.
+
+The hub does not poll. It sleeps until a key arrives or something it watches
+changes: the registry log `events.jsonl`, the `input-inbox/` directory, the
+opened or peeked agent's `conversation.jsonl`, or a worker process exiting. A
+change made by any process reaches the open hub within a fraction of a second,
+and an idle hub uses effectively no CPU. On Linux it uses inotify and
+`pidfd_open`; on macOS and BSD, kqueue; elsewhere it stats the watched files
+every `refresh_interval_s`. A slower stat sweep runs alongside native
+notification as a safety net for network filesystems. A worktree agent's
+change summary is re-read at most every five seconds while it is open.
+
+Maintenance (stale workers, deferred input, queue dispatch) also runs only
+when something is due:
+
+| Concern | When it runs |
 |---|---|
-| `↑`/`k`, `↓`/`j` | Move selection; moving across a boundary changes page |
-| `Home`/`End` | Select the first/last session |
-| `PageUp`/`PageDown` | Move one session page |
-| `Enter` | Open the selected session's detailed page |
-| `Enter` (details page) | Attach that exact session in the normal foreground TUI, loading its transcript |
-| `i` (details page) | Open the composer for that exact live, recoverable, or completed session; stale/completed sessions process accepted input in the background without attaching |
-| `Esc` (details page) | Return to the session table |
-| `↑`/`↓`, `j`/`k` (details page) | Scroll one detail row without changing the selected session |
-| `PageUp`/`PageDown` (details page) | Scroll one detail viewport |
-| `Home`/`End` (details page) | Scroll to the first/last detail row |
-| `[`/`]` (details page) | Scroll six detail rows |
-| `r` | Refresh |
-| `c` | Cancel the selected worker |
-| `a` | Archive a terminal session |
-| `p` | Pin or unpin a session |
-| `y`/`n` | Approve or reject a visible approval request |
-| `Ctrl+X` | Immediately delete the selected/marked sessions to recoverable trash |
-| `?` | Show help |
-| `q` | Leave the manager without stopping workers |
-| `Esc` (session table) | Leave the manager without stopping workers |
+| A worker process exits without recording its result | At once: the session is marked orphaned |
+| A heartbeat is older than `stale_after_s` | When the deadline passes: the worker is probed once and flagged stale, or orphaned if it is gone |
+| A new or restarted worker | Probed once when first seen, then watched for exit |
+| A worker whose exit cannot be watched (no pidfd or kqueue) | Probed every `maintenance_interval_s` |
+| Accepted deferred input is waiting | When its inbox file changes or a worker slot frees; a failed start retries with exponential backoff |
+| Queued requests | When the registry changes, and when a claimed reservation's lease expires |
 
-If a session is deleted while its details page is open, the second Enter never
-attaches the row that shifted into its place. The manager validates the exact
-session ID against the durable store before handoff; deleted or missing
-sessions are rejected in place, and a validation read never stops or
-foregrounds a worker. Only after validation does the CLI perform the normal
-single-owner foreground handoff.
+The first pass, when the first rows are ready, and Ctrl+R reconcile every
+active session. With nothing due, maintenance probes no process and writes
+nothing.
 
-Foregrounding is an ownership handoff, not a second observer. For an active
-session the manager stops that session's worker and owned terminals, verifies
-the worker lease has ended, and then opens the normal TUI with the same
-`session_id`, project directory, and durable journals. This lets the user send
-new directions without concurrent writers or duplicated tool calls. Completed,
-failed, cancelled, and orphaned sessions open directly through the same resume
-path; leaving that TUI does not relaunch a background worker.
+### Attach, switch and delete
 
-Delete is asynchronous and recoverable. Pressing `Ctrl+X` immediately captures
-the selected/marked session IDs and starts one durable operation; no second
-confirmation key is required. Active work is cancelled first, then only
-the exact session directory and its sibling kernel journal are moved to
-`~/.agenthicc/background/trash/`. The tombstone remains in the append-only
-registry, so a stale worker cannot resurrect it. Deleted sessions are excluded
-from the interactive `agenthicc agents` table; use the existing jobs/store
-recovery interface to restore one. The table displays at most ten sessions per
-page (fewer when the terminal viewport requires it). In the interactive
-manager, deletion runs off the TUI event loop; the table remains responsive
-while active-worker cancellation and terminal cleanup finish, then refreshes
-automatically. A repeated `Ctrl+X` is ignored while the current operation is
-active, and failures remain visible with durable retry/recovery metadata.
+Enter in the detail view attaches the agent in the foreground. The hub
+validates the exact session ID against the durable store first; a deleted or
+missing agent is rejected in place, and a validation read never stops or
+foregrounds a worker. Foregrounding is an ownership handoff, not a second
+observer: for an active agent the worker and its owned terminals are stopped,
+the worker lease is verified to have ended, and the normal TUI opens with the
+same `session_id`, project directory and durable journals. Completed, failed,
+cancelled and orphaned agents open directly through the same resume path.
+
+Inside a session the hub asks first — `Switch to … ? This session reopens when
+you leave it.` — then closes the current session, opens the chosen agent or
+saved session, and reopens the original session when that one ends. Switching
+waits for a running turn to finish or be stopped. After `/background` the
+session hands over to its worker and the hub opens with the new background
+agent selected.
+
+Delete is asynchronous and recoverable. `Ctrl+X` immediately captures the
+selected or marked agents and starts one durable operation; no confirmation is
+asked. Active work is cancelled first, then only the exact session directory
+and its sibling kernel journal are moved to `~/.agenthicc/background/trash/`.
+The tombstone remains in the append-only registry, so a stale worker cannot
+resurrect it. Deleted agents leave the hub; `agenthicc agents restore
+SESSION_ID` brings one back. Deletion runs off the event loop, so the hub stays
+responsive; a repeated `Ctrl+X` is ignored while an operation runs, and
+failures stay visible with durable retry metadata.
 
 ## Scriptable control
 
 ```bash
 uv run agenthicc agents --json
-uv run agenthicc jobs list --json
-uv run agenthicc jobs status SESSION_ID --json
-uv run agenthicc jobs cancel SESSION_ID
-uv run agenthicc jobs resume SESSION_ID
-uv run agenthicc jobs retry SESSION_ID
-uv run agenthicc jobs approve SESSION_ID
-uv run agenthicc jobs archive SESSION_ID
-uv run agenthicc jobs delete SESSION_ID
-uv run agenthicc jobs restore SESSION_ID
+uv run agenthicc agents list --json
+uv run agenthicc agents status SESSION_ID --json
+uv run agenthicc agents cancel SESSION_ID
+uv run agenthicc agents resume SESSION_ID
+uv run agenthicc agents retry SESSION_ID
+uv run agenthicc agents approve SESSION_ID
+uv run agenthicc agents archive SESSION_ID
+uv run agenthicc agents delete SESSION_ID
+uv run agenthicc agents restore SESSION_ID
 ```
 
-The JSON manager listing is complete and unpaginated. Pagination applies only
-to the interactive viewport; it never hides or removes a durable session.
+`agenthicc agents list` prints statuses with the same glyphs and labels as the
+hub; its JSON output, and `agenthicc agents --json`, are complete and keep the
+raw `status` values.
 
 JSON status removes the original intent and lease token and applies the same
 secret-pattern redaction used by session inspection. A missing or invalid
@@ -545,7 +681,6 @@ terminal_retention_days = 30
 [background.manager]
 refresh_interval_s = 0.25
 maintenance_interval_s = 5.0
-projection_batch_size = 256
 activity_tail_bytes = 64000
 frame_debounce_ms = 16
 max_in_flight_operations = 4
@@ -556,10 +691,15 @@ Queueing remains disabled by default until explicitly enabled. Other defaults
 are conservative. Invalid or out-of-range values fail closed before a worker
 is created. `--set background.max_workers=1` is supported for one invocation, and
 `AGENTHICC_DISABLE_BACKGROUND=1` is an emergency local disable switch.
-Manager settings are independently validated and bounded; they control only
-refresh, display, and concurrency cadence, not locking, ownership, or durable
-event recording. Set `metrics = true` to collect redacted timing aggregates
-while diagnosing latency.
+`[background.manager]` configures the agents hub (`AgentsHubSettings`). Its
+settings are independently validated and bounded; they control only display
+and concurrency cadence, not locking, ownership, or durable event recording.
+`refresh_interval_s` is how often the hub stats the files it
+watches where native change notification is unavailable; `maintenance_interval_s`
+is how often it probes a worker whose exit it cannot watch (and, without
+inotify, rescans the input inbox). `stale_after_s` is the heartbeat age after
+which a worker is probed and flagged stale. Set `metrics = true` to collect
+redacted timing aggregates while diagnosing latency.
 
 ### Background notifications and webhooks
 
@@ -607,7 +747,7 @@ The append-only background journal records the redacted event descriptor
 before the SQLite outbox is updated; startup reconciliation repairs a crash
 between those writes. The sender runs separately from the job worker, retries
 only bounded transient failures, and cannot change the job's lifecycle state.
-Use `agenthicc jobs notifications [--status pending|sending|delivered|failed]
+Use `agenthicc agents notifications [--status pending|sending|delivered|failed]
 [--session-id ID] [--json]` to inspect receipts. The command omits webhook
 URLs, secret references, and payloads. Headless environments without a local
 notification service quietly record `local_notifier_unavailable`.
@@ -682,16 +822,16 @@ uv run python -m agenthicc.background.coverage_gate
 ```
 
 The gate enforces at least 90% coverage across the background package, the
-background CLI commands, and the background manager workspace. The ordinary
+`agenthicc agents` commands, and the agents hub. The ordinary
 full-package coverage report remains useful for tracking unrelated legacy and
 platform-specific surfaces.
 
 ## Try it
 
-Background sessions are inspectable without opening the manager TUI:
+Background agents are inspectable without opening the hub:
 
 ```bash
-PYTHONPATH=src python -m agenthicc jobs list --json
+PYTHONPATH=src python -m agenthicc agents list --json
 ```
 
 ```text
@@ -716,31 +856,31 @@ understand a job parked on an approval.
 To see the entry points the runtime exposes:
 
 ```bash
-PYTHONPATH=src python -m agenthicc jobs --help
+PYTHONPATH=src python -m agenthicc agents --help
 ```
 
 ```text
-usage: agenthicc jobs [-h] <subcommand> ...
+usage: agenthicc agents [-h] [--tab TAB] [--run RUN] [--json] [SESSION_ID]
 ```
 
-Accepted subcommands include `list`, `status`, `cancel`, `resume`, `retry`,
-`approve`, `reject`, `input`, `inbox`, `rename`, `labels`, `purge`, `archive`,
-`delete`, and `restore`.
+Its subcommands are `list`, `status`, `cancel`, `resume`, `retry`, `priority`,
+`approve`, `reject`, `input`, `inbox`, `notifications`, `rename`, `labels`,
+`purge`, `archive`, `delete`, `restore`, `actions` and `action`.
 
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| A job is stuck and no prompt is visible | It is parked on a typed approval/question | Use `/inbox` or `agenthicc jobs inbox list`; answer by exact item ID/version |
-| A job needs an answer, not an approval | It is waiting on an input request | Use `/inbox` or `agenthicc jobs inbox answer`; `jobs input` remains for compatibility |
-| A cancelled job cannot be found | Cancelled work may have moved to the trash | `agenthicc jobs list --trash` lists recoverable sessions; `jobs restore` brings one back |
-| A job list is cluttered with old entries | They have not been archived or purged | `jobs archive JOB` to keep it out of the default list, `jobs purge` to remove it deliberately |
-| `agenthicc agents` behaves like `agenthicc jobs` | They are the same manager | Expected: both are registered entry points to the background-session manager, and `jobs <subcommand>` is the scriptable form |
+| An agent is stuck and no prompt is visible | It is parked on a typed approval/question | Open the hub's Needs you tab (`/inbox`, `agenthicc agents --tab needs-you`) or run `agenthicc agents inbox list`; answer by exact item ID/version |
+| An agent needs an answer, not an approval | It is waiting on an input request | Press `i` on it in the hub, or `agenthicc agents inbox answer`; `agents input` answers a legacy request |
+| A cancelled agent cannot be found | Cancelled work may have moved to the trash | `agenthicc agents list --trash` lists recoverable agents; `agents restore` brings one back |
+| The History tab is cluttered with old entries | They have not been archived or purged | `A` (or `agents archive SESSION_ID`) archives one; `agents purge` removes expired trash deliberately |
+| `agenthicc jobs` is not a command | It moved under `agenthicc agents` (AGX-05) | Use `agenthicc agents <subcommand>`; `agenthicc agents` alone opens the hub |
 | `/bg` is missing from the command picker | It is injected outside `BUILTIN_COMMANDS` | `/background` and `/bg` come from the background integration; check that the integration loaded |
 | A background job wrote to an unexpected place | `cwd` was relative at submit time | Pass an explicit working directory to `run --background`; inspect `artifact_dir` in the job record |
-| A job shows `attempt: 2` unexpectedly | It was retried | Compare with `jobs status --json`; a retry after a cancellation may be intentional, so confirm before assuming a crash |
+| An agent shows `attempt: 2` unexpectedly | It was retried | Compare with `agents status --json`; a retry after a cancellation may be intentional, so confirm before assuming a crash |
 | A stale job is still listed as running | Stale detection is lease-based | Check the worker lease; a dead worker is reclaimed rather than silently reported as healthy |
-| `/detach` says a session is already managed after `--continue` reclaimed it | The background lifecycle record can outlive the killed worker process | Retry `/detach`; it verifies process identity and the current foreground owner lease, then reconciles only the exact dead attempt. If the worker is live or its identity cannot be verified, inspect `agenthicc agents` and do not start a second worker |
+| `/detach` says a session is already managed after `--continue` reclaimed it | The background lifecycle record can outlive the killed worker process | Retry `/detach`; it verifies process identity and the current foreground owner lease, then reconciles only the exact dead attempt. If the worker is live or its identity cannot be verified, inspect it in `agenthicc agents` and do not start a second worker |
 | Killing the parent session left child processes alive | Detached terminals are owned by the session's terminal manager | Cancelling a detached parent asks the terminal registry to stop its exact child groups. Inspect with `/ps` and stop with `/stop <terminal-id>` |
 | Background state disappeared after a restart | The store holds only the rebuildable lifecycle index | The index is rebuilt from durable owners (kernel events, conversation events, workflow phase state), so a lost index is recoverable |
 | Archiving lost the audit trail | Archive moves the listing entry | Workflow phase state, approvals, and memory keep their own owners; the index was never the audit trail |

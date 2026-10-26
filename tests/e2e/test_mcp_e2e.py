@@ -15,7 +15,8 @@ pytestmark = [
 @pytest.mark.asyncio
 async def test_filesystem_server_real_connection():
     """Connect to reference MCP filesystem server and list tools."""
-    from agenthicc.tools.mcp import McpServerConfig, McpToolRegistry
+    from agenthicc.tools.mcp import McpToolRegistry
+    from agenthicc.tools.mcp_server_config import McpServerConfig
 
     cfg = McpServerConfig(
         name="fs",

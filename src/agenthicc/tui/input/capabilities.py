@@ -11,6 +11,7 @@ requires registering it in TriggerManager — no changes here.
 
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING, Protocol
 
 from agenthicc.tui.cbreak_reader import Key
@@ -94,9 +95,7 @@ class CondensedPasteEscapeCapability:
         ch: str,
         session: UnifiedInputSession,
     ) -> CapabilityResult:
-        if key != Key.ESC or not session._paste.condensed:
-            return _PASS
-        if session._buf.cursor != session._paste.end:
+        if session._action != "composer.drop_paste":
             return _PASS
         session._paste.delete_condensed(session._buf)
         session._push()
@@ -119,7 +118,7 @@ class CtrlCCapability:
         ch: str,
         session: UnifiedInputSession,
     ) -> CapabilityResult:
-        if key == Key.CTRL_C:
+        if session._action == "composer.quit":
             result = session._ctrl_c_sequence()
             return _EXIT if result is _EXIT else _CONSUMED
         # Any key other than Ctrl+C clears the "Press Ctrl+C again" notification.
@@ -141,7 +140,7 @@ class CtrlDCapability:
         ch: str,
         session: UnifiedInputSession,
     ) -> CapabilityResult:
-        if key != Key.CTRL_D:
+        if session._action != "composer.eof":
             return _PASS
         text = session._buf.text
         if text:
@@ -162,17 +161,18 @@ class InterruptCapability:
         ch: str,
         session: UnifiedInputSession,
     ) -> CapabilityResult:
-        if key not in (Key.CTRL_C, Key.ESC):
+        if session._action not in ("composer.interrupt", "composer.cancel"):
             return _PASS
         from agenthicc.tui.runtime.commands import InterruptAgentCommand
 
+        pause = session._action == "composer.interrupt"
         session._buf.clear()
         session._paste.condensed = False
         session._push()
         await session._bus.dispatch_async(
             InterruptAgentCommand(
-                source="escape" if key == Key.ESC else "ctrl_c",
-                disposition="pause" if key == Key.ESC else "cancel",
+                source="escape" if pause else "ctrl_c",
+                disposition="pause" if pause else "cancel",
             )
         )
         return _CONSUMED
@@ -237,7 +237,7 @@ class PasteCapability:
             session._paste.apply(session._buf, ch, cols)
             session._push()
             return _CONSUMED
-        if key == Key.CTRL_V:
+        if session._action == "composer.expand_paste":
             session._paste.expand()
             session._push()
             return _CONSUMED
@@ -263,7 +263,7 @@ class SubmitCapability:
         ch: str,
         session: UnifiedInputSession,
     ) -> CapabilityResult:
-        if key != Key.ENTER:
+        if session._action != "composer.submit":
             return _PASS
         from agenthicc.tui.runtime.commands import SendMessageCommand
 
@@ -312,7 +312,7 @@ class NewlineCapability:
         ch: str,
         session: UnifiedInputSession,
     ) -> CapabilityResult:
-        if key != Key.CTRL_ENTER:
+        if session._action != "composer.newline":
             return _PASS
         session._paste.insert(session._buf, "\n")
         session._push()
@@ -336,7 +336,7 @@ class BackspaceCapability:
         ch: str,
         session: UnifiedInputSession,
     ) -> CapabilityResult:
-        if key != Key.BACKSPACE:
+        if session._action != "composer.delete_back":
             return _PASS
         if session._paste.condensed:
             if session._buf.cursor == session._paste.end:
@@ -360,6 +360,7 @@ class BackspaceCapability:
             session._buf.delete_before()
         else:
             session._buf.delete_before()
+        _note_emptied(session)
         session._push()
         return _CONSUMED
 
@@ -376,10 +377,11 @@ class ClearCapability:
         ch: str,
         session: UnifiedInputSession,
     ) -> CapabilityResult:
-        if key != Key.CTRL_U:
+        if session._action != "composer.clear":
             return _PASS
         session._buf.clear()
         session._paste.condensed = False
+        _note_emptied(session)
         session._push()
         return _CONSUMED
 
@@ -396,14 +398,14 @@ class CursorCapability:
         ch: str,
         session: UnifiedInputSession,
     ) -> CapabilityResult:
-        match key:
-            case Key.LEFT:
+        match session._action:
+            case "composer.left":
                 session._paste.move_left(session._buf)
-            case Key.RIGHT:
+            case "composer.right":
                 session._paste.move_right(session._buf)
-            case Key.HOME:
+            case "composer.home":
                 session._paste.move_home(session._buf)
-            case Key.END:
+            case "composer.end":
                 session._paste.move_end(session._buf)
             case _:
                 return _PASS
@@ -423,15 +425,15 @@ class HistoryCapability:
         ch: str,
         session: UnifiedInputSession,
     ) -> CapabilityResult:
-        match key:
-            case Key.UP:
+        match session._action:
+            case "composer.history_previous":
                 moved = session._paste.move_up(session._buf)
                 if not moved:
                     result = session._hist.up(session._buf.buf)
                     if result is not None:
                         session._buf.set(result)
                         session._paste.condensed = False
-            case Key.DOWN:
+            case "composer.history_next":
                 moved = session._paste.move_down(session._buf)
                 if not moved:
                     result = session._hist.down(session._buf.buf)
@@ -440,6 +442,7 @@ class HistoryCapability:
                         session._paste.condensed = False
             case _:
                 return _PASS
+        _note_emptied(session)
         session._push()
         return _CONSUMED
 
@@ -460,10 +463,104 @@ class ModeCycleCapability:
         ch: str,
         session: UnifiedInputSession,
     ) -> CapabilityResult:
-        if key != Key.SHIFT_TAB:
+        if session._action != "composer.mode_cycle":
             return _PASS
         new_mode = session._modes.cycle()  # writes app_state.active_mode internally
         session._state.conversation.notify_transient(f"❖ Switched to {new_mode.name} mode")
+        return _CONSUMED
+
+
+# ── Agents hub ────────────────────────────────────────────────────────────────
+
+#: A ← this soon after the prompt was emptied needs a second press (AGX-05 §5.2).
+HUB_GUARD_S = 2.0
+
+
+def _note_emptied(session: UnifiedInputSession) -> None:
+    """Remember when deleting or recalling history left the prompt empty."""
+    if not session._buf.text:
+        session._emptied_at = time.monotonic()
+
+
+class AgentsHubCapability:
+    """Ctrl+G, or ← on an empty prompt, opens the agents hub (AGX-05 §5.2).
+
+    ← right after a deletion or history recall emptied the prompt only says
+    ``Press ← again to open agents``; the second ← opens it. An editor without
+    a hub (the hub's own input composer) passes the key on.
+    """
+
+    async def handle(
+        self,
+        key: Key,
+        ch: str,
+        session: UnifiedInputSession,
+    ) -> CapabilityResult:
+        if session._action != "agents.open_hub":
+            return _PASS
+        from agenthicc.tui.runtime.commands import OpenAgentsHubCommand
+
+        if not session._bus.handles(OpenAgentsHubCommand):
+            return _PASS
+        if (
+            key is Key.LEFT
+            and not session._hub_left_armed
+            and time.monotonic() - session._emptied_at < HUB_GUARD_S
+        ):
+            session._hub_left_armed = True
+            session._state.conversation.notify_transient("Press ← again to open agents")
+            return _CONSUMED
+        session._hub_left_armed = False
+        await session._bus.dispatch_async(OpenAgentsHubCommand())
+        return _CONSUMED
+
+
+class SubagentsCapability:
+    """Ctrl+O moves focus to the subagent panel while it is shown (AGX-08 §5.2)."""
+
+    async def handle(
+        self,
+        key: Key,
+        ch: str,
+        session: UnifiedInputSession,
+    ) -> CapabilityResult:
+        if session._action != "subagents.focus":
+            return _PASS
+        from agenthicc.tui.runtime.commands import OpenSubagentsCommand
+
+        if not session._bus.handles(OpenSubagentsCommand):
+            return _PASS
+        await session._bus.dispatch_async(OpenSubagentsCommand())
+        return _CONSUMED
+
+
+# ── Mouse ─────────────────────────────────────────────────────────────────────
+
+
+class MouseCapability:
+    """Mouse reports ([ui] mouse = "on"): the wheel moves the cursor by a line.
+
+    In a prompt taller than its viewport this scrolls the visible rows; it
+    never recalls history. Clicks are not used in the inline composer.
+    """
+
+    async def handle(
+        self,
+        key: Key,
+        ch: str,
+        session: UnifiedInputSession,
+    ) -> CapabilityResult:
+        if key != Key.MOUSE:
+            return _PASS
+        from agenthicc.tui.cbreak_reader import MouseEvent
+
+        event = MouseEvent.decode(ch)
+        if event is not None and event.wheel < 0:
+            session._paste.move_up(session._buf)
+            session._push()
+        elif event is not None and event.wheel > 0:
+            session._paste.move_down(session._buf)
+            session._push()
         return _CONSUMED
 
 
@@ -483,7 +580,9 @@ class InsertCapability:
         ch: str,
         session: UnifiedInputSession,
     ) -> CapabilityResult:
-        if key != Key.CHAR or not ch:
+        if key != Key.CHAR or not ch or session._action_rebindable:
+            # A character the user bound to an action is not typed; the fixed
+            # trigger characters ("/", "@") still are.
             return _PASS
         # Re-enter trigger overlay when typing into an existing trigger token.
         if not ch.isspace() and session._buf.cursor == len(session._buf):
@@ -519,6 +618,9 @@ IDLE_CAPABILITIES: list[Capability] = [
     CursorCapability(),
     HistoryCapability(),
     ModeCycleCapability(),
+    AgentsHubCapability(),
+    SubagentsCapability(),
+    MouseCapability(),
     InsertCapability(),  # fallback — must be last
 ]
 
@@ -535,5 +637,8 @@ STREAMING_CAPABILITIES: list[Capability] = [
     ClearCapability(),
     CursorCapability(),  # Cursor movement remains available while queued input is edited.
     ModeCycleCapability(),  # Shift+Tab — mode switch takes effect on next tool call
+    AgentsHubCapability(),  # the hub opens over a running turn too
+    SubagentsCapability(),  # workers run while their turn does
+    MouseCapability(),
     InsertCapability(),  # fallback — must be last
 ]

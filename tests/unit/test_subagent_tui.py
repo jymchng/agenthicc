@@ -21,14 +21,14 @@ class TestSubagentPoolStateSignal:
 
     def test_signal_accepts_pool_state(self) -> None:
         conv = ConversationStore()
-        workers = [WorkerState("explorer #1", "explorer", "pending")]
+        workers = (WorkerState("explorer #1", "explorer", "pending"),)
         ps = SubagentPoolState("pool-1", 1, workers)
         conv.subagent_pool_state.set(ps)
         assert conv.subagent_pool_state() is ps
 
     def test_signal_accepts_none_reset(self) -> None:
         conv = ConversationStore()
-        ps = SubagentPoolState("pool-1", 1, [])
+        ps = SubagentPoolState("pool-1", 1, ())
         conv.subagent_pool_state.set(ps)
         conv.subagent_pool_state.set(None)
         assert conv.subagent_pool_state() is None
@@ -39,22 +39,22 @@ class TestSubagentPoolStateSignal:
 
 class TestSubagentPoolState:
     def test_done_counts_done_and_failed(self) -> None:
-        workers = [
+        workers = (
             WorkerState("a #1", "explorer", "done"),
             WorkerState("b #1", "tester", "failed"),
             WorkerState("c #1", "reviewer", "pending"),
             WorkerState("d #1", "planner", "running"),
-        ]
+        )
         ps = SubagentPoolState("p", 4, workers)
         assert ps.done == 2
 
     def test_done_zero_when_all_pending(self) -> None:
-        workers = [WorkerState(f"x #{i}", "explorer", "pending") for i in range(3)]
+        workers = tuple(WorkerState(f"x #{i}", "explorer", "pending") for i in range(3))
         ps = SubagentPoolState("p", 3, workers)
         assert ps.done == 0
 
     def test_total_reflects_workers_list(self) -> None:
-        ps = SubagentPoolState("p", 5, [])
+        ps = SubagentPoolState("p", 5, ())
         assert ps.total == 5
 
 
@@ -236,11 +236,11 @@ class TestStatusComponentSubagentCounter:
         from rich.console import Console
         from agenthicc.tui.workspace.components import StatusComponent
 
-        workers = [
+        workers = (
             WorkerState("explorer #1", "explorer", "done"),
             WorkerState("tester #1", "tester", "running"),
             WorkerState("reviewer #1", "reviewer", "pending"),
-        ]
+        )
         pool = SubagentPoolState("pool-1", 3, workers)
         state = self._make_state(pool_state=pool)
         comp = StatusComponent(state)
@@ -252,16 +252,19 @@ class TestStatusComponentSubagentCounter:
         assert "1/3" in rendered  # 1 done out of 3
 
 
-# ── FooterComponent worker grid ───────────────────────────────────────────────
+# ── FooterComponent and the subagent panel ────────────────────────────────────
 
 
-class TestFooterComponentWorkerGrid:
-    def _render_footer(self, pool_state=None) -> str:
-        from rich.console import Console
-        from agenthicc.tui.workspace.components import FooterComponent
+class TestFooterComponentSubagentHint:
+    @staticmethod
+    def _state(pool_state=None) -> MagicMock:
+        from agenthicc.tui.actions import DEFAULT_ACTIONS
+        from agenthicc.tui.keymap import Keymap
 
         state = MagicMock()
+        state.keymap.return_value = Keymap.build(DEFAULT_ACTIONS)
         state.conversation.notification.return_value = None
+        state.conversation.loop_status.return_value = None
         state.conversation.agent_state.return_value = MagicMock(name="IDLE")
         state.conversation.agent_state().name = "IDLE"
         state.conversation.workflow_override.return_value = None
@@ -269,40 +272,36 @@ class TestFooterComponentWorkerGrid:
         state.active_mode.return_value = MagicMock(badge="⏵⏵", name="Auto", color="green")
         state.input.paste_condensed.return_value = False
         state.workflow_run.return_value = None
+        return state
 
-        comp = FooterComponent(state)
+    def _render_footer(self, pool_state=None) -> str:
+        from rich.console import Console
+        from agenthicc.tui.workspace.components import FooterComponent
+
+        comp = FooterComponent(self._state(pool_state))
         console = Console(highlight=False, markup=False, no_color=True, width=120)
         with console.capture() as cap:
             console.print(comp.render())
         return cap.get()
 
-    def test_worker_grid_hidden_when_no_pool(self) -> None:
-        out = self._render_footer(pool_state=None)
-        assert "explorer" not in out
-
-    def test_worker_grid_shows_workers(self) -> None:
-        workers = [
-            WorkerState("explorer #1", "explorer", "running"),
-            WorkerState("tester #1", "tester", "pending"),
-        ]
-        pool = SubagentPoolState("p", 2, workers)
-        out = self._render_footer(pool_state=pool)
-        assert "explorer #1" in out
-        assert "tester #1" in out
-
-    def test_footer_height_increases_with_pool(self) -> None:
+    def test_footer_lists_no_workers(self) -> None:
+        # Workers are the subagent panel's (AGX-08); the footer offers its key.
         from agenthicc.tui.workspace.components import FooterComponent
 
-        state = MagicMock()
-        state.conversation.notification.return_value = None
-        state.conversation.subagent_pool_state.return_value = None
-        state.workflow_run.return_value = None
+        workers = (WorkerState("explorer #1", "explorer", "running", worker_id="w"),)
+        with_pool = " ".join(
+            FooterComponent(self._state(SubagentPoolState("p", 1, workers))).markup_lines(200)
+        )
+        assert "explorer #1" not in with_pool
+        assert "Ctrl+O" in with_pool and "subagents" in with_pool
+        assert "Ctrl+O" not in " ".join(FooterComponent(self._state()).markup_lines(200))
+
+    def test_footer_height_does_not_grow_with_a_pool(self) -> None:
+        from agenthicc.tui.workspace.components import FooterComponent
+
+        state = self._state()
         comp = FooterComponent(state)
         height_no_pool = comp.height(80)
-
-        workers = [WorkerState("x #1", "explorer", "running")]
-        pool = SubagentPoolState("p", 1, workers)
-        state.conversation.subagent_pool_state.return_value = pool
-        height_with_pool = comp.height(80)
-
-        assert height_with_pool == height_no_pool + 1
+        workers = (WorkerState("x #1", "explorer", "running", worker_id="w"),)
+        state.conversation.subagent_pool_state.return_value = SubagentPoolState("p", 1, workers)
+        assert comp.height(80) == height_no_pool

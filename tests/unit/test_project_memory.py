@@ -119,13 +119,16 @@ class TestProjectMemoryConnections:
                 closed.append(self)
                 super().close()
 
-        def recording_connect() -> sqlite3.Connection:
+        def recording_open() -> sqlite3.Connection:
             conn = sqlite3.connect(layer.db_path, timeout=10.0, factory=RecordingConnection)
             conn.row_factory = sqlite3.Row
             opened.append(conn)
             return conn
 
-        monkeypatch.setattr(layer, "_connect", recording_connect)
+        # The schema is created on first use (AGX-02); create it before
+        # recording so each count below is one operation's connection.
+        layer._init_schema()
+        monkeypatch.setattr(layer, "_open", recording_open)
         return opened, closed
 
     async def test_every_operation_closes_its_connection(self, tmp_path, monkeypatch):

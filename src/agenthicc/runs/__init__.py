@@ -5,13 +5,13 @@ delegates process execution to :mod:`agenthicc.background` and Git isolation
 to :mod:`agenthicc.worktrees`.
 """
 
-from .manager import GoalRunManager, RepositoryValidationError
+from .manager import GoalRunService, RepositoryValidationError
 from .model import GoalRun, GoalRunStatus, RunAgentRecord, RunTaskRecord, RunWorktreeRecord
 from .store import RunNotFound, RunStore
 
 __all__ = [
     "GoalRun",
-    "GoalRunManager",
+    "GoalRunService",
     "GoalRunStatus",
     "RepositoryValidationError",
     "RunAgentRecord",

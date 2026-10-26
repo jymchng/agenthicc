@@ -35,6 +35,23 @@ class InterruptAgentCommand(Command):
     disposition: Literal["cancel", "pause"] = "cancel"
 
 
+@dataclass(frozen=True)
+class OpenAgentsHubCommand(Command):
+    """Open the agents hub over the conversation (AGX-05 §5.2).
+
+    ``tab`` is a ``--tab`` name (``running``, ``needs-you`` …); empty keeps the
+    hub's default. ``run_id`` filters the Running tab to one goal run.
+    """
+
+    tab: str = ""
+    run_id: str = ""
+
+
+@dataclass(frozen=True)
+class OpenSubagentsCommand(Command):
+    """Move focus to the subagent panel (Ctrl+O, ``/subagents``; AGX-08 §5.2)."""
+
+
 C = TypeVar("C", bound=Command)
 
 
@@ -55,6 +72,10 @@ class CommandBus:
         self._handlers[command_type] = cast(
             Callable[[Command], object | Awaitable[object]], handler
         )
+
+    def handles(self, command_type: type[Command]) -> bool:
+        """Whether a handler is registered for *command_type*."""
+        return command_type in self._handlers
 
     def dispatch(self, command: Command) -> object:
         handler = self._handlers.get(type(command))

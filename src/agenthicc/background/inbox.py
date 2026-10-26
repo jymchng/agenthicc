@@ -1,7 +1,7 @@
 """Durable, versioned operator inbox for background approval and questions.
 
 The inbox stores the exact operation identity and a private answer receipt.
-Opaque messages sent from the agents manager remain in ``input_inbox.py`` and
+Opaque messages sent from the agents hub remain in ``input_inbox.py`` and
 are deliberately not interpreted here.
 """
 
@@ -16,6 +16,7 @@ import math
 import os
 from pathlib import Path
 import sqlite3
+import threading
 import time
 from typing import Literal, Mapping
 
@@ -150,28 +151,60 @@ class BackgroundInteractionInbox:
         self.store = store
         self.root = store.root
         self.path = self.root / "operator-inbox.sqlite3"
-        self._initialize()
+        # The database is created on first use, so opening an interactive
+        # session does no inbox I/O before its first frame (AGX-02).
+        self._init_lock = threading.Lock()
+        self._initialized = False
 
     def _connect(self) -> sqlite3.Connection:
+        if not self._initialized:
+            self._initialize()
+        return self._open()
+
+    def _open(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=5.0)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA busy_timeout=5000")
         connection.execute("PRAGMA synchronous=FULL")
         return connection
 
+    def prepare(self) -> None:
+        """Create the database now rather than on first use (blocking).
+
+        The agents hub prepares its inbox on a worker thread as it opens,
+        so the first approval, input or deletion does not pay for it.
+        """
+        self._initialize()
+
     def _initialize(self) -> None:
+        with self._init_lock:
+            if not self._initialized:
+                self._create_schema()
+                self._initialized = True
+
+    def _create_schema(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
         try:
             os.chmod(self.root, 0o700)
         except OSError:
             pass
-        with closing(self._connect()) as connection:
+        with closing(self._open()) as connection:
             connection.execute("PRAGMA journal_mode=WAL")
             version = int(connection.execute("PRAGMA user_version").fetchone()[0])
             if version not in {0, _INBOX_SCHEMA_VERSION}:
                 raise RuntimeError(f"unsupported operator inbox schema version: {version}")
-            connection.executescript(
-                """
+            if version == 0:
+                self._write_schema(connection)
+        try:
+            os.chmod(self.path, 0o600)
+        except OSError:
+            pass
+
+    @staticmethod
+    def _write_schema(connection: sqlite3.Connection) -> None:
+        """Create the tables of a new database; opening an existing one writes nothing."""
+        connection.executescript(
+            """
                 CREATE TABLE IF NOT EXISTS inbox_items (
                     item_id TEXT PRIMARY KEY,
                     session_id TEXT NOT NULL,
@@ -205,12 +238,8 @@ class BackgroundInteractionInbox:
                     FOREIGN KEY(item_id) REFERENCES inbox_items(item_id)
                 );
                 """
-            )
-            connection.execute(f"PRAGMA user_version={_INBOX_SCHEMA_VERSION}")
-        try:
-            os.chmod(self.path, 0o600)
-        except OSError:
-            pass
+        )
+        connection.execute(f"PRAGMA user_version={_INBOX_SCHEMA_VERSION}")
 
     @staticmethod
     def _parse(row: sqlite3.Row) -> BackgroundInboxItem:

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sys
 import pytest
 
 pytestmark = pytest.mark.unit
@@ -31,7 +30,7 @@ def test_parse_mcp_servers_empty_list():
 
 def test_parse_mcp_servers_returns_mcp_server_config_instances():
     from agenthicc.config import _parse_mcp_servers
-    from agenthicc.tools.mcp import McpServerConfig
+    from agenthicc.tools.mcp_server_config import McpServerConfig
 
     raw = [{"name": "x", "url": "y", "transport": "stdio"}]
     result = _parse_mcp_servers(raw)
@@ -44,7 +43,7 @@ def test_parse_mcp_servers_returns_mcp_server_config_instances():
 
 def test_parse_mcp_servers_multiple_entries():
     from agenthicc.config import _parse_mcp_servers
-    from agenthicc.tools.mcp import McpServerConfig
+    from agenthicc.tools.mcp_server_config import McpServerConfig
 
     raw = [
         {"name": "srv1", "url": "cmd1"},
@@ -80,28 +79,6 @@ def test_parse_mcp_servers_from_dict_maps_fields_correctly():
     assert cfg.reconnect_delay_seconds == 2.0
 
 
-def test_parse_mcp_servers_graceful_on_missing_import(monkeypatch):
-    """Falls back to raw dicts when agenthicc.tools.mcp is not importable."""
-    monkeypatch.setitem(sys.modules, "agenthicc.tools.mcp", None)
-    # Force reimport of config to pick up the monkeypatched sys.modules
-    import agenthicc.config as cfg_module
-
-    # Simulate ImportError path by patching directly
-    def _failing_parse(raw_list):
-        try:
-            from agenthicc.tools.mcp import McpServerConfig
-
-            return [McpServerConfig.from_dict(d) for d in raw_list]
-        except ImportError:
-            return list(raw_list)
-
-    monkeypatch.setattr(cfg_module, "_parse_mcp_servers", _failing_parse)
-
-    raw = [{"name": "x", "url": "y"}]
-    result = cfg_module._parse_mcp_servers(raw)
-    assert result == raw  # falls back to raw dicts
-
-
 def test_parse_mcp_servers_ignores_unknown_keys():
     """from_dict should silently drop keys not in McpServerConfig."""
     from agenthicc.config import _parse_mcp_servers
@@ -115,7 +92,7 @@ def test_parse_mcp_servers_ignores_unknown_keys():
 def test_dict_to_config_integrates_mcp_servers():
     """_dict_to_config passes [[tools.mcp_servers]] through _parse_mcp_servers."""
     from agenthicc.config import _dict_to_config
-    from agenthicc.tools.mcp import McpServerConfig
+    from agenthicc.tools.mcp_server_config import McpServerConfig
 
     data = {
         "tools": {"mcp_servers": [{"name": "fs", "url": "npx server /tmp", "transport": "stdio"}]}

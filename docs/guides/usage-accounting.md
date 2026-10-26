@@ -38,6 +38,17 @@ does not duplicate usage totals. On resume, journal records are folded before
 the first new turn, so a new run extends the restored total rather than
 overwriting it.
 
+## Background agents
+
+A background worker builds the same session runtime, so its ledger folds the
+session's journal records from every earlier attempt. The worker copies the
+ledger's committed totals — `completed_snapshot()`, never provisional
+streaming values — into the session's record as `tokens_in`, `tokens_out` and
+`cost_usd`, once per completed provider call, with its next heartbeat and at
+finalization. The agents hub shows them in its cost column and detail header,
+and `agenthicc agents status --json` includes them. The record is a projection;
+the journal's usage records stay authoritative.
+
 ## Data quality and recovery
 
 Chunk usage updates a provisional call. The per-call completion signal commits

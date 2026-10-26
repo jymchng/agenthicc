@@ -3,14 +3,8 @@
 from __future__ import annotations
 
 from agenthicc.cli.context import CLIContext
-from agenthicc.cli.registry import command, group
 
 
-@group("skills", help="Install and manage skill definitions")
-def _skills_group() -> None: ...
-
-
-@command("skills", "add", help="Download and install a skill")
 async def skills_add(
     ctx: CLIContext,
     source: str,

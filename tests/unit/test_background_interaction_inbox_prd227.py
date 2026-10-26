@@ -19,7 +19,6 @@ from agenthicc.background.model import BackgroundSession, SessionStatus
 from agenthicc.background.store import BackgroundStore
 from agenthicc.background.worker import BackgroundApprovalService
 from agenthicc.tui.cbreak_reader import Key
-from agenthicc.tui.workspace.overlays.background_inbox import BackgroundInboxOverlay
 
 
 def _running(
@@ -356,7 +355,29 @@ def test_inbox_rejects_answer_shape_that_does_not_match_questions(tmp_path: Path
         )
 
 
-def test_tui_inbox_approves_exact_workspace_target_once(tmp_path: Path) -> None:
+async def _needs_you(store: BackgroundStore, tmp_path: Path) -> object:
+    """The agents hub on its Needs you tab, where inbox requests are answered."""
+    from rich.console import Console
+
+    from agenthicc.background import BackgroundSupervisor
+    from agenthicc.tui.workspace.agents_hub import AgentsHub, Tab
+    from agenthicc.tui.workspace.agents_hub.prefs import HubPrefs
+
+    hub = AgentsHub(
+        Console(record=True, width=120),
+        store=store,
+        supervisor=BackgroundSupervisor(store),
+        prefs=HubPrefs(path=tmp_path / "hub.json"),
+        tab=Tab.NEEDS_YOU,
+    )
+    await hub.start()
+    await hub.settle()
+    return hub
+
+
+async def test_tui_inbox_approves_exact_workspace_target_once(tmp_path: Path) -> None:
+    from agenthicc.tui.workspace.agents_hub import AgentsHub
+
     store, session = _running(tmp_path)
     inbox = BackgroundInteractionInbox(store)
     item = _pending(
@@ -368,14 +389,21 @@ def test_tui_inbox_approves_exact_workspace_target_once(tmp_path: Path) -> None:
             "workspace_access": [{"canonical": "/outside/file", "operation": "write"}],
         },
     )
-    overlay = BackgroundInboxOverlay(inbox, lambda: None)
-    overlay.handle_key(Key.CHAR, "a")
-    answer = inbox.accepted_answer(item.item_id)
-    assert answer is not None
-    assert answer.response == {"allowed": True, "scope_grant": "target_once"}
+    hub = await _needs_you(store, tmp_path)
+    assert isinstance(hub, AgentsHub)
+    try:
+        hub.handle_key(Key.CHAR, "y")
+        await hub.settle()
+        answer = inbox.accepted_answer(item.item_id)
+        assert answer is not None
+        assert answer.response == {"allowed": True, "scope_grant": "target_once"}
+    finally:
+        await hub.stop()
 
 
-def test_tui_inbox_question_answer_preserves_text_verbatim(tmp_path: Path) -> None:
+async def test_tui_inbox_question_answer_preserves_text_verbatim(tmp_path: Path) -> None:
+    from agenthicc.tui.workspace.agents_hub import AgentsHub
+
     store, session = _running(tmp_path)
     inbox = BackgroundInteractionInbox(store)
     item = _pending(
@@ -385,30 +413,41 @@ def test_tui_inbox_question_answer_preserves_text_verbatim(tmp_path: Path) -> No
         kind="question",
         target={"question_ids": ["one"], "questions": [{"id": "one", "text": "Say something"}]},
     )
-    overlay = BackgroundInboxOverlay(inbox, lambda: None)
-    overlay.handle_key(Key.ENTER, "")
-    answer = "  exact answer\nsecond line  "
-    overlay.handle_key(Key.PASTE, answer)
-    overlay.handle_key(Key.ENTER, "")
-    accepted = inbox.accepted_answer(item.item_id)
-    assert accepted is not None
-    assert accepted.response == {"answers": {"one": answer}}
+    hub = await _needs_you(store, tmp_path)
+    assert isinstance(hub, AgentsHub)
+    try:
+        hub.handle_key(Key.CHAR, "i")
+        answer = "  exact answer\nsecond line  "
+        hub.handle_key(Key.PASTE, answer)
+        hub.handle_key(Key.ENTER, "")
+        await hub.settle()
+        accepted = inbox.accepted_answer(item.item_id)
+        assert accepted is not None
+        assert accepted.response == {"answers": {"one": answer}}
+    finally:
+        await hub.stop()
 
 
-def test_tui_inbox_rejects_stale_items_and_shows_reason(tmp_path: Path) -> None:
+async def test_tui_inbox_rejects_stale_items_and_shows_reason(tmp_path: Path) -> None:
+    from agenthicc.tui.workspace.agents_hub import AgentsHub
+
     store, session = _running(tmp_path)
     inbox = BackgroundInteractionInbox(store)
     item = _pending(inbox, session)
-    store.update(
-        session.session_id,
-        expected_status=SessionStatus.WAITING_APPROVAL,
-        status=SessionStatus.RUNNING,
-        attempt=session.attempt + 1,
-        lease_token="new-lease",
-        approval_item_id="",
-    )
-    overlay = BackgroundInboxOverlay(inbox, lambda: None)
-    overlay.handle_key(Key.CHAR, "a")
-    assert inbox.get(item.item_id).status == "stale"
-    rendered = overlay.render()
-    assert rendered is not None
+    hub = await _needs_you(store, tmp_path)
+    assert isinstance(hub, AgentsHub)
+    try:
+        store.update(
+            session.session_id,
+            expected_status=SessionStatus.WAITING_APPROVAL,
+            status=SessionStatus.RUNNING,
+            attempt=session.attempt + 1,
+            lease_token="new-lease",
+            approval_item_id="",
+        )
+        hub.handle_key(Key.CHAR, "y")
+        await hub.settle()
+        assert inbox.get(item.item_id).status == "stale"
+        assert "Approve failed" in hub.notice
+    finally:
+        await hub.stop()

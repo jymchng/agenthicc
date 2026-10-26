@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
 import json
 import os
@@ -9,13 +10,22 @@ import secrets
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 __all__ = [
+    "ACCOUNT_TIER_TTL_S",
+    "AccountTier",
     "AuthClient",
     "TokenStore",
     "TokenBundle",
     "NotLoggedInError",
 ]
+
+AccountTier = Literal["signed_out", "free", "pro"]
+#: How long a cached account tier is trusted before the token store is read.
+ACCOUNT_TIER_TTL_S = 24 * 60 * 60
+_ACCOUNT_TIER_SCHEMA = 1
+_ACCOUNT_TIERS: dict[str, AccountTier] = {"signed_out": "signed_out", "free": "free", "pro": "pro"}
 
 AGENTHICC_CLIENT_ID = "agenthicc-cli"
 AGENTHICC_AUTH_URL = "https://agenthicc.ai/oauth/authorize"
@@ -54,6 +64,10 @@ class TokenBundle:
     @property
     def is_pro(self) -> bool:
         return self.plan in ("pro", "enterprise")
+
+    @property
+    def tier(self) -> AccountTier:
+        return "pro" if self.is_pro else "free"
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -101,11 +115,22 @@ class TokenBundle:
 
 
 class TokenStore:
-    """Persist tokens in the OS keychain; fall back to a local file."""
+    """Persist tokens in the OS keychain; fall back to a local file.
+
+    Alongside the tokens the store keeps the derived account tier in a small
+    owner-only file. Start-up reads only that file: the first keyring call
+    performs backend discovery and may talk to D-Bus (AGX-02). The tier file
+    never contains token material.
+    """
 
     def __init__(self) -> None:
-        # Tests may set this to a tmp_path to avoid touching $HOME.
+        # Tests may set this to a tmp_path to avoid touching $HOME; the cached
+        # account tier lives next to it.
         self._fallback_path: Path = Path.home() / ".agenthicc" / "tokens.json"
+
+    @property
+    def _tier_path(self) -> Path:
+        return self._fallback_path.with_name("account-tier.json")
 
     def load(self) -> TokenBundle | None:
         """Return stored tokens or None."""
@@ -122,9 +147,64 @@ class TokenStore:
 
     def save(self, bundle: TokenBundle) -> None:
         self._write(json.dumps(bundle.to_dict()))
+        self._remember_tier(bundle.tier)
 
     def clear(self) -> None:
         self._write(None)
+        self._remember_tier("signed_out")
+
+    def account_tier(self, *, now: float | None = None) -> AccountTier:
+        """Return the account tier, reading the token store only when stale.
+
+        Blocking: on a stale cache this reads the keyring, so call it from a
+        worker thread when an event loop is running.
+        """
+        cached = self.cached_tier(now=now)
+        if cached is not None:
+            return cached
+        bundle = self.load()
+        tier: AccountTier = "signed_out" if bundle is None else bundle.tier
+        self._remember_tier(tier, now=now)
+        return tier
+
+    def cached_tier(self, *, now: float | None = None) -> AccountTier | None:
+        """Return the cached tier while it is fresh, otherwise ``None``."""
+        try:
+            raw: object = json.loads(self._tier_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        if not isinstance(raw, dict) or raw.get("schema") != _ACCOUNT_TIER_SCHEMA:
+            return None
+        tier = raw.get("tier")
+        checked_at = raw.get("checked_at")
+        if not isinstance(checked_at, (int, float)) or isinstance(checked_at, bool):
+            return None
+        age = (time.time() if now is None else now) - checked_at
+        if not 0 <= age < ACCOUNT_TIER_TTL_S:
+            return None
+        return _ACCOUNT_TIERS.get(tier) if isinstance(tier, str) else None
+
+    def _remember_tier(self, tier: AccountTier, *, now: float | None = None) -> None:
+        """Atomically record *tier* with owner-only permissions (best effort)."""
+        payload = json.dumps(
+            {
+                "schema": _ACCOUNT_TIER_SCHEMA,
+                "tier": tier,
+                "checked_at": time.time() if now is None else now,
+            }
+        )
+        path = self._tier_path
+        temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                handle.write(payload)
+            os.replace(temporary, path)
+        except OSError:
+            # The cache only avoids a keyring read; the next start re-derives it.
+            with contextlib.suppress(OSError):
+                temporary.unlink()
 
     def _read(self) -> str | None:
         try:
@@ -213,12 +293,15 @@ class AuthClient:
 
     async def get_token(self) -> str:
         """Return a valid access token, refreshing if necessary."""
-        bundle = self._store.load()
+        import asyncio
+
+        # Keyring access can block on backend discovery or D-Bus.
+        bundle = await asyncio.to_thread(self._store.load)
         if bundle is None:
             raise NotLoggedInError("Not logged in. Run: agenthicc login")
         if bundle.is_expired:
             bundle = await self._refresh(bundle)
-            self._store.save(bundle)
+            await asyncio.to_thread(self._store.save, bundle)
         return bundle.access_token
 
     async def logout(self) -> None:
@@ -229,6 +312,10 @@ class AuthClient:
 
     def current_bundle(self) -> TokenBundle | None:
         return self._store.load()
+
+    def account_tier(self) -> AccountTier:
+        """Return the cached account tier (see :meth:`TokenStore.account_tier`)."""
+        return self._store.account_tier()
 
     # -- internal -------------------------------------------------------------
 

@@ -12,18 +12,37 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import functools
+import io
 import json
 import os
 import platform
-import sqlite3
+import queue
+import subprocess
+import sys
 import tempfile
 import time
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from rich.console import Console
 
-from agenthicc.background import BackgroundSession, BackgroundStore, SessionStatus
-from agenthicc.tui.workspace.background_manager import BackgroundManager
+from agenthicc.background import (
+    AgentsService,
+    BackgroundSession,
+    BackgroundStore,
+    BackgroundSupervisor,
+    SessionFilter,
+    SessionStatus,
+)
+from agenthicc.background.maintenance import MaintenanceTrigger
+from agenthicc.background.settings import AgentsHubSettings
+from agenthicc.tui.cbreak_reader import Key
+from agenthicc.tui.conversation_store import AppState
+from agenthicc.tui.workspace.agents_hub import AgentsHub, Tab
+from agenthicc.tui.workspace.agents_hub.overlay import AgentsHubOverlay
+from agenthicc.tui.workspace.agents_hub.prefs import HubPrefs
 
 
 def _write_fixture(root: Path, sessions: int, events: int, active_workers: int) -> None:
@@ -57,8 +76,12 @@ def _write_fixture(root: Path, sessions: int, events: int, active_workers: int) 
                 artifact_dir=str(artifact_dir),
                 now=float(index + 1),
             )
+            # Most of a large registry is finished work; the active workers
+            # carry a PID whose process is not a worker.
             if index < active_workers:
                 session = session.evolve(status=SessionStatus.RUNNING, worker_pid=1)
+            else:
+                session = session.evolve(status=SessionStatus.COMPLETED)
             sequence += 1
             buffer.append(
                 json.dumps(
@@ -102,6 +125,31 @@ def _write_fixture(root: Path, sessions: int, events: int, active_workers: int) 
         os.fsync(handle.fileno())
 
 
+def _append_heartbeats(event_path: Path, session_id: str, count: int) -> None:
+    """Append *count* heartbeat events, as other processes would."""
+    last = event_path.read_bytes().rstrip(b"\n").rsplit(b"\n", 1)[-1]
+    sequence = int(json.loads(last)["seq"])
+    lines = []
+    for offset in range(1, count + 1):
+        lines.append(
+            json.dumps(
+                {
+                    "seq": sequence + offset,
+                    "event_type": "updated",
+                    "timestamp": float(sequence + offset),
+                    "payload": {
+                        "session_id": session_id,
+                        "changes": {"last_active": float(sequence + offset)},
+                    },
+                },
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+    with event_path.open("a", encoding="utf-8") as handle:
+        handle.writelines(lines)
+
+
 def _percentiles(samples_ms: list[float]) -> dict[str, float]:
     ordered = sorted(samples_ms)
     if not ordered:
@@ -117,195 +165,329 @@ def _percentiles(samples_ms: list[float]) -> dict[str, float]:
     }
 
 
-def _measure_sqlite_candidate(event_path: Path, database_path: Path) -> dict[str, float | int]:
-    """Prototype a transactional SQLite projection against the same fixture.
+def _fresh_process_first_page(registry_root: Path, samples: int) -> dict[str, float]:
+    """Time opening the store and reading one page in new interpreters.
 
-    The deterministic load fixture consists of created records followed by
-    last-active heartbeats. This candidate stores a queryable materialized
-    projection in SQLite and applies those heartbeats transactionally; it is
-    an architecture comparison, not production storage code.
+    Imports are excluded: the probe starts its clock after importing
+    ``agenthicc.background``, matching the "after imports" budget (AGX-03).
     """
+    probe = (
+        "import json, sys, time\n"
+        "from agenthicc.background import BackgroundStore\n"
+        "started = time.perf_counter()\n"
+        "BackgroundStore(sys.argv[1]).query_window(limit=25)\n"
+        "print(json.dumps((time.perf_counter() - started) * 1000))\n"
+    )
+    timings: list[float] = []
+    for _ in range(max(1, min(samples, 20))):
+        output = subprocess.run(
+            [sys.executable, "-c", probe, str(registry_root)],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        timings.append(float(json.loads(output)))
+    return _percentiles(timings)
 
-    connection = sqlite3.connect(database_path)
-    connection.execute("PRAGMA journal_mode=WAL")
-    connection.execute("PRAGMA synchronous=FULL")
-    connection.execute(
-        """
-        CREATE TABLE sessions (
-            session_id TEXT PRIMARY KEY,
-            status TEXT NOT NULL,
-            pinned INTEGER NOT NULL,
-            last_active REAL NOT NULL,
-            payload TEXT NOT NULL
-        )
-        """
-    )
-    started = time.perf_counter()
-    connection.execute("BEGIN")
-    with event_path.open(encoding="utf-8") as handle:
-        for line in handle:
-            event = json.loads(line)
-            payload = event.get("payload")
-            if not isinstance(payload, dict):
-                continue
-            if event.get("event_type") == "created":
-                session = BackgroundSession.from_mapping(payload)
-                connection.execute(
-                    "INSERT INTO sessions VALUES (?, ?, ?, ?, ?)",
-                    (
-                        session.session_id,
-                        session.status.value,
-                        int(session.pinned),
-                        session.last_active,
-                        json.dumps(session.to_dict(), separators=(",", ":")),
-                    ),
-                )
-                continue
-            changes = payload.get("changes")
-            value = changes.get("last_active") if isinstance(changes, dict) else None
-            if event.get("event_type") != "updated" or not isinstance(changes, dict):
-                raise ValueError("SQLite candidate fixture contains an unsupported event")
-            session_id = payload.get("session_id")
-            if (
-                len(changes) == 1
-                and "last_active" in changes
-                and isinstance(value, (int, float))
-                and not isinstance(value, bool)
-            ):
-                connection.execute(
-                    """
-                    UPDATE sessions
-                    SET last_active = ?, payload = json_set(payload, '$.last_active', ?)
-                    WHERE session_id = ?
-                    """,
-                    (float(value), float(value), session_id),
-                )
-            else:
-                row = connection.execute(
-                    "SELECT payload FROM sessions WHERE session_id = ?", (session_id,)
-                ).fetchone()
-                if row is None:
-                    continue
-                updated = BackgroundSession.from_mapping(json.loads(row[0])).evolve(**changes)
-                connection.execute(
-                    """
-                    UPDATE sessions
-                    SET status = ?, pinned = ?, last_active = ?, payload = ?
-                    WHERE session_id = ?
-                    """,
-                    (
-                        updated.status.value,
-                        int(updated.pinned),
-                        updated.last_active,
-                        json.dumps(updated.to_dict(), separators=(",", ":")),
-                        updated.session_id,
-                    ),
-                )
-    connection.execute(
-        """
-        CREATE INDEX sessions_page_order
-        ON sessions (pinned DESC, last_active DESC, session_id)
-        WHERE status != 'deleted'
-        """
-    )
-    connection.commit()
-    cold_projection_ms = (time.perf_counter() - started) * 1_000
-    query_started = time.perf_counter()
-    connection.execute(
-        """
-        SELECT payload FROM sessions WHERE status != 'deleted'
-        ORDER BY pinned DESC, last_active DESC, session_id LIMIT 25 OFFSET 0
-        """
-    ).fetchall()
-    connection.execute("SELECT count(*) FROM sessions WHERE status != 'deleted'").fetchone()
-    page_query_ms = (time.perf_counter() - query_started) * 1_000
-    connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-    database_bytes = database_path.stat().st_size
-    connection.close()
-    return {
-        "cold_projection_ms": round(cold_projection_ms, 3),
-        "page_and_count_query_ms": round(page_query_ms, 3),
-        "database_bytes": database_bytes,
-    }
+
+def _timed(samples: int, operation: Callable[[], object]) -> dict[str, float]:
+    timings: list[float] = []
+    for _ in range(samples):
+        started = time.perf_counter()
+        operation()
+        timings.append((time.perf_counter() - started) * 1_000)
+    return _percentiles(timings)
 
 
 async def _measure(registry_root: Path, samples: int) -> dict[str, object]:
     store = BackgroundStore(registry_root)
-    cold_started = time.perf_counter()
-    store.query_page(page=1, page_size=25)
-    cold_projection_ms = (time.perf_counter() - cold_started) * 1_000
-    refresh_samples: list[float] = []
-    for _ in range(samples):
-        started = time.perf_counter()
-        store.query_page(page=1, page_size=25)
-        refresh_samples.append((time.perf_counter() - started) * 1_000)
+    rebuild_started = time.perf_counter()
+    store.query_window(limit=25)
+    index_rebuild_ms = (time.perf_counter() - rebuild_started) * 1_000
+    store.close()
+    reopened_started = time.perf_counter()
+    store = BackgroundStore(registry_root)
+    first = store.query_window(limit=25)
+    reopened_first_page_ms = (time.perf_counter() - reopened_started) * 1_000
+    refresh = _timed(samples, lambda: store.query_window(limit=25))
+    search = _timed(
+        samples, lambda: store.query_window(SessionFilter(query="session 99"), limit=25)
+    )
+    counts = _timed(samples, store.status_counts)
+    fresh_process = _fresh_process_first_page(registry_root, samples)
 
     incremental_samples: list[float] = []
-    if store._ordered_ids:
+    if first.sessions:
         writer = BackgroundStore(registry_root)
-        session_id = store._ordered_ids[0]
+        session_id = first.sessions[0].session_id
         for index in range(min(samples, 25)):
             writer.update(session_id, last_active=float(time.time() + index))
             started = time.perf_counter()
-            store.query_page(page=1, page_size=25)
+            store.query_window(limit=25)
             incremental_samples.append((time.perf_counter() - started) * 1_000)
+        # A reader that falls 1,000 events behind catches up in one pass.
+        reader = BackgroundStore(registry_root)
+        reader.query_window(limit=25)
+        catch_up_samples: list[float] = []
+        for _ in range(5):
+            _append_heartbeats(registry_root / "events.jsonl", session_id, 1_000)
+            catch_up_started = time.perf_counter()
+            reader.query_window(limit=25)
+            catch_up_samples.append((time.perf_counter() - catch_up_started) * 1_000)
+        catch_up = _percentiles(catch_up_samples)
+    else:
+        catch_up = _percentiles([])
 
-    manager = BackgroundManager(
+    prefs = tempfile.TemporaryDirectory(prefix="agenthicc-hub-prefs-")
+    manager = AgentsHub(
         Console(width=120, height=25, record=True),
         store=store,
+        supervisor=BackgroundSupervisor(store),
+        prefs=HubPrefs(path=Path(prefs.name) / "hub.json"),
     )
-    manager._async_mode = True
-    manager._projection_ready = False
     first_frame_started = time.perf_counter()
-    manager.render()
+    manager.render(120, 25)
     first_frame_ms = (time.perf_counter() - first_frame_started) * 1_000
-    page = await manager._service.refresh_page_async(page=1, page_size=25)
-    manager._apply_async_page(page)
+    await manager.snapshot()
+    manager._loop = asyncio.get_running_loop()
     key_samples: list[float] = []
     for _ in range(samples):
         started = time.perf_counter()
-        manager.handle_key("DOWN")
-        manager.render()
+        manager.handle_key(Key.DOWN, "")
+        manager.render(120, 25)
         key_samples.append((time.perf_counter() - started) * 1_000)
     maintenance_started = time.perf_counter()
     await manager.maintain_async(force=True)
     maintenance_ms = (time.perf_counter() - maintenance_started) * 1_000
+    # AGX-04: once the first pass has reconciled the fixture, a pass prompted
+    # by a registry change with nothing due probes nothing and appends nothing.
+    # As on the screen, workers the first pass verified are watched for exit.
+    scheduler = manager._service.scheduler
+    watched = frozenset(scheduler.run(MaintenanceTrigger()).workers)
+    log_bytes = (registry_root / "events.jsonl").stat().st_size
+    idle_samples: list[float] = []
+    idle_probes = 0
+    idle_changes = 0
+    for _ in range(samples):
+        started = time.perf_counter()
+        outcome = scheduler.run(MaintenanceTrigger(registry_changed=True, exit_watched=watched))
+        idle_samples.append((time.perf_counter() - started) * 1_000)
+        idle_probes += outcome.probes
+        idle_changes += len(outcome.changed)
+    idle_appended_bytes = (registry_root / "events.jsonl").stat().st_size - log_bytes
     activity_ms = 0.0
-    if page.sessions:
+    selected_id = manager.selected_session_id
+    if selected_id is not None:
         activity_session = store.get("bench-000000")
+        # The first read imports the redactor; time a warm read, as the hub
+        # does on every journal change.
+        await manager._service.run_blocking(manager._read_detail, activity_session, False)
         activity_started = time.perf_counter()
-        await manager._service.run_blocking(manager._activity_lines, activity_session)
+        await manager._service.run_blocking(manager._read_detail, activity_session, False)
         activity_ms = (time.perf_counter() - activity_started) * 1_000
-        selected_id = page.sessions[0].session_id
         dispatch_started = time.perf_counter()
         manager._start_operation(
             selected_id,
             "pin",
-            lambda: manager._service.pin_async(selected_id, True),
+            functools.partial(manager._service.pin_async, selected_id, True),
         )
         action_dispatch_ms = (time.perf_counter() - dispatch_started) * 1_000
         pending = tuple(manager._operation_tasks.values())
         if pending:
             await asyncio.gather(*pending)
+        full_record_bytes = len(
+            json.dumps(store.get(selected_id).to_dict(), separators=(",", ":")).encode()
+        )
+        store.update(selected_id, pinned=False)
+        last_line = (registry_root / "events.jsonl").read_bytes().rstrip(b"\n").rsplit(b"\n", 1)
+        single_field_update_bytes = len(last_line[-1])
     else:
         action_dispatch_ms = 0.0
-    if manager._activity_task is not None:
-        manager._activity_task.cancel()
-        await asyncio.gather(manager._activity_task, return_exceptions=True)
-    if manager._refresh_task is not None and not manager._refresh_task.done():
-        manager._refresh_task.cancel()
-        await asyncio.gather(manager._refresh_task, return_exceptions=True)
+        full_record_bytes = single_field_update_bytes = 0
+    await manager.settle()
     await manager._service.close()
+    prefs.cleanup()
     return {
         "first_frame_ms": round(first_frame_ms, 3),
-        "cold_projection_ms": round(cold_projection_ms, 3),
-        "projection_refresh": _percentiles(refresh_samples),
+        "index_rebuild_ms": round(index_rebuild_ms, 3),
+        "reopened_first_page_ms": round(reopened_first_page_ms, 3),
+        "fresh_process_first_page": fresh_process,
+        "page_refresh": refresh,
+        "search": search,
+        "status_counts": counts,
+        "catch_up_1000_events": catch_up,
         "incremental_refresh": _percentiles(incremental_samples),
         "key_to_render": _percentiles(key_samples),
         "maintenance_ms": round(maintenance_ms, 3),
+        "maintenance_nothing_due": {
+            **_percentiles(idle_samples),
+            "probes": idle_probes,
+            "changed": idle_changes,
+            "appended_bytes": idle_appended_bytes,
+        },
+        "update_event_bytes": {
+            "full_record": full_record_bytes,
+            "single_field": single_field_update_bytes,
+        },
         "activity_read_ms": round(activity_ms, 3),
         "action_dispatch_ms": round(action_dispatch_ms, 3),
     }
+
+
+class _Terminal:
+    """A scripted terminal: keys are typed by the benchmark; restore unblocks a read."""
+
+    def __init__(self) -> None:
+        self.keys: queue.Queue[tuple[Key, str]] = queue.Queue()
+
+    def is_interactive(self) -> bool:
+        return True
+
+    @contextmanager
+    def enter_raw_mode(self) -> Iterator[None]:
+        yield
+
+    def read_key(self) -> tuple[Key, str]:
+        return self.keys.get()
+
+    def restore(self) -> None:
+        self.keys.put((Key.CHAR, ""))
+
+    def close(self) -> None:
+        return None
+
+    def set_reporting(self, *, focus: bool | None = None, mouse: bool | None = None) -> None:
+        return None
+
+
+async def _wait_for(condition: Callable[[], bool], timeout: float) -> float:
+    started = time.perf_counter()
+    while not condition():
+        if time.perf_counter() - started > timeout:
+            raise TimeoutError("benchmark condition not reached")
+        await asyncio.sleep(0.002)
+    return (time.perf_counter() - started) * 1_000
+
+
+def _metric_count(manager: AgentsHub, name: str) -> int:
+    metrics = manager.diagnostics["metrics"]
+    entry = metrics.get(name) if isinstance(metrics, dict) else None
+    return int(entry["count"]) if isinstance(entry, dict) else 0
+
+
+async def _measure_live(registry_root: Path, idle_s: float, samples: int) -> dict[str, object]:
+    """Run the real screen loop: idle CPU, then another writer's change latency (AGX-04)."""
+
+    import agenthicc.tui.terminal.backend as terminal_backend
+
+    terminal = _Terminal()
+    original_backend = terminal_backend.get_backend
+    terminal_backend.get_backend = lambda: terminal
+    try:
+        store = BackgroundStore(registry_root)
+        prefs = tempfile.TemporaryDirectory(prefix="agenthicc-hub-prefs-")
+        manager = AgentsHub(
+            Console(width=120, height=25, file=io.StringIO()),
+            store=store,
+            supervisor=BackgroundSupervisor(store),
+            settings=AgentsHubSettings(metrics=True),
+            prefs=HubPrefs(path=Path(prefs.name) / "hub.json"),
+        )
+        run = asyncio.create_task(manager.run())
+        await _wait_for(lambda: manager.loaded, 600.0)
+        await _wait_for(lambda: _metric_count(manager, "maintenance_finished") >= 1, 600.0)
+        await asyncio.sleep(1.0)
+        counts = {
+            name: _metric_count(manager, name)
+            for name in ("load_requested", "maintenance_started", "frame_requested")
+        }
+        cpu_started = time.process_time()
+        wall_started = time.perf_counter()
+        await asyncio.sleep(idle_s)
+        idle_cpu = (time.process_time() - cpu_started) / (time.perf_counter() - wall_started)
+        idle_work = {name: _metric_count(manager, name) - value for name, value in counts.items()}
+
+        writer = BackgroundStore(registry_root)
+        target = next(row.session_id for row in manager.rows if row.session_id is not None)
+        latencies: list[float] = []
+        append_ms: list[float] = []
+        for index in range(samples):
+            title = f"latency probe {index}"
+            append_started = time.perf_counter()
+            writer.rename(target, title)
+            # Latency runs from the durable append, not from the writer's call.
+            started = time.perf_counter()
+            append_ms.append((started - append_started) * 1_000)
+            await _wait_for(
+                lambda title=title: any(  # type: ignore[misc]
+                    row.session is not None and row.session.title == title for row in manager.rows
+                ),
+                30.0,
+            )
+            latencies.append((time.perf_counter() - started) * 1_000)
+            # One change at a time: let the screen finish the frame and any
+            # coalesced refresh before the next append.
+            await asyncio.sleep(0.1)
+        terminal.keys.put((Key.CHAR, "q"))
+        await run
+        prefs.cleanup()
+    finally:
+        terminal_backend.get_backend = original_backend
+    return {
+        "idle_seconds": idle_s,
+        "idle_cpu_fraction": round(idle_cpu, 4),
+        "idle_work": idle_work,
+        "change_to_visible": _percentiles(latencies),
+        "writer_append": _percentiles(append_ms),
+    }
+
+
+async def _measure_overlay_open(registry_root: Path, samples: int) -> dict[str, object]:
+    """``/agents`` in a session: the keypress to the first frame with rows (AGX-05 §6).
+
+    As in a session, every opening shares one :class:`AgentsService`, whose
+    store and executor live as long as the session. CPU time is the whole
+    process's, so a busy host inflates wall time far more than CPU time.
+    """
+    store = BackgroundStore(registry_root)
+    service = AgentsService(store, BackgroundSupervisor(store))
+    state = AppState.create()
+    console = Console(file=io.StringIO(), width=120, height=40, force_terminal=True)
+    cpu_samples: list[float] = []
+    wall_samples: list[float] = []
+    with tempfile.TemporaryDirectory(prefix="agenthicc-hub-prefs-") as prefs:
+        for index in range(samples + 2):
+            wall_started = time.perf_counter()
+            cpu_started = time.process_time()
+            hub = AgentsHub(
+                console,
+                store=store,
+                supervisor=service.supervisor,
+                service=service,
+                app_state=state,
+                prefs=HubPrefs(path=Path(prefs) / "hub.json"),
+                tab=Tab.RUNNING,
+                in_session=True,
+            )
+            dirty = asyncio.Event()
+            overlay = AgentsHubOverlay(
+                hub, on_close=lambda: None, on_result=lambda _result: None, request_redraw=dirty.set
+            )
+            overlay.set_viewport(120, 30)
+            overlay.on_mount()
+            console.print(overlay.render())
+            while not hub.loaded:
+                dirty.clear()
+                await asyncio.wait_for(dirty.wait(), 30.0)
+            console.print(overlay.render())
+            if index >= 2:  # the first openings import modules and warm the store
+                wall_samples.append((time.perf_counter() - wall_started) * 1_000)
+                cpu_samples.append((time.process_time() - cpu_started) * 1_000)
+            overlay.on_unmount()
+            await asyncio.sleep(0)
+            await hub.settle()
+    await service.close()
+    return {"cpu": _percentiles(cpu_samples), "wall": _percentiles(wall_samples)}
 
 
 def main() -> int:
@@ -316,9 +498,7 @@ def main() -> int:
     parser.add_argument("--samples", type=int, default=100)
     parser.add_argument("--directory", type=Path)
     parser.add_argument(
-        "--compare-sqlite",
-        action="store_true",
-        help="also measure a transactional SQLite materialized-projection prototype",
+        "--idle-seconds", type=float, default=10.0, help="idle screen CPU window (AGX-04)"
     )
     args = parser.parse_args()
     if args.samples < 1:
@@ -335,15 +515,13 @@ def main() -> int:
     _write_fixture(root, args.sessions, args.events, args.active_workers)
     event_path = root / "registry" / "events.jsonl"
     fixture_bytes = event_path.stat().st_size
-    sqlite_candidate = (
-        _measure_sqlite_candidate(
-            event_path,
-            root / "sqlite-candidate.db",
-        )
-        if args.compare_sqlite
-        else None
-    )
     result = asyncio.run(_measure(root / "registry", args.samples))
+    result["live_screen"] = asyncio.run(
+        _measure_live(root / "registry", args.idle_seconds, min(args.samples, 50))
+    )
+    result["overlay_open"] = asyncio.run(
+        _measure_overlay_open(root / "registry", min(args.samples, 50))
+    )
     print(
         json.dumps(
             {
@@ -355,7 +533,6 @@ def main() -> int:
                 "terminal": {"width": 120, "height": 25},
                 "fixture_bytes": fixture_bytes,
                 "measurements": result,
-                "sqlite_candidate": sqlite_candidate,
                 "directory": str(root),
             },
             indent=2,

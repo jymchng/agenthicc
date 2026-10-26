@@ -36,16 +36,16 @@ Do **not** use this skill for writing ordinary tools — those are Python
 
 | Subcommand | Purpose |
 |---|---|
-| `add` | Add a server to configuration (`cli/commands/mcp.py:20`) |
-| `list` | List configured servers (`cli/commands/mcp.py:81`) |
-| `get` | Show one configured server (`cli/commands/mcp.py:111`) |
-| `remove` | Remove one server (`cli/commands/mcp.py:127`) |
-| `connect` | Connect and inspect the catalog (`cli/commands/mcp.py:178`) |
-| `disconnect` | Disconnect in the current process (`cli/commands/mcp.py:192`) |
-| `refresh` | Refresh one server's tool catalog (`cli/commands/mcp.py:200`) |
-| `doctor` | Validate and diagnose connectivity (`cli/commands/mcp.py:215`) |
-| `auth` | Check configured authentication (`cli/commands/mcp.py:231`) |
-| `logout` | Remove stored authentication (`cli/commands/mcp.py:252`) |
+| `add` | Add a server to configuration (`mcp_add`) |
+| `list` | List configured servers (`mcp_list`) |
+| `get` | Show one configured server (`mcp_get`) |
+| `remove` | Remove one server (`mcp_remove`) |
+| `connect` | Connect and inspect the catalog (`mcp_connect`) |
+| `disconnect` | Disconnect in the current process (`mcp_disconnect`) |
+| `refresh` | Refresh one server's tool catalog (`mcp_refresh`) |
+| `doctor` | Validate and diagnose connectivity (`mcp_doctor`) |
+| `auth` | Check configured authentication (`mcp_auth`) |
+| `logout` | Remove stored authentication (`mcp_logout`) |
 
 ### Adding a server
 
@@ -54,7 +54,7 @@ agenthicc mcp add context7 'python -m my_mcp_server' --project
 agenthicc mcp add docs 'https://example.com/mcp' --transport streamable_http
 ```
 
-`mcp_add` (`cli/commands/mcp.py:21-33`) accepts:
+`mcp_add` (`cli/commands/mcp.py`) accepts:
 
 | Flag | Default | Effect |
 |---|---|---|
@@ -71,7 +71,7 @@ normalized into an `lmcp run server.py --stdio` launcher
 (`src/agenthicc/cli/mcp_config.py:179`). A directory that does not contain a
 `server.py` raises `McpConfigError` rather than silently doing nothing. A
 `stdio` server is launched **without a shell** — the command is split with
-`shlex` and executed directly (`src/agenthicc/tools/mcp.py:168-172`), so shell
+`shlex` and executed directly (`McpServerConfig.resolved_command`, `src/agenthicc/tools/mcp_server_config.py`), so shell
 metacharacters are not interpreted. That matters when writing a stdio `url`:
 `foo | bar` is not a pipeline, it is one argument.
 
@@ -88,7 +88,7 @@ metacharacters are not interpreted. That matters when writing a stdio `url`:
 - negative reconnect attempts, or a non-finite/negative reconnect delay
 
 Each violation raises `McpConfigError`, which the CLI catches and prints as
-`error: ...` rather than a traceback (`cli/commands/mcp.py:44-46`).
+`error: ...` rather than a traceback (`mcp_add`).
 
 ---
 
@@ -118,7 +118,7 @@ required = false
 tool_timeout_s = 60.0
 ```
 
-The stanza maps onto `McpServerConfig` (`src/agenthicc/tools/mcp.py:99`):
+The stanza maps onto `McpServerConfig` (`src/agenthicc/tools/mcp_server_config.py`):
 
 | Field | Default | Notes |
 |---|---|---|
@@ -142,10 +142,10 @@ The stanza maps onto `McpServerConfig` (`src/agenthicc/tools/mcp.py:99`):
 | `oauth` | `None` | Mapping or boolean |
 | `metadata` | `{}` | Free-form |
 
-Two compatibility aliases are accepted (`tools/mcp.py:158-160`):
+Two compatibility aliases are accepted (`McpServerConfig.from_dict`, `tools/mcp_server_config.py`):
 `reconnect_delay_s` for `reconnect_delay_seconds`, and `timeout_s` for
 `tool_timeout_s`. With `strict=True`, an unknown field raises
-`McpConfigurationError` (`tools/mcp.py:298`) instead of being silently ignored.
+`McpConfigurationError` (`tools/mcp_server_config.py`) instead of being silently ignored.
 
 ### Transport aliases
 
@@ -162,9 +162,9 @@ real source of confusion:
 | `ws` | `ws` |
 | `sse` | `sse` |
 
-The alias table is `_TRANSPORT_ALIASES` (`cli/commands/mcp.py:33-37`) and the runtime set of
-supported transports is `_SUPPORTED_TRANSPORTS = {"stdio", "streamable_http",
-"sse", "ws"}` (`tools/mcp.py:38`). The CLI's accepted set is
+The alias table is `_TRANSPORT_ALIASES` and the runtime set of supported
+transports is `_SUPPORTED_TRANSPORTS = {"stdio", "streamable_http", "sse", "ws"}`,
+both in `tools/mcp_server_config.py`. The CLI's accepted set is
 `{"stdio", "ws", "websocket", "streamable", "http"}` (`cli/mcp_config.py:27`), so
 `sse` and `streamable_http` are valid in TOML but are not offered by
 `--transport`.
@@ -209,14 +209,14 @@ granular mechanism.
 ### Tool identity and naming
 
 agenthicc keeps MCP tools under the canonical ``mcp:<server>:<tool>`` identity,
-represented by `AgenthiccMcpTool` (`tools/mcp.py:347`). Provider tool schemas are
+represented by `AgenthiccMcpTool` (`tools/mcp.py`). Provider tool schemas are
 stricter than that, so the bridge rewrites names into a provider-safe form
-(`tools/mcp.py:41`) while preserving the canonical identity internally.
-`McpToolRegistry` (`tools/mcp.py:788`) holds the bridged catalog, and `McpToolBridge`
-(`tools/mcp.py:451`) performs the calls.
+(`_provider_safe_tool_name`, `tools/mcp.py`) while preserving the canonical identity internally.
+`McpToolRegistry` (`tools/mcp.py`) holds the bridged catalog, and `McpToolBridge`
+(`tools/mcp.py`) performs the calls.
 
-A stale catalog produces `McpStaleCatalogError` (`tools/mcp.py:338`), a subclass of
-`McpToolCallError` (`tools/mcp.py:334`). Seeing that error means the server's tool set
+A stale catalog produces `McpStaleCatalogError` (`tools/mcp.py`), a subclass of
+`McpToolCallError` (`tools/mcp.py`). Seeing that error means the server's tool set
 changed after import; refresh it.
 
 ---
@@ -232,9 +232,9 @@ agenthicc mcp doctor context7   # validate and diagnose connectivity
 agenthicc mcp connect context7  # connect and dump the imported catalog
 ```
 
-`mcp list` prints redacted output (`cli/commands/mcp.py:68-79`), and
-`McpServerConfig._redacted_url` (`tools/mcp.py:307`) exists so a token embedded in a
-URL is never echoed. `_looks_secret` (`tools/mcp.py:302`) identifies secret-looking
+`mcp list` prints redacted output (`mcp_list`), and
+`_redacted_url` (`tools/mcp_server_config.py`) exists so a token embedded in a
+URL is never echoed. `_looks_secret` (`tools/mcp_server_config.py`) identifies secret-looking
 field names.
 
 If the CLI reports an auth-shaped problem, `agenthicc mcp auth NAME` checks
@@ -264,8 +264,8 @@ Internally `_is_auth_error` (`tools/mcp_manager.py:1196`) classifies error text.
 - Ten subcommands: `add`, `list`, `get`, `remove`, `connect`, `disconnect`,
   `refresh`, `doctor`, `auth`, `logout`.
 - Configuration lives in `[[tools.mcp_servers]]` stanzas mapping onto
-  `McpServerConfig` (`tools/mcp.py:99`).
-- Transports normalize through `_TRANSPORT_ALIASES` (`cli/commands/mcp.py:33`); `sse` and
+  `McpServerConfig` (`tools/mcp_server_config.py`).
+- Transports normalize through `_TRANSPORT_ALIASES` (`tools/mcp_server_config.py`); `sse` and
   `streamable_http` are valid in TOML but are not `--transport` choices.
 - stdio commands run without a shell.
 - Secrets are redacted in `mcp list`; prefer `token = "${ENV_VAR}"` over literals.

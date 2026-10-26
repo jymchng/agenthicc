@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 import time
 from dataclasses import dataclass
 from enum import Enum
@@ -173,6 +175,19 @@ def legal_transition(current: SessionStatus, target: SessionStatus) -> bool:
     """Return whether *current* may move to *target*."""
 
     return target in _TRANSITIONS.get(current, frozenset())
+
+
+def _count(value: object) -> int:
+    """A non-negative token count; anything else is 0."""
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
+
+
+def _amount(value: object) -> float:
+    """A non-negative, finite cost in US dollars; anything else is 0."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0.0
+    amount = float(value)
+    return amount if math.isfinite(amount) and amount > 0 else 0.0
 
 
 def _string_tuple(value: object) -> tuple[str, ...]:
@@ -436,6 +451,10 @@ class BackgroundSession:
     # PRD-229: bounded JSON receipts contain command IDs, manifest digest,
     # timestamps, exit codes, and result states only (never command/env values).
     environment_receipts: tuple[str, ...] = ()
+    # AGX-07 §5.5: provider usage accumulated by the worker across attempts.
+    tokens_in: int = 0
+    tokens_out: int = 0
+    cost_usd: float = 0.0
 
     @classmethod
     def create(
@@ -675,6 +694,9 @@ class BackgroundSession:
             environment_receipts=_string_tuple(
                 changes.get("environment_receipts", self.environment_receipts)
             )[-64:],
+            tokens_in=_count(changes.get("tokens_in", self.tokens_in)),
+            tokens_out=_count(changes.get("tokens_out", self.tokens_out)),
+            cost_usd=_amount(changes.get("cost_usd", self.cost_usd)),
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -752,6 +774,9 @@ class BackgroundSession:
             "dispatch_token": self.dispatch_token,
             "dispatch_claimed_at": self.dispatch_claimed_at,
             "priority_history": [item.to_dict() for item in self.priority_history],
+            "tokens_in": self.tokens_in,
+            "tokens_out": self.tokens_out,
+            "cost_usd": self.cost_usd,
         }
 
     @classmethod
@@ -915,4 +940,7 @@ class BackgroundSession:
             dispatch_claimed_at=_float_or_none(value.get("dispatch_claimed_at")),
             priority_history=priority_history,
             environment_receipts=_string_tuple(value.get("environment_receipts"))[-64:],
+            tokens_in=_count(value.get("tokens_in")),
+            tokens_out=_count(value.get("tokens_out")),
+            cost_usd=_amount(value.get("cost_usd")),
         )

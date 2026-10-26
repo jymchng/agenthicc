@@ -11,7 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from agenthicc.cli.context import CLIContext
-from agenthicc.cli.registry import command, group, optional_positionals
+from agenthicc.cli.registry import optional_positionals
 from agenthicc.plugins.trust import current_extension_trust
 
 #: Extension directories under ``.agenthicc/`` and the kind each one holds.
@@ -59,11 +59,6 @@ def _targets(path: Path) -> list[Path]:
     return [path]
 
 
-@group("trust", help="Review and trust this repository's Python extensions")
-def _() -> None: ...
-
-
-@command("trust", "list", help="Show project extensions and whether each is trusted")
 def trust_list(ctx: CLIContext) -> None:
     trust = current_extension_trust()
     files = project_extension_files(Path.cwd())
@@ -77,7 +72,6 @@ def trust_list(ctx: CLIContext) -> None:
 
 
 @optional_positionals("path")
-@command("trust", "add", help="Trust the current content of extension files")
 def trust_add(ctx: CLIContext, path: str = "") -> None:
     """Trust PATH (a file, or every Python file under a directory).
 
@@ -101,7 +95,6 @@ def trust_add(ctx: CLIContext, path: str = "") -> None:
     print(f"\nRecorded in {trust.store_path}. Editing a file revokes its trust.")
 
 
-@command("trust", "revoke", help="Revoke trust for a file or every file under a directory")
 def trust_revoke(ctx: CLIContext, path: str) -> None:
     trust = current_extension_trust()
     revoked = [target for target in _targets(Path(path)) if trust.revoke(target)]

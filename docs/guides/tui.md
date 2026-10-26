@@ -17,7 +17,9 @@ event.
 | Component | Location | Responsibility |
 |---|---|---|
 | Reactive state | `tui/conversation_store.py` | Conversation, input, metrics, mode, overlays, approvals, workflow progress |
-| Workspace root | `tui/workspace/workspace.py` | Owns one Live block for the application lifetime |
+| Workspace root | `tui/workspace/workspace.py` | Owns one live block for the application lifetime |
+| Live region | `tui/workspace/live_region.py` | Writes the live block by line diff; repaints around scroll-buffer output |
+| Frame scheduler | `tui/workspace/frames.py` | Merges redraw requests into capped frames; frame statistics |
 | Scroll buffer | `tui/workspace/appender.py` | Prints conversation and tool events above the live block |
 | Live components | `tui/workspace/components.py` | Status, composer, footer |
 | Overlay host | `tui/workspace/overlay.py` | Shows one active overlay and redraws the workspace |
@@ -34,7 +36,7 @@ terminal
 │   ├── agent text
 │   ├── tool results and collapsed tool groups
 │   └── workflow/system/retry notifications
-└── permanent Rich Live block
+└── permanent live block
     ├── blank separator
     ├── status component
     ├── composer or active overlay
@@ -43,13 +45,44 @@ terminal
 ```
 
 `Workspace.start()` is called once, before the processor and input loop begin;
-`Workspace.stop()` is called once during teardown. Starting/stopping Live per
-turn causes cursor races and duplicated status lines.
+`Workspace.stop()` is called once during teardown. Starting/stopping the block
+per turn causes cursor races and duplicated status lines.
 
 Terminal resize signals are debounced into one repaint after the new geometry
-settles. The workspace clears Rich's pre-resize live geometry first, so an
-active Plan Review remains a single overlay instead of leaking duplicate
-frames into scrollback.
+settles. That frame erases the block at its old height and paints every row
+again, in one write, so an active Plan Review remains a single overlay instead
+of leaking duplicate frames into scrollback.
+
+### Rendering
+
+Redraws cost what changed, not what is on screen (AGX-11):
+
+- **Frames.** Signals request a frame instead of drawing. The scheduler draws
+  at most one frame per `[behaviour] frame_interval_ms` (16 ms), merging every
+  request made meanwhile. Typing, cursor moves and overlay keys draw on the next
+  event-loop iteration. The spinner advances at 10 Hz, and only while a turn or
+  compaction is running; an idle TUI draws no frames.
+- **Rows.** Each frame is a list of rows rendered at exactly the terminal width,
+  so the terminal never wraps one. Status and footer rows are built as markup
+  and rendered once per distinct row and width, so a spinner frame renders one
+  row and an unchanged footer parses no markup.
+- **Composer.** Each logical line of the prompt is folded at the width and the
+  fold is cached per line, so a keystroke in a 200-line prompt re-folds one line.
+  At most `[behaviour] composer_max_rows` rows (12) are shown around the cursor;
+  `↑ N more lines` / `↓ N more lines` stand for the rest.
+- **Writes.** The live region keeps the rows it last wrote and rewrites only the
+  rows that differ — a spinner frame is one row, about 50 bytes. A resize, a
+  width change or a frame that changes more than half of the rows is a full
+  redraw. Output printed while the block is live (the scroll buffer, or anything
+  written to stdout/stderr) is printed above it and the block repainted below.
+- **Synchronized output.** On POSIX terminals the first raw-mode entry asks
+  (DECRQM) whether mode 2026 is supported; the key reader consumes the answer.
+  If it is, every write is bracketed with `CSI ? 2026 h` … `CSI ? 2026 l` so the
+  terminal presents it at once. Windows is not asked, because its console input
+  would deliver the answer as typed characters.
+
+`/perf` prints how many frames the session drew, render and write time
+percentiles, characters per frame and whether synchronized output is on.
 
 The shared animation frame advances only while an animated status is active:
 thinking, tool execution, recovery, or compaction. Idle, complete, and error
@@ -99,6 +132,96 @@ active capability list. IDLE supports triggers, history, cursor movement,
 paste, mode cycling, and submission. STREAMING reduces the capability set so
 the user can queue input or interrupt an active turn while retaining cursor
 movement and basic editing.
+
+### Key bindings
+
+Keys are not hard-coded (AGX-13). Each key resolves, once per keystroke, to a
+named action in the composer's context — `composer.submit`, `composer.newline`,
+`composer.interrupt` … — and the footer's hints are the applicable actions'
+labels from the same registry (`agenthicc.tui.actions`), so the footer can no
+longer advertise a key that does nothing. An action can depend on the
+composer's conditions (`running`, `paste`, `paste_at_cursor`): Esc deletes a
+condensed paste when the cursor is right after it and pauses a running turn
+otherwise; Ctrl+C cancels a running turn and starts the double-press exit when
+idle.
+
+| Key | Action | When |
+|---|---|---|
+| Enter | `composer.submit` — send (queued while a turn runs) | always |
+| Ctrl+J | `composer.newline` | always |
+| `/`, `@` | command picker, mention picker (fixed) | always |
+| Ctrl+V / Esc | expand / delete a condensed paste | a paste is condensed (Esc: cursor right after it) |
+| Esc | `composer.interrupt` — pause the turn | a turn is running |
+| Ctrl+C | `composer.cancel` / `composer.quit` | running / idle (press twice) |
+| Ctrl+D | `composer.eof` — send, or exit on an empty prompt | idle |
+| Ctrl+U, ←→, Home/End, ↑↓, Backspace | clear, cursor, history, delete | ↑↓ idle only |
+| Shift+Tab | `composer.mode_cycle` | always |
+| Ctrl+G, ← | `agents.open_hub` — open the agents hub over the conversation | ← only on an empty prompt |
+| Ctrl+O | `subagents.focus` — move to the subagent panel | while the panel is shown |
+
+← opens the hub only when the prompt is empty. If the prompt was just emptied
+by Backspace, Ctrl+U or history recall, the first ← says "Press ← again to open
+agents" instead, so a key held down to delete text does not open it by
+accident. In a rebinding, `left_on_empty` names that gesture.
+
+Every screen has a context: `composer`, `agents` (operations on an agent),
+`agents.list`, `agents.peek` and `agents.detail` (the hub's list, peek panel
+and detail view), `transcript`, `subagents` and `overlay`; `global` actions
+apply everywhere. `agents.list` and `agents.detail` inherit `agents`, and
+`agents.peek` inherits `agents.list`, so an agent operation such as
+`agents.stop` works in all three. A key bound in a context shadows the same key
+inherited from a parent, which is how `y` approves in the hub without
+affecting anything else. The subagent panel (Ctrl+O) uses `subagents` and a
+worker's transcript `transcript` — see [Subagents](subagents.md#the-subagent-panel).
+`/keybindings` lists every context's actions.
+
+Rebind them in `~/.agenthicc/keybindings.toml` (`AGENTHICC_KEYBINDINGS`
+overrides the path). A value is a key, a list of keys, or `"none"`:
+
+```toml
+leader = "ctrl+t"          # optional: enables "<leader>a" two-step bindings
+leader_timeout_ms = 2000
+
+[composer]
+"composer.newline" = ["alt+enter", "ctrl+j"]
+"composer.clear" = "none"
+
+[agents]
+"agents.stop" = ["c", "ctrl+k"]
+
+[agents.list]
+"agents.search" = ["/", "ctrl+f"]
+```
+
+Edits apply at once in running sessions. An edit that names an unknown
+action, binds two actions that can apply together to one key, or does not
+parse is not applied: the defaults stay in effect and the footer says why.
+`/keybindings` creates the file (every action listed, commented out) and shows
+the effective bindings and where each comes from; `agenthicc keybindings
+edit` opens the file in `$VISUAL`/`$EDITOR` from the shell.
+
+The decoder knows the whole keyboard on POSIX and Windows: Ctrl+A–Z, Alt+key,
+Shift/Alt/Ctrl with arrows, Home and End, Delete, Insert, F1–F12, focus
+reports, and SGR mouse reports. A key nothing binds is ignored — before AGX-13,
+Ctrl+letters, Alt combinations and unknown sequences arrived as Esc.
+
+### Accessibility and the mouse
+
+```toml
+[ui]
+screen_reader = false   # no spinners or box drawing; state changes also printed as sentences
+reduced_motion = false  # keep the layout, replace animation with a static ●
+mouse = "auto"          # "auto": full-screen agents hub only; "on": also here; "off": never
+```
+
+With `screen_reader`, the status bar and footer use commas instead of
+box-drawing separators and words instead of arrows, the borders are dropped,
+nothing animates, and each change — the agent thinking, running a tool,
+finishing or failing, a prompt waiting for approval, a notification, a mode
+switch — is printed once as a plain sentence in the scroll buffer.
+Announcements are not written to the session's event log. With
+`mouse = "on"`, the wheel moves the composer's cursor through a tall prompt;
+`"off"` never writes a mouse-reporting sequence. `NO_COLOR` is respected.
 
 ESC cancels the active turn and immediately returns the input pipeline to IDLE,
 even while asynchronous task cleanup is still finishing. This keeps the
@@ -178,9 +301,10 @@ live scrollback; newly arriving events retain their normal order. `--continue`,
 `--resume SESSION_ID`, `agenthicc attach`, and the session-manager attach path
 share this same TUI bootstrap.
 
-Use `/startup` to inspect payload-free durations for session context and
-provider-journal restoration, first frame, transcript page read, input-history
-projection, transcript rendering, and interactive-input readiness.
+Use `/startup` to inspect payload-free durations for session context, first
+frame, transcript page read, input-history projection, transcript rendering,
+interactive-input readiness, and the agent runtime that loads after the first
+frame (provider-journal restoration and the provider itself).
 For repeatable large-log measurements without provider credentials, run
 `uv run python scripts/bench_resume_transcript.py --events 100000 --samples 5`;
 use `--tool-event-every 1 --large-event-bytes 0` for an all-tool-event log.
@@ -261,6 +385,11 @@ dispatched, even if a stale skill record is manually present in a registry.
   console for new event renderers.
 - Test input capabilities with synthetic `Key` values.
 - Test workspace startup/shutdown and non-TTY input in integration tests.
+- Inspect frames with `workspace._build_lines()` and
+  `live_region.lines_text()`; feed a forced-terminal console's output to
+  `pyte` to check what the terminal shows. Frames are capped to the frame
+  interval, so wait with `tests.tui_frames.settle_frames()` before asserting on
+  `LiveRegion.update` calls.
 - Test terminal backends with pure key-decoding cases on Linux and actual
   interactive behaviour where the platform is available.
 

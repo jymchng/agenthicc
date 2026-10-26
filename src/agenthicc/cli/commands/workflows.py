@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict
 
 from agenthicc.cli.context import CLIContext
-from agenthicc.cli.registry import command, group
 
 if TYPE_CHECKING:
     from agenthicc.workflows.registry import WorkflowRegistry
@@ -27,10 +26,6 @@ class _WorkflowPayload(TypedDict):
     source: str
     mode_bindings: list[object]
     phases: list[_PhasePayload]
-
-
-@group("workflows", help="Discover and run workflow plugins")
-def _() -> None: ...
 
 
 def _workflow_payload(plugin_cls: type[object], source: str) -> _WorkflowPayload:
@@ -68,7 +63,6 @@ def _workflow_registry() -> WorkflowRegistry:
     )
 
 
-@command("workflows", "list", help="List available workflow plugins")
 def workflows_list(ctx: CLIContext, json: bool = False) -> None:
     """List built-in, user, and project workflows with their phase topology."""
     registry = _workflow_registry()
@@ -95,7 +89,6 @@ def workflows_list(ctx: CLIContext, json: bool = False) -> None:
         print(f"  modes: {bindings or 'manual'}")
 
 
-@command("workflows", "run", help="Run a workflow headlessly for one intent")
 async def workflows_run(
     ctx: CLIContext,
     workflow_name: str,

@@ -928,7 +928,9 @@ def test_recovery_rejects_a_different_workspace_identity(tmp_path: Path) -> None
         conversation.close()
 
 
-def test_incompatible_checkpoint_can_be_audited_as_discarded(tmp_path: Path) -> None:
+def test_profile_difference_does_not_block_checkpoint_inspection_or_discard(
+    tmp_path: Path,
+) -> None:
     conversation = _conversation(tmp_path)
     try:
         store, handle = _running_checkpoint(tmp_path, conversation)
@@ -948,7 +950,11 @@ def test_incompatible_checkpoint_can_be_audited_as_discarded(tmp_path: Path) -> 
             conversation=conversation,
             provider_profile="current-profile",
         )[0]
-        assert record.recoverable is False
+        # Provider profile selection belongs to the shared resume boundary,
+        # not checkpoint discovery: a missing saved profile must remain
+        # visible and can still be explicitly discarded.
+        assert record.recoverable is True
+        assert record.provider_profile == "removed-profile"
         discarded = coordinator.discard(record, owner_id="reset-owner")
         assert discarded.status == "discarded"
         assert store.load("run-1") == discarded

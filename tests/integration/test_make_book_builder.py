@@ -104,6 +104,12 @@ printf '%%PDF-1.7\\n1 0 obj\\n<<>>\\nendobj\\n' > "$outdir/book.pdf"
     environment["PATH"] = f"{bin_dir}{os.pathsep}{environment['PATH']}"
     environment["BUILD_LOG"] = str(log_path)
     environment["ARGS_LOG"] = str(tmp_path / "pandoc-args.log")
+    old_dist = tmp_path / "dist"
+    old_dist.mkdir()
+    old_pdf = old_dist / "previous.pdf"
+    old_epub = old_dist / "previous.epub"
+    old_pdf.write_bytes(b"prior PDF deliverable")
+    old_epub.write_bytes(b"prior EPUB deliverable")
     result = subprocess.run(
         [sys.executable, str(script), "--out", "dist/result.pdf"],
         cwd=tmp_path,
@@ -118,6 +124,8 @@ printf '%%PDF-1.7\\n1 0 obj\\n<<>>\\nendobj\\n' > "$outdir/book.pdf"
     assert output.read_bytes().startswith(b"%PDF")
     epub = tmp_path / "dist" / "result.epub"
     assert epub.read_bytes()[:2] == b"PK"
+    assert old_pdf.read_bytes() == b"prior PDF deliverable"
+    assert old_epub.read_bytes() == b"prior EPUB deliverable"
     with zipfile.ZipFile(epub) as archive:
         assert archive.read("mimetype") == b"application/epub+zip"
     assert not (tmp_path / ".build_book").exists()

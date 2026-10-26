@@ -248,49 +248,47 @@ def test_builtin_init_config_menu_and_help_factories(
     assert overlay.name and help_overlay.name
 
 
-def test_cli_registry_decorators_tree_wire_and_call(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_cli_registry_plugin_decorators_wire_and_call(monkeypatch: pytest.MonkeyPatch) -> None:
     from agenthicc.cli import registry
     from agenthicc.cli.context import CLIContext
 
-    old_registry = registry._REGISTRY.copy()
-    old_groups = registry._GROUPS.copy()
-    registry._REGISTRY.clear()
-    registry._GROUPS.clear()
+    monkeypatch.setattr(registry, "_PLUGIN_COMMANDS", {})
+    monkeypatch.setattr(registry, "_PLUGIN_GROUPS", {})
     calls: list[object] = []
-    try:
 
-        @registry.group("demo", help="demo commands")
-        def _group() -> None:
-            return None
+    @registry.group("demo", help="demo commands")
+    def _group() -> None:
+        return None
 
-        @registry.command("demo", "run", help="run it")
-        def run(ctx: CLIContext, count: int, verbose: bool = False) -> None:
-            calls.append((ctx, count, verbose))
+    @registry.command("demo", "run", help="run it")
+    def run(ctx: CLIContext, count: int, verbose: bool = False) -> None:
+        calls.append((ctx, count, verbose))
 
-        run.__annotations__["ctx"] = CLIContext
+    run.__annotations__["ctx"] = CLIContext
 
-        @registry.command("demo", "async")
-        async def async_cmd(ctx: CLIContext) -> None:
-            """Asynchronous demo command."""
-            calls.append("async")
+    @registry.command("demo", "async")
+    async def async_cmd(ctx: CLIContext) -> None:
+        """Asynchronous demo command."""
+        calls.append("async")
 
-        async_cmd.__annotations__["ctx"] = CLIContext
+    async_cmd.__annotations__["ctx"] = CLIContext
 
-        tree = registry._as_tree()
-        assert tree["demo"]["children"]["run"]["entry"] is not None
+    index = registry.command_index()
+    assert index.groups[("demo",)] == "demo commands"
+    assert index.children(("demo",)) == ["run", "async"]
+    assert index.source_for(("demo", "run")) == "plugin"
+
+    def parse(argv: list[str]) -> argparse.Namespace:
         parser = argparse.ArgumentParser()
-        registry._wire(parser, tree)
-        ns = parser.parse_args(["demo", "run", "4", "--verbose"])
-        registry._call(ns._entry, SimpleNamespace(name="ctx"), ns)
-        assert calls[0][1:] == ("4", True)
-        ns = parser.parse_args(["demo", "async"])
-        registry._call(ns._entry, SimpleNamespace(name="ctx"), ns)
-        assert "async" in calls
-    finally:
-        registry._REGISTRY.clear()
-        registry._REGISTRY.update(old_registry)
-        registry._GROUPS.clear()
-        registry._GROUPS.update(old_groups)
+        registry.wire(parser, index, index.resolve(registry.leading_tokens(argv)))
+        return parser.parse_args(argv)
+
+    ns = parse(["demo", "run", "4", "--verbose"])
+    registry._call(ns._entry, SimpleNamespace(name="ctx"), ns)
+    assert calls[0][1:] == ("4", True)
+    ns = parse(["demo", "async"])
+    registry._call(ns._entry, SimpleNamespace(name="ctx"), ns)
+    assert "async" in calls
 
 
 def test_cli_registry_discovery_toml_and_trust_paths(
@@ -298,79 +296,94 @@ def test_cli_registry_discovery_toml_and_trust_paths(
 ) -> None:
     from agenthicc.cli import registry
 
-    old = registry._REGISTRY.copy()
-    original_registry = registry._REGISTRY
-    registry._REGISTRY.clear()
-    try:
-        user = tmp_path / "user" / "cli"
-        user.mkdir(parents=True)
-        (user / "plugin.py").write_text(
-            "from agenthicc.cli.registry import command\n"
-            "@command('user', 'hello')\n"
-            'def hello():\n    """User hello."""\n    return None\n',
-            encoding="utf-8",
-        )
-        registry._discover_directory(user, "user")
-        assert ("user", "hello") in registry._REGISTRY
+    monkeypatch.setattr(registry, "_PLUGIN_COMMANDS", {})
+    user = tmp_path / "user" / "cli"
+    user.mkdir(parents=True)
+    (user / "plugin.py").write_text(
+        "from agenthicc.cli.registry import command\n"
+        "@command('user', 'hello')\n"
+        'def hello():\n    """User hello."""\n    return None\n',
+        encoding="utf-8",
+    )
+    registry._discover_directory(user, "user")
+    assert ("user", "hello") in registry._PLUGIN_COMMANDS
 
-        cli_toml = user.parent / "cli.toml"
-        cli_toml.write_text(
-            "[[command]]\npath=['tool','run']\nrun='echo {value}'\n"
-            "[[command.args]]\nname='value'\n",
-            encoding="utf-8",
-        )
-        registry._load_toml_commands(cli_toml, "user")
-        assert ("tool", "run") in registry._REGISTRY
-        spawned: list[tuple[object, ...]] = []
+    cli_toml = user.parent / "cli.toml"
+    cli_toml.write_text(
+        "[[command]]\npath=['tool','run']\nrun='echo {value}'\n[[command.args]]\nname='value'\n",
+        encoding="utf-8",
+    )
+    registry._load_toml_commands(cli_toml, "user")
+    assert ("tool", "run") in registry._PLUGIN_COMMANDS
+    spawned: list[tuple[object, ...]] = []
 
-        async def fake_exec(*argv: object) -> SimpleNamespace:
-            spawned.append(argv)
+    async def fake_exec(*argv: object) -> SimpleNamespace:
+        spawned.append(argv)
 
-            async def wait() -> int:
-                return 0
+        async def wait() -> int:
+            return 0
 
-            return SimpleNamespace(wait=wait)
+        return SimpleNamespace(wait=wait)
 
-        monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
-        asyncio.run(registry._REGISTRY[("tool", "run")].handler(value="ok"))
-        assert spawned == [("echo", "ok")]
+    monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
+    asyncio.run(registry._PLUGIN_COMMANDS[("tool", "run")].handler(value="ok"))
+    assert spawned == [("echo", "ok")]
 
-        project = tmp_path / "project" / "cli"
-        project.mkdir(parents=True)
-        plugin = project / "project.py"
-        plugin.write_text(
-            "from agenthicc.cli.registry import command\n"
-            "@command('project', 'hello')\n"
-            'def hello():\n    """Project hello."""\n    return None\n',
-            encoding="utf-8",
-        )
-        # An untrusted project plugin is skipped without being imported ...
-        from agenthicc.plugins.trust import ExtensionTrust, override_extension_trust
+    project = tmp_path / "project" / "cli"
+    project.mkdir(parents=True)
+    plugin = project / "project.py"
+    plugin.write_text(
+        "from agenthicc.cli.registry import command\n"
+        "@command('project', 'hello')\n"
+        'def hello():\n    """Project hello."""\n    return None\n',
+        encoding="utf-8",
+    )
+    # An untrusted project plugin is skipped without being imported ...
+    from agenthicc.plugins.trust import ExtensionTrust, override_extension_trust
 
-        strict = ExtensionTrust(store_path=tmp_path / "trust.json", trusted_roots=())
-        with override_extension_trust(strict):
-            registry._discover_directory(project, "project")
-            assert ("project", "hello") not in registry._REGISTRY
-            # ... and loads once its current content is trusted.
-            strict.trust(plugin, kind="cli")
-            registry._discover_directory(project, "project")
-        assert ("project", "hello") in registry._REGISTRY
+    strict = ExtensionTrust(store_path=tmp_path / "trust.json", trusted_roots=())
+    with override_extension_trust(strict):
+        registry._discover_directory(project, "project")
+        assert ("project", "hello") not in registry._PLUGIN_COMMANDS
+        # ... and loads once its current content is trusted.
+        strict.trust(plugin, kind="cli")
+        registry._discover_directory(project, "project")
+    assert ("project", "hello") in registry._PLUGIN_COMMANDS
 
-        class DuplicateEntries(dict[tuple[str, ...], object]):
-            def items(self):  # type: ignore[no-untyped-def]
-                return [
-                    (("shadow",), registry._Entry(("shadow",), "u", lambda: None, False, "user")),
-                    (
-                        ("shadow",),
-                        registry._Entry(("shadow",), "p", lambda: None, False, "project"),
-                    ),
-                ]
+    monkeypatch.setattr(
+        registry,
+        "_PLUGIN_COMMANDS",
+        {("shadow",): registry._Entry(("shadow",), "p", lambda: None, False, "project")},
+    )
+    with pytest.warns(UserWarning, match="shadows"):
+        registry._check_shadows({("shadow",)})
+    with pytest.raises(SystemExit):
+        registry._check_shadows({("shadow",)}, strict=True)
 
-        registry._REGISTRY = DuplicateEntries()  # type: ignore[assignment]
-        registry._check_shadows()
-        with pytest.raises(SystemExit):
-            registry._check_shadows(strict=True)
-    finally:
-        registry._REGISTRY = original_registry
-        original_registry.clear()
-        original_registry.update(old)
+
+def test_discover_plugins_warns_when_a_project_command_shadows_a_user_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A project plugin replacing a user plugin's path is reported (AGX-01)."""
+    from agenthicc.cli import registry
+    from agenthicc.plugins.trust import ExtensionTrust, override_extension_trust
+
+    monkeypatch.setattr(registry, "_PLUGIN_COMMANDS", {})
+    source = (
+        "from agenthicc.cli.registry import command\n"
+        "@command('shadow')\n"
+        'def shadow():\n    """Shadowed."""\n    return None\n'
+    )
+    user_home = tmp_path / "home"
+    (user_home / "cli").mkdir(parents=True)
+    (user_home / "cli" / "mine.py").write_text(source, encoding="utf-8")
+    project = tmp_path / "repo" / ".agenthicc"
+    (project / "cli").mkdir(parents=True)
+    project_plugin = project / "cli" / "theirs.py"
+    project_plugin.write_text(source, encoding="utf-8")
+    trust = ExtensionTrust(store_path=tmp_path / "trust.json", trusted_roots=(user_home,))
+    trust.trust(project_plugin, kind="cli")
+
+    with override_extension_trust(trust), pytest.warns(UserWarning, match="shadows"):
+        registry.discover_plugins(project_dir=project, user_dir=user_home)
+    assert registry._PLUGIN_COMMANDS[("shadow",)].source == "project"

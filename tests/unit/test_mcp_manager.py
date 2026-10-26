@@ -8,7 +8,9 @@ from dataclasses import dataclass
 
 import pytest
 
-from agenthicc.tools.mcp import McpServerConfig, McpStaleCatalogError, McpToolSchema
+from agenthicc.tools.mcp import McpStaleCatalogError, McpToolSchema
+
+from agenthicc.tools.mcp_server_config import McpServerConfig
 from agenthicc.tools.mcp_manager import (
     McpRequiredServerError,
     McpServerState,

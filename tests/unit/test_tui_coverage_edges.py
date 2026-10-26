@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agenthicc.tui.cbreak_reader import Key
+from agenthicc.tui.cbreak_reader import Key, key_name
 from agenthicc.tui.conversation_store import AppState
 from agenthicc.tui.diff_renderer import (
     _build_hunks,
@@ -21,6 +21,8 @@ from agenthicc.tui.input.capabilities import (
     _CONSUMED,
     _EXIT,
     BackspaceCapability,
+    Capability,
+    CapabilityResult,
     ClearCapability,
     CondensedPasteEscapeCapability,
     CtrlCCapability,
@@ -101,7 +103,7 @@ def test_cbreak_reader_maps_control_escape_and_unicode(monkeypatch: pytest.Monke
     monkeypatch.setattr(reader.os, "read", lambda _fd, _size: next(utf8))
     monkeypatch.setattr(reader.select, "select", lambda *_args: ([3], [], []))
     assert reader.read_key(3)[1] == "é"
-    assert read_one(b"\xff")[0] is Key.ESC
+    assert read_one(b"\xff")[0] is Key.UNKNOWN  # never mistaken for an Esc press
 
     sequences = iter([b"\x1b", b"[", b"A"])
     monkeypatch.setattr(reader.os, "read", lambda _fd, _size: next(sequences))
@@ -112,7 +114,7 @@ def test_cbreak_reader_maps_control_escape_and_unicode(monkeypatch: pytest.Monke
     assert reader.read_key(3) == (Key.PASTE, "hello")
     sequences = iter([b"\x1b", b"x"])
     monkeypatch.setattr(reader.os, "read", lambda _fd, _size: next(sequences))
-    assert reader.read_key(3)[0] is Key.ESC
+    assert reader.read_key(3) == (Key.ALT, "x")
     monkeypatch.setattr(reader.select, "select", lambda *_args: ([], [], []))
     sequences = iter([b"\x1b"])
     monkeypatch.setattr(reader.os, "read", lambda _fd, _size: next(sequences))
@@ -135,6 +137,17 @@ class _FakeSession:
         self._bus = SimpleNamespace(dispatch_async=self._dispatch)
         self.sent: list[object] = []
         self.opened: list[str] = []
+        self.running = False
+        self._action: str | None = None
+        self._action_rebindable = False
+
+    def conditions(self) -> frozenset[str]:
+        flags = {"running"} if self.running else set()
+        if self._paste.condensed:
+            flags.add("paste")
+            if self._buf.cursor == self._paste.end:
+                flags.add("paste_at_cursor")
+        return frozenset(flags)
 
     async def _dispatch(self, command: object) -> None:
         self.sent.append(command)
@@ -159,57 +172,69 @@ class _FakeSession:
         self.opened.append("".join(value))
 
 
+async def _press(
+    capability: Capability, key: Key, ch: str, session: _FakeSession
+) -> CapabilityResult:
+    """Resolve the key to its composer action as ``_dispatch`` does, then run one capability."""
+    action = session._state.keymap().resolve("composer", key_name(key, ch), session.conditions())
+    session._action = None if action is None else action.name
+    session._action_rebindable = action is not None and action.rebindable
+    return await capability.handle(key, ch, session)  # type: ignore[arg-type]
+
+
 @pytest.mark.asyncio
 async def test_input_capabilities_cover_idle_streaming_and_editing_paths() -> None:
     session = _FakeSession()
-    assert await OverlayCapability().handle(Key.CHAR, "x", session) is False
+    assert await _press(OverlayCapability(), Key.CHAR, "x", session) is False
     overlay = SimpleNamespace(active=True, handle_key=lambda key, ch: None)
     session._overlay = overlay
-    assert await OverlayCapability().handle(Key.CHAR, "x", session) is _CONSUMED
+    assert await _press(OverlayCapability(), Key.CHAR, "x", session) is _CONSUMED
     session._overlay = None
-    assert await CtrlCCapability().handle(Key.CHAR, "x", session) is False
-    assert await CtrlCCapability().handle(Key.CTRL_C, "", session) is _CONSUMED
-    assert await CtrlCCapability().handle(Key.CTRL_C, "", session) is _EXIT
+    assert await _press(CtrlCCapability(), Key.CHAR, "x", session) is False
+    assert await _press(CtrlCCapability(), Key.CTRL_C, "", session) is _CONSUMED
+    assert await _press(CtrlCCapability(), Key.CTRL_C, "", session) is _EXIT
     session._buf.insert("x")
-    assert await CtrlDCapability().handle(Key.CTRL_D, "", session) is _CONSUMED
+    assert await _press(CtrlDCapability(), Key.CTRL_D, "", session) is _CONSUMED
     session._buf.clear()
-    assert await CtrlDCapability().handle(Key.CTRL_D, "", session) is _EXIT
-    assert await CtrlDCapability().handle(Key.CHAR, "", session) is False
+    assert await _press(CtrlDCapability(), Key.CTRL_D, "", session) is _EXIT
+    assert await _press(CtrlDCapability(), Key.CHAR, "", session) is False
     session._buf.set(list("send"))
-    assert await SubmitCapability(commit_history=True).handle(Key.ENTER, "", session) is _CONSUMED
+    assert await _press(SubmitCapability(commit_history=True), Key.ENTER, "", session) is _CONSUMED
     assert session.sent
     exact_text = "  /workflow resume run-1  \nsecond line\t"
     session._preserve_submission_text = True
     session._buf.set(list(exact_text))
-    assert await SubmitCapability().handle(Key.ENTER, "", session) is _CONSUMED
+    assert await _press(SubmitCapability(), Key.ENTER, "", session) is _CONSUMED
     assert session.sent[-1].text == exact_text
-    assert await SubmitCapability().handle(Key.CHAR, "", session) is False
-    assert await InterruptCapability().handle(Key.CHAR, "", session) is False
-    assert await NewlineCapability().handle(Key.CTRL_ENTER, "", session) is _CONSUMED
-    await InsertCapability().handle(Key.CHAR, "z", session)
-    await CursorCapability().handle(Key.HOME, "", session)
-    await CursorCapability().handle(Key.END, "", session)
-    await BackspaceCapability().handle(Key.BACKSPACE, "", session)
-    await ClearCapability().handle(Key.CTRL_U, "", session)
+    assert await _press(SubmitCapability(), Key.CHAR, "", session) is False
+    assert await _press(InterruptCapability(), Key.CHAR, "", session) is False
+    assert await _press(NewlineCapability(), Key.CTRL_ENTER, "", session) is _CONSUMED
+    await _press(InsertCapability(), Key.CHAR, "z", session)
+    await _press(CursorCapability(), Key.HOME, "", session)
+    await _press(CursorCapability(), Key.END, "", session)
+    await _press(BackspaceCapability(), Key.BACKSPACE, "", session)
+    await _press(ClearCapability(), Key.CTRL_U, "", session)
     session._buf.set(list("line1\nline2"), cursor=8)
-    await CursorCapability().handle(Key.LEFT, "", session)
-    await HistoryCapability().handle(Key.UP, "", session)
-    await HistoryCapability().handle(Key.DOWN, "", session)
-    assert await HistoryCapability().handle(Key.CHAR, "", session) is False
+    await _press(CursorCapability(), Key.LEFT, "", session)
+    await _press(HistoryCapability(), Key.UP, "", session)
+    await _press(HistoryCapability(), Key.DOWN, "", session)
+    assert await _press(HistoryCapability(), Key.CHAR, "", session) is False
     session._paste.apply(session._buf, "a\nb\nc\nd", 10)
-    assert await PasteCapability().handle(Key.CTRL_V, "", session) is _CONSUMED
-    assert await PasteCapability().handle(Key.PASTE, "pasted", session) is _CONSUMED
-    assert await ModeCycleCapability().handle(Key.SHIFT_TAB, "", session) is _CONSUMED
-    assert await ModeCycleCapability().handle(Key.CHAR, "", session) is False
-    assert await InterruptCapability().handle(Key.ESC, "", session) is _CONSUMED
+    assert await _press(PasteCapability(), Key.CTRL_V, "", session) is _CONSUMED
+    assert await _press(PasteCapability(), Key.PASTE, "pasted", session) is _CONSUMED
+    assert await _press(ModeCycleCapability(), Key.SHIFT_TAB, "", session) is _CONSUMED
+    assert await _press(ModeCycleCapability(), Key.CHAR, "", session) is False
+    session.running = True  # the interrupt capability serves the streaming list
+    assert await _press(InterruptCapability(), Key.ESC, "", session) is _CONSUMED
+    session.running = False
 
     session._paste.apply(session._buf, "a\nb\nc\nd", 10)
-    await BackspaceCapability().handle(Key.BACKSPACE, "", session)
+    await _press(BackspaceCapability(), Key.BACKSPACE, "", session)
     session._buf.set(list("@frag"))
     session._find_trigger_tail = lambda: ("@", [], "frag")  # type: ignore[method-assign]
     session._registry = SimpleNamespace(get=lambda _char: SimpleNamespace())
-    await BackspaceCapability().handle(Key.BACKSPACE, "", session)
-    assert await BackspaceCapability().handle(Key.CHAR, "", session) is False
+    await _press(BackspaceCapability(), Key.BACKSPACE, "", session)
+    assert await _press(BackspaceCapability(), Key.CHAR, "", session) is False
 
 
 @pytest.mark.asyncio
@@ -218,12 +243,12 @@ async def test_space_does_not_expand_condensed_paste() -> None:
     session._paste.apply(session._buf, "a\nb\nc\nd", 80)
     assert session._paste.condensed
 
-    await InsertCapability().handle(Key.CHAR, " ", session)
+    await _press(InsertCapability(), Key.CHAR, " ", session)
 
     assert session._paste.condensed
     assert session._buf.text.endswith(" ")
 
-    await PasteCapability().handle(Key.CTRL_V, "", session)
+    await _press(PasteCapability(), Key.CTRL_V, "", session)
     assert not session._paste.condensed
 
 
@@ -376,7 +401,7 @@ async def test_escape_deletes_condensed_paste_only_at_placeholder_end() -> None:
     session = _FakeSession()
     session._paste.apply(session._buf, "a\nb\nc\nd", 80)
 
-    assert await CondensedPasteEscapeCapability().handle(Key.ESC, "", session) is _CONSUMED
+    assert await _press(CondensedPasteEscapeCapability(), Key.ESC, "", session) is _CONSUMED
     assert not session._paste.condensed
     assert session._buf.text == ""
 
@@ -384,7 +409,7 @@ async def test_escape_deletes_condensed_paste_only_at_placeholder_end() -> None:
     session._paste.apply(session._buf, "a\nb\nc\nd", 80)
     session._buf.insert("G")
 
-    assert await CondensedPasteEscapeCapability().handle(Key.ESC, "", session) is False
+    assert await _press(CondensedPasteEscapeCapability(), Key.ESC, "", session) is False
     assert session._paste.condensed
     assert session._buf.text.endswith("G")
 
@@ -450,19 +475,19 @@ async def test_trigger_capability_passes_or_opens_registered_trigger() -> None:
         resolve=lambda key, ch: "/" if key is Key.CHAR and ch == "/" else None,
         get=lambda _char: handler,
     )
-    assert await TriggerCapability().handle(Key.CHAR, "/", session) is _CONSUMED
+    assert await _press(TriggerCapability(), Key.CHAR, "/", session) is _CONSUMED
     assert session.opened == ["/"]
     handler.can_activate = lambda _pre: False
     session._buf.set(list("text"))
-    assert await TriggerCapability().handle(Key.CHAR, "/", session) is _CONSUMED
+    assert await _press(TriggerCapability(), Key.CHAR, "/", session) is _CONSUMED
     session._registry = None
-    assert await TriggerCapability().handle(Key.CHAR, "/", session) is False
+    assert await _press(TriggerCapability(), Key.CHAR, "/", session) is False
 
     session = _FakeSession()
     session._buf.set(list("@frag"))
     session._find_trigger_tail = lambda: ("@", [], "frag")  # type: ignore[method-assign]
     session._registry = SimpleNamespace(get=lambda _char: SimpleNamespace())
-    assert await InsertCapability().handle(Key.CHAR, "x", session) is _CONSUMED
+    assert await _press(InsertCapability(), Key.CHAR, "x", session) is _CONSUMED
 
 
 @pytest.mark.asyncio

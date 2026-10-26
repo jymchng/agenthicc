@@ -174,3 +174,38 @@ def test_checkpoint_from_dict_rejects_schema_identity_and_numeric_errors() -> No
     checked(browser=[])
     checked(phase_index=True)
     checked(phase_index=-1)
+    checked(provider_profile_fingerprint="not-a-sha256-digest")
+    checked(provider_profile_history=["saved"] * 9)
+
+
+def test_checkpoint_profile_binding_provenance_round_trips() -> None:
+    base = WorkflowCheckpoint(
+        run_id="run",
+        workflow_name="demo",
+        conversation_id="session",
+        intent="intent",
+        status="paused",
+        current_phase="build",
+        phase_index=1,
+        phase_iteration=0,
+        conversation_cursor=3,
+        context={},
+        plugin_fingerprint="plugin",
+    )
+    checkpoint = dataclasses.replace(
+        base,
+        provider_profile="replacement",
+        provider_profile_fingerprint=hashlib.sha256(b"safe identity").hexdigest(),
+        provider_profile_origin="original",
+        provider_profile_history=("original", "replacement"),
+    )
+
+    restored = WorkflowCheckpoint.from_dict(checkpoint.to_dict())
+
+    assert restored.provider_profile == "replacement"
+    assert restored.provider_profile_fingerprint == checkpoint.provider_profile_fingerprint
+    assert restored.provider_profile_origin == "original"
+    assert restored.provider_profile_history == ("original", "replacement")
+    legacy = WorkflowCheckpoint.from_dict(base.to_dict())
+    assert legacy.provider_profile_fingerprint == ""
+    assert legacy.provider_profile_history == ()

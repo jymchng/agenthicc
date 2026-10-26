@@ -16,10 +16,11 @@ from enum import Enum, auto
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
-from agenthicc.tui.cbreak_reader import Key
+from agenthicc.tui.cbreak_reader import Key, key_name
 from agenthicc.tui.input.buffer import InputBuffer
 from agenthicc.tui.input.history import HistoryNavigator
 from agenthicc.tui.input.paste import PasteState
+from agenthicc.tui.conversation_store import ui_settings
 from agenthicc.tui.runtime.mode_manager import ModeManager
 from agenthicc.tui.runtime.commands import CommandBus, SendMessageCommand
 from agenthicc.tui.input.capabilities import (
@@ -70,7 +71,7 @@ class UnifiedInputSession:
     ) -> None:
         self._state: AppState = app_state
         # Set by the /background handoff to end the input loop after detaching.
-        self._background_exit_requested: bool = False
+        self._exit_requested: bool = False
         self._bus: CommandBus = command_bus
         self._registry: TriggerManager | None = trigger_registry
         self._modes: ModeManager = mode_manager or ModeManager()
@@ -91,6 +92,13 @@ class UnifiedInputSession:
         # when the composer is closed and reopened.
         self._hist: HistoryNavigator = HistoryNavigator(history if history is not None else [])
         self._ctrl_c_count: int = 0
+        # The composer action the key being dispatched is bound to (AGX-13).
+        self._action: str | None = None
+        self._action_rebindable = False
+        # When deleting or recalling history last emptied the prompt, and
+        # whether a guarded ← has asked for its second press (AGX-05 §5.2).
+        self._emptied_at = 0.0
+        self._hub_left_armed = False
 
     # ── lifecycle ─────────────────────────────────────────────────────────────
 
@@ -136,6 +144,10 @@ class UnifiedInputSession:
 
         loop = _asyncio.get_event_loop()
         with backend.enter_raw_mode():
+            # The inline TUI keeps native selection unless [ui] mouse = "on".
+            ui = ui_settings(self._state)
+            if ui is not None and ui.mouse_enabled(fullscreen=False):
+                backend.set_reporting(mouse=True)
             if self._on_ready is not None:
                 self._on_ready(True)
             while True:
@@ -147,21 +159,69 @@ class UnifiedInputSession:
                     self._state.conversation.notification.set(None)
                     return
                 except OSError:
+                    if self._exit_requested:
+                        return
                     continue
 
                 if await self._dispatch(key, ch) is _EXIT:
                     return
 
+    def request_exit(self) -> None:
+        """End :meth:`run` now, even while it waits for a key.
+
+        Used when the session hands over without a keystroke of its own —
+        switching to another agent from the hub (AGX-05 §5.2). The wake byte
+        interrupts the blocking read.
+        """
+        from agenthicc.tui.terminal.backend import get_backend
+
+        self._exit_requested = True
+        get_backend().restore()
+
     # ── capability pipeline dispatch ──────────────────────────────────────────
 
+    def conditions(self) -> frozenset[str]:
+        """The composer conditions key bindings depend on (AGX-13)."""
+        flags: set[str] = set()
+        if self._mode == InputMode.STREAMING:
+            flags.add("running")
+        if self._state.conversation.subagent_pool_state() is not None:
+            flags.add("subagents")
+        if self._paste.condensed:
+            flags.add("paste")
+            if self._buf.cursor == self._paste.end:
+                flags.add("paste_at_cursor")
+        return frozenset(flags)
+
     async def _dispatch(self, key: Key, ch: str) -> _ExitSentinel | None:
-        """Run the active capability list until one consumes the key."""
+        """Run the active capability list until one consumes the key.
+
+        The key is first resolved against the composer's key bindings; each
+        capability then acts on the named action rather than a fixed key.
+        """
+        keymap = self._state.require_keymap()
+        name = key_name(key, ch)
+        conditions = self.conditions()
+        action = None
+        if name == "left" and not self._buf.text and not self._paste.condensed:
+            # ← on an empty prompt has its own binding (agents.open_hub).
+            action = keymap.resolve("composer", "left_on_empty", conditions)
+        if action is None:
+            action = keymap.resolve("composer", name, conditions)
+        self._action = None if action is None else action.name
+        self._action_rebindable = action is not None and action.rebindable
+        if self._action != "agents.open_hub":
+            self._hub_left_armed = False
         for cap in self._capabilities:
             result = await cap.handle(key, ch, self)
             if result is _EXIT:
                 return _EXIT
             if result:
-                return None
+                break
+        # A started /background handoff, or a switch to another session, ends
+        # the input loop.
+        if self._exit_requested:
+            return _EXIT
         return None
 
     # ── helpers ───────────────────────────────────────────────────────────────

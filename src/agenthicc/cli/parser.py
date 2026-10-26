@@ -1,30 +1,47 @@
-"""CLI argument parser — builds argparse from the decorator registry (PRD-79)."""
+"""CLI argument parser — builds argparse from the command index (PRD-79, AGX-01)."""
 
 from __future__ import annotations
 
 import argparse
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from agenthicc.cli.context import CLIContext, CLIFlags
+from agenthicc.cli.version import package_version
 
 if TYPE_CHECKING:
     from agenthicc.config import AgenthiccConfig
 
 
-def package_version() -> str:
-    """Return the installed distribution's version, which is the wheel's version.
+class _VersionAction(argparse.Action):
+    """``--version`` that reads package metadata only when it is used.
 
-    An uninstalled source tree (``PYTHONPATH=src``) has no distribution
-    metadata, so it reports ``0+unknown`` instead of a version it cannot know.
+    argparse's built-in ``version`` action needs the string when the parser is
+    built, which would import ``importlib.metadata`` for every command.
     """
-    from importlib.metadata import PackageNotFoundError, version
 
-    try:
-        return version("agenthicc")
-    except PackageNotFoundError:
-        return "0+unknown"
+    def __init__(
+        self,
+        option_strings: list[str],
+        dest: str = argparse.SUPPRESS,
+        default: str = argparse.SUPPRESS,
+        help: str = "show program's version number and exit",
+    ) -> None:
+        super().__init__(
+            option_strings=option_strings, dest=dest, default=default, nargs=0, help=help
+        )
+
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: str | Sequence[object] | None,
+        option_string: str | None = None,
+    ) -> None:
+        sys.stdout.write(f"agenthicc {package_version()}\n")
+        parser.exit()
 
 
 def _add_global_flags(parser: argparse.ArgumentParser) -> None:
@@ -83,7 +100,7 @@ def _add_global_flags(parser: argparse.ArgumentParser) -> None:
         default=None,
         help="Path to agenthicc.toml.",
     )
-    parser.add_argument("--version", action="version", version=f"agenthicc {package_version()}")
+    parser.add_argument("--version", action=_VersionAction)
     parser.add_argument(
         "--continue",
         dest="continue_session",
@@ -155,14 +172,14 @@ def parse_cli() -> tuple[CLIContext, argparse.Namespace]:
         _fast_help_parser().parse_args(argv)
         raise AssertionError("argparse help should terminate")
 
-    from agenthicc.cli.registry import _discover, _as_tree, _wire
+    from agenthicc.cli import registry
 
     # Parse only global options first.  This gives trusted project-command
     # discovery the same configuration snapshot later consumed by the runner,
-    # without executing dynamic command modules to learn those options.
+    # and leaves the command path at the front of the remaining arguments.
     bootstrap_parser = argparse.ArgumentParser(add_help=False)
     _add_global_flags(bootstrap_parser)
-    bootstrap_ns, _ = bootstrap_parser.parse_known_args(argv)
+    bootstrap_ns, remaining = bootstrap_parser.parse_known_args(argv)
     config = None
     try:
         from agenthicc.config import load_config
@@ -175,18 +192,21 @@ def parse_cli() -> tuple[CLIContext, argparse.Namespace]:
     except Exception:  # noqa: BLE001
         pass
 
-    _discover(
+    registry.discover_plugins(
         strict_cli_shadow=bool(
             getattr(getattr(config, "plugins", None), "strict_cli_shadow", False)
         ),
     )
+    index = registry.command_index()
 
     parser = argparse.ArgumentParser(
         prog="agenthicc",
         description="Agenthicc — state-driven agent OS for autonomous software engineering",
     )
     _add_global_flags(parser)
-    _wire(parser, _as_tree())
+    # Only the selected command's module is imported; every other node is a
+    # help-only stub (AGX-01).
+    registry.wire(parser, index, index.resolve(registry.leading_tokens(remaining)))
 
     ns = parser.parse_args()
     ns_values = vars(ns)
@@ -201,17 +221,16 @@ def parse_cli() -> tuple[CLIContext, argparse.Namespace]:
 
 
 def _fast_help_parser() -> argparse.ArgumentParser:
-    """Build help without importing dynamic command implementations."""
+    """Build help from the built-in manifest without importing any command."""
+    from agenthicc.cli import registry
+
     parser = argparse.ArgumentParser(
         prog="agenthicc",
         description="Agenthicc — state-driven agent OS for autonomous software engineering",
-        epilog=(
-            "Built-in command groups: agents, attach, auth, config, jobs, mcp, runs, "
-            "sessions, skills, tools, trust, and workflows. Project commands are discovered "
-            "after startup."
-        ),
+        epilog="Project and user command plugins are discovered when a command runs.",
     )
     _add_global_flags(parser)
+    registry.wire(parser, registry.command_index(), None)
     return parser
 
 
@@ -242,12 +261,3 @@ def _build_ctx(
         json_output=bool(vars(ns).get("json_output", False)),
         config=typed_config,
     )
-
-
-# ── backward-compat shim ──────────────────────────────────────────────────────
-
-
-def _parse_args() -> argparse.Namespace:
-    """Legacy shim — returns just the Namespace for callers that haven't migrated."""
-    _, ns = parse_cli()
-    return ns

@@ -1,21 +1,19 @@
-"""Decorator-based CLI command registry (PRD-79).
+"""CLI command registry: the built-in manifest plus plugin commands (PRD-79, AGX-01).
 
-Usage
------
+Built-in commands are declared in :mod:`agenthicc.cli.manifest` and imported
+only when an invocation selects them. Plugin commands in ``~/.agenthicc/cli/``
+and ``.agenthicc/cli/`` register with the decorators below and override a
+built-in command at the same path:
+
     from agenthicc.cli.registry import command, group
     from agenthicc.cli.context import CLIContext
 
-    @group("sessions", help="Manage saved sessions")
+    @group("deploy", help="Deploy this project")
     def _(): ...
 
-    @command("sessions", "list")
-    def sessions_list(ctx: CLIContext) -> None:
-        '''List sessions for the current directory.'''
-        ...
-
-    @command("sessions", "show")
-    async def sessions_show(ctx: CLIContext, session_id: str) -> None:
-        '''Show detail for one session.'''
+    @command("deploy", "preview")
+    async def deploy_preview(ctx: CLIContext, branch: str = "main") -> None:
+        '''Deploy a preview environment.'''
         ...
 
 CLIContext is injected by annotation type, not by parameter name — any name works.
@@ -25,61 +23,50 @@ Positional args, --flags, and --options are inferred from the function signature
 from __future__ import annotations
 
 import argparse
-import asyncio
 import importlib
 import importlib.util
 import inspect
-import pkgutil
 import sys
 import typing
 import warnings
+from collections.abc import Callable, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, TypeAlias, TypedDict
+from typing import TypeAlias
 
-from agenthicc.plugins.trust import current_extension_trust
+from agenthicc.cli.manifest import BUILTIN_COMMANDS, BUILTIN_GROUPS, CommandRef
 
 Handler: TypeAlias = Callable[..., object]
+CommandPath: TypeAlias = tuple[str, ...]
 
 
-class _TreeNode(TypedDict):
-    help: str
-    entry: _Entry | None
-    children: dict[str, _TreeNode]
-    source: str
-
-
-Tree: TypeAlias = dict[str, _TreeNode]
-
-
-# ── entry dataclass ────────────────────────────────────────────────────────────
+# ── entries ────────────────────────────────────────────────────────────────────
 
 
 @dataclass
 class _Entry:
-    path: tuple[str, ...]
+    path: CommandPath
     help: str
     handler: Handler
     is_async: bool
-    source: str = "builtin"  # "builtin" | "user" | "project"
+    source: str = "builtin"  # "builtin" | "user" | "project" | "plugin"
 
 
-# ── flat registries ────────────────────────────────────────────────────────────
-
-_REGISTRY: dict[tuple[str, ...], _Entry] = {}
-_GROUPS: dict[tuple[str, ...], str] = {}
+# Plugin registrations only; built-in commands come from the manifest.
+_PLUGIN_COMMANDS: dict[CommandPath, _Entry] = {}
+_PLUGIN_GROUPS: dict[CommandPath, str] = {}
 
 # ContextVar lets @command() read the source tag at decoration time even
 # when commands are loaded dynamically from user/project directories.
-_LOADING_SOURCE: ContextVar[str] = ContextVar("_LOADING_SOURCE", default="builtin")
+_LOADING_SOURCE: ContextVar[str] = ContextVar("_LOADING_SOURCE", default="plugin")
 
 
-# ── public decorators ─────────────────────────────────────────────────────────
+# ── public decorators (plugin API) ─────────────────────────────────────────────
 
 
 def command(*path: str, help: str = "") -> Callable[[Handler], Handler]:
-    """Register a leaf command handler at *path*.
+    """Register a plugin command handler at *path*.
 
     Signature inference rules (applied at argparse-build time):
       param: str            (no default)  → positional argument
@@ -90,11 +77,11 @@ def command(*path: str, help: str = "") -> Callable[[Handler], Handler]:
 
     def decorator(fn: Handler) -> Handler:
         doc = help or (inspect.getdoc(fn) or "").splitlines()[0]
-        _REGISTRY[path] = _Entry(
+        _PLUGIN_COMMANDS[path] = _Entry(
             path=path,
             help=doc,
             handler=fn,
-            is_async=asyncio.iscoroutinefunction(fn),
+            is_async=inspect.iscoroutinefunction(fn),
             source=_LOADING_SOURCE.get(),
         )
         return fn
@@ -103,8 +90,8 @@ def command(*path: str, help: str = "") -> Callable[[Handler], Handler]:
 
 
 def group(*path: str, help: str = "") -> Callable[[Handler | None], Handler | None]:
-    """Declare a command group (branch node with no handler of its own)."""
-    _GROUPS[path] = help
+    """Declare a plugin command group (branch node with no handler of its own)."""
+    _PLUGIN_GROUPS[path] = help
 
     def decorator(fn: Handler | None = None) -> Handler | None:
         return fn
@@ -129,16 +116,103 @@ def optional_positionals(*names: str) -> Callable[[Handler], Handler]:
     return decorator
 
 
+# ── the command index ──────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class CommandIndex:
+    """Every known command path and group, built-in and plugin, without imports."""
+
+    commands: Mapping[CommandPath, CommandRef | _Entry]
+    groups: Mapping[CommandPath, str]
+
+    def nodes(self) -> list[CommandPath]:
+        """Every command and group path, in declaration order."""
+        seen: dict[CommandPath, None] = {}
+        for path in (*self.groups, *self.commands):
+            for depth in range(1, len(path) + 1):
+                seen.setdefault(path[:depth], None)
+        return list(seen)
+
+    def children(self, prefix: CommandPath) -> list[str]:
+        """Names of the nodes directly below *prefix*, in declaration order."""
+        names: dict[str, None] = {}
+        for path in self.nodes():
+            if len(path) == len(prefix) + 1 and path[: len(prefix)] == prefix:
+                names.setdefault(path[-1], None)
+        return list(names)
+
+    def help_for(self, path: CommandPath) -> str:
+        source = self.commands.get(path)
+        if source is not None and source.help:
+            return source.help
+        return self.groups.get(path, "")
+
+    def source_for(self, path: CommandPath) -> str:
+        source = self.commands.get(path)
+        return source.source if isinstance(source, _Entry) else "builtin"
+
+    def resolve(self, tokens: Sequence[str]) -> CommandPath | None:
+        """Return the longest command or group path that prefixes *tokens*."""
+        known = set(self.nodes())
+        best: CommandPath | None = None
+        for depth in range(1, len(tokens) + 1):
+            candidate = tuple(tokens[:depth])
+            if candidate in known:
+                best = candidate
+            else:
+                break
+        return best
+
+
+def command_index() -> CommandIndex:
+    """Merge the built-in manifest with registered plugins; plugins win."""
+    commands: dict[CommandPath, CommandRef | _Entry] = {ref.path: ref for ref in BUILTIN_COMMANDS}
+    commands.update(_PLUGIN_COMMANDS)
+    groups = dict(BUILTIN_GROUPS)
+    groups.update(_PLUGIN_GROUPS)
+    return CommandIndex(commands=commands, groups=groups)
+
+
+def load_entry(source: CommandRef | _Entry) -> _Entry:
+    """Import a built-in command's module and return its entry."""
+    if isinstance(source, _Entry):
+        return source
+    module_name, _, function_name = source.target.partition(":")
+    handler: Handler = vars(importlib.import_module(module_name))[function_name]
+    return _Entry(
+        path=source.path,
+        help=source.help,
+        handler=handler,
+        is_async=inspect.iscoroutinefunction(handler),
+        source="builtin",
+    )
+
+
+def leading_tokens(arguments: Sequence[str]) -> list[str]:
+    """Return the positional words before the first option in *arguments*."""
+    tokens: list[str] = []
+    for argument in arguments:
+        if argument.startswith("-"):
+            break
+        tokens.append(argument)
+    return tokens
+
+
 # ── argparse wiring ────────────────────────────────────────────────────────────
 
 
-def _add_params(parser: argparse.ArgumentParser, fn: Handler) -> None:
-    """Add argparse arguments inferred from the function signature."""
+def _add_params(parser: argparse.ArgumentParser, fn: Handler) -> bool:
+    """Add argparse arguments inferred from the function signature.
+
+    Returns whether an optional positional argument was added.
+    """
     from agenthicc.cli.context import CLIContext
 
     hints = typing.get_type_hints(fn)
     sig = inspect.signature(fn)
     optional: frozenset[str] = getattr(fn, "_optional_positionals", frozenset())
+    added_optional = False
     for name, param in sig.parameters.items():
         ann = hints.get(name, inspect.Parameter.empty)
         default = param.default
@@ -156,6 +230,7 @@ def _add_params(parser: argparse.ArgumentParser, fn: Handler) -> None:
                 default=None if default is empty else default,
                 metavar=name.upper(),
             )
+            added_optional = True
             continue
         if ann is bool:
             parser.add_argument(
@@ -173,52 +248,57 @@ def _add_params(parser: argparse.ArgumentParser, fn: Handler) -> None:
                 default=default,
                 type=ann if ann in (int, float) else str,
             )
+    return added_optional
 
 
-def _as_tree() -> Tree:
-    """Build a nested dict from the flat _REGISTRY and _GROUPS."""
-    tree: Tree = {}
+def wire(
+    parser: argparse.ArgumentParser,
+    index: CommandIndex,
+    selected: CommandPath | None,
+) -> _Entry | None:
+    """Wire subcommands into *parser* and return the selected command's entry.
 
-    for path, help_text in _GROUPS.items():
-        node = tree
-        for i, part in enumerate(path):
-            slot = node.setdefault(
-                part, {"help": "", "entry": None, "children": {}, "source": "builtin"}
-            )
-            if i == len(path) - 1:
-                slot["help"] = help_text
-            node = slot["children"]
-
-    for path, entry in _REGISTRY.items():
-        node = tree
-        for part in path[:-1]:
-            slot = node.setdefault(
-                part, {"help": "", "entry": None, "children": {}, "source": entry.source}
-            )
-            node = slot["children"]
-        slot = node.setdefault(
-            path[-1], {"help": entry.help, "entry": None, "children": {}, "source": entry.source}
-        )
-        slot["entry"] = entry
-        slot["source"] = entry.source
-        if not slot["help"]:
-            slot["help"] = entry.help
-
-    return tree
+    Only the command on the *selected* path is imported and given its real
+    parameters. Every other node is a help-only stub, so ``--help`` listings
+    and "invalid choice" errors stay complete without importing their modules.
+    """
+    return _wire_level(parser, (), index, selected or ())
 
 
-def _wire(parser: argparse.ArgumentParser, tree: Tree) -> None:
-    """Recursively wire the tree into argparse subparsers (unlimited depth)."""
-    if not tree:
-        return
-    subs = parser.add_subparsers(metavar="<subcommand>")
-    for name, node in tree.items():
-        source_badge = f"  [{node['source']}]" if node["source"] != "builtin" else ""
-        p = subs.add_parser(name, help=f"{node['help']}{source_badge}")
-        if (entry := node["entry"]) is not None:
-            _add_params(p, entry.handler)
-            p.set_defaults(_entry=entry)
-        _wire(p, node["children"])
+def _wire_level(
+    parser: argparse.ArgumentParser,
+    prefix: CommandPath,
+    index: CommandIndex,
+    selected: CommandPath,
+) -> _Entry | None:
+    names = index.children(prefix)
+    if not names:
+        return None
+    subparsers = parser.add_subparsers(metavar="<subcommand>")
+    # A group without a handler of its own needs a subcommand; the root does
+    # not (no subcommand starts the TUI), nor does a command with children.
+    subparsers.required = bool(prefix) and prefix not in index.commands
+    selected_entry: _Entry | None = None
+    for name in names:
+        path = (*prefix, name)
+        source = index.source_for(path)
+        badge = f"  [{source}]" if source != "builtin" else ""
+        child = subparsers.add_parser(name, help=f"{index.help_for(path)}{badge}")
+        if selected[: len(path)] != path:
+            continue
+        if path == selected and path in index.commands:
+            selected_entry = load_entry(index.commands[path])
+            optional = _add_params(child, selected_entry.handler)
+            child.set_defaults(_entry=selected_entry)
+            if optional and index.children(path):
+                # argparse would give an optional positional's value to the
+                # subcommand slot. The path resolved to this command, so the
+                # next word is not a subcommand: list them in the help instead.
+                child.epilog = "subcommands: " + ", ".join(index.children(path))
+                continue
+        nested = _wire_level(child, path, index, selected)
+        selected_entry = nested or selected_entry
+    return selected_entry
 
 
 def _call(entry: _Entry, ctx: object, ns: argparse.Namespace) -> None:
@@ -237,6 +317,7 @@ def _call(entry: _Entry, ctx: object, ns: argparse.Namespace) -> None:
                 kwargs[name] = getattr(ns, attr)
     result = entry.handler(**kwargs)
     if inspect.isawaitable(result):
+        import asyncio
 
         async def _wait() -> object:
             return await result
@@ -244,23 +325,15 @@ def _call(entry: _Entry, ctx: object, ns: argparse.Namespace) -> None:
         asyncio.run(_wait())
 
 
-# ── discovery ──────────────────────────────────────────────────────────────────
-
-
-def _discover_package(package_name: str) -> None:
-    """Import every module in *package_name* to trigger @command registrations."""
-    try:
-        pkg = importlib.import_module(package_name)
-    except ImportError:
-        return
-    for _, name, _ in pkgutil.iter_modules(getattr(pkg, "__path__", [])):
-        importlib.import_module(f"{package_name}.{name}")
+# ── plugin discovery ───────────────────────────────────────────────────────────
 
 
 def _discover_directory(directory: Path, source: str) -> None:
     """Dynamically load command plugins from *directory*, tagged with *source*."""
     if not directory.is_dir():
         return
+
+    from agenthicc.plugins.trust import current_extension_trust
 
     trust = current_extension_trust()
     token = _LOADING_SOURCE.set(source)
@@ -319,6 +392,8 @@ def _load_toml_commands(toml_file: Path, source: str) -> None:
                 tmpl: str, args: list[dict[str, object]], h: str, handler_name: str
             ) -> Handler:
                 async def handler(**kwargs: object) -> None:
+                    import asyncio
+
                     argv = shlex.split(tmpl.format(**kwargs))
                     process = await asyncio.create_subprocess_exec(*argv)
                     returncode = await process.wait()
@@ -340,7 +415,7 @@ def _load_toml_commands(toml_file: Path, source: str) -> None:
                 handler.__kwdefaults__ = defaults
                 return handler
 
-            _REGISTRY[path] = _Entry(
+            _PLUGIN_COMMANDS[path] = _Entry(
                 path=path,
                 help=help_str,
                 handler=_make_handler(run_tmpl, arg_specs, help_str, "_".join(path_list)),
@@ -351,15 +426,13 @@ def _load_toml_commands(toml_file: Path, source: str) -> None:
         _LOADING_SOURCE.reset(token)
 
 
-def _check_shadows(strict: bool = False) -> None:
+def _check_shadows(user_paths: set[CommandPath], strict: bool = False) -> None:
     """Warn (or error) when a project command shadows a user-global command."""
-    user_paths = {p for p, e in _REGISTRY.items() if e.source == "user"}
-    project_paths = {p for p, e in _REGISTRY.items() if e.source == "project"}
-    conflicts = user_paths & project_paths
-    for p in sorted(conflicts):
+    project_paths = {path for path, entry in _PLUGIN_COMMANDS.items() if entry.source == "project"}
+    for path in sorted(user_paths & project_paths):
         msg = (
             f"[agenthicc] .agenthicc/cli/ (project) shadows "
-            f"~/.agenthicc/cli/ (user) for command path {list(p)}. "
+            f"~/.agenthicc/cli/ (user) for command path {list(path)}. "
             f"Run `agenthicc --help` to see which commands are active."
         )
         if strict:
@@ -367,25 +440,22 @@ def _check_shadows(strict: bool = False) -> None:
         warnings.warn(msg, stacklevel=2)
 
 
-def _discover(
+def discover_plugins(
     project_dir: Path | None = None,
     user_dir: Path | None = None,
     strict_cli_shadow: bool = False,
 ) -> None:
-    """Discover commands from all three layers in precedence order.
+    """Load user-global then project-local command plugins.
 
     Every plugin file must be trusted (``agenthicc trust``); files in the
-    user's own ``~/.agenthicc`` are trusted by location.
+    user's own ``~/.agenthicc`` are trusted by location. A directory that does
+    not exist costs one ``stat``.
     """
-    # 1. Built-in (lowest priority)
-    _discover_package("agenthicc.cli.commands")
-
-    # 2. User-global
     user_cli = (user_dir or Path.home() / ".agenthicc") / "cli"
     _discover_directory(user_cli, source="user")
+    user_paths = {path for path, entry in _PLUGIN_COMMANDS.items() if entry.source == "user"}
 
-    # 3. Project-local — highest priority
     project_cli = (project_dir or Path(".agenthicc")) / "cli"
     _discover_directory(project_cli, source="project")
 
-    _check_shadows(strict=strict_cli_shadow)
+    _check_shadows(user_paths, strict=strict_cli_shadow)

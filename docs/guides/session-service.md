@@ -59,10 +59,12 @@ additionally accepts `--payload` holding a JSON object; `send` has no
 signature from memory.
 
 The existing plural `sessions` commands remain compatibility tools for the
-kernel/conversation artifacts. `sessions list` opens a paginated interactive
-selector in a terminal; pressing Enter resumes the selected session and loads
-its transcript. When output is redirected, it prints a deterministic page
-instead. It merges the historical project-local index with the current
+kernel/conversation artifacts. In a terminal, `sessions list` opens the
+agents hub's History tab (`agenthicc agents --tab history`), where saved
+sessions are listed with finished background agents, newest first; pressing
+Enter on a saved session resumes it in its own project directory and loads its
+transcript. When output is redirected, it prints a deterministic page instead.
+It merges the historical project-local index with the current
 user-wide TUI index, so it shows sessions created by both runtime generations.
 The singular `session` group reads the client-neutral projection and is the
 path new adapters should use.

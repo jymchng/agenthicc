@@ -5,6 +5,8 @@ from __future__ import annotations
 import pytest
 from unittest.mock import MagicMock
 
+from agenthicc.tui.workspace.workspace import Workspace
+
 pytestmark = pytest.mark.unit
 
 
@@ -89,16 +91,15 @@ def test_status_height_matches_render_without_model():
     assert comp.height(80) == render_lines + 1
 
 
-# ── _build() contains a blank separator as its first element ─────────────────
+# ── the live block starts with a blank separator ─────────────────────────────
 
 
-def test_build_first_element_is_blank():
-    """Workspace._build() must start with Text('') as the blank separator."""
-    from rich.text import Text
-    from rich.console import Group
-    from agenthicc.tui.workspace.workspace import Workspace
+def _workspace() -> Workspace:
+    from io import StringIO
 
-    console = MagicMock()
+    from rich.console import Console
+
+    console = Console(file=StringIO(), width=80, color_system=None)
     state = _make_app_state()
     state.input = MagicMock()
     state.input.paste_condensed.return_value = False
@@ -106,39 +107,31 @@ def test_build_first_element_is_blank():
     state.input.buf.return_value = []
     state.input.cursor.return_value = 0
     state.overlay.return_value = ""
-
+    state.conversation.notification.return_value = None
+    state.conversation.loop_status.return_value = None
+    state.conversation.workflow_override.return_value = None
+    state.conversation.subagent_pool_state.return_value = None
+    state.conversation.live_tool_overflow.return_value = 0
+    state.workflow_run.return_value = None
     ws = Workspace(state, console)
     ws.overlays._overlay = None  # no active overlay
+    return ws
 
-    group = ws._build()
-    assert isinstance(group, Group)
-    first = group.renderables[0]
-    assert isinstance(first, Text)
-    assert first.plain == ""  # blank line
+
+def test_build_first_line_is_blank():
+    """The live block's first row is the blank separator."""
+    from agenthicc.tui.workspace.live_region import lines_text
+
+    assert lines_text(_workspace()._build_lines())[0] == ""
 
 
 def test_build_total_live_block_height_with_model():
-    """With model set: Live Block = 1 blank + 3 status + 1 border + 1 composer
-    + 1 border + 2 footer = 9 lines (borders and composer may vary, but
-    blank + status must be 4).
-    """
-    from agenthicc.tui.workspace.workspace import Workspace
+    """With a model: blank + 3 status rows + border + composer + border + 2
+    footer rows + bottom margin."""
+    from agenthicc.tui.workspace.live_region import lines_text
 
-    console = MagicMock()
-    state = _make_app_state()
-    state.input = MagicMock()
-    state.input.paste_condensed.return_value = False
-    state.input.paste_label.return_value = ""
-    state.input.buf.return_value = []
-    state.input.cursor.return_value = 0
-    state.overlay.return_value = ""
-
-    ws = Workspace(state, console)
-    ws.overlays._overlay = None
-
-    group = ws._build()
-    # First element: blank separator
-    assert group.renderables[0].plain == ""
-    # Second element: status bar Group with 3 lines (model is set)
-    status_rendered = group.renderables[1]
-    assert _rendered_line_count(status_rendered) == 3
+    rows = lines_text(_workspace()._build_lines())
+    assert rows[0] == ""
+    assert "abc-123" in rows[3]  # the third status row: session and cost
+    assert set(rows[4]) == {"─"}
+    assert len(rows) == 1 + 3 + 1 + 1 + 1 + 2 + 1

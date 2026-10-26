@@ -51,7 +51,14 @@ def test_read_key_control_bytes(
         (b"F", Key.END),
         (b"Z", Key.SHIFT_TAB),
         (b"1~", Key.HOME),
-        (b"3~", Key.CHAR),
+        (b"3~", Key.DELETE),
+        (b"2~", Key.INSERT),
+        (b"15~", Key.FUNCTION),
+        (b"1;5C", Key.MODIFIED),
+        (b"I", Key.FOCUS_IN),
+        (b"O", Key.FOCUS_OUT),
+        (b"<0;3;4M", Key.MOUSE),
+        (b"99~", Key.UNKNOWN),
         (b"4~", Key.END),
         (b"5~", Key.PAGE_UP),
         (b"6~", Key.PAGE_DOWN),
@@ -77,8 +84,9 @@ def test_read_key_escape_paste_and_utf8(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setattr("os.read", lambda _fd, _size: next(values))
     assert read_key(0) == (Key.CHAR, "é")
 
+    # Invalid UTF-8 is not an Esc press.
     monkeypatch.setattr("os.read", lambda _fd, _size: b"\xff")
-    assert read_key(0)[0] is Key.ESC
+    assert read_key(0)[0] is Key.UNKNOWN
 
 
 def test_read_key_timeout_invalid_paste_and_long_utf8(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -102,7 +110,7 @@ def test_read_key_timeout_invalid_paste_and_long_utf8(monkeypatch: pytest.Monkey
     monkeypatch.setattr("os.read", lambda _fd, _size: next(values))
     assert read_key(0) == (Key.CHAR, "😀")
     monkeypatch.setattr("os.read", lambda _fd, _size: b"\x01")
-    assert read_key(0)[0] is Key.ESC
+    assert read_key(0)[0] is Key.CTRL_A
 
 
 def test_raw_mode_applies_and_restores_cbreak_settings(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -277,8 +285,11 @@ def test_windows_console_and_raw_mode_paths(monkeypatch: pytest.MonkeyPatch) -> 
         raising=False,
     )
     assert win._console_handle() == 7
-    assert win._next_input_event() == (1, True, 9, "\0", 255)
-    assert win._read_key_console() == (Key.SHIFT_TAB, "")
+    from agenthicc.tui.terminal.windows_backend import _ConsoleEvent
+
+    assert win._next_input_event() == _ConsoleEvent(1, True, 9, "\0", 255)
+    # 255 holds every modifier.
+    assert win._read_key_console() == (Key.MODIFIED, "ctrl+alt+shift+tab")
     win._set_raw_input_mode()
     assert win._orig_mode == 255
     with win.enter_raw_mode():

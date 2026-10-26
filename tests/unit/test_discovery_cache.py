@@ -70,3 +70,31 @@ def test_invalid_or_oversized_discovery_cache_is_ignored(tmp_path: Path) -> None
 
     path.write_bytes(b"x" * (256 * 1024 + 1))
     assert read_discovery_cache(path) is None
+
+
+def test_extension_discovery_fingerprints_skills_not_the_whole_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Session journals under the global directory are not extension sources (AGX-02)."""
+    from agenthicc.config import AgenthiccConfig
+    from agenthicc.runners import discovery_cache, tui_session
+
+    global_dir = tmp_path / "global"
+    (global_dir / "sessions").mkdir(parents=True)
+    (global_dir / "sessions" / "journal.jsonl").write_text("{}\n", encoding="utf-8")
+    cfg = AgenthiccConfig()
+    cfg.skills.default_skill_directory = str(global_dir)
+    cfg.skills.install_default_skills = False
+    monkeypatch.chdir(tmp_path)
+    seen: list[Path] = []
+
+    def record(roots: tuple[Path, ...]) -> discovery_cache.DiscoveryFingerprint:
+        seen.extend(roots)
+        raise RuntimeError("stop after fingerprinting")
+
+    monkeypatch.setattr(discovery_cache, "fingerprint_sources", record)
+    with pytest.raises(RuntimeError, match="stop after fingerprinting"):
+        tui_session._discover_extensions_sync(cfg)
+
+    assert global_dir / "skills" in seen
+    assert global_dir not in seen

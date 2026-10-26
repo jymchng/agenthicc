@@ -1,45 +1,50 @@
 # Background sessions
 
 Long-running work can be detached from the foreground TUI and managed
-independently. The manager owns worker leases, bounded process creation,
+independently. The background supervisor owns worker leases, bounded process creation,
 cancellation, and stale detection — it is a control plane, not a second agent
 runtime.
 
 ## From the TUI
 
-| Command | Effect |
+| Command or key | Effect |
 |---|---|
-| `/bg` (or `/background`) | Move the current task into the background |
-| `/bg list` | List running background sessions |
-| `/bg <n>` | Re-attach and replay buffered output |
-| `/inbox` | Review pending background approvals, questions, and input requests |
+| `/bg` (or `/background`, `/detach`) | Hand the current session to a background worker; the agents hub then opens with it selected |
+| `/agents [running\|needs-you\|history\|library]` | Open the agents hub over the conversation; Esc returns to it |
+| Ctrl+G, or ← on an empty prompt | Open the agents hub (← right after deleting asks for a second press) |
+| `/inbox` | Open the hub's Needs you tab: pending approvals, questions and input requests |
+| `/workers` | Open the hub's Running tab; `/workers --json` prints the worker manifests |
 
 ## From the CLI
 
-`jobs` is the scriptable form; `agents` opens the same manager UI.
+`agenthicc agents` opens the agents hub full screen (`--tab`, `SESSION_ID`,
+`--run RUN_ID`); its subcommands are the scriptable form.
 
 ```bash
-agenthicc jobs list                # list background sessions
-agenthicc jobs status <id>         # show one session
-agenthicc jobs priority <id> urgent # set urgent, normal, or low priority
-agenthicc jobs cancel <id>         # cancel a session
-agenthicc jobs resume <id>         # resume a session
-agenthicc jobs retry <id>          # retry a failed session
-agenthicc jobs approve <id>        # approve a waiting session
-agenthicc jobs reject <id>         # reject a waiting session
-agenthicc jobs input <id>          # provide input to a waiting session
-agenthicc jobs inbox list --json   # list pending typed interactions and versions
-agenthicc jobs inbox answer ITEM_ID TEXT VERSION KEY
-agenthicc jobs inbox approve ITEM_ID VERSION KEY
-agenthicc jobs inbox reject ITEM_ID VERSION KEY
-agenthicc jobs inbox expire ITEM_ID VERSION KEY
-agenthicc jobs rename <id>         # rename a session
-agenthicc jobs labels <id>         # set comma-separated labels
-agenthicc jobs notifications       # inspect notification delivery receipts
-agenthicc jobs archive <id>        # archive a session
-agenthicc jobs delete <id>         # move to recoverable trash
-agenthicc jobs restore <id>        # restore a deleted session
-agenthicc jobs purge               # permanently remove expired trash
+agenthicc agents                     # the hub: running, needs you, history, library
+agenthicc agents --tab needs-you     # open on one tab
+agenthicc agents <id>                # open one agent's detail view
+agenthicc agents list                # list background agents
+agenthicc agents status <id>         # show one agent
+agenthicc agents priority <id> urgent # set urgent, normal, or low priority
+agenthicc agents cancel <id>         # stop an agent
+agenthicc agents resume <id>         # resume an agent
+agenthicc agents retry <id>          # retry a failed agent
+agenthicc agents approve <id>        # approve a waiting agent
+agenthicc agents reject <id>         # reject a waiting agent
+agenthicc agents input <id>          # provide input to a waiting agent
+agenthicc agents inbox list --json   # list pending typed interactions and versions
+agenthicc agents inbox answer ITEM_ID TEXT VERSION KEY
+agenthicc agents inbox approve ITEM_ID VERSION KEY
+agenthicc agents inbox reject ITEM_ID VERSION KEY
+agenthicc agents inbox expire ITEM_ID VERSION KEY
+agenthicc agents rename <id>         # rename an agent
+agenthicc agents labels <id>         # set comma-separated labels
+agenthicc agents notifications       # inspect notification delivery receipts
+agenthicc agents archive <id>        # archive an agent
+agenthicc agents delete <id>         # move to recoverable trash
+agenthicc agents restore <id>        # restore a deleted agent
+agenthicc agents purge               # permanently remove expired trash
 ```
 
 New requests use `normal` priority unless overridden. To request a specific
@@ -47,19 +52,19 @@ priority on admission, use `agenthicc run --background --priority low --intent
 "..."` or `agenthicc --priority low --goal "..." --detach`. Durable queueing
 is opt-in with `[background].queue_enabled = true`; otherwise a full worker
 pool continues to return the existing capacity error. Queue positions shown in
-JSON and the `agents` manager are advisory.
+JSON and the agents hub are advisory.
 
-Useful flags: `jobs list --all --json --trash` and `jobs status --json`.
+Useful flags: `agents list --all --json --trash` and `agents status --json`.
 
 For one inbox covering approvals, questions, and explicit input prompts, use
-`/inbox` in the TUI or `agenthicc jobs inbox list`. Each write is tied to the
+the hub's Needs you tab (`/inbox`) or `agenthicc agents inbox list`. Each write is tied to the
 listed item ID and version; use a fresh idempotency key for each intended
 response. Multi-question `ask_user` answers are JSON objects keyed by question
-ID. This inbox does not intercept or transform ordinary messages sent from a
-session's details view.
+ID. This inbox does not intercept or transform ordinary messages sent to an
+agent from the hub's composer.
 
 ```bash
-agenthicc jobs list --json
+agenthicc agents list --json
 ```
 
 ```json
@@ -84,9 +89,9 @@ retry from a first run, and `cancellation_reason` records *why* a job stopped.
 
 | Situation | Command |
 |---|---|
-| Waiting on an approval | `jobs status <id> --json`, then `jobs approve` or `jobs reject` |
-| Waiting on a question | `jobs input <id>` |
-| Cancelled and missing from the list | `jobs list --trash`, then `jobs restore <id>` |
+| Waiting on an approval | `y`/`n` on it in the hub, or `agents status <id> --json`, then `agents approve` or `agents reject` |
+| Waiting on a question | `i` on it in the hub, or `agents inbox answer` |
+| Cancelled and missing from the list | `agents list --trash`, then `agents restore <id>` |
 
 ## What is durable
 
@@ -102,7 +107,7 @@ for the signed payload format, secret setup, private-network policy, and
 delivery/recovery behavior. Inspect delivery receipts with:
 
 ```bash
-agenthicc jobs notifications --status failed --json
+agenthicc agents notifications --status failed --json
 ```
 
 Receipt output contains event/session IDs, destination names, attempt counts,

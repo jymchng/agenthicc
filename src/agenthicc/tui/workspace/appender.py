@@ -315,6 +315,18 @@ class ScrollBufferAppender:
             event.rendered = False
             self._queue_event(event)
 
+    def announce(self, text: str) -> None:
+        """Print a plain sentence in order with the transcript (AGX-13).
+
+        Used for screen-reader announcements; like :meth:`replay`, it is
+        presentation only and never reaches the session's event log.
+        """
+        from agenthicc.tui.conversation_store import ConversationEvent
+
+        self._queue_event(
+            ConversationEvent(event_id="", kind="announcement", payload={"text": text})
+        )
+
     # ── event queuing ─────────────────────────────────────────────────────────
 
     def _queue_event(self, ev: ConversationEvent) -> None:
@@ -744,6 +756,13 @@ def _render_system(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
     if text:
         self._console.print(f"[dim]{_e(text)}[/dim]", markup=True, highlight=False)
         self._console.print()
+
+
+@register_renderer("announcement")
+def _render_announcement(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
+    text = str(ev.payload.get("text", ""))
+    if text:
+        self._console.print(text, markup=False, highlight=False)
 
 
 @register_renderer("tool_recovery")

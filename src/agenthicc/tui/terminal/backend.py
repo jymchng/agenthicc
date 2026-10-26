@@ -45,6 +45,18 @@ class TerminalBackend(Protocol):
         """Best-effort terminal restore — safe to call even after an error."""
         ...
 
+    def close(self) -> None:
+        """Release what :meth:`read_key` uses, once no read is in progress."""
+        ...
+
+    def set_reporting(self, *, focus: bool | None = None, mouse: bool | None = None) -> None:
+        """Turn focus and/or mouse reporting on or off (AGX-13).
+
+        Reports arrive from :meth:`read_key` as ``Key.FOCUS_IN`` /
+        ``Key.FOCUS_OUT`` and ``Key.MOUSE``. Leaving raw mode turns both off.
+        """
+        ...
+
 
 def get_backend() -> TerminalBackend:
     """Return the appropriate ``TerminalBackend`` for the current platform.

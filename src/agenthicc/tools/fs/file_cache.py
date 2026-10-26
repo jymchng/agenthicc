@@ -37,16 +37,28 @@ CREATE TABLE IF NOT EXISTS files (
 
 
 class WorkspaceFileCache:
-    """Durable cache of file reads, invalidated by ``(mtime, size, encoding)``."""
+    """Durable cache of file reads, invalidated by ``(mtime, size, encoding)``.
 
-    __slots__ = ("_db",)
+    The store opens on first use, on the thread that reads files, so installing
+    the cache for a session does no disk I/O before its first frame (AGX-02).
+    """
+
+    __slots__ = ("_db", "_db_path")
 
     def __init__(self, db_path: Path) -> None:
-        db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._db = sqlite3.connect(str(db_path))
-        self._db.execute("PRAGMA journal_mode=WAL")
-        self._db.executescript(_SCHEMA)
-        self._db.commit()
+        self._db_path = db_path
+        self._db: sqlite3.Connection | None = None
+
+    def _connection(self) -> sqlite3.Connection:
+        db = self._db
+        if db is None:
+            self._db_path.parent.mkdir(parents=True, exist_ok=True)
+            db = sqlite3.connect(str(self._db_path))
+            db.execute("PRAGMA journal_mode=WAL")
+            db.executescript(_SCHEMA)
+            db.commit()
+            self._db = db
+        return db
 
     def get_fresh(self, abspath: str, encoding: str = "utf-8") -> str | None:
         """Return cached content iff the file on disk is unchanged.
@@ -59,10 +71,14 @@ class WorkspaceFileCache:
             st = os.stat(abspath)
         except OSError:
             return None
-        row = self._db.execute(
-            "SELECT mtime_ns, size, encoding, content FROM files WHERE abspath=?",
-            (abspath,),
-        ).fetchone()
+        row = (
+            self._connection()
+            .execute(
+                "SELECT mtime_ns, size, encoding, content FROM files WHERE abspath=?",
+                (abspath,),
+            )
+            .fetchone()
+        )
         if row is None:
             return None
         mtime_ns, size, enc, content = row
@@ -77,20 +93,24 @@ class WorkspaceFileCache:
         except OSError:
             return
         sha = hashlib.sha256(content.encode(encoding, errors="replace")).hexdigest()
-        self._db.execute(
+        db = self._connection()
+        db.execute(
             "INSERT OR REPLACE INTO files "
             "(abspath, sha256, mtime_ns, size, encoding, content, updated_at) "
             "VALUES (?,?,?,?,?,?,?)",
             (abspath, sha, st.st_mtime_ns, st.st_size, encoding, content, time.time()),
         )
-        self._db.commit()
+        db.commit()
 
     def __len__(self) -> int:
-        return int(self._db.execute("SELECT COUNT(*) FROM files").fetchone()[0])
+        return int(self._connection().execute("SELECT COUNT(*) FROM files").fetchone()[0])
 
     def close(self) -> None:
+        db = self._db
+        if db is None:
+            return
         try:
-            self._db.close()
+            db.close()
         except sqlite3.Error:
             pass
 

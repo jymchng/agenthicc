@@ -1,7 +1,9 @@
 """ApprovalOverlay — shown in the Live block while an agent tool awaits approval (PRD-78).
 
 Options are selectable with Up/Down and confirmed with Enter.
-Hotkeys (y/a/A/n) still work for quick access.
+Hotkeys (y/a/A/n) still work for quick access. A request from a subagent
+worker names it, and ``o`` opens that worker's transcript before deciding
+(AGX-08 §5.5); Esc denies only that call.
 """
 
 from __future__ import annotations
@@ -15,7 +17,7 @@ from agenthicc.tui.workspace.overlay import Overlay
 
 if TYPE_CHECKING:
     from rich.console import RenderableType
-    from agenthicc.tools.approval import ApprovalRequest, InteractiveApprovals
+    from agenthicc.tools.approval import ApprovalRequest, ApprovalRequester, InteractiveApprovals
 
 _BORDER_CHAR = "─"
 
@@ -59,10 +61,13 @@ class ApprovalOverlay(Overlay):
         req: ApprovalRequest,
         service: InteractiveApprovals,
         close_fn: Callable[[], None],
+        *,
+        open_requester: Callable[[ApprovalRequester], None] | None = None,
     ) -> None:
         self._req = req
         self._service = service
         self._close = close_fn
+        self._open_requester = open_requester
         self._selected = 0  # index into _OPTIONS
         self._scroll = 0  # first visible option index
 
@@ -94,8 +99,17 @@ class ApprovalOverlay(Overlay):
         lines.append(Text.from_markup(f"[bold yellow]  ⚠  {header}{suffix}[/bold yellow]"))
         lines.append(Text(_BORDER_CHAR * min(cols, 66), style="dim"))
 
-        # ── tool name ─────────────────────────────────────────────────────────
-        lines.append(Text.from_markup(f"  [bold]{_e(req.tool_name)}[/bold]"))
+        # ── who asks and the tool ─────────────────────────────────────────────
+        requester = req.requester
+        if requester is not None:
+            lines.append(
+                Text.from_markup(
+                    f"  [bold magenta]{_e(requester.describe())}[/bold magenta] wants to run "
+                    f"[bold]{_e(req.tool_name)}[/bold]"
+                )
+            )
+        else:
+            lines.append(Text.from_markup(f"  [bold]{_e(req.tool_name)}[/bold]"))
 
         if scope_items:
             for access in scope_items[:3]:
@@ -155,7 +169,10 @@ class ApprovalOverlay(Overlay):
             lines.append(Text("  ↓ more…", style="dim"))
 
         lines.append(Text(""))
-        lines.append(Text("  ↑↓ navigate  Enter confirm", style="dim"))
+        footer = "  ↑↓ navigate  Enter confirm"
+        if requester is not None and self._open_requester is not None:
+            footer += f"  o open {requester.label}'s transcript  Esc deny this call"
+        lines.append(Text(footer, style="dim"))
 
         return Group(*lines)
 
@@ -171,8 +188,11 @@ class ApprovalOverlay(Overlay):
             case Key.ENTER:
                 self._execute(self._selected)
             case Key.ESC:
-                # ESC always denies
+                # ESC always denies — only this call; a worker keeps running.
                 self._respond(dict(allowed=False))
+            case Key.CHAR if ch == "o" and self._req.requester is not None:
+                if self._open_requester is not None:
+                    self._open_requester(self._req.requester)
             case Key.CHAR if ch:
                 # Hotkey fast-path
                 for idx, (hotkey, _, _) in enumerate(options):

@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from typing import Generator
 
 from agenthicc.tui.cbreak_reader import Key, raw_mode as _raw_mode, read_key as _read_key
+from agenthicc.tui.cbreak_reader import set_reporting as _set_reporting
 
 __all__ = ["PosixBackend"]
 
@@ -23,6 +24,8 @@ class PosixBackend:
         self._fd: int | None = None
         self._cancel_read_fd: int | None = None
         self._cancel_write_fd: int | None = None
+        self._focus_reporting = False
+        self._mouse_reporting = False
 
     # ── TerminalBackend interface ─────────────────────────────────────────────
 
@@ -54,7 +57,19 @@ class PosixBackend:
             try:
                 yield
             finally:
+                self.set_reporting(
+                    focus=False if self._focus_reporting else None,
+                    mouse=False if self._mouse_reporting else None,
+                )
                 self.restore()
+
+    def set_reporting(self, *, focus: bool | None = None, mouse: bool | None = None) -> None:
+        """Turn focus and/or mouse reporting on or off (AGX-13)."""
+        if focus is not None:
+            self._focus_reporting = focus
+        if mouse is not None:
+            self._mouse_reporting = mouse
+        _set_reporting(focus=focus, mouse=mouse)
 
     def restore(self) -> None:
         """Wake a worker blocked in :meth:`read_key` during shutdown."""

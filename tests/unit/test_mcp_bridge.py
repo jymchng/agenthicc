@@ -7,15 +7,14 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from agenthicc.tools.mcp import (
-    McpServerConfig,
     McpToolSchema,
     McpToolBridge,
     AgenthiccMcpTool,
     McpToolRegistry,
     McpToolCallError,
-    McpConfigurationError,
     _extract_tool_content,
 )
+from agenthicc.tools.mcp_server_config import McpServerConfig, McpConfigurationError
 
 pytestmark = pytest.mark.unit
 

@@ -11,13 +11,8 @@ from __future__ import annotations
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from agenthicc.tools.mcp import (
-    AgenthiccMcpTool,
-    McpServerConfig,
-    McpToolBridge,
-    McpToolSchema,
-    McpToolRegistry,
-)
+from agenthicc.tools.mcp import AgenthiccMcpTool, McpToolBridge, McpToolSchema, McpToolRegistry
+from agenthicc.tools.mcp_server_config import McpServerConfig
 
 pytestmark = pytest.mark.integration
 

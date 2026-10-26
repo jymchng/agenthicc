@@ -962,7 +962,14 @@ async def test_book_transition_tools_cover_validation_and_decisions(
     assert getattr(create_builder, "__name__", "") == "create_build_book"
     assert (await complete(summary="compiled"))["ok"] is False
     await create_builder()
+    # The pair created above predates the compile baseline. The completion
+    # gate must require a fresh pair and retain those historical outputs.
+    new_pdf = pdf.with_name("book 20261026-120000-000001.pdf")
+    new_pdf.write_bytes(b"%PDF-1.7\nnew compile fixture")
+    _write_epub(new_pdf.with_suffix(".epub"))
     assert (await complete(summary="compiled"))["ok"] is True
+    assert pdf.read_bytes() == b"%PDF-1.7\nfixture"
+    assert pdf.with_suffix(".epub").is_file()
     event.clear()
     assert (await reject(summary=""))["ok"] is False
     assert (await reject(summary="rewrite the whole book"))["ok"] is True

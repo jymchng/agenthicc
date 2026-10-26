@@ -37,8 +37,9 @@ Select the workflow in the TUI or run it headlessly:
     uv run agenthicc --workflow parallel_code_plan
     uv run agenthicc workflows run parallel_code_plan --intent 'implement the feature'
 
-Inside the TUI, /workers displays the durable orchestration and task status.
-The CLI surfaces the same manifest:
+Inside the TUI, /workers opens the agents hub's Running tab, where each worker
+is listed under the session that started it; `/workers --json` prints the
+durable orchestration and task status. The CLI surfaces the same manifest:
 
     agenthicc worktrees list
     agenthicc worktrees show ORCHESTRATION_ID

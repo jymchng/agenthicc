@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import signal
 import subprocess
 import sys
@@ -138,6 +139,7 @@ def test_completed_session_detach_starts_same_session_without_replaying_intent(
 def test_killed_worker_continue_then_detach_uses_same_session_and_updated_config(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Reproduce kill → --continue lease → config change → /detach end to end."""
     from rich.console import Console
@@ -157,7 +159,7 @@ def test_killed_worker_continue_then_detach_uses_same_session_and_updated_config
         workflow_name="goal_flow",
         intent="continue the existing goal",
         artifact_dir=str(artifacts / session_id),
-    )
+    ).evolve(idempotency_key="legacy-detach-key")
     store.create(session)
 
     script = (
@@ -209,6 +211,14 @@ def test_killed_worker_continue_then_detach_uses_same_session_and_updated_config
     os.kill(old_worker_pid, signal.SIGKILL)
     old_process.wait(timeout=60)
     assert old_process.returncode is not None
+
+    # Simulate a pre-idempotency SQLite projection that has no reliable
+    # schema-version marker. The event log and serialized record remain intact.
+    store.close()
+    with sqlite3.connect(store_root / "index.sqlite3") as connection:
+        connection.execute("DROP INDEX sessions_idempotency")
+        connection.execute("ALTER TABLE sessions DROP COLUMN idempotency_key")
+        connection.execute("DELETE FROM meta WHERE key = 'schema_version'")
 
     sessions_root = tmp_path / "sessions"
     (sessions_root / session_id).mkdir(parents=True)
@@ -262,6 +272,31 @@ def test_killed_worker_continue_then_detach_uses_same_session_and_updated_config
         _last_submitted_text="",
     )
 
+    # A failed/busy migration must leave foreground ownership and the prior
+    # request intact. Retrying after the transient condition clears must then
+    # perform the normal single-worker handoff.
+    from agenthicc.background.index import SessionIndex
+
+    original_backfill = SessionIndex._backfill_idempotency_keys
+
+    def migration_busy(_connection: sqlite3.Connection) -> None:
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(SessionIndex, "_backfill_idempotency_keys", staticmethod(migration_busy))
+    request_path = store_root / "requests" / f"{session_id}.json"
+    previous_request = request_path.read_bytes()
+    events_before_failed_handoff = (store_root / "events.jsonl").read_bytes()
+    assert _handoff(foreground) is True
+    assert foreground._background_handoff_state == "idle"
+    assert not foreground_lease.released
+    assert len(processes) == 1
+    assert request_path.read_bytes() == previous_request
+    assert (store_root / "events.jsonl").read_bytes() == events_before_failed_handoff
+    assert "close it and retry /detach" in " ".join(ctx.console.export_text().split())
+    assert "database is locked" in caplog.text
+
+    monkeypatch.setattr(SessionIndex, "_backfill_idempotency_keys", staticmethod(original_backfill))
+
     assert _handoff(foreground) is True
     _wait_for_status(store, session_id, SessionStatus.RUNNING)
     resumed = store.get(session_id)
@@ -269,6 +304,7 @@ def test_killed_worker_continue_then_detach_uses_same_session_and_updated_config
         (store_root / "requests" / f"{session_id}.json").read_text(encoding="utf-8")
     )
     assert resumed.session_id == session_id
+    assert store.with_idempotency_key("legacy-detach-key")[0].session_id == session_id
     assert resumed.attempt == 2
     assert resumed.worker_pid not in {None, old_worker_pid}
     assert resumed.attempt_history[-1].status is SessionStatus.ORPHANED
@@ -289,7 +325,7 @@ def test_killed_worker_continue_then_detach_uses_same_session_and_updated_config
     assert worker_config.execution.model == "model-selected-after-continue"
     assert worker_config.execution.profile == "modal-kimi"
     assert foreground_lease.released
-    assert input_session._background_exit_requested is True
+    assert input_session._exit_requested is True
 
     new_worker_pid = resumed.worker_pid
     assert new_worker_pid is not None
@@ -352,7 +388,7 @@ def test_foreground_takeover_stops_owned_worker_before_resume(tmp_path: Path, mo
 
 
 @cli_test_timeout(3)
-def test_cli_manager_alias_and_background_acceptance(tmp_path: Path) -> None:
+def test_agents_cli_listing_and_background_acceptance(tmp_path: Path) -> None:
     env = dict(os.environ)
     env["HOME"] = str(tmp_path)
     env["PYTHONPATH"] = str(Path(__file__).parents[2] / "src")
@@ -366,7 +402,8 @@ def test_cli_manager_alias_and_background_acceptance(tmp_path: Path) -> None:
         check=False,
     )
     assert manager.returncode == 0
-    assert "Background Sessions" in manager.stdout
+    assert "Agents — Running 0" in manager.stdout
+    assert "No agents yet" in manager.stdout
 
     accepted = subprocess.run(
         [
@@ -393,7 +430,7 @@ def test_cli_manager_alias_and_background_acceptance(tmp_path: Path) -> None:
     request_file = tmp_path / ".agenthicc" / "background" / "requests" / f"{session_id}.json"
     assert json.loads(request_file.read_text(encoding="utf-8"))["mode_name"] == "Yolo"
     status = subprocess.run(
-        [sys.executable, "-m", "agenthicc", "jobs", "status", session_id, "--json"],
+        [sys.executable, "-m", "agenthicc", "agents", "status", session_id, "--json"],
         cwd=tmp_path,
         env=env,
         text=True,
@@ -406,7 +443,7 @@ def test_cli_manager_alias_and_background_acceptance(tmp_path: Path) -> None:
 
 
 @cli_test_timeout(1)
-def test_jobs_cli_projects_durable_queue_state_across_processes(
+def test_agents_cli_projects_durable_queue_state_across_processes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -447,7 +484,7 @@ def test_jobs_cli_projects_durable_queue_state_across_processes(
     assert len(launches) == 1
 
     listed = subprocess.run(
-        [sys.executable, "-m", "agenthicc", "jobs", "list", "--json"],
+        [sys.executable, "-m", "agenthicc", "agents", "list", "--json"],
         cwd=tmp_path,
         env=env,
         text=True,
@@ -527,8 +564,8 @@ def test_detached_goal_yolo_mode_is_visible_and_attested_across_cli_projections(
     assert session.requested_mode_name == "YOLO"
     assert session.mode_name == "Yolo"
 
-    jobs_status = subprocess.run(
-        [sys.executable, "-m", "agenthicc", "jobs", "status", session_id, "--json"],
+    agents_status = subprocess.run(
+        [sys.executable, "-m", "agenthicc", "agents", "status", session_id, "--json"],
         cwd=repository,
         env=env,
         text=True,
@@ -536,11 +573,11 @@ def test_detached_goal_yolo_mode_is_visible_and_attested_across_cli_projections(
         timeout=CLI_PROCESS_TIMEOUT_S,
         check=False,
     )
-    assert jobs_status.returncode == 0, jobs_status.stderr
-    jobs_payload = json.loads(jobs_status.stdout)
-    assert jobs_payload["requested_mode_name"] == "YOLO"
-    assert jobs_payload["mode_name"] == "Yolo"
-    assert jobs_payload["mode_application_status"] == "applied"
+    assert agents_status.returncode == 0, agents_status.stderr
+    agents_payload = json.loads(agents_status.stdout)
+    assert agents_payload["requested_mode_name"] == "YOLO"
+    assert agents_payload["mode_name"] == "Yolo"
+    assert agents_payload["mode_application_status"] == "applied"
 
     run_status = subprocess.run(
         [sys.executable, "-m", "agenthicc", "runs", "show", run_id, "--json"],

@@ -86,9 +86,10 @@ or global tier for anything durable.
 
 ## What are background sessions?
 
-Detached long-running work managed with `/bg` or `agenthicc jobs ...`. The
-manager keeps a rebuildable lifecycle index; the underlying events, approvals,
-and memory remain under their own owners.
+Detached long-running work started with `/bg` and managed in the agents hub
+(`/agents`, Ctrl+G, or `agenthicc agents`) or with `agenthicc agents ...`
+subcommands. The background store keeps a rebuildable lifecycle index; the
+underlying events, approvals, and memory remain under their own owners.
 
 ## Can I run a prompt repeatedly in the same session?
 

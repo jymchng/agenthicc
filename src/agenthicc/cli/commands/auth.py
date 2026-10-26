@@ -5,10 +5,8 @@ from __future__ import annotations
 import time
 
 from agenthicc.cli.context import CLIContext
-from agenthicc.cli.registry import command
 
 
-@command("login", help="Authenticate with agenthicc.ai")
 async def login(ctx: CLIContext) -> None:
     """Authenticate with agenthicc.ai and store credentials."""
     from agenthicc.auth import AuthClient
@@ -18,7 +16,6 @@ async def login(ctx: CLIContext) -> None:
     print(f"Logged in as {bundle.email}  [plan: {bundle.plan}]")
 
 
-@command("logout", help="Log out and revoke stored tokens")
 async def logout(ctx: CLIContext) -> None:
     """Log out and revoke stored tokens."""
     from agenthicc.auth import AuthClient
@@ -27,7 +24,6 @@ async def logout(ctx: CLIContext) -> None:
     print("Logged out.")
 
 
-@command("whoami", help="Show the currently authenticated user")
 def whoami(ctx: CLIContext) -> None:
     """Print the currently authenticated user and token expiry."""
     from agenthicc.auth import AuthClient

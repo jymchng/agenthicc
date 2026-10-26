@@ -36,6 +36,9 @@ class _Workspace:
     def stop(self) -> None:
         self.stopped = True
 
+    def frame_stats(self) -> None:
+        return None
+
     def flush_scroll(self) -> None:
         pass
 

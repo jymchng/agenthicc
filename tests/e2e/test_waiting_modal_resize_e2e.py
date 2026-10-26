@@ -14,6 +14,7 @@ from agenthicc.tools.approval import ApprovalRequest, ApprovalService
 from agenthicc.tui.cbreak_reader import Key
 from agenthicc.tui.conversation_store import AppState
 from agenthicc.tui.workspace import Workspace
+from agenthicc.tui.workspace.live_region import lines_text
 from agenthicc.tui.workspace.overlays.approval import ApprovalOverlay
 from agenthicc.tui.workspace.overlays.plan_approval import PlanApprovalOverlay
 from agenthicc.tui.workspace.overlays.questions import QuestionsOverlay
@@ -176,7 +177,7 @@ async def test_long_question_can_be_scrolled_and_answered_through_workspace(
         await asyncio.sleep(0)
         for _ in range(100):
             workspace.overlays.handle_key(Key.CHAR, "]")
-        rendered = _render_text(console, workspace._build())
+        rendered = "\n".join(lines_text(workspace._build_lines()))
         assert "requirement-79" in rendered
         assert "[/] scroll" in rendered
         assert not request_task.done()

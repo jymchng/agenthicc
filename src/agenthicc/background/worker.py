@@ -18,7 +18,7 @@ import time
 import uuid
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Mapping, TypedDict, cast
+from typing import TYPE_CHECKING, Callable, Literal, Mapping, TypedDict, cast
 
 from agenthicc.background.model import (
     BackgroundSession,
@@ -49,6 +49,8 @@ if TYPE_CHECKING:
     from agenthicc.runners.session_conversation import SessionConversation
     from agenthicc.runners.session_lease import SessionOwnerLease
     from agenthicc.runners.run_coordinator import ResumePlan
+    from agenthicc.runners.usage_ledger import UsageSnapshot
+    from agenthicc.tui.conversation_store import ConversationEvent
     from agenthicc.workflows.registry import WorkflowRegistry
 
 
@@ -194,6 +196,78 @@ class _FinalizationChanges(TypedDict, total=False):
     phase_history: tuple[str, ...]
     mode_application_status: ModeApplicationStatus
     mode_application_error: str
+    tokens_in: int
+    tokens_out: int
+    cost_usd: float
+
+
+class _WorkerReport:
+    """What a running worker reports in its session record.
+
+    The report line is the first sentence of the agent's latest message
+    (AGX-06 §5.2): the agents hub's Activity column shows it instead of a
+    generic heartbeat, and a completed attempt keeps it as its summary. Usage
+    is the session ledger's completed totals across attempts (AGX-07 §5.5), so
+    the record changes once per provider call and never holds provisional
+    values. Both reach the record on the next heartbeat and at finalization.
+    """
+
+    def __init__(self, session: BackgroundSession) -> None:
+        self.line = ""
+        self._usage = (session.tokens_in, session.tokens_out, session.cost_usd)
+        self._recorded_usage = self._usage
+
+    def bind(self, session: SessionContext) -> Callable[[], None]:
+        """Follow *session*'s messages and usage; return the unsubscribe."""
+        unsubscribes = [session.app_state.conversation.on_event(self.observe_event)]
+        ledger = session.usage_ledger
+        if ledger is not None:
+            self.observe_usage(ledger.completed_snapshot())
+            unsubscribes.append(ledger.subscribe_completed(self.observe_usage))
+
+        def unbind() -> None:
+            for unsubscribe in unsubscribes:
+                unsubscribe()
+
+        return unbind
+
+    def observe_event(self, event: ConversationEvent) -> None:
+        if event.kind != "text":
+            return
+        text = event.payload.get("text")
+        if not isinstance(text, str):
+            return
+        from agenthicc.background.vocabulary import report_sentence
+        from agenthicc.tui.runtime.session_export import _Redactor
+
+        line = report_sentence(str(_Redactor().value(text, "text")))
+        if line:
+            self.line = line
+
+    def observe_usage(self, snapshot: UsageSnapshot) -> None:
+        self._usage = (
+            snapshot.input_tokens,
+            snapshot.output_tokens,
+            round(snapshot.cost_usd, 6),
+        )
+
+    def usage(self) -> tuple[int, int, float] | None:
+        """The totals to record, or ``None`` when the record already has them."""
+        return None if self._usage == self._recorded_usage else self._usage
+
+    def recorded(self, usage: tuple[int, int, float]) -> None:
+        self._recorded_usage = usage
+
+    def final_changes(self, outcome: _WorkerOutcome) -> _FinalizationChanges:
+        tokens_in, tokens_out, cost_usd = self._usage
+        changes: _FinalizationChanges = {
+            "tokens_in": tokens_in,
+            "tokens_out": tokens_out,
+            "cost_usd": cost_usd,
+        }
+        if outcome.status is SessionStatus.COMPLETED and self.line:
+            changes["latest_activity"] = self.line
+        return changes
 
 
 def _confirmed_idle_after_thinking(session: SessionContext) -> bool:
@@ -213,10 +287,7 @@ def _confirmed_idle_after_thinking(session: SessionContext) -> bool:
     if conversation.active_tool() or conversation.compaction_active():
         return False
     pool = conversation.subagent_pool_state()
-    if pool is not None and (
-        any(worker.status.upper() not in {"DONE", "FAILED", "CANCELLED"} for worker in pool.workers)
-        or pool.total > pool.done
-    ):
+    if pool is not None and pool.active:
         return False
     if app_state.pending_approval() is not None:
         return False
@@ -245,6 +316,7 @@ def _outcome_changes(
     worker_pid: int,
     finalization_attempts: int,
     cleanup_error: str = "",
+    report: _WorkerReport | None = None,
 ) -> _FinalizationChanges:
     """Build the bounded durable fields shared by every finalization path."""
 
@@ -267,6 +339,8 @@ def _outcome_changes(
         "current_phase": outcome.phase_history[-1] if outcome.phase_history else current_phase,
         "phase_history": combined_phases[-64:],
     }
+    if report is not None:
+        changes.update(report.final_changes(outcome))
     # The lease argument is consumed by the caller's expected lease check;
     # naming it here documents that finalization belongs to the process that
     # claimed the session.
@@ -283,6 +357,7 @@ def _finalize_worker(
     outcome: _WorkerOutcome,
     worker_pid: int,
     cleanup_error: str = "",
+    report: _WorkerReport | None = None,
 ) -> None:
     """Persist a worker outcome and an audit event idempotently.
 
@@ -314,6 +389,7 @@ def _finalize_worker(
             worker_pid=current.worker_pid or worker_pid,
             finalization_attempts=attempts,
             cleanup_error=cleanup_error,
+            report=report,
         )
         if (
             outcome.status is SessionStatus.FAILED
@@ -345,6 +421,7 @@ def _finalize_worker(
                 worker_pid=current.worker_pid or worker_pid,
                 finalization_attempts=attempts,
                 cleanup_error=cleanup_error,
+                report=report,
             )
             store.transition(
                 request.session_id,
@@ -371,6 +448,7 @@ def _finalize_worker(
                 worker_pid=current.worker_pid or worker_pid,
                 finalization_attempts=attempts,
                 cleanup_error=cleanup_error,
+                report=report,
             )
             store.transition(
                 request.session_id,
@@ -561,7 +639,7 @@ class BackgroundApprovalService:
         safe_input = _Redactor().value(tool_input, "tool_input")
         if not isinstance(safe_input, dict):
             safe_input = {}
-        return {
+        target: dict[str, object] = {
             "tool_name": tool_name[:160] if isinstance(tool_name, str) else "approval request",
             "approval_id": tool_use_id[:256] if isinstance(tool_use_id, str) else "",
             "request_kind": str(_request_attribute(req, "kind", "tool"))[:40],
@@ -572,6 +650,13 @@ class BackgroundApprovalService:
             else [],
             "tool_input": safe_input,
         }
+        # A subagent worker's request names it, so the hub can too (AGX-08 §5.5).
+        from agenthicc.tools.approval import ApprovalRequester
+
+        requester = _request_attribute(req, "requester", None)
+        if isinstance(requester, ApprovalRequester):
+            target["requester"] = {key: value[:160] for key, value in requester.to_dict().items()}
+        return target
 
     @staticmethod
     def _question_target(req: object) -> tuple[str, dict[str, object]]:
@@ -1100,9 +1185,6 @@ def _assess_direct_turn_recovery(
             WorkflowRecoveryCoordinator,
         )
 
-        config = _request_attribute(session, "cfg", None)
-        execution = _request_attribute(config, "execution", None)
-        profile = _request_attribute(execution, "profile", "")
         registry = _request_attribute(session, "workflow_registry", None)
         workspace_scope = _request_attribute(session, "workspace_scope", None)
         workspace_root = _request_attribute(workspace_scope, "primary_root", "")
@@ -1112,7 +1194,6 @@ def _assess_direct_turn_recovery(
             ).inspect(
                 workflow_registry=cast("WorkflowRegistry | None", registry),
                 conversation=cast("SessionConversation | None", conversation),
-                provider_profile=str(profile or ""),
                 workspace_root=str(workspace_root or ""),
             )
             recoverable_run_ids = [record.run_id for record in records if record.recoverable]
@@ -1349,7 +1430,6 @@ async def _handle_background_workflow_command(
     subcommand = parts[0] if parts else ""
     registry = session.workflow_registry
     conversation = session.session_conversation
-    profile = str(session.cfg.execution.profile or "")
     workspace_scope = session.workspace_scope
     workspace_root = str(workspace_scope.primary_root or "") if workspace_scope else ""
 
@@ -1384,7 +1464,6 @@ async def _handle_background_workflow_command(
             records = coordinator.inspect(
                 workflow_registry=registry,
                 conversation=conversation,
-                provider_profile=profile,
                 workspace_root=workspace_root,
                 include_terminal=include_terminal,
             )
@@ -1505,8 +1584,35 @@ async def _handle_background_workflow_command(
             )
 
         if subcommand == "resume":
-            if len(parts) > 2:
-                return _BackgroundWorkflowCommandResult(error="Usage: /workflow resume [run-id]")
+            run_id: str | None = None
+            profile_override: str | None = None
+            index = 1
+            while index < len(parts):
+                part = parts[index]
+                if part == "--profile" and index + 1 < len(parts):
+                    if profile_override is not None:
+                        return _BackgroundWorkflowCommandResult(
+                            error="Usage: /workflow resume [run-id] [--profile <name|none>]"
+                        )
+                    raw_profile = parts[index + 1]
+                    profile_override = "" if raw_profile.casefold() == "none" else raw_profile
+                    index += 2
+                    continue
+                if part.startswith("--profile=") and profile_override is None:
+                    raw_profile = part.partition("=")[2]
+                    if not raw_profile:
+                        return _BackgroundWorkflowCommandResult(
+                            error="Usage: /workflow resume [run-id] [--profile <name|none>]"
+                        )
+                    profile_override = "" if raw_profile.casefold() == "none" else raw_profile
+                    index += 1
+                    continue
+                if part.startswith("-") or run_id is not None:
+                    return _BackgroundWorkflowCommandResult(
+                        error="Usage: /workflow resume [run-id] [--profile <name|none>]"
+                    )
+                run_id = part
+                index += 1
             if conversation is None:
                 return _BackgroundWorkflowCommandResult(
                     error="Workflow resume requires the durable session conversation.",
@@ -1514,15 +1620,14 @@ async def _handle_background_workflow_command(
                 )
             coordinator = WorkflowRecoveryCoordinator(session.session_id)
             try:
-                if len(parts) == 2:
-                    record, error = find_run_record(parts[1], include_terminal=False)
+                if run_id is not None:
+                    record, error = find_run_record(run_id, include_terminal=False)
                     if error:
                         return _BackgroundWorkflowCommandResult(error=error)
                 else:
                     record = coordinator.select_latest_for_resume(
                         workflow_registry=registry,
                         conversation=conversation,
-                        provider_profile=profile,
                         workspace_root=workspace_root,
                     )
             except Exception as exc:  # noqa: BLE001
@@ -1595,13 +1700,23 @@ async def _handle_background_workflow_command(
                 return _BackgroundWorkflowCommandResult(
                     error="The selected workflow checkpoint has no resumable intent."
                 )
-            result = await execute_workflow(
-                session,
-                workflow_name,
-                intent,
-                resume_run_id=record.run_id,
-                resume_plan=input_resume_plan,
-            )
+            if profile_override is None:
+                result = await execute_workflow(
+                    session,
+                    workflow_name,
+                    intent,
+                    resume_run_id=record.run_id,
+                    resume_plan=input_resume_plan,
+                )
+            else:
+                result = await execute_workflow(
+                    session,
+                    workflow_name,
+                    intent,
+                    resume_run_id=record.run_id,
+                    resume_plan=input_resume_plan,
+                    profile_override=profile_override,
+                )
             # The workflow resume may have completed the exact interrupted
             # journal turn. Re-fold the authoritative journal before deciding
             # whether deferred ordinary input can be delivered.
@@ -1739,6 +1854,8 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
     lease = uuid.uuid4().hex
     session = None
     claimed = False
+    report: _WorkerReport | None = None
+    unbind_report: Callable[[], None] | None = None
     outcome: _WorkerOutcome | None = None
     owner_lease: SessionOwnerLease | None = None
     claimed_attempt: int | None = None
@@ -1763,21 +1880,28 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
             raise RuntimeError(f"Worker could not claim session: {claimed_session.status.value}")
         claimed = True
         claimed_attempt = claimed_session.attempt
+        report = _WorkerReport(claimed_session)
 
         async def _heartbeat() -> None:
             while not heartbeat_stop.is_set():
                 await asyncio.sleep(1.0)
                 if heartbeat_stop.is_set():
                     return
+                usage = report.usage()
                 try:
                     store.heartbeat(
                         request.session_id,
                         lease_token=lease,
                         attempt=claimed_attempt,
-                        activity="Worker active",
+                        activity=report.line or "Worker active",
+                        tokens_in=usage[0] if usage else None,
+                        tokens_out=usage[1] if usage else None,
+                        cost_usd=usage[2] if usage else None,
                     )
                 except (KeyError, InvalidSessionTransition):
                     return
+                if usage is not None:
+                    report.recorded(usage)
 
         heartbeat_task = asyncio.create_task(_heartbeat(), name="background-heartbeat")
         from agenthicc.runners.headless import (
@@ -1831,6 +1955,7 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
             mode_name=request.mode_name,
             owner_lease=owner_lease,
         )
+        unbind_report = report.bind(session)
         effective_mode = session.mode_manager.active_name
         if not effective_mode:
             raise RuntimeError("Session initialization produced no effective runtime mode")
@@ -2632,6 +2757,8 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
         if heartbeat_task is not None:
             heartbeat_task.cancel()
             await asyncio.gather(heartbeat_task, return_exceptions=True)
+        if unbind_report is not None:
+            unbind_report()
         if processor_task is not None and session is not None:
             try:
                 from agenthicc.runners.headless import _close_headless_session
@@ -2656,6 +2783,7 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
                 outcome=final_outcome,
                 worker_pid=os.getpid(),
                 cleanup_error=cleanup_error,
+                report=report,
             )
         if owner_lease is not None:
             owner_lease.release()
@@ -2666,17 +2794,7 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
         try:
             from agenthicc.background.supervisor import BackgroundSupervisor
 
-            BackgroundSupervisor(
-                store,
-                max_workers=background_settings.max_workers,
-                max_workers_per_project=background_settings.max_workers_per_project,
-                max_workers_per_user=background_settings.max_workers_per_user,
-                queue_enabled=background_settings.queue_enabled,
-                max_queue_length=background_settings.max_queue_length,
-                priority_aging_interval_s=background_settings.priority_aging_interval_s,
-                dispatch_lease_s=background_settings.dispatch_lease_s,
-                notification_settings=background_settings.notifications,
-            ).dispatch_pending()
+            BackgroundSupervisor.from_settings(store, background_settings).dispatch_pending()
         except Exception:  # noqa: BLE001
             # The durable queue remains authoritative; a manager refresh or
             # the next accepted request retries dispatch after a failure.

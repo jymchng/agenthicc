@@ -6,7 +6,6 @@ from pathlib import Path
 from pprint import pformat
 
 from agenthicc.cli.context import CLIContext
-from agenthicc.cli.registry import command, group
 
 _TEMPLATE = """\
 # agenthicc.toml — project configuration
@@ -24,11 +23,6 @@ network_allow_list = []
 """
 
 
-@group("config", help="Manage configuration")
-def _() -> None: ...
-
-
-@command("config", "show", help="Print the merged effective configuration")
 def config_show(ctx: CLIContext) -> None:
     """Print the merged effective configuration including all TOML layers and --set overrides."""
     from agenthicc.config import load_config
@@ -49,7 +43,6 @@ def config_show(ctx: CLIContext) -> None:
             print(f"{k} = {v!r}")
 
 
-@command("config", "validate", help="Validate the effective provider configuration")
 def config_validate(ctx: CLIContext) -> None:
     """Validate profile selection, endpoint syntax, and required env secrets."""
     from agenthicc.config import load_config
@@ -69,7 +62,6 @@ def config_validate(ctx: CLIContext) -> None:
     print(f"Configuration is valid: {profile} ({provider}/{model})")
 
 
-@command("config", "profiles", help="List configured provider profiles")
 def config_profiles(ctx: CLIContext) -> None:
     """List profile names and non-secret connection metadata."""
     from agenthicc.config import load_config
@@ -95,7 +87,6 @@ def config_profiles(ctx: CLIContext) -> None:
         print(f"{name}\t{profile.provider}\t{model}\t{endpoint}\t{capabilities}")
 
 
-@command("config", "init", help="Create a template agenthicc.toml in .agenthicc/")
 def config_init(ctx: CLIContext, force: bool = False) -> None:
     """Create a template agenthicc.toml. Use --force to overwrite an existing file."""
     target = Path(".agenthicc") / "agenthicc.toml"

@@ -67,9 +67,13 @@ def _mock_httpx_client(json_data: dict) -> MagicMock:
 
 
 class TestTokenStoreFallbackPath:
-    def test_fallback_path_is_home_agenthicc(self):
+    def test_fallback_path_is_home_agenthicc(self, monkeypatch):
+        # The suite redirects token stores to a temporary directory; inspect
+        # the production default (nothing is read or written).
+        monkeypatch.undo()
         store = TokenStore()
         assert str(store._fallback_path).endswith(".agenthicc/tokens.json")
+        assert str(store._tier_path).endswith(".agenthicc/account-tier.json")
 
     def test_fallback_write_creates_parents(self, tmp_path):
         store = TokenStore()

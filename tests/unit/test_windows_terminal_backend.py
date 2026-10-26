@@ -12,6 +12,7 @@ import pytest
 from agenthicc.tui.cbreak_reader import Key
 from agenthicc.tui.terminal.windows_backend import (
     WindowsBackend,
+    _ConsoleEvent,
     _decode_key_event,
     _KEY_EVENT,
     _SHIFT_PRESSED,
@@ -131,7 +132,7 @@ class TestReadKeyConsoleLoop:
     def test_returns_first_decodable_keydown(self) -> None:
         backend = self._backend_with_events(
             [
-                (_KEY_EVENT, True, _VK_TAB, "", _SHIFT_PRESSED),
+                _ConsoleEvent(_KEY_EVENT, True, _VK_TAB, "", _SHIFT_PRESSED),
             ]
         )
         assert backend._read_key_console() == (Key.SHIFT_TAB, "")
@@ -139,8 +140,8 @@ class TestReadKeyConsoleLoop:
     def test_skips_key_up_events(self) -> None:
         backend = self._backend_with_events(
             [
-                (_KEY_EVENT, False, _VK_TAB, "", _SHIFT_PRESSED),  # key-up → skip
-                (_KEY_EVENT, True, _VK_TAB, "", _SHIFT_PRESSED),  # key-down → use
+                _ConsoleEvent(_KEY_EVENT, False, _VK_TAB, "", _SHIFT_PRESSED),  # key-up → skip
+                _ConsoleEvent(_KEY_EVENT, True, _VK_TAB, "", _SHIFT_PRESSED),  # key-down → use
             ]
         )
         assert backend._read_key_console() == (Key.SHIFT_TAB, "")
@@ -148,8 +149,8 @@ class TestReadKeyConsoleLoop:
     def test_skips_non_key_events(self) -> None:
         backend = self._backend_with_events(
             [
-                (0x0002, True, 0, "", 0),  # MOUSE_EVENT → skip
-                (_KEY_EVENT, True, _VK_RETURN, "\r", 0),  # key-down → use
+                _ConsoleEvent(0x0002),  # MOUSE_EVENT without mouse reporting → skip
+                _ConsoleEvent(_KEY_EVENT, True, _VK_RETURN, "\r", 0),  # key-down → use
             ]
         )
         assert backend._read_key_console() == (Key.ENTER, "")
@@ -157,8 +158,10 @@ class TestReadKeyConsoleLoop:
     def test_skips_modifier_only_keydown(self) -> None:
         backend = self._backend_with_events(
             [
-                (_KEY_EVENT, True, 0x10, "", _SHIFT_PRESSED),  # bare Shift → None → skip
-                (_KEY_EVENT, True, 0x41, "a", 0),  # 'a' → use
+                _ConsoleEvent(
+                    _KEY_EVENT, True, 0x10, "", _SHIFT_PRESSED
+                ),  # bare Shift → None → skip
+                _ConsoleEvent(_KEY_EVENT, True, 0x41, "a", 0),  # 'a' → use
             ]
         )
         assert backend._read_key_console() == (Key.CHAR, "a")
@@ -167,7 +170,7 @@ class TestReadKeyConsoleLoop:
         backend = self._backend_with_events(
             [
                 None,  # read failed → skip
-                (_KEY_EVENT, True, _VK_TAB, "", 0),  # plain Tab → use
+                _ConsoleEvent(_KEY_EVENT, True, _VK_TAB, "", 0),  # plain Tab → use
             ]
         )
         assert backend._read_key_console() == (Key.TAB, "")

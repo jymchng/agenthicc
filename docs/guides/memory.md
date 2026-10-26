@@ -162,6 +162,15 @@ one reset. Repeating recovery is idempotent. Unknown, duplicate, empty, or
 ambiguous result IDs remain fail-closed: the shared runner raises
 `ToolConversationIntegrityError` before network I/O.
 
+Per-step bookkeeping does not copy the history. Before each provider request
+the session memory validates its tool history and, when it is valid — the
+common case — returns at once instead of repairing a copy and comparing it.
+Rollback checkpoints taken around each provider step keep references to the
+current messages rather than deep copies. This is safe because messages are
+values here: appends add new message objects, and repair, compaction and
+trimming build new lists from copies. Code that changes a message must replace
+it, not edit it in place.
+
 The minimum supported integration is the transaction-capable `lauren-ai`
 release exposing `ShortTermMemory.validate_tool_history()`,
 `repair_tool_history()`, `begin_tool_exchange()`,

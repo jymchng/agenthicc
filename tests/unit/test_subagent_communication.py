@@ -280,3 +280,28 @@ def test_policy_revision_is_stable_and_mode_specific() -> None:
     assert "write" in plan.blocked_capabilities
     assert "INHERITED RUNTIME POLICY" in plan.prompt_section()
     assert "PLAN MODE" in plan.system_prompt_suffix
+
+
+@pytest.mark.asyncio
+async def test_an_answer_that_arrives_before_the_asker_looks_is_not_lost() -> None:
+    """The parent may answer while the worker is still finishing its turn."""
+    broker = AgentMessageBroker(
+        conversation_id="conversation-early",
+        parent_run_id="run-early",
+        pool_id="pool-early",
+    )
+    broker.register_worker("worker-a")
+    question = await broker.open_question(
+        sender="worker-a",
+        recipient="main",
+        question="Which API version?",
+        context="",
+    )
+    await broker.answer_question(
+        answerer="main", question_id=str(question["question_id"]), answer="Use v2."
+    )
+    assert broker.pending_questions(sender="worker-a") == []
+    open_questions = broker.open_questions(sender="worker-a")
+    assert [item["question_id"] for item in open_questions] == [question["question_id"]]
+    assert await broker.wait_for_answer(str(question["question_id"])) == "Use v2."
+    assert broker.open_questions(sender="worker-a") == []

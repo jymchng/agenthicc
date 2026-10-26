@@ -93,9 +93,13 @@ a still frame is not a hang. Use `/status` to check the session.
 
 ## Background sessions
 
-Move long-running work to the background with `/bg` (or `/background`), list
-with `/bg list`, and re-attach with `/bg <n>`. The command-line equivalents
-live under `agenthicc jobs` — see [Background sessions](11-background.md).
+Move long-running work to the background with `/bg` (or `/background`); the
+agents hub then opens with that agent selected. Open the hub at any time with
+`/agents`, Ctrl+G, or ← on an empty prompt; `/inbox` opens its Needs you tab
+and `/workers` its Running tab. Enter on an agent opens its detail view and
+Enter there attaches to it; when that session ends you return to the one you
+left. The command-line equivalents live under `agenthicc agents` — see
+[Background sessions](11-background.md).
 
 ## Recurring session prompts
 

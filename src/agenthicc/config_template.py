@@ -223,6 +223,7 @@ def build_commented_config_template() -> str:
 
     for name in (
         "behaviour",
+        "ui",
         "loops",
         "tools",
         "security",
@@ -271,9 +272,8 @@ def build_commented_config_template() -> str:
     _field(lines, "terminal_cancel_grace_s", 5.0)
     _field(lines, "terminal_retention_days", 30)
     _section(lines, "background.manager")
-    _field(lines, "refresh_interval_s", 0.25)
-    _field(lines, "maintenance_interval_s", 5.0)
-    _field(lines, "projection_batch_size", 256)
+    _field(lines, "refresh_interval_s", 0.25, "stat interval without native change notification")
+    _field(lines, "maintenance_interval_s", 5.0, "probe interval for unwatchable workers")
     _field(lines, "activity_tail_bytes", 64_000)
     _field(lines, "frame_debounce_ms", 16)
     _field(lines, "max_in_flight_operations", 4)

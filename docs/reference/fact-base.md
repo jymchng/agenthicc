@@ -95,62 +95,82 @@ Two behaviors worth documenting precisely:
 
 ### Subcommands
 
-Registered by the `@command(...)` decorator. The group names in the help
-epilog (`src/agenthicc/cli/parser.py:160-162`) are:
-`agents`, `auth`, `config`, `jobs`, `mcp`, `sessions`, `skills`, `tools`,
-`trust`, `workflows`.
+Built-in commands are declared in `src/agenthicc/cli/manifest.py`
+(`BUILTIN_COMMANDS`, `BUILTIN_GROUPS`). An invocation imports only the module
+of the command it selects; `agenthicc --help` lists every built-in command from
+the manifest without importing any of them. Plugin commands in
+`~/.agenthicc/cli/` and `.agenthicc/cli/` register with `@command(...)` and
+override a built-in command at the same path.
 
-| Group | Invocations | Evidence |
+| Top-level | Invocations | Module |
 |---|---|---|
-| auth | `auth login`, `auth logout`, `auth whoami` | `src/agenthicc/cli/commands/auth.py:11,21,30` |
-| background | `agents`, `jobs`, `run` | `src/agenthicc/cli/commands/background.py:117,124,131` |
-| jobs | `list`, `status`, `cancel`, `resume`, `retry`, `approve`, `reject`, `input`, `inbox list/answer/approve/reject/expire`, `rename`, `labels`, `purge`, `archive`, `delete`, `restore` | `src/agenthicc/cli/commands/background.py` |
-| config | `config show`, `config validate`, `config profiles`, `config init` | `src/agenthicc/cli/commands/config.py:41,62,82,108` |
-| init | `init` | `src/agenthicc/cli/commands/init.py:12` |
-| mcp | `add`, `list`, `get`, `remove`, `connect`, `disconnect`, `refresh`, `doctor`, `auth`, `logout` | `src/agenthicc/cli/commands/mcp.py:20-252` |
-| session | `create`, `list`, `show`, `export`, `events`, `send`, `control`, `serve` | `src/agenthicc/cli/commands/session_service.py:35-205` |
-| sessions | `list`, `show`, `export`, `inspect` | `src/agenthicc/cli/commands/sessions.py:23,74,92,108` |
-| skills | `skills add` | `src/agenthicc/cli/commands/skills.py:13` |
-| trust | `trust list`, `trust add [PATH]`, `trust revoke PATH` | `src/agenthicc/cli/commands/trust.py:66,80,104` |
-| workflows | `workflows list`, `workflows run` | `src/agenthicc/cli/commands/workflows.py:71,98` |
+| login, logout, whoami | `login`, `logout`, `whoami` | `cli/commands/auth.py` |
+| agents | `agents`, `agents list`, `agents status`, `agents cancel`, `agents resume`, `agents retry`, `agents priority`, `agents approve`, `agents reject`, `agents input`, `agents inbox list`, `agents inbox answer`, `agents inbox approve`, `agents inbox reject`, `agents inbox expire`, `agents notifications`, `agents rename`, `agents labels`, `agents purge`, `agents archive`, `agents delete`, `agents restore`, `agents actions`, `agents action` | `cli/commands/background.py`, `cli/commands/worktrees.py` |
+| run | `run` | `cli/commands/background.py` |
+| config | `config show`, `config validate`, `config profiles`, `config init` | `cli/commands/config.py` |
+| init | `init` | `cli/commands/init.py` |
+| mcp | `mcp add`, `mcp list`, `mcp get`, `mcp remove`, `mcp connect`, `mcp disconnect`, `mcp refresh`, `mcp doctor`, `mcp auth`, `mcp logout` | `cli/commands/mcp.py` |
+| runs | `runs`, `runs list`, `runs show`, `runs cancel`, `runs resume` | `cli/commands/runs.py` |
+| attach | `attach` | `cli/commands/runs.py` |
+| schedules | `schedules`, `schedules list`, `schedules create`, `schedules show`, `schedules pause`, `schedules resume`, `schedules run-now`, `schedules retry`, `schedules update`, `schedules delete`, `schedules service-status`, `schedules history` | `cli/commands/schedules.py` |
+| session | `session create`, `session list`, `session show`, `session export`, `session events`, `session send`, `session control`, `session serve` | `cli/commands/session_service.py` |
+| sessions | `sessions list`, `sessions show`, `sessions export`, `sessions inspect` | `cli/commands/sessions.py` |
+| skills | `skills add` | `cli/commands/skills.py` |
+| trust | `trust list`, `trust add`, `trust revoke` | `cli/commands/trust.py` |
+| workflows | `workflows list`, `workflows run` | `cli/commands/workflows.py` |
+| worktrees | `worktrees list`, `worktrees show`, `worktrees recover`, `worktrees integrate`, `worktrees dispatch`, `worktrees actions`, `worktrees action`, `worktrees setup`, `worktrees trust` | `cli/commands/worktrees.py` |
 
-!!! note "`agents` and `jobs` are the same manager"
-    Both are registered as top-level entry points to the background-session
-    manager (`src/agenthicc/cli/commands/background.py:117,124`), and
-    `jobs <subcommand>` is the scriptable form.
+!!! note "`agents` is the agents hub and its scriptable form"
+    `agenthicc agents [SESSION_ID] [--tab TAB] [--run RUN_ID]` opens the agents
+    hub (AGX-05, `src/agenthicc/tui/workspace/agents_hub/`); `agents
+    <subcommand>` is the scriptable form, and `agents --json` prints the
+    complete projection without a terminal. The former `jobs` group moved under
+    `agents` and is no longer a command.
 
 ---
 
 ## Slash commands
 
 The canonical registry is `BUILTIN_COMMANDS`
-(`src/agenthicc/commands/builtins.py:892`). It contains **23** entries:
+(`src/agenthicc/commands/builtins.py:1353`). It contains **35** entries:
 
 | Command | Argument hint | Aliases | Evidence |
 |---|---|---|---|
-| `/replay` | `[session-id]` | — | `src/agenthicc/commands/builtins.py:893` |
-| `/cancel` | — | `/interrupt` | `src/agenthicc/commands/builtins.py:900` |
-| `/clear` | — | — | `src/agenthicc/commands/builtins.py:907` |
-| `/commands` | `[reload]` | — | `src/agenthicc/commands/builtins.py:913` |
-| `/tools` | `[reload]` | — | `src/agenthicc/commands/builtins.py:922` |
-| `/workflows` | `[runs\|reload]` | — | `src/agenthicc/commands/builtins.py:931` |
-| `/config` | — | — | `src/agenthicc/commands/builtins.py:940` |
-| `/expand` | `[tool-id-or-@path]` | — | `src/agenthicc/commands/builtins.py:947` |
-| `/help` | `[/command]` | — | `src/agenthicc/commands/builtins.py:954` |
-| `/history` | `[repair]` | — | `src/agenthicc/commands/builtins.py:401` |
-| `/init` | `[write] [--force]` | — | `src/agenthicc/commands/builtins.py:967` |
-| `/mcp` | `[status\|reload\|connect NAME\|disconnect NAME\|refresh NAME\|doctor [NAME]]` | — | `src/agenthicc/commands/builtins.py:974` |
-| `/model` | `[provider] [model]` | — | `src/agenthicc/commands/builtins.py:983` |
-| `/models` | — | — | `src/agenthicc/commands/builtins.py:991` |
-| `/skills` | `[reload]` | — | `src/agenthicc/commands/builtins.py:997` |
-| `/status` | — | — | `src/agenthicc/commands/builtins.py:1005` |
-| `/startup` | — | — | `src/agenthicc/commands/builtins.py:1011` |
-| `/ps` | `[terminal-id] [--json]` | `/processes` | `src/agenthicc/commands/builtins.py:1017` |
-| `/stop` | `[terminal-id\|all] [--force]` | `/stop-terminal` | `src/agenthicc/commands/builtins.py:1025` |
-| `/usage` | — | — | `src/agenthicc/commands/builtins.py:1033` |
-| `/mode` | `[Safe\|Plan\|Yolo]` | — | `src/agenthicc/commands/builtins.py:1040` |
-| `/workflow` | `<name> \| resume [run-id] \| reset [run-id]` | — | `src/agenthicc/commands/builtins.py:1047` |
-| `/compact` | — | — | `src/agenthicc/commands/builtins.py:1057` |
+| `/replay` | `[session-id]` | — | `src/agenthicc/commands/builtins.py:1355` |
+| `/cancel` | — | `/interrupt` | `src/agenthicc/commands/builtins.py:1362` |
+| `/loop` | `[interval] <prompt> \| status \| pause \| resume \| stop` | — | `src/agenthicc/commands/builtins.py:1369` |
+| `/loops` | — | — | `src/agenthicc/commands/builtins.py:1378` |
+| `/schedules` | — | — | `src/agenthicc/commands/builtins.py:1386` |
+| `/schedule` | `create ... \| run-now ID \| pause ID \| resume ID NEXT-RUN \| delete ID --confirm` | — | `src/agenthicc/commands/builtins.py:1394` |
+| `/agents` | `[running\|needs-you\|history\|library]` | — | `src/agenthicc/commands/builtins.py:1402` |
+| `/inbox` | — | — | `src/agenthicc/commands/builtins.py:1410` |
+| `/subagents` | — | — | `src/agenthicc/commands/builtins.py:1417` |
+| `/clear` | — | — | `src/agenthicc/commands/builtins.py:1424` |
+| `/commands` | `[reload]` | — | `src/agenthicc/commands/builtins.py:1430` |
+| `/tools` | `[reload]` | — | `src/agenthicc/commands/builtins.py:1439` |
+| `/workflows` | `[runs\|reload]` | — | `src/agenthicc/commands/builtins.py:1448` |
+| `/config` | — | — | `src/agenthicc/commands/builtins.py:1457` |
+| `/expand` | `[tool-id-or-@path]` | — | `src/agenthicc/commands/builtins.py:1464` |
+| `/help` | `[/command]` | — | `src/agenthicc/commands/builtins.py:1471` |
+| `/history` | `[repair]` | — | `src/agenthicc/commands/builtins.py:1478` |
+| `/init` | `[write] [--force]` | — | `src/agenthicc/commands/builtins.py:1486` |
+| `/mcp` | `[status\|reload\|connect NAME\|disconnect NAME\|refresh NAME\|doctor [NAME]]` | — | `src/agenthicc/commands/builtins.py:1493` |
+| `/model` | `[provider] [model]` | — | `src/agenthicc/commands/builtins.py:1502` |
+| `/models` | — | — | `src/agenthicc/commands/builtins.py:1510` |
+| `/skills` | `[reload]` | — | `src/agenthicc/commands/builtins.py:1516` |
+| `/status` | — | — | `src/agenthicc/commands/builtins.py:1524` |
+| `/startup` | — | — | `src/agenthicc/commands/builtins.py:1530` |
+| `/keybindings` | — | — | `src/agenthicc/commands/builtins.py:1536` |
+| `/perf` | — | — | `src/agenthicc/commands/builtins.py:1542` |
+| `/ps` | `[terminal-id] [--json]` | `/processes` | `src/agenthicc/commands/builtins.py:1548` |
+| `/background` | `(alias: /bg)` | `/bg` | `src/agenthicc/commands/builtins.py:1556` |
+| `/detach` | — | — | `src/agenthicc/commands/builtins.py:1563` |
+| `/workers` | `[--json]` | — | `src/agenthicc/commands/builtins.py:1568` |
+| `/stop` | `[terminal-id\|all] [--force]` | `/stop-terminal` | `src/agenthicc/commands/builtins.py:1575` |
+| `/usage` | — | — | `src/agenthicc/commands/builtins.py:1583` |
+| `/mode` | `[Safe\|Plan\|Yolo]` | — | `src/agenthicc/commands/builtins.py:1590` |
+| `/workflow` | `<name> \| resume [run-id] \| reset [run-id]` | — | `src/agenthicc/commands/builtins.py:1597` |
+| `/compact` | — | — | `src/agenthicc/commands/builtins.py:1607` |
 
 !!! note "Counting the registry"
     Count the `BUILTIN_COMMANDS` list literal rather than grepping for command
@@ -161,20 +181,19 @@ The canonical registry is `BUILTIN_COMMANDS`
 `/workflow` and `/compact` deliberately carry `handler=None`; they are
 intercepted in `TUISession.route()` before dispatch so they can reach
 session-local state, and exist in the registry purely so the trigger picker
-can display and complete them (`src/agenthicc/commands/builtins.py:1047-1056`, `1057-1064`; routing at
-`src/agenthicc/runners/tui_session.py:2679,2681`).
+can display and complete them (`src/agenthicc/commands/builtins.py:1597-1606`, `1607-1614`; routing at
+`src/agenthicc/runners/tui_session.py:3492,3494`).
 
-### Commands registered outside `BUILTIN_COMMANDS`
+### Commands intercepted before dispatch
 
 These are easy to miss and have caused documentation errors, so they are
-recorded explicitly.
+recorded explicitly. All of them are `BUILTIN_COMMANDS` entries, so the picker,
+`/help` and completion see them, but `TUISession` handles them itself:
 
-| Command | Registered by | Evidence |
+| Command | Handled by | Evidence |
 |---|---|---|
-| `/background` (alias `/bg`) | injected by the background integration, guarded against double registration | `src/agenthicc/background/integration.py:117-121` |
-
-`/background` is *not* in `BUILTIN_COMMANDS`; that is why the constant alone
-under-reports the command surface.
+| `/workflow`, `/compact` | `TUISession.route()` (session memory and workflow state) | `src/agenthicc/runners/tui_session.py:3492,3494` |
+| `/background` (alias `/bg`), `/detach` | `TUISession.dispatch_slash()` (the background handoff, `_BACKGROUND_HANDOFF_COMMANDS`) | `src/agenthicc/runners/tui_session.py:536,2685` |
 
 ### Bootstrap skills that provide slash commands
 
@@ -289,7 +308,8 @@ because nothing read them.
 | `ToolSettings` (11) | `mcp_servers`, `plugins`, `allowed`, `denied`, `max_live_tool_calls`, `group_exploratory_calls`, `http_timeout_s`, `question_timeout_s`, `cloakbrowser`, `playwright`, `browser_backend` | `config.py:1355` |
 | `SecuritySettings` (2) | `allowed_paths`, `network_allow_list` | `config.py:1393` |
 | `PluginSettings` (1) | `strict_cli_shadow` | `config.py:1399` |
-| `BehaviourSettings` (4) | `resume_transcript_turns`, `resume_transcript_max_events`, `resume_transcript_max_bytes`, `resume_transcript_max_event_bytes` | `config.py:1410` |
+| `BehaviourSettings` (6) | `resume_transcript_turns`, `resume_transcript_max_events`, `resume_transcript_max_bytes`, `resume_transcript_max_event_bytes`, `composer_max_rows`, `frame_interval_ms` | `config.py:1410` |
+| `UISettings` (3) | `mouse`, `screen_reader`, `reduced_motion` | `config.py` (`[ui]`) |
 | `CloakBrowserSettings` (15) | `enabled`, `transport`, `cdp_endpoint`, `allowed_domains`, `headless`, `navigation_timeout_s`, `action_timeout_s`, `max_pages`, `max_actions_per_turn`, `max_snapshot_chars`, `max_screenshot_bytes`, `allow_persistent_profiles`, `profile_root`, `license_key_env`, `allow_all_domains` | `config.py:1197` |
 | `PlaywrightSettings` (16) | `enabled`, `transport`, `browser_type`, `browser_channel`, `executable_path`, `allowed_domains`, `headless`, `navigation_timeout_s`, `action_timeout_s`, `max_pages`, `max_actions_per_turn`, `max_snapshot_chars`, `max_screenshot_bytes`, `allow_persistent_profiles`, `profile_root`, `allow_all_domains` | `config.py:1288` |
 | `SkillsSettings` (2) | `install_default_skills`, `default_skill_directory` | `config.py:1558` |
@@ -429,8 +449,7 @@ Checked specifically because they are counter-intuitive. Do not delete these.
 | Claim | Verification |
 |---|---|
 | `/create-tools` and `/create-commands` exist | Provided as bootstrap skills, `src/agenthicc/skills/bootstrap.py:222,269` |
-| `/bg` and `/background` exist | Injected at `src/agenthicc/background/integration.py:117-121` |
-| `agenthicc agents` and `agenthicc jobs` both exist | Both registered, `src/agenthicc/cli/commands/background.py:117,124` |
+| `/bg`, `/background` and `/detach` exist | Registered in `src/agenthicc/commands/builtins.py` and intercepted by `TUISession.dispatch_slash` |
 | A TUI command picker sees `/workflow` and `/compact` | Both are registry entries with `handler=None`, intercepted in `TUISession.route()` |
 | `name_that_ui.py` exists | Present at `src/agenthicc/workflows/name_that_ui.py` — older notes said it was missing |
 | `EventBusTestHarness` exists | A pytest fixture defined at `tests/conftest.py:89`, used to drive the kernel event bus from tests — it is *not* part of the `agenthicc.testing` public API, and an earlier register row wrongly called it absent |
@@ -502,8 +521,8 @@ for node in ast.walk(tree):
     if isinstance(node, ast.AnnAssign) and getattr(node.target, 'id', None) == 'BUILTIN_COMMANDS':
         print('BUILTIN_COMMANDS entries:', len(node.value.elts))"
 
-# 4. CLI subcommand decorators
-grep -rho '@command([^)]*)' src/agenthicc/cli/commands/ | sort
+# 4. CLI subcommands (built-in manifest)
+python -c "from agenthicc.cli.manifest import BUILTIN_COMMANDS; print(*(' '.join(r.path) for r in BUILTIN_COMMANDS), sep='\n')"
 
 # 5. Workflow table
 sed -n '45,80p' src/agenthicc/workflows/loader.py

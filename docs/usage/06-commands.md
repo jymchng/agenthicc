@@ -9,6 +9,11 @@ The canonical registry is `BUILTIN_COMMANDS` in
 | `/cancel` | — | Cancel the active turn (alias `/interrupt`) |
 | `/loop` | `[interval] <prompt> \| status \| pause \| resume \| stop` | Schedule and control a recurring session prompt |
 | `/loops` | — | Open the table of all persisted schedule jobs |
+| `/schedules` | — | Manage repository-scoped scheduled workflows |
+| `/schedule` | `create ... \| run-now ID \| pause ID \| resume ID NEXT-RUN \| delete ID --confirm` | Create or control a repository scheduled workflow |
+| `/agents` | `[running\|needs-you\|history\|library]` | Open the agents hub over the conversation, optionally on one tab (also Ctrl+G, or ← on an empty prompt) |
+| `/inbox` | — | Open the agents hub's Needs you tab: pending approvals, questions and input requests |
+| `/subagents` | — | Show the turn's subagents and the session's earlier ones; Enter opens a worker's transcript (also Ctrl+O while the panel is shown) |
 | `/clear` | — | Clear the transcript |
 | `/commands` | `[reload]` | List commands |
 | `/tools` | `[reload]` | List tools |
@@ -23,18 +28,24 @@ The canonical registry is `BUILTIN_COMMANDS` in
 | `/models` | — | List models |
 | `/skills` | `[reload]` | Inspect and reload skills |
 | `/status` | — | Show session status |
-| `/startup` | — | Print the bounded startup phase report |
+| `/startup` | — | Print startup milestones (process start → first frame → agent runtime ready, modules at first frame) and the bounded phase report |
+| `/keybindings` | — | Show the effective key bindings and where each comes from; create `~/.agenthicc/keybindings.toml` with every action listed |
+| `/perf` | — | Print live-block rendering diagnostics: frames drawn, full redraws, render and write time percentiles, characters per frame, and whether synchronized output is on |
 | `/ps` | `[terminal-id] [--json]` | List processes (alias `/processes`) |
+| `/background` | — | Detach the active session into a background agent and open the agents hub with it selected (alias `/bg`) |
+| `/detach` | — | Detach the active session into a background agent |
+| `/workers` | `[--json]` | Open the agents hub's Running tab, where this session's parallel workers are nested under it; `--json` prints their worker manifests |
 | `/stop` | `[terminal-id\|all] [--force]` | Stop a terminal (alias `/stop-terminal`) |
 | `/usage` | — | Show the local token/cost snapshot |
 | `/mode` | `[Safe\|Plan\|Yolo]` | Switch mode |
 | `/workflow` | `<name> \| resume [run-id] \| reset [run-id]` | Select or resume a workflow |
 | `/compact` | — | Compact the conversation |
 
-!!! note "Commands registered outside `BUILTIN_COMMANDS`"
-    Counting the registry under-reports the surface. `/background` (alias
-    `/bg`) is injected by the background integration, and `/create-tools` and
-    `/create-commands` come from bootstrap skills.
+!!! note "Commands outside `BUILTIN_COMMANDS`"
+    `/create-tools` and `/create-commands` come from bootstrap skills, not the
+    registry. `/background`, `/bg` and `/detach` are registry entries that
+    `TUISession` intercepts to hand the conversation to the background
+    service.
 
 !!! note "`/workflow` and `/compact` carry `handler=None`"
     Both are intercepted in `TUISession.route()` so they can reach

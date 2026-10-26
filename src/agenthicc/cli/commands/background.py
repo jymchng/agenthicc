@@ -1,8 +1,9 @@
-"""Background session CLI and manager entry points (PRD-141)."""
+"""``agenthicc agents``: the agents hub and its commands (PRD-141, AGX-05)."""
 
 from __future__ import annotations
 
 import json as json_module
+from collections.abc import Coroutine
 from pathlib import Path
 
 from agenthicc.background import (
@@ -14,19 +15,7 @@ from agenthicc.background import (
     load_background_settings,
 )
 from agenthicc.cli.context import CLIContext
-from agenthicc.cli.registry import command, group
-
-from agenthicc.background.integration import install_tui_handoff
-
-install_tui_handoff()
-
-
-@group("jobs", help="Manage durable background sessions")
-def _jobs_group() -> None: ...
-
-
-@group("jobs", "inbox", help="List and resolve background approvals and questions")
-def _jobs_inbox_group() -> None: ...
+from agenthicc.cli.registry import optional_positionals
 
 
 def _config(ctx: CLIContext) -> object:
@@ -48,26 +37,9 @@ def _store_and_supervisor(
 ) -> tuple[BackgroundStore, BackgroundSupervisor]:
     settings = settings or _background_settings(ctx)
     if not background_enabled(settings):
-        raise RuntimeError("Background sessions are disabled by configuration")
-    store = BackgroundStore(
-        settings.store_root,
-        projection_batch_size=settings.manager.projection_batch_size,
-    )
-    supervisor = BackgroundSupervisor(
-        store,
-        max_workers=settings.max_workers,
-        max_workers_per_project=settings.max_workers_per_project,
-        cancel_grace_s=settings.cancel_grace_s,
-        wall_timeout_s=settings.wall_timeout_s,
-        max_activity_bytes=settings.max_activity_bytes,
-        trash_retention_days=settings.trash_retention_days,
-        queue_enabled=settings.queue_enabled,
-        max_queue_length=settings.max_queue_length,
-        max_workers_per_user=settings.max_workers_per_user,
-        priority_aging_interval_s=settings.priority_aging_interval_s,
-        dispatch_lease_s=settings.dispatch_lease_s,
-        notification_settings=settings.notifications,
-    )
+        raise RuntimeError("Background agents are disabled by configuration")
+    store = BackgroundStore(settings.store_root)
+    supervisor = BackgroundSupervisor.from_settings(store, settings)
     return store, supervisor
 
 
@@ -154,20 +126,46 @@ def _queue_positions(supervisor: BackgroundSupervisor) -> dict[str, int]:
     }
 
 
-async def _open_manager(ctx: CLIContext) -> None:
+async def _open_hub(
+    ctx: CLIContext,
+    *,
+    tab: str = "",
+    session_id: str = "",
+    run_id: str = "",
+) -> None:
+    """Open the agents hub full screen, then follow an attach or a saved session."""
     from rich.console import Console
 
-    from agenthicc.tui.workspace.background_manager import run_background_manager
+    from agenthicc.tui.workspace.agents_hub import DispatchDefaults, Tab, run_agents_hub
+    from agenthicc.tui.workspace.agents_hub.sources import HubSources
 
     settings = _background_settings(ctx)
-    store, supervisor = _store_and_supervisor(ctx)
-    result = await run_background_manager(
+    store, supervisor = _store_and_supervisor(ctx, settings=settings)
+    config = _config(ctx)
+    ui = vars(config).get("ui")
+    from agenthicc.config import UISettings
+
+    result = await run_agents_hub(
         Console(highlight=False),
         store=store,
         supervisor=supervisor,
-        manager_settings=settings.manager,
+        settings=settings.manager,
+        sources=HubSources.default(Path.cwd()),
+        tab=Tab(tab) if tab else Tab.RUNNING,
+        open_session=session_id or None,
+        run_id=run_id,
+        dispatch=DispatchDefaults(
+            config_path=ctx.config_path,
+            set_overrides=tuple(ctx.set_overrides),
+            set_secret_overrides=tuple(ctx.set_secret_overrides),
+            dangerously_skip_permissions=ctx.flags.dangerously_skip_permissions,
+            mode_name=ctx.mode_name,
+        ),
+        ui=ui if isinstance(ui, UISettings) else None,
     )
-    if result.action == "attach" and result.session_id:
+    if result.session_id is None:
+        return
+    if result.action == "attach":
         await attach_background_session(
             ctx,
             result.session_id,
@@ -175,6 +173,10 @@ async def _open_manager(ctx: CLIContext) -> None:
             supervisor=supervisor,
             fail_on_error=False,
         )
+    elif result.action == "open_saved":
+        from agenthicc.cli.commands.sessions import open_saved_session
+
+        await open_saved_session(ctx, result.session_id)
 
 
 async def attach_background_session(
@@ -188,7 +190,7 @@ async def attach_background_session(
 ) -> bool:
     """Attach one exact background session through the canonical TUI path.
 
-    Both the manager's Enter action and the public ``attach`` command call
+    Both the agents hub's attach action and the public ``attach`` command call
     this function.  Keeping the handoff here prevents a second session lookup
     or an accidental goal-run/last-session fallback.
     """
@@ -252,53 +254,27 @@ async def attach_background_session(
     return True
 
 
-async def _open_goal_manager(ctx: CLIContext, run_id: str) -> None:
-    """Open the run projection while preserving the existing attach path."""
+def _run_interactive(screen: Coroutine[object, object, None]) -> None:
+    """Run an interactive screen; JSON paths never start an event loop (AGX-01)."""
+    import asyncio
 
-    from rich.console import Console
-
-    from agenthicc.runs.cli import _manager
-    from agenthicc.tui.workspace.goal_run_manager import (
-        run_goal_run_manager,
-    )
-
-    manager = _manager(ctx)
-    try:
-        result = await run_goal_run_manager(
-            Console(highlight=False), manager=manager, run_id=run_id
-        )
-    except KeyError:
-        print(f"Run not found: {run_id}")
-        raise SystemExit(1) from None
-    if result.action != "attach":
-        return
-    try:
-        foreground = manager.attach(run_id)
-        from agenthicc.runners.tui_session import _run_tui_session
-
-        await _run_tui_session(
-            resume_id=foreground.session_id,
-            cli_overrides=list(ctx.set_overrides),
-            cli_secret_overrides=list(ctx.set_secret_overrides),
-            record_cassette=ctx.record_cassette,
-            cli_flags=ctx.flags,
-            config_path=ctx.config_path,
-            cwd=foreground.cwd,
-            config=ctx.config,
-            mode_name=ctx.mode_name,
-        )
-    except (KeyError, RuntimeError, ValueError) as exc:
-        print(f"Unable to attach {run_id}: {exc}")
-        raise SystemExit(1) from exc
+    asyncio.run(screen)
 
 
-@command("agents", help="Open the background sessions manager")
-async def agents(
+@optional_positionals("session_id")
+def agents(
     ctx: CLIContext,
+    session_id: str = "",
+    tab: str = "",
     run: str = "",
     json: bool = False,
 ) -> None:
-    """Open the manager, or inspect agents linked to one goal run."""
+    """Open the agents hub: running work, what needs you, history and the library.
+
+    SESSION_ID opens that agent's detail; ``--tab`` picks running, needs-you,
+    history or library; ``--run`` shows one goal run's agents. ``--json``
+    prints the agents (of the run) instead.
+    """
 
     if run:
         from agenthicc.runs.cli import _manager
@@ -311,10 +287,7 @@ async def agents(
         if json:
             print(json_module.dumps(payload.get("agents", []), indent=2, sort_keys=True))
             return
-        await _open_goal_manager(ctx, run)
-        return
-
-    if json:
+    elif json:
         store, supervisor = _store_and_supervisor(ctx)
         positions = _queue_positions(supervisor)
         session_payload = [
@@ -323,18 +296,16 @@ async def agents(
         ]
         print(json_module.dumps(session_payload, indent=2, sort_keys=True))
         return
+    # The hub is imported only now: listing paths stay light (AGX-01).
+    from agenthicc.tui.workspace.agents_hub import Tab
 
-    await _open_manager(ctx)
+    if tab and tab not in {item.value for item in Tab}:
+        names = ", ".join(item.value for item in Tab)
+        print(f"Unknown tab {tab!r}: use {names}")
+        raise SystemExit(2)
+    _run_interactive(_open_hub(ctx, tab=tab, session_id=session_id, run_id=run))
 
 
-@command("jobs", help="Open the background sessions manager")
-async def jobs(ctx: CLIContext) -> None:
-    """Open the background session manager."""
-
-    await _open_manager(ctx)
-
-
-@command("run", help="Start an agent turn or workflow")
 async def run(
     ctx: CLIContext,
     background: bool = False,
@@ -384,14 +355,14 @@ async def run(
         )
 
 
-@command("jobs", "list", help="List background sessions")
-def jobs_list(
+def agents_list(
     ctx: CLIContext,
     json: bool = False,
     all: bool = False,
     trash: bool = False,
 ) -> None:
-    """List current, archived, or recoverable-trash sessions."""
+    """List current, archived, or recoverable-trash agents (statuses as the hub shows them)."""
+    from agenthicc.background.vocabulary import status_look
 
     store, supervisor = _store_and_supervisor(ctx)
     sessions = store.list(include_archived=all, include_deleted=trash)
@@ -403,12 +374,13 @@ def jobs_list(
         print(json_module.dumps(payload, indent=2, sort_keys=True))
         return
     if not payload:
-        print("No background sessions.")
+        print("No background agents.")
         return
-    for item in payload:
+    for session, item in zip(sessions, payload, strict=True):
+        look = status_look(session.status, queue_position=positions.get(session.session_id))
         print(
             f"{str(item.get('session_id', ''))[:16]}  "
-            f"{str(item.get('status', 'unknown')):16}  "
+            f"{look.glyph} {look.label:16}  "
             f"{str(item.get('title', ''))[:48]}  "
             f"{item.get('workflow_name') or 'direct'}  "
             f"priority={item.get('priority', 'normal')}  "
@@ -420,8 +392,7 @@ def jobs_list(
         )
 
 
-@command("jobs", "status", help="Show one background session")
-def jobs_status(ctx: CLIContext, session_id: str, json: bool = False) -> None:
+def agents_status(ctx: CLIContext, session_id: str, json: bool = False) -> None:
     """Show redacted status for SESSION_ID."""
 
     store, supervisor = _store_and_supervisor(ctx)
@@ -496,30 +467,26 @@ def _mutate(ctx: CLIContext, session_id: str, action: str) -> None:
         elif action == "restore":
             session = supervisor.restore_deleted(session_id)
         else:
-            raise ValueError(f"unknown job operation: {action}")
+            raise ValueError(f"unknown agent operation: {action}")
     except (KeyError, RuntimeError, ValueError) as exc:
         print(f"Unable to {action} {session_id}: {exc}")
         raise SystemExit(1) from exc
     print(f"{action}: {session.session_id} → {session.status.value}")
 
 
-@command("jobs", "cancel", help="Cancel a background session")
-def jobs_cancel(ctx: CLIContext, session_id: str) -> None:
+def agents_cancel(ctx: CLIContext, session_id: str) -> None:
     _mutate(ctx, session_id, "cancel")
 
 
-@command("jobs", "resume", help="Resume a background session")
-def jobs_resume(ctx: CLIContext, session_id: str) -> None:
+def agents_resume(ctx: CLIContext, session_id: str) -> None:
     _mutate(ctx, session_id, "resume")
 
 
-@command("jobs", "retry", help="Retry a failed background session")
-def jobs_retry(ctx: CLIContext, session_id: str) -> None:
+def agents_retry(ctx: CLIContext, session_id: str) -> None:
     _mutate(ctx, session_id, "retry")
 
 
-@command("jobs", "priority", help="Change a background session's scheduling priority")
-def jobs_priority(ctx: CLIContext, session_id: str, priority: str) -> None:
+def agents_priority(ctx: CLIContext, session_id: str, priority: str) -> None:
     """Set priority to urgent, normal, or low and record an audit event."""
 
     _store, supervisor = _store_and_supervisor(ctx)
@@ -531,8 +498,7 @@ def jobs_priority(ctx: CLIContext, session_id: str, priority: str) -> None:
     print(f"priority: {session.session_id} → {session.priority.value}")
 
 
-@command("jobs", "approve", help="Approve a waiting background session")
-def jobs_approve(ctx: CLIContext, session_id: str) -> None:
+def agents_approve(ctx: CLIContext, session_id: str) -> None:
     _store, supervisor = _store_and_supervisor(ctx)
     try:
         session = supervisor.approve(session_id, True)
@@ -542,8 +508,7 @@ def jobs_approve(ctx: CLIContext, session_id: str) -> None:
     print(f"approve: {session.session_id} → {session.status.value}")
 
 
-@command("jobs", "reject", help="Reject a waiting background session")
-def jobs_reject(ctx: CLIContext, session_id: str) -> None:
+def agents_reject(ctx: CLIContext, session_id: str) -> None:
     _store, supervisor = _store_and_supervisor(ctx)
     try:
         session = supervisor.approve(session_id, False)
@@ -553,8 +518,7 @@ def jobs_reject(ctx: CLIContext, session_id: str) -> None:
     print(f"reject: {session.session_id} → {session.status.value}")
 
 
-@command("jobs", "input", help="Provide input to a waiting background session")
-def jobs_input(ctx: CLIContext, session_id: str, value: str) -> None:
+def agents_input(ctx: CLIContext, session_id: str, value: str) -> None:
     """Deliver VALUE to a session currently waiting for user input."""
 
     _store, supervisor = _store_and_supervisor(ctx)
@@ -566,8 +530,7 @@ def jobs_input(ctx: CLIContext, session_id: str, value: str) -> None:
     print(f"input: {session.session_id} → {session.status.value}")
 
 
-@command("jobs", "inbox", "list", help="List pending background approvals and questions")
-def jobs_inbox_list(
+def agents_inbox_list(
     ctx: CLIContext,
     project: str = "",
     type: str = "",
@@ -616,8 +579,7 @@ def _parse_inbox_version(value: str) -> int:
     return version
 
 
-@command("jobs", "inbox", "answer", help="Answer a pending question or input request")
-def jobs_inbox_answer(
+def agents_inbox_answer(
     ctx: CLIContext,
     item_id: str,
     response: str,
@@ -697,8 +659,7 @@ def _resolve_inbox_approval(
         print("idempotent replay")
 
 
-@command("jobs", "inbox", "approve", help="Approve the exact pending tool request")
-def jobs_inbox_approve(
+def agents_inbox_approve(
     ctx: CLIContext,
     item_id: str,
     expected_version: str,
@@ -723,8 +684,7 @@ def jobs_inbox_approve(
     )
 
 
-@command("jobs", "inbox", "reject", help="Reject the exact pending tool request")
-def jobs_inbox_reject(
+def agents_inbox_reject(
     ctx: CLIContext,
     item_id: str,
     expected_version: str,
@@ -741,8 +701,7 @@ def jobs_inbox_reject(
     )
 
 
-@command("jobs", "inbox", "expire", help="Expire an exact pending interaction")
-def jobs_inbox_expire(
+def agents_inbox_expire(
     ctx: CLIContext,
     item_id: str,
     expected_version: str,
@@ -766,8 +725,7 @@ def jobs_inbox_expire(
     print(f"expire: {updated.item_id} → {updated.status}")
 
 
-@command("jobs", "notifications", help="Inspect background notification delivery status")
-def jobs_notifications(
+def agents_notifications(
     ctx: CLIContext,
     session_id: str = "",
     status: str = "",
@@ -801,8 +759,7 @@ def jobs_notifications(
         )
 
 
-@command("jobs", "rename", help="Rename a background session")
-def jobs_rename(ctx: CLIContext, session_id: str, title: str) -> None:
+def agents_rename(ctx: CLIContext, session_id: str, title: str) -> None:
     """Set a bounded, local-only display title."""
 
     store, _supervisor = _store_and_supervisor(ctx)
@@ -814,8 +771,7 @@ def jobs_rename(ctx: CLIContext, session_id: str, title: str) -> None:
     print(f"rename: {session.session_id} → {session.title}")
 
 
-@command("jobs", "labels", help="Set comma-separated labels on a background session")
-def jobs_labels(ctx: CLIContext, session_id: str, labels: str = "") -> None:
+def agents_labels(ctx: CLIContext, session_id: str, labels: str = "") -> None:
     """Replace user labels; labels are not sent to providers."""
 
     store, _supervisor = _store_and_supervisor(ctx)
@@ -828,8 +784,7 @@ def jobs_labels(ctx: CLIContext, session_id: str, labels: str = "") -> None:
     print(f"labels: {session.session_id} → {', '.join(session.labels) or 'none'}")
 
 
-@command("jobs", "purge", help="Permanently remove expired background trash")
-def jobs_purge(ctx: CLIContext) -> None:
+def agents_purge(ctx: CLIContext) -> None:
     """Apply the configured recoverable-trash retention policy."""
 
     _store, supervisor = _store_and_supervisor(ctx)
@@ -837,16 +792,13 @@ def jobs_purge(ctx: CLIContext) -> None:
     print(f"purged: {len(removed)}")
 
 
-@command("jobs", "archive", help="Archive a background session")
-def jobs_archive(ctx: CLIContext, session_id: str) -> None:
+def agents_archive(ctx: CLIContext, session_id: str) -> None:
     _mutate(ctx, session_id, "archive")
 
 
-@command("jobs", "delete", help="Move a background session to recoverable trash")
-def jobs_delete(ctx: CLIContext, session_id: str) -> None:
+def agents_delete(ctx: CLIContext, session_id: str) -> None:
     _mutate(ctx, session_id, "delete")
 
 
-@command("jobs", "restore", help="Restore a deleted background session")
-def jobs_restore(ctx: CLIContext, session_id: str) -> None:
+def agents_restore(ctx: CLIContext, session_id: str) -> None:
     _mutate(ctx, session_id, "restore")

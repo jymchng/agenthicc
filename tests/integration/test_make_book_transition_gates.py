@@ -159,9 +159,15 @@ async def test_complete_file_backed_gate_sequence_and_checkpoint(tmp_path: Path)
         event, data, output_dir=str(output), title="Book", author="Author"
     )
     await _named(compile_tools, "create_build_book")()
+    current_pdf = output / "dist" / "book 20261025-120000-123456.pdf"
+    current_pdf.write_bytes(b"%PDF-1.7\ncurrent compile fixture")
+    _write_epub(current_pdf.with_suffix(".epub"))
     assert (await _named(compile_tools, "mark_book_complete")(summary="PDF and EPUB are valid"))[
         "ok"
     ] is True
+    assert data["pdf_path"] == "dist/book 20261025-120000-123456.pdf"
+    assert (output / "dist" / "book.pdf").read_bytes() == b"%PDF-1.7\nfixture"
+    assert (output / "dist" / "book.epub").is_file()
     receipts.append(data["receipt"])
 
     context = make_book.MakeBookContext(

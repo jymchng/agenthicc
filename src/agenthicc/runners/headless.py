@@ -9,7 +9,7 @@ import sys
 import uuid
 from dataclasses import dataclass, field, is_dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from agenthicc.runners.session_lease import (
     SessionAlreadyActiveError,
@@ -19,12 +19,15 @@ from agenthicc.runners.session_lease import (
 from agenthicc.runners.workflow_handle import classify_workflow_failure
 
 if TYPE_CHECKING:
+    from lauren_ai._agents._runner import AgentRunnerBase
+
     from agenthicc.cli.context import CLIContext
     from agenthicc.kernel.events import Event
     from agenthicc.tools.approval import ApprovalRequest, ApprovalResponse
     from agenthicc.runners.run_coordinator import ResumePlan
     from agenthicc.runners.session_context import SessionContext
     from agenthicc.runners.session_lease import SessionOwnerLease
+    from agenthicc.runners.workflow_handle import WorkflowLifecycle
 
 __all__ = ["WorkflowExecutionResult", "execute_workflow", "run_headless_workflow"]
 
@@ -72,6 +75,10 @@ class WorkflowExecutionResult:
         if self.failure_category:
             result["failure_category"] = self.failure_category
         return result
+
+
+class _WorkflowResumeTransitionError(RuntimeError):
+    """A resume checkpoint could not be persisted before provider dispatch."""
 
 
 def _optional_request_field(value: object, name: str, default: object = None) -> object:
@@ -175,7 +182,6 @@ def _select_headless_workflow_resume(
         workflow_name=workflow_name,
         workflow_registry=session.workflow_registry,
         conversation=conversation,
-        provider_profile=getattr(session.cfg.execution, "profile", ""),
         workspace_root=workspace_root,
     )
     return record.run_id if record is not None else None
@@ -190,6 +196,7 @@ async def execute_workflow(
     resume_run_id: str | None = None,
     continuation: str | None = None,
     resume_plan: ResumePlan | None = None,
+    profile_override: str | None = None,
 ) -> WorkflowExecutionResult:
     """Execute one registered workflow using an existing session context.
 
@@ -204,12 +211,14 @@ async def execute_workflow(
     from agenthicc.workflows.config import WorkflowConfig
     from agenthicc.runners.workflow_checkpoint_store import WorkflowCheckpointStore
     from agenthicc.runners.workflow_handle import WorkflowRunHandle
+    from agenthicc.config import AgenthiccConfig
+    from agenthicc.runners.workflow_profile import provider_profile_fingerprint
 
     workflow_cls = session.workflow_registry.get(workflow_name)
     if workflow_cls is None:
         available = ", ".join(sorted(session.workflow_registry.names())) or "none"
         raise ValueError(f"Unknown workflow: {workflow_name!r}. Available: {available}")
-    if session.agent_runner is None:
+    if session.agent_runner is None and resume_run_id is None:
         raise RuntimeError(
             "No LLM configured. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, or configure Ollama."
         )
@@ -218,6 +227,12 @@ async def execute_workflow(
 
     workflow_handle = None
     resuming = resume_run_id is not None
+    resume_profile_selection = None
+    resume_previous_profile_state: (
+        tuple[str, str, str, tuple[str, ...], WorkflowLifecycle, bool] | None
+    ) = None
+    resume_agent_runner = session.agent_runner
+    execution_config = session.cfg
     session_conversation = session.session_conversation
     session_service = session.session_service
     if resuming and session_conversation is None:
@@ -254,7 +269,6 @@ async def execute_workflow(
             records = coordinator.inspect(
                 workflow_registry=session.workflow_registry,
                 conversation=session_conversation,
-                provider_profile=session.cfg.execution.profile,
                 workspace_root=str(getattr(session.workspace_scope, "primary_root", "") or ""),
             )
             record = next(
@@ -269,12 +283,57 @@ async def execute_workflow(
                     f"workflow run {resume_run_id!r} belongs to {record.workflow_name!r}, "
                     f"not {workflow_cls.name!r}"
                 )
+            from agenthicc.runners.workflow_profile import (
+                execution_profile_override,
+                resolve_resume_provider_profile,
+                workflow_resume_agent_runner,
+            )
+
+            explicit_profile = profile_override
+            if explicit_profile is None:
+                explicit_profile = execution_profile_override(session.cfg_overrides)
+            resume_profile_selection = resolve_resume_provider_profile(
+                session.cfg,
+                saved_profile=record.provider_profile,
+                saved_binding_fingerprint=record.provider_profile_fingerprint,
+                explicit_profile=explicit_profile,
+            )
+            execution_config = resume_profile_selection.config
+            resume_agent_runner = cast(
+                "AgentRunnerBase",
+                workflow_resume_agent_runner(
+                    session.agent_runner,
+                    resume_profile_selection,
+                    conversation_id=session.session_id,
+                ),
+            )
             workflow_handle = coordinator.rehydrate(
                 record,
                 workflow=workflow_cls,
                 conversation=session_conversation,
                 browser_manager=session.browser_manager,
                 owner_id=f"headless:{os.getpid()}:{resume_run_id}",
+            )
+            old_binding = workflow_handle.provider_profile_fingerprint
+            record_switch = resume_profile_selection.source == "explicit override" and (
+                resume_profile_selection.switched
+                or (
+                    bool(old_binding)
+                    and old_binding != resume_profile_selection.binding_fingerprint
+                )
+            )
+            resume_previous_profile_state = (
+                workflow_handle.provider_profile,
+                workflow_handle.provider_profile_fingerprint,
+                workflow_handle.provider_profile_origin,
+                workflow_handle.provider_profile_history,
+                workflow_handle.lifecycle,
+                workflow_handle.pause_requested,
+            )
+            workflow_handle.apply_provider_profile(
+                resume_profile_selection.profile_name,
+                resume_profile_selection.binding_fingerprint,
+                record_switch=record_switch,
             )
         else:
             workflow_handle = WorkflowRunHandle.create(
@@ -285,6 +344,11 @@ async def execute_workflow(
                 checkpoint_store=checkpoint_store,
                 browser_manager=session.browser_manager,
                 provider_profile=session.cfg.execution.profile,
+                provider_profile_fingerprint=(
+                    provider_profile_fingerprint(session.cfg, session.cfg.execution.profile)
+                    if isinstance(session.cfg, AgenthiccConfig)
+                    else ""
+                ),
                 workspace_root=str(getattr(session.workspace_scope, "primary_root", "") or ""),
             )
     effective_intent = (
@@ -336,8 +400,39 @@ async def execute_workflow(
                     if _phase_specs:
                         workflow_handle.update_phase(_phase_specs[0].name, 0, 0)
         elif workflow_handle is not None:
-            workflow_handle.mark_resuming()
-            workflow_handle.persist_checkpoint(reason="resuming")
+            if resume_previous_profile_state is None:
+                raise RuntimeError("workflow resume profile state was not captured")
+            try:
+                workflow_handle.mark_resuming()
+                workflow_handle.persist_checkpoint(reason="resuming")
+            except Exception as exc:  # noqa: BLE001 - preserve the prior checkpoint
+                (
+                    workflow_handle.provider_profile,
+                    workflow_handle.provider_profile_fingerprint,
+                    workflow_handle.provider_profile_origin,
+                    workflow_handle.provider_profile_history,
+                    workflow_handle.lifecycle,
+                    workflow_handle.pause_requested,
+                ) = resume_previous_profile_state
+                workflow_handle.release_claim()
+                raise _WorkflowResumeTransitionError(
+                    "resume_transition_failed: the saved workflow is unchanged; "
+                    f"could not persist the resuming checkpoint ({type(exc).__name__})."
+                ) from None
+            if session_service is not None and resume_profile_selection is not None:
+                await session_service.publish(
+                    session.session_id,
+                    source="headless",
+                    kind="workflow_resume_profile_selected",
+                    payload={
+                        "run_id": workflow_handle.run_id,
+                        "saved_profile": resume_profile_selection.saved_profile,
+                        "selected_profile": resume_profile_selection.profile_name,
+                        "source": resume_profile_selection.source,
+                        "switched": record_switch,
+                        "binding_fingerprint": resume_profile_selection.binding_fingerprint,
+                    },
+                )
             memory = session.session_memory
             if memory is not None:
                 from agenthicc.runners.agent_turn import (
@@ -371,9 +466,9 @@ async def execute_workflow(
             conv_store=session.app_state.conversation,
             app_state=session.app_state,
             processor=session.processor,
-            agent_runner=session.agent_runner,
+            agent_runner=resume_agent_runner,
             approval_svc=session.approval_svc,
-            cfg=session.cfg,
+            cfg=execution_config,
             skills=session.skills,
             plugin_tools=session.project_plugins,
             mcp_registry=session.mcp_registry,
@@ -465,12 +560,22 @@ async def execute_workflow(
             workflow_handle.release_claim()
         raise
     except Exception as exc:  # noqa: BLE001
-        error = f"{type(exc).__name__}: {exc}"
+        error = (
+            str(exc)
+            if isinstance(exc, _WorkflowResumeTransitionError)
+            else f"{type(exc).__name__}: {exc}"
+        )
         from agenthicc.memory.compactor import CompactionRecoveryRequired
 
-        if isinstance(exc, CompactionRecoveryRequired):
-            failure_category = exc.failure_category
-        if workflow_handle is not None:
+        if isinstance(exc, _WorkflowResumeTransitionError):
+            # The resuming checkpoint is the dispatch boundary. If it could
+            # not be written, preserve the prior paused checkpoint exactly;
+            # do not turn this local storage failure into a workflow failure.
+            failure_category = "workflow_resume_transition_failed"
+        else:
+            if isinstance(exc, CompactionRecoveryRequired):
+                failure_category = exc.failure_category
+        if workflow_handle is not None and not isinstance(exc, _WorkflowResumeTransitionError):
             checkpoint = workflow_handle.finalize_failure(
                 error,
                 kind=_workflow_failure_kind(exc),
@@ -527,7 +632,7 @@ async def execute_workflow(
         status = "paused"
         # The handle owns the redacted, bounded diagnostic. Do not expose a
         # provider exception's raw request dump in the JSON result.
-        if workflow_handle.last_error:
+        if workflow_handle.last_error and failure_category != "workflow_resume_transition_failed":
             error = workflow_handle.last_error
     run_id = (workflow_run.run_id if workflow_run is not None else "") or (
         workflow_handle.run_id if workflow_handle is not None else ""

@@ -443,10 +443,71 @@ rerun as a whole.
 
 ## TUI and kernel observability
 
-While a pool is active, `ConversationStore.subagent_pool_state` contains the
-pool ID, total count, and per-worker `pending`, `running`, `done`, or `failed`
-status. The workspace uses that signal for the live worker display and clears
-it when aggregation finishes.
+### The subagent panel
+
+While a pool runs, the live block shows a panel between the prompt and the
+footer (AGX-08):
+
+```text
+ Subagents 3 running · 1 done · limit 4                                   Ctrl+O focus
+ ● explorer #1   read src/agenthicc/background/store.py                 0:42   3.1k
+ ● explorer #2   grep refresh_interval_s src/                           0:40   2.4k
+ ◆ executor #1   needs approval: bash pytest -k store                   1:05   5.8k
+ ✓ reviewer #1   3 findings in the scheduler                            0:31   1.9k
+```
+
+Each row is a worker: its status (`◌` waiting to start, `●` running, `◆` needs
+approval, `✓` done, `✗` failed, `⊘` stopped), label, what it is doing now —
+the current tool and its target, the approval it waits for, or the first line
+of its latest message — how long it has run and its tokens. A row changes when
+the worker's tool call starts, before the tool runs. Finished rows stay 30
+seconds and then fold into the summary; failed rows stay until you dismiss
+them. Past six rows the rest collapse into `… +N more`, and a terminal shorter
+than 24 rows shows the summary line alone. Everything shown is redacted with
+the session-export redactor.
+
+`ConversationStore.subagent_pool_state` holds an immutable `SubagentPoolState`
+snapshot that the pool replaces on every change, so subscribers hear about each
+one. A finished pool stays published (with `finished_at`) while the panel still
+lists rows; the store's tick clears it afterwards.
+
+### Focus, transcripts and stopping a worker
+
+Ctrl+O (or `/subagents`) moves focus from the prompt to the panel: ↑/↓ select
+a worker — the session's earlier pools are listed below the current one —,
+Enter opens its transcript and Esc returns to the prompt. In a transcript, ←
+and → move to its siblings, `f` follows new events, and Esc (or ↑ at the top)
+returns to the conversation. The keys are the key map's `subagents` and
+`transcript` contexts, so `~/.agenthicc/keybindings.toml` can rebind them. In
+a session, the agents hub's Running tab also lists the turn's workers, and
+Enter on one opens its transcript.
+
+`x` stops the selected worker, in the panel or its transcript. Only that
+worker is cancelled: it is recorded as failed with `stopped by user`, the
+others keep running, and the parent receives the aggregate of the rest. On a
+failed row, `x` dismisses it instead. `SubagentPool.stop_worker(worker_id)`
+and `agenthicc.subagents.pool.active_pool(pool_id)` are the programmatic form.
+
+Each worker's transcript is
+`~/.agenthicc/sessions/<session-id>/subagents/<pool-id>/<worker-id>.jsonl`,
+with the pool's workers in `pool.json` beside them: the task, the agent's
+messages, each tool call's start and result, approval requests and decisions,
+and the final result, one JSON line each and redacted. A background thread
+writes them in order; a transcript is kept under 2 MiB by dropping its oldest
+events behind a `truncated` marker, and it is deleted with the session. The
+parent agent never reads them, so its provider requests are byte-identical
+with and without them.
+
+### Approvals name the worker
+
+A worker's approval prompt says who asks — `executor #1 (executor) wants to
+run bash` — and `o` opens that worker's transcript before you decide; closing
+it returns to the prompt. Esc denies that single call without stopping the
+worker. `ApprovalRequest.requester` carries an `ApprovalRequester` (label,
+role, pool and worker IDs); a background session records it in the inbox item,
+so the agents hub's request card shows it too.
+
+### Events
 
 The pool also appends scroll events:
 
@@ -562,6 +623,8 @@ The subagent tests intentionally use deterministic Lauren mock transports:
 | `tests/integration/test_subagent_tool_execution.py` | real worker runner, tool dispatch, mutation evidence, Safe approval |
 | `tests/integration/test_subagent_executor_integration.py` | workflow-compatible executor role |
 | `tests/e2e/test_subagent_executor_e2e.py` | user-facing aggregate contract |
+| `tests/integration/test_subagent_panel_agx08.py` | live rows, transcripts, stopping one worker, named approvals, provider requests unchanged by the panel |
+| `tests/unit/test_subagent_panel_agx08.py` | transcript bounding and redaction, panel rows, the focused panel, transcripts, the approval prompt |
 
 Run the focused suite with:
 
@@ -572,6 +635,8 @@ Run the focused suite with:
   tests/unit/test_lauren_integration_boundaries.py \
   tests/integration/test_subagent_tool_execution.py \
   tests/integration/test_subagent_executor_integration.py \
+  tests/integration/test_subagent_panel_agx08.py \
+  tests/unit/test_subagent_panel_agx08.py \
   tests/e2e/test_subagent_executor_e2e.py -q
 ```
 

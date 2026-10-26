@@ -9,7 +9,7 @@ import sys
 TARGETS = (
     "agenthicc.background",
     "agenthicc.cli.commands.background",
-    "agenthicc.tui.workspace.background_manager",
+    "agenthicc.tui.workspace.agents_hub",
 )
 
 

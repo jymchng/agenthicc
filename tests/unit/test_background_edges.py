@@ -373,13 +373,32 @@ def test_store_same_state_and_trash_manifest_edge_cases(tmp_path: Path) -> None:
     assert store.restore_deleted("empty-artifact").status is SessionStatus.COMPLETED
 
 
-@pytest.mark.asyncio
-async def test_manager_noninteractive_fallback_and_action_errors(
+async def _hub_for(
+    store: BackgroundStore, supervisor: object, tmp_path: Path, console: object | None = None
+) -> object:
+    from rich.console import Console
+
+    from agenthicc.tui.workspace.agents_hub import AgentsHub
+    from agenthicc.tui.workspace.agents_hub.prefs import HubPrefs
+
+    hub = AgentsHub(
+        console if isinstance(console, Console) else Console(record=True),
+        store=store,
+        supervisor=supervisor,  # type: ignore[arg-type]
+        prefs=HubPrefs(path=tmp_path / "hub.json"),
+    )
+    await hub.start()
+    await hub.settle()
+    return hub
+
+
+async def test_hub_reports_failed_actions_and_lists_without_a_terminal(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     from rich.console import Console
 
-    from agenthicc.tui.workspace.background_manager import BackgroundManager, ManagerResult
+    from agenthicc.tui.cbreak_reader import Key
+    from agenthicc.tui.workspace.agents_hub import AgentsHub, HubResult
 
     store = BackgroundStore(tmp_path / "background")
     session = _record(tmp_path, "manager-edge")
@@ -391,84 +410,98 @@ async def test_manager_noninteractive_fallback_and_action_errors(
     def fail(*args: object, **kwargs: object) -> object:
         raise RuntimeError("controlled action failure")
 
+    real = BackgroundSupervisor(store)
     bad = SimpleNamespace(
         delete=fail,
         cancel=fail,
         archive=fail,
         restore_deleted=fail,
         approve=fail,
+        queue_positions=real.queue_positions,
+        recover_stale=real.recover_stale,
     )
-    console = Console(record=True)
-    manager = BackgroundManager(console, store=store, supervisor=bad, refresh_s=0.1)
-    manager.set_query("manager")
-    manager.render()
-    manager.help_visible = True
-    manager.render()
-    manager.help_visible = False
-    manager.handle_key("CHAR", "c")
-    manager.handle_key("CHAR", "a")
-    manager.handle_key("CHAR", "u")
-    manager.handle_key("CHAR", "p")
-    manager.handle_key("CHAR", "\x18")
-    deadline = time.monotonic() + 2.0
-    while manager._deletion_thread is not None and time.monotonic() < deadline:
-        manager._poll_async_delete()
-        time.sleep(0.01)
-    manager._poll_async_delete()
-    assert "controlled action failure" in console.export_text()
+    hub = await _hub_for(store, bad, tmp_path)
+    assert isinstance(hub, AgentsHub)
+    try:
+        hub.set_search("manager")
+        hub.handle_key(Key.CHAR, "?")
+        hub.render(100, 30)
+        hub.handle_key(Key.ESC, "")
+        hub.handle_key(Key.CHAR, "A")  # archive the finished agent
+        await hub.settle()
+        assert "controlled action failure" in hub.notice
+        hub.handle_key(Key.CTRL_X, "")
+        await hub.settle()
+        assert "controlled action failure" in hub.notice
+    finally:
+        await hub.stop()
 
     backend = SimpleNamespace(is_interactive=lambda: False)
     monkeypatch.setattr("agenthicc.tui.terminal.backend.get_backend", lambda: backend)
-    assert await manager.run() == ManagerResult("exit")
+    console = Console(record=True, width=120)
+    listing = AgentsHub(console, store=store, supervisor=real)
+    assert await listing.run() == HubResult("exit")
+    assert "manager-edge" in console.export_text()
 
 
-def test_manager_empty_navigation_and_unavailable_activity(tmp_path: Path) -> None:
-    from rich.console import Console
-
-    from agenthicc.tui.workspace.background_manager import BackgroundManager, ManagerResult
+async def test_hub_navigates_an_empty_list_and_opens_a_failed_agent(tmp_path: Path) -> None:
+    from agenthicc.tui.cbreak_reader import Key
+    from agenthicc.tui.workspace.agents_hub import AgentsHub, HubResult
 
     store = BackgroundStore(tmp_path / "background")
-    console = Console(record=True)
-    manager = BackgroundManager(console, store=store)
-    assert manager.selected_session is None
-    manager.render()
-    manager.handle_key("UP")
-    manager.handle_key("DOWN")
-    manager.handle_key("CHAR", "r")
-    assert manager.handle_key("ENTER") is None
-    assert manager.handle_key("CHAR", "q") == ManagerResult("exit")
+    hub = await _hub_for(store, BackgroundSupervisor(store), tmp_path)
+    assert isinstance(hub, AgentsHub)
+    try:
+        assert hub.selected_row() is None
+        hub.render(100, 20)
+        hub.handle_key(Key.UP, "")
+        hub.handle_key(Key.DOWN, "")
+        hub.handle_key(Key.CTRL_R, "")
+        assert hub.handle_key(Key.ENTER, "") is None
+        assert hub.handle_key(Key.CHAR, "q") == HubResult("exit")
 
-    session = _record(tmp_path, "unavailable-activity").evolve(error="error summary")
-    Path(session.artifact_dir, "conversation.jsonl").write_text("bad\n{}\n", encoding="utf-8")
-    store.create(session)
-    manager.refresh(force=True)
-    assert manager.handle_key("ENTER") is None
-    assert manager.handle_key("ENTER") is not None
-    console.print(manager.render())
-    assert "error summary" in console.export_text()
+        session = _record(tmp_path, "unavailable-activity").evolve(
+            status=SessionStatus.FAILED, error="error summary"
+        )
+        Path(session.artifact_dir, "conversation.jsonl").write_text("bad\n{}\n", encoding="utf-8")
+        store.create(session)
+        hub._request_load("test", force=True)
+        await hub.settle()
+        assert hub.handle_key(Key.ENTER, "") is None
+        await hub.settle()
+        assert hub.detail_session_id == "unavailable-activity"
+        from rich.console import Console
+
+        console = Console(record=True, width=100)
+        console.print(hub.render(100, 40))
+        assert "error summary" in console.export_text()
+    finally:
+        await hub.stop()
 
 
-def test_manager_ctrl_c_exits_agents_screen_even_in_modal_state(tmp_path: Path) -> None:
-    from rich.console import Console
-
+async def test_ctrl_c_leaves_the_hub_from_any_state(tmp_path: Path) -> None:
     from agenthicc.tui.cbreak_reader import Key
-    from agenthicc.tui.workspace.background_manager import BackgroundManager, ManagerResult
+    from agenthicc.tui.workspace.agents_hub import AgentsHub, HubResult
 
     store = BackgroundStore(tmp_path / "background")
     store.create(_record(tmp_path, "ctrl-c"))
-    manager = BackgroundManager(Console(), store=store)
+    hub = await _hub_for(store, BackgroundSupervisor(store), tmp_path)
+    assert isinstance(hub, AgentsHub)
+    try:
+        hub.handle_key(Key.CHAR, "/")  # typing a search
+        assert hub.handle_key(Key.CTRL_C, "") == HubResult("exit")
+        hub.handle_key(Key.ESC, "")
+        hub.handle_key(Key.CHAR, "?")  # help shown
+        assert hub.handle_key(Key.CTRL_C, "") == HubResult("exit")
+    finally:
+        await hub.stop()
 
-    manager.filter_mode = True
-    assert manager.handle_key(Key.CTRL_C) == ManagerResult("exit")
 
-    manager._deleting_ids = ("ctrl-c",)
-    assert manager.handle_key("CHAR", "\x03") == ManagerResult("exit")
-
-
-def test_manager_full_control_surface_and_activity_redaction(tmp_path: Path) -> None:
+async def test_hub_control_surface_and_transcript_redaction(tmp_path: Path) -> None:
     from rich.console import Console
 
-    from agenthicc.tui.workspace.background_manager import BackgroundManager
+    from agenthicc.tui.cbreak_reader import Key
+    from agenthicc.tui.workspace.agents_hub import AgentsHub
 
     store = BackgroundStore(tmp_path / "background")
     supervisor = BackgroundSupervisor(store, artifact_root=tmp_path / "sessions")
@@ -492,56 +525,46 @@ def test_manager_full_control_surface_and_activity_redaction(tmp_path: Path) -> 
         + "\n",
         encoding="utf-8",
     )
-    console = Console(record=True)
-    manager = BackgroundManager(console, store=store, supervisor=supervisor, refresh_s=0.0)
-    manager.set_input_provider(lambda prompt: "provided")
-    manager.set_filters(project=str(tmp_path), workflow="demo")
-    assert manager._activity_lines(store.get(approval.session_id))
-    manager.render()
+    console = Console(record=True, width=120)
+    hub = await _hub_for(store, supervisor, tmp_path, console)
+    assert isinstance(hub, AgentsHub)
+    try:
+        # An approval recorded before the inbox is resolved on the session.
+        hub._selected_key = f"session:{approval.session_id}"
+        hub.handle_key(Key.ENTER, "")
+        await hub.settle()
+        console.print(hub.render(120, 40))
+        hub.handle_key(Key.CHAR, "y")
+        await hub.settle()
+        # The worker resumes once it reads the recorded decision.
+        assert store.get(approval.session_id).approval_decision is True
+        hub.handle_key(Key.ESC, "")
 
-    manager.set_filters(status=SessionStatus.WAITING_APPROVAL)
-    manager.handle_key("CHAR", "y")
-    manager.set_filters(status=SessionStatus.WAITING_INPUT)
-    manager.handle_key("CHAR", "i")
-    store.transition(waiting_input.session_id, SessionStatus.WAITING_INPUT, input_request="answer")
+        hub._selected_key = f"session:{complete.session_id}"
+        hub.handle_key(Key.CHAR, "p")
+        hub.handle_key(Key.CHAR, "v")
+        hub.handle_key(Key.CHAR, "/")
+        for ch in "complete":
+            hub.handle_key(Key.CHAR, ch)
+        hub.handle_key(Key.BACKSPACE, "")
+        hub.handle_key(Key.ESC, "")
+        hub.handle_key(Key.CHAR, "z")
+        assert hub.paused
+        hub.handle_key(Key.CHAR, "z")
+        hub.handle_key(Key.CHAR, "?")
+        console.print(hub.render(120, 40))
+        hub.handle_key(Key.ESC, "")
+        await hub.settle()
+        assert store.get(complete.session_id).pinned
 
-    manager.set_filters(status=None)
-    manager.selected = 0
-    manager.handle_key("CHAR", "p")
-    manager.handle_key("CHAR", "v")
-    manager.handle_key("CHAR", "m")
-    manager.handle_key("CHAR", "C")
-    manager.handle_key("CHAR", "A")
-    manager.handle_key("CHAR", "/")
-    manager.handle_key("CHAR", "approval")
-    manager.handle_key("BACKSPACE")
-    manager.handle_key("ESC")
-    manager.handle_key("SPACE")
-    manager.handle_key("SPACE")
-    manager.help_visible = True
-    manager.render()
-    manager.help_visible = False
-
-    manager.set_filters(status=SessionStatus.WAITING_INPUT)
-    manager.handle_key("CHAR", "i")
-    manager.set_input_provider(lambda prompt: (_ for _ in ()).throw(RuntimeError("input broke")))
-    manager.handle_key("CHAR", "i")
-    manager.set_input_provider(None)
-    manager.handle_key("CHAR", "i")
-
-    manager.set_filters(status=SessionStatus.COMPLETED)
-    manager.handle_key("CTRL_X")
-    deadline = time.monotonic() + 2.0
-    while manager._deletion_thread is not None and time.monotonic() < deadline:
-        manager._poll_async_delete()
-        time.sleep(0.01)
-    manager._poll_async_delete()
-    assert store.get(complete.session_id, include_deleted=True).status is SessionStatus.DELETED
-    manager.status_filter = None
-    manager.refresh(force=True)
-    assert all(item.session_id != complete.session_id for item in manager.sessions)
-    manager.handle_key("CHAR", "u")
-    assert store.get(complete.session_id, include_deleted=True).status is SessionStatus.DELETED
+        hub.marked_ids.clear()
+        hub._selected_key = f"session:{complete.session_id}"
+        hub.handle_key(Key.CTRL_X, "")
+        await hub.settle()
+        assert store.get(complete.session_id, include_deleted=True).status is SessionStatus.DELETED
+        assert all(row.session_id != complete.session_id for row in hub.rows)
+    finally:
+        await hub.stop()
     assert "secret-value" not in console.export_text()
 
 
@@ -734,22 +757,37 @@ async def test_worker_cannot_claim_terminal_session(tmp_path: Path) -> None:
     assert await run_worker(request, store) == 1
 
 
-@pytest.mark.asyncio
-async def test_background_cli_aliases_and_run_paths(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+def test_agents_cli_opens_the_hub_with_tab_session_and_run(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from agenthicc.cli.commands import background
     from agenthicc.cli.context import CLIContext
 
-    opened: list[str] = []
+    opened: list[dict[str, str]] = []
 
-    async def open_manager(ctx: CLIContext) -> None:
-        opened.append("manager")
+    async def open_hub(
+        ctx: CLIContext, *, tab: str = "", session_id: str = "", run_id: str = ""
+    ) -> None:
+        opened.append({"tab": tab, "session_id": session_id, "run_id": run_id})
 
-    monkeypatch.setattr(background, "_open_manager", open_manager)
-    await background.agents(CLIContext())
-    await background.jobs(CLIContext())
-    assert opened == ["manager", "manager"]
+    monkeypatch.setattr(background, "_open_hub", open_hub)
+    background.agents(CLIContext())
+    background.agents(CLIContext(), session_id="abc", tab="history")
+    assert opened == [
+        {"tab": "", "session_id": "", "run_id": ""},
+        {"tab": "history", "session_id": "abc", "run_id": ""},
+    ]
+    with pytest.raises(SystemExit):
+        background.agents(CLIContext(), tab="nowhere")
+    assert not hasattr(background, "jobs")
+
+
+@pytest.mark.asyncio
+async def test_background_cli_run_paths(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from agenthicc.cli.commands import background
+    from agenthicc.cli.context import CLIContext
 
     store = BackgroundStore(tmp_path / "background")
     session = _record(tmp_path, "cli-edge")
@@ -781,14 +819,14 @@ def test_background_cli_list_status_and_mutations(
     )
     monkeypatch.setattr(background, "_store_and_supervisor", lambda ctx: (store, supervisor))
     ctx = CLIContext()
-    background.jobs_list(ctx, False, False, False)
-    background.jobs_list(ctx, True, True, True)
-    background.jobs_status(ctx, "missing", False)
-    background.jobs_status(ctx, "missing", True)
+    background.agents_list(ctx, False, False, False)
+    background.agents_list(ctx, True, True, True)
+    background.agents_status(ctx, "missing", False)
+    background.agents_status(ctx, "missing", True)
     for action in ("cancel", "resume", "retry", "archive", "delete", "restore"):
         background._mutate(ctx, "cli-edge", action)
-    background.jobs_approve(ctx, "cli-edge")
-    background.jobs_reject(ctx, "cli-edge")
+    background.agents_approve(ctx, "cli-edge")
+    background.agents_reject(ctx, "cli-edge")
     output = capsys.readouterr().out
     assert "cli-edge" in output
     assert "not_found" in output
@@ -800,7 +838,8 @@ async def test_background_cli_manager_attach_and_handler_errors(
 ) -> None:
     from agenthicc.cli.commands import background
     from agenthicc.cli.context import CLIContext
-    from agenthicc.tui.workspace.background_manager import ManagerResult
+    from agenthicc.background.settings import BackgroundSettings
+    from agenthicc.tui.workspace.agents_hub import HubResult
 
     store = BackgroundStore(tmp_path / "background")
     session = _record(tmp_path, "attach-edge")
@@ -816,10 +855,13 @@ async def test_background_cli_manager_attach_and_handler_errors(
         restore_deleted=lambda sid: session,
         approve=lambda sid, allowed: session,
     )
-    monkeypatch.setattr(background, "_store_and_supervisor", lambda ctx: (store, supervisor))
     monkeypatch.setattr(
-        "agenthicc.tui.workspace.background_manager.run_background_manager",
-        lambda *args, **kwargs: asyncio.sleep(0, result=ManagerResult("attach", "attach-edge")),
+        background, "_store_and_supervisor", lambda ctx, settings=None: (store, supervisor)
+    )
+    monkeypatch.setattr(background, "_background_settings", lambda ctx: BackgroundSettings())
+    monkeypatch.setattr(
+        "agenthicc.tui.workspace.agents_hub.run_agents_hub",
+        lambda *args, **kwargs: asyncio.sleep(0, result=HubResult("attach", "attach-edge")),
     )
     attached: list[dict[str, object]] = []
 
@@ -836,7 +878,7 @@ async def test_background_cli_manager_attach_and_handler_errors(
         set_overrides=("execution.model=test",),
         set_secret_overrides=("execution.api_key=TEST_KEY",),
     )
-    await background._open_manager(ctx)
+    await background._open_hub(ctx)
     assert attached == [
         {
             "resume_id": "attach-edge",
@@ -867,14 +909,14 @@ async def test_background_cli_manager_attach_and_handler_errors(
     monkeypatch.setattr(background, "_store_and_supervisor", lambda ctx: (store, failing))
     ctx = CLIContext()
     for handler in (
-        background.jobs_cancel,
-        background.jobs_resume,
-        background.jobs_retry,
-        background.jobs_archive,
-        background.jobs_delete,
-        background.jobs_restore,
-        background.jobs_approve,
-        background.jobs_reject,
+        background.agents_cancel,
+        background.agents_resume,
+        background.agents_retry,
+        background.agents_archive,
+        background.agents_delete,
+        background.agents_restore,
+        background.agents_approve,
+        background.agents_reject,
     ):
         with pytest.raises(SystemExit):
             handler(ctx, "attach-edge")
@@ -937,7 +979,7 @@ def test_foreground_handoff_extracts_latest_user_request_and_handles_missing_req
         ).evolve(status=SessionStatus.QUEUED),
     )
     assert _handoff(session) is True
-    assert session._input_session._background_exit_requested is True
+    assert session._input_session._exit_requested is True
     empty = _tui_session(
         _ctx=SimpleNamespace(
             app_state=SimpleNamespace(conversation=SimpleNamespace(turns=lambda: [])),
@@ -1007,7 +1049,7 @@ async def test_foreground_detach_reactivates_completed_goal_session(
     assert reactivated.resume_marker == "resume:3"
     assert reactivated.attempt_history[-1].status is SessionStatus.COMPLETED
     assert released == [True]
-    assert input_session._background_exit_requested is True
+    assert input_session._exit_requested is True
     request = json.loads(
         (store_root / "requests" / f"{completed.session_id}.json").read_text(encoding="utf-8")
     )
@@ -1139,7 +1181,7 @@ def test_detach_after_continue_preserves_owner_and_selected_configuration(
     assert request["workflow_name"] == "goal_flow"
     assert request["resume_existing_only"] is True
     assert owner.released
-    assert input_session._background_exit_requested is True
+    assert input_session._exit_requested is True
 
 
 def test_detach_reclaims_released_foreground_lease_for_proven_dead_worker(
@@ -1204,7 +1246,7 @@ def test_detach_reclaims_released_foreground_lease_for_proven_dead_worker(
     assert current.attempt_history[-1].status is SessionStatus.ORPHANED
     assert ctx.owner_lease is not stale_owner
     assert ctx.owner_lease.released is True  # released only after worker handoff
-    assert input_session._background_exit_requested is True
+    assert input_session._exit_requested is True
 
 
 def test_failed_worker_launch_restores_foreground_owner_for_safe_retry(
@@ -1265,7 +1307,7 @@ def test_failed_worker_launch_restores_foreground_owner_for_safe_retry(
     assert ctx.owner_lease.released is False
     assert ctx.owner_lease.path.is_file()
     assert session._background_handoff_state == "idle"
-    assert getattr(session._input_session, "_background_exit_requested", False) is False
+    assert getattr(session._input_session, "_exit_requested", False) is False
     assert "controlled launch failure" in ctx.console.export_text()
 
 
@@ -1317,7 +1359,7 @@ def test_repeated_detach_in_one_tui_does_not_prepare_twice(
 
 
 @pytest.mark.asyncio
-async def test_installed_foreground_wrappers_route_aliases(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_tui_session_routes_background_aliases(monkeypatch: pytest.MonkeyPatch) -> None:
     from agenthicc.background import integration
     from agenthicc.runners.tui_session import TUISession
 
@@ -1328,12 +1370,9 @@ async def test_installed_foreground_wrappers_route_aliases(monkeypatch: pytest.M
 
 
 @pytest.mark.asyncio
-async def test_installed_foreground_wrapper_remembers_plain_request() -> None:
-    from agenthicc.background import integration
+async def test_tui_session_remembers_plain_request_for_background() -> None:
     from agenthicc.runners.tui_session import TUISession
     from agenthicc.tui.conversation_store import ConversationStore
-
-    integration.install_tui_handoff()
 
     async def agent_task_body(_text: str) -> None:
         return
@@ -1343,6 +1382,7 @@ async def test_installed_foreground_wrapper_remembers_plain_request() -> None:
         dispatch_slash=lambda text: False,
         route=lambda text: False,
         _agent_task=None,
+        _runtime_loading=lambda: False,
         _ctx=SimpleNamespace(app_state=SimpleNamespace(conversation=conversation)),
         agent_task_body=agent_task_body,
     )

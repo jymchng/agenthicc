@@ -12,6 +12,7 @@ from rich.console import Console
 from agenthicc.tools.approval import ApprovalRequest, ApprovalService
 from agenthicc.tui.conversation_store import AppState
 from agenthicc.tui.workspace import Workspace
+from tests.tui_frames import settle_frames
 
 pytestmark = pytest.mark.integration
 
@@ -50,6 +51,7 @@ async def test_prompt_ticks_do_not_repaint_live_surface(kind: str) -> None:
         await asyncio.sleep(0)
         await asyncio.sleep(0)
         assert app_state.pending_approval() is not None
+        await settle_frames(workspace)
         live = workspace._live
         assert live is not None
         live.update = MagicMock(wraps=live.update)  # type: ignore[method-assign]

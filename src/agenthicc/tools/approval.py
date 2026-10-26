@@ -26,20 +26,46 @@ from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from agenthicc.config import DEFAULT_QUESTION_TIMEOUT_S
-from agenthicc.tools.context import ToolCallContext
 
 if TYPE_CHECKING:
+    from agenthicc.tools.context import ToolCallContext
     from agenthicc.tui.conversation_store import AppState
     from agenthicc.tools.workspace_access import WorkspaceAccessPolicy, WorkspaceAccessRequest
 
 __all__ = [
     "ApprovalBroker",
     "ApprovalRequest",
+    "ApprovalRequester",
     "ApprovalResponse",
     "ApprovalService",
     "ApprovalGate",
     "InteractiveApprovals",
 ]
+
+
+@dataclass(frozen=True)
+class ApprovalRequester:
+    """The subagent worker an approval request comes from (AGX-08 §5.5).
+
+    ``None`` on a request means the session's own agent asked.
+    """
+
+    label: str
+    agent_type: str
+    pool_id: str
+    worker_id: str
+
+    def describe(self) -> str:
+        """``explorer #1 (explorer)``."""
+        return f"{self.label} ({self.agent_type})"
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "label": self.label,
+            "agent_type": self.agent_type,
+            "pool_id": self.pool_id,
+            "worker_id": self.worker_id,
+        }
 
 
 @dataclass(frozen=True)
@@ -62,6 +88,8 @@ class ApprovalRequest:
     """Restart-safe wall-clock deadline for a question request."""
     question_fingerprint: str | None = None
     """Bounded non-sensitive identity for repeated-timeout protection."""
+    requester: ApprovalRequester | None = None
+    """The subagent worker that asked, or ``None`` for the session's agent."""
 
 
 @dataclass(frozen=True)

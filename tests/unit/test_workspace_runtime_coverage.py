@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+from io import StringIO
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+from rich.console import Console
 
+from agenthicc.tui.workspace.frames import FrameStats
+from agenthicc.tui.workspace.live_region import LiveRegion, lines_text
 from agenthicc.tui.workspace.workspace import Workspace
 
 pytestmark = pytest.mark.unit
@@ -45,33 +49,22 @@ def _state() -> MagicMock:
     return state
 
 
-def test_workspace_start_stop_wires_signals_and_overlay(monkeypatch: pytest.MonkeyPatch) -> None:
-    class FakeLive:
-        def __init__(self, renderable: object, **kwargs: object) -> None:
-            self.renderable = renderable
-            self.kwargs = kwargs
-            self.started = False
-            self.stopped = False
+def _console() -> Console:
+    return Console(file=StringIO(), force_terminal=True, width=80, height=30, color_system=None)
 
-        def start(self) -> None:
-            self.started = True
 
-        def stop(self) -> None:
-            self.stopped = True
-
+def test_workspace_start_stop_wires_signals_and_overlay() -> None:
     state = _state()
-    console = MagicMock()
-    workspace = Workspace(state, console)
+    workspace = Workspace(state, _console())
     workspace.scroll.mount = MagicMock()
     workspace.scroll.unmount = MagicMock()
     workspace.overlays._overlay = MagicMock()
     workspace.overlays.render = MagicMock(return_value="overlay")
-    monkeypatch.setattr("rich.live.Live", FakeLive)
 
     workspace.start()
 
-    assert isinstance(workspace._live, FakeLive)
-    assert workspace._live.started is True
+    assert isinstance(workspace._live, LiveRegion)
+    assert "overlay" in lines_text(workspace._live.lines)
     assert workspace.overlays.render.called
     assert len(workspace._unsubs) > 5
     workspace.stop()
@@ -83,27 +76,25 @@ def test_workspace_start_stop_wires_signals_and_overlay(monkeypatch: pytest.Monk
 def test_build_handles_overflow_failure_and_plain_composer() -> None:
     state = _state()
     state.conversation.live_tool_overflow.side_effect = RuntimeError("stale signal")
-    workspace = Workspace(state, MagicMock())
+    workspace = Workspace(state, _console())
     workspace.overlays._overlay = None
-    group = workspace._build()
-    assert len(group.renderables) >= 5
+    rows = lines_text(workspace._build_lines())
+    assert len(rows) >= 5
+    assert not any("more tool" in row for row in rows)
 
 
-def test_redraw_direct_and_error_paths(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    workspace = Workspace(_state(), MagicMock())
+def test_redraw_direct_and_error_paths(capsys: pytest.CaptureFixture[str]) -> None:
+    workspace = Workspace(_state(), _console())
     workspace._live = MagicMock()
-    workspace._build = MagicMock(return_value="frame")
-    monkeypatch.setattr(
-        asyncio, "get_event_loop", lambda: SimpleNamespace(is_running=lambda: False)
-    )
+    workspace._live.stats = FrameStats()
+    workspace._build_lines = MagicMock(return_value=["frame"])
+    # Without a running event loop a frame is drawn at once.
     workspace._redraw()
-    workspace._live.update.assert_called_once_with("frame", refresh=True)
+    workspace._live.update.assert_called_once_with(["frame"])
 
     workspace._live.update.side_effect = OSError("not a tty")
     workspace._flush_redraw()
-    workspace._live.update.side_effect = RuntimeError("render failed")
+    workspace._build_lines.side_effect = RuntimeError("render failed")
     workspace._flush_redraw()
     assert "render failed" in capsys.readouterr().err
 

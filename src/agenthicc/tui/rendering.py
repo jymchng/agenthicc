@@ -19,18 +19,24 @@ Usage::
 
 from __future__ import annotations
 
+import functools
 
+
+@functools.lru_cache(maxsize=2048)
 def visible_len(markup: str) -> int:
     """Return the number of terminal columns *markup* occupies.
 
     Strips Rich markup tags before measuring so ``[bold]Hi[/bold]`` correctly
-    reports 2 columns rather than the raw string length.
+    reports 2 columns rather than the raw string length. The status bar and
+    footer measure the same strings every frame, so results are cached
+    (AGX-11).
     """
     from rich.text import Text
 
-    return Text.from_markup(markup).cell_len
+    return Text.from_markup(markup, emoji=False).cell_len
 
 
+@functools.lru_cache(maxsize=2048)
 def fit(markup: str, cols: int, ellipsis: str = "…") -> str:
     """Truncate *markup* so it renders within *cols* terminal columns.
 
@@ -44,7 +50,7 @@ def fit(markup: str, cols: int, ellipsis: str = "…") -> str:
     from rich.text import Text
     from rich.markup import escape
 
-    t = Text.from_markup(markup)
+    t = Text.from_markup(markup, emoji=False)
     if t.cell_len <= cols:
         return markup
 

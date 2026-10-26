@@ -56,7 +56,7 @@ def test_cli_notification_status_exposes_safe_receipts(
     )
     monkeypatch.setattr(background_cli, "_store_and_supervisor", lambda _ctx: (store, object()))
 
-    background_cli.jobs_notifications(CLIContext(), json=True)
+    background_cli.agents_notifications(CLIContext(), json=True)
 
     output = capsys.readouterr().out
     assert "evt-cli-safe" in output

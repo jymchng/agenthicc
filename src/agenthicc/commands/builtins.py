@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import shlex
 from typing import TYPE_CHECKING
 
 from .command import BusyPolicy, Command, CommandContext, CommandHandler, UsageSnapshot
@@ -265,85 +264,59 @@ def _cmd_schedule(ctx: CommandContext) -> bool:
     return True
 
 
-def _cmd_inbox(ctx: CommandContext) -> bool:
-    """Open or print the durable background interaction inbox."""
+def _cmd_agents(ctx: CommandContext) -> bool:
+    """Open the agents hub over the conversation (AGX-05)."""
 
-    from agenthicc.background.inbox import (
-        BackgroundInboxItem,
+    from agenthicc.tui.workspace.agents_hub.model import Tab
+
+    tab = ctx.args.strip()
+    names = [item.value for item in Tab]
+    if tab and tab not in names:
+        ctx.console.print(f"/agents: unknown tab {tab!r}; use {', '.join(names)}", markup=False)
+        return True
+    if ctx.open_agents_hub is None:
+        ctx.console.print("The agents hub needs the interactive TUI: run agenthicc agents.")
+        return True
+    ctx.open_agents_hub(tab)
+    return True
+
+
+def _cmd_subagents(ctx: CommandContext) -> bool:
+    """The turn's subagents and the session's earlier ones (AGX-08 §5.2)."""
+
+    if ctx.open_subagents is None:
+        ctx.console.print("[dim]/subagents needs the interactive TUI.[/dim]")
+        return True
+    ctx.open_subagents()
+    return True
+
+
+def _cmd_inbox(ctx: CommandContext) -> bool:
+    """Show what needs you: the agents hub's Needs you tab (AGX-05)."""
+
+    if ctx.open_agents_hub is not None:
+        ctx.open_agents_hub("needs-you")
+        return True
+    from agenthicc.background import (
         BackgroundInteractionInbox,
+        BackgroundStore,
+        load_background_settings,
     )
 
-    inbox = ctx.background_inbox
-    if not isinstance(inbox, BackgroundInteractionInbox):
-        ctx.console.print("Background interaction inbox is unavailable.", markup=False)
-        return True
+    inbox = BackgroundInteractionInbox(BackgroundStore(load_background_settings().store_root))
     inbox.reconcile()
-    project_root: str | None = None
-    item_type: str | None = None
-    older_than_s: float | None = None
-    status: str | None = None
-    try:
-        for token in shlex.split(ctx.args):
-            key, separator, value = token.partition("=")
-            if not separator or not value:
-                raise ValueError("filters use type=..., project=..., older-than=..., status=...")
-            if key == "type":
-                item_type = value
-            elif key == "project":
-                project_root = value
-            elif key == "older-than":
-                older_than_s = float(value)
-            elif key == "status":
-                status = value
-            else:
-                raise ValueError(f"unknown inbox filter: {key}")
-    except ValueError as exc:
-        ctx.console.print(f"/inbox: {exc}", markup=False)
-        return True
-
-    def loader() -> tuple[BackgroundInboxItem, ...]:
-        return inbox.list_items(
-            project_root=project_root,
-            item_type=item_type,
-            older_than_s=older_than_s,
-            status=status,
-        )
-
-    if ctx.set_pending_menu is not None:
-        from agenthicc.tui.workspace.overlays.background_inbox import (
-            BackgroundInboxOverlay,
-        )
-
-        ctx.set_pending_menu(
-            BackgroundInboxOverlay(
-                inbox,
-                ctx.close_overlay if ctx.close_overlay is not None else (lambda: None),
-                loader=loader,
-            )
-        )
-        return True
-    items = loader()
+    items = inbox.list_items()
     if not items:
         ctx.console.print(
             "No pending background approvals, questions, or input requests.", markup=False
         )
         return True
-    from rich.table import Table
-
-    table = Table(title="Background Inbox")
-    for column in ("ID", "Type", "Status", "Version", "Workspace", "Session", "Target"):
-        table.add_column(column, no_wrap=column != "Target")
     for item in items:
-        table.add_row(
-            item.item_id,
-            item.kind,
-            item.status,
-            str(item.version),
-            item.workspace,
-            item.session_id,
-            str(item.target.get("tool_name", item.kind)),
+        ctx.console.print(
+            f"{item.item_id}  {item.kind:8}  {item.status:9}  {item.workspace}  "
+            f"{item.session_id}  {item.target.get('tool_name', item.kind)}",
+            markup=False,
         )
-    ctx.console.print(table)
     return True
 
 
@@ -812,26 +785,93 @@ def _cmd_status(ctx: CommandContext) -> bool:
     return True
 
 
+def _cmd_keybindings(ctx: CommandContext) -> bool:
+    """Show the effective key bindings and create the bindings file (AGX-13)."""
+    service = ctx.keymap_service
+    if service is None:
+        ctx.console.print("Key bindings are unavailable here.", markup=False)
+        return True
+    from agenthicc.tui.keymap_table import render_bindings
+
+    created = service.ensure_file()
+    loaded = service.reload()
+    render_bindings(ctx.console, loaded)
+    if created:
+        ctx.console.print("Created the file with every action listed, commented out.", markup=False)
+    ctx.console.print(
+        "Edit the file and the changes apply at once; `agenthicc keybindings edit` "
+        "opens it in your editor.",
+        markup=False,
+    )
+    return True
+
+
+def _cmd_perf(ctx: CommandContext) -> bool:
+    """Show how many frames the live block drew and what they cost (AGX-11)."""
+    stats = ctx.frame_stats() if ctx.frame_stats is not None else None
+    if stats is None:
+        ctx.console.print("Rendering diagnostics are unavailable.", markup=False)
+        return True
+    from agenthicc.tui.terminal.capabilities import capabilities
+
+    summary = stats.summary()
+    ctx.console.print(
+        f"Frames drawn: {stats.frames} ({stats.full_redraws} full redraws)", markup=False
+    )
+    ctx.console.print(
+        f"Render: p50 {summary['render_p50_ms']:.2f} ms · p95 {summary['render_p95_ms']:.2f} ms",
+        markup=False,
+    )
+    ctx.console.print(
+        f"Write: p50 {summary['write_p50_ms']:.2f} ms · p95 {summary['write_p95_ms']:.2f} ms",
+        markup=False,
+    )
+    ctx.console.print(
+        "Characters per frame: "
+        f"p50 {summary['characters_p50']:.0f} · p95 {summary['characters_p95']:.0f}",
+        markup=False,
+    )
+    ctx.console.print(
+        "Synchronized output: " + ("on" if capabilities.synchronized_output else "off"),
+        markup=False,
+    )
+    return True
+
+
 def _cmd_startup(ctx: CommandContext) -> bool:
     """Show redacted startup phase timing and readiness diagnostics."""
     coordinator = ctx.startup
     if coordinator is None:
         ctx.console.print("Startup diagnostics are unavailable.", markup=False)
         return True
-    raw_reports: object = getattr(coordinator, "to_dict", lambda: [])()
-    reports: list[object] = raw_reports if isinstance(raw_reports, list) else []
+    milestones = coordinator.milestones()
+
+    def seconds(value: float | None, pending: str) -> str:
+        return f"{value:.3f}s" if value is not None else pending
+
+    ctx.console.print(
+        "Process start → first frame: "
+        f"{seconds(milestones.process_to_first_frame_s, 'not recorded')}",
+        markup=False,
+    )
+    ctx.console.print(
+        "First frame → agent runtime ready: "
+        f"{seconds(milestones.first_frame_to_runtime_ready_s, 'not ready')}",
+        markup=False,
+    )
+    if milestones.modules_at_first_frame is not None:
+        ctx.console.print(
+            f"Modules loaded at first frame: {milestones.modules_at_first_frame}",
+            markup=False,
+        )
+    reports = coordinator.snapshot()
     if not reports:
         ctx.console.print("No startup phases have been recorded.", markup=False)
         return True
     for report in reports:
-        if not isinstance(report, dict):
-            continue
-        elapsed = report.get("elapsed_s")
-        elapsed_text = f"{float(elapsed):.3f}s" if isinstance(elapsed, (int, float)) else "—"
-        ctx.console.print(
-            f"{report.get('name', 'unknown')}: {report.get('state', 'unknown')} ({elapsed_text})",
-            markup=False,
-        )
+        elapsed = report.elapsed_s
+        elapsed_text = f"{elapsed:.3f}s" if elapsed is not None else "—"
+        ctx.console.print(f"{report.name}: {report.state.value} ({elapsed_text})", markup=False)
     return True
 
 
@@ -887,8 +927,14 @@ def _cmd_ps(ctx: CommandContext) -> bool:
 
 
 def _cmd_workers(ctx: CommandContext) -> bool:
-    """Show durable parallel worker tasks owned by this session."""
+    """Show this session's parallel workers: the agents hub's Running tab (AGX-05).
 
+    ``--json`` prints the worker manifests instead, as it always has.
+    """
+
+    if ctx.open_agents_hub is not None and "--json" not in ctx.args.split():
+        ctx.open_agents_hub("running")
+        return True
     from agenthicc.worktrees import ManifestStore
 
     manifests = ManifestStore().list()
@@ -1353,12 +1399,26 @@ BUILTIN_COMMANDS: list[Command] = [
         handler=_cmd_schedule,
     ),
     Command(
+        name="/agents",
+        description="Open the agents hub: running work, what needs you, history, library",
+        argument_hint="[running|needs-you|history|library]",
+        group="Built-in",
+        busy_policy=BusyPolicy.IMMEDIATE_CONTROL,
+        handler=_cmd_agents,
+    ),
+    Command(
         name="/inbox",
-        description="Review and answer background approvals and questions",
-        argument_hint="[type=approval|question|input] [project=PATH] [older-than=SECONDS] [status=STATUS]",
+        description="Review and answer background approvals and questions (agents hub)",
         group="Built-in",
         busy_policy=BusyPolicy.IMMEDIATE_CONTROL,
         handler=_cmd_inbox,
+    ),
+    Command(
+        name="/subagents",
+        description="Show the turn's subagents and open a worker's transcript (also Ctrl+O)",
+        group="Built-in",
+        busy_policy=BusyPolicy.IMMEDIATE_CONTROL,
+        handler=_cmd_subagents,
     ),
     Command(
         name="/clear",
@@ -1473,6 +1533,18 @@ BUILTIN_COMMANDS: list[Command] = [
         handler=_cmd_startup,
     ),
     Command(
+        name="/keybindings",
+        description="Show key bindings and where to change them",
+        busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
+        handler=_cmd_keybindings,
+    ),
+    Command(
+        name="/perf",
+        description="Show live-block frame counts and render and write cost",
+        busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
+        handler=_cmd_perf,
+    ),
+    Command(
         name="/ps",
         description="Open the live manager for owned background terminals",
         aliases=("/processes",),
@@ -1481,8 +1553,20 @@ BUILTIN_COMMANDS: list[Command] = [
         handler=_cmd_ps,
     ),
     Command(
+        name="/background",
+        aliases=("/bg",),
+        description="Detach the active session into a background agent",
+        argument_hint="(alias: /bg)",
+        busy_policy=BusyPolicy.IMMEDIATE_CONTROL,
+    ),
+    Command(
+        name="/detach",
+        description="Detach the active session into a background agent",
+        busy_policy=BusyPolicy.IMMEDIATE_CONTROL,
+    ),
+    Command(
         name="/workers",
-        description="Show durable parallel worker tasks",
+        description="Show parallel workers in the agents hub",
         argument_hint="[--json]",
         busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
         handler=_cmd_workers,

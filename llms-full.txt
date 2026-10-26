@@ -5,7 +5,7 @@
 > every prose section is current. Verify imports against `src/agenthicc/`.
 
 The current product has no `agenthicc.api` package and no prompt-toolkit
-`TranscriptModel`/`tui.app` surface. The supported TUI is the Rich Live
+`TranscriptModel`/`tui.app` surface. The supported TUI is the Rich-rendered
 workspace under `agenthicc.tui.workspace`, with reactive presentation state in
 `agenthicc.tui.conversation_store`. Historical sections are labeled below so
 agents do not copy them into new code.
@@ -917,13 +917,35 @@ class ApprovalRequest:
     event: asyncio.Event
     kind: str = "tool"
     mode_options: tuple[str, ...] = ()
+    # … workspace_access, request_id, timeout_s, deadline_at, question_fingerprint
+    requester: ApprovalRequester | None = None
 ```
 
 An approval request is the session-owned handoff from an agent-side wait to a
 TUI or headless approval service. `kind="plan_review"` selects the plan review
 overlay. `mode_options` is used by code-plan approval to advertise the
 canonical `Safe` and `Yolo` execution choices; ordinary tool and legacy plan
-review requests leave it empty.
+review requests leave it empty. `requester` names the subagent worker that
+asked (AGX-08); `None` means the session's own agent.
+
+### ApprovalRequester
+
+```python
+@dataclass(frozen=True)
+class ApprovalRequester:
+    label: str          # "executor #1"
+    agent_type: str
+    pool_id: str
+    worker_id: str
+    def describe(self) -> str: ...          # "executor #1 (executor)"
+    def to_dict(self) -> dict[str, str]: ...
+```
+
+A worker's approvals reach the session's broker through a wrapper that fills
+`requester` and marks the worker's panel row as waiting. The TUI prompt reads
+"executor #1 (executor) wants to run bash", `o` opens the worker's transcript
+first and Esc denies only that call; a background worker stores
+`requester.to_dict()` in the inbox item's target.
 
 ### ApprovalResponse
 
@@ -1558,6 +1580,12 @@ class JournaledShortTermMemory(ShortTermMemory)
 ```
 
 ``ShortTermMemory`` that durably journals every append and reset.
+`ensure_valid_and_persist()`, which lauren-ai runs before every provider step,
+returns `False` without copying when the tool history is already valid, and
+`snapshot()` returns a copy-on-write checkpoint — the current message
+references, the summary and a deep copy of the active tool exchange — instead
+of a deep copy of the history (AGX-12). Both rely on messages being values:
+code changes a message by replacing it, never by editing it in place.
 
 ## Current TUI — `agenthicc.tui.workspace` and reactive state
 
@@ -1565,18 +1593,49 @@ class JournaledShortTermMemory(ShortTermMemory)
 
 ```python
 class Workspace:
-    def __init__(self, app_state: AppState, console: Console, max_live_tool_calls: int = 5) -> None: ...
+    def __init__(self, app_state: AppState, console: Console, max_live_tool_calls: int = 5, group_exploratory_calls: bool = True, startup: StartupCoordinator | None = None, *, composer_max_rows: int = 12, frame_interval_s: float = 0.016) -> None: ...
+    frames: FrameScheduler
     def start(self) -> None: ...
     def stop(self) -> None: ...
+    def frame_stats(self) -> FrameStats | None: ...
     def flush_scroll(self) -> None: ...
 ```
 
-The Rich Live root owns one terminal block for the application lifetime. It
-renders status, composer, footer, overlays, and the scroll-buffer bridge. Start
-it once before the input loop and stop it once during session teardown; do not
-start or stop Live per agent turn. `flush_scroll()` commits queued transcript
-events and collapsed tool-group summaries before an agent interruption can
-cancel the normal turn-boundary event.
+The root owns one live block at the bottom of the terminal for the application
+lifetime. It renders status, composer, footer, overlays, and the scroll-buffer
+bridge. Start it once before the input loop and stop it once during session
+teardown; do not start or stop it per agent turn. `flush_scroll()` commits
+queued transcript events and collapsed tool-group summaries before an agent
+interruption can cancel the normal turn-boundary event.
+
+Rendering (AGX-11): signals request frames from `frames`
+(`agenthicc.tui.workspace.frames.FrameScheduler`), which draws at most one
+frame per `frame_interval_s` and draws typed input, cursor and overlay changes
+on the next loop iteration. Each frame is a list of segment lines
+(`agenthicc.tui.workspace.live_region.Line`); status and footer rows are built
+as markup and rendered once per distinct row and width. The block is a
+`LiveRegion` that rewrites only changed rows (a full redraw after a resize or
+when more than half the rows changed), repaints itself below anything printed
+while it is live (the scroll buffer, or stdout/stderr), and brackets each write
+with synchronized-output mode 2026 when the terminal reported support.
+`frame_stats()` returns counts and render/write percentiles, shown by `/perf`.
+
+### ComposerComponent
+
+```python
+class ComposerComponent:
+    def __init__(self, app_state: AppState, *, max_rows: int = 12) -> None: ...
+    def lines(self, cols: int) -> tuple[Line, ...]: ...
+    def render(self) -> RenderableType: ...
+    def height(self, cols: int) -> int: ...
+```
+
+Folds each logical line of the prompt at the width (continuation rows indented
+under `❯`), caching the fold per line, and shows at most `max_rows` rows around
+the cursor with `↑ N more lines` / `↓ N more lines` for the rest. `render()`
+returns a renderable laid out at the width it is given (the agents screen
+embeds it); `StatusComponent.markup_lines(cols)` and
+`FooterComponent.markup_lines(cols)` return their rows as markup.
 
 ### ConversationStore and reactive TUI AppState
 
@@ -1593,7 +1652,82 @@ drives the `Loading transcript…` status while `Workspace` replays history to
 `tui.input.unified_session.UnifiedInputSession` owns one raw-terminal lifetime
 and dispatches keys through declared IDLE/STREAMING capability lists. POSIX and
 Windows decoding stay behind `tui.terminal.backend.get_backend()` and the
-canonical `tui.cbreak_reader.Key` values.
+canonical `tui.cbreak_reader.Key` values. Each keystroke is first resolved to a
+named composer action (`AppState.keymap().resolve("composer", key_name(key, ch),
+session.conditions())`); capabilities act on the action name, not the key.
+`request_exit()` ends the input loop from outside (the agents hub's session
+switch uses it).
+
+The composer's `agents.open_hub` action (Ctrl+G, or ← on an empty prompt)
+posts `tui.runtime.commands.OpenAgentsHubCommand(tab="", run_id="")` on the
+`CommandBus`; `/agents`, `/inbox` and `/workers` reach the same place through
+`CommandContext.open_agents_hub(tab)`. `TUISession.open_agents_hub(tab)`
+mounts an `AgentsHubOverlay` over the conversation (or switches the open one's
+tab). Choosing to attach to a background agent or open a saved session ends
+the session with `TUISession.switch` set to a frozen
+`runners.tui_session.SessionSwitch(action, target, origin, origin_cwd)`
+(`action` is `"attach"`, `"open_saved"` or `"hub"` after `/background`); the
+driver runs the target in its own project directory and reopens the origin
+session when the target ends. A switch waits for a running turn to finish.
+
+### Keymap — `agenthicc.tui.keymap`
+
+```python
+@dataclass(frozen=True)
+class Action:
+    name: str; context: str; keys: tuple[str, ...]; label: str
+    hint_priority: int = 0; description: str = ""
+    when: frozenset[str] = frozenset(); unless: frozenset[str] = frozenset()
+    rebindable: bool = True; paired: str = ""
+
+@dataclass(frozen=True)
+class Hint:
+    keys: str; label: str; action: str = ""   # a click on a footer hint runs `action`
+
+@dataclass(frozen=True)
+class Keymap:
+    @classmethod
+    def build(cls, actions, *, overrides=None, leader=None, leader_timeout_s=2.0, source="default") -> Keymap: ...
+    def resolve(self, context: str, key: str, conditions: frozenset[str] = frozenset()) -> Action | None: ...
+    def hints(self, context: str, conditions: frozenset[str] = frozenset(), *, limit: int | None = None) -> list[Hint]: ...
+    def help(self, context: str) -> list[HelpEntry]: ...
+
+def load_keybindings(actions, path: Path | None = None) -> KeymapLoad: ...
+```
+
+One registry of named actions per context (`CONTEXTS`: `global`, `composer`,
+`agents`, `agents.list`, `agents.peek`, `agents.detail`, `transcript`,
+`subagents`, `overlay`) drives dispatch, footer hints and help (AGX-13).
+`PARENTS` makes a context inherit another's actions after its own
+(`agents.list` and `agents.detail` inherit `agents`, `agents.peek` inherits
+`agents.list`); a key bound in a context shadows the same key inherited from a
+parent, and `global` applies last everywhere. An action applies when all of its
+`when` conditions and none of its `unless` conditions hold; two actions may
+share a key in a context only when their conditions exclude each other,
+otherwise `KeymapError`. `paired` names an action whose key is shown first in
+the same hint (`↑↓ select`). The pseudo-key `left_on_empty` is ← on an empty
+composer (`agents.open_hub`, with Ctrl+G). The `subagents` and `transcript`
+contexts hold the subagent panel's and a worker transcript's keys, and the
+composer's `subagents.focus` (Ctrl+O) applies while the panel is shown
+(AGX-08). `normalize_key` canonicalises bindings
+(`"Ctrl+Y"` → `"ctrl+y"`, `"shift+y"` → `"Y"`); `tui.cbreak_reader.key_name(key,
+ch)` gives a keystroke's canonical name. `Dispatcher` follows a leader key
+across two presses. `load_keybindings` reads `~/.agenthicc/keybindings.toml`
+(or `AGENTHICC_KEYBINDINGS`), one table per context (`[agents.list]` is the
+`agents.list` context): an invalid file is ignored as a whole and its
+problems returned in `KeymapLoad.errors`. The default actions are in
+`agenthicc.tui.actions`; `tui.keymap_service.KeymapService` keeps
+`AppState.keymap` current as the file changes, and `/keybindings` shows the
+effective bindings. `AppState.ui` holds `config.UISettings` (`[ui]`:
+`mouse`, `screen_reader`, `reduced_motion`).
+
+The decoder (`tui.cbreak_reader`) adds `Key.CTRL_A`–`CTRL_Z`, `DELETE`,
+`INSERT`, `FUNCTION` (`ch` `"f1"`…`"f12"`), `ALT` (`ch` the character),
+`MODIFIED` (`ch` the full name, e.g. `"ctrl+shift+left"`), `FOCUS_IN`,
+`FOCUS_OUT`, `MOUSE` (`ch` a `MouseEvent.encode()` string) and `UNKNOWN` —
+an unbound sequence is never `ESC`. `decode_control`, `decode_csi`,
+`decode_ss3` and `decode_alt` are pure functions over bytes. Backends add
+`set_reporting(focus=…, mouse=…)`; leaving raw mode turns reporting off.
 
 The current overlay host maps approval request kinds to overlay classes in
 `runners.tui_session.TUISession`; `PlanApprovalOverlay` is the current plan
@@ -2025,6 +2159,14 @@ one.
 
 `SessionConversation` owns the stable session `conversation_id` and the single
 journal-backed provider memory shared by direct turns and workflow phases.
+`SessionConversation.open(conversation_id, *, max_tokens)` folds the journal
+immediately; `open_deferred(conversation_id, *, max_tokens: Callable[[], int])`
+opens only the journal, and the memory is folded on first access to `.memory`
+(blocking) or ahead of time by `await load()` on a worker thread. `load_memory()`
+folds exactly once under a lock, `memory_loaded` reports whether it has run,
+and `close()` waits for an in-flight fold. The TUI uses the deferred form so
+lauren-ai stays off its first frame (AGX-02). `SessionContext.session_memory`
+is a read-only property over `session_conversation.memory`.
 `WorkflowRunHandle` owns workflow-specific context, lifecycle, phase cursor, and
 checkpoint identity without duplicating provider messages.
 Its `resumable` property reports the durable capability required for exact
@@ -3056,9 +3198,17 @@ class BackgroundSession
 ```
 
 Fields: `session_id`, `title`, `cwd`, `workflow_name`, `intent`, `status`,
-`created_at`, `started_at`, `last_active`, `state_changed_at`, … (70 fields
+`created_at`, `started_at`, `last_active`, `state_changed_at`, … (76 fields
 total). Queue metadata records priority, idempotency/owner identity, requested
 profile, scheduler dispatch state, and a bounded priority-change audit history.
+`tokens_in`, `tokens_out` and `cost_usd` (AGX-07) are the session's provider
+usage across attempts: the worker copies its usage ledger's completed totals
+(`UsageLedger.subscribe_completed`) into the record with its next heartbeat
+(`BackgroundStore.heartbeat(..., tokens_in=, tokens_out=, cost_usd=)`) and at
+finalization. While it runs, the worker's heartbeat also records the agent's
+report line — the first sentence of its latest message, redacted
+(`background.vocabulary.report_sentence`) — as `latest_activity`, and a
+completed attempt keeps it as its summary.
 
 ### BackgroundInboxItem
 
@@ -3139,32 +3289,154 @@ effective mode, application state, and bounded diagnostic when present.
 ### BackgroundStore
 
 ```python
-class BackgroundStore
+class BackgroundStore:
+    def __init__(self, root: Path | str | None = None, *, search_mode: SearchMode | None = None) -> None: ...
 ```
 
-Durable registry whose authoritative history is ``events.jsonl``.
-The process-local projection is invalidated by local writes and by external
-inode/size/mtime changes; it does not replace the append-only source of truth.
+Durable registry whose authoritative history is ``events.jsonl``. Reads go to
+a derived SQLite index, ``index.sqlite3`` (AGX-03): `get`, `list`,
+`query_window(filter, *, order, offset, limit)` (rows plus the matching total,
+a `BackgroundWindow`), `select(filter, *, order, limit)`, `count(filter)`,
+`known_ids(ids)` and `status_counts` first apply any complete events appended since the index's
+recorded position (inode, offset, mtime, sequence), then answer with SQL. A
+missing, corrupt, rotated, truncated or rewritten log, a sequence gap or a
+schema change rebuilds the index; `rebuild_progress()` returns
+`(bytes_read, log_bytes)` meanwhile, and `recent_from_log_tail(max_bytes=…,
+limit=…)` reads recently created sessions straight from the end of the log for
+a provisional view. A search (`list(query=…)`, `SessionFilter(query=…)`) is
+split into words and every word must occur, in any order, as a case-insensitive
+substring of ID, title, intent, labels, latest activity, workspace and
+workflow; `search_mode` is `"fts5"` (FTS5 trigram index) or
+`"like"` (plain scan, also selectable with `search_mode="like"`).
+`invalidate_index()` makes the next read re-check the log; `close()` closes the
+index connection; `cancel_rebuild()` stops a rebuild in progress, which raises
+`IndexRebuildCancelled` and rolls back. A registry from before the index is
+migrated once by importing its `projection-v1.json` snapshot and replaying the
+log after it; the snapshot is then deleted. An append whose index update finds
+the index busy (another process rebuilding) still succeeds — the log is the
+commit point and a later read applies it. The index is never authoritative.
+`update()` and `restore_deleted()` append `updated` events that carry only the
+fields that changed, plus `last_active` (AGX-04); replay applies them with
+`evolve`, exactly as it applies the full records older logs contain. A new
+`mode_name` is always written with its `mode_application_status`.
 
-### BackgroundPage
+### SessionIndex
+
+```python
+class SessionIndex:  # agenthicc.background.index
+    def __init__(self, path: Path, *, search_mode: SearchMode | None = None) -> None: ...
+```
+
+The SQLite file behind `BackgroundStore`: a `sessions` table (full record plus
+ordering, filter and search columns), an external-content FTS5 trigram table
+kept current by triggers, a single-row `position` table (`IndexState`: inode,
+offset, mtime, sequence) and a `meta` table (`INDEX_SCHEMA_VERSION`,
+search mode). Callers serialize access to an instance; `BackgroundStore` does.
+
+### SessionFilter
+
+```python
+@dataclass(frozen=True, slots=True)
+class SessionFilter:  # agenthicc.background
+    include_archived: bool = True
+    include_deleted: bool = False
+    cwd: str | None = None
+    workflow_name: str | None = None
+    query: str = ""
+    status: SessionStatus | None = None
+    statuses: frozenset[SessionStatus] | None = None
+    idempotency_key: str | None = None
+    project: str | None = None
+    agent: str | None = None
+    run_id: str | None = None
+    labels: frozenset[str] = frozenset()
+    active_since: float | None = None
+    pinned: bool | None = None
+```
+
+Filters shared by listing, windows and counts; all must hold. `query` words
+must all match; `project` matches a full working directory or its last path
+component (either separator); `agent` matches the workflow or the worker role;
+every one of `labels` must be present; `active_since` keeps sessions active at
+or after that time.
+
+### SessionOrder
+
+```python
+class SessionOrder(enum.Enum):  # agenthicc.background
+    REGISTRY = "registry"   # pinned first, then most recent activity
+    RECENT = "recent"
+    CREATED = "created"
+    TITLE = "title"         # case-insensitive
+    PROJECT = "project"     # working directory, then most recent activity
+```
+
+### BackgroundWindow
 
 ```python
 @dataclass(frozen=True)
-class BackgroundPage
+class BackgroundWindow:
+    sessions: tuple[BackgroundSession, ...]
+    total: int
+    offset: int
+    generation: tuple[int, int, int, int]
+    stale: bool = False
 ```
 
-Bounded background-session rows, matching count, page metadata, and the
-durable projection generation used by the interactive manager.
+One window of a listing from row `offset`, the matching total, and the index
+generation (`stale` when a writer appended during the read).
 
-### BackgroundManagerService
+### AgentsService
 
 ```python
-class BackgroundManagerService
+class AgentsService
 ```
 
-Owns the bounded executor adapter for interactive projection, maintenance,
-activity, and lifecycle operations. Scriptable CLI callers retain synchronous
-store/supervisor APIs.
+The agents hub's bounded executor adapter (AGX-05): `window_async`,
+`select_async` and `count_async` read the index off the event loop;
+`cancel_async`, `archive_async`, `restore_async`, `resume_async`,
+`retry_async`, `priority_async`, `rename_async`, `labels_async`,
+`approve_async`, `pin_async`, `submit_async`, `inbox_respond_async`,
+`inbox_expire_async`, `enqueue_input_async` and `delete_async` return a
+`ManagerOperationResult`. Scriptable CLI callers keep the synchronous
+store/supervisor APIs. `maintain_async(trigger)` runs one pass of the
+service's `scheduler` (a `MaintenanceScheduler`) off the event loop and
+returns its `MaintenanceOutcome`.
+
+### MaintenanceScheduler
+
+```python
+class MaintenanceScheduler:  # agenthicc.background.maintenance
+    def __init__(self, supervisor: BackgroundSupervisor, *, stale_after_s: float | None = None, poll_interval_s: float = 5.0, inbox_rescan_s: float | None = None) -> None: ...
+    def run(self, trigger: MaintenanceTrigger) -> MaintenanceOutcome: ...
+```
+
+Due-driven maintenance (AGX-04). A worker is probed when first seen, when its
+process exits (`trigger.exited`), when its heartbeat deadline passes, when a
+stale heartbeat resumes, and — only if it is not in `trigger.exit_watched` —
+every `poll_interval_s`. Deferred-input candidates come from the input inbox,
+re-read only when an inbox file changes; a failed start backs off. Queue
+dispatch runs when pending requests exist and the registry changed, or a
+claimed lease expires. `MaintenanceTrigger(full=True)` probes every active
+worker, rescans the inbox and dispatches. `MaintenanceOutcome` carries the
+changed sessions, the probe count, `next_due_at` (wall clock, polling
+excluded) and `workers` (session → PID) the caller may watch for exit. With
+nothing due a pass probes nothing and appends nothing.
+
+### FileWatcher
+
+```python
+class FileWatcher:  # agenthicc.background.watch
+    def __init__(self, *, fallback_interval_s: float = 0.25, safety_interval_s: float = 2.0, backend: WatchBackend | None = None) -> None: ...
+```
+
+Named watches on files (`watch`), directory entries (`watch_directory`) and
+process exits (`watch_process`, which returns `False` when the platform cannot
+notify). `await wait(timeout)` returns `WatchChanges`: watch key → changed
+entry names for a directory (inotify only; otherwise `None`) or an empty set.
+Backends: inotify and pidfd on Linux, kqueue on macOS/BSD, otherwise a `stat`
+of each path every `fallback_interval_s`; a `safety_interval_s` stat sweep runs
+alongside native notification and arms watches whose path appears later.
 
 ### ManagerOperationResult
 
@@ -3176,24 +3448,51 @@ class ManagerOperationResult
 Structured exact-target operation identity, phase, success/failure category,
 and bounded redacted message.
 
-### BackgroundManager and ViewportBudget
+### AgentsHub
 
-The interactive ``agents``/``jobs`` manager uses a viewport budget to paginate
-session rows (at most ten per page) while retaining the selected session ID,
-details, and controls; deleted sessions are excluded. The selected row is
-marked with ``▶``. Its default activity projection reads a bounded journal
-tail, allows only meaningful text events, redacts them, and caches the result
-by file fingerprint. Pressing ``i`` on a details page opens a target-bound
-composer. Live-worker input is delivered through its owner; input to a stale
-recoverable session is durably queued before background recovery. Workflow
-recovery resumes a saved checkpoint and rejects input if no checkpoint exists,
-without attaching to the foreground. Rendering does not run stale-worker
-recovery or fold the durable event log; maintenance is rate-limited separately.
+```python
+class AgentsHub:  # agenthicc.tui.workspace.agents_hub
+    def __init__(self, console: Console, *, store: BackgroundStore, supervisor: BackgroundSupervisor, settings: AgentsHubSettings | None = None, service: AgentsService | None = None, sources: HubSources | None = None, app_state: AppState | None = None, prefs: HubPrefs | None = None, tab: Tab = Tab.RUNNING, open_session: str | None = None, select: str | None = None, run_id: str = "", cwd: Path | None = None, in_session: bool = False, dispatch: DispatchDefaults | None = None, clock: Callable[[], float] = time.time) -> None: ...
+    async def run(self) -> HubResult: ...          # full screen (agenthicc agents)
+    async def serve(self, on_dirty, on_result=None) -> None: ...   # an overlay's engine
+    def handle_key(self, key: Key, ch: str = "") -> HubResult | None: ...
+    def render(self, width: int, height: int) -> RenderableType: ...
+    async def settle(self, timeout_s: float = 10.0) -> None: ...
+```
 
-``agenthicc attach SESSION_ID`` and Enter from the manager share the canonical
-owner-safe foreground handoff. The positional attach argument is never a
-goal-run or workspace-relative lookup. ``agents --json`` and ``jobs list
---json`` remain complete machine-readable projections.
+The agents hub (AGX-05–07): one component for every agent, behind
+`agenthicc agents` (full screen, `run()`) and `/agents`, Ctrl+G or ← on an
+empty prompt (`AgentsHubOverlay`, which drives `serve()`). Tabs (`Tab`):
+Running (active, queued, pinned and recently finished agents, goal-run trees,
+the next scheduled occurrences), Needs you (pending inbox requests and waiting
+or lost agents, oldest first), History (finished agents and saved foreground
+sessions, newest first, read in windows) and Library (agent definitions). Rows
+are status-first with responsive columns (`layout()`), grouped, searchable
+(`parse_search`: words plus `status:`, `project:`, `agent:`, `label:`, `run:`)
+and keep the selection on the same agent across updates. Space opens a peek
+panel, Enter the detail view: the Needs you card (the inbox item's canonical
+target, redacted; `y`/`n` resolve that exact item), Now, a redacted transcript
+tail that follows the journal, a worktree `git diff --stat` summary, attempts
+and the non-empty fields. Keys resolve through the key map's `agents`,
+`agents.list`, `agents.peek` and `agents.detail` contexts; footer hints and
+`?` help come from it. `HubResult(action, session_id)` hands back `exit`,
+`attach` (validated off the key path) or `open_saved`. The engine never polls
+(AGX-04): it sleeps until a key, a watched file, a worker exit, a finished task
+or due maintenance. `run_agents_hub(console, *, store, supervisor, …)` opens it
+full screen with the user's key bindings watched. Without a terminal, `run()`
+prints the tab as plain lines.
+
+### status_look
+
+```python
+def status_look(status: SessionStatus, *, queue_position: int | None = None) -> StatusLook  # agenthicc.background.vocabulary
+```
+
+The one status vocabulary (AGX-06 §5.1) used by the hub, `agents list` and the
+docs: a glyph, an unambiguous label (`needs approval`, `needs input`,
+`worker lost`, `running`, `queued #N`, `done`, `failed` …), the `Group` the
+Running tab lists it under, and a style. `Group` carries each group's
+empty-state description.
 
 ### BackgroundSupervisor
 
@@ -3202,6 +3501,9 @@ class BackgroundSupervisor
 ```
 
 Own worker processes and expose idempotent lifecycle operations.
+`BackgroundSupervisor.from_settings(store, settings)` applies every configured
+limit, including `stale_after_s`. `recover_stale()` is one full maintenance
+pass (`MaintenanceScheduler` with `MaintenanceTrigger(full=True)`).
 When `queue_enabled` is true, it admits bounded durable requests, applies
 priority aging and per-project round-robin scheduling, and uses a process-safe
 reservation token before launching workers. `queue_positions()` reports
@@ -3238,16 +3540,20 @@ Fields: `enabled`, `store_path`, `max_workers`, `max_workers_per_project`,
 include the opt-in `queue_enabled` flag, `max_queue_length`, optional
 `max_workers_per_user`, `priority_aging_interval_s`, and `dispatch_lease_s`.
 
-### BackgroundManagerSettings
+### AgentsHubSettings
 
 ```python
 @dataclass(frozen=True)
-class BackgroundManagerSettings
+class AgentsHubSettings
 ```
 
-Validated bounded manager refresh and maintenance cadence, projection snapshot
-batch floor, journal-tail byte budget, frame debounce, operation concurrency,
-and opt-in redacted latency metrics.
+The agents hub's `[background.manager]` settings: watch cadence,
+journal-tail byte budget, frame debounce, operation concurrency, and opt-in
+redacted latency metrics. The hub is event-driven (AGX-04):
+`refresh_interval_s` is how often it stats watched files
+when native change notification is unavailable, and `maintenance_interval_s`
+is how often it probes a worker whose exit it cannot watch (and, without
+inotify, rescans the input inbox).
 
 ### InvalidSessionTransition
 
@@ -3433,10 +3739,10 @@ class RunStore
 Locked, fsync'd append-only JSONL persistence at `~/.agenthicc/runs/` by
 default. Partial trailing records are ignored during recovery.
 
-### GoalRunManager
+### GoalRunService
 
 ```python
-class GoalRunManager
+class GoalRunService
 ```
 
 Validates a repository/workflow, creates a run, launches detached work through
@@ -3524,10 +3830,95 @@ Executes one SubagentTask using an isolated AgentRunnerBase instance.
 ### SubagentPool
 
 ```python
-class SubagentPool
+class SubagentPool:
+    def __init__(self, tasks, parent_runner, parent_model, all_tools, max_concurrent=4, …, transcript_root: Path | None = None) -> None: ...
+    async def run(self) -> AggregatedResult: ...
+    @property
+    def state(self) -> SubagentPoolState: ...
+    def stop_worker(self, worker_id: str) -> bool: ...
+    def dismiss_worker(self, worker_id: str) -> bool: ...
+
+def active_pool(pool_id: str) -> SubagentPool | None: ...  # agenthicc.subagents.pool
 ```
 
-Runs a set of SubagentTasks concurrently bounded by *max_concurrent*.
+Runs a set of SubagentTasks concurrently bounded by *max_concurrent*. It
+publishes an immutable `SubagentPoolState` on the conversation store for every
+change (AGX-08) and keeps the finished snapshot published while the panel shows
+rows. `stop_worker` cancels one running worker (or keeps a waiting one from
+starting): it is recorded as failed with `stopped by user` and the rest of the
+pool, and the parent turn, go on. `active_pool` finds a running pool by ID.
+Worker transcripts are written under `transcript_root`, by default
+`<session dir>/subagents` beside the conversation journal.
+
+### WorkerState and SubagentPoolState
+
+```python
+@dataclass(frozen=True, slots=True)
+class WorkerState:  # agenthicc.subagents.pool
+    label: str
+    agent_type: str
+    status: str = "pending"   # pending | running | waiting | done | failed | stopped
+    worker_id: str = ""
+    activity: str = ""        # current tool and target, pending approval, latest text, result
+    started_at: float | None = None
+    finished_at: float | None = None
+    tokens: int = 0
+    dismissed: bool = False
+
+@dataclass(frozen=True, slots=True)
+class SubagentPoolState:
+    pool_id: str
+    total: int
+    workers: tuple[WorkerState, ...] = ()
+    limit: int = 0
+    finished_at: float | None = None
+    transcripts: Path | None = None
+    done: int                  # property
+    active: bool               # property: any worker unfinished
+    def shown(self, now: float) -> tuple[WorkerState, ...]: ...
+    def expired(self, now: float) -> bool: ...
+    def worker(self, worker_id: str) -> WorkerState | None: ...
+    def with_worker(self, worker: WorkerState) -> SubagentPoolState: ...
+```
+
+The subagent panel's model (AGX-08 §5.1). `shown(now)` lists unfinished
+workers, failures until dismissed and other finished workers for
+`FINISHED_ROW_S` (30 s); `ConversationStore.tick()` clears an `expired` pool
+and publishes the row count on `subagent_rows`. The panel renders between the
+prompt and the footer (`tui.workspace.subagent_panel.panel_lines`); Ctrl+O or
+`/subagents` focuses it (`OpenSubagentsCommand`, the key map's `subagents`
+context) and Enter opens a worker's transcript (`transcript` context).
+
+### Subagent transcripts — `agenthicc.subagents.transcripts`
+
+```python
+@dataclass(frozen=True, slots=True)
+class TranscriptEvent:
+    kind: str     # prompt | text | tool_started | tool_finished | approval_requested | approval_resolved | finished | truncated
+    at: float
+    text: str = ""
+    tool: str = ""
+    ok: bool | None = None
+    dropped: int = 0
+
+class TranscriptWriter:
+    def __init__(self, root: Path, pool_id: str, *, limit: int = MAX_TRANSCRIPT_BYTES) -> None: ...
+    def start(self, workers: Sequence[WorkerRecord], created_at: float) -> None: ...
+    def append(self, worker_id: str, event: TranscriptEvent) -> None: ...
+    def finish(self, finished_at: float) -> None: ...
+    async def aclose(self) -> None: ...
+
+def read_transcript(path: Path) -> tuple[TranscriptEvent, ...]: ...
+def list_pools(root: Path, *, limit: int = 20) -> tuple[PoolRecord, ...]: ...
+def last_event(path: Path) -> TranscriptEvent | None: ...
+class TranscriptTail: ...  # refresh() reads only what was appended
+```
+
+One pool's `pool.json` and one `<worker_id>.jsonl` per worker under
+`<session dir>/subagents/<pool_id>/`. Writes are queued to one background
+thread in order and redacted with the session-export redactor; a worker's file
+stays under `MAX_TRANSCRIPT_BYTES` (2 MiB) by dropping its oldest events behind
+a `truncated` marker that counts them. The parent agent never reads them.
 
 ### SubagentExecutionPolicy
 
@@ -3558,6 +3949,9 @@ class AgentMessageBroker
 
 Session-scoped per-pool broker for ordered mailboxes, clarification futures,
 membership validation, bounded payloads, lifecycle journaling, and replay.
+`open_questions(sender=...)` lists the questions a worker asked whose answer it
+has not received — including one answered before it looked — and
+`wait_for_answer` delivers it.
 
 ### CommunicationError
 
@@ -4509,7 +4903,28 @@ Handles the OAuth PKCE flow and token refresh.
 class TokenStore
 ```
 
-Persist tokens in the OS keychain; fall back to a local file.
+Persist tokens in the OS keychain; fall back to a local file. The store also
+keeps the derived account tier in `account-tier.json` next to the fallback file
+(mode 600, no token material): `save()` and `clear()` record it,
+`cached_tier()` returns it while fresh, and `account_tier()` answers from the
+cache or reads the keyring and refreshes it (blocking; call it off the event
+loop). `AuthClient.account_tier()` delegates to it, and `AuthClient.get_token()`
+reads and saves tokens on a worker thread.
+
+### AccountTier
+
+```python
+AccountTier = Literal["signed_out", "free", "pro"]
+ACCOUNT_TIER_TTL_S = 24 * 60 * 60
+```
+
+The tier start-up uses to decide whether to show sponsored messages, cached for
+`ACCOUNT_TIER_TTL_S` seconds (AGX-02). `TokenBundle.tier` maps a bundle's plan
+to `free` or `pro`.
+
+### ACCOUNT_TIER_TTL_S
+
+How long a cached `AccountTier` is trusted before the token store is read.
 
 ### TokenBundle
 
@@ -5186,6 +5601,9 @@ never stores prompts or responses. `UsageRunTracker` correlates stream chunks
 with scoped `ModelCallComplete` and `AgentRunComplete` signals so completion
 and cumulative reconciliation are idempotent. `UsageSnapshot` is projected to
 the reactive TUI store, `/usage`, session restore, export, and inspection.
+`snapshot()` includes provisional (streaming) calls; `completed_snapshot()`
+and `subscribe_completed(callback)` cover committed calls only, delivered once
+per commit — what a background worker copies into its session record (AGX-07).
 
 Standard workflow phases, generated `create_workflow` workflows, subagents, and
 compaction receive the ledger through `WorkflowConfig` and `_run_agent_turn()`.
@@ -5324,6 +5742,14 @@ full exception data.
 
 ### `StartupCoordinator`
 
+    class StartupCoordinator:
+        def __init__(
+            self,
+            *,
+            clock: Callable[[], float] | None = None,
+            process_started_at: float | None = None,
+        ) -> None: ...
+
 Owns session startup phase reports and tracked background readiness tasks.
 `begin()`/`finish()` record a phase, `start_background()` starts a
 cancellable deferred operation, `wait_for()` gates a dependent operation,
@@ -5331,6 +5757,27 @@ cancellable deferred operation, `wait_for()` gates a dependent operation,
 `close()` cancels and awaits outstanding tasks idempotently. The TUI uses
 this owner for its first-frame boundary and `/startup`; it does not replace
 the event processor or any session/workflow persistence owner.
+`record_first_frame_modules(count)` stores the module count when the first
+frame is drawn and `milestones()` returns a `StartupMilestones`. The TUI
+passes `agenthicc.STARTED_AT`, the monotonic time at which the process first
+imported agenthicc, as `process_started_at`.
+
+The TUI's post-frame `agent_runtime` phase covers `provider_journal_restore`
+(journal fold on a worker thread) and `provider` (provider config, transport
+and runner on a worker thread); turns, workflow resumes and `/compact` wait for
+both and fail with `StartupDependencyError` when either failed.
+
+### `StartupMilestones`
+
+    @dataclass(frozen=True, slots=True)
+    class StartupMilestones:
+        process_to_first_frame_s: float | None = None
+        first_frame_to_runtime_ready_s: float | None = None
+        modules_at_first_frame: int | None = None
+
+Landmarks printed by `/startup` (AGX-02). A value is `None` until reached;
+runtime-ready is reported only when `agent_runtime` finished `ready`.
+`to_dict()` returns the JSON form.
 
 `SessionEventStore` uses an atomic redacted `index.json` projection for
 listing and lazily replays one selected service session. The authoritative

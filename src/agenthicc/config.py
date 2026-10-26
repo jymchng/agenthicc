@@ -34,8 +34,8 @@ from agenthicc.kernel import SecurityPolicy, SystemSettings
 
 if TYPE_CHECKING:
     from lauren_ai._config import LLMConfig
-    from agenthicc.tools.mcp import McpServerConfig
     from agenthicc.skills.loader import SkillPermissionSet
+    from agenthicc.tools.mcp_server_config import McpServerConfig
 
 __all__ = [
     "AgenthiccConfig",
@@ -1427,6 +1427,42 @@ class BehaviourSettings:
     """Maximum serialized event bytes retained for the initial preview."""
     resume_transcript_max_event_bytes: int = 16 * 1024
     """Maximum serialized bytes decoded from any one preview event."""
+    composer_max_rows: int = 12
+    """Rows the prompt shows before scrolling (3–200); the rows it hides are
+    summarised as ``↑ N more lines`` / ``↓ N more lines`` (AGX-11)."""
+    frame_interval_ms: int = 16
+    """Shortest interval between two redraws of the live block (0–1000 ms).
+    Key echo is drawn at once regardless (AGX-11)."""
+
+
+_MOUSE_MODES = ("auto", "on", "off")
+
+
+@dataclass(frozen=True)
+class UISettings:
+    """[ui] section — input and accessibility preferences (AGX-13)."""
+
+    mouse: str = "auto"
+    """``"auto"`` reports the mouse only in the full-screen agents hub, where
+    native text selection is not needed; ``"on"`` also in the inline TUI;
+    ``"off"`` never writes a mouse-reporting sequence."""
+    screen_reader: bool = False
+    """No spinners or box drawing; state changes are also printed as sentences."""
+    reduced_motion: bool = False
+    """Keep the layout but replace animation with a static ``●``."""
+
+    def __post_init__(self) -> None:
+        if self.mouse not in _MOUSE_MODES:
+            raise ValueError(f"ui.mouse must be one of: {', '.join(_MOUSE_MODES)}")
+
+    @property
+    def animated(self) -> bool:
+        """Whether spinners and other animation may run."""
+        return not (self.screen_reader or self.reduced_motion)
+
+    def mouse_enabled(self, *, fullscreen: bool) -> bool:
+        """Whether a screen should turn on mouse reporting."""
+        return self.mouse == "on" or (self.mouse == "auto" and fullscreen)
 
 
 @dataclass
@@ -1578,6 +1614,7 @@ class AgenthiccConfig:
     # Appended after the original fields to preserve positional construction
     # compatibility for downstream callers of this public dataclass.
     loops: LoopSettings = field(default_factory=LoopSettings)
+    ui: UISettings = field(default_factory=UISettings)
 
     def to_system_settings(self) -> SystemSettings:
         """Reflect execution settings into the kernel ``SystemSettings``."""
@@ -1768,18 +1805,17 @@ class AgenthiccConfig:
 
 
 def _parse_mcp_servers(raw_list: list[dict[str, object]]) -> list[McpServerConfig]:
-    """Convert raw TOML dicts to McpServerConfig objects (graceful if mcp.py unavailable)."""
-    try:
-        from agenthicc.tools.mcp import McpServerConfig
-
-        servers = [McpServerConfig.from_dict(d) for d in raw_list]
-        names = [server.name for server in servers]
-        duplicates = sorted({name for name in names if names.count(name) > 1})
-        if duplicates:
-            raise ValueError("duplicate MCP server name(s): " + ", ".join(duplicates))
-        return servers
-    except ImportError:
+    """Convert raw TOML dicts to McpServerConfig objects; duplicate names are an error."""
+    if not raw_list:
         return []
+    from agenthicc.tools.mcp_server_config import McpServerConfig
+
+    servers = [McpServerConfig.from_dict(d) for d in raw_list]
+    names = [server.name for server in servers]
+    duplicates = sorted({name for name in names if names.count(name) > 1})
+    if duplicates:
+        raise ValueError("duplicate MCP server name(s): " + ", ".join(duplicates))
+    return servers
 
 
 # ── merging ──────────────────────────────────────────────────────────────
@@ -2370,6 +2406,8 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
             128 * 1024,
             max(256, _as_int(beh.get("resume_transcript_max_event_bytes"), 16 * 1024)),
         ),
+        composer_max_rows=min(200, max(3, _as_int(beh.get("composer_max_rows"), 12))),
+        frame_interval_ms=min(1_000, max(0, _as_int(beh.get("frame_interval_ms"), 16))),
     )
 
     loop_data = _section(data.get("loops"))
@@ -2399,6 +2437,13 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
     )
 
     agents = AgentsSettings.from_dict(_section(data.get("agents")))
+
+    ui_data = _section(data.get("ui"))
+    ui = UISettings(
+        mouse=_as_str(ui_data.get("mouse"), "auto").lower(),
+        screen_reader=_as_bool(ui_data.get("screen_reader"), False),
+        reduced_motion=_as_bool(ui_data.get("reduced_motion"), False),
+    )
 
     # [workflows] section — dict[workflow_name, dict[str, Any]] (PRD-111)
     workflows: dict[str, dict[str, object]] = {
@@ -2431,6 +2476,7 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
         skills=skills,
         agents=agents,
         workflows=workflows,
+        ui=ui,
     )
 
 

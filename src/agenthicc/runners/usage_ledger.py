@@ -321,6 +321,7 @@ class UsageLedger:
         self._active: dict[str, UsageRecord] = {}
         self._next_index: dict[str, int] = {}
         self._subscribers: list[Callable[[UsageSnapshot], None]] = []
+        self._completed_subscribers: list[Callable[[UsageSnapshot], None]] = []
         self._projection: Callable[[UsageSnapshot], None] | None = None
         self._persistence_failed = False
 
@@ -360,6 +361,16 @@ class UsageLedger:
         """Subscribe to aggregate changes and return an unsubscribe callback."""
         self._subscribers.append(callback)
         return lambda: self._unsubscribe(callback)
+
+    def subscribe_completed(self, callback: Callable[[UsageSnapshot], None]) -> Callable[[], None]:
+        """Subscribe to the totals of completed calls, sent after each commit.
+
+        Provisional values never reach these subscribers, so a durable copy of
+        the totals (a background session's record, AGX-07) changes once per
+        provider call rather than once per streamed chunk.
+        """
+        self._completed_subscribers.append(callback)
+        return lambda: self._unsubscribe_completed(callback)
 
     def bind_conversation_store(self, store: "ConversationStore") -> Callable[[], None]:
         """Project all ledger snapshots into legacy reactive counters."""
@@ -499,6 +510,7 @@ class UsageLedger:
         self._records[call.record_id] = updated
         self._persist(updated)
         self._notify()
+        self._notify_completed()
 
     def reconcile_run(
         self,
@@ -542,7 +554,13 @@ class UsageLedger:
 
     def snapshot(self) -> UsageSnapshot:
         """Return a consistent aggregate of completed and provisional calls."""
-        records = [*self._records.values(), *self._active.values()]
+        return self._aggregate([*self._records.values(), *self._active.values()])
+
+    def completed_snapshot(self) -> UsageSnapshot:
+        """Return the aggregate of completed calls only."""
+        return self._aggregate(list(self._records.values()))
+
+    def _aggregate(self, records: list[UsageRecord]) -> UsageSnapshot:
         values = _aggregate_values(records)
         costs = [record for record in records if record.cost_usd is not None]
         unknown = [record for record in records if not record.is_known]
@@ -627,6 +645,16 @@ class UsageLedger:
             except Exception:  # noqa: BLE001
                 pass
 
+    def _notify_completed(self) -> None:
+        if not self._completed_subscribers:
+            return
+        snapshot = self.completed_snapshot()
+        for subscriber in tuple(self._completed_subscribers):
+            try:
+                subscriber(snapshot)
+            except Exception:  # noqa: BLE001
+                pass
+
     def _advance_index(self, record: UsageRecord) -> None:
         self._next_index[record.run_id] = max(
             self._next_index.get(record.run_id, 0), record.call_index
@@ -670,6 +698,12 @@ class UsageLedger:
     def _unsubscribe(self, callback: Callable[[UsageSnapshot], None]) -> None:
         try:
             self._subscribers.remove(callback)
+        except ValueError:
+            pass
+
+    def _unsubscribe_completed(self, callback: Callable[[UsageSnapshot], None]) -> None:
+        try:
+            self._completed_subscribers.remove(callback)
         except ValueError:
             pass
 

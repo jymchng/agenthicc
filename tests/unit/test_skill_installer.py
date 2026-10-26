@@ -200,28 +200,22 @@ def test_existing_skill_is_never_overwritten(tmp_path: Path) -> None:
     assert marker.read_text(encoding="utf-8") == "keep"
 
 
-def test_cli_parser_supports_reserved_global_flag_name() -> None:
+def test_cli_parser_supports_reserved_global_flag_name(monkeypatch: pytest.MonkeyPatch) -> None:
     from agenthicc.cli import registry
 
-    old_registry = registry._REGISTRY.copy()
-    old_groups = registry._GROUPS.copy()
-    registry._REGISTRY.clear()
-    registry._GROUPS.clear()
-    try:
+    monkeypatch.setattr(registry, "_PLUGIN_COMMANDS", {})
+    monkeypatch.setattr(registry, "_PLUGIN_GROUPS", {})
 
-        @registry.command("skills", "add", help="add a skill")
-        def add(ctx: CLIContext, global_: bool = False) -> None:
-            return None
+    @registry.command("skills", "add", help="add a skill")
+    def add(ctx: CLIContext, global_: bool = False) -> None:
+        return None
 
-        parser = argparse.ArgumentParser()
-        registry._wire(parser, registry._as_tree())
-        namespace = parser.parse_args(["skills", "add", "--global"])
-        assert namespace.global_ is True
-    finally:
-        registry._REGISTRY.clear()
-        registry._REGISTRY.update(old_registry)
-        registry._GROUPS.clear()
-        registry._GROUPS.update(old_groups)
+    argv = ["skills", "add", "--global"]
+    index = registry.command_index()
+    parser = argparse.ArgumentParser()
+    registry.wire(parser, index, index.resolve(registry.leading_tokens(argv)))
+    namespace = parser.parse_args(argv)
+    assert namespace.global_ is True
 
 
 def test_cli_handler_reports_install_errors(

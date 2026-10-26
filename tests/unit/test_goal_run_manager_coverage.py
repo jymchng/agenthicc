@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from agenthicc.background import BackgroundSession, BackgroundStore, SessionStatus
-from agenthicc.runs.manager import GoalRunManager, RepositoryValidationError, inspect_repository
+from agenthicc.runs.manager import GoalRunService, RepositoryValidationError, inspect_repository
 from agenthicc.runs.model import GoalRun, GoalRunStatus
 from agenthicc.runs.store import RunStore
 
@@ -45,9 +45,9 @@ class _Supervisor:
         return self.store.get(session_id)
 
 
-def _manager(tmp_path: Path) -> tuple[GoalRunManager, _Supervisor]:
+def _manager(tmp_path: Path) -> tuple[GoalRunService, _Supervisor]:
     supervisor = _Supervisor(tmp_path)
-    manager = GoalRunManager(
+    manager = GoalRunService(
         store=RunStore(tmp_path / "runs"), supervisor=supervisor, require_git=False
     )
     manager._validate_workflow = lambda _name: None  # type: ignore[method-assign]
@@ -66,7 +66,7 @@ def test_repository_inspection_handles_missing_and_non_git_paths(tmp_path: Path)
 
 
 def test_manifest_status_precedence_is_deterministic() -> None:
-    helper = GoalRunManager._status_for_manifests
+    helper = GoalRunService._status_for_manifests
     assert helper(GoalRunStatus.RUNNING, (), has_attention=False) is GoalRunStatus.RUNNING
     assert (
         helper(GoalRunStatus.CREATED, ("planning",), has_attention=False) is GoalRunStatus.PLANNING
@@ -173,7 +173,7 @@ def test_manager_start_failure_is_recorded(tmp_path: Path) -> None:
             raise RuntimeError("cannot start")
 
     supervisor = _Failing(tmp_path)
-    manager = GoalRunManager(
+    manager = GoalRunService(
         store=RunStore(tmp_path / "runs"), supervisor=supervisor, require_git=False
     )
     manager._validate_workflow = lambda _name: None  # type: ignore[method-assign]
@@ -231,7 +231,7 @@ def test_manifest_projection_deduplicates_and_surfaces_attention(
     run = GoalRun.create("Goal", repository=str(tmp_path), run_id="run_manifest").evolve(
         main_session_id="main"
     )
-    ids, tasks, worktrees, attention = GoalRunManager._manifest_projection(run)
+    ids, tasks, worktrees, attention = GoalRunService._manifest_projection(run)
     assert ids == ("orchestration",)
     assert len(tasks) == len(worktrees) == 1
     assert tasks[0].result_status == "complete"

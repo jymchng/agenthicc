@@ -15,7 +15,7 @@ The primary entry point is `agenthicc.__main__:main`.
 - `agenthicc --headless --workflow NAME` executes NAME for each stdin line.
 - `agenthicc --mode MODE --goal GOAL --detach` persists the requested mode
   before launch and attests its canonical effective value before worker
-  execution; inspect pending/applied startup state with `jobs status` or
+  execution; inspect pending/applied startup state with `agents status` or
   `runs show`.
 - `kernel.AppState` is frozen domain state reduced from `Event` objects.
 - `tui.conversation_store.AppState` is a separate reactive presentation model.
@@ -64,9 +64,10 @@ The primary entry point is `agenthicc.__main__:main`.
 | `ToolResult` / `ToolResultEnvelope` | `agenthicc.tools` | Typed compatibility and adapter result envelopes |
 | `TerminalManager` / `TerminalStore` | `agenthicc.background.terminals` | Owned process groups, bounded output, handles, wait, stop, and local recovery |
 | `TerminalState` / `TerminalRecord` | `agenthicc.background.terminals` | Durable background-terminal lifecycle and redacted result metadata |
-| `BackgroundPage` / `BackgroundManagerService` / `ManagerOperationResult` | `agenthicc.background` | Bounded page projections and structured asynchronous manager operations |
+| `BackgroundWindow` / `SessionFilter` / `SessionOrder` / `AgentsService` / `ManagerOperationResult` | `agenthicc.background` | Indexed listing windows, filters and orders, and the agents hub's bounded asynchronous operations |
 | `QueuePriority` / `QueueDispatchState` / `PriorityChange` / `QueueFullError` | `agenthicc.background` | Durable bounded background admission, priority audit, scheduler state, and queue-capacity rejection |
-| `BackgroundManagerSettings` | `agenthicc.background` | Validated latency, activity-tail, frame, and operation-concurrency limits for `agenthicc agents` |
+| `AgentsHubSettings` | `agenthicc.background` | Validated `[background.manager]` watch, activity-tail, frame, and operation-concurrency limits for the agents hub |
+| `AgentsHub` / `AgentsHubOverlay` / `status_look` | `agenthicc.tui.workspace.agents_hub`, `agenthicc.background.vocabulary` | The agents hub (full screen and in-session overlay) and the one status vocabulary |
 | `BackgroundInboxItem` / `BackgroundInteractionInbox` / `InboxConflict` | `agenthicc.background` | Durable exact-operation approval/question/input inbox with versioned CAS, idempotency, and safe stale-state reporting |
 | `CommandOutcome` / `CommandState` / `CommandKind` | `agenthicc.tools.exec` | Canonical command states, deadlines, cancellation, and service lifecycle |
 | `ToolSandbox` / `WorkspaceView` | `agenthicc.tools` | Timeout, resource, network, and real-path boundaries |
@@ -234,26 +235,30 @@ this finalizer and remains interactive.
 Owned terminal records are stored under `~/.agenthicc/background/terminals/`
 and remain separate from durable agent-session records.
 
-`agenthicc agents` is a viewport-aware, paginated manager. Its interactive
-table shows at most ten sessions per page and excludes deleted sessions. It
-marks the selected row with `▶`, shows only the newest meaningful text
-activity, and keeps selection tied to the exact session ID across refreshes.
-Press `i` on a details page to send input to the live worker or queue it before
-recovering a stale session in the background; workflow recovery requires and
-resumes its saved checkpoint without attaching to the foreground. Restore
-deleted sessions with `agenthicc jobs restore SESSION_ID`. `agents --json`
-and `jobs list --json` remain complete, unpaginated projections. Enter attaches
-the selected session through the same owner-safe path as
-`agenthicc attach SESSION_ID`; a positional `run_...` identifier is rejected
-and goal-run discovery uses `agents --run RUN_ID` or explicit
-`attach --run RUN_ID`.
+`agenthicc agents` opens the agents hub (AGX-05–07); `/agents`, Ctrl+G and ←
+on an empty prompt open it over a session. Tabs: Running (grouped by what needs
+you; goal runs with their workers nested), Needs you (inbox requests, oldest
+first), History (finished agents and saved sessions) and Library. Rows lead
+with one status vocabulary (`status_look`), keep the selection on the same
+session ID across refreshes, and show the agent's report line — the first
+sentence of its latest message, recorded by the worker. Space peeks, Enter opens
+the detail view (request card, live redacted transcript, worktree changes,
+attempts) and Enter there attaches through the same owner-safe path as
+`agenthicc attach SESSION_ID`; `i` sends input to the live worker or queues it
+before recovering a stale session in the background, and workflow recovery
+resumes its saved checkpoint without attaching to the foreground. From inside a
+session, attaching switches sessions and returns afterwards. `agents --json`
+and `agents list --json` remain complete projections; a positional `run_...`
+identifier is rejected and goal-run discovery uses `agents --run RUN_ID` or
+explicit `attach --run RUN_ID`. The scriptable `agents` subcommands replace
+the former `jobs` group.
 
-In the interactive manager, `Ctrl+X` immediately dispatches deletion for the
-exact selected or marked session IDs; it does not open a confirmation modal.
-Deletion runs asynchronously, records durable progress, moves artifacts to
-recoverable trash, and preserves failure/recovery metadata. A repeated key is
-ignored while the operation is active. Deleted records are not shown in the
-interactive table and are restored through the `jobs restore` command.
+In the hub, `Ctrl+X` immediately dispatches deletion for the exact selected or
+marked session IDs; it does not open a confirmation modal. Deletion runs
+asynchronously, records durable progress, moves artifacts to recoverable trash,
+and preserves failure/recovery metadata. A repeated key is ignored while the
+operation is active. Deleted records are not listed and are restored with
+`agenthicc agents restore SESSION_ID`.
 
 Durable session attachment is single-owner. `--continue`, `--resume`, the
 session picker, headless workflow execution, and explicit background attaches

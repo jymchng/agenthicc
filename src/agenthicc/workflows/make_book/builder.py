@@ -497,8 +497,13 @@ def attach_cover(pdf_path: Path) -> Path:
 
 
 def default_output() -> Path:
-    stamp = datetime.now().strftime("%d %b %Y %H%M")
-    return ROOT / "dist" / f"{{SLUG}} {{stamp}}.pdf"
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    output = ROOT / "dist" / f"{{SLUG}} {{stamp}}.pdf"
+    collision = 1
+    while output.exists() or output.with_suffix(".epub").exists():
+        output = ROOT / "dist" / f"{{SLUG}} {{stamp}}-{{collision}}.pdf"
+        collision += 1
+    return output
 
 
 def build(output: Path, *, keep_intermediates: bool = False) -> Path:

@@ -133,6 +133,25 @@ class JournaledShortTermMemory(ShortTermMemory):
 
     # ── reset surface — retry rollback and compaction ────────────────────────
 
+    def snapshot(self) -> dict[str, object]:
+        """Return a copy-on-write checkpoint of the projection (AGX-12).
+
+        Messages in this memory are values: appends add new objects, and
+        repair, compaction and trimming build new lists from copies instead of
+        editing a message in place. A checkpoint therefore keeps references to
+        the current messages rather than deep-copying the whole history on
+        every provider step; ``restore`` rebuilds the list from them. The
+        active tool exchange stays a deep copy: it is small and holds the
+        calls' input mappings.
+        """
+        checkpoint: dict[str, object] = {
+            "messages": list(self._messages),
+            "summary": self._summary,
+        }
+        if self._active_exchange is not None:
+            checkpoint["tool_exchange"] = copy.deepcopy(self._active_exchange)
+        return checkpoint
+
     def restore(
         self,
         data: object,
@@ -345,7 +364,14 @@ class JournaledShortTermMemory(ShortTermMemory):
         transient pre-send repair. An explicit user cancellation is different:
         the repaired history is the context the next turn must remember, so it
         must survive a process restart as well.
+
+        lauren-ai runs this before every provider step. A valid history — the
+        common case — returns before anything is copied: lauren-ai's repair
+        returns a valid history unchanged, so the copy, repair and comparison
+        below could only conclude ``False`` (AGX-12).
         """
+        if self.validate_tool_history().ok:
+            return False
         before = copy.deepcopy(self._messages)
         candidate = copy.copy(self)
         candidate._messages = copy.deepcopy(before)

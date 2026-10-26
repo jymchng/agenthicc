@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
+import textwrap
 from pathlib import Path
 
+import pytest
+
+from agenthicc.config import load_config
 from agenthicc.runners.session_conversation import SessionConversation
 from agenthicc.runners.workflow_checkpoint_store import WorkflowCheckpointStore
 from agenthicc.runners.workflow_recovery import WorkflowRecoveryCoordinator
+from agenthicc.runners.workflow_profile import (
+    provider_profile_fingerprint,
+    resolve_resume_provider_profile,
+)
 from agenthicc.workflows.code_plan.definition import CodePlan
 from agenthicc.workflows.code_plan.state import CodePlanContext, CodePlanState
 from agenthicc.workflows.create_workflow.definition import CreateWorkflow
@@ -87,6 +95,128 @@ def test_reopen_same_session_rehydrates_checkpoint_into_one_memory(tmp_path: Pat
         assert restored.context.shared_memory is reopened.memory
         assert reopened.conversation_id == session_id
         assert reopened.messages == expected_messages
+        restored.release_claim()
+    finally:
+        reopened.close()
+
+
+def test_disk_checkpoint_inherits_saved_profile_after_default_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session_id = "profile-aware-process-recovery"
+    checkpoint_root = tmp_path / "sessions"
+    journal_path = checkpoint_root / session_id / "conversation-journal.jsonl"
+    config_path = tmp_path / "agenthicc.toml"
+    config_path.write_text(
+        textwrap.dedent(
+            """
+            [execution]
+            provider = "openai"
+            model = "legacy-model"
+            profile = "current"
+
+            [providers.saved]
+            provider = "openai"
+            model = "saved-model"
+            base_url = "https://saved.example/v1"
+            api_key_env = "SAVED_KEY"
+
+            [providers.current]
+            provider = "openai"
+            model = "current-model"
+            base_url = "https://current.example/v1"
+            api_key_env = "CURRENT_KEY"
+            """
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SAVED_KEY", "integration-saved-secret")
+    monkeypatch.setenv("CURRENT_KEY", "integration-current-secret")
+    config = load_config(
+        project_path=config_path,
+        user_path=tmp_path / "missing-user.toml",
+        env_overrides=False,
+    )
+
+    initial = SessionConversation.open(
+        session_id,
+        max_tokens=10_000,
+        journal_path=journal_path,
+    )
+    store = WorkflowCheckpointStore(session_id, root=checkpoint_root)
+    from agenthicc.runners.workflow_handle import WorkflowRunHandle
+
+    handle = WorkflowRunHandle.create(
+        run_id="profile-recovery-run",
+        workflow=CodePlan,
+        conversation=initial,
+        intent="continue the existing plan",
+        checkpoint_store=store,
+        provider_profile="saved",
+        provider_profile_fingerprint=provider_profile_fingerprint(config, "saved"),
+        workspace_root="/workspace/project",
+    )
+    handle.attach_context(
+        CodePlanContext(
+            intent="continue the existing plan",
+            run_id=handle.run_id,
+            state=CodePlanState.EXECUTE,
+            phase_iteration=3,
+            shared_memory=initial.memory,
+        )
+    )
+    handle.update_phase("execute", 1, 3)
+    handle.request_pause()
+    handle.mark_paused(reason="integration setup")
+    checkpoint = handle.save_checkpoint(reason="integration setup")
+    checkpoint_bytes = store.path_for(handle.run_id).read_bytes()
+    assert b"integration-saved-secret" not in checkpoint_bytes
+    assert b"integration-current-secret" not in checkpoint_bytes
+    assert checkpoint.provider_profile == "saved"
+    initial.close()
+
+    reopened = SessionConversation.open(
+        session_id,
+        max_tokens=10_000,
+        journal_path=journal_path,
+    )
+    try:
+        registry = WorkflowRegistry()
+        registry.register(CodePlan)
+        coordinator = WorkflowRecoveryCoordinator(
+            session_id,
+            checkpoint_store=WorkflowCheckpointStore(session_id, root=checkpoint_root),
+        )
+        records = coordinator.inspect(
+            workflow_registry=registry,
+            conversation=reopened,
+            provider_profile="current",
+            workspace_root="/workspace/project",
+        )
+        assert len(records) == 1
+        assert records[0].recoverable
+        restored = coordinator.rehydrate(
+            records[0],
+            workflow=CodePlan,
+            conversation=reopened,
+            owner_id="profile-integration-owner",
+        )
+        assert restored.run_id == handle.run_id
+        assert restored.current_phase == "execute"
+        assert isinstance(restored.context, CodePlanContext)
+        assert restored.context.state is CodePlanState.EXECUTE
+
+        selection = resolve_resume_provider_profile(
+            config,
+            saved_profile=records[0].provider_profile,
+            saved_binding_fingerprint=records[0].provider_profile_fingerprint,
+        )
+        assert selection.profile_name == "saved"
+        assert selection.source == "saved"
+        assert selection.config.execution.profile == "saved"
+        assert selection.config.execution._resolved_profile is not None
+        assert selection.config.execution._resolved_profile.api_key == "integration-saved-secret"
+        assert config.execution.profile == "current"
         restored.release_claim()
     finally:
         reopened.close()

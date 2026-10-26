@@ -28,20 +28,32 @@ from agenthicc.worktrees.environment import (
 )
 
 
-def test_agents_detail_lists_previews_and_requires_y_before_running_action(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def _hub(tmp_path: Path, session: object | None = None, width: int = 100) -> object:
     from rich.console import Console
 
-    from agenthicc.background import BackgroundSession, BackgroundStore
-    from agenthicc.tui.cbreak_reader import Key
-    from agenthicc.tui.workspace.background_manager import (
-        BackgroundManager,
-        ViewportBudget,
-    )
-    from agenthicc.worktrees import environment_actions
+    from agenthicc.background import BackgroundSession, BackgroundStore, BackgroundSupervisor
+    from agenthicc.tui.workspace.agents_hub import AgentsHub
+    from agenthicc.tui.workspace.agents_hub.prefs import HubPrefs
 
-    session = BackgroundSession.create(
+    store = BackgroundStore(tmp_path / "sessions")
+    hub = AgentsHub(
+        Console(file=StringIO(), force_terminal=False, width=width),
+        store=store,
+        supervisor=BackgroundSupervisor(store),
+        prefs=HubPrefs(path=tmp_path / "hub.json"),
+    )
+    if isinstance(session, BackgroundSession):
+        store.create(session)
+        hub._sessions[session.session_id] = session
+        hub._selected_key = f"session:{session.session_id}"
+        hub._detail_id = session.session_id
+    return hub
+
+
+def _worker(tmp_path: Path) -> object:
+    from agenthicc.background import BackgroundSession
+
+    return BackgroundSession.create(
         "worker-session",
         title="worker",
         cwd=str(tmp_path),
@@ -51,8 +63,29 @@ def test_agents_detail_lists_previews_and_requires_y_before_running_action(
         task_id="tests",
         worktree_id="worktree-1",
     )
-    store = BackgroundStore(tmp_path / "sessions")
-    store.create(session)
+
+
+def _text(hub: object, width: int, height: int) -> str:
+    from rich.console import Console
+
+    from agenthicc.tui.workspace.agents_hub import AgentsHub
+
+    assert isinstance(hub, AgentsHub)
+    console = Console(file=StringIO(), force_terminal=False, width=width)
+    with console.capture() as capture:
+        console.print(hub.render(width, height))
+    return capture.get()
+
+
+def test_agents_detail_lists_previews_and_requires_y_before_running_action(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agenthicc.tui.cbreak_reader import Key
+    from agenthicc.tui.workspace.agents_hub import AgentsHub
+    from agenthicc.worktrees import environment_actions
+
+    hub = _hub(tmp_path, _worker(tmp_path))
+    assert isinstance(hub, AgentsHub)
     action = EnvironmentCommand("test", "pytest -q", cwd=".", timeout_s=30, network="none_declared")
     reviewed_digest = "reviewed-manifest-digest"
     verified_workspace = tmp_path / "verified-worker"
@@ -74,27 +107,20 @@ def test_agents_detail_lists_previews_and_requires_y_before_running_action(
         return SimpleNamespace(result="succeeded")
 
     monkeypatch.setattr(environment_actions, "run_session_action", run_action)
-    manager = BackgroundManager(Console(file=StringIO(), force_terminal=False), store=store)
-    manager._sessions = [session]
-    manager._selected_session_id = session.session_id
-    manager._detail_session_id = session.session_id
     operation: list[object] = []
-    manager._start_operation = lambda _target, _label, callback: operation.append(callback)  # type: ignore[method-assign]
+    hub._start_operation = lambda _target, _label, callback: operation.append(callback)  # type: ignore[method-assign]
 
-    manager.handle_key(Key.CHAR, "x")
-    assert manager._environment_action_mode == "select"
-    manager.handle_key(Key.ENTER)
-    assert manager._environment_action_mode == "preview"
-    rendered = manager._render_detail_page(session, ViewportBudget.from_terminal(100, 20))
-    with manager.console.capture() as capture:
-        manager.console.print(rendered)
-    assert "pytest -q" in capture.get()
-    assert "none_declared" in capture.get()
-    rendered_text = "".join(capture.get().replace("│", "").split())
-    assert "".join(str(verified_workspace).split()) in rendered_text
+    hub.handle_key(Key.CHAR, "x")
+    assert hub._environment_action_mode == "select"
+    hub.handle_key(Key.ENTER, "")
+    assert hub._environment_action_mode == "preview"
+    preview = _text(hub, 100, 20)
+    assert "pytest -q" in preview
+    assert "none_declared" in preview
+    assert "".join(str(verified_workspace).split()) in "".join(preview.split())
     assert not approval
 
-    manager.handle_key(Key.CHAR, "y")
+    hub.handle_key(Key.CHAR, "y")
     assert len(operation) == 1
     asyncio.run(operation[0]())  # type: ignore[operator]
     assert approval == [(True, reviewed_digest)]
@@ -103,32 +129,14 @@ def test_agents_detail_lists_previews_and_requires_y_before_running_action(
 def test_cancelling_agents_action_signals_its_subprocess_thread(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from rich.console import Console
-
-    from agenthicc.background import BackgroundSession, BackgroundStore
     from agenthicc.tui.cbreak_reader import Key
-    from agenthicc.tui.workspace.background_manager import BackgroundManager
+    from agenthicc.tui.workspace.agents_hub import AgentsHub
     from agenthicc.worktrees import environment_actions
 
-    session = BackgroundSession.create(
-        "worker-session",
-        title="worker",
-        cwd=str(tmp_path),
-        workflow_name="",
-        intent="task",
-        role="worker",
-        task_id="tests",
-        worktree_id="worktree-1",
-    )
-    manager = BackgroundManager(
-        Console(file=StringIO(), force_terminal=False),
-        store=BackgroundStore(tmp_path / "sessions"),
-    )
-    manager._sessions = [session]
-    manager._visible_sessions = [session]
-    manager._detail_session_id = session.session_id
-    manager._environment_actions = (EnvironmentCommand("slow", "sleep 20", timeout_s=30),)
-    manager._environment_action_mode = "preview"
+    hub = _hub(tmp_path, _worker(tmp_path))
+    assert isinstance(hub, AgentsHub)
+    hub._environment_actions = (EnvironmentCommand("slow", "sleep 20", timeout_s=30),)
+    hub._environment_action_mode = "preview"
     started = threading.Event()
     observed_cancel = threading.Event()
 
@@ -143,8 +151,8 @@ def test_cancelling_agents_action_signals_its_subprocess_thread(
     monkeypatch.setattr(environment_actions, "run_session_action", blocking_action)
 
     async def cancel_the_ui_task() -> None:
-        manager.handle_key(Key.CHAR, "y")
-        operation = next(iter(manager._operation_tasks.values()))
+        hub.handle_key(Key.CHAR, "y")
+        operation = next(iter(hub._operation_tasks.values()))
         await asyncio.to_thread(started.wait, 1)
         operation.cancel()
         with pytest.raises(asyncio.CancelledError):
@@ -155,15 +163,10 @@ def test_cancelling_agents_action_signals_its_subprocess_thread(
 
 
 def test_agents_action_notice_surfaces_truncated_output(tmp_path: Path) -> None:
-    from rich.console import Console
+    from agenthicc.tui.workspace.agents_hub import AgentsHub
 
-    from agenthicc.background import BackgroundStore
-    from agenthicc.tui.workspace.background_manager import BackgroundManager
-
-    manager = BackgroundManager(
-        Console(file=StringIO(), force_terminal=False),
-        store=BackgroundStore(tmp_path / "sessions"),
-    )
+    hub = _hub(tmp_path)
+    assert isinstance(hub, AgentsHub)
     receipt = EnvironmentRunReceipt(
         "digest",
         "action:test",
@@ -183,44 +186,36 @@ def test_agents_action_notice_surfaces_truncated_output(tmp_path: Path) -> None:
         ),
     )
 
-    asyncio.run(
-        manager._run_operation("operation", "session", "environment-action", lambda: receipt)
-    )
+    async def operation() -> object:
+        return receipt
 
-    assert "tests passed" in manager._notice
-    assert "output truncated" in manager._notice
+    asyncio.run(hub._run_operation("operation", "session", "environment-action", operation))
+
+    assert "tests passed" in hub.notice
+    assert "output truncated" in hub.notice
 
 
 def test_long_action_preview_is_scrollable_without_truncating_command(tmp_path: Path) -> None:
-    from rich.console import Console
-
-    from agenthicc.background import BackgroundStore
     from agenthicc.tui.cbreak_reader import Key
-    from agenthicc.tui.workspace.background_manager import BackgroundManager, ViewportBudget
+    from agenthicc.tui.workspace.agents_hub import AgentsHub
 
     command = "command-" + "0123456789" * 24
-    manager = BackgroundManager(
-        Console(file=StringIO(), force_terminal=False, width=48),
-        store=BackgroundStore(tmp_path / "sessions"),
+    hub = _hub(tmp_path, _worker(tmp_path), width=48)
+    assert isinstance(hub, AgentsHub)
+    hub._environment_action_mode = "preview"
+    hub._environment_actions = (EnvironmentCommand("long", command),)
+    hub._environment_manifest_digest = "reviewed-digest"
+    hub._environment_workspace_root = tmp_path / "worker"
+
+    first_page = _text(hub, 48, 30)
+    assert command in "".join(
+        line[14:].strip() for line in first_page.splitlines() if "command-" in line or "012" in line
     )
-    manager._environment_action_mode = "preview"
-    manager._environment_actions = (EnvironmentCommand("long", command),)
-    manager._environment_manifest_digest = "reviewed-digest"
-    manager._environment_workspace_root = tmp_path / "worker"
-    budget = ViewportBudget.from_terminal(48, 10)
-
-    def capture_preview() -> str:
-        with manager.console.capture() as capture:
-            manager.console.print(manager._render_detail_page(None, budget))
-        return capture.get()
-
-    first_page = capture_preview()
-    assert command[:20] in "".join(first_page.split())
-    manager.handle_key(Key.DOWN)
-    assert manager._detail_scroll == 1
-    assert capture_preview() != first_page
-    manager.handle_key(Key.END)
-    assert manager._detail_scroll > 1
+    hub.handle_key(Key.DOWN, "")
+    assert hub._detail_scroll == 1
+    assert _text(hub, 48, 30) != first_page
+    hub.handle_key(Key.END, "")
+    assert hub._detail_scroll > 1
 
 
 def _git(path: Path, *args: str) -> str:

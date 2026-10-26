@@ -1,4 +1,3 @@
-# No "from __future__ import annotations" — set_metadata runs at import time.
 """Tool capability taxonomy and pre-built capability decorators (PRD-76).
 
 Usage::
@@ -12,11 +11,17 @@ Usage::
 
 Decorator order does not matter — @set_metadata and @tool() write to different
 attributes and never interfere.  Conventional style is @set_metadata above @tool().
+
+The decorators import lauren-ai when they are applied, by tool modules that
+already depend on it, so the taxonomy itself stays importable on the TUI's
+first-frame path (AGX-02).
 """
 
-from enum import Enum
+from __future__ import annotations
 
-from lauren_ai._tools import TOOL_METADATA as _TOOL_METADATA, set_metadata
+from collections.abc import Callable
+from enum import Enum
+from typing import TypeVar
 
 __all__ = [
     "CAPABILITIES_KEY",
@@ -67,40 +72,61 @@ class ToolCapability(str, Enum):
     UNDECLARED = "undeclared"  # internal fail-closed marker for missing metadata
 
 
+_T = TypeVar("_T")
+
+
+def _metadata(key: str, value: object) -> Callable[[_T], _T]:
+    """Return a decorator recording *value* under *key* in lauren-ai tool metadata."""
+
+    def decorate(target: _T) -> _T:
+        from lauren_ai._tools import set_metadata
+
+        return set_metadata(key, value)(target)
+
+    return decorate
+
+
+def _tool_metadata(tool: object) -> object:
+    """Return the raw lauren-ai metadata mapping attached to *tool*."""
+    from lauren_ai._tools import TOOL_METADATA
+
+    return getattr(tool, TOOL_METADATA, None) or {}
+
+
 # ── Single-capability decorators ──────────────────────────────────────────────
 
-tool_read = set_metadata(CAPABILITIES_KEY, frozenset({ToolCapability.READ}))
-tool_write = set_metadata(CAPABILITIES_KEY, frozenset({ToolCapability.WRITE}))
-tool_execute = set_metadata(CAPABILITIES_KEY, frozenset({ToolCapability.EXECUTE}))
-tool_git_read = set_metadata(CAPABILITIES_KEY, frozenset({ToolCapability.GIT_READ}))
-tool_git_write = set_metadata(CAPABILITIES_KEY, frozenset({ToolCapability.GIT_WRITE}))
-tool_network = set_metadata(CAPABILITIES_KEY, frozenset({ToolCapability.NETWORK}))
-tool_search = set_metadata(CAPABILITIES_KEY, frozenset({ToolCapability.SEARCH}))
+tool_read = _metadata(CAPABILITIES_KEY, frozenset({ToolCapability.READ}))
+tool_write = _metadata(CAPABILITIES_KEY, frozenset({ToolCapability.WRITE}))
+tool_execute = _metadata(CAPABILITIES_KEY, frozenset({ToolCapability.EXECUTE}))
+tool_git_read = _metadata(CAPABILITIES_KEY, frozenset({ToolCapability.GIT_READ}))
+tool_git_write = _metadata(CAPABILITIES_KEY, frozenset({ToolCapability.GIT_WRITE}))
+tool_network = _metadata(CAPABILITIES_KEY, frozenset({ToolCapability.NETWORK}))
+tool_search = _metadata(CAPABILITIES_KEY, frozenset({ToolCapability.SEARCH}))
 
 # ── Common multi-capability combinations ─────────────────────────────────────
 
-tool_read_search = set_metadata(
+tool_read_search = _metadata(
     CAPABILITIES_KEY,
     frozenset({ToolCapability.READ, ToolCapability.SEARCH}),
 )
-tool_network_read = set_metadata(
+tool_network_read = _metadata(
     CAPABILITIES_KEY,
     frozenset({ToolCapability.NETWORK, ToolCapability.READ}),
 )
-tool_network_write = set_metadata(
+tool_network_write = _metadata(
     CAPABILITIES_KEY,
     frozenset({ToolCapability.NETWORK, ToolCapability.WRITE}),
 )
-tool_network_search = set_metadata(
+tool_network_search = _metadata(
     CAPABILITIES_KEY,
     frozenset({ToolCapability.NETWORK, ToolCapability.SEARCH}),
 )
-tool_control = set_metadata(CAPABILITIES_KEY, frozenset({ToolCapability.CONTROL}))
+tool_control = _metadata(CAPABILITIES_KEY, frozenset({ToolCapability.CONTROL}))
 
 # Opt-in TUI presentation tag.  This decorator can be stacked with any
 # security-capability decorator, for example ``@tool_exploratory`` above
 # ``@tool_read_search``.
-tool_exploratory = set_metadata(PRESENTATION_KEY, {"exploratory": True})
+tool_exploratory = _metadata(PRESENTATION_KEY, {"exploratory": True})
 
 
 def get_tool_capabilities(tool: object) -> frozenset[ToolCapability]:
@@ -111,7 +137,7 @@ def get_tool_capabilities(tool: object) -> frozenset[ToolCapability]:
     tool has no declared capability; the runtime gates classify that case as
     ``ToolCapability.UNDECLARED`` and fail closed in Safe/Plan.
     """
-    meta_dict: object = getattr(tool, _TOOL_METADATA, None) or {}
+    meta_dict = _tool_metadata(tool)
     if not isinstance(meta_dict, dict):
         return frozenset()
     capabilities = meta_dict.get(CAPABILITIES_KEY)
@@ -131,7 +157,7 @@ def is_exploratory_tool(tool: object) -> bool:
     """
     if getattr(tool, "exploratory", False) is True:
         return True
-    metadata: object = getattr(tool, _TOOL_METADATA, None) or {}
+    metadata = _tool_metadata(tool)
     if not isinstance(metadata, dict):
         return False
     presentation = metadata.get(PRESENTATION_KEY)

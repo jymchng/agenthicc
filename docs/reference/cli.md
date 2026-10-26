@@ -63,12 +63,13 @@ interactive TUI sessions.
 ## Command groups
 
 Nine groups have subcommands. Each group name is also callable on its own
-(`agenthicc mcp`, `agenthicc jobs`) and prints that group's help.
+(`agenthicc mcp`, `agenthicc config`) and prints that group's help;
+`agenthicc agents` alone opens the agents hub instead.
 
 | Group | Purpose |
 |---|---|
+| `agents` | The agents hub and its scriptable commands (background agents, their inbox) |
 | `config` | Manage configuration |
-| `jobs` | Manage durable background sessions |
 | `mcp` | Manage configured MCP servers |
 | `schedules` | Manage durable repository-scoped workflow automations |
 | `session` | Inspect, control, and attach to client-neutral sessions |
@@ -85,7 +86,7 @@ help string the command registers.
 
 | Command | Purpose |
 |---|---|
-| `agents [--json]` | Open the paginated background sessions manager, or list all sessions as JSON |
+| `agents [SESSION_ID] [--tab TAB] [--run RUN_ID] [--json]` | Open the agents hub (Running, Needs you, History, Library); `SESSION_ID` opens one agent's detail, `--tab` picks `running`, `needs-you`, `history` or `library`, `--run` shows one goal run's agents; `--json` lists agents instead. Without a terminal it prints the tab |
 | `agents actions WORKER_SESSION_ID [--json]` | List named actions in one worker worktree |
 | `agents action WORKER_SESSION_ID ACTION_ID [--approve] [--json]` | Review or run one worker action |
 | `runs` | Inspect and control durable goal runs |
@@ -110,25 +111,27 @@ help string the command registers.
 | `config validate` | Validate the effective provider configuration |
 | `config profiles` | List configured provider profiles |
 | `config init [--force]` | Create a template `agenthicc.toml` in `.agenthicc/` |
-| `jobs list [--json] [--all] [--trash]` | List background sessions |
-| `jobs status SESSION_ID [--json]` | Show one background session |
-| `jobs cancel SESSION_ID` | Cancel a background session |
-| `jobs resume SESSION_ID` | Resume a background session |
-| `jobs retry SESSION_ID` | Retry a failed background session |
-| `jobs approve SESSION_ID` | Approve a waiting background session |
-| `jobs reject SESSION_ID` | Reject a waiting background session |
-| `jobs input SESSION_ID VALUE` | Provide input to a waiting background session |
-| `jobs inbox list [--project PATH] [--type TYPE] [--older-than-s SECONDS] [--status STATUS] [--json]` | List exact background approvals/questions/input requests and their versions |
-| `jobs inbox answer ITEM_ID RESPONSE VERSION IDEMPOTENCY_KEY` | Answer an exact question/input request; multiple answers use a JSON map |
-| `jobs inbox approve ITEM_ID VERSION IDEMPOTENCY_KEY [options]` | Approve the exact tool request |
-| `jobs inbox reject ITEM_ID VERSION IDEMPOTENCY_KEY [--message TEXT]` | Reject the exact tool request |
-| `jobs inbox expire ITEM_ID VERSION IDEMPOTENCY_KEY` | Expire one exact pending interaction |
-| `jobs rename SESSION_ID TITLE` | Rename a background session |
-| `jobs labels SESSION_ID [--labels TEXT]` | Set comma-separated labels on a background session |
-| `jobs archive SESSION_ID` | Archive a background session |
-| `jobs delete SESSION_ID` | Move a background session to recoverable trash |
-| `jobs restore SESSION_ID` | Restore a deleted background session |
-| `jobs purge` | Permanently remove expired background trash |
+| `agents list [--json] [--all] [--trash]` | List background agents, with the hub's status labels |
+| `agents status SESSION_ID [--json]` | Show one background agent |
+| `agents cancel SESSION_ID` | Stop a background agent |
+| `agents resume SESSION_ID` | Resume a background agent |
+| `agents retry SESSION_ID` | Retry a failed background agent |
+| `agents priority SESSION_ID PRIORITY` | Change a background agent's queue priority (`urgent`, `normal`, `low`) |
+| `agents approve SESSION_ID` | Approve a waiting background agent |
+| `agents reject SESSION_ID` | Reject a waiting background agent |
+| `agents input SESSION_ID VALUE` | Provide input to a waiting background agent |
+| `agents inbox list [--project PATH] [--type TYPE] [--older-than-s SECONDS] [--status STATUS] [--json]` | List exact background approvals/questions/input requests and their versions |
+| `agents inbox answer ITEM_ID RESPONSE VERSION IDEMPOTENCY_KEY` | Answer an exact question/input request; multiple answers use a JSON map |
+| `agents inbox approve ITEM_ID VERSION IDEMPOTENCY_KEY [options]` | Approve the exact tool request |
+| `agents inbox reject ITEM_ID VERSION IDEMPOTENCY_KEY [--message TEXT]` | Reject the exact tool request |
+| `agents inbox expire ITEM_ID VERSION IDEMPOTENCY_KEY` | Expire one exact pending interaction |
+| `agents notifications [--session-id ID] [--status STATUS] [--json]` | Inspect background notification delivery receipts |
+| `agents rename SESSION_ID TITLE` | Rename a background agent |
+| `agents labels SESSION_ID [--labels TEXT]` | Set comma-separated labels on a background agent |
+| `agents archive SESSION_ID` | Archive a background agent |
+| `agents delete SESSION_ID` | Move a background agent to recoverable trash |
+| `agents restore SESSION_ID` | Restore a deleted background agent |
+| `agents purge` | Permanently remove expired background trash |
 | `mcp add NAME URL [--project \| --global] [--transport KIND] [--token-env ENV_VAR] [--no-auto-connect] [--reconnect-attempts N] [--reconnect-delay-seconds N]` | Add an MCP server to configuration |
 | `mcp list [--project \| --global] [--json]` | List configured MCP servers |
 | `mcp get NAME [--project \| --global] [--json]` | Show one configured MCP server |
@@ -139,7 +142,7 @@ help string the command registers.
 | `mcp auth NAME` | Check configured MCP authentication |
 | `mcp logout NAME` | Remove stored MCP authentication |
 | `mcp doctor [NAME] [--json]` | Validate and diagnose MCP server connectivity |
-| `sessions list [--page N] [--page-size N]` | Open the paginated saved-session selector |
+| `sessions list [--page N] [--page-size N]` | On a terminal, open the agents hub's History tab (saved sessions with finished agents); piped, print one page of saved sessions |
 | `sessions show SESSION_ID` | Show detail for one session |
 | `sessions inspect SESSION_ID [--json]` | Inspect one session's durable state |
 | `sessions export SESSION_ID [--output PATH]` | Export one session as a redacted JSON document |

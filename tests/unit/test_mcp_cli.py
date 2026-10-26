@@ -177,22 +177,22 @@ def test_mcp_add_parser_wires_positional_and_options() -> None:
     from agenthicc.cli import registry
     from agenthicc.cli.commands import mcp
 
+    argv = [
+        "mcp",
+        "add",
+        "remote",
+        "https://mcp.example.test",
+        "--global",
+        "--transport",
+        "http",
+        "--token-env",
+        "MCP_TOKEN",
+        "--no-auto-connect",
+    ]
+    index = registry.command_index()
     parser = argparse.ArgumentParser()
-    registry._wire(parser, registry._as_tree())
-    namespace = parser.parse_args(
-        [
-            "mcp",
-            "add",
-            "remote",
-            "https://mcp.example.test",
-            "--global",
-            "--transport",
-            "http",
-            "--token-env",
-            "MCP_TOKEN",
-            "--no-auto-connect",
-        ]
-    )
+    registry.wire(parser, index, index.resolve(registry.leading_tokens(argv)))
+    namespace = parser.parse_args(argv)
 
     assert namespace.name == "remote"
     assert namespace.url == "https://mcp.example.test"
@@ -223,8 +223,10 @@ def test_remove_preserves_unrelated_toml_and_permissions(tmp_path: Path) -> None
 def test_mcp_doctor_supports_optional_positional_name() -> None:
     from agenthicc.cli import registry
 
+    argv = ["mcp", "doctor", "remote", "--json"]
+    index = registry.command_index()
     parser = argparse.ArgumentParser()
-    registry._wire(parser, registry._as_tree())
-    namespace = parser.parse_args(["mcp", "doctor", "remote", "--json"])
+    registry.wire(parser, index, index.resolve(registry.leading_tokens(argv)))
+    namespace = parser.parse_args(argv)
     assert namespace.name == "remote"
     assert namespace.json_ is True

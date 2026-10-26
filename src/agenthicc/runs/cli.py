@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import time
 from pathlib import Path
@@ -11,7 +10,7 @@ from typing import TYPE_CHECKING
 from agenthicc.background import BackgroundStore, BackgroundSupervisor, load_background_settings
 from agenthicc.cli.context import CLIContext
 
-from .manager import GoalRunManager, RepositoryValidationError
+from .manager import GoalRunService, RepositoryValidationError
 from .model import GoalRun, GoalRunStatus, RunAgentRecord
 from .store import RunStore
 
@@ -19,7 +18,7 @@ if TYPE_CHECKING:
     from agenthicc.runners.tui_session import TUISession
 
 
-def _manager(ctx: CLIContext) -> GoalRunManager:
+def _manager(ctx: CLIContext) -> GoalRunService:
     from agenthicc.config import load_config
 
     cfg = ctx.config or load_config(
@@ -34,22 +33,8 @@ def _manager(ctx: CLIContext) -> GoalRunManager:
     )
     root = settings.store_root
     background_store = BackgroundStore(root)
-    supervisor = BackgroundSupervisor(
-        background_store,
-        max_workers=settings.max_workers,
-        max_workers_per_project=settings.max_workers_per_project,
-        cancel_grace_s=settings.cancel_grace_s,
-        wall_timeout_s=settings.wall_timeout_s,
-        max_activity_bytes=settings.max_activity_bytes,
-        trash_retention_days=settings.trash_retention_days,
-        queue_enabled=settings.queue_enabled,
-        max_queue_length=settings.max_queue_length,
-        max_workers_per_user=settings.max_workers_per_user,
-        priority_aging_interval_s=settings.priority_aging_interval_s,
-        dispatch_lease_s=settings.dispatch_lease_s,
-        notification_settings=settings.notifications,
-    )
-    return GoalRunManager(
+    supervisor = BackgroundSupervisor.from_settings(background_store, settings)
+    return GoalRunService(
         store=RunStore(),
         supervisor=supervisor,
         require_git=True,
@@ -101,6 +86,7 @@ def _json_or_text(run: GoalRun, *, json_output: bool, detached: bool = False) ->
 
 def run_goal_cli(ctx: CLIContext) -> None:
     """Dispatch the global ``--goal`` entry point."""
+    import asyncio
 
     assert ctx.goal is not None
     # ``--goal`` is intentionally a stable shorthand for the same operation
@@ -145,8 +131,9 @@ def run_goal_cli(ctx: CLIContext) -> None:
         raise SystemExit(1) from exc
 
 
-async def _run_attached_goal(ctx: CLIContext, manager: GoalRunManager, run: GoalRun) -> None:
+async def _run_attached_goal(ctx: CLIContext, manager: GoalRunService, run: GoalRun) -> None:
     """Run an attached goal through the normal TUI and submit it exactly once."""
+    import asyncio
 
     # TUISession.run is the existing owner of command registration and first
     # frame startup.  The small adapter schedules the initial command only

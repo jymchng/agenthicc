@@ -19,6 +19,7 @@ from typing import TypeVar
 __all__ = [
     "ReadinessState",
     "StartupDependencyError",
+    "StartupMilestones",
     "StartupPhaseReport",
     "StartupCoordinator",
 ]
@@ -88,6 +89,28 @@ class StartupPhaseReport:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class StartupMilestones:
+    """Start-up landmarks shown by ``/startup`` and recorded by benchmarks (AGX-02).
+
+    ``process_to_first_frame_s`` starts when the process first imported
+    agenthicc. ``first_frame_to_runtime_ready_s`` ends when the conversation
+    memory and provider loaded after the first frame are ready.
+    """
+
+    process_to_first_frame_s: float | None = None
+    first_frame_to_runtime_ready_s: float | None = None
+    modules_at_first_frame: int | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        """Return a JSON-compatible report."""
+        return {
+            "process_to_first_frame_s": self.process_to_first_frame_s,
+            "first_frame_to_runtime_ready_s": self.first_frame_to_runtime_ready_s,
+            "modules_at_first_frame": self.modules_at_first_frame,
+        }
+
+
 class StartupDependencyError(RuntimeError):
     """Raised when an operation requires a phase that failed or was cancelled."""
 
@@ -101,8 +124,15 @@ class StartupDependencyError(RuntimeError):
 class StartupCoordinator:
     """Own phase reports and cancellable background readiness tasks."""
 
-    def __init__(self, *, clock: Callable[[], float] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        clock: Callable[[], float] | None = None,
+        process_started_at: float | None = None,
+    ) -> None:
         self._clock = clock or time.monotonic
+        self._process_started_at = process_started_at
+        self._modules_at_first_frame: int | None = None
         self._reports: dict[str, StartupPhaseReport] = {}
         self._events: dict[str, asyncio.Event] = {}
         self._tasks: set[asyncio.Task[object]] = set()
@@ -253,6 +283,36 @@ class StartupCoordinator:
         if report.state is ReadinessState.LOADING:
             return replace(report, observed_at=self._clock())
         return report
+
+    def record_first_frame_modules(self, count: int) -> None:
+        """Record how many modules were loaded when the first frame was drawn."""
+        self._modules_at_first_frame = count
+
+    def milestones(self) -> StartupMilestones:
+        """Return the process → first frame → runtime-ready landmarks."""
+        frame = self._reports.get("first_frame")
+        frame_at = (
+            frame.finished_at if frame is not None and frame.state is ReadinessState.READY else None
+        )
+        runtime = self._reports.get("agent_runtime")
+        runtime_at = (
+            runtime.finished_at
+            if runtime is not None and runtime.state is ReadinessState.READY
+            else None
+        )
+        return StartupMilestones(
+            process_to_first_frame_s=(
+                max(0.0, frame_at - self._process_started_at)
+                if frame_at is not None and self._process_started_at is not None
+                else None
+            ),
+            first_frame_to_runtime_ready_s=(
+                max(0.0, runtime_at - frame_at)
+                if runtime_at is not None and frame_at is not None
+                else None
+            ),
+            modules_at_first_frame=self._modules_at_first_frame,
+        )
 
     def snapshot(self) -> tuple[StartupPhaseReport, ...]:
         """Return reports in deterministic phase-name order."""

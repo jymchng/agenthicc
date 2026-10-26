@@ -11,6 +11,7 @@ from rich.console import Console
 from agenthicc.tools.approval import ApprovalRequest, ApprovalService
 from agenthicc.tui.conversation_store import AppState
 from agenthicc.tui.workspace import Workspace
+from agenthicc.tui.workspace.live_region import lines_text
 from agenthicc.tui.workspace.overlays.plan_approval import PlanApprovalOverlay
 
 pytestmark = pytest.mark.unit
@@ -38,10 +39,10 @@ def test_plan_review_stays_single_and_stable_when_animation_is_paused() -> None:
     workspace = Workspace(app_state, console)
     workspace.overlays.show(PlanApprovalOverlay(request, ApprovalService(app_state), lambda: None))
 
-    first = _render_text(console, workspace._build())
+    first = "\n".join(lines_text(workspace._build_lines()))
     frame_before = app_state.conversation.frame()
     app_state.conversation.tick(paused=app_state.pending_approval() is not None)
-    second = _render_text(console, workspace._build())
+    second = "\n".join(lines_text(workspace._build_lines()))
 
     assert app_state.conversation.frame() == frame_before
     assert first == second

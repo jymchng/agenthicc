@@ -30,7 +30,7 @@ other per-session artifact lives **inside** it.
 | `~/.agenthicc/background/events.jsonl` | `BackgroundStore` | Authoritative append-only session lifecycle, queue admission, dispatch, and priority-audit events | Replay to rebuild background session state; queue-pending records survive restart |
 | `~/.agenthicc/background/notifications/outbox.sqlite3` | `BackgroundNotificationOutbox` | Redacted notification payloads, configured destination snapshots, idempotency keys, delivery attempts, leases, and retry state | Reconcile event descriptors from `events.jsonl`; due deliveries resume after restart |
 | `~/.agenthicc/background/operator-inbox.sqlite3` | `BackgroundInteractionInbox` | Exact pending approval/question/input metadata, CAS versions, idempotency receipts, and private accepted responses | Reconcile publication and stale/expired state against the owning background-session attempt; answers are omitted from public projections |
-| `~/.agenthicc/background/projection-v1.json` | `BackgroundStore` | Rebuildable session projection cache | Rebuilt from `events.jsonl` when missing or stale |
+| `~/.agenthicc/background/index.sqlite3` | `BackgroundStore` | Derived SQLite index of the registry: one row per session with its full record, ordering/filter columns, an FTS5 trigram search index, and the applied log position | Caught up from the `events.jsonl` tail on read; rebuilt from the log when missing, corrupt, or out of step |
 | `~/.agenthicc/background/queue-scheduler-v1.json` | `BackgroundSupervisor` | Last-dispatched project cursor for round-robin fairness | Advisory scheduler cursor; loss does not lose accepted queue records |
 | `~/.agenthicc/background/queue-scheduler.lock` | `BackgroundSupervisor` | Cross-process admission/dispatch critical section | OS advisory lock; protects slot reservation and prevents duplicate effective dispatch |
 | `~/.agenthicc/background/requests/<session-id>.json` | `BackgroundSupervisor` | Private worker launch envelope, including dispatch token and execution request | Replayed only when an accepted queued record is dispatched; request files are sensitive |
@@ -103,6 +103,7 @@ grep -rn 'Path.home() / ".agenthicc"' src/agenthicc --include=*.py
 | `~/.agenthicc/sessions/<id>.jsonl` | `src/agenthicc/runners/tui_session.py:797` |
 | `~/.agenthicc/sessions/<id>/conversation.jsonl` | `src/agenthicc/tui/runtime/session_log.py:182` |
 | `~/.agenthicc/sessions/<id>/loop.json` and `loop.lock` | `src/agenthicc/runners/loop_scheduler.py:251-256` |
+| `~/.agenthicc/sessions/<id>/subagents/<pool-id>/` (`pool.json`, `<worker-id>.jsonl`) | `src/agenthicc/subagents/transcripts.py` (`TranscriptWriter`) |
 | `~/.agenthicc/sessions/index.json`, `index.lock` | `src/agenthicc/runners/session_lease.py:492-493` |
 | `~/.agenthicc/session-service/` | `src/agenthicc/session_service/store.py:56` |
 | `~/.agenthicc/background/` | `src/agenthicc/background/store.py:25-26` |
@@ -110,7 +111,8 @@ grep -rn 'Path.home() / ".agenthicc"' src/agenthicc --include=*.py
 | `~/.agenthicc/background/notifications/outbox.sqlite3` | `src/agenthicc/background/notifications.py` |
 | `~/.agenthicc/background/operator-inbox.sqlite3` | `src/agenthicc/background/inbox.py` |
 | `~/.agenthicc/background/input-inbox/<session-id>.jsonl` and `.lock` | `background.input_inbox.BackgroundInputInbox` | Owner-attempt-fenced live input, deferred stale-session recovery input, waiting/rearmed recovery reasons, and delivery receipts | Append-only, fsynced, deduplicated FIFO; deferred items are rebound to the next worker lease only after that worker claims the same session; recovery controls may be claimed by stable ID while ordinary messages remain queued in order; submitted text is sensitive and separate from lifecycle logs |
-| `~/.agenthicc/background/terminals/` | `src/agenthicc/background/terminals.py:349` |
+| `~/.agenthicc/background/terminals/` | `src/agenthicc/background/terminals.py:354` |
+| `~/.agenthicc/state/agents-hub.json` | `src/agenthicc/tui/workspace/agents_hub/prefs.py:24-29` |
 | `~/.agenthicc/cassettes` (default `--record-cassette`) | `src/agenthicc/cli/parser.py:61` |
 
 ## Session ownership and resume races
@@ -340,6 +342,16 @@ are kept under the session directory with restrictive permissions. Corrupt,
 unreadable, stale, or plugin-mismatched checkpoints fail closed. Workflow
 contexts have no framework-imposed serialized byte ceiling; they must still be
 JSON-compatible, and available filesystem capacity is the practical limit.
+
+Provider-profile-aware resume adds only non-secret checkpoint fields:
+`provider_profile_fingerprint` (a SHA-256 digest of canonical provider/model/
+endpoint/protocol and routing-field identity), `provider_profile_origin`, and
+bounded `provider_profile_history`. The digest excludes credentials, header and
+query values, and environment contents. These additive fields keep earlier
+schema-v1 checkpoints readable; an absent digest means the old binding is
+unknown. Resume persists the selected effective profile with the `resuming`
+checkpoint before dispatching provider work, so restart cannot silently revert
+an accepted override. Current secrets are resolved at resume time.
 
 Recovery identity follows the context schema rather than matching attribute
 names by convention. `WorkflowCheckpoint.workflow_name` is the canonical run
@@ -718,33 +730,74 @@ Background execution adds a local registry at `~/.agenthicc/background/`
 
 | Path | Owner | Contents | Recovery |
 |---|---|---|---|
-| `events.jsonl` | `background.BackgroundStore` | Authoritative ordered create/update/delete lifecycle events | Full rebuild when the derived projection is missing or incompatible; same-inode appends replay only the complete tail |
-| `projection-v1.json` | `background.BackgroundStore` | Versioned derived session projection, ordering indexes, and event offset/sequence | Atomically replaced and fsync'd; rejected on schema/inode mismatch, truncation, invalid offset, or same-size mtime mismatch; safely rebuilt from `events.jsonl` |
+| `events.jsonl` | `background.BackgroundStore` | Authoritative ordered create/update/delete lifecycle events; `created` carries the full record, `updated` only the changed fields plus `last_active` | Rebuilds the derived index when it is missing or incompatible; same-inode appends apply only the complete tail |
+| `index.sqlite3` (+ `-wal`, `-shm`) | `background.BackgroundStore` | Derived session index: full records, ordering/filter columns, FTS5 trigram search text, and the applied inode/offset/mtime/sequence | WAL mode, `synchronous=NORMAL`, mode 600; readers apply the complete tail; schema/inode mismatch, truncation, same-size rewrite, sequence gap, or corruption rebuilds it from `events.jsonl` |
+| `index.sqlite3.maintenance.lock` | `background.SessionIndex` | Cross-process lock for schema initialization and derived-index recovery | Recreated automatically; SQLite transactions continue to coordinate normal index reads and writes |
 | `registry.lock` | `BackgroundStore` | Cross-process advisory lock | Recreated automatically |
 | `queue-scheduler-v1.json` | `BackgroundSupervisor` | Last-dispatched project cursor for round-robin fairness | Advisory state; accepted queue records remain in the event log |
 | `queue-scheduler.lock` | `BackgroundSupervisor` | Cross-process queue admission/dispatch lock | Serializes slot reservations and prevents duplicate effective dispatch |
 | `requests/<id>.json` | `BackgroundSupervisor` | Mode-600 worker launch request, including the dispatch token | Read by the owned worker; pending requests are recovered after restart |
 | `notifications/outbox.sqlite3` | `BackgroundNotificationOutbox` | Durable webhook/local-notification outbox; stores endpoint URL and environment-variable name but never the resolved secret value | Re-enqueued idempotently from redacted lifecycle-event descriptors; WAL database in a mode-700 directory and mode-600 main file |
-| `trash/<id>-<nonce>/` | `BackgroundStore` | Exact deleted artifacts plus `manifest.json` | `agenthicc jobs restore <id>` |
+| `trash/<id>-<nonce>/` | `BackgroundStore` | Exact deleted artifacts plus `manifest.json` | `agenthicc agents restore <id>` |
 
 The background registry is a rebuildable index, not a second conversation or
-workflow journal. `projection-v1.json` is only a cache: `events.jsonl` remains
-authoritative and recovery replays it whenever the cached schema or file
-identity no longer matches. A larger same-inode event log is compatible: only
-its appended tail is applied. Truncation, rotation, sequence gaps, or invalid
-snapshot metadata trigger a safe rebuild. Local writes and cross-process
-appends update the in-memory ordered projection incrementally. When replay
-detects a sequence mismatch, recovery bypasses the suspect snapshot and folds
-the authoritative event log once; it does not retry the same snapshot in a
-recursive loop. Snapshot cadence
-grows with the number of records to avoid rewriting a large projection after
-every small event batch. Session artifacts remain under
+workflow journal. `index.sqlite3` (AGX-03) is derived: `events.jsonl` remains
+authoritative. The index records how far into the log it has applied — inode,
+byte offset, modification time and sequence — and a reader that finds the log
+longer applies only the complete tail, inside one `BEGIN IMMEDIATE`
+transaction that re-reads the position first, so two processes never apply the
+same events twice. A writer applies its own append before releasing the
+registry lock. On open, the actual schema is checked even when the version
+marker is missing or claims to be current. A missing
+`sessions.idempotency_key` column is transactionally added and backfilled from
+the stored records before its index is created; interruption rolls the
+migration back for a safe retry. Unsupported layouts reset only the derived
+SQLite schema and are replayed from `events.jsonl`. SQLite busy/locked errors
+remain contention rather than triggering schema repair, while unrelated I/O
+errors are surfaced. Truncation, rotation, a same-size rewrite, a sequence gap, a
+schema change or a corrupt file rebuilds the index from the log; the rebuild
+reports its progress, the agents hub shows recent sessions read from the
+end of the log until it finishes, and closing the hub cancels it (its
+transaction rolls back). A registry written before the index still holds a
+`projection-v1.json` snapshot: the first open imports it and replays only the
+events after it, then deletes the file, because replaying a long log of
+full-record update events can take minutes. Windows, counts, filters,
+orderings and search are SQL queries, so a fresh process reads one window of
+rows without folding the log. Schema version 4 (AGX-05) adds the columns and
+indexes the agents hub filters and sorts by — project, agent (workflow or
+worker role), goal run, labels, pin and creation time — so an older index is
+rebuilt once from the log. Search splits the query into words; each word must
+match, in any order, a case-insensitive substring of the session's ID, title,
+intent, labels, latest activity, workspace and workflow; with SQLite's FTS5
+`trigram` tokenizer the match uses an index, and without FTS5 the same `LIKE`
+runs over a plain column. Session artifacts remain under
 `~/.agenthicc/sessions/<id>/` and
 are consumed by the existing session/kernel persistence code. Events are
 written with append and fsync semantics; an incomplete trailing line is not
 applied, and the next writer truncates only that partial tail before appending
 a new sequence. A deletion tombstone prevents an old worker from resurrecting
 a deleted session.
+
+Since AGX-04 an `updated` event carries only the fields whose serialized value
+changed, plus `last_active` — a heartbeat or a pin is about 170 bytes instead
+of a 1.7 KB copy of the record. Replay applies `changes` with
+`BackgroundSession.evolve`, which keeps every field the event does not name, so
+logs that mix older full-record `updated` events with delta events replay
+identically and need no migration. A changed `mode_name` is always written
+together with its `mode_application_status`, because `evolve` treats a mode
+name that arrives alone as a new, still-pending request. The provisional view
+shown during an index rebuild can rebuild a session created before its log
+window only from an older full-record `updated` event, not from a delta.
+
+The agents hub watches `events.jsonl`, `input-inbox/` and the open agent's
+journal for changes instead of polling them, and creates `input-inbox/` if it
+is missing so that watch starts armed.
+
+The hub remembers its sort, grouping, pinned order and what you have seen of
+each agent's activity in `~/.agenthicc/state/agents-hub.json`
+(`AGENTHICC_AGENTS_HUB_STATE` overrides the path). The file is advisory: a
+missing or unreadable file restores the defaults, and the seen marks are capped
+at the 2,000 most recently changed agents.
 
 Workers claim a lease before execution and heartbeat while active. A missing
 worker or expired heartbeat is shown as `orphaned`; the default restart policy

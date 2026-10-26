@@ -180,7 +180,7 @@ def test_opening_an_untrusted_repository_imports_no_project_code(
 
     root = _repository(tmp_path)
     user = tmp_path / "home" / ".agenthicc"
-    monkeypatch.setattr(cli_registry, "_REGISTRY", dict(cli_registry._REGISTRY))
+    monkeypatch.setattr(cli_registry, "_PLUGIN_COMMANDS", dict(cli_registry._PLUGIN_COMMANDS))
 
     tools = discover_project_tools(project_dir=root, user_dir=user)
     commands = discover_command_plugins(project_dir=root, user_dir=user)
@@ -188,7 +188,7 @@ def test_opening_an_untrusted_repository_imports_no_project_code(
     discover_mode_plugins(project_dir=root.parent, user_dir=user.parent)
     build_agents_registry(project_dir=root, user_dir=user)
     build_workflow_registry(project_dir=root, user_dir=user)
-    cli_registry._discover(project_dir=root, user_dir=user)
+    cli_registry.discover_plugins(project_dir=root, user_dir=user)
 
     assert marker.read_text() == ""
     assert [result.untrusted for result in tools.results] == [True]
@@ -268,7 +268,7 @@ def test_each_loader_imports_its_extension_once_trusted(
     user = tmp_path / "home" / ".agenthicc"
     for path, kind in project_extension_files(root.parent):
         strict_trust.trust(path, kind=kind)
-    monkeypatch.setattr(cli_registry, "_REGISTRY", dict(cli_registry._REGISTRY))
+    monkeypatch.setattr(cli_registry, "_PLUGIN_COMMANDS", dict(cli_registry._PLUGIN_COMMANDS))
 
     discover_project_tools(project_dir=root, user_dir=user)
     discover_command_plugins(project_dir=root, user_dir=user)
@@ -276,7 +276,7 @@ def test_each_loader_imports_its_extension_once_trusted(
     discover_mode_plugins(project_dir=root.parent, user_dir=user.parent)
     build_agents_registry(project_dir=root, user_dir=user)
     build_workflow_registry(project_dir=root, user_dir=user)
-    cli_registry._discover(project_dir=root, user_dir=user)
+    cli_registry.discover_plugins(project_dir=root, user_dir=user)
 
     imported = marker.read_text().splitlines()
     assert any("plugin" in name and "workflow" not in name for name in imported), imported

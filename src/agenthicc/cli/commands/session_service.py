@@ -8,17 +8,12 @@ from pathlib import Path
 from typing import Any, Coroutine, TypeVar
 
 from agenthicc.cli.context import CLIContext
-from agenthicc.cli.registry import command, group
 from agenthicc.session_service import (
     SessionCommand,
     SessionError,
     SessionService,
 )
 from agenthicc.session_service.transport import LocalSessionServer
-
-
-@group("session", help="Inspect, control, and attach to client-neutral sessions")
-def _session_group() -> None: ...
 
 
 def _service() -> SessionService:
@@ -32,7 +27,6 @@ def _run(coro: Coroutine[Any, Any, _ResultT]) -> _ResultT:
     return asyncio.run(coro)
 
 
-@command("session", "create", help="Create a client-neutral session")
 def session_create(
     ctx: CLIContext,
     project_root: str = ".",
@@ -54,7 +48,6 @@ def session_create(
     print(json_module.dumps(snapshot.to_dict(), indent=2, sort_keys=True))
 
 
-@command("session", "list", help="List client-neutral sessions")
 def session_list(ctx: CLIContext, project_root: str = "", json: bool = False) -> None:
     """List service sessions, optionally restricted to a project root."""
 
@@ -75,7 +68,6 @@ def session_list(ctx: CLIContext, project_root: str = "", json: bool = False) ->
         print(f"{snapshot.session_id}  {snapshot.state.value:18}  {snapshot.project_root}")
 
 
-@command("session", "show", help="Show a client-neutral session snapshot")
 def session_show(ctx: CLIContext, session_id: str, json: bool = False) -> None:
     """Show one session's policy-filtered snapshot."""
 
@@ -100,7 +92,6 @@ def session_show(ctx: CLIContext, session_id: str, json: bool = False) -> None:
         print(f"Queue: {snapshot.queue.get('depth', 0)}")
 
 
-@command("session", "export", help="Export a redacted client-neutral session")
 def session_export(ctx: CLIContext, session_id: str, output: str = "") -> None:
     """Write a schema-versioned snapshot and durable event export."""
 
@@ -138,7 +129,6 @@ def session_export(ctx: CLIContext, session_id: str, output: str = "") -> None:
     print(f"Exported session {session_id} to {destination}")
 
 
-@command("session", "events", help="Replay durable session events as JSON-lines")
 def session_events(ctx: CLIContext, session_id: str, after: int = 0) -> None:
     """Replay events after a durable sequence cursor."""
 
@@ -158,7 +148,6 @@ def session_events(ctx: CLIContext, session_id: str, after: int = 0) -> None:
         print(json_module.dumps(event.to_dict(), sort_keys=True))
 
 
-@command("session", "send", help="Submit a message to a client-neutral session")
 def session_send(ctx: CLIContext, session_id: str, text: str) -> None:
     """Queue one message using the shared command envelope."""
 
@@ -177,7 +166,6 @@ def session_send(ctx: CLIContext, session_id: str, text: str) -> None:
     print(json_module.dumps(result.to_dict(), indent=2, sort_keys=True))
 
 
-@command("session", "control", help="Submit a JSON session control command")
 def session_control(ctx: CLIContext, session_id: str, kind: str, payload: str = "") -> None:
     """Submit cancel, resume, retry, archive, fork, or another command kind."""
 
@@ -202,7 +190,6 @@ def session_control(ctx: CLIContext, session_id: str, kind: str, payload: str = 
     print(json_module.dumps(result.to_dict(), indent=2, sort_keys=True))
 
 
-@command("session", "serve", help="Serve local session snapshots and events over HTTP/SSE")
 async def session_serve(
     ctx: CLIContext,
     host: str = "127.0.0.1",
@@ -222,9 +209,7 @@ async def session_serve(
             vars(ctx.config).get("background") if getattr(ctx, "config", None) is not None else None
         ),
     )
-    background_store = BackgroundStore(
-        settings.store_root, projection_batch_size=settings.manager.projection_batch_size
-    )
+    background_store = BackgroundStore(settings.store_root)
     inbox = BackgroundInteractionInbox(background_store)
     service = SessionService(background_inbox=inbox)
     server = LocalSessionServer(

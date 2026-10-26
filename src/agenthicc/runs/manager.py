@@ -95,7 +95,7 @@ def inspect_repository(path: Path, *, require_git: bool = True) -> tuple[Path, s
         return resolved, "", ""
 
 
-class GoalRunManager:
+class GoalRunService:
     """Create, launch, project, and control durable goal runs."""
 
     def __init__(

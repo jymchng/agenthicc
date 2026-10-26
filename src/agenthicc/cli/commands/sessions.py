@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import asyncio
 import os
 import sys
 from collections.abc import Mapping
 from pathlib import Path
 
 from agenthicc.cli.context import CLIContext
-from agenthicc.cli.registry import command, group
 from agenthicc.runners.session_lease import (
     SessionAlreadyActiveError,
     SessionStorageError,
@@ -17,22 +15,51 @@ from agenthicc.runners.session_lease import (
 )
 
 
-@group("sessions", help="Manage saved sessions")
-def _() -> None: ...
-
-
-@command("sessions", "list", help="Open the paginated saved-session selector")
 def sessions_list(ctx: CLIContext, page: int = 1, page_size: int = 0) -> None:
-    """Open the session selector, or print a deterministic list when piped."""
-    from agenthicc.sessions import _do_sessions
+    """Open saved sessions in the agents hub, or print a list when piped.
 
+    On a terminal this is ``agenthicc agents --tab history`` (AGX-05 §5.5):
+    saved sessions are listed with finished background agents, newest first,
+    and Enter resumes one. Piped output keeps the deterministic page listing.
+    """
+    from agenthicc.sessions import _do_sessions
     from agenthicc.tui.terminal.backend import get_backend
 
     if not get_backend().is_interactive():
         _do_sessions(page=page, page_size=page_size or 50)
         return
+    import asyncio
+
+    from agenthicc.cli.commands.background import _open_hub
+
+    asyncio.run(_open_hub(ctx, tab="history"))
+
+
+async def open_saved_session(ctx: CLIContext, session_id: str) -> None:
+    """Resume a saved foreground session in its own project directory."""
+    import asyncio
+
+    from agenthicc.runners.tui_session import _run_tui_session
+    from agenthicc.sessions import _load_all_session_indexes
+
+    record = _load_all_session_indexes().get(session_id, {})
+    cwd_value = record.get("cwd")
+    cwd = (
+        cwd_value
+        if isinstance(cwd_value, str) and await asyncio.to_thread(os.path.isdir, cwd_value)
+        else None
+    )
     try:
-        asyncio.run(_open_selected_session(ctx, page=page, page_size=page_size))
+        await _run_tui_session(
+            resume_id=session_id,
+            cli_overrides=list(ctx.set_overrides),
+            record_cassette=ctx.record_cassette,
+            cli_flags=ctx.flags,
+            config_path=ctx.config_path,
+            cli_secret_overrides=list(ctx.set_secret_overrides),
+            cwd=cwd,
+            config=ctx.config,
+        )
     except SessionAlreadyActiveError as exc:
         print(format_session_conflict(exc), file=sys.stderr)
         raise SystemExit(exc.exit_code) from exc
@@ -41,42 +68,6 @@ def sessions_list(ctx: CLIContext, page: int = 1, page_size: int = 0) -> None:
         raise SystemExit(1) from exc
 
 
-async def _open_selected_session(ctx: CLIContext, *, page: int, page_size: int) -> None:
-    from rich.console import Console
-
-    from agenthicc.sessions import _load_all_session_indexes
-    from agenthicc.tui.workspace.session_manager import run_session_manager
-
-    result = await run_session_manager(
-        Console(highlight=False),
-        initial_page=page,
-        page_size=page_size or None,
-    )
-    if result.action != "open" or result.session_id is None:
-        return
-
-    record = _load_all_session_indexes().get(result.session_id, {})
-    cwd_value = record.get("cwd")
-    cwd = (
-        cwd_value
-        if isinstance(cwd_value, str) and await asyncio.to_thread(os.path.isdir, cwd_value)
-        else None
-    )
-    from agenthicc.runners.tui_session import _run_tui_session
-
-    await _run_tui_session(
-        resume_id=result.session_id,
-        cli_overrides=list(ctx.set_overrides),
-        record_cassette=ctx.record_cassette,
-        cli_flags=ctx.flags,
-        config_path=ctx.config_path,
-        cli_secret_overrides=list(ctx.set_secret_overrides),
-        cwd=cwd,
-        config=ctx.config,
-    )
-
-
-@command("sessions", "show", help="Show detail for one session")
 def sessions_show(ctx: CLIContext, session_id: str) -> None:
     """Print stored events for SESSION_ID."""
     import json
@@ -94,7 +85,6 @@ def sessions_show(ctx: CLIContext, session_id: str) -> None:
             print(f"  {line}")
 
 
-@command("sessions", "export", help="Export one session as a redacted JSON document")
 def sessions_export(ctx: CLIContext, session_id: str, output: str = "") -> None:
     """Export SESSION_ID and its durable artifacts to OUTPUT or SESSION_ID.json."""
 
@@ -109,7 +99,6 @@ def sessions_export(ctx: CLIContext, session_id: str, output: str = "") -> None:
     print(f"Exported session {session_id} to {exported}")
 
 
-@command("sessions", "inspect", help="Inspect one session's durable state")
 def sessions_inspect(ctx: CLIContext, session_id: str, json: bool = False) -> None:
     """Summarize SESSION_ID, including artifacts, usage, workflows, and resume state."""
     import json as json_module

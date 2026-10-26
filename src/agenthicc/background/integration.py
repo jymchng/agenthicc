@@ -1,13 +1,14 @@
-"""Small runtime bridge for foreground ``/bg`` handoff (PRD-141).
+"""Foreground ``/background`` handoff to the background service (PRD-141).
 
-The bridge is installed during CLI discovery, before the interactive session
-is constructed.  It keeps the handoff command in the existing command/input
-pipeline while the background service remains the single lifecycle owner.
+``TUISession`` intercepts ``/background``, ``/bg`` and ``/detach`` and calls
+:func:`_handoff`; the background service remains the single lifecycle owner.
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
+import sqlite3
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -16,16 +17,12 @@ from .settings import background_enabled, load_background_settings
 from .supervisor import BackgroundSupervisor
 from .store import BackgroundStore
 
+_LOGGER = logging.getLogger(__name__)
+
 if TYPE_CHECKING:
     from agenthicc.runners.session_context import SessionContext
     from agenthicc.runners.tui_session import TUISession
-    from agenthicc.tui.cbreak_reader import Key
-    from agenthicc.tui.input.capabilities import _ExitSentinel
-    from agenthicc.tui.input.unified_session import UnifiedInputSession
-    from agenthicc.tui.runtime.commands import SendMessageCommand
     from agenthicc.runners.session_lease import SessionOwnerLease
-
-_INSTALLED = False
 
 
 def _last_user_text(session: TUISession) -> str:
@@ -162,7 +159,7 @@ def _handoff(session: TUISession) -> bool:
             ctx.app_state.conversation.notify_transient(
                 f"Backgrounded session {record.session_id[:12]}… ({record.status.value})"
             )
-            session._input_session._background_exit_requested = True
+            session._input_session._exit_requested = True
             return True
         session._background_handoff_state = "idle"
 
@@ -176,24 +173,10 @@ def _handoff(session: TUISession) -> bool:
     )
     settings = load_background_settings(config=getattr(ctx.cfg, "background", None))
     if not background_enabled(settings):
-        ctx.console.print("Background sessions are disabled by configuration.")
+        ctx.console.print("Background agents are disabled by configuration.")
         return True
     store = BackgroundStore(settings.store_root)
-    supervisor = BackgroundSupervisor(
-        store,
-        max_workers=settings.max_workers,
-        max_workers_per_project=settings.max_workers_per_project,
-        cancel_grace_s=settings.cancel_grace_s,
-        wall_timeout_s=settings.wall_timeout_s,
-        max_activity_bytes=settings.max_activity_bytes,
-        trash_retention_days=settings.trash_retention_days,
-        queue_enabled=settings.queue_enabled,
-        max_queue_length=settings.max_queue_length,
-        max_workers_per_user=settings.max_workers_per_user,
-        priority_aging_interval_s=settings.priority_aging_interval_s,
-        dispatch_lease_s=settings.dispatch_lease_s,
-        notification_settings=settings.notifications,
-    )
+    supervisor = BackgroundSupervisor.from_settings(store, settings)
     mode_name_value = vars(mode).get("name")
     mode_name = mode_name_value if isinstance(mode_name_value, str) else None
     cfg_values = vars(ctx).get("cfg")
@@ -317,7 +300,7 @@ def _handoff(session: TUISession) -> bool:
                     ctx.console.print(record.error or "Background worker launch failed.")
                     return True
                 session._background_handoff_state = "started"
-                session._input_session._background_exit_requested = True
+                session._input_session._exit_requested = True
                 ctx.console.print(
                     "Background worker launch failed and foreground ownership could not "
                     "be safely restored; reopen the same session with `agenthicc --continue`."
@@ -353,90 +336,27 @@ def _handoff(session: TUISession) -> bool:
                     session._background_handoff_state = "idle"
                 else:
                     session._background_handoff_state = "started"
-                    session._input_session._background_exit_requested = True
+                    session._input_session._exit_requested = True
             else:
                 # The child may have started but failed before its result was
                 # observed. Leave the terminal instead of retaining an
                 # unowned foreground runtime that could race the worker.
                 session._background_handoff_state = "started"
-                session._input_session._background_exit_requested = True
-        ctx.console.print(f"Unable to background session: {type(exc).__name__}: {exc}")
+                session._input_session._exit_requested = True
+        if isinstance(exc, sqlite3.OperationalError) and not owner_released:
+            _LOGGER.exception("Background session handoff failed while accessing its SQLite index")
+            ctx.console.print(
+                "Unable to background session: the registry index could not be read or migrated. "
+                "No worker was started and foreground ownership "
+                "is unchanged. If another Agenthicc process is using this registry, close it "
+                "and retry /detach."
+            )
+        else:
+            ctx.console.print(f"Unable to background session: {type(exc).__name__}: {exc}")
         return True
     session._background_handoff_state = "started"
     ctx.app_state.conversation.notify_transient(
         f"Backgrounded session {record.session_id[:12]}… ({record.status.value})"
     )
-    session._input_session._background_exit_requested = True
+    session._input_session._exit_requested = True
     return True
-
-
-def install_tui_handoff() -> None:
-    """Install the two foreground aliases once per interpreter."""
-
-    global _INSTALLED
-    if _INSTALLED:
-        return
-    from agenthicc.runners.tui_session import TUISession
-    from agenthicc.tui.input.unified_session import UnifiedInputSession
-    from agenthicc.tui.input.capabilities import _EXIT
-    from agenthicc.commands.builtins import BUILTIN_COMMANDS
-    from agenthicc.commands.command import BusyPolicy, Command
-
-    if not any(command.name == "/background" for command in BUILTIN_COMMANDS):
-        BUILTIN_COMMANDS.append(
-            Command(
-                name="/background",
-                aliases=("/bg",),
-                description="Detach the active session into the background manager",
-                argument_hint="(alias: /bg)",
-                busy_policy=BusyPolicy.IMMEDIATE_CONTROL,
-            )
-        )
-    if not any(command.name == "/detach" for command in BUILTIN_COMMANDS):
-        BUILTIN_COMMANDS.append(
-            Command(
-                name="/detach",
-                description="Detach the active session into the background manager",
-                argument_hint="",
-                busy_policy=BusyPolicy.IMMEDIATE_CONTROL,
-            )
-        )
-
-    original_dispatch = TUISession.dispatch_slash
-
-    def dispatch_slash(self: TUISession, text: str) -> bool:
-        command = text.strip().split(maxsplit=1)[0] if text.strip() else ""
-        if command in {"/bg", "/background", "/detach"}:
-            return _handoff(self)
-        return original_dispatch(self, text)
-
-    original_handle_send = TUISession.handle_send
-
-    async def handle_send(self: TUISession, cmd: SendMessageCommand) -> None:
-        text = str(getattr(cmd, "text", "")).strip()
-        if text.startswith("/") and text.split(maxsplit=1)[0] in {
-            "/bg",
-            "/background",
-            "/detach",
-        }:
-            self.dispatch_slash(text)
-            return
-        if text:
-            # TUISession emits user_message before opening the agent turn, so
-            # the event is intentionally not owned by a ConversationTurn.
-            # Remember the accepted input on the session for /background.
-            self._background_intent = text
-        return await original_handle_send(self, cmd)
-
-    original_dispatch_key = UnifiedInputSession._dispatch
-
-    async def dispatch_key(self: UnifiedInputSession, key: Key, ch: str) -> _ExitSentinel | None:
-        result = await original_dispatch_key(self, key, ch)
-        if self._background_exit_requested:
-            return _EXIT
-        return result
-
-    TUISession.dispatch_slash = dispatch_slash  # type: ignore[method-assign]
-    TUISession.handle_send = handle_send  # type: ignore[method-assign]
-    UnifiedInputSession._dispatch = dispatch_key  # type: ignore[method-assign]
-    _INSTALLED = True

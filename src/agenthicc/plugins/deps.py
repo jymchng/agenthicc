@@ -12,7 +12,6 @@ reported and skipped.
 from __future__ import annotations
 
 import ast
-import importlib.metadata
 import re
 from pathlib import Path
 
@@ -67,6 +66,10 @@ def _sidecar_requirements(path: Path) -> list[str]:
 
 def missing_requirements(requirements: list[str]) -> list[str]:
     """Return the requirements whose distribution is not installed."""
+    # Distribution metadata loads the email and zipfile packages; only plugins
+    # that declare requirements pay for it.
+    import importlib.metadata
+
     missing: list[str] = []
     for requirement in requirements:
         distribution = re.split(r"[>=<!~\[;\s]", requirement, maxsplit=1)[0].strip()

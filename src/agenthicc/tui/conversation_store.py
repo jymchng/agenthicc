@@ -19,8 +19,10 @@ from agenthicc.reactive import Signal, Computed
 
 if TYPE_CHECKING:
     import asyncio as _asyncio
+    from agenthicc.config import UISettings
     from agenthicc.tools.approval import ApprovalRequest
     from agenthicc.tui.runtime.mode_manager import RuntimeMode
+    from agenthicc.tui.keymap import Keymap
     from agenthicc.workflows.plugin import WorkflowRun
     from agenthicc.subagents.pool import SubagentPoolState
 
@@ -154,7 +156,13 @@ class ConversationStore:
         self.subagent_pool_state: Signal[SubagentPoolState | None] = Signal(
             None, name="subagent_pool_state"
         )
-        """Live state of the active SubagentPool — None when no pool is running (PRD-124)."""
+        """The latest subagent pool snapshot; ``None`` once nothing is left to show.
+
+        A finished pool stays while the panel still lists rows (AGX-08 §5.1);
+        :meth:`tick` clears it after that.
+        """
+        self.subagent_rows: Signal[int] = Signal(0, name="subagent_rows")
+        """How many worker rows the subagent panel lists now (finished rows expire)."""
         # PRD-149: owned background-terminal wait projection.  These are
         # separate signals so a live wait can refresh its elapsed/count line
         # without changing the conversation event stream.
@@ -357,6 +365,14 @@ class ConversationStore:
             self.set_display_paused(paused)
         now = time.monotonic()
         self._advance_display_clock(now)
+        pool = self.subagent_pool_state()
+        if pool is not None:
+            wall = time.time()
+            if pool.expired(wall):
+                self.subagent_pool_state.set(None)
+                self.subagent_rows.set(0)
+            else:
+                self.subagent_rows.set(len(pool.shown(wall)))
         if self._display_paused:
             return
         # The activity start timestamp remains live while a prompt owns the
@@ -655,10 +671,22 @@ class InputState:
 # ── Root application state ────────────────────────────────────────────────────
 
 
+def ui_settings(state: object) -> "UISettings | None":
+    """Read the state's accessibility preferences, tolerating test doubles."""
+    from agenthicc.config import UISettings
+
+    try:
+        value = object.__getattribute__(state, "ui")
+    except AttributeError:
+        return None
+    current = value() if callable(value) else value
+    return current if isinstance(current, UISettings) else None
+
+
 class AppState:
     """Root state container — single instance for the application lifetime."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, defer_keymap: bool = False) -> None:
         from agenthicc.tui.runtime.mode_manager import build_safe_mode
         from agenthicc.cli.context import CLIFlags
 
@@ -679,14 +707,40 @@ class AppState:
         self.workflow_run: Signal[WorkflowRun | None] = Signal(None, name="workflow_run")
         # PRD-79: ephemeral CLI flags — frozen after startup, read by ApprovalGate etc.
         self.cli_flags: CLIFlags = CLIFlags()
+        # AGX-13: the effective key bindings (replaced when the user's bindings
+        # file changes) and the [ui] accessibility preferences.
+        from agenthicc.config import UISettings
+
+        keymap = None
+        if not defer_keymap:
+            from agenthicc.tui.actions import DEFAULT_ACTIONS
+            from agenthicc.tui.keymap import Keymap
+
+            keymap = Keymap.build(DEFAULT_ACTIONS)
+        self.keymap: Signal[Keymap | None] = Signal(keymap, name="keymap")
+        self.ui: Signal[UISettings] = Signal(UISettings(), name="ui")
 
     def _sync_display_wait_state(self) -> None:
         """Mirror prompt ownership into the conversation display clock."""
         self.conversation.set_display_paused(self.pending_approval() is not None)
 
     @classmethod
-    def create(cls) -> "AppState":
-        return cls()
+    def create(cls, *, defer_keymap: bool = False) -> "AppState":
+        """Create state, optionally loading keymap code after the first frame.
+
+        Interactive startup uses ``defer_keymap=True`` and renders the initial
+        footer with static default hints.  ``KeymapService`` installs the
+        configured map before input starts.  Other callers retain the eager,
+        fully initialized default.
+        """
+        return cls(defer_keymap=defer_keymap)
+
+    def require_keymap(self) -> "Keymap":
+        """Return the installed keymap, rejecting access during deferred startup."""
+        keymap = self.keymap()
+        if keymap is None:
+            raise RuntimeError("keymap is not initialized until interactive startup completes")
+        return keymap
 
     def update_workflow_phase(
         self,

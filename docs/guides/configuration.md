@@ -194,8 +194,13 @@ printing their values.
 `extra_headers` and `extra_query` for per-request additions, plus optional
 `timeout_s`, `max_retries`, and `include_raw_response`. `default_headers`,
 `default_query`, and `client_options` configure the underlying provider client.
-Profile secrets are resolved again when a resumed session starts; workflow
-checkpoints store only the profile name and never store resolved credentials.
+Profile secrets are resolved from the current environment when workflow resume
+is requested. A workflow checkpoint stores the profile name, a non-secret
+provider-binding fingerprint, and bounded profile-switch provenance; it never
+stores resolved credentials. `/workflow resume [run-id] --profile <name|none>`
+selects a different profile for that run only. A changed endpoint/provider
+binding under the saved name requires this explicit acknowledgement, while
+rotating a credential does not.
 OpenAI-compatible endpoints may omit token-usage fields; spawned subagents
 normalize those unavailable counts so the response remains usable instead of
 failing with an `int + NoneType` error.
@@ -469,6 +474,20 @@ resume_transcript_turns = 20
 resume_transcript_max_events = 128
 resume_transcript_max_bytes = 131072
 resume_transcript_max_event_bytes = 16384
+```
+
+`[ui]` holds accessibility and input preferences (AGX-13): `screen_reader`,
+`reduced_motion` and `mouse` (`"auto"`, `"on"` or `"off"`); see the
+[terminal workspace guide](tui.md#accessibility-and-the-mouse). Key bindings
+live in their own file, `~/.agenthicc/keybindings.toml`
+([key bindings](tui.md#key-bindings)).
+
+`[behaviour]` also sets the prompt's height and the redraw cap (AGX-11):
+
+```toml
+[behaviour]
+composer_max_rows = 12  # prompt rows shown before scrolling (3–200)
+frame_interval_ms = 16  # shortest gap between two redraws (0–1000); typing is not delayed
 ```
 
 `resume_transcript_turns` limits the number of recent complete turns considered.

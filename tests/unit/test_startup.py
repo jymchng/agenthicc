@@ -101,9 +101,10 @@ def test_fast_help_does_not_discover_commands(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(sys, "argv", ["agenthicc", "--help"])
 
     def fail_discovery(*args: object, **kwargs: object) -> None:
-        raise AssertionError("dynamic command discovery must not run for --help")
+        raise AssertionError("plugin discovery and command imports must not run for --help")
 
-    monkeypatch.setattr("agenthicc.cli.registry._discover", fail_discovery)
+    monkeypatch.setattr("agenthicc.cli.registry.discover_plugins", fail_discovery)
+    monkeypatch.setattr("agenthicc.cli.registry.load_entry", fail_discovery)
     with pytest.raises(SystemExit) as exc_info:
         parser.parse_cli()
     assert exc_info.value.code == 0
@@ -143,11 +144,88 @@ def test_version_of_an_uninstalled_source_tree_is_unknown(
 ) -> None:
     import importlib.metadata
 
-    from agenthicc.cli import parser
+    from agenthicc.cli import version
 
     def missing(name: str) -> str:
         raise importlib.metadata.PackageNotFoundError(name)
 
     monkeypatch.setattr(importlib.metadata, "version", missing)
 
-    assert parser.package_version() == "0+unknown"
+    assert version.package_version() == "0+unknown"
+
+
+def test_milestones_measure_process_start_first_frame_and_runtime_ready() -> None:
+    ticks = iter([2.0, 3.0, 3.5, 6.0])
+    coordinator = StartupCoordinator(clock=lambda: next(ticks), process_started_at=1.25)
+
+    coordinator.begin("first_frame")
+    coordinator.finish("first_frame")
+    coordinator.record_first_frame_modules(342)
+    coordinator.begin("agent_runtime", deferred=True)
+    coordinator.finish("agent_runtime")
+
+    milestones = coordinator.milestones()
+    assert milestones.process_to_first_frame_s == 1.75
+    assert milestones.first_frame_to_runtime_ready_s == 3.0
+    assert milestones.modules_at_first_frame == 342
+    assert milestones.to_dict() == {
+        "process_to_first_frame_s": 1.75,
+        "first_frame_to_runtime_ready_s": 3.0,
+        "modules_at_first_frame": 342,
+    }
+
+
+def test_milestones_are_absent_until_reached_and_never_for_a_failed_runtime() -> None:
+    coordinator = StartupCoordinator()
+    assert coordinator.milestones().to_dict() == {
+        "process_to_first_frame_s": None,
+        "first_frame_to_runtime_ready_s": None,
+        "modules_at_first_frame": None,
+    }
+
+    coordinator.begin("first_frame")
+    coordinator.finish("first_frame")
+    coordinator.begin("agent_runtime", deferred=True)
+    assert coordinator.milestones().first_frame_to_runtime_ready_s is None
+    coordinator.finish("agent_runtime", ReadinessState.DEGRADED, error="journal unreadable")
+    milestones = coordinator.milestones()
+    assert milestones.first_frame_to_runtime_ready_s is None
+    # No process start was supplied, so that landmark stays unknown.
+    assert milestones.process_to_first_frame_s is None
+
+
+def test_startup_command_prints_milestones_before_phases() -> None:
+    from rich.console import Console
+
+    from agenthicc.commands.builtins import _cmd_startup
+    from agenthicc.commands.command import CommandContext
+    from agenthicc.config import AgenthiccConfig
+
+    ticks = iter([2.0, 3.0, 3.5, 6.0])
+    coordinator = StartupCoordinator(clock=lambda: next(ticks), process_started_at=1.0)
+    coordinator.begin("first_frame")
+    coordinator.finish("first_frame")
+    coordinator.record_first_frame_modules(300)
+    coordinator.begin("agent_runtime", deferred=True)
+    coordinator.finish("agent_runtime")
+    console = Console(record=True, width=120)
+
+    assert _cmd_startup(
+        CommandContext(
+            text="/startup",
+            args="",
+            model="test/model",
+            console=console,
+            config=AgenthiccConfig(),
+            startup=coordinator,
+        )
+    )
+
+    lines = console.export_text().splitlines()
+    assert lines[:3] == [
+        "Process start → first frame: 2.000s",
+        "First frame → agent runtime ready: 3.000s",
+        "Modules loaded at first frame: 300",
+    ]
+    assert "agent_runtime: ready (2.500s)" in lines
+    assert "first_frame: ready (1.000s)" in lines

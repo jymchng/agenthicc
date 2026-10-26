@@ -7,17 +7,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from agenthicc.cli.context import CLIContext
-from agenthicc.cli.registry import command, group, optional_positionals
+from agenthicc.cli.registry import optional_positionals
 
 if TYPE_CHECKING:
     from agenthicc.tools.mcp_manager import McpSessionManager
 
 
-@group("mcp", help="Manage configured MCP servers")
-def _mcp_group() -> None: ...
-
-
-@command("mcp", "add", help="Add an MCP server to configuration")
 def mcp_add(
     ctx: CLIContext,
     name: str,
@@ -67,7 +62,7 @@ def _selected_path(ctx: CLIContext, global_: bool, project: bool) -> Path:
 
 def _redacted_servers(path: Path) -> list[dict[str, object]]:
     from agenthicc.cli.mcp_config import read_mcp_servers
-    from agenthicc.tools.mcp import McpServerConfig
+    from agenthicc.tools.mcp_server_config import McpServerConfig
 
     result: list[dict[str, object]] = []
     for raw in read_mcp_servers(path):
@@ -78,7 +73,6 @@ def _redacted_servers(path: Path) -> list[dict[str, object]]:
     return result
 
 
-@command("mcp", "list", help="List configured MCP servers")
 def mcp_list(
     ctx: CLIContext,
     global_: bool = False,
@@ -108,7 +102,6 @@ def mcp_list(
         )
 
 
-@command("mcp", "get", help="Show one configured MCP server")
 def mcp_get(
     ctx: CLIContext,
     name: str,
@@ -128,7 +121,6 @@ def mcp_get(
     )
 
 
-@command("mcp", "remove", help="Remove one configured MCP server")
 def mcp_remove(
     ctx: CLIContext,
     name: str,
@@ -156,7 +148,7 @@ async def _live_cli_manager(ctx: CLIContext) -> "McpSessionManager":
     """Build a short-lived manager for explicit CLI diagnostics/actions."""
     from agenthicc.cli.mcp_config import mcp_config_path, read_mcp_servers
     from agenthicc.config import load_config
-    from agenthicc.tools.mcp import McpServerConfig
+    from agenthicc.tools.mcp_server_config import McpServerConfig
     from agenthicc.tools.mcp_manager import McpSessionManager
     from agenthicc.tools.sandbox import NetworkGuard
 
@@ -179,7 +171,6 @@ async def _live_cli_manager(ctx: CLIContext) -> "McpSessionManager":
     return manager
 
 
-@command("mcp", "connect", help="Connect to one MCP server and inspect its catalog")
 async def mcp_connect(ctx: CLIContext, name: str) -> None:
     manager = None
     try:
@@ -193,7 +184,6 @@ async def mcp_connect(ctx: CLIContext, name: str) -> None:
             await manager.shutdown()
 
 
-@command("mcp", "disconnect", help="Disconnect an MCP server in the current process")
 def mcp_disconnect(ctx: CLIContext, name: str) -> None:
     print(
         f"MCP server {name!r} is session-scoped; run /mcp disconnect {name} "
@@ -201,7 +191,6 @@ def mcp_disconnect(ctx: CLIContext, name: str) -> None:
     )
 
 
-@command("mcp", "refresh", help="Refresh one MCP server's tool catalog")
 async def mcp_refresh(ctx: CLIContext, name: str) -> None:
     manager = None
     try:
@@ -220,7 +209,6 @@ async def mcp_refresh(ctx: CLIContext, name: str) -> None:
 
 
 @optional_positionals("name")
-@command("mcp", "doctor", help="Validate and diagnose MCP server connectivity")
 async def mcp_doctor(ctx: CLIContext, name: str = "", json_: bool = False) -> None:
     manager = None
     result: list[dict[str, object]] | dict[str, object]
@@ -244,7 +232,6 @@ async def mcp_doctor(ctx: CLIContext, name: str = "", json_: bool = False) -> No
             await manager.shutdown()
 
 
-@command("mcp", "auth", help="Check configured MCP authentication")
 def mcp_auth(ctx: CLIContext, name: str) -> None:
     from agenthicc.cli.mcp_config import mcp_config_path, read_mcp_servers
 
@@ -265,7 +252,6 @@ def mcp_auth(ctx: CLIContext, name: str) -> None:
     print(json.dumps({"server": name, "status": "configured" if configured else "not_configured"}))
 
 
-@command("mcp", "logout", help="Remove stored MCP authentication")
 def mcp_logout(ctx: CLIContext, name: str) -> None:
     # Environment-backed credentials are intentionally not mutated by the CLI.
     print(

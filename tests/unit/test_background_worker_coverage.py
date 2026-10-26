@@ -68,10 +68,15 @@ def test_confirmed_idle_requires_a_closed_turn_and_rejects_pending_work() -> Non
     conversation.active_tool.set("read_file")
     assert not _confirmed_idle_after_thinking(session)
     conversation.active_tool.set("")
-    pool = SubagentPoolState(pool_id="pool", total=1, workers=[WorkerState("w", "explorer")])
+    pool = SubagentPoolState(
+        pool_id="pool", total=1, workers=(WorkerState("w", "explorer", worker_id="w"),)
+    )
     conversation.subagent_pool_state.set(pool)
     assert not _confirmed_idle_after_thinking(session)
-    pool.workers[0].status = "done"
+    # A finished pool can stay on the panel; it no longer vetoes idle (AGX-08).
+    conversation.subagent_pool_state.set(
+        pool.with_worker(WorkerState("w", "explorer", "done", worker_id="w"))
+    )
     assert _confirmed_idle_after_thinking(session)
 
 

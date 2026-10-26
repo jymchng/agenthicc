@@ -565,7 +565,7 @@ def test_workflows_list_json_includes_phase_topology(monkeypatch, capsys) -> Non
 
 
 def test_workflows_cli_parser_supports_run_and_headless_workflow(monkeypatch) -> None:
-    from agenthicc.cli.parser import _parse_args
+    from agenthicc.cli.parser import parse_cli
 
     monkeypatch.setattr(
         "sys.argv",
@@ -579,7 +579,7 @@ def test_workflows_cli_parser_supports_run_and_headless_workflow(monkeypatch) ->
             "--json",
         ],
     )
-    args = _parse_args()
+    _, args = parse_cli()
     assert args._entry.path == ("workflows", "run")
     assert args.workflow_name == "demo"
     assert args.intent == "do work"
@@ -589,7 +589,7 @@ def test_workflows_cli_parser_supports_run_and_headless_workflow(monkeypatch) ->
         "sys.argv",
         ["agenthicc", "--headless", "--mode", "Plan", "--workflow", "demo"],
     )
-    args = _parse_args()
+    _, args = parse_cli()
     assert args.headless is True
     assert args.mode_name == "Plan"
     assert args.workflow_name == "demo"

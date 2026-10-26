@@ -58,7 +58,7 @@ def test_jobs_status_and_agents_report_resumed_attempt_not_old_error(tmp_path: P
     env["HOME"] = str(home)
     env["PYTHONPATH"] = str(Path(__file__).parents[2] / "src")
     status = subprocess.run(
-        [sys.executable, "-m", "agenthicc", "jobs", "status", current.session_id, "--json"],
+        [sys.executable, "-m", "agenthicc", "agents", "status", current.session_id, "--json"],
         cwd=tmp_path,
         env=env,
         text=True,

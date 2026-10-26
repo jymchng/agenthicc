@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -411,10 +410,37 @@ def test_store_archive_and_restore(tmp_path: Path) -> None:
     assert store.restore_archive("session-1").status is SessionStatus.COMPLETED
 
 
-def test_manager_approval_action_updates_waiting_session(tmp_path: Path) -> None:
+async def _hub(store: BackgroundStore, tmp_path: Path, supervisor: object | None = None) -> object:
     from rich.console import Console
 
-    from agenthicc.tui.workspace.background_manager import BackgroundManager
+    from agenthicc.tui.workspace.agents_hub import AgentsHub
+    from agenthicc.tui.workspace.agents_hub.prefs import HubPrefs
+
+    hub = AgentsHub(
+        Console(record=True, width=120),
+        store=store,
+        supervisor=supervisor or BackgroundSupervisor(store),  # type: ignore[arg-type]
+        prefs=HubPrefs(path=tmp_path / "hub.json"),
+    )
+    await hub.start()
+    await hub.settle()
+    return hub
+
+
+def _frame(hub: object, width: int = 120, height: int = 30) -> str:
+    from rich.console import Console
+
+    from agenthicc.tui.workspace.agents_hub import AgentsHub
+
+    assert isinstance(hub, AgentsHub)
+    console = Console(record=True, width=width)
+    console.print(hub.render(width, height))
+    return console.export_text()
+
+
+async def test_hub_approval_action_updates_waiting_session(tmp_path: Path) -> None:
+    from agenthicc.tui.cbreak_reader import Key
+    from agenthicc.tui.workspace.agents_hub import AgentsHub
 
     store = BackgroundStore(tmp_path / "background")
     store.create(_session(tmp_path))
@@ -425,47 +451,44 @@ def test_manager_approval_action_updates_waiting_session(tmp_path: Path) -> None
         SessionStatus.WAITING_APPROVAL,
         approval_request="write_file",
     )
-    manager = BackgroundManager(Console(), store=store, supervisor=BackgroundSupervisor(store))
-    manager.handle_key("CHAR", "y")
-    assert store.get("session-1").approval_decision is True
+    hub = await _hub(store, tmp_path)
+    assert isinstance(hub, AgentsHub)
+    try:
+        hub.handle_key(Key.CHAR, "y")
+        await hub.settle()
+        assert store.get("session-1").approval_decision is True
+    finally:
+        await hub.stop()
 
 
-def test_manager_paginates_sessions_and_enter_resumes_selected_record(tmp_path: Path) -> None:
-    from rich.console import Console
-
-    from agenthicc.tui.workspace.background_manager import BackgroundManager, ManagerResult
+async def test_hub_scrolls_long_lists_and_enter_attaches_the_selected_agent(
+    tmp_path: Path,
+) -> None:
+    from agenthicc.tui.cbreak_reader import Key
+    from agenthicc.tui.workspace.agents_hub import AgentsHub, HubResult
 
     store = BackgroundStore(tmp_path / "background")
     for index in range(5):
         session_id = f"session-{index}"
         store.create(_session(tmp_path, session_id).evolve(title=session_id))
-
-    console = Console(record=True)
-    manager = BackgroundManager(
-        console,
-        store=store,
-        supervisor=SimpleNamespace(recover_stale=lambda: []),
-        page_size=2,
-    )
-    manager.refresh(force=True)
-
-    console.print(manager.render())
-    first_page = console.export_text()
-    assert "page 1/3" in first_page
-    assert "session-0" in first_page
-    assert "session-2" not in first_page
-
-    manager.handle_key("PAGE_DOWN")
-    console.print(manager.render())
-    second_page = console.export_text()
-    assert "page 2/3" in second_page
-    assert "session-2" in second_page
-
-    manager.handle_key("END")
-    assert manager.handle_key("ENTER") is None
-    assert manager._detail_session_id == "session-4"
-    result = manager.handle_key("ENTER")
-    assert result == ManagerResult("attach", "session-4")
+    hub = await _hub(store, tmp_path)
+    assert isinstance(hub, AgentsHub)
+    try:
+        order = [row.session_id for row in hub.rows if row.selectable]
+        first = _frame(hub, height=6)  # tab bar, header, three rows, footer
+        assert order[0] in first and order[-1] not in first
+        hub.handle_key(Key.PAGE_DOWN, "")
+        selected = hub.selected_session_id
+        assert selected is not None and order.index(selected) >= 2  # moved by a screen
+        assert selected in _frame(hub, height=6)  # and stays in view
+        hub.handle_key(Key.END, "")
+        assert hub.handle_key(Key.ENTER, "") is None
+        assert hub.detail_session_id == order[-1]
+        hub.handle_key(Key.ENTER, "")
+        await hub.settle()
+        assert hub.attach_result == HubResult("attach", order[-1])
+    finally:
+        await hub.stop()
 
 
 def test_supervisor_submit_writes_private_request_and_enforces_limit(
@@ -703,94 +726,96 @@ def test_supervisor_foreground_attach_refuses_live_worker_after_grace(
     assert store.get("session-1").status is SessionStatus.CANCELLING
 
 
-def test_manager_keyboard_delete_restore_and_help(tmp_path: Path, capsys) -> None:
-    from rich.console import Console
-
-    from agenthicc.tui.workspace.background_manager import BackgroundManager
-
-    store = BackgroundStore(tmp_path / "background")
-    store.create(_session(tmp_path))
-    store.transition("session-1", SessionStatus.STARTING)
-    store.transition("session-1", SessionStatus.RUNNING)
-    store.transition("session-1", SessionStatus.COMPLETED)
-    manager = BackgroundManager(Console(), store=store, supervisor=BackgroundSupervisor(store))
-    manager.handle_key("CHAR", "?")
-    assert manager.help_visible is True
-    manager.handle_key("CHAR", "?")
-    manager.handle_key("CHAR", "\x18")
-    deadline = time.monotonic() + 2.0
-    while manager._deletion_thread is not None and time.monotonic() < deadline:
-        manager._poll_async_delete()
-        time.sleep(0.01)
-    manager._poll_async_delete()
-    assert store.get("session-1", include_deleted=True).status is SessionStatus.DELETED
-    manager.handle_key("CHAR", "t")
-    manager.refresh(force=True)
-    assert all(item.status is not SessionStatus.DELETED for item in manager.sessions)
-    assert "t trash" not in str(manager.render())
-    store.restore_deleted("session-1")
-    assert store.get("session-1").status is SessionStatus.COMPLETED
-    console = Console(record=True)
-    console.print(manager.render())
-    assert "Background Sessions" in console.export_text()
-
-
-def test_manager_keyboard_ctrl_x_reader_key_deletes_without_confirmation(tmp_path: Path) -> None:
-    from rich.console import Console
-
+async def test_hub_keyboard_delete_restore_and_help(tmp_path: Path) -> None:
     from agenthicc.tui.cbreak_reader import Key
-    from agenthicc.tui.workspace.background_manager import BackgroundManager
+    from agenthicc.tui.workspace.agents_hub import AgentsHub
 
     store = BackgroundStore(tmp_path / "background")
     store.create(_session(tmp_path))
     store.transition("session-1", SessionStatus.STARTING)
     store.transition("session-1", SessionStatus.RUNNING)
     store.transition("session-1", SessionStatus.COMPLETED)
-    manager = BackgroundManager(Console(), store=store, supervisor=BackgroundSupervisor(store))
+    hub = await _hub(store, tmp_path)
+    assert isinstance(hub, AgentsHub)
+    try:
+        hub.handle_key(Key.CHAR, "?")
+        assert hub.help_visible is True
+        hub.handle_key(Key.CHAR, "?")
+        assert hub.help_visible is False
+        hub.handle_key(Key.CTRL_X, "")
+        await hub.settle()
+        assert store.get("session-1", include_deleted=True).status is SessionStatus.DELETED
+        assert all(row.session_id != "session-1" for row in hub.rows)
+        store.restore_deleted("session-1")
+        assert store.get("session-1").status is SessionStatus.COMPLETED
+        hub._request_load("test", force=True)
+        await hub.settle()
+        frame = _frame(hub)
+        assert "Agents" in frame and "Background Sessions" not in frame
+        assert "session-1" in [row.session_id for row in hub.rows]
+    finally:
+        await hub.stop()
 
-    manager.handle_key(Key.CTRL_X)
-    deadline = time.monotonic() + 2.0
-    while manager._deletion_thread is not None and time.monotonic() < deadline:
-        manager._poll_async_delete()
-        time.sleep(0.01)
-    manager._poll_async_delete()
-    assert store.get("session-1", include_deleted=True).status is SessionStatus.DELETED
-    assert manager.selected_session is None
+
+async def test_hub_ctrl_x_deletes_without_confirmation(tmp_path: Path) -> None:
+    from agenthicc.tui.cbreak_reader import Key
+    from agenthicc.tui.workspace.agents_hub import AgentsHub
+
+    store = BackgroundStore(tmp_path / "background")
+    store.create(_session(tmp_path))
+    store.transition("session-1", SessionStatus.STARTING)
+    store.transition("session-1", SessionStatus.RUNNING)
+    store.transition("session-1", SessionStatus.COMPLETED)
+    hub = await _hub(store, tmp_path)
+    assert isinstance(hub, AgentsHub)
+    try:
+        hub.handle_key(Key.CTRL_X, "")
+        await hub.settle()
+        assert store.get("session-1", include_deleted=True).status is SessionStatus.DELETED
+        assert hub.selected_row() is None
+    finally:
+        await hub.stop()
 
 
-def test_manager_filters_pause_and_renders_bounded_redacted_activity(tmp_path: Path) -> None:
-    from rich.console import Console
+async def test_hub_filters_pauses_and_shows_a_redacted_transcript(tmp_path: Path) -> None:
+    from agenthicc.tui.cbreak_reader import Key
+    from agenthicc.tui.workspace.agents_hub import AgentsHub
 
-    from agenthicc.tui.workspace.background_manager import BackgroundManager
-
-    session = _session(tmp_path).evolve(phase_history=("plan", "execute"))
+    session = _session(tmp_path).evolve(
+        status=SessionStatus.RUNNING, phase_history=("plan", "execute"), current_phase="execute"
+    )
     (Path(session.artifact_dir) / "conversation.jsonl").write_text(
         '{"kind":"assistant_message","payload":{"text":"Bearer sk-ant-1234567890123456"}}\n',
         encoding="utf-8",
     )
     store = BackgroundStore(tmp_path / "background")
     store.create(session)
-    console = Console(record=True)
-    manager = BackgroundManager(console, store=store)
-    manager.set_filters(workflow="demo")
-    assert manager.selected_session is not None
-    manager.handle_key("CHAR", " ")
-    assert manager.paused is True
-    manager.handle_key("CHAR", "[")
-    assert manager.activity_offset == 6
-    manager.handle_key("CHAR", "]")
-    assert manager.activity_offset == 0
-    console.print(manager.render())
-    output = console.export_text()
-    assert "Bearer" not in output and "sk-ant-" not in output
-    assert "assistant_message" in output
-    assert "plan → execute" in output
+    hub = await _hub(store, tmp_path)
+    assert isinstance(hub, AgentsHub)
+    try:
+        hub.set_search("agent:demo")
+        assert hub.selected_session_id == "session-1"
+        hub.set_search("agent:other")
+        assert hub.selected_row() is None
+        hub.set_search("")
+        hub.handle_key(Key.CHAR, "z")
+        assert hub.paused is True
+        hub.handle_key(Key.CHAR, "z")
+        assert hub.paused is False
+        hub.handle_key(Key.ENTER, "")
+        await hub.settle()
+        hub.handle_key(Key.CHAR, "[")
+        hub.handle_key(Key.CHAR, "]")
+        output = _frame(hub, height=40)
+        assert "Bearer" not in output and "sk-ant-" not in output
+        assert "assistant" in output
+        assert "plan ✓ → execute ●" in output
+    finally:
+        await hub.stop()
 
 
 def test_foreground_background_aliases_are_registered_for_trigger_picker() -> None:
-    from agenthicc.background.integration import install_tui_handoff
     from agenthicc.commands.builtins import BUILTIN_COMMANDS
 
-    install_tui_handoff()
     command = next(item for item in BUILTIN_COMMANDS if item.name == "/background")
     assert "/bg" in command.aliases

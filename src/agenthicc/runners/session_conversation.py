@@ -3,21 +3,27 @@
 The TUI's reactive ``ConversationStore`` is a rendering projection.  This
 module owns the provider-ready conversation that must survive direct turns,
 mode changes, workflow switches, pauses, and process restarts.
+
+The journal opens with the session, but folding it into provider memory needs
+lauren-ai and, on resume, a read of the whole journal.  Neither belongs in front
+of the first TUI frame (AGX-02), so the memory is materialized on first use,
+or ahead of time by :meth:`SessionConversation.load` on a worker thread.
 """
 
 from __future__ import annotations
 
 import asyncio
+import threading
+from collections.abc import Callable
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
 from pathlib import Path
-from typing import AsyncIterator
-
-from lauren_ai._memory import ShortTermMemory
+from typing import TYPE_CHECKING, AsyncIterator
 
 from agenthicc.memory.journal import ConversationJournal, journal_path_for
-from agenthicc.memory.journaled import JournaledShortTermMemory
-from agenthicc.memory.tool_history import ToolHistoryRecoveryState
+
+if TYPE_CHECKING:
+    from agenthicc.memory.journaled import JournaledShortTermMemory
+    from agenthicc.memory.tool_history import ToolHistoryRecoveryState
 
 __all__ = ["ConversationBusyError", "SessionConversation"]
 
@@ -26,7 +32,6 @@ class ConversationBusyError(RuntimeError):
     """Raised when two agent activities try to mutate one session history."""
 
 
-@dataclass
 class SessionConversation:
     """One session-scoped, journal-backed provider conversation.
 
@@ -36,11 +41,20 @@ class SessionConversation:
     durable recovery uses the journal and workflow checkpoints.
     """
 
-    conversation_id: str
-    journal: ConversationJournal
-    memory: JournaledShortTermMemory
-
-    def __post_init__(self) -> None:
+    def __init__(
+        self,
+        conversation_id: str,
+        journal: ConversationJournal,
+        *,
+        max_tokens: Callable[[], int],
+    ) -> None:
+        self.conversation_id = conversation_id
+        self.journal = journal
+        self._max_tokens = max_tokens
+        self._memory: JournaledShortTermMemory | None = None
+        # Guards the one-time fold: a worker thread may be loading while the
+        # event loop touches ``memory``; the loser waits for the same object.
+        self._memory_lock = threading.Lock()
         self._lock = asyncio.Lock()
         self._owner: str | None = None
 
@@ -54,17 +68,63 @@ class SessionConversation:
         journal_path: Path | None = None,
     ) -> "SessionConversation":
         """Open and fold the session conversation from its durable journal."""
+        conversation = cls.open_deferred(
+            conversation_id,
+            max_tokens=lambda: max_tokens,
+            journal=journal,
+            journal_path=journal_path,
+        )
+        conversation.load_memory()
+        return conversation
+
+    @classmethod
+    def open_deferred(
+        cls,
+        conversation_id: str,
+        *,
+        max_tokens: Callable[[], int],
+        journal: ConversationJournal | None = None,
+        journal_path: Path | None = None,
+    ) -> "SessionConversation":
+        """Open the durable journal now and fold provider memory on first use.
+
+        *max_tokens* is evaluated when the memory is materialized, because the
+        live-window budget comes from lauren-ai's model registry.
+        """
         _validate_identifier(conversation_id, "conversation_id")
         if journal is not None and journal_path is not None:
             raise ValueError("provide journal or journal_path, not both")
         active_journal = journal or ConversationJournal(
             journal_path or journal_path_for(conversation_id)
         )
-        return cls(
-            conversation_id=conversation_id,
-            journal=active_journal,
-            memory=JournaledShortTermMemory(active_journal, max_tokens=max_tokens),
-        )
+        return cls(conversation_id, active_journal, max_tokens=max_tokens)
+
+    @property
+    def memory(self) -> JournaledShortTermMemory:
+        """Return the provider memory, folding the journal on first access."""
+        memory = self._memory
+        return memory if memory is not None else self.load_memory()
+
+    @property
+    def memory_loaded(self) -> bool:
+        """Whether the journal has already been folded into provider memory."""
+        return self._memory is not None
+
+    def load_memory(self) -> JournaledShortTermMemory:
+        """Fold the journal into provider memory exactly once (blocking)."""
+        with self._memory_lock:
+            if self._memory is None:
+                from agenthicc.memory.journaled import JournaledShortTermMemory
+
+                self._memory = JournaledShortTermMemory(self.journal, max_tokens=self._max_tokens())
+            return self._memory
+
+    async def load(self) -> JournaledShortTermMemory:
+        """Fold the journal on a worker thread so the event loop stays responsive."""
+        memory = self._memory
+        if memory is not None:
+            return memory
+        return await asyncio.to_thread(self.load_memory)
 
     @property
     def cursor(self) -> int:
@@ -125,14 +185,9 @@ class SessionConversation:
         self.memory.ensure_valid()
 
     def close(self) -> None:
-        """Close the durable journal handle."""
-        self.journal.close()
-
-
-def _memory_type_check(memory: ShortTermMemory) -> None:
-    """Keep the imported lauren type visible to static analyzers."""
-    if not isinstance(memory, ShortTermMemory):  # pragma: no cover
-        raise TypeError("session conversation memory must be ShortTermMemory")
+        """Close the durable journal handle once no fold is in flight."""
+        with self._memory_lock:
+            self.journal.close()
 
 
 def _validate_identifier(value: str, label: str) -> None:

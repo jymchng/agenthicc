@@ -60,7 +60,8 @@ implements it.
 |---|---|---|
 | `entry` | `src/agenthicc/__main__.py` | Parse argv, then dispatch to a subcommand, headless, or TUI |
 | `parser` | `src/agenthicc/cli/parser.py` | Build the argument parser and the `CLIContext` |
-| `registry` | `src/agenthicc/cli/registry.py` | Discover `@command(...)` entries and wire them into the parser |
+| `manifest` | `src/agenthicc/cli/manifest.py` | Declare every built-in command path, handler and help text |
+| `registry` | `src/agenthicc/cli/registry.py` | Merge the manifest with `@command(...)` plugins, import only the selected command, and wire it into the parser |
 | `tui` | `src/agenthicc/runners/tui_session.py` | Drive an interactive session |
 | `headless` | `src/agenthicc/runners/headless.py` | Drive a session with no TUI |
 | `modes` | `src/agenthicc/tui/runtime/mode_manager.py` | Active mode, `UnknownModeError`, TUI mode registry |

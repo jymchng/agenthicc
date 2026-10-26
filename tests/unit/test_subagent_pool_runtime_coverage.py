@@ -97,7 +97,10 @@ async def test_real_pool_run_emits_state_and_normalizes_results(
     assert result.succeeded == 1
     assert result.failed == 2
     assert emitted
-    assert app.conversation.subagent_pool_state() is None
+    # The finished pool stays published for the panel, with nothing running.
+    state = app.conversation.subagent_pool_state()
+    assert state is not None and state.finished_at is not None and not state.active
+    assert [worker.status for worker in state.workers] == ["done", "failed", "failed"]
 
 
 @pytest.mark.asyncio

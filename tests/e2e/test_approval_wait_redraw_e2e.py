@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 
 import pytest
 from rich.console import Console
@@ -11,6 +11,8 @@ from rich.console import Console
 from agenthicc.tools.approval import ApprovalRequest, ApprovalService
 from agenthicc.tui.conversation_store import AppState
 from agenthicc.tui.workspace import Workspace
+from tests.tui_frames import settle_frames
+from agenthicc.tui.workspace.live_region import Line
 from agenthicc.tui.workspace.overlay import Overlay
 from agenthicc.tui.workspace.overlays.approval import ApprovalOverlay
 from agenthicc.tui.workspace.overlays.plan_approval import PlanApprovalOverlay
@@ -77,16 +79,16 @@ async def test_waiting_ticks_do_not_append_duplicate_prompt_surfaces(
         await asyncio.sleep(0)
         await asyncio.sleep(0)
         workspace.overlays.show(_overlay(kind, request, service, workspace.overlays.hide))
-        await asyncio.sleep(0)
+        await settle_frames(workspace)
 
         live = workspace._live
         assert live is not None
         updates: list[object] = []
         original_update = live.update
 
-        def _record_update(renderable: object, *, refresh: bool = False) -> None:
-            updates.append(renderable)
-            original_update(renderable, refresh=refresh)
+        def _record_update(lines: Sequence[Line]) -> None:
+            updates.append(lines)
+            original_update(lines)
 
         live.update = _record_update  # type: ignore[method-assign]
         updates.clear()
