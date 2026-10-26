@@ -17,6 +17,7 @@ from agenthicc.background import (
     SessionOrder,
     SessionStatus,
 )
+from agenthicc.background.store import BackgroundEventLogError
 from agenthicc.background.index import INDEX_SCHEMA_VERSION, SearchMode, SessionIndex
 from agenthicc.background.model import QueuePriority
 
@@ -587,6 +588,57 @@ def _write_legacy_snapshot(
 def _drop_index(root: Path) -> None:
     for suffix in ("", "-wal", "-shm"):
         Path(f"{root / 'index.sqlite3'}{suffix}").unlink(missing_ok=True)
+
+
+def test_event_log_read_failure_rolls_back_rebuild_and_can_be_retried(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "background"
+    writer = BackgroundStore(root)
+    writer.create(_session(tmp_path, "preserved", 1.0))
+    writer.close()
+    events_path = root / "events.jsonl"
+    events_before = events_path.read_bytes()
+    _drop_index(root)
+
+    store = BackgroundStore(root)
+    original_open = Path.open
+
+    def deny_event_log(path: Path, mode: str = "r", *args: object, **kwargs: object) -> object:
+        if path == events_path and mode == "rb":
+            raise PermissionError("test event-log access denial")
+        return original_open(path, mode, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "open", deny_event_log)
+        with pytest.raises(BackgroundEventLogError) as raised:
+            store.list()
+
+    assert isinstance(raised.value.__cause__, PermissionError)
+    assert events_path.read_bytes() == events_before
+    # The failed replay rolls back rather than publishing an empty projection.
+    with sqlite3.connect(root / "index.sqlite3") as connection:
+        assert connection.execute("SELECT count(*) FROM sessions").fetchone() == (0,)
+
+    assert [item.session_id for item in store.list()] == ["preserved"]
+    assert events_path.read_bytes() == events_before
+
+
+def test_missing_event_log_does_not_replace_a_nonempty_index_with_empty_state(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "background"
+    store = BackgroundStore(root)
+    store.create(_session(tmp_path, "preserved", 1.0))
+    store.close()
+    (root / "events.jsonl").unlink()
+
+    reopened = BackgroundStore(root)
+    with pytest.raises(BackgroundEventLogError, match="is missing"):
+        reopened.list()
+
+    with sqlite3.connect(root / "index.sqlite3") as connection:
+        assert connection.execute("SELECT session_id FROM sessions").fetchall() == [("preserved",)]
 
 
 def test_first_open_seeds_the_index_from_the_old_projection(

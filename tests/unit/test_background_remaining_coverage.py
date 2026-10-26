@@ -19,6 +19,7 @@ from agenthicc.background import (
     SessionStatus,
 )
 from agenthicc.background.settings import BackgroundSettings
+from agenthicc.background.store import BackgroundEventLogError
 from agenthicc.background.worker import BackgroundApprovalService, WorkerRequest, _load_request
 import agenthicc.background.worker as worker
 from agenthicc.tui.conversation_store import ConversationStore
@@ -277,7 +278,8 @@ def test_store_recovery_and_artifact_kernel_paths(
     monkeypatch.setattr(
         Path, "open", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("read"))
     )
-    assert store._read_events() == []
+    with pytest.raises(BackgroundEventLogError, match="could not be read"):
+        store._read_events()
     monkeypatch.setattr(Path, "open", original_open)
 
     empty_store = BackgroundStore(tmp_path / "empty")

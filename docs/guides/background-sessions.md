@@ -83,6 +83,12 @@ TUI reacquires that lease only after the store confirms the worker attempt is
 terminal; otherwise it exits safely so the session can be reopened with
 `agenthicc --continue`.
 
+If the background registry's authoritative event log cannot be accessed,
+`/detach` fails closed before starting a worker: it keeps foreground ownership,
+leaves the durable request and event history untouched, and asks you to restore
+registry access before retrying. The derived SQLite index is never rebuilt as
+an empty registry merely because reading the event log failed.
+
 There is an important ordering detail in the current implementation: step 4
 requests cancellation, but does not await the agent task before steps 5–6
 release ownership and launch the worker. TUI teardown later awaits that task,

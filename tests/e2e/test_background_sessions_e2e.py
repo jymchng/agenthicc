@@ -286,6 +286,28 @@ def test_killed_worker_continue_then_detach_uses_same_session_and_updated_config
     request_path = store_root / "requests" / f"{session_id}.json"
     previous_request = request_path.read_bytes()
     events_before_failed_handoff = (store_root / "events.jsonl").read_bytes()
+
+    original_stat = Path.stat
+
+    def deny_event_log_stat(path: Path, *args: object, **kwargs: object) -> object:
+        if path == store_root / "events.jsonl":
+            raise PermissionError("test event-log access denial")
+        return original_stat(path, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "stat", deny_event_log_stat)
+        assert _handoff(foreground) is True
+
+    assert foreground._background_handoff_state == "idle"
+    assert not foreground_lease.released
+    assert len(processes) == 1
+    assert request_path.read_bytes() == previous_request
+    assert (store_root / "events.jsonl").read_bytes() == events_before_failed_handoff
+    event_log_message = " ".join(ctx.console.export_text().split())
+    assert "event log could not be read" in event_log_message
+    assert "Restore access to the registry and retry /detach" in event_log_message
+    assert "test event-log access denial" in caplog.text
+
     assert _handoff(foreground) is True
     assert foreground._background_handoff_state == "idle"
     assert not foreground_lease.released

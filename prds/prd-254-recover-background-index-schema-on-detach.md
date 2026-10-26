@@ -25,9 +25,9 @@ durable lifecycle authority. Agenthicc must detect and repair an old or
 partially initialized index before using the new schema, rather than failing
 the foreground-to-background handoff or asking users to delete their store.
 
-## Incident analysis and confirmed cause
+## Incident analysis and confirmed cause (pre-fix)
 
-The current call path is:
+The `/detach` call path at the time of the incident was:
 
 ```text
 /detach
@@ -36,30 +36,30 @@ The current call path is:
   → BackgroundStore.get(session_id)
   → BackgroundStore._sync()
   → SessionIndex.state() / SessionIndex._connect()
-  → executes _TABLES
+  → creates the SQLite schema and dependent indexes
 ```
 
-The current index schema declares `sessions.idempotency_key` and then creates
+The pre-fix index schema declared `sessions.idempotency_key` and then created
 the `sessions_idempotency` index on that column. However:
 
-1. `_foreign_schema()` only rejects a database when `meta.schema_version`
+1. The old schema check only rejected a database when `meta.schema_version`
    exists and explicitly differs from `INDEX_SCHEMA_VERSION`. Missing `meta`
    or a missing version row is not classified as an incompatible schema.
 2. `CREATE TABLE IF NOT EXISTS sessions (...)` does not add columns to an
    already-existing `sessions` table.
-3. `_TABLES` then attempts to create an index referencing
-   `sessions.idempotency_key`. SQLite raises `OperationalError: no such
+3. The dependent index DDL then referenced `sessions.idempotency_key`. SQLite
+   raised `OperationalError: no such
    column: idempotency_key` before the store can read the session.
-4. `BackgroundStore._sync()` re-raises every `sqlite3.OperationalError` as if
-   it were a transient lock/busy error. Thus a permanent schema mismatch does
-   not reach the existing corrupt-index rebuild path.
+4. `BackgroundStore._sync()` re-raised every `sqlite3.OperationalError` as if
+   it were transient contention. Thus a permanent schema mismatch did not
+   reach the existing index recovery path.
 5. `_handoff()` catches the exception and displays the reported message. The
    handoff fails before the supervisor prepares its durable background request
    or launches a worker. This is a local registry/schema failure, not a model,
    provider, or workflow error.
 
 This failure was reproduced against an existing SQLite `sessions` table with
-the current schema's columns except `idempotency_key`; opening
+the then-current columns except `idempotency_key`; opening
 `SessionIndex.state()` produced the exact reported exception. The likely
 runtime precondition is an older or partially initialized index whose schema
 marker is missing or unreliable. A database marked with an old version should
@@ -215,6 +215,9 @@ diagnostic logs.
    the foreground lease, or duplicate a request on retry.
 9. Existing current-version startup, indexed queries, FTS5 fallback, and
    crash-replay behavior remain unchanged.
+10. If the authoritative event log cannot be accessed during index recovery,
+    recovery aborts without publishing an empty index; `/detach` stays in the
+    foreground, starts no worker, and reports a concise retry instruction.
 
 ## Test plan
 
@@ -229,6 +232,9 @@ diagnostic logs.
 - Unknown missing-column layout routes to rebuild, not blind DDL.
 - Lock/busy errors do not invoke schema deletion or rebuild.
 - Interrupted migration leaves a state that the next opener can recover.
+- Event-log stat/read failures abort replay and leave the event bytes intact.
+- A missing event log with a nonempty indexed position does not replace the
+  existing derived rows with an empty registry.
 
 ### Integration
 
@@ -246,6 +252,9 @@ diagnostic logs.
   exactly once.
 - Inject schema migration failure and assert `/detach` remains foreground,
   reports a retryable actionable error, and starts no worker.
+- Inject an event-log access failure and assert `/detach` preserves the
+  foreground lease, starts no worker, leaves the request and event log
+  unchanged, and records the underlying exception only in diagnostics.
 - Retry after recovery and verify no duplicate session attempt or worker.
 
 Use mocked worker launch and deterministic event logs; tests must not call an
@@ -259,6 +268,14 @@ must remain untouched. If an index must be rebuilt, retain the existing
 recoverable behavior for partial progress and make the operation safe to
 repeat after process restart. Emit schema version and migration outcome in
 diagnostics without logging session contents.
+
+The implementation inspects actual table columns before dependent DDL,
+migrates the supported idempotency-column gap in a transaction, and rebuilds
+unsupported schemas by replaying the event log. A cross-process maintenance
+lock serializes schema initialization and recovery; open index handles detect
+replacement by file identity before reusing cached state. Failed SQLite
+handoffs are logged for diagnostics while the foreground message remains
+concise and does not expose database paths or transcript data.
 
 ## Evidence and limitation
 

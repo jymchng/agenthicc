@@ -754,8 +754,11 @@ the stored records before its index is created; interruption rolls the
 migration back for a safe retry. Unsupported layouts reset only the derived
 SQLite schema and are replayed from `events.jsonl`. SQLite busy/locked errors
 remain contention rather than triggering schema repair, while unrelated I/O
-errors are surfaced. Truncation, rotation, a same-size rewrite, a sequence gap, a
-schema change or a corrupt file rebuilds the index from the log; the rebuild
+errors are surfaced. If the authoritative event log cannot be accessed, replay
+fails closed instead of publishing an empty index, and `/detach` retains
+foreground ownership while asking the user to restore registry access. Truncation,
+rotation, a same-size rewrite, a sequence gap, a schema change or a corrupt file
+rebuilds the index from the log; the rebuild
 reports its progress, the agents hub shows recent sessions read from the
 end of the log until it finishes, and closing the hub cancels it (its
 transaction rolls back). A registry written before the index still holds a

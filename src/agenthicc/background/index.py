@@ -42,8 +42,8 @@ __all__ = [
     "SessionOrder",
 ]
 
-#: Bumped whenever a column, table or search representation changes; a file
-#: stamped with another version is discarded and rebuilt from the log.
+#: Bumped whenever a column, table or search representation changes; known
+#: additive migrations are applied in place, while unsupported layouts rebuild.
 INDEX_SCHEMA_VERSION = 4
 
 SearchMode = Literal["fts5", "like"]

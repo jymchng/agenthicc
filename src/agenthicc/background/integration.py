@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, cast
 from .model import ACTIVE_STATUSES, SessionStatus
 from .settings import background_enabled, load_background_settings
 from .supervisor import BackgroundSupervisor
-from .store import BackgroundStore
+from .store import BackgroundEventLogError, BackgroundStore
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -343,7 +343,21 @@ def _handoff(session: TUISession) -> bool:
                 # unowned foreground runtime that could race the worker.
                 session._background_handoff_state = "started"
                 session._input_session._exit_requested = True
-        if isinstance(exc, sqlite3.OperationalError) and not owner_released:
+        if isinstance(exc, BackgroundEventLogError):
+            _LOGGER.exception("Background session handoff failed while accessing its event log")
+            if not owner_released:
+                ctx.console.print(
+                    "Unable to background session: the background registry event log could not "
+                    "be read. No worker was started and foreground ownership is unchanged. "
+                    "Restore access to the registry and retry /detach."
+                )
+            else:
+                ctx.console.print(
+                    "Background handoff was prepared, but the registry event log could not be "
+                    "read while starting the worker. The session may need recovery; inspect it "
+                    "with `agenthicc agents` before retrying."
+                )
+        elif isinstance(exc, sqlite3.OperationalError) and not owner_released:
             _LOGGER.exception("Background session handoff failed while accessing its SQLite index")
             ctx.console.print(
                 "Unable to background session: the registry index could not be read or migrated. "
