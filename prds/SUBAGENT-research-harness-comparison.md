@@ -738,20 +738,25 @@ should be sequenced and scoped accordingly.
 
 ### 5.1 What "locked" means here
 
-An area is **locked** only when four admission tests pass. The tests exist to
-make padding visible in both directions: an area that fails T1 or T3 is a
-*subject*, not a work stream, and an area that fails T2 is a guess about what
-competitors value rather than a response to a local problem.
+An area is **locked** when it passes the two **admission** tests (T1, T3) and
+clears the two **calibration** tests (T2, T4). The distinction is deliberate and
+it is the reason the set can be honest about a weak area: failing an admission
+test means the area does not exist, while failing a calibration test means the
+area exists at reduced confidence, narrower scope, later sequencing, or with an
+explicit supersession statement — never silently.
 
-| Test | Question | Failure mode it prevents |
-|---|---|---|
-| **T1 evidence** | Is there a reproducible agenthicc gap with a `file:line`, and for absences a named exhaustive search (§1.9)? | An area invented from competitor reading with no local problem to solve |
-| **T2 precedent** | Does at least one of the six harnesses actually demonstrate the capability (§2, and the §4 Strength column)? | An area with no external justification |
-| **T3 distinct owner** | Is the change concentrated in code that no other area owns? | Two PRDs editing the same function, or an area that is really a sub-task of another |
-| **T4 prior art** | Has an existing document already claimed it (PRD-124/148/157/180/197/214/232/233, AGX-08)? | A second coordination or policy model forking the first |
+| Test | Kind | Question | What a failure admits |
+|---|---|---|---|
+| **T1 evidence** | admission | Is there a reproducible agenthicc gap with a `file:line`, and for absences a named exhaustive search (§1.9)? | An area invented from competitor reading with no local problem to solve |
+| **T2 precedent** | calibration | Does at least one of the six harnesses actually demonstrate the capability (§2, and the §4 Strength column)? | An area with no external justification |
+| **T3 distinct owner** | admission | Is the change concentrated in code that no other area owns? | Two PRDs editing the same function, or an area that is really a sub-task of another |
+| **T4 prior art** | calibration | Has an existing document already claimed it (PRD-124/148/157/180/197/214/232/233, AGX-08)? | A second coordination or policy model forking the first |
 
-T4 never deletes an area by itself: it forces the PRD to open with a
-supersession-or-delegation statement, which §6 will make a required section.
+Concretely: T1 or T3 failing means no area and no PRD. T2 failing means the
+area keeps its slot but its PRD must state the weakness in its own evidence
+appendix and it sorts last (A-6 is the only such area). T4 failing does not
+delete an area either — it forces the PRD to open with a supersession-or-
+delegation statement, which §6 will make a required section.
 
 Two rules govern the set, and they are what "one PRD per area" means
 operationally:
@@ -898,7 +903,7 @@ explicit **does not own** list, not just an **owns** list.
   are context and turn budgets, not spend budgets.
 - **Owns:** per-pool and per-worker budget *accounting* on top of the existing
   usage ledger, the limit declarations, and the user-visible budget report.
-- **Does not own (M-1):** the *act* of aborting. Pre-emptive abort versus
+- **Does not own (M-1 in §5.4):** the *act* of aborting. Pre-emptive abort versus
   graceful drain is a lifecycle decision, it operates on the same worker
   handles as steering and cancellation, and it is therefore owned by A-8. A-6
   decides *when a budget is exceeded*; A-8 decides *what happens to the
