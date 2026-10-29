@@ -1,7 +1,7 @@
 ---
 title: "SUBAGENT research: how coding-agent harnesses manage subagents and their tools"
 status: Historical
-version: 0.2.0
+version: 0.3.0
 date: 2026-10-26
 snapshot_commit: f843040644db374260ebb272577f4f3d8f976953
 scope: "cross-harness subagent research, agenthicc evidence baseline, capability taxonomy, and PRD house-format contract for the SUBAGENT series"
@@ -43,7 +43,7 @@ reference before citing it in a new PRD.
 | §3 | Cross-harness feature matrix | implemented |
 | §4 | Gap analysis: competitor capability → agenthicc evidence | implemented |
 | §5 | Locked capability taxonomy and area-to-PRD bijection | implemented |
-| §6 | SUBAGENT PRD house-format contract | pending |
+| §6 | SUBAGENT PRD house-format contract | implemented |
 
 Snapshot identity for the external evidence: open-source harnesses were cloned
 at `--depth 1` and are cited by full commit SHA; closed-source harnesses were
@@ -1057,3 +1057,188 @@ A-4 and A-5 all reference. That is a **document** order.
 Confidence order is A-2, then A-1/A-3/A-4/A-5/A-7/A-8, then A-6 and A-9. That
 ordering is *not* a commitment to ship in that order; it is what the PRDs should
 say when they claim urgency.
+
+---
+
+## 6. The SUBAGENT PRD house-format contract
+
+### 6.1 Why a contract, and why this one
+
+The nine `SUBAGENT-NN` documents are written months apart by different hands and
+will be read by someone who has not read this report. Two facts about the
+existing tree make a contract necessary rather than fussy:
+
+- Only **186 of 270** documents in `prds/` carry YAML frontmatter at all, so
+  "follow the house style" resolves to nothing specific.
+- The frontmatter that does exist is not uniform: `created` appears in 105
+  documents and `date` in 77, and `status` has **eleven** spellings in use
+  (`Implemented` 83, `draft` 55, `Proposed` 33, `implemented` 5, `In progress`
+  3, `proposal` 2, then one each of `Historical`, `Implemented (phase 1)`,
+  `Implemented (agenthicc side)`, `implementing` and `Complete`).
+
+The final audit for this series is mechanical (it checks frontmatter, section
+presence, citation resolvability and appendix tables). A mechanical audit needs
+a fixed shape, and this section is that shape. It is a *contract*, not advice:
+§6.7 is the checklist the audit re-runs.
+
+The repo's own rule is the reason the investigation section is mandatory rather
+than optional: `AGENTS.md:119-120` says `prds/` are historical records and a PRD
+must not be treated as current API documentation. A PRD written against this
+report's snapshot without re-reading the source is therefore stale on the day it
+is written.
+
+### 6.2 Frontmatter: required keys
+
+Every `SUBAGENT-NN` document opens with a fenced YAML block, before the title.
+
+```yaml
+---
+title: "SUBAGENT-01: Declarative subagent types and discovery"
+status: Proposed
+version: 0.1.0
+date: 2026-11-02
+scope: "declarative subagent type definitions, discovery precedence, and model-facing selection text"
+area: A-1
+related_prds:
+  - PRD-233
+  - PRD-197
+  - AGX-09
+tags:
+  - subagents
+  - type-system
+  - configuration
+---
+```
+
+| Key | Required | Rule |
+|---|---|---|
+| `title` | yes | `SUBAGENT-NN: <human title>`, matching the H1 |
+| `status` | yes | Literally `Proposed` at creation. See §6.6 |
+| `version` | yes | `0.1.0` at creation; bump on substantive revision |
+| `date` | yes | ISO `YYYY-MM-DD`, the date the source investigation was run |
+| `scope` | yes | One sentence, the area's boundary — not a restatement of the title |
+| `area` | yes | The locked area id (`A-1` … `A-9`) from §5.6 |
+| `related_prds` | yes | Every document named in §6.3 section 8 |
+| `tags` | yes | Lowercase, 3–6 tags, `subagents` always first |
+
+Two deliberate decisions:
+
+- **`date`, not `created`.** The goal specifies `date`; 77 existing documents
+  already use it. The 105 documents using `created` are legacy and are not a
+  precedent this series follows. A SUBAGENT PRD carries `date` and never
+  `created`.
+- **`area` is an addition** beyond the keys the goal names, and it is the one
+  addition that earns its place: §5.6 claims a bijection, and a bijection that
+  cannot be checked from the PRD itself is an assertion. With `area` present,
+  the final audit verifies area-to-PRD coverage by reading frontmatter instead
+  of trusting prose. If that audit is judged unnecessary later, `area` is the
+  one key to drop.
+
+### 6.3 The body: nine sections and one appendix
+
+Numbered `## 1.` … `## 9.`, then an unnumbered appendix. Section numbers are
+stable, so a later PRD can cite "SUBAGENT-04 §6" and mean acceptance criteria.
+
+| # | Section | Required content | The check that fails it |
+|---|---|---|---|
+| 1 | Executive summary | What changes, for whom, in ≤200 words. No citations required here | Missing, or restates the title |
+| 2 | Problem statement | Every claim carries `file:line`; at least three distinct citations; names the git commit the checks were run against | Fewer than three citations, or a claim with no file |
+| 3 | **Current-source investigation** (mandatory) | The commands actually run, their results, and anything that changed since `f843040` | Section absent, or contains no command |
+| 4 | Goals | Numbered, each one outcome, each traceable to §2 | A goal with no problem-statement link |
+| 5 | Non-goals | Must include the area's "does not own" list from §5.3, verbatim or paraphrased | Absent, or contradicts §5.3 |
+| 6 | Acceptance criteria | Each a testable assertion, each naming a test file or command | A criterion no one can run |
+| 7 | Rollout, migration and security | Compatibility, defaults, migration of existing config, permission impact, fail-open versus fail-closed | Absent, or no default stated |
+| 8 | Verification | Exact commands and the test files they run, including existing tests to extend | No command, or a command that does not exist |
+| 9 | Related and superseded PRDs | One relationship verb per document: *inherits*, *narrows*, *supersedes*, *extends*, *unrelated* | An overlapping document from §1.10 not addressed |
+| A | Competitor evidence appendix | The table in §6.5 | Empty, or no depth label |
+
+Section 3 sits *before* goals on purpose. If the investigation comes last it
+becomes a justification of decisions already made; placed third, its result can
+still change the goals.
+
+### 6.4 Section 3, the current-source investigation
+
+This is the section most likely to be faked, so it has a fixed shape:
+
+1. **State the commit.** `git rev-parse HEAD` at the time of writing, in full.
+2. **List the commands and their results.** The greps and reads that establish
+   the *present* claims, and for every *absent* claim the pattern and the search
+   scope, following the discipline §1.1 already uses. "Not found" without a
+   pattern and a scope is not evidence.
+3. **Diff against this report.** Anything that moved since `f843040`. If nothing
+   moved, say so in one line — that is a result, not an omission.
+4. **Record surprises.** If the source contradicts this report, the PRD follows
+   the source and says so. §5.6 makes the taxonomy authoritative over the PRD,
+   not over the code.
+
+### 6.5 Appendix A, the competitor evidence table
+
+Each PRD carries the rows relevant to its own area, so it can be read without
+this report. Shape:
+
+| Harness | Evidence | Depth | What it does | Take or reject |
+|---|---|---|---|---|
+| opencode | `packages/schema/src/agent.ts:23-35` @ `726cf09` | code | `description?` and `mode` on `Agent.Info` | Take the description field; reject `mode` as redundant with our registry |
+
+Rules:
+
+- **Open source:** file path plus the pinned commit. Cite the SHA from §2.1; a
+  path without a commit is not a reproducible reference.
+- **Closed source:** the doc URL and the date fetched. Never a file path.
+- **Depth label is mandatory** (`code`, `code + design notes`, `docs-only`). A
+  `docs-only` row may not be the sole justification for a requirement.
+- **One row per harness that has the capability.** Four rows is typical; a
+  single row means the requirement rests on one data point and §7 of the PRD
+  must say so.
+
+Restating §2 in full is not required and is discouraged: the appendix carries
+the rows for that area, with the depth label copied honestly.
+
+### 6.6 Status and lifecycle vocabulary
+
+- Created as `Proposed`. Exactly that spelling, exactly that case.
+- `draft`, `proposal`, `In progress` are not used. 55 documents currently say
+  `draft` and 2 say `proposal`; that inconsistency is what the series
+  standardises away.
+- Promoted to `Implemented` only when behaviour is on `main`, per
+  `AGENTS.md:156` ("update PRD status when behavior or persistence changes").
+  `Implemented (phase 1)` is available only if a shipped phase is genuinely
+  partial, and the PRD must name what phase 2 is.
+- A superseded PRD keeps its file and gains `superseded_by:`; it is never
+  deleted.
+
+### 6.7 Pre-submit checklist
+
+The final audit re-runs these against every `SUBAGENT-NN` document.
+
+1. Frontmatter parses as YAML (strip the `---` delimiters first; a naive
+   parse reads the closing delimiter as a second document) and contains all
+   eight keys of §6.2.
+2. `status` is exactly `Proposed`; `date` is ISO and matches the investigation.
+3. `area` is one of `A-1` … `A-9` and matches the row in §5.6.
+4. Sections 1–9 and appendix A all present, in order, numbered as §6.3.
+5. Section 2 has ≥3 `file:line` citations and names the commit.
+6. Every `file:line` in the document resolves in the working tree at that commit.
+7. Section 3 lists at least one command, and every absent claim names pattern
+   and scope.
+8. Section 5 includes the area's "does not own" exclusions from §5.3.
+9. Every acceptance criterion names a test file or a runnable command.
+10. Every verification command exists and its test path is real.
+11. Section 9 gives a relationship verb for every overlapping document from
+    §1.10 that touches this area.
+12. Appendix A has ≥1 row, and every row carries a pinned commit (open source)
+    or a URL plus fetch date (closed source), and a depth label.
+
+### 6.8 What the contract does not require
+
+Stated so the contract does not become a length tax:
+
+- **No length target.** A PRD that needs 400 lines and one that needs 90 are
+  both compliant.
+- **No re-derivation of §2.** The appendix summarises; it does not re-research.
+- **No implementation plan or code.** Line-level design belongs in the PR that
+  implements it, not in the requirement.
+- **No update to this report.** This document is `Historical` and frozen at
+  `f843040` plus the research commits; PRDs cite it, they do not maintain it.
+  The one exception is §5.6: if a PRD splits, the mapping table is updated
+  first, because §5.6 is authoritative over the PRD numbering.
