@@ -339,7 +339,7 @@ Three consequences, and they are the reason the table exists at all:
   rule governs keys only. A known key with an unusable value fails closed at the
   owning PRD's load check — `model:` and an unrecognised `effort:` (SUBAGENT-02
   §6 criterion 8), `output:` (SUBAGENT-03 §6 criterion 7), `permissions:`
-  (SUBAGENT-05 §6 criterion 8) — with two deliberate exceptions that are
+  (SUBAGENT-05 §4 goal 8) — with two deliberate exceptions that are
   quality-of-execution knobs rather than identity or permission claims: an
   `effort:` the named model does not support warns once and runs at the model's
   default (SUBAGENT-02 §7), and a `context:` larger than the model's resolved
