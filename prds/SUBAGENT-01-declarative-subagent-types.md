@@ -283,6 +283,69 @@ Three rules:
   available tools, as `allowed_tools` already is) and may never widen them. The
   widening rules themselves are SUBAGENT-05.
 
+**The definition-format key set, and who owns each key.** AGX-09 §5.1 fixes the
+frontmatter key list and makes an unknown key a validation error rather than an
+ignored field (`prds/agx-09-agent-library-and-switching.md:92`). That rule is
+PRD-250's inert-field rule pointing the other way: a field that is accepted but
+never read is a defect (`prds/prd-250-code-quality-evaluation-and-improvement-programme.md:244`),
+so a key the loader does not recognise must not be quietly absorbed
+(`:245`). Four PRDs in this series extend that key list, and each says so in its
+own §7. Left in those places alone, the format would be extended independently
+four times with no statement of the result. The union is recorded here, once;
+the other PRDs cite this table rather than restating it.
+
+| Key | Owner | In AGX-09 §5.1 today | Absent means | What the `:92` rule requires |
+|---|---|---|---|---|
+| `description` | SUBAGENT-01 §4 goals 2 and 4 | **yes, and required** (`prds/agx-09-agent-library-and-switching.md:78`, `:91`) | required in a definition file; on the runtime record `SubagentTypeSpec.description` defaults to `""` so plugin-registered types keep working (§7 migration step 1) | nothing — the key is already known. What changes is the runtime home and the model-facing projection, not the format |
+| `override` | SUBAGENT-01 §4 goal 7 | **no** | `false`: a project definition whose name shadows a built-in is refused, naming the built-in | add it to the key list, the schema and the validator in the same change as SUBAGENT-01. Until then every definition that sets it is refused as an unknown key, which makes the shadowing refusal indistinguishable from a typo |
+| `effort` | SUBAGENT-02 §4 goal 2, §7 | **no** | inherit the parent's resolved provider options; an absent key adds no effort entry, exactly as today | same, in the same change as SUBAGENT-02 |
+| `context` | SUBAGENT-02 §4 goal 3, §7 | **no** | 8,000 tokens — `ShortTermMemory(max_tokens=8_000)` (`src/agenthicc/subagents/pool.py:960`), observed through the probe wrapper at `:958` | same, in the same change as SUBAGENT-02 |
+| `output` | SUBAGENT-03 §4 goal 1, §7 | **no** | no contract: plain-text `SubagentResult.text`, no validation, no parser | same, in the same change as SUBAGENT-03 |
+| `permissions` | SUBAGENT-05 §4 goal 1, §7 | **no** | no block: today's effective scope and an unchanged `policy_revision` | same, in the same change as SUBAGENT-05. Nested on purpose, so the next permission field extends a block instead of arriving as another key |
+
+The other eight keys — `name`, `mode`, `model`, `tools`, `max_steps`, `ceiling`,
+`color`, `hidden` (`prds/agx-09-agent-library-and-switching.md:77-85`) — stay
+exactly as AGX-09 writes them. `mode:` is what makes a definition a subagent type
+at all (`mode: subagent`, reused here rather than replaced by an `is_subagent`
+flag, §3), and `model:` gains *behaviour* in SUBAGENT-02 §4 goal 1 without
+becoming a new key. SUBAGENT-04 §4 goal 10, SUBAGENT-06 §7, SUBAGENT-07,
+SUBAGENT-08 and SUBAGENT-09 add none: their subjects are pools, calls, workers
+and transcripts, not type records. **After the series the key set is fourteen
+keys — AGX-09's nine plus the five above that AGX-09 does not already have.**
+SUBAGENT-04 §7 and SUBAGENT-06 §7 had each counted three extending PRDs, because
+both were written before SUBAGENT-05 and neither counted `permissions:`; both now
+cite this table instead of carrying a count.
+
+The table sits in §7 rather than in a second appendix because the research
+report's contract allows nine numbered sections and one appendix, and its §6.7
+item 5 fails a document carrying two; defaults and the migration of existing
+configuration are §7's own subject in any case.
+
+Three consequences, and they are the reason the table exists at all:
+
+- **One change, not five.** The key list, the schema and the validator are one
+  artefact. "Add the key" therefore means "land the key and its reader in the
+  same release". A key accepted a release before its reader exists is precisely
+  the inert-field defect PRD-250 records for settings
+  (`prds/prd-250-code-quality-evaluation-and-improvement-programme.md:244`),
+  applied to definitions.
+- **Refused beats ignored, and this PRD does not soften it.** Because the
+  unknown-key rule makes these errors, a definition using a key whose owning PRD
+  has not landed fails at load with the file path — the correct outcome, and the
+  reason no key here may be introduced as "accepted and ignored". The one
+  existing key that cannot take effect until SUBAGENT-02 lands is `model:`,
+  which §5 *warns* about instead of dropping.
+- **An unknown value is a different axis from an unknown key.** The unknown-key
+  rule governs keys only. A known key with an unusable value fails closed at the
+  owning PRD's load check — `model:` and an unrecognised `effort:` (SUBAGENT-02
+  §6 criterion 8), `output:` (SUBAGENT-03 §6 criterion 7), `permissions:`
+  (SUBAGENT-05 §6 criterion 8) — with two deliberate exceptions that are
+  quality-of-execution knobs rather than identity or permission claims: an
+  `effort:` the named model does not support warns once and runs at the model's
+  default (SUBAGENT-02 §7), and a `context:` larger than the model's resolved
+  window is clamped rather than refused (SUBAGENT-02 §6 criterion 5), because an
+  oversized budget bounds memory, it does not misreport which model ran.
+
 ## 8. Verification
 
 Current suite that must stay green:
@@ -306,7 +369,10 @@ already cover.
   This PRD consumes that format as-is and adds only the subagent projection. If
   AGX-09 ships first, this PRD is the adapter; if this PRD ships first, it must
   implement AGX-09's format exactly as written there so AGX-09 does not later
-  have to migrate files. Two definition formats is the failure mode.
+  have to migrate files. Two definition formats is the failure mode. The key set
+  this series adds to that format is tabulated in §7, because AGX-09's
+  unknown-key rule makes each addition a change to AGX-09 and not only to the
+  PRD that wants the key.
 - **PRD-233 — supersedes for the subagent type record only.** PRD-233 §4.1
   proposes a versioned profile schema with `description`, `role`, prompt source,
   tool allowlists and budgets, and §4.2 a precedence order. For *subagent

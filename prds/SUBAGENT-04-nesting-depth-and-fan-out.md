@@ -278,7 +278,8 @@ and load-bearing the moment pools overlap.
 10. No new definition-format keys. Depth and fan-out are properties of a *pool*,
     not of a *type* — a type is a role, a depth is a position — so this PRD adds
     nothing to AGX-09 §5.1's key set, which is already being extended by
-    SUBAGENT-01, -02 and -03. §7 records that reasoning.
+    SUBAGENT-01, -02, -03 and -05 (the union is tabulated in SUBAGENT-01 §7).
+    §7 records that reasoning.
 
 ## 5. Non-goals
 
@@ -391,11 +392,12 @@ inert-field rule (`prds/agx-09-agent-library-and-switching.md:92`). `max_depth`,
 the task ceiling and the pool ceiling are properties of a *pool*, and a pool is
 created by a call, not by a definition; a type is a role and a depth is a
 position. Putting them on the type would let two definitions disagree about the
-tree they share, and would add a fourth unilateral extension to a key set that
-already has three (SUBAGENT-01's `description` and `override:`, SUBAGENT-02's
-`effort:` and `context:`, SUBAGENT-03's `output:`). They are run/project
-settings instead. If a later PRD wants per-type depth ceilings, that is a
-definition-format change and must go through the consolidation, not around it.
+tree they share, and would add a sixth unilateral extension to a key set that
+already has five (`override:`, `effort:`, `context:`, `output:` and
+`permissions:` — the union, with each key's owner and default, is tabulated in
+SUBAGENT-01 §7). They are run/project settings instead. If a later PRD wants
+per-type depth ceilings, that is a definition-format change and must go through
+that table, not around it.
 
 **Security, and where it fails closed.**
 

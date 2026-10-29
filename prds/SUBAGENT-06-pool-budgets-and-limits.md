@@ -447,9 +447,10 @@ a ceiling.
 
 **No definition-format coordination.** This PRD adds no key to the type record,
 so AGX-09 §5.1 and PRD-250's unknown-key validation need no change on its
-account. That is deliberate: three of the first five PRDs in this series each
-extend that key set, and a fourth unilateral extension in the weakest-evidenced
-area would be the wrong way to spend the format's tolerance.
+account. That is deliberate: four PRDs in this series extend that key set, and
+the union is tabulated in SUBAGENT-01 §7; a fifth extension, in the
+weakest-evidenced area of the series, would be the wrong way to spend the
+format's tolerance.
 
 **Security and honesty.**
 

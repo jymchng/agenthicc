@@ -299,7 +299,9 @@ declaring a contract; a project opts in by defining such a type.
 and makes unknown keys a validation error by PRD-250's inert-field rule
 (`prds/agx-09-agent-library-and-switching.md:92`). `output:` is not in that key
 list and must be added there in the same change, exactly as SUBAGENT-02 §7
-requires for `effort:` and `context:`.
+requires for `effort:` and `context:`. The union of the keys the series adds,
+with the owning PRD and the default for each, is recorded once in
+SUBAGENT-01 §7; this paragraph states only what SUBAGENT-03 adds.
 
 **Security, and where it fails closed.**
 

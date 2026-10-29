@@ -426,7 +426,10 @@ block; a project opts in by defining such a type.
 unknown keys a validation error (`prds/agx-09-agent-library-and-switching.md:92`).
 This PRD adds one new key, a nested `permissions:` block rather than four
 top-level keys, and AGX-09's list and PRD-250's validation must be updated in the
-same change — as SUBAGENT-01, -02 and -03 each require for their keys. Declaring
+same change — as SUBAGENT-01, -02 and -03 each require for their keys. The union
+of the keys this series adds, with the owning PRD and the default for each, is
+recorded once in SUBAGENT-01 §7; this paragraph states only what SUBAGENT-05
+adds. Declaring
 it nested is deliberate: it keeps one extension point for a set of related
 constraints, so a later permission field does not become a fifth unilateral
 addition to the format.

@@ -285,7 +285,9 @@ makes unknown keys a validation error by PRD-250's inert-field rule
 `effort:` and `context:` do not. They must be added to AGX-09's key list and its
 schema in the same change, exactly as SUBAGENT-01 §9 requires for the format it
 consumes — otherwise every definition using them fails validation as an unknown
-key.
+key. The union of the keys this series adds, with the owning PRD and the default
+for each, is recorded once in SUBAGENT-01 §7; this paragraph states what
+SUBAGENT-02 adds and does not restate the other PRDs' keys.
 
 **Security, and where it fails closed.**
 
