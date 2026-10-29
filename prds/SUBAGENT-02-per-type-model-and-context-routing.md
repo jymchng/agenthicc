@@ -211,9 +211,12 @@ The A-2 boundaries from the research report §5.3, restated as commitments:
   as a *feature*, and provider capability metadata are out of scope; agenthicc
   has no such registry (§3). This PRD only defines what a type may say and when
   a value is refused.
-- **Spend limits.** Aggregate cost, per-pool budgets and abort are SUBAGENT-06
-  (A-6). Context *sizing* is here; aggregate *cost* is there. They read the same
-  ledger and neither owns the other's policy.
+- **Spend limits and the response to a breach.** Aggregate cost and per-pool
+  budgets are SUBAGENT-06 (A-6); the abort-versus-drain response to a crossed
+  limit is SUBAGENT-08 (A-8), per research report §5.4 M-1 — A-6 decides *when a
+  budget is exceeded*, A-8 decides *what happens to the workers*. Context
+  *sizing* is here; aggregate *cost* is there. All three read the same ledger and
+  none owns another's policy.
 - **Turn and tool-call budgets.** Already implemented as `max_turns`
   (`src/agenthicc/subagents/types.py:89`) and `max_turn_time_s` (`:91`); M-3 and
   R-8 in the research report reject them as an area, and this PRD does not
@@ -308,7 +311,8 @@ key.
 **Cost.** Per-worker model choice makes spend per type legible, which is the
 point and also the risk: a type pointed at an expensive model multiplies. This
 PRD stops at making the cost *attributable* (`§4` goal 6) and visible through the
-existing ledger. Stopping a pool that has spent too much is SUBAGENT-06 (A-6).
+existing ledger. Stopping a pool that has spent too much is SUBAGENT-08 (A-8),
+acting on the limit SUBAGENT-06 (A-6) declares (research report §5.4 M-1).
 
 ## 8. Verification
 
