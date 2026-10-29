@@ -190,8 +190,13 @@ Absence claims, each with the pattern and the scope that establish it:
 - **No test asserts that workers cannot delegate.** Pattern
   `spawn_subagents|depth|nest`, scope `tests/`: the name appears in
   `tests/integration/test_subagent_tool_execution.py` only as
-  `make_spawn_subagents_tool` construction in the parent role. No test asserts
-  anything about a worker's tool set or about recursive spawning.
+  `make_spawn_subagents_tool` construction in the parent role. The tool
+  *ceiling* is tested: `tests/integration/test_subagent_tool_execution.py:112`
+  builds two tools, allows one, and asserts every provider call exposes only
+  `lookup_fact`, so filtering in general is covered. What no test asserts is the
+  narrower thing this PRD needs — that `spawn_subagents` is absent from a
+  worker's tools, that depth is enforced, or that recursion is refused. The
+  defensive copy at `agent_turn.py:1576` is asserted by nothing at all.
 
 Diff against the research report's `f843040` snapshot: **nothing has moved** for
 G-4. `types.py:182-306`, `types.py:309-371`, `pool.py:1309` and
@@ -242,11 +247,15 @@ and load-bearing the moment pools overlap.
    a tool it must not call. Both the refusal (goal 2) and the withholding
    (goal 3) are required; either alone is a single point of failure. Today the
    withholding rests on a defensive copy (`agent_turn.py:1576`) plus an
-   undeclared ceiling, and neither is asserted by any test.
+   undeclared ceiling. The ceiling's effect is tested; the copy is asserted by
+   no test.
 4. Fan-out is bounded per pool by two declared ceilings: a maximum task count,
    checked before any worker is constructed, and a maximum for the model's
-   `max_concurrent` argument. The model may **lower** a ceiling per call and may
-   never raise it.
+   `max_concurrent` argument. Both are declared **per depth**, so a nested pool
+   can be given less work than the pool that spawned it; a depth with no entry
+   inherits the nearest declared ancestor's ceiling, and the default declares
+   one pair covering every depth, which reproduces today. The model may **lower**
+   a ceiling per call and may never raise it.
 5. A limit on how many pools may be running at once, since `_ACTIVE_POOLS` is a
    fan-out dimension with no bound today and overlapping pools are coming
    (SUBAGENT-07).
@@ -324,10 +333,14 @@ The A-4 boundaries from the research report §5.3, restated as commitments:
    `tests/integration/test_subagent_tool_execution.py`.
 5. A task list longer than the declared maximum is rejected before any
    `SubagentWorker` is constructed, and the error states the limit and the
-   configured source it came from: `tests/unit/test_subagent_pool.py`.
+   configured source it came from. The same test declares a per-depth table in
+   which depth 2 allows fewer tasks than depth 1, and asserts the depth-2 pool is
+   held to its own smaller maximum: `tests/unit/test_subagent_pool.py`.
 6. A `max_concurrent` argument above the declared ceiling is lowered to the
    ceiling, and the returned result reports the value actually used, so the
-   model is told rather than silently obeyed: `tests/integration/test_subagent_tool_execution.py`.
+   model is told rather than silently obeyed. A depth with no entry inherits the
+   nearest declared ancestor's ceiling rather than falling back to unlimited:
+   `tests/integration/test_subagent_tool_execution.py`.
 7. Exceeding the pool-count limit is refused with an error naming the limit and
    the pools currently running: `tests/unit/test_subagent_pool.py`.
 8. A child pool whose `(type, task)` signature repeats in its ancestry is
@@ -350,13 +363,16 @@ The A-4 boundaries from the research report §5.3, restated as commitments:
 is today's behaviour: no delegation, no refusal reachable, no new error path.
 
 The fan-out ceilings are finite by default — a maximum task count of `64` and a
-maximum `max_concurrent` of `16` — and that **is** a change, because today the
-model may ask for unbounded work. It is deliberate and it is a judgement, not a
-finding: no harness in the research report demonstrably caps task count (§A
-records the same absence for Qoder), so `64` is chosen to sit above any pool a
-human would read in a result digest and to be raisable in one line. Stating it
-as evidence would be the overclaim §4 of the report warns against; stating it as
-a default with a migration path is honest.
+maximum `max_concurrent` of `16`, covering every depth — and that **is** a
+change, because today the model may ask for unbounded work. It is deliberate and
+it is a judgement, not a finding: no harness in the research report demonstrably
+caps task count (§A records the same absence for Qoder), so `64` is chosen to sit
+above any pool a human would read in a result digest and to be raisable in one
+line. Stating it as evidence would be the overclaim §4 of the report warns
+against; stating it as a default with a migration path is honest. The per-depth
+form exists so that a project which does enable nesting can give a nested pool
+less rope than its parent without touching code; it is not exercised by the
+default configuration, which declares one ceiling for all depths.
 
 **Migration.** Three ordered steps, each independently shippable:
 
@@ -461,6 +477,6 @@ two accidents into one invariant.
 | Harness | Evidence | Depth | What it does | Take or reject |
 |---|---|---|---|---|
 | opencode | `packages/core/src/tool/plugin/subagent.ts:124-139` @ `726cf096396d5014c3b1845e231cc01efe0421ee` | code | Walks parent sessions to compute `depth` (`:124-134`), reads `experimental.subagent_depth` **defaulting to 1** (`:135`), and fails with "Subagent depth limit reached (N). Increase \"experimental.subagent_depth\" to allow nested subagents." (`:136-139`) | Take all of it: depth as an opt-in integer defaulting to today's behaviour, and an error that names the remedy. This is the closest analogue to agenthicc's situation |
-| Claude Code | `https://code.claude.com/docs/en/sub-agents` fetched 2026-10-29 | docs-only | Three layers below the main conversation, changed by `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH` (`1` disables nesting); at the limit the CLI **withholds the Agent tool** from every subagent, and a spawning subagent waits for its nested subagent so nesting does not multiply concurrency behind the parent's back | Take the withholding mechanism (goal 3) and the separation of depth from concurrency (goals 1 and 4). Reject the default of three: agenthicc has no evidence it needs nesting at all |
+| Claude Code | `https://code.claude.com/docs/en/sub-agents` fetched 2026-10-29 | docs-only | Three layers below the main conversation, changed by `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH` (`1` disables nesting); at the limit the CLI **withholds the Agent tool** from every subagent *except a fork, whose call returns an error instead of spawning*; a spawning subagent waits for its nested subagent, so nesting does not multiply concurrency behind the parent's back | Take the withholding mechanism (goal 3) and the separation of depth from concurrency (goals 1 and 4). Reject the default of three: agenthicc has no evidence it needs nesting at all |
 | Codex CLI | `codex-rs/protocol/src/agent_path.rs:19-23` and `codex-rs/core/src/session/multi_agents.rs:59` @ `9cc14e79882ff8885cd5d33b4adadae014045aef` | code | `AgentPath` is a validated absolute path with `ROOT = "/root"`, making identity a *tree position*; concurrency is a config integer, `max_concurrency: config.max_concurrent_threads_per_session` | Take the idea that identity carries tree position — minimally, as depth plus parent id (goal 7). Reject the full path refactor: §5.5 R-1 records that agenthicc already has `worker_id` and `PoolHandle` |
 | Qoder CLI | `https://docs.qoder.com/cli/subagent` fetched 2026-10-29 | docs-only | Subagents are invoked with an `Agent(name)` expression; the documented surface describes `model`, `effort` and `maxTurns`, not a depth counter or a fan-out cap | Partial, and recorded as partial: take direct-child invocation as the mental model only. The *absence* of a documented depth or fan-out cap is weak evidence (§2.1's caveat), so it is not used to justify any requirement here |
