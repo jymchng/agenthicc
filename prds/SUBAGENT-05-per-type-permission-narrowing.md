@@ -72,6 +72,20 @@ capability blocks and the same approval requirements.
 contribute to either set, so a type that must never write files cannot say so —
 it can only omit the write tools from its allow-list.
 
+**A denied capability's only documented remedy is to widen.** `ToolCapabilityGate`
+does not merely refuse a blocked capability: it aborts with an instruction to
+change the mode — `"Switch to Yolo mode or annotate it as read-only."`
+(`src/agenthicc/tools/capability_gate.py:51-67`). For a human in a session that
+is reasonable advice. For a worker it is an escalation: the worker's mode is a
+copy derived from the inherited policy (`policy.py:106-118`), so the remedy is
+either impossible or a widening the invariant forbids. What a worker may not do
+is therefore expressed today as a sentence inside an error message, not as a rule
+the runtime enforces. `types.py:6-8` already states the invariant in prose —
+"registering a name does not grant a new security capability" — because the pool
+intersects the allow-list with the parent's visible tools and capability policy.
+The invariant holds by subtraction only, and there is no field through which a
+type may subtract more.
+
 **Workspace scope is shared by reference.** `child_workspace_access` constructs
 `WorkspaceAccessPolicy(parent.scope, …)`
 (`src/agenthicc/subagents/policy.py:167-181`): the *same* `WorkspaceScope`
@@ -189,6 +203,29 @@ $ sed -n '856,870p' src/agenthicc/subagents/pool.py
                 )
 ```
 
+What the gate does when a capability is blocked — the remedy it offers:
+
+```console
+$ sed -n '51,67p' src/agenthicc/tools/capability_gate.py
+        if denied:
+            caps_str = ", ".join(sorted(denied))
+            reason = (
+                "has no declared capability metadata"
+                if "undeclared" in denied
+                else f"requires {caps_str} capability"
+            )
+            return BeforeToolHookDecision.abort(
+                {
+                    "ok": False,
+                    "error": (
+                        f"Tool '{ctx.tool_name}' {reason}, "
+                        f"which is blocked in {mode.name} mode. "
+                        f"Switch to Yolo mode or annotate it as read-only."
+                    ),
+                }
+            )
+```
+
 Absence claims, each with the pattern and the scope that establish it:
 
 - **No per-type deny-list, capability block, approval override or workspace
@@ -207,6 +244,11 @@ Absence claims, each with the pattern and the scope that establish it:
   `permissions`, scope `prds/agx-09-agent-library-and-switching.md`: the base
   format is `name`, `description` and body (§7 quotes it), with no permission
   section.
+- **No escalation vocabulary and no grant field.** Patterns
+  `grant|escalat|allow_more|can_widen`, scope `src/agenthicc/subagents/`: one
+  match, the `types.py:7` docstring phrase "grant a new security capability",
+  which asserts the opposite of an escalation path. The only recourse a worker
+  is offered at runtime is the gate's mode-switch sentence quoted above.
 
 Diff against the research report's `f843040` snapshot: **nothing has moved** for
 G-5. `types.py:88`, the ceiling prose at `:83-84` and the PRD-197 inheritance
@@ -276,11 +318,17 @@ it is why goal 3 is a *deny* rather than a wider allow.
    that cannot narrow is a validation error naming the file and the key, and the
    type is not registered — following AGX-09's existing rule that unknown keys
    are errors, not silently ignored (`prds/agx-09-agent-library-and-switching.md:92`).
-9. Boundaries are recorded rather than absorbed: the dormant `max_spawn_depth` /
-   `can_spawn` gate belongs to SUBAGENT-04, PRD-19's unbuilt `scope_restrict`
-   tool belongs to SUBAGENT-08, and per-agent profiles belong to PRD-233. §9
-   states each.
-10. No behaviour change for the nine built-in types, none of which declares a
+9. A type-level deny is not escalatable. A denied capability aborts the call with
+   a message naming the type and the constraint, never a mode switch; a denied
+   tool is absent from the worker's tool list rather than promptable; and no
+   approval prompt, retry or model-visible instruction lifts either. Approval is
+   the one thing a type may add, and adding it never removes a deny — which is
+   why there is no `allow_*` or `grant_*` field.
+10. Boundaries are recorded rather than absorbed: the dormant `max_spawn_depth` /
+    `can_spawn` gate belongs to SUBAGENT-04, PRD-19's unbuilt `scope_restrict`
+    tool belongs to SUBAGENT-08, and per-agent profiles belong to PRD-233. §9
+    states each.
+11. No behaviour change for the nine built-in types, none of which declares a
     `permissions:` block, and no change for any existing definition.
 
 ## 5. Non-goals
@@ -351,6 +399,10 @@ The A-5 boundaries from the research report §5.3, restated as commitments:
 10. `pytest tests/unit/test_agent_permissions.py -q` and
     `pytest tests/integration/test_subagent_tool_execution.py -q` pass unchanged,
     proving the nine built-in types admit exactly what they admit today.
+11. A capability denied by the type aborts the call with an error that names the
+    type and the constraint and offers no mode switch, while a tool denied by
+    `deny_tools` never appears in the worker's tool list and is never offered for
+    approval: `tests/unit/test_subagent_pool.py`.
 
 ## 7. Rollout, migration and security
 
@@ -408,6 +460,14 @@ addition to the format.
   capability is refused at call time even if the tool reached the list — belt and
   braces against the glob hazard, and the one place where a name-level ceiling is
   visibly insufficient.
+- *Denial is not a negotiation.* A capability deny is an abort, not a prompt: the
+  gate refuses the call (`src/agenthicc/tools/capability_gate.py:58-67`) and the
+  capability gate is registered before the approval gate (`pool.py:856-870`), an
+  order the implementation must preserve so that no approval prompt can lift a
+  deny. The abort text must name the type constraint rather than today's
+  `Switch to Yolo mode…` remedy, which inside a worker is exactly the escalation
+  the invariant forbids. A denied tool is simpler still: it never reaches the
+  list, so there is nothing to negotiate over.
 - *The revised policy is fingerprinted.* A changed `permissions:` block changes
   `policy_revision`, so cached results produced under weaker constraints are not
   reused.
