@@ -1,7 +1,7 @@
 ---
 title: "SUBAGENT research: how coding-agent harnesses manage subagents and their tools"
 status: Historical
-version: 0.1.0
+version: 0.2.0
 date: 2026-10-26
 snapshot_commit: f843040644db374260ebb272577f4f3d8f976953
 scope: "cross-harness subagent research, agenthicc evidence baseline, capability taxonomy, and PRD house-format contract for the SUBAGENT series"
@@ -42,7 +42,7 @@ reference before citing it in a new PRD.
 | §2 | Harness-by-harness findings (Grok CLI, Claude Code, Codex CLI, opencode, DeepSeek harness, Qoder CLI) | implemented |
 | §3 | Cross-harness feature matrix | implemented |
 | §4 | Gap analysis: competitor capability → agenthicc evidence | implemented |
-| §5 | Locked capability taxonomy | pending |
+| §5 | Locked capability taxonomy and area-to-PRD bijection | implemented |
 | §6 | SUBAGENT PRD house-format contract | pending |
 
 Snapshot identity for the external evidence: open-source harnesses were cloned
@@ -731,3 +731,324 @@ token-or-cost budgets are not clearly present in any of the six. Claude Code's
 15k *description* budget and Qoder's `maxTurns` are turn/context budgets, not
 spend budgets. A budget PRD is therefore the weakest-supported of the nine and
 should be sequenced and scoped accordingly.
+
+---
+
+## 5. Locked capability taxonomy
+
+### 5.1 What "locked" means here
+
+An area is **locked** only when four admission tests pass. The tests exist to
+make padding visible in both directions: an area that fails T1 or T3 is a
+*subject*, not a work stream, and an area that fails T2 is a guess about what
+competitors value rather than a response to a local problem.
+
+| Test | Question | Failure mode it prevents |
+|---|---|---|
+| **T1 evidence** | Is there a reproducible agenthicc gap with a `file:line`, and for absences a named exhaustive search (§1.9)? | An area invented from competitor reading with no local problem to solve |
+| **T2 precedent** | Does at least one of the six harnesses actually demonstrate the capability (§2, and the §4 Strength column)? | An area with no external justification |
+| **T3 distinct owner** | Is the change concentrated in code that no other area owns? | Two PRDs editing the same function, or an area that is really a sub-task of another |
+| **T4 prior art** | Has an existing document already claimed it (PRD-124/148/157/180/197/214/232/233, AGX-08)? | A second coordination or policy model forking the first |
+
+T4 never deletes an area by itself: it forces the PRD to open with a
+supersession-or-delegation statement, which §6 will make a required section.
+
+Two rules govern the set, and they are what "one PRD per area" means
+operationally:
+
+1. **Every locked area maps to at least one `SUBAGENT-NN` PRD.** An area with no
+   PRD is a note.
+2. **No PRD exists without a locked area.** A PRD that cannot name its area is
+   either an addition that this table owes the reader, or scope creep.
+
+Locked IDs are `A-1` … `A-9` and are stable. PRDs cite them; if a PRD and this
+table disagree about what an area owns, this table wins.
+
+### 5.2 The nine areas as first proposed, and their disposition
+
+| Proposed | Area as proposed | Gap | Disposition |
+|---|---|---|---|
+| P-1 | Declarative types and discovery | G-1 | **A-1**, scope widened (M-2) |
+| P-2 | Per-type model / effort / context routing | G-2 | **A-2**, as proposed |
+| P-3 | Structured result contracts | G-3 | **A-3**, as proposed; mechanism borrowed (M-4) |
+| P-4 | Nesting depth and fan-out governance | G-4 | **A-4**, as proposed |
+| P-5 | Per-type permission narrowing | G-5 | **A-5**, as proposed; one open question carried (R-3) |
+| P-6 | Pool-level budgets and early abort | G-6 | **A-6**, scope narrowed: abort mechanism transferred to A-8 (M-1) |
+| P-7 | Non-blocking / background orchestration | G-7 | **A-7**, as proposed |
+| P-8 | Worker steering, cancellation, retry, partial-result salvage | G-8 | **A-8**, scope widened to own the abort mechanism (M-1) |
+| P-9 | Observability and transcript contract | G-9 | **A-9**, as proposed |
+
+The proposal is sound: each of the nine named areas corresponds to exactly one
+of the nine evidenced gaps, and no two areas name the same owner of change. The
+work below is therefore not a rewrite but a boundary exercise, because the
+failure mode for nine overlapping areas is not "too many areas", it is *two
+PRDs quietly implementing the same decision*. Each area therefore carries an
+explicit **does not own** list, not just an **owns** list.
+
+### 5.3 The locked areas
+
+#### A-1 — Declarative type definitions and discovery
+
+- **Gap:** G-1. Five-field `SubagentTypeSpec` with no model-facing description
+  (`types.py:60-91`); nine specs hard-coded in `_BUILTIN_SPECS`
+  (`types.py:309-371`) behind a process-global `DEFAULT_REGISTRY`
+  (`types.py:433-441`); the type enum reaches the model as bare names
+  (`tool.py:559-563`).
+- **Precedent (T2):** opencode carries `description?` and `mode` on the record;
+  Claude Code selects *by* description; Qoder documents a five-tier definition
+  ladder; Grok's whole type is a three-field record. Five of six.
+- **Owns:** the definition format, where definitions are discovered from, the
+  precedence ladder between sources, and the model-facing selection text.
+- **Does not own:** what a type may *do* with its tools (A-5), which model it
+  runs on (A-2), or the registry's runtime lookup API, which stays as it is.
+- **Prior art (T4):** PRD-233 proposes declarative agent profiles and per-agent
+  policy for *agents*; A-1 must state supersession or delegation, and must not
+  silently become a second profile system.
+- **Absorbs (M-2):** definition precedence, duplicate-name detection and
+  shadowing visibility. Claude Code ships a `/doctor` check for same-directory
+  name collisions and Qoder marks shadowed definitions in its panel; both are
+  consequences of having a ladder, so they belong to the area that introduces
+  the ladder rather than to a separate "definition tooling" area.
+
+#### A-2 — Per-type model, reasoning-effort and context-budget routing
+
+- **Gap:** G-2. Workers are decorated with `model=self._parent_model`
+  (`pool.py:849`), usage is attributed to the parent model (`pool.py:940`), and
+  worker memory is fixed at `8_000` tokens (`pool.py:958-960`).
+- **Precedent (T2):** all six. Unanimous, and therefore the strongest area.
+- **Owns:** per-type model selection, reasoning-effort selection, worker
+  memory/context sizing, and the precedence between a type's provider options
+  and the inherited `SubagentExecutionPolicy`.
+- **Does not own:** discovery of what models exist (that is PRD / model-catalog
+  territory), nor spend limits on the resulting usage (A-6). Context *sizing* is
+  here; aggregate *cost* is A-6. The split is deliberate: they read the same
+  ledger but one is a per-worker setting and the other is a per-pool policy.
+- **Prior art (T4):** none. This is the only area with no overlapping document,
+  which is itself evidence that it has been overlooked rather than settled.
+
+#### A-3 — Structured result contracts and schema-validated findings
+
+- **Gap:** G-3. `SubagentResult.text` is plain text (`pool.py:325`), results are
+  concatenated as labelled text (`pool.py:360`), and `aggregate()` returns
+  `str` (`types.py:51`).
+- **Precedent (T2):** DeepSeek's canonical tool-output contract; opencode's
+  typed `Output` struct; Claude Code's partial-output rules.
+- **Owns:** the optional per-type output contract, its validation and failure
+  semantics, and the reconciliation of that contract with PRD-214's file-backed
+  Markdown handoff.
+- **Does not own:** what happens to a worker's partial output when it is
+  *stopped or fails* at runtime (A-8). A-3 defines the shape of a result; A-8
+  defines what is salvageable when there is no complete result. This is the
+  boundary most likely to be violated, because "partial results" sounds like one
+  topic. It is not: one is a schema question, the other a lifecycle question.
+- **Prior art (T4):** the PRD-124 amendment at
+  `prds/prd-124-concurrent-typed-subagents.md:6-10` removed typed result schemas
+  because LLM output cannot reliably satisfy a Pydantic schema. A-3 must argue
+  in the terms of §4's G-3 note — the *tool* declares the schema and the runtime
+  validates the returned value, so the model never fills a schema — or it will
+  lose the same argument twice. PRD-180 also touches result handoff.
+
+#### A-4 — Nesting depth and fan-out governance
+
+- **Gap:** G-4. `spawn_subagents` appears in `types.py` only inside docstrings
+  (`:29`, `:67`, `:82`) and in none of the nine `allowed_tools` frozensets
+  (`types.py:182-306`); the only bound anywhere is a per-call semaphore at
+  `pool.py:1309` with `max_concurrent: int = 4` (`pool.py:1120`).
+- **Precedent (T2):** opencode `experimental.subagent_depth` defaulting to 1
+  with a named remedy in the error; Claude Code three layers with the `Agent`
+  tool *withheld* at the limit and a separate 20-concurrency cap; Codex
+  `AgentPath` plus `max_concurrent_threads_per_session`; Qoder's
+  `Agent(name)` expression.
+- **Owns:** `max_depth`, per-depth fan-out and pool-count limits, tiered
+  tool/model escalation by depth, and cycle/runaway prevention.
+- **Does not own:** the concurrency semaphore itself, which works and stays.
+  A-4 adds *policy above* it; it does not replace it.
+- **Prior art (T4):** PRD-232's task graph is the broadest overlapping proposal;
+  A-4 must not fork a second notion of a worker tree.
+- **Note the honest possibility:** §4 records that the evidence supports
+  *governing* depth, not *having* nesting. A-4's PRD is therefore allowed to
+  conclude "depth 1 stays the default and nesting is declined", and must say so
+  explicitly rather than leaving the reader to infer it.
+
+#### A-5 — Per-type permission narrowing
+
+- **Gap:** G-5. Type scoping is one `allowed_tools` ceiling (`types.py:88`) with
+  ceiling semantics stated at `types.py:83-84`; there is no deny-list, approval
+  override or per-type workspace narrowing anywhere in `policy.py` or
+  `types.py`.
+- **Precedent (T2):** opencode's action×resource×effect ruleset including `ask`
+  on `*.env`; Claude Code `permissionMode` plus `disallowedTools` plus
+  `permissions.deny`; Qoder the same shape.
+- **Owns:** per-type deny-lists, approval overrides and workspace-scope
+  restrictions, under one hard invariant: **a type may narrow the inherited
+  policy and may never widen it.**
+- **Does not own:** the inheritance contract itself. PRD-197 is `Implemented`
+  and is the base; A-5 cites it and adds the narrowing delta.
+- **Prior art (T4):** PRD-197 (implemented), PRD-233 (proposed profiles).
+- **Carries (R-3):** per-subagent worktree isolation is raised as an open
+  question here rather than as its own area; see §5.5.
+
+#### A-6 — Pool-level budgets and limits
+
+- **Gap:** G-6. `grep -rniE "budget|max_cost|cost_limit|token_limit|abort_threshold"
+  src/agenthicc/subagents/` returns zero matches.
+- **Precedent (T2):** **weak, and recorded as weak.** Concurrency caps are
+  near-universal but explicit token-or-cost budgets are not clearly present in
+  any of the six; Claude Code's 15k description budget and Qoder's `maxTurns`
+  are context and turn budgets, not spend budgets.
+- **Owns:** per-pool and per-worker budget *accounting* on top of the existing
+  usage ledger, the limit declarations, and the user-visible budget report.
+- **Does not own (M-1):** the *act* of aborting. Pre-emptive abort versus
+  graceful drain is a lifecycle decision, it operates on the same worker
+  handles as steering and cancellation, and it is therefore owned by A-8. A-6
+  decides *when a budget is exceeded*; A-8 decides *what happens to the
+  workers*. Without this split the two PRDs would each define a cancellation
+  path.
+- **Prior art (T4):** PRD-157 is `Implemented` and owns canonical usage
+  accounting and TUI token display. A-6 consumes that ledger and must not build
+  a second meter or a second cost widget.
+
+#### A-7 — Non-blocking and background orchestration
+
+- **Gap:** G-7. `SubagentPool.run()` awaits all workers (`pool.py:1217`) and
+  `PoolContinuationRegistry` (`communication.py:727-760`) only collects pools
+  that have already finished.
+- **Precedent (T2):** opencode `background: true` with completion notification
+  and explicit anti-polling instructions; Claude Code background plus
+  notification; Grok's separate read-only `delegate` tool; Codex `wait_agent` as
+  an explicit, disableable tool. Four of six.
+- **Owns:** the fire-and-return mode, durable pool identity, and collection and
+  resumption across turns and process restarts.
+- **Does not own:** mid-flight steering or cancellation of the workers it
+  launches (A-8), nor the session lifecycle it rides on (PRD-141, PRD-204).
+- **Prior art (T4):** PRD-141 background sessions and PRD-204 detached
+  orchestration are *dependencies*. A-7 extends them and must not duplicate them.
+
+#### A-8 — Worker lifecycle: steering, cancellation, retry, salvage
+
+- **Gap:** G-8. `stop_worker` (`pool.py:1188`), `dismiss_worker`
+  (`pool.py:1204`) and `send_subagent_message` (`communication.py:909`) exist as
+  disjoint pieces with no unified per-worker lifecycle.
+- **Precedent (T2):** Codex splits the whole surface into six tools
+  (`spawn_agent`, `send_message`, `followup_task`, `wait_agent`,
+  `interrupt_agent`, `list_agents`); Claude Code stops and resumes by name and
+  retains the row for 30 s; opencode steers by `sessionID`.
+- **Owns:** mid-flight steering, per-worker cancellation with cleanup,
+  per-worker retry versus whole-pool retry, salvage of partial output when a
+  worker is stopped or fails, and (via M-1) the abort-versus-drain decision that
+  A-6 triggers.
+- **Does not own:** the shape of a completed result (A-3), nor the termination
+  semantics of an in-flight *turn* outside a subagent pool — PRD-148 owns
+  unified interrupt and graceful cancellation, and A-8 must extend that
+  vocabulary rather than invent a parallel one.
+- **Prior art (T4):** PRD-232 and PRD-148.
+
+#### A-9 — Observability and a canonical transcript/event contract
+
+- **Gap:** G-9. `TranscriptEvent` exists (`transcripts.py:63-107`), the pool
+  emits through four methods (`pool.py:1480-1566`), and there is no contract
+  document tying the two to what the TUI renders.
+- **Precedent (T2):** moderate, and recorded as such. DeepSeek has canonical
+  output plus jobs/activity records; opencode persists to SQLite and projects
+  session events, with an eviction drive test; Codex has protocol items and an
+  app-server surface. Every harness has *an* answer but they are not mutually
+  comparable.
+- **Owns:** one documented event and transcript schema shared by kernel events,
+  durable transcripts and the TUI rails, including redaction guarantees,
+  bounded payloads, replay, and the counters needed to diagnose stuck or
+  over-budget pools.
+- **Does not own:** the panel's information architecture or navigation, which
+  AGX-08 phase 1 already shipped and which A-9 formalises rather than redesigns.
+- **Prior art (T4):** AGX-08 (implemented, phase 1).
+
+### 5.4 Change log against the proposed nine
+
+**Two scope transfers, one borrowed mechanism, zero merges, zero deletions, zero
+net additions.** The table is deliberately unexciting, and each null result is
+argued rather than asserted.
+
+| ID | Change | From → to | Why | Reflected in |
+|---|---|---|---|---|
+| **M-1** | Scope transfer | P-6 "early abort" → **A-8** | Abort-versus-drain is the same mechanism as cancellation; the handles, cleanup and partial-output salvage are A-8's. Leaving it in A-6 would give two PRDs a cancellation path. | A-6 narrows to accounting and limit declaration; A-8 widens to own the response |
+| **M-2** | Scope transfer | "definition precedence and shadowing" (proposed as part of the Claude/Qoder reading, never a numbered area) → **A-1** | A precedence ladder is a property of discovery; a separate area would own no code that A-1 does not already touch, so it fails T3 | A-1 absorbs it as an acceptance criterion |
+| **M-3** | Rejected on T1 | "per-type turn/tool-call budget" | Already implemented: `max_turns` is a `SubagentTypeSpec` field at `types.py:89`. T1 fails, so it cannot be an area or a PRD | Becomes a non-goal inside A-2 and A-6 rather than a tenth area |
+| **M-4** | Borrowed mechanism | DeepSeek canonical tool-output contract → **A-3** | It is the mechanism by which a structured result contract can avoid PRD-124's schema objection. A "tool output contract" area would be a different product decision about *all* tools, not about subagents | A-3 cites it as precedent, not as scope |
+
+**Why nothing was merged or deleted.** The two credible merge candidates were
+P-9 into P-8 ("runtime visibility and control") and P-6 into P-4 ("governance
+and limits"). Both were rejected on T3, not on taste: P-9's owner is
+`transcripts.py` plus the event emitters, P-8's is the pool's worker handles;
+P-6 consumes the usage ledger and P-4 gates spawning, and neither touches the
+other's code. Merging them would produce one PRD with two unrelated acceptance
+criteria — which is how a PRD ends up unimplementable in one review.
+
+A-6 is the weakest area on T2 (no competitor clearly has spend budgets) and it
+is **not** deleted, because the deletion rule is T1 or T3, not T2. It has a
+reproducible local gap (the zero-match grep covers the whole `subagents/`
+package) and a unique owner, so it survives at reduced confidence: scoped
+narrow by M-1, sequenced last, and with its weakness stated in the PRD's own
+evidence appendix rather than discovered by a reviewer.
+
+### 5.5 Rejected candidates, and where each one lands instead
+
+This table is the padding guard. Each row is a real capability observed in §2
+that is deliberately **not** an area, with the test it fails.
+
+| ID | Candidate | Seen in | Fails | Lands instead in |
+|---|---|---|---|---|
+| R-1 | Typed hierarchical agent identity (`AgentPath` tree) | Codex CLI | T3 — agenthicc already has `worker_id` and `PoolHandle`; path-based prefix operations are a refactor of A-4/A-9 addressing, not a capability gap | A-4 (depth addressing), A-9 (enumeration) |
+| R-2 | Inter-agent message board / durable task graph | Codex CLI, PRD-232 | T1 — `AgentMessageBroker` (`communication.py`) exists and PRD-232 already proposes the durable version | Prior art, not a new PRD |
+| R-3 | Per-subagent worktree isolation | Claude Code (`isolation: worktree`), Qoder | T2/T3 — 2 of 6, and it is a workspace-scoping feature that `policy.py` already constructs for children | Open question inside A-5 |
+| R-4 | Promoting a definition to session main agent (`--agent`) | Qoder CLI only | T1/T2 — 1 of 6, and it is not a subagent-management gap | Not carried |
+| R-5 | Definition linting and duplicate-name tooling (`/doctor`) | Claude Code, Qoder | T3 — consequence of A-1's ladder, owns no separate code | A-1 acceptance criteria (M-2) |
+| R-6 | Model-catalog injection and staleness notices | Codex CLI | T3 — a mechanism inside model routing | A-2 |
+| R-7 | Cost/token display in the TUI | Claude Code, PRD-157 | T4 — PRD-157 is implemented and owns it | Consumed by A-6 |
+| R-8 | Turn and tool-call budgets | opencode `steps`, Qoder `maxTurns`, Claude Code `maxTurns` | T1 — already implemented at `types.py:89` | Non-goal in A-2/A-6 (M-3) |
+
+R-8 and R-2 are the two that most often become padding in this kind of report:
+both are real, both are visible in several competitors, and both are already
+answered locally. Including them would have looked like a more thorough
+taxonomy and produced two PRDs that implement nothing.
+
+### 5.6 The area-to-PRD bijection
+
+One PRD per area, one area per PRD. Filenames are provisional until written;
+the numbers and the mapping are not.
+
+| Area | PRD | Working title | Gap | Evidence strength |
+|---|---|---|---|---|
+| A-1 | `prds/SUBAGENT-01-declarative-subagent-types.md` | Declarative subagent types and discovery | G-1 | Strong (5 of 6) |
+| A-2 | `prds/SUBAGENT-02-per-type-model-and-context-routing.md` | Per-type model, effort and context routing | G-2 | Strongest (6 of 6) |
+| A-3 | `prds/SUBAGENT-03-structured-result-contracts.md` | Structured result contracts | G-3 | Strong, argument-conditional |
+| A-4 | `prds/SUBAGENT-04-nesting-depth-and-fan-out.md` | Nesting depth and fan-out governance | G-4 | Strong on mechanism, open on whether to nest |
+| A-5 | `prds/SUBAGENT-05-per-type-permission-narrowing.md` | Per-type permission narrowing | G-5 | Strong (3 of 6, one open source in detail) |
+| A-6 | `prds/SUBAGENT-06-pool-budgets-and-limits.md` | Pool budgets and limits | G-6 | Weak (T2 not met) |
+| A-7 | `prds/SUBAGENT-07-background-orchestration.md` | Background and non-blocking orchestration | G-7 | Strong (4 of 6) |
+| A-8 | `prds/SUBAGENT-08-worker-lifecycle-controls.md` | Worker steering, cancellation, retry, salvage | G-8 | Strong (Codex is a working model) |
+| A-9 | `prds/SUBAGENT-09-observability-and-transcript-contract.md` | Observability and transcript contract | G-9 | Moderate |
+
+The invariant is checked mechanically at the end of the series: every locked
+area has exactly one PRD, every PRD names exactly one area, and no PRD exists
+outside this table. If a PRD later splits into two, this table is updated
+*first*, because it is the authority — not the PRD.
+
+### 5.7 Ordering: writing order is not implementation order
+
+The nine PRDs are written in numeric order, `SUBAGENT-01` through
+`SUBAGENT-09`, because A-1's vocabulary (what a type *is*) is what A-2, A-3,
+A-4 and A-5 all reference. That is a **document** order.
+
+**Implementation** dependencies are different and the PRDs must respect them:
+
+- A-2, A-3, A-4 and A-5 all presuppose A-1's type record; none of them can ship
+  a field that A-1 has not defined.
+- A-6 depends on A-8: A-6 declares limits, A-8 responds to them (M-1).
+- A-7 depends on A-8: a background pool that cannot be steered or stopped is a
+  leak.
+- A-9 comes last among the areas because the event schema is cheapest to
+  finalise once the events of A-6, A-7 and A-8 exist.
+- A-2 and A-5 are independent of each other and can be taken in parallel.
+
+Confidence order is A-2, then A-1/A-3/A-4/A-5/A-7/A-8, then A-6 and A-9. That
+ordering is *not* a commitment to ship in that order; it is what the PRDs should
+say when they claim urgency.
