@@ -135,6 +135,7 @@ src/agenthicc/subagents/transcripts.py:417:            manifest = json.loads((di
 
 $ grep -n "def aggregate" src/agenthicc/subagents/types.py
 51:    def aggregate(self, results: list[SubagentResult]) -> str:
+394:            def aggregate(self, results):
 
 $ sed -n '307,315p' src/agenthicc/subagents/pool.py
 @dataclass
@@ -158,6 +159,10 @@ Absence claims, with the pattern and the scope that establish them:
   `:417`), which read back the pool's own JSONL and `pool.json` persistence
   format. No code path parses a `SubagentResult.text` or checks it against
   anything; the pool's only JSON *write* is a message hash (`pool.py:1023`).
+  The one place that reads a result's *content* is the docstring example at
+  `types.py:394-397`, where an example `SecurityAggregator` decides its verdict
+  with `"APPROVED" in r.text`. That is substring sniffing on prose — the failure
+  mode this PRD replaces, not a counterexample to the absence claim.
 - **No submission tool.** Pattern `submit_`, scope
   `src/agenthicc/subagents/`: no match. A worker's only outbound channel is its
   final completion text.
@@ -373,7 +378,7 @@ those files already own worker construction and definition validation.
 | Harness | Evidence | Depth | What it does | Take or reject |
 |---|---|---|---|---|
 | DeepSeek Harness | `.agents/notes/archived/architecture/2026-07-20-canonical-tool-output-contract.md` @ `f3803c96974ad4a94195fb97e5c637e9c2a3afe3` | code + design notes | Every tool declares `output: { schema, render(args, value), presentationMeta? }`; the registry validates the returned value against `output.schema`, deep-freezes it, then invokes a *pure renderer*; schema, JSON, renderer and projector failures are contained as `ToolOutputError` results | Take all of it: this is the mechanism that makes a contract possible without parsing prose, and the containment rule in §4 goal 6 |
-| opencode | `packages/core/src/tool/plugin/subagent.ts:30-54` @ `726cf096396d5014c3b1845e231cc01ee0421ee` | code | The subagent tool returns a typed envelope `{ sessionID, status: "completed" \| "running", output }` rather than a bare string | Take the envelope idea: a result carries its status and payload as separate fields, not concatenated text |
+| opencode | `packages/core/src/tool/plugin/subagent.ts:30-54` @ `726cf096396d5014c3b1845e231cc01efe0421ee` | code | The subagent tool returns a typed envelope `{ sessionID, status: "completed" \| "running", output }` rather than a bare string | Take the envelope idea: a result carries its status and payload as separate fields, not concatenated text |
 | Claude Code | `https://code.claude.com/docs/en/sub-agents` fetched 2026-10-29 | docs-only | A subagent returns a final summary to the parent; on a limit or server error it returns its partial output with a note that it was cut, and a background subagent's last output is reported | Take the summary/partial distinction; the partial half is A-8's, not this PRD's |
 | Grok CLI | `src/utils/settings.ts:109-112` @ `fb97af83f06dca873281d60168430f06c8de6324` | code | A subagent record is `{name, model, instruction}` and its result is prose; there is no output contract anywhere in the type | Reject: this is the state agenthicc is in, recorded as the contrast case rather than as a model |
 | Qoder CLI | `https://docs.qoder.com/cli/subagent` fetched 2026-10-29 | docs-only | Subagents return prose to the caller; the documented surface describes `model`, `effort` and `maxTurns`, not result shape | Reject for value shape; note that this is docs-only evidence, so absence here is weak evidence (§2.1's caveat) |
