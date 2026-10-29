@@ -441,7 +441,7 @@ design.
 
 - **Six dedicated tools, not one.** `spawn_agent`, `send_message`,
   `followup_task`, `wait_agent`, `interrupt_agent`, `list_agents`
-  (`codex-rs/core/tests/suite/multi_agent_tool_descriptions.rs:21-28`). The
+  (`codex-rs/core/tests/suite/multi_agent_tool_descriptions.rs:18-25`). The
   split matters: *continuing* an agent (`send_message`), *queueing more work*
   (`followup_task`), *blocking on it* (`wait_agent`), *stopping it*
   (`interrupt_agent`), and *enumerating it* (`list_agents`) are distinct
@@ -461,9 +461,10 @@ design.
   i.e. a deliberate interaction between reasoning effort and fan-out.
 - **Model override is an exposed capability, not an assumption.**
   `expose_model_overrides: config.expose_spawn_agent_model_overrides`
-  (`multi_agents.rs:61`); `spawn_agent` is only registered when
-  `multi_agent_v2.expose_spawn_agent_model_overrides` is true
-  (`codex-rs/core/src/session/world_state.rs:394-403`). When overrides are
+  (`multi_agents.rs:61`); under V2, `spawn_agent` is registered only when
+  `multi_agent_v2.expose_spawn_agent_model_overrides` is true — the V1 arm
+  registers it unconditionally
+  (`codex-rs/core/src/session/world_state.rs:389-403`). When overrides are
   available *and* the `ModelCatalogInContext` feature is on, a model-catalog
   section is injected into context (`…/context/world_state/model_catalog.rs`),
   and it can be invalidated with the note "The previous spawn_agent model
