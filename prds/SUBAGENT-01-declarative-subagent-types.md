@@ -37,7 +37,7 @@ All claims verified at commit
 `0115674bc61298975bd0f992dd6f9b78620a6138` (2026-11-02).
 
 **The type record has no description.** `SubagentTypeSpec` is a five-field
-dataclass (`src/agenthicc/subagents/types.py:60`) and none of the fields is a
+dataclass (`src/agenthicc/subagents/types.py:60-91`) and none of the fields is a
 description. The nine built-ins are constructed by hand with no description
 field to set (`src/agenthicc/subagents/types.py:309`).
 
@@ -64,10 +64,21 @@ of truth for the model's schema is still a literal in the module.
 extension point is a plugin module exporting `SUBAGENT_TYPES`
 (`src/agenthicc/plugins/discovery.py:163-178`), which registers each spec into
 the module-level mutable `DEFAULT_REGISTRY`
-(`src/agenthicc/subagents/types.py:441`). That registry is then used as a
-*default argument* in four signatures (`src/agenthicc/subagents/pool.py:1124`,
-`:1591`, `:1647`; `src/agenthicc/subagents/tool.py:99`), so the set of types a
-session sees depends on import order and on which plugins ran first.
+(`src/agenthicc/subagents/types.py:441`). That registry is bound at import time
+in four places: as a literal *default argument* in three signatures
+(`src/agenthicc/subagents/pool.py:1124`, `:1591`, `:1647`) and as a `None`
+default that the function body replaces with the global
+(`src/agenthicc/subagents/tool.py:99`, substituted at `:180`). The set of types
+a session sees therefore depends on import order and on which plugins ran first
+— three cases by default binding, the fourth by fallback. §7's migration treats
+them differently for that reason.
+
+**Overwrites are silent.** `SubagentTypeRegistry.register` is
+`self._types[spec.name] = spec` (`src/agenthicc/subagents/types.py:405-407`): a
+second definition of the same name replaces the first and nothing records what
+was replaced. Today that is merely unhelpful; once a precedence ladder exists it
+would make a shadowed definition invisible, which is why detection belongs to
+this PRD rather than to the UI that renders it.
 
 **Consequence for users.** Adding a type requires authoring Python and
 understanding plugin trust. There is no way for a project to ship a `.md` file
@@ -102,6 +113,14 @@ $ grep -n "_EXTENSION_DIRS" -A9 src/agenthicc/cli/commands/trust.py
 22:    "agents": "agent",
 23:    "cli": "cli",
 24:}
+
+$ grep -rnE "\.md|markdown|frontmatter|yaml" src/agenthicc/subagents/
+src/agenthicc/subagents/tool.py:440:    return hashlib.md5(json.dumps(entries, ensure_ascii=False).encode()).hexdigest()[:16]
+
+$ sed -n '405,407p' src/agenthicc/subagents/types.py
+    def register(self, spec: SubagentTypeSpec) -> None:
+        """Register or replace a subagent type."""
+        self._types[spec.name] = spec
 ```
 
 Absence claims, with the search that establishes them:
@@ -113,13 +132,22 @@ Absence claims, with the search that establishes them:
   still has no place to put a description. The file is 441 lines, so this is an
   exhaustive result for that file, not a sample.
 - **No Markdown/declarative loader for types.** Pattern
-  `\.md|markdown|frontmatter|yaml`, scope `src/agenthicc/subagents/`: no loader
-  for type definitions. The only `.md` handling in the package is transcript
-  writing.
+  `\.md|markdown|frontmatter|yaml`, scope `src/agenthicc/subagents/`, returns
+  exactly one match: `tool.py:440`, which is `hashlib.md5` in a cache-key hash
+  and therefore a false positive on the `.md` alternative. No frontmatter,
+  Markdown or YAML reader exists in the package, so there is no loader for
+  declarative type definitions. Transcript writing is not the exception it might
+  look like: `transcripts.py:3-4` records that a pool writes `pool.json` and one
+  `<worker_id>.jsonl` per worker — JSON and JSONL, no Markdown.
 - **No `subagents` trust kind.** `src/agenthicc/cli/commands/trust.py:17-24`
   lists six extension kinds and `subagents` is not among them. Definitions
   therefore cannot live in a `.agenthicc/subagents/` directory under today's
   trust model without a new entry.
+
+The commit quoted above is the one HEAD pointed at while the checks ran; this
+document was then committed as `61c81c66604f40cbf5007209b5b0992df2f275c1`, and
+`git diff --name-only 0115674 61c81c6` lists this file and nothing else, so every
+claim here holds at both commits.
 
 Diff against the research report's `f843040` snapshot: **nothing has moved** for
 these claims. The report's §1.3, §1.9 (G-1) and §5.3 (A-1) are still accurate at
@@ -146,6 +174,16 @@ PRD can reuse it rather than inventing an `is_subagent: bool`.
 5. The registry a session uses is explicit, not a mutated process global; the
    existing plugin `SUBAGENT_TYPES` export keeps working through a documented
    compatibility path.
+6. Loading **reports shadowing and refuses collisions**: when a project
+   definition overrides a user definition or a built-in, the winning source and
+   the shadowed source are recorded on the load result and reported once; two
+   definitions of the same name *within one directory* are an error naming both
+   files. (Research report §5.3 A-1 absorbs M-2: detection and attribution are
+   here, rendering is AGX-09's.)
+7. A definition may not silently override a built-in it did not intend to: a
+   project definition that shadows a built-in name does so only with an explicit
+   `override: true` key, otherwise it is refused with the built-in named in the
+   message.
 
 ## 5. Non-goals
 
@@ -162,7 +200,9 @@ commitments:
 - **The registry's runtime lookup API.** `SubagentTypeRegistry.get`,
   `register`, `names` and `__contains__` stay as they are; this PRD changes who
   builds registries and where definitions come from, not how lookup works.
-- **The Library tab, editing, hot reload and definition UX.** AGX-09 owns those.
+- **The Library tab, editing, hot reload and definition *rendering*.** AGX-09
+  owns those. This PRD produces the shadowing and collision report on the load
+  result (§4 goals 6-7); it does not design the surface that displays it.
 - **Removing Python plugins.** `AgentPlugin` and `SUBAGENT_TYPES` remain valid
   ways to ship types that need code.
 - **Policy semantics and the mode ceiling.** PRD-233 owns the profile contract;
@@ -196,6 +236,13 @@ Each criterion names the check that decides it.
    `tests/unit/test_subagent_pool.py`.
 8. `pytest tests/integration/test_subagent_tool_execution.py -q` passes
    unchanged, proving the tool boundary did not shift.
+9. A shadowed definition is reported with both sources, and two definitions of
+   the same name inside one directory are refused naming both files:
+   `pytest tests/unit/test_subagent_plugin.py -q`.
+10. A project definition that shadows a built-in without `override: true` is
+    refused with the built-in named; with the key set the project definition
+    wins and the shadowing is reported:
+    `pytest tests/unit/test_subagent_plugin.py -q`.
 
 ## 7. Rollout, migration and security
 
@@ -211,7 +258,9 @@ release:
    release, with a deprecation note, because `tests/unit/test_subagent_pool.py`
    and `tests/unit/test_subagent_plugin.py` import it directly and plugins
    register into it today.
-4. Only then remove the default-argument form from the four signatures.
+4. Only then remove the import-time bindings: the three `DEFAULT_REGISTRY`
+   default arguments in `pool.py`, and the `None` fallback at
+   `tool.py:180`, which is a one-line change and can go last.
 
 **Compatibility.** A plugin that registers into `DEFAULT_REGISTRY` after the
 session registry has been built would be invisible to that session. The loader
