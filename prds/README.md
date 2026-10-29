@@ -159,9 +159,10 @@ PRD exists without an area. The report labels each harness's evidence depth — 
 cloned repository, design notes, or vendor documentation only — rather than
 presenting a docs-only reading as verified behaviour.
 
-All ten documents are `Proposed` or `Historical`; none is implemented. Each PRD
-opens with the current agenthicc source at a pinned commit and states which
-existing PRD it extends, narrows or supersedes.
+All eleven documents are `Proposed` or `Historical`; none is implemented. Each
+PRD opens with the current agenthicc source at a pinned commit and states which
+existing PRD it extends, narrows or supersedes; the closing record holds the
+series' coverage and scope audit.
 
 - [SUBAGENT research — How coding-agent harnesses manage subagents and their tools (historical)](SUBAGENT-research-harness-comparison.md)
 - [SUBAGENT-01 — Declarative subagent type definitions and discovery (proposed)](SUBAGENT-01-declarative-subagent-types.md)
@@ -173,6 +174,7 @@ existing PRD it extends, narrows or supersedes.
 - [SUBAGENT-07 — Background and non-blocking orchestration (proposed)](SUBAGENT-07-background-orchestration.md)
 - [SUBAGENT-08 — Worker lifecycle controls (proposed)](SUBAGENT-08-worker-lifecycle-controls.md)
 - [SUBAGENT-09 — Observability and the transcript/event contract (proposed)](SUBAGENT-09-observability-and-transcript-contract.md)
+- [SUBAGENT audit — Final coverage and scope audit (historical)](SUBAGENT-series-audit.md)
 
 ### PRD-220–239 — OpenCode, Claude Code, and Codex feature study
 
