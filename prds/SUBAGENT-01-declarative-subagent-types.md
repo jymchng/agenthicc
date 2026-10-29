@@ -2,7 +2,7 @@
 title: "SUBAGENT-01: Declarative subagent type definitions and discovery"
 status: Proposed
 version: 0.1.0
-date: 2026-11-02
+date: 2026-10-29
 scope: "user- and project-scoped subagent type definitions, their discovery precedence, and the model-facing description used to select a type"
 area: A-1
 related_prds:
@@ -34,7 +34,7 @@ adopts that format unchanged and owns only the subagent-specific projection.
 ## 2. Problem statement
 
 All claims verified at commit
-`0115674bc61298975bd0f992dd6f9b78620a6138` (2026-11-02).
+`0115674bc61298975bd0f992dd6f9b78620a6138` (2026-10-29).
 
 **The type record has no description.** `SubagentTypeSpec` is a five-field
 dataclass (`src/agenthicc/subagents/types.py:60-91`) and none of the fields is a
@@ -87,7 +87,7 @@ only path is a Python plugin that constructs a dataclass and mutates a global.
 
 ## 3. Current-source investigation
 
-Run on 2026-11-02 against `0115674bc61298975bd0f992dd6f9b78620a6138`.
+Run on 2026-10-29 against `0115674bc61298975bd0f992dd6f9b78620a6138`.
 
 ```console
 $ git rev-parse HEAD
