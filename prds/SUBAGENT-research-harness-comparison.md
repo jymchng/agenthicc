@@ -1,7 +1,7 @@
 ---
 title: "SUBAGENT research: how coding-agent harnesses manage subagents and their tools"
 status: Historical
-version: 0.3.0
+version: 0.3.1
 date: 2026-10-26
 snapshot_commit: f843040644db374260ebb272577f4f3d8f976953
 scope: "cross-harness subagent research, agenthicc evidence baseline, capability taxonomy, and PRD house-format contract for the SUBAGENT series"
@@ -1209,25 +1209,43 @@ the rows for that area, with the depth label copied honestly.
 
 ### 6.7 Pre-submit checklist
 
-The final audit re-runs these against every `SUBAGENT-NN` document.
+The final audit re-runs these against every `SUBAGENT-NN` document. Each item is
+marked **M** (mechanical: a script decides) or **H** (human: a reviewer decides).
+The distinction is not decoration. An audit that reports a semantic judgement as
+a checked item is worse than one that admits it did not check, so the audit
+reports H items as *unverified* rather than silently passing them.
 
-1. Frontmatter parses as YAML (strip the `---` delimiters first; a naive
-   parse reads the closing delimiter as a second document) and contains all
-   eight keys of §6.2.
-2. `status` is exactly `Proposed`; `date` is ISO and matches the investigation.
-3. `area` is one of `A-1` … `A-9` and matches the row in §5.6.
-4. Sections 1–9 and appendix A all present, in order, numbered as §6.3.
-5. Section 2 has ≥3 `file:line` citations and names the commit.
-6. Every `file:line` in the document resolves in the working tree at that commit.
-7. Section 3 lists at least one command, and every absent claim names pattern
-   and scope.
-8. Section 5 includes the area's "does not own" exclusions from §5.3.
-9. Every acceptance criterion names a test file or a runnable command.
-10. Every verification command exists and its test path is real.
-11. Section 9 gives a relationship verb for every overlapping document from
-    §1.10 that touches this area.
-12. Appendix A has ≥1 row, and every row carries a pinned commit (open source)
-    or a URL plus fetch date (closed source), and a depth label.
+| # | Check | Runs as |
+|---|---|---|
+| 1 | Frontmatter parses as YAML - strip the `---` delimiters first, because a naive parse reads the closing delimiter as a second document - and contains all eight keys of §6.2 | M |
+| 2 | `status` is exactly `Proposed` | M |
+| 3 | `date` is ISO `YYYY-MM-DD` | M |
+| 4 | `area` is one of `A-1` … `A-9` and equals the §5.6 row for this PRD number | M |
+| 5 | Sections 1–9 and appendix A all present, in order, numbered as §6.3 | M |
+| 6 | Section 2 has ≥3 distinct `file:line` citations and a 40-character commit sha | M |
+| 7 | Every `file:line` in the document resolves, and is within the file's length, at the named commit | M |
+| 8 | Section 3 contains at least one command | M |
+| 9 | Every acceptance criterion names a test file or runnable command. The reference may sit anywhere in the same list item; a criterion that wraps across lines still counts as one item | M |
+| 10 | Every test path named in section 8 exists in the tree | M |
+| 11 | Section 9 carries a relationship verb (*inherits*, *narrows*, *supersedes*, *extends*, *unrelated*) for every entry in `related_prds` | M |
+| 12 | Appendix A has ≥1 data row; every row carries either a 7+ character hex commit (open source) or a **scheme-qualified** URL such as `https://…` (closed source), never a bare host, plus a depth label from §6.5 | M |
+| 13 | Section 3's absent claims each name a pattern and a scope, not just "not found" | H |
+| 14 | Section 5's non-goals actually match the area's "does not own" list in §5.3, rather than merely mentioning it | H |
+| 15 | `date` in the frontmatter matches the date the investigation in section 3 was run | H |
+| 16 | Section 9 gives the *correct* relationship verb for each document, not merely a verb | H |
+
+Sixteen items, twelve mechanical. Items 13–16 are the ones a script cannot
+settle, and pretending otherwise would be the failure mode this contract exists
+to prevent.
+
+The mechanical items were exercised before this section was committed: a
+synthetic `SUBAGENT-01` written to satisfy the contract passed, and a variant
+carrying seven deliberate defects (wrong `status`, wrong `area`, one missing
+citation, missing commit sha, a bare-host URL, an invalid depth label and a
+missing relationship verb) produced eight diagnostics - seven direct and one
+cascade, because the wrong `area` also broke the §5.3 non-goal comparison. Two rules above are the direct result of that exercise rather than
+foresight: item 9's "may wrap across lines", and item 12's
+"scheme-qualified URL".
 
 ### 6.8 What the contract does not require
 
