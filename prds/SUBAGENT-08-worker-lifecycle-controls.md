@@ -66,6 +66,12 @@ productive turns reports which files it touched and none of what it concluded �
 the salvage mechanism is half-built, and the half that is missing is the half a
 parent needs.
 
+**A failure loses the same thing.** The generic `except Exception` handler builds
+the same shape with `text=""` and `error=str(exc)` (`:775-787`), so a worker that
+read four files, wrote a paragraph and then hit a provider error returns the error
+and the file list without the paragraph. The gap is not specific to cancellation;
+it is the shape of every unsuccessful terminal path in the worker.
+
 **Steering is fire-and-forget.** `send_subagent_message` returns
 `status="sent"` (`communication.py:919-924`). The worker injects pending messages
 at a provider-turn boundary under an *UNTRUSTED CONTEXT* heading
@@ -155,6 +161,12 @@ At `:762` the worker returns a result whose `text` is empty and whose
 `tool_calls`/`changed_paths` are preserved. At `:1330` `_bounded` re-raises. At
 `:1364` the pool closes the broker and re-raises to the parent turn.
 
+The same read covers the ordinary failure path, which the `CancelledError` grep
+does not surface: `except Exception` at `:775` builds the identical result shape,
+with `text=""` at `:782`. Reading both handlers is what makes §2's claim "a
+failure loses the same thing" an observation rather than an inference from one
+exception type.
+
 **The acknowledgement that nothing calls.**
 
 ```
@@ -224,12 +236,13 @@ the lifecycle record itself, and the stopped-row dismissal defect
    workers finish normally, and their results are kept. A drain of a pool
    therefore reduces `total` to "the workers that ever ran", and the report says
    which workers never started.
-5. **Partial output survives every stop.** A cancelled worker returns its
-   accumulated text, the tool evidence it already keeps, `partial=True` and a
-   `stop_reason`. A stop in the middle of a turn truncates at the last completed
-   provider turn; the result says so rather than implying the answer is whole.
-   The same fields carry a timeout (`pool.py:746-760`) and a transport-exhausted
-   failure.
+5. **Partial output survives every unsuccessful ending.** A cancelled worker
+   returns its accumulated text, the tool evidence it already keeps, `partial=True`
+   and a `stop_reason`. A stop in the middle of a turn truncates at the last
+   completed provider turn; the result says so rather than implying the answer is
+   whole. The same fields carry a timeout (`pool.py:746-760`), a failure
+   (`:775-787`) and a transport-exhausted attempt, so "stopped or failed" is one
+   representation of salvage rather than two.
 6. **Steering is acknowledged, not merely sent.** Each injected instruction is
    acknowledged after the turn that consumed it, via the broker's existing
    `acknowledge` (`communication.py:417`); a message still unconsumed when the
@@ -239,8 +252,11 @@ the lifecycle record itself, and the stopped-row dismissal defect
    accepts a worker whose last attempt ended `failed` or `cancelled`, starts
    attempt *n+1* with a fresh worker, keeps the previous attempt's partial output
    and error in the lifecycle record, and never re-runs a succeeded worker.
-   Transport retry (`retry.py:95`) stays exactly where it is: inside one
-   attempt.
+   Transport retry (`retry.py:95`) stays exactly where it is: inside one attempt.
+   Whole-pool retry keeps its existing meaning — the parent calls
+   `spawn_subagents` again (`src/agenthicc/subagents/tool.py:188`) and pays for
+   every sibling twice — and this PRD adds no second pool-retry API, so the choice
+   between the two is a choice the parent can see.
 8. **A pool-level stop is a fan-out of the worker-level one.** `request_pool_stop`
    applies one mode and one reason to every worker and reports the per-worker
    outcome. There is one cancellation implementation, called at two scopes —
@@ -340,6 +356,9 @@ The A-8 boundaries from the research report §5.3, restated as commitments.
     action removes it: `tests/integration/test_subagent_panel_agx08.py`.
 12. A pool with no stop request produces the same text, events and transcripts as
     the current implementation: `tests/unit/test_subagent_pool_runtime_coverage.py`.
+13. A worker that fails after a productive provider turn returns that turn's text
+    with `partial=True` and a `stop_reason` naming the failure, and the aggregate
+    shows the text alongside the error: `tests/unit/test_subagent_pool.py`.
 
 ## 7. Rollout, migration and security
 
