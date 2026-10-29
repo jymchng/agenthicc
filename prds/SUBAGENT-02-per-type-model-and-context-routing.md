@@ -229,10 +229,12 @@ The A-2 boundaries from the research report §5.3, restated as commitments:
 
 Each criterion names the check that decides it.
 
-1. A pool built with no per-type settings produces workers decorated with the
-   parent model and `ShortTermMemory(max_tokens=8_000)`, exactly as today:
-   `pytest tests/unit/test_subagent_pool_runtime_coverage.py -q` stays green
-   with no edits to its model assertions.
+1. With no per-type settings, a worker is decorated with the parent model and
+   built with `ShortTermMemory(max_tokens=8_000)`: a new case captures the model
+   handed to `agent_decorator` and the memory budget. The existing cases in
+   `tests/unit/test_subagent_pool_runtime_coverage.py` — which construct pools
+   with `parent_model="model"` (`:39`, `:88`) but assert only usage
+   normalisation — must stay green unedited, proving no behavioural drift.
 2. A definition declaring `model: <id>` produces workers decorated with that id
    and usage records naming it: new cases in
    `tests/unit/test_subagent_pool.py`.
