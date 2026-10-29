@@ -1,7 +1,7 @@
 ---
 title: "SUBAGENT series — final coverage and scope audit"
 status: Historical
-version: 0.1.0
+version: 0.2.0
 date: 2026-10-29
 scope: "the delivery audit for the SUBAGENT series: the §5.6 area-to-PRD bijection, the §6.7 mechanical and human checks, and the documentation-only scope proof, at commit 4fd8cbe"
 related_prds:
@@ -208,6 +208,82 @@ The M-1 boundary (§5.4) splits one decision across two documents: A-6 decides
 *when* a budget is exceeded; A-8 decides *what happens to the workers*. The
 second half of this audit — that `SUBAGENT-06` and `SUBAGENT-08` carry that
 split in identical words, from the same citation, without either defining a
-second cancellation path — is recorded here when run.
+second cancellation path — is the check recorded in this section.
 
-**Status: pending.**
+**Run at `794484d055796222ed20433d5660360ee7775b74`, 2026-10-29. Status:
+satisfied — six conditions tested, none failed, one judgement recorded.**
+
+Each condition is a claim with a locator, not a reading of intent.
+
+| # | Condition | Evidence | Verdict |
+|---|---|---|---|
+| 1 | -06 lists pre-emptive abort versus graceful drain as a non-goal | §5 bullet 1, `prds/SUBAGENT-06-pool-budgets-and-limits.md:354-361`: "This PRD may say that a limit was crossed; it may not stop a worker, drain a pool, or define what survives a stop" | holds |
+| 2 | -06 lists partial-result preservation on abort as a non-goal and cross-references -08 | the same bullet names "partial-result preservation on abort" and assigns both to SUBAGENT-08; §9 gives the verb — `SUBAGENT-08 — narrows against` (`:521-524`) | holds |
+| 3 | -08 owns both and cross-references -06 | §4 goal 9 (`prds/SUBAGENT-08-worker-lifecycle-controls.md:264-268`): reads A-6's crossing record, applies `drain` by default or `abort` under `subagents.on_budget_exceeded`, and "A-6 neither calls a stop nor chooses a mode"; §5 bullet 1 (`:282-288`); §9 `SUBAGENT-06 — supplies the trigger, narrows against` (`:456-459`) | holds |
+| 4 | -08 carries an acceptance criterion for partial-result preservation on abort | §6 criterion 3 (`:332-335`), headed **Partial-result preservation on abort:** — a worker stopped after a completed provider turn returns that turn's text with `partial=True` and `stop_reason`, the aggregate carries both the text and the marker, and the test is named | holds |
+| 5 | Both quote the boundary in identical words and cite §5.4 M-1 | the sentence *A-6 decides \*when a budget is exceeded\*; A-8 decides \*what happens to the workers\** is byte-identical in both files and occurs twice in each — -06 `:45-46`, `:356-357`; -08 `:45-46`, `:286-287` — and every occurrence names M-1 and its home, §5.4 of the report, whose own row is the authority | holds |
+| 6 | Neither defines a second mechanism | argued below, because this is the condition that could fail quietly | holds |
+
+**Condition 6.** A grep can show that a word appears; only reading shows whether
+it is a routine.
+
+- **-06 defines no cancellation path.** Every occurrence of abort, cancel or
+  drain in the document is one of three things, and none of them is a routine: a
+  boundary disclaimer (§1 `:43-47`, §4 goal 9 "Detection, not response"
+  `:341-344`, §5 `:354-361`, §8 `:509-513`, §9 `:521-524`); the
+  `abort_threshold` string inside the §3 grep pattern that establishes the gap
+  (`:71`, `:144`, `:257`) — a search term, not an API; or criterion 10, which
+  asserts the *absence* of the behaviour ("Crossing a declared limit produces a
+  recorded crossing and no cancellation: the worker count, statuses and returned
+  text are identical to the same run with no limit", `:421-424`). There is no
+  mode name, no handle operation and no call to `stop_worker`.
+- **-08 defines no second usage meter.** §5 bullet 1 assigns budget accounting,
+  the `budget:` keys, the settings ceiling, cost provenance and the budget report
+  to -06 and states the negative half in the same breath: "A-8 defines no meter,
+  no limit key and no spend report, and A-6 defines no mode and calls no stop"
+  (`:287-288`). The document performs no token, cost or wall-clock arithmetic
+  anywhere.
+- **The one judgement this half of the audit makes.** -08 §7 introduces two
+  settings, `subagents.on_budget_exceeded` (default `"drain"`) and
+  `subagents.stop_grace_s` (`:379-385`). Neither is a limit: one selects a
+  response mode, the other is a cleanup timeout, and the document says so in its
+  own words — "Both are A-8's own policy keys, not budget keys: neither names a
+  limit or a spend quantity". A strict reading of "no limit key" could quarrel
+  with `on_budget_exceeded`; this audit's reading is that the boundary is about
+  what is *metered and declared*, and a response selector is neither. That is a
+  judgement, recorded as one, not a checked fact.
+
+**Reproduction.**
+
+```console
+$ git rev-parse HEAD     # 794484d055796222ed20433d5660360ee7775b74
+$ python - <<'PY'
+import pathlib
+CANON = "A-6 decides *when a budget is exceeded*; A-8 decides *what happens to the workers*"
+for p in ["prds/SUBAGENT-06-pool-budgets-and-limits.md",
+          "prds/SUBAGENT-08-worker-lifecycle-controls.md"]:
+    print(p, " ".join(pathlib.Path(p).read_text().split()).count(CANON))
+PY
+prds/SUBAGENT-06-pool-budgets-and-limits.md 2
+prds/SUBAGENT-08-worker-lifecycle-controls.md 2
+$ grep -c 'M-1' prds/SUBAGENT-06-pool-budgets-and-limits.md prds/SUBAGENT-08-worker-lifecycle-controls.md
+prds/SUBAGENT-06-pool-budgets-and-limits.md:6
+prds/SUBAGENT-08-worker-lifecycle-controls.md:4
+$ grep -n 'Partial-result preservation on abort' prds/SUBAGENT-08-worker-lifecycle-controls.md
+332:3. **Partial-result preservation on abort:** a worker stopped after a completed
+$ grep -nE 'abort|cancel|drain|stop_worker' prds/SUBAGENT-06-pool-budgets-and-limits.md | wc -l
+18
+```
+
+All eighteen of those lines are the disclaimers, the grep pattern or the
+no-cancellation criterion listed under condition 6; none names a routine.
+
+**What this closes, and what it did not test.** The series has one cancellation
+path, one usage meter and one limit vocabulary, each owned by a single document
+with the boundary stated in both documents' own words. No scope edit was needed
+as a result of this half: the split M-1 transferred has held since `c70ad55`
+wrote `SUBAGENT-06` and `602b38d` wrote `SUBAGENT-08`. What this does *not*
+settle is whether the boundary survives implementation — a criterion can assert
+"no cancellation" and an implementation can still add one — so the two tests
+named in conditions 4 and 6 are the durable form of this record, not this
+paragraph.
