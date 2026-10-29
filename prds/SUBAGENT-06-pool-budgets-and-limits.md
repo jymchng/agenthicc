@@ -42,9 +42,9 @@ receive a report that cannot tell it so. The only bound anywhere is concurrency:
 **This PRD gives budgets a name, a number and a report. It does not make them
 stop anything.** The response to a crossed limit — pre-emptive abort versus
 graceful drain, and what partial output survives — belongs to SUBAGENT-08 under
-the locked boundary M-1 (research report §5.4): *A-6 decides when a budget is
-exceeded; A-8 decides what happens to the workers.* Two PRDs in one series must
-not each define a cancellation path, so this one stops at detection.
+the locked boundary M-1 (research report §5.4): A-6 decides *when a budget is
+exceeded*; A-8 decides *what happens to the workers*. Two PRDs in one series
+must not each define a cancellation path, so this one stops at detection.
 
 Three additions, each reusing what is already built rather than parallel to it:
 
@@ -353,11 +353,12 @@ The A-6 boundaries from the research report §5.3, restated as commitments.
 
 - **The response to a crossed limit.** Pre-emptive abort versus graceful drain,
   and partial-result preservation on abort, are SUBAGENT-08's, under the locked
-  boundary M-1 (§5.4): *A-6 decides when a budget is exceeded; A-8 decides what
-  happens to the workers.* Abort is the same mechanism as cancellation, it
-  operates on the same worker handles, and leaving it here would give the series
-  two cancellation paths. This PRD may say that a limit was crossed; it may not
-  stop a worker, drain a pool, or define what survives a stop.
+  boundary M-1 (§5.4), quoted in the report's own emphasis: A-6 decides *when a
+  budget is exceeded*; A-8 decides *what happens to the workers*. Abort is the
+  same mechanism as cancellation, it operates on the same worker handles, and
+  leaving it here would give the series two cancellation paths. This PRD may say
+  that a limit was crossed; it may not stop a worker, drain a pool, or define
+  what survives a stop.
 - **The usage ledger.** PRD-157 is `Implemented` and owns canonical accounting,
   durability, cost provenance and the TUI projection
   (`src/agenthicc/runners/usage_ledger.py`). This PRD consumes records; it adds
@@ -532,12 +533,13 @@ fail for this PRD to have quietly become a cancellation PRD.
 
 ## A. Competitor evidence
 
-The weakest area of the nine on competitor evidence, stated as such rather than
-smoothed over. Concurrency caps are common; explicit token-or-cost budgets are
-not clearly present in any of the six harnesses, and two rows below are turn or
-context budgets being read as adjacent evidence, not as spend budgets. Absence
-in a cloned repository is a bounded claim about a commit; absence in docs is
-weaker, and is labelled.
+The weakest area of the nine on competitor evidence — the research report's own
+verdict for A-6 is *Weak (T2 not met)* (§5.4 and the appendix table) — stated as
+such rather than smoothed over. Concurrency caps are common; explicit
+token-or-cost budgets are not clearly present in any of the six harnesses, and
+two rows below are turn or context budgets being read as adjacent evidence, not
+as spend budgets. Absence in a cloned repository is a bounded claim about a
+commit; absence in docs is weaker, and is labelled.
 
 | Harness | Evidence | Depth | What it does about spend and limits | Take or reject |
 |---|---|---|---|---|
