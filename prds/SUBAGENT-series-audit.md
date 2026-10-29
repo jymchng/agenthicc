@@ -3,7 +3,7 @@ title: "SUBAGENT series — final coverage and scope audit"
 status: Historical
 version: 0.2.0
 date: 2026-10-29
-scope: "the delivery audit for the SUBAGENT series: the §5.6 area-to-PRD bijection, the §6.7 mechanical and human checks, and the documentation-only scope proof, at commit 4fd8cbe"
+scope: "the delivery audit for the SUBAGENT series: the §5.6 area-to-PRD bijection, the §6.7 mechanical and human checks, and the documentation-only scope proof, at commit 4fd8cbe, plus the M-1 mirror of §7 run at 794484d"
 related_prds:
   - SUBAGENT-01
   - SUBAGENT-02
