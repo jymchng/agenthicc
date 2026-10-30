@@ -24,6 +24,19 @@ from .test_tui_session_coverage import _make_session
 pytestmark = pytest.mark.unit
 
 
+def _stub_workflow_resume_provider(monkeypatch: pytest.MonkeyPatch, session: object) -> None:
+    selection = SimpleNamespace(
+        config=SimpleNamespace(workflows={}),
+        profile_name="",
+        binding_fingerprint="",
+    )
+    monkeypatch.setattr(
+        session,
+        "_resolve_workflow_resume_provider",
+        lambda _handle, **_kwargs: (selection, SimpleNamespace()),
+    )
+
+
 def test_session_helpers_project_terminal_usage_and_event_publication(
     tmp_path: Path,
 ) -> None:
@@ -111,10 +124,13 @@ def test_session_reload_failure_paths_and_workflow_resume_guards(
     assert session._handle_workflow_resume(None) is True
 
 
-def test_workflow_resume_without_id_selects_latest_and_uses_explicit_guard() -> None:
+def test_workflow_resume_without_id_selects_latest_and_uses_explicit_guard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from agenthicc.runners.workflow_checkpoint_store import WorkflowClaimError
 
     session, ctx, _workspace, _input = _make_session()
+    _stub_workflow_resume_provider(monkeypatch, session)
 
     class Demo:
         name = "demo"
@@ -153,13 +169,16 @@ def test_workflow_resume_rejects_more_than_one_run_id_argument() -> None:
 
     assert session.route("/workflow resume run-a run-b") is True
     notification = ctx.app_state.conversation.notification() or ""
-    assert notification == "⚠ Usage: /workflow resume [run-id]"
+    assert notification == "⚠ Usage: /workflow resume [run-id] --profile <name|none>"
 
 
-def test_workflow_claim_error_is_reported_without_repeating_exception_type() -> None:
+def test_workflow_claim_error_is_reported_without_repeating_exception_type(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from agenthicc.runners.workflow_checkpoint_store import WorkflowClaimError
 
     session, ctx, _workspace, _input = _make_session()
+    _stub_workflow_resume_provider(monkeypatch, session)
 
     class Demo:
         name = "demo"
@@ -239,8 +258,11 @@ def test_unavailable_resume_workflow_does_not_change_workflow_selection() -> Non
     assert ctx.app_state.conversation.workflow_override() == "existing-selection"
 
 
-def test_resume_checkpoint_transition_failure_preserves_workflow_selection() -> None:
+def test_resume_checkpoint_transition_failure_preserves_workflow_selection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     session, ctx, _workspace, _input = _make_session()
+    _stub_workflow_resume_provider(monkeypatch, session)
 
     class Demo:
         name = "recovered-workflow"
@@ -253,9 +275,17 @@ def test_resume_checkpoint_transition_failure_preserves_workflow_selection() -> 
         context = object()
         claim_owner_id = None
         released = False
+        provider_profile = ""
+        provider_profile_fingerprint = ""
+        provider_profile_origin = ""
+        provider_profile_history: tuple[object, ...] = ()
 
         def claim(self, owner_id: str) -> None:
             self.claim_owner_id = owner_id
+
+        def select_provider_profile(self, profile_name: str, fingerprint: str) -> None:
+            self.provider_profile = profile_name
+            self.provider_profile_fingerprint = fingerprint
 
         def mark_resuming(self) -> None:
             self.lifecycle = "resuming"
@@ -280,10 +310,13 @@ def test_resume_checkpoint_transition_failure_preserves_workflow_selection() -> 
     assert ctx.app_state.conversation.workflow_override() == "previous-workflow"
 
 
-def test_resume_refreshes_checkpoint_index_and_resolves_claim_diagnostic_id() -> None:
+def test_resume_refreshes_checkpoint_index_and_resolves_claim_diagnostic_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from agenthicc.runners.workflow_checkpoint_store import WorkflowClaimError
 
     session, ctx, _workspace, _input = _make_session()
+    _stub_workflow_resume_provider(monkeypatch, session)
     ctx.session_conversation = object()
     expected_run_id = "00c0eebb9bd24f43b3a0f1fd756bf475"
     record = SimpleNamespace(

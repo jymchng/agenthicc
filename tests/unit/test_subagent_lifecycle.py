@@ -32,6 +32,9 @@ class _ControlledWorker:
         self._task = task
         self.label = f"{task.agent_type} #{index}"
 
+    async def _undelivered_message_count(self) -> int:
+        return 0
+
     async def run(self) -> SubagentResult:
         task_id = self._task.task_id
         self.started[task_id].set()

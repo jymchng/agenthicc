@@ -6,10 +6,10 @@ import json
 import math
 import re
 from collections.abc import Mapping
-from typing import TypeAlias
+from typing import TYPE_CHECKING, TypeAlias
 
-from jsonschema import Draft202012Validator
-from jsonschema.exceptions import SchemaError, ValidationError
+if TYPE_CHECKING:
+    from jsonschema.exceptions import ValidationError
 
 __all__ = [
     "JSONMapping",
@@ -257,6 +257,9 @@ def normalize_output_schema(schema: Mapping[str, object]) -> JSONMapping:
         raise ValueError(f"output schema exceeds the {MAX_SCHEMA_BYTES}-byte limit")
     _validate_schema_tree(copied)
     try:
+        from jsonschema import Draft202012Validator
+        from jsonschema.exceptions import SchemaError
+
         Draft202012Validator.check_schema(copied)
     except SchemaError as exc:
         detail = str(exc.message).replace("\n", " ")[:240]
@@ -266,6 +269,8 @@ def normalize_output_schema(schema: Mapping[str, object]) -> JSONMapping:
 
 def validate_result_value(schema: Mapping[str, JSONValue], value: Mapping[str, JSONValue]) -> None:
     """Raise an error with a field path when *value* violates *schema*."""
+    from jsonschema import Draft202012Validator
+
     validator = Draft202012Validator(dict(schema))
     errors = sorted(
         validator.iter_errors(value),

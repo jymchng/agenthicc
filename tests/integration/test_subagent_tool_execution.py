@@ -902,11 +902,10 @@ async def test_implementer_rejects_a_mutating_tool_error_result() -> None:
     assert "no mutation was recorded" in str(result["results"])
 
 
-async def test_nested_depth_tier_clamps_concurrency_and_reports_inherited_limit() -> None:
+async def test_nested_depth_tier_refuses_concurrency_above_inherited_limit() -> None:
     from agenthicc.config import SubagentDepthLimit, SubagentSettings
 
     transport = MockTransport()
-    transport.queue_response(_final("The API is compatible.", "nested-limit-final"))
     spawn = make_spawn_subagents_tool(
         AgentRunnerBase(transport=transport),
         "mock-model",
@@ -927,12 +926,13 @@ async def test_nested_depth_tier_clamps_concurrency_and_reports_inherited_limit(
         timeout_s=30,
     )
 
-    assert result["ok"] is True
+    assert result["ok"] is False
+    assert result["status"] == "refused"
     assert result["depth"] == 3
     assert result["parent_pool_id"] == "parent-pool"
-    assert result["max_concurrent_used"] == 2
     assert result["max_concurrent_limit"] == 2
     assert result["max_concurrent_limit_source"] == "subagents.depth_limits.2.max_concurrent"
+    assert "requested max_concurrent=99 exceeds configured max_concurrent=2" in result["error"]
 
 
 async def test_synthetic_delegating_type_cannot_spawn_past_max_depth() -> None:

@@ -5046,10 +5046,6 @@ class TUISession:
             if required_phases:
                 startup = ctx.startup
                 deferred_phases = tuple(phase for phase in required_phases if phase != "provider")
-                if "provider" in required_phases:
-                    prepare = getattr(selected_runner, "prepare", None)
-                    if callable(prepare):
-                        prepare()
                 if deferred_phases:
                     if startup is None:
                         raise RuntimeError(
@@ -5199,7 +5195,6 @@ class TUISession:
         ctx.command_bus.register(OpenAgentsHubCommand, self._open_agents_hub_command)
         ctx.command_bus.register(OpenSubagentsCommand, self._open_subagents_command)
         ctx.command_bus.register(BackgroundSubagentsCommand, self._background_subagents_command)
-        self._wire_approval_overlay()
 
         startup = ctx.startup
         if startup is not None:
@@ -5219,6 +5214,7 @@ class TUISession:
         if startup is not None:
             startup.finish("first_frame")
             startup.record_first_frame_modules(len(sys.modules))
+        self._wire_approval_overlay()
         # AGX-13: the user's key bindings, hot-reloaded while the session runs.
         # They load right after the first frame (whose hints use the defaults)
         # and before any key is read, which keeps the module off startup.

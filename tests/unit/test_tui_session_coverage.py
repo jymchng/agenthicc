@@ -821,7 +821,16 @@ async def test_tui_resume_workflow_task_and_compact_branches(
 
             return SimpleNamespace(resume=resume)
 
-    await session._resume_workflow_task(Demo, SimpleNamespace())  # type: ignore[arg-type]
+    await session._resume_workflow_task(
+        Demo,
+        SimpleNamespace(),
+        provider_selection=SimpleNamespace(
+            config=ctx.cfg,
+            profile_name="",
+            binding_fingerprint="",
+        ),
+        provider_runner=SimpleNamespace(),
+    )  # type: ignore[arg-type]
     # The success path leaves the input session in its streaming state until
     # the resumed workflow's next turn; the exception/cancel paths reset it.
     assert session._agent_task is None
