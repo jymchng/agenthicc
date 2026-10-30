@@ -115,30 +115,48 @@ def load_saved_sessions() -> list[SavedSession]:
 
 
 def load_library(project_dir: Path, user_dir: Path) -> list[LibraryEntry]:
-    """Agent definitions; untrusted project files are skipped by the registry."""
-    from lauren_ai._agents import AGENT_META
-
+    """Every catalog candidate, including definitions that need attention."""
     from agenthicc.agents.registry import build_agents_registry
+    from agenthicc.agents.selection import project_default
 
     registry = build_agents_registry(project_dir, user_dir, load_external=True)
+    default_name = project_default(project_dir.parent)
     entries: list[LibraryEntry] = []
-    for definition in registry.all():
-        meta = vars(definition.agent_class).get(AGENT_META)
-        system = vars(meta).get("system", "") if meta is not None else ""
-        first = next((line.strip() for line in str(system or "").splitlines() if line.strip()), "")
-        capabilities = definition.allowed_capabilities
-        if capabilities is None:
+    for candidate in registry.catalog:
+        spec = candidate.spec
+        if spec is None or spec.tools is None and spec.capabilities is None:
             tools = "all tools"
-        elif not capabilities:
-            tools = "no tools"
+        elif spec.tools is not None:
+            tools = " ".join(spec.tools) or "no tools"
         else:
-            tools = " ".join(sorted(str(capability.value) for capability in capabilities))
+            tools = " ".join(spec.capabilities or ()) or "no tools"
+
+        if candidate.error is not None:
+            note = str(candidate.error)
+        elif candidate.state == "shadowed":
+            note = f"shadowed by {candidate.shadowed_by}"
+        elif candidate.state == "untrusted":
+            note = "requires explicit trust before use"
+        elif candidate.kept_previous:
+            note = "previous valid version remains active"
+        else:
+            note = ""
+
         entries.append(
             LibraryEntry(
-                name=definition.name,
-                source=definition.source,
-                description=first[:200],
+                name=candidate.name,
+                source=candidate.source,
+                description=spec.description if spec is not None else "",
                 tools=tools,
+                mode=spec.mode if spec is not None else "",
+                model=spec.model if spec is not None else "",
+                state=candidate.state,
+                note=note,
+                path=str(candidate.path) if candidate.path is not None else "",
+                spec=spec,
+                default=(
+                    candidate.state == "active" and spec is not None and spec.name == default_name
+                ),
             )
         )
     return entries

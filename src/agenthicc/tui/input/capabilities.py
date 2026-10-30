@@ -450,6 +450,25 @@ class HistoryCapability:
 # ── Mode cycling ──────────────────────────────────────────────────────────────
 
 
+class AgentCycleCapability:
+    """Tab — choose the next primary agent for the next turn (AGX-09)."""
+
+    async def handle(
+        self,
+        key: Key,
+        ch: str,
+        session: UnifiedInputSession,
+    ) -> CapabilityResult:
+        if session._action != "composer.agent_cycle":
+            return _PASS
+        from agenthicc.tui.runtime.commands import CycleAgentCommand
+
+        if not session._bus.handles(CycleAgentCommand):
+            return _PASS
+        await session._bus.dispatch_async(CycleAgentCommand())
+        return _CONSUMED
+
+
 class ModeCycleCapability:
     """Shift+Tab — cycles through registered input modes.
 
@@ -531,6 +550,25 @@ class SubagentsCapability:
         if not session._bus.handles(OpenSubagentsCommand):
             return _PASS
         await session._bus.dispatch_async(OpenSubagentsCommand())
+        return _CONSUMED
+
+
+class BackgroundSubagentsCapability:
+    """Ctrl+B detaches a live subagent pool from its foreground tool call."""
+
+    async def handle(
+        self,
+        key: Key,
+        ch: str,
+        session: UnifiedInputSession,
+    ) -> CapabilityResult:
+        if session._action != "subagents.background":
+            return _PASS
+        from agenthicc.tui.runtime.commands import BackgroundSubagentsCommand
+
+        if not session._bus.handles(BackgroundSubagentsCommand):
+            return _PASS
+        await session._bus.dispatch_async(BackgroundSubagentsCommand())
         return _CONSUMED
 
 
@@ -617,6 +655,7 @@ IDLE_CAPABILITIES: list[Capability] = [
     ClearCapability(),
     CursorCapability(),
     HistoryCapability(),
+    AgentCycleCapability(),
     ModeCycleCapability(),
     AgentsHubCapability(),
     SubagentsCapability(),
@@ -636,9 +675,11 @@ STREAMING_CAPABILITIES: list[Capability] = [
     BackspaceCapability(),
     ClearCapability(),
     CursorCapability(),  # Cursor movement remains available while queued input is edited.
+    AgentCycleCapability(),
     ModeCycleCapability(),  # Shift+Tab — mode switch takes effect on next tool call
     AgentsHubCapability(),  # the hub opens over a running turn too
     SubagentsCapability(),  # workers run while their turn does
+    BackgroundSubagentsCapability(),
     MouseCapability(),
     InsertCapability(),  # fallback — must be last
 ]

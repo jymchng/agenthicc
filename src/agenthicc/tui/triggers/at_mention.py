@@ -21,7 +21,13 @@ Matching behaviour
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from pathlib import Path
+from textwrap import wrap
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from agenthicc.agents.definitions import AgentSpec
 
 from agenthicc.mentions.matcher import filter_and_rank
 from agenthicc.mentions.parser import _is_valid_mention_position
@@ -32,7 +38,10 @@ class AtMentionTrigger(TriggerHandlerBase):
     """File/directory mention trigger for the '@' character."""
 
     char = "@"
-    label = "Mention File"
+    label = "Mention File or Agent"
+
+    def __init__(self, agents: Callable[[], Sequence[AgentSpec]] | None = None) -> None:
+        self._agents = agents
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -72,6 +81,19 @@ class AtMentionTrigger(TriggerHandlerBase):
         and fuzzy matching via ``mentions.matcher.filter_and_rank()``.
         """
         cwd = ctx.cwd
+
+        if self._agents is not None and fragment.casefold().startswith("agent"):
+            query = fragment[len("agent") :].removeprefix(":").casefold()
+            return [
+                MatchItem(
+                    display=f"agent:{spec.name}  {spec.description}",
+                    value=f"agent:{spec.name}",
+                    label=f"@agent:{spec.name}",
+                    detail=spec.description,
+                )
+                for spec in self._agents()
+                if spec.subagent and not spec.hidden and spec.name.casefold().startswith(query)
+            ]
 
         # ── navigating into a subdirectory ──────────────────────────────────
         separator_index = max(fragment.rfind("/"), fragment.rfind("\\"))
@@ -122,6 +144,18 @@ class AtMentionTrigger(TriggerHandlerBase):
                     candidates.append(MatchItem(display=child_path, value=child_path))
 
         return filter_and_rank(fragment, candidates)
+
+    def get_lines(self, item: MatchItem, available_width: int) -> list[str]:
+        """Render agent matches with their descriptions on wrapped lines."""
+        if not item.label:
+            return super().get_lines(item, available_width)
+        label_width = min(max(len(item.label), 16), max(available_width - 16, 16))
+        detail_width = max(available_width - label_width - 1, 16)
+        detail = wrap(item.detail, width=detail_width) or [""]
+        return [
+            f"{item.label:<{label_width}} {detail[0]}",
+            *(f"{'':<{label_width}} {line}" for line in detail[1:]),
+        ]
 
     def on_select(
         self,

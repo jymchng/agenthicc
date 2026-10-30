@@ -522,8 +522,11 @@ class FooterComponent:
                 conditions.add("running")
             if self._state.input.paste_condensed():
                 conditions.update(("paste", "paste_at_cursor"))
-            if conv.subagent_pool_state() is not None:
+            pool_state = conv.subagent_pool_state()
+            if pool_state is not None:
                 conditions.add("subagents")
+                if pool_state.active:
+                    conditions.add("subagents_running")
             keymap = self._state.keymap()
             ui = _ui(self._state)
             hints: tuple[tuple[str, str], ...]

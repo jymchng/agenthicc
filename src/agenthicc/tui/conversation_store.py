@@ -705,6 +705,8 @@ class AppState:
         self.pending_approval.subscribe(self._sync_display_wait_state)
         # PRD-81: holds WorkflowRun | None; set by WorkflowRunner during execution.
         self.workflow_run: Signal[WorkflowRun | None] = Signal(None, name="workflow_run")
+        # AGX-09: the primary agent the next turn talks to.
+        self.agent: Signal[str] = Signal("default", name="agent")
         # PRD-79: ephemeral CLI flags — frozen after startup, read by ApprovalGate etc.
         self.cli_flags: CLIFlags = CLIFlags()
         # AGX-13: the effective key bindings (replaced when the user's bindings

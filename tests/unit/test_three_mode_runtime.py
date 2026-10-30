@@ -13,7 +13,9 @@ from agenthicc.tui.runtime.mode_manager import (
     RuntimeMode,
     UnknownModeError,
     build_default_registry,
+    builtin_mode,
     canonical_mode_name,
+    restrict_mode,
 )
 
 pytestmark = pytest.mark.unit
@@ -34,6 +36,18 @@ def test_default_registry_has_exact_selectable_order_and_internal_replay() -> No
     replay = registry.get("Replay")
     assert replay is not None
     assert ToolCapability.CONTROL in replay.blocked_capabilities
+
+
+def test_agent_mode_ceilings_only_add_restrictions() -> None:
+    yolo = builtin_mode("Yolo")
+    safe = builtin_mode("Safe")
+    plan = builtin_mode("Plan")
+
+    yolo_under_plan = restrict_mode(yolo, plan)
+    assert yolo_under_plan.blocked_capabilities == plan.blocked_capabilities
+    assert yolo_under_plan.approval_required == plan.approval_required
+    assert restrict_mode(plan, safe).blocked_capabilities == plan.blocked_capabilities
+    assert restrict_mode(safe, yolo) is safe
 
 
 @pytest.mark.parametrize(

@@ -11,6 +11,8 @@ from agenthicc.tui.runtime.commands import (
     Command,
     SendMessageCommand,
     InterruptAgentCommand,
+    CycleAgentCommand,
+    BackgroundSubagentsCommand,
     OpenAgentsHubCommand,
     OpenSubagentsCommand,
 )
@@ -33,6 +35,8 @@ __all__ = [
     "Command",
     "SendMessageCommand",
     "InterruptAgentCommand",
+    "CycleAgentCommand",
+    "BackgroundSubagentsCommand",
     "OpenAgentsHubCommand",
     "OpenSubagentsCommand",
     "ModeManager",

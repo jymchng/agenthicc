@@ -281,6 +281,21 @@ def _cmd_agents(ctx: CommandContext) -> bool:
     return True
 
 
+def _cmd_agent(ctx: CommandContext) -> bool:
+    """Choose the primary agent: ``/agent`` opens the picker, ``/agent NAME`` switches."""
+    name = ctx.args.strip()
+    if ctx.select_agent is None or ctx.open_agent_picker is None:
+        ctx.console.print(
+            "[dim]/agent needs the interactive TUI; use agenthicc --agent NAME.[/dim]"
+        )
+        return True
+    if name:
+        ctx.console.print(ctx.select_agent(name), markup=False)
+    else:
+        ctx.open_agent_picker()
+    return True
+
+
 def _cmd_subagents(ctx: CommandContext) -> bool:
     """The turn's subagents and the session's earlier ones (AGX-08 §5.2)."""
 
@@ -1405,6 +1420,14 @@ BUILTIN_COMMANDS: list[Command] = [
         group="Built-in",
         busy_policy=BusyPolicy.IMMEDIATE_CONTROL,
         handler=_cmd_agents,
+    ),
+    Command(
+        name="/agent",
+        description="Choose the primary agent the session talks to (also Tab)",
+        argument_hint="[name]",
+        group="Built-in",
+        busy_policy=BusyPolicy.IMMEDIATE_CONTROL,
+        handler=_cmd_agent,
     ),
     Command(
         name="/inbox",

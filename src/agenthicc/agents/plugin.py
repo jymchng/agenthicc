@@ -1,8 +1,9 @@
-"""AgentPlugin — base types for agent definitions (PRD-87).
+"""AgentPlugin — Python agent plugins and role defaults (PRD-87).
 
-AgentDefinition wraps a @agent(...)-decorated class with registry metadata.
-AgentPlugin is the ABC for user/project agent plugins discovered from
-~/.agenthicc/agents/ and .agenthicc/agents/.
+AgentPlugin is the base class for user/project agent plugins discovered from
+~/.agenthicc/agents/ and .agenthicc/agents/; the registry converts each to an
+:class:`~agenthicc.agents.definitions.AgentSpec` (AGX-09). Markdown
+definitions need no code.
 
 Capability convenience sets replace the old tool_access strings:
     READ_CAPS   — read, git_read, search
@@ -10,8 +11,6 @@ Capability convenience sets replace the old tool_access strings:
 """
 
 from __future__ import annotations
-
-from dataclasses import dataclass
 
 from agenthicc.tools.capabilities import ToolCapability
 
@@ -64,19 +63,6 @@ ROLE_DEFAULT_ALLOWED: dict[str, frozenset[ToolCapability] | None] = {
     "custom": None,
     "auto": None,
 }
-
-
-# ── AgentDefinition ───────────────────────────────────────────────────────────
-
-
-@dataclass(frozen=True)
-class AgentDefinition:
-    """Registry entry: maps a name to a @agent(...)-decorated class."""
-
-    name: str
-    agent_class: type  # @agent(model=None,system=…) class
-    allowed_capabilities: frozenset[ToolCapability] | None = None
-    source: str = "builtin"
 
 
 # ── AgentPlugin ───────────────────────────────────────────────────────────────

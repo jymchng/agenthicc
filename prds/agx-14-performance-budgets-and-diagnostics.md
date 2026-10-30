@@ -1,6 +1,6 @@
 ---
 title: "AGX-14: CPU-time performance budgets in CI and perf diagnostics"
-status: Proposed
+status: Implemented (weekly 10k search target unmet)
 version: 0.1.0
 date: 2026-10-23
 repository: jymchng/agenthicc
@@ -11,6 +11,20 @@ tags: [performance, ci, benchmarks, diagnostics, process]
 ---
 
 # AGX-14 — CPU-time performance budgets in CI and perf diagnostics
+
+## Implementation status (2026-10-30)
+
+The CPU-time and deterministic-count probe suite, checked budget ratchet,
+`agenthicc perf report` command, required CI performance session, and scheduled
+weekly profile are integrated. The `cli.agents_json.modules` exact-count budget
+was lowered from 170 to the measured 167; the ratchet prevents the measured
+improvement from going stale. `nox -s perf` and the coverage session pass; the
+coverage run completed in 9 minutes. The full Nox run found one unmet weekly
+target: `agents.search_10k.cpu_p95_ms` measured 220.379 ms against a 50 ms
+budget (30% tolerance). The benchmark query includes the two-character term
+`99`, below the FTS5 trigram index's three-character lookup threshold. This
+weekly search target remains open; all other sessions in the recorded run
+passed.
 
 ## 1. Summary
 

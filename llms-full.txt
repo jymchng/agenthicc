@@ -56,7 +56,11 @@ gate, and—when supplied—the same approval service and workspace policy. It
 does not share the parent's short-term message memory and cannot recursively
 spawn workers. Empty provider finals receive one bounded finalisation turn.
 Worker and complete-pool results are fsync'd to the session conversation
-journal; only TUI/kernel diagnostic previews are bounded.
+journal; only TUI/kernel diagnostic previews are bounded. Ctrl+B in the TUI can
+return a durable background receipt while the session-owned pool continues.
+Resume never reruns an unfinished pool: it records interruption and delivers a
+completed/interrupted/cancelled aggregate once at the next non-resume turn
+boundary, using a stable message ID outside the parent tool-result boundary.
 
 Its `timeout_s` argument is a finite wall-clock deadline in seconds for each
 worker and defaults to `DEFAULT_SUBAGENT_TIMEOUT_S` (`3600`, one hour). A
@@ -1524,7 +1528,11 @@ Durable conversation journal (PRD-129 Phases 2 & 3).
 class ConversationJournal
 ```
 
-Append-only, ``fsync``-ed JSONL journal of conversation transitions.
+Append-only, ``fsync``-ed JSONL journal of conversation transitions. It also
+stores subagent pool start, background receipt, completion, cancellation,
+interruption, and notification-delivery records outside the provider-message
+fold. These lifecycle records make background receipts replayable and let
+resume report interrupted work without restarting worker side effects.
 
 ### IncompleteTurn
 
@@ -1586,6 +1594,9 @@ returns `False` without copying when the tool history is already valid, and
 references, the summary and a deep copy of the active tool exchange — instead
 of a deep copy of the history (AGX-12). Both rely on messages being values:
 code changes a message by replacing it, never by editing it in place.
+`add_user_once(content, message_id=...)` appends a synthetic user message with a
+durable stable receipt, so session notifications can be retried without
+inserting the same message twice.
 
 ## Current TUI — `agenthicc.tui.workspace` and reactive state
 
@@ -1669,6 +1680,18 @@ the session with `TUISession.switch` set to a frozen
 (`action` is `"attach"`, `"open_saved"` or `"hub"` after `/background`); the
 driver runs the target in its own project directory and reopens the origin
 session when the target ends. A switch waits for a running turn to finish.
+
+### BackgroundSubagentsCommand
+
+```python
+@dataclass(frozen=True)
+class BackgroundSubagentsCommand(Command): ...  # Ctrl+B
+```
+
+The composer's `subagents.background` action is available while a turn and an
+active worker pool are both present. The capability dispatches this command to
+`TUISession`, which requests backgrounding from the active pool; it does not
+cancel the session-owned task.
 
 ### Keymap — `agenthicc.tui.keymap`
 
@@ -3835,6 +3858,8 @@ class SubagentPool:
     async def run(self) -> AggregatedResult: ...
     @property
     def state(self) -> SubagentPoolState: ...
+    def request_background(self) -> bool: ...
+    async def wait_for_background_request(self) -> None: ...
     def stop_worker(self, worker_id: str) -> bool: ...
     def dismiss_worker(self, worker_id: str) -> bool: ...
 
@@ -3846,9 +3871,12 @@ publishes an immutable `SubagentPoolState` on the conversation store for every
 change (AGX-08) and keeps the finished snapshot published while the panel shows
 rows. `stop_worker` cancels one running worker (or keeps a waiting one from
 starting): it is recorded as failed with `stopped by user` and the rest of the
-pool, and the parent turn, go on. `active_pool` finds a running pool by ID.
-Worker transcripts are written under `transcript_root`, by default
-`<session dir>/subagents` beside the conversation journal.
+pool, and the parent turn, go on. `request_background()` sets the pool's
+background request flag; `wait_for_background_request()` lets the provider tool
+return its durable receipt while the session-owned task continues. `active_pool`
+finds a running pool by ID. Worker transcripts are written under
+`transcript_root`, by default `<session dir>/subagents` beside the conversation
+journal.
 
 ### WorkerState and SubagentPoolState
 
@@ -4120,16 +4148,53 @@ its subagents actually receive.
 
 ## Agent definitions and registry — `agenthicc.agents`
 
-Agents system — named, reusable @agent(...)-decorated classes (PRD-87).
+Agent definitions are validated Markdown files, Python plugins, or shipped
+built-ins. The registry retains active, shadowed, invalid, and untrusted
+candidates in its catalog; primary and subagent use applies session-policy
+intersections at invocation. In the TUI, Tab cycles primary agents and `/agent`
+opens a picker; `agenthicc --agent NAME` selects the initial agent, while
+session metadata restores the choice on resume. The Library is available from
+`agenthicc agents --tab library`; it uses `$VISUAL`, then `$EDITOR`, for edits
+when configured, launching the command without a shell after safely yielding the
+terminal. Otherwise it uses its built-in multiline editor. Scriptable catalog
+commands are `agenthicc agents definitions list [--json]`, `show NAME`, and
+`validate`.
 
-### AgentDefinition
+### AgentSpec
 
 ```python
-@dataclass
-class AgentDefinition
+@dataclass(frozen=True, slots=True)
+class AgentSpec
 ```
 
-Fields: `name`, `agent_class`, `allowed_capabilities`, `source`.
+Fields: `name`, `description`, `prompt`, `mode`, `model`, `tools`,
+`capabilities`, `max_steps`, `ceiling`, `color`, `hidden`, `source`, and `path`.
+
+### DefinitionError
+
+```python
+class DefinitionError(ValueError)
+```
+
+A definition parsing error with its optional `path`, one-based `line`, and
+`message` attributes.
+
+### parse_definition
+
+```python
+def parse_definition(text: str, *, path: Path | None = None, source: str = "builtin") -> AgentSpec
+```
+
+Parse and validate the supported Markdown frontmatter subset and use the body as
+the agent prompt. Unknown keys and invalid values raise `DefinitionError`.
+
+### render_definition
+
+```python
+def render_definition(spec: AgentSpec) -> str
+```
+
+Render an `AgentSpec` as Markdown that `parse_definition` reads back.
 
 ### AgentPlugin
 
@@ -4137,7 +4202,7 @@ Fields: `name`, `agent_class`, `allowed_capabilities`, `source`.
 class AgentPlugin
 ```
 
-ABC for user/project agent plugins.
+ABC for trusted user/project Python agent plugins.
 
 ### READ_CAPS
 
@@ -4163,15 +4228,70 @@ ROLE_DEFAULT_ALLOWED = dict
 class AgentsRegistry
 ```
 
-Maps agent type names to AgentDefinition instances.
+Maps names to active `AgentSpec` values and exposes the full candidate catalog.
+It can instantiate a per-turn agent with a caller-provided, already-filtered
+tool list.
+
+### CatalogEntry
+
+```python
+@dataclass(frozen=True, slots=True)
+class CatalogEntry
+```
+
+One registry candidate with `name`, `source`, `state`, optional `spec` and
+`path`, shadowing information, an optional parse `error`, and `kept_previous`.
 
 ### build_agents_registry
 
 ```python
-def build_agents_registry(project_dir: 'Path | None' = None, user_dir: 'Path | None' = None, *, load_external: 'bool' = True) -> 'AgentsRegistry'
+def build_agents_registry(project_dir: Path | None = None, user_dir: Path | None = None, *, load_external: bool = True, previous: AgentsRegistry | None = None) -> AgentsRegistry
 ```
 
-Build the agents registry: builtin → user-global → project-local.
+Build the registry from built-ins, trusted Python plugins, user Markdown, and
+project Markdown. An invalid changed Markdown file can retain its last valid
+spec from `previous`.
+
+### DefinitionScope
+
+```python
+DefinitionScope = Literal["project", "user"]
+```
+
+### agent_directory
+
+```python
+def agent_directory(scope: DefinitionScope, *, project_root: Path) -> Path
+```
+
+Return the Markdown agent directory for one scope.
+
+### write_definition
+
+```python
+def write_definition(spec: AgentSpec, *, scope: DefinitionScope, project_root: Path, overwrite: bool = False) -> Path
+```
+
+Validate and atomically write a definition under its project or user directory.
+Project creation records digest-bound trust; overwriting revokes prior trust.
+
+### delete_definition
+
+```python
+def delete_definition(path: Path, *, project_root: Path, user_root: Path | None = None) -> None
+```
+
+Delete only a regular Markdown definition inside the project or user agent
+directory; revoke its trust record when applicable.
+
+### generate_definition_draft
+
+```python
+async def generate_definition_draft(runner: AgentRunnerBase, *, model_id: str, name: str, description: str) -> str
+```
+
+Use the supplied lauren-ai runner to generate a Markdown draft. This function
+never writes a file; the caller must validate and present the draft for review.
 
 ## Modes and mode plugins — `agenthicc.modes`
 

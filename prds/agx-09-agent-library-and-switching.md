@@ -1,6 +1,6 @@
 ---
 title: "AGX-09: Agent library — Markdown definitions, management and switching"
-status: Proposed
+status: Implemented (live external-file reload deferred)
 version: 0.1.0
 date: 2026-10-23
 repository: jymchng/agenthicc
@@ -11,6 +11,25 @@ tags: [agents, profiles, tui, ux, configuration]
 ---
 
 # AGX-09 — Agent library: Markdown definitions, management and switching
+
+## Implementation status (2026-10-30)
+
+The Markdown `AgentSpec` registry and catalog, built-in Markdown definitions,
+Python plugin adaptation, policy ceilings, definition CLI, Library management
+flows, primary-agent selection, and `@agent:NAME` invocation are integrated.
+Invalid Markdown definitions retain a previous valid version, and catalog
+entries expose active, shadowed, invalid, and untrusted states.
+
+**Deferred:** the live-session registry is populated during startup discovery
+but is not watched for subsequent external file edits. The Library can refresh
+its catalog, but external edits do not update the active session; startup
+rebuilds the runtime registry for a new session. The no-restart hot-reload
+acceptance in §6 remains open.
+
+Focused evidence: `tests/unit/test_agent_definitions_cli.py`,
+`test_agent_library.py`, `test_agent_library_editor.py`,
+`test_agent_generation.py`, `test_agent_mentions_agx09.py`, and
+`test_agents_registry_coverage.py`.
 
 ## 1. Summary
 

@@ -20,6 +20,7 @@ from agenthicc.background.model import BackgroundSession, SessionStatus
 from agenthicc.background.vocabulary import Group, status_look
 
 if TYPE_CHECKING:
+    from agenthicc.agents.definitions import AgentSpec
     from agenthicc.subagents.pool import SubagentPoolState, WorkerState
 
 #: The Running tab's group of the session's subagent workers (in-session, AGX-08).
@@ -156,6 +157,13 @@ class LibraryEntry:
     source: str
     description: str = ""
     tools: str = ""
+    mode: str = ""
+    model: str = ""
+    state: str = "active"
+    note: str = ""
+    path: str = ""
+    spec: AgentSpec | None = None
+    default: bool = False
 
 
 @dataclass(frozen=True, slots=True)

@@ -113,6 +113,27 @@ class JournaledShortTermMemory(ShortTermMemory):
         super().add_user(content)
         self._journal_new(before)
 
+    def add_user_once(self, content: str, *, message_id: str) -> bool:
+        """Durably append one synthetic user message at most once."""
+        if not message_id:
+            raise ValueError("message_id must be non-empty")
+        if self._journal.has_message_id(message_id):
+            return False
+        checkpoint = super().snapshot()
+        before = len(self._messages)
+        super().add_user(content)
+        added = self._messages[before:]
+        try:
+            for index, message in enumerate(added):
+                self._journal.append_message(
+                    message,
+                    message_id=message_id if index == 0 else f"{message_id}:{index}",
+                )
+        except BaseException:
+            super().restore(checkpoint)
+            raise
+        return bool(added)
+
     def add_assistant(self, completion: object) -> None:
         before = len(self._messages)
         super().add_assistant(completion)

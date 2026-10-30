@@ -336,6 +336,10 @@ async def resolve_mention(
 ) -> InjectedContent:
     """Resolve a single Mention to an InjectedContent block."""
 
+    if mention.kind == MentionKind.AGENT:
+        # ``@agent:NAME`` runs a subagent; it has no injected file content.
+        return InjectedContent(mention=mention, block="")
+
     if mention.kind == MentionKind.UNRESOLVED:
         return InjectedContent(
             mention=mention,
@@ -514,11 +518,17 @@ async def build_context_prefix(
     from .parser import parse_mentions
 
     cfg = cfg or InjectionConfig(cwd=cwd or Path.cwd())
-    mentions = parse_mentions(
-        text,
-        cwd=cfg.cwd,
-        workspace_scope=(cfg.workspace_access.scope if cfg.workspace_access is not None else None),
-    )
+    mentions = [
+        mention
+        for mention in parse_mentions(
+            text,
+            cwd=cfg.cwd,
+            workspace_scope=(
+                cfg.workspace_access.scope if cfg.workspace_access is not None else None
+            ),
+        )
+        if mention.kind is not MentionKind.AGENT
+    ]
     if not mentions:
         return "", []
 

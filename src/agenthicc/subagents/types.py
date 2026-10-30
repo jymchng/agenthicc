@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from agenthicc.subagents.pool import SubagentResult
+    from agenthicc.subagents.policy import SubagentExecutionPolicy
 
 __all__ = [
     "DEFAULT_SUBAGENT_TIMEOUT_S",
@@ -89,6 +90,8 @@ class SubagentTypeSpec:
     max_turns: int
     system_prompt: str
     max_turn_time_s: float = DEFAULT_SUBAGENT_TIMEOUT_S
+    model: str = ""
+    policy: "SubagentExecutionPolicy | None" = None
 
 
 # ── system prompts ────────────────────────────────────────────────────────────

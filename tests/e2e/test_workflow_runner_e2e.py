@@ -195,17 +195,11 @@ async def test_e2e_opt_in_cap_stops_rejection_loop(app_state, processor, tmp_pat
 
 
 async def test_e2e_agents_registry_resolves_system_prompt(app_state, processor, tmp_path):
-    """make_instance() reads the system prompt from the @agent class."""
+    """make_instance() reads the system prompt from the built-in Markdown spec."""
     registry = build_agents_registry()
-    defn = registry.get("planner")
-    assert defn is not None
-
-    # Verify the system prompt comes from PlannerAgent's @agent(system=...)
-    from lauren_ai._agents import AGENT_META
-
-    meta = getattr(defn.agent_class, AGENT_META, None)
-    assert meta is not None
-    assert "planning" in (meta.system or "").lower()
+    definition = registry.get("planner")
+    assert definition is not None
+    assert "planning" in definition.prompt.lower()
 
 
 async def test_e2e_workflow_context_injected(app_state, processor, tmp_path):

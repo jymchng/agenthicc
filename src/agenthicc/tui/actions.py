@@ -21,7 +21,8 @@ The agents hub (AGX-05–07) reports, for its selected row and tab:
 - ``transcript``, ``changes`` — the detail view has those sections.
 
 The composer also reports ``subagents`` while the subagent panel is shown
-(AGX-08). The panel and a worker's transcript report ``worker`` (the selected
+(AGX-08), and ``subagents_running`` while a pool has live workers (AGX-08
+Phase 2). The panel and a worker's transcript report ``worker`` (the selected
 worker has a transcript), ``running_worker`` (it has not finished) and
 ``failed_worker`` (it failed and its row has not been dismissed).
 """
@@ -165,6 +166,14 @@ COMPOSER_ACTIONS: tuple[Action, ...] = (
         description="Move down a line, or recall the next prompt",
     ),
     Action(
+        "composer.agent_cycle",
+        "composer",
+        ("tab",),
+        "agent",
+        hint_priority=35,
+        description="Talk to the next primary agent",
+    ),
+    Action(
         "composer.mode_cycle",
         "composer",
         ("shift+tab",),
@@ -187,6 +196,15 @@ COMPOSER_ACTIONS: tuple[Action, ...] = (
         hint_priority=45,
         description="Move to the subagent panel",
         when=frozenset({"subagents"}),
+    ),
+    Action(
+        "subagents.background",
+        "composer",
+        ("ctrl+b",),
+        "background pool",
+        hint_priority=46,
+        description="Let the active subagent pool continue in the background",
+        when=frozenset({"running", "subagents_running"}),
     ),
 )
 

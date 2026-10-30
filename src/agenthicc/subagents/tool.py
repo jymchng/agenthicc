@@ -25,7 +25,7 @@ import asyncio
 import hashlib
 import json
 from collections.abc import Callable, Mapping
-from typing import TYPE_CHECKING, Literal, TypedDict
+from typing import TYPE_CHECKING, Literal, TypedDict, cast
 
 from agenthicc.subagents.pool import SubagentTask
 from agenthicc.tools.base import tool_name
@@ -259,6 +259,41 @@ def make_spawn_subagents_tool(
             subagent_tasks,
             policy_revision=(effective_policy.policy_revision if effective_policy else ""),
         )
+        if conversation_journal is not None and parent_run_id:
+            previous = conversation_journal.find_subagent_pool(parent_run_id, fp)
+            if previous is not None:
+                stored_receipt = previous.get("tool_result")
+                if isinstance(stored_receipt, dict):
+                    return dict(stored_receipt)
+                status = previous.get("status")
+                if status in {"completed", "interrupted", "cancelled"}:
+                    total_value = previous.get("total", len(subagent_tasks))
+                    succeeded_value = previous.get("succeeded", 0)
+                    failed_value = previous.get("failed", len(subagent_tasks))
+                    total = total_value if isinstance(total_value, int) else len(subagent_tasks)
+                    succeeded = succeeded_value if isinstance(succeeded_value, int) else 0
+                    failed = failed_value if isinstance(failed_value, int) else len(subagent_tasks)
+                    text = previous.get("text", "")
+                    return {
+                        "ok": status == "completed" and failed == 0,
+                        "status": str(status),
+                        "pool_id": str(previous.get("pool_id", "")),
+                        "total": total,
+                        "succeeded": succeeded,
+                        "failed": failed,
+                        "error": "" if failed == 0 else f"{failed} subagent(s) failed",
+                        "results": text if isinstance(text, str) else "",
+                    }
+                return {
+                    "ok": False,
+                    "status": "in_progress",
+                    "pool_id": str(previous.get("pool_id", "")),
+                    "total": len(subagent_tasks),
+                    "succeeded": 0,
+                    "failed": 0,
+                    "results": "This logical turn already started this subagent pool.",
+                }
+
         cached = _find_cached_result(conv_store, fp, journal=conversation_journal)
         if cached is not None:
             if conv_store is not None:
@@ -301,20 +336,93 @@ def make_spawn_subagents_tool(
             task_fingerprint=fp,
             policy=effective_policy,
         )
-        pool_task = asyncio.create_task(pool.run())
-        if pool.communication is not None:
-            pending_task = asyncio.create_task(pool.communication.wait_for_pending())
+        if conversation_journal is not None:
+            conversation_journal.subagent_pool_started(
+                pool_id=pool.pool_id,
+                fingerprint=fp,
+                parent_run_id=parent_run_id,
+                tasks=[
+                    {"task_id": task.task_id, "agent_type": task.agent_type}
+                    for task in subagent_tasks
+                ],
+            )
+        from agenthicc.runners.agent_turn_context import current_background_task_owner
+
+        task_owner = current_background_task_owner()
+        if task_owner is None:
+            pool_task = asyncio.create_task(pool.run(), name=f"subagent-pool-{pool.pool_id}")
+        else:
+            pool_task = task_owner.start(pool.run(), name=f"subagent-pool-{pool.pool_id}")
+        pending_task: asyncio.Task[list[dict[str, object]]] | None = None
+        background_task = asyncio.create_task(
+            pool.wait_for_background_request(), name=f"subagent-background-{pool.pool_id}"
+        )
+        communication = pool.communication
+        if communication is not None:
+            pending_task = asyncio.create_task(communication.wait_for_pending())
+        waiters: set[asyncio.Task[object]] = {
+            cast(asyncio.Task[object], pool_task),
+            cast(asyncio.Task[object], background_task),
+        }
+        if pending_task is not None:
+            waiters.add(cast(asyncio.Task[object], pending_task))
+        backgrounded = False
+        try:
             done, _pending = await asyncio.wait(
-                {pool_task, pending_task},
+                waiters,
                 return_when=asyncio.FIRST_COMPLETED,
             )
-            if pending_task in done and not pool_task.done():
-                questions = pool.communication.pending_questions(recipient="main")
+            if pool_task in done or pool_task.done():
+                result = await pool_task
+            elif background_task in done:
+                background_receipt: dict[str, object] = {
+                    "ok": True,
+                    "status": "backgrounded",
+                    "pool_id": pool.pool_id,
+                    "total": len(subagent_tasks),
+                    "succeeded": 0,
+                    "failed": 0,
+                    "error": "",
+                    "results": (
+                        f"Subagent pool {pool.pool_id} is running in the background. "
+                        "Its result will be delivered as a user message on your next turn."
+                    ),
+                }
+                if conversation_journal is None:
+                    pool_task.cancel()
+                    await asyncio.gather(pool_task, return_exceptions=True)
+                    return {
+                        "ok": False,
+                        "status": "background_unavailable",
+                        "pool_id": pool.pool_id,
+                        "total": len(subagent_tasks),
+                        "succeeded": 0,
+                        "failed": 0,
+                        "error": "Background subagents require a durable conversation journal.",
+                        "results": "",
+                    }
+                conversation_journal.subagent_pool_backgrounded(
+                    pool_id=pool.pool_id,
+                    tool_result=background_receipt,
+                )
+                backgrounded = True
+                if communication is not None:
+                    continuation_registry.register(
+                        PoolHandle(
+                            pool_id=pool.pool_id,
+                            conversation_id=conversation_id,
+                            broker=communication,
+                            task=pool_task,
+                        )
+                    )
+                return background_receipt
+            elif pending_task is not None and communication is not None and pending_task in done:
+                questions = communication.pending_questions(recipient="main")
                 continuation_registry.register(
                     PoolHandle(
                         pool_id=pool.pool_id,
                         conversation_id=conversation_id,
-                        broker=pool.communication,
+                        broker=communication,
                         task=pool_task,
                     )
                 )
@@ -328,9 +436,25 @@ def make_spawn_subagents_tool(
                     "failed": 0,
                     "results": "A subagent needs clarification. Answer it with answer_subagent, then collect_subagent_results.",
                 }
-            pending_task.cancel()
-            await asyncio.gather(pending_task, return_exceptions=True)
-        result = await pool_task
+            result = await pool_task
+        except asyncio.CancelledError:
+            if not backgrounded and not pool_task.done():
+                pool_task.cancel()
+                await asyncio.gather(pool_task, return_exceptions=True)
+            raise
+        except Exception:
+            if not backgrounded and not pool_task.done():
+                pool_task.cancel()
+                await asyncio.gather(pool_task, return_exceptions=True)
+            raise
+        finally:
+            for watcher in (background_task, pending_task):
+                if watcher is not None and not watcher.done():
+                    watcher.cancel()
+            await asyncio.gather(
+                *(watcher for watcher in (background_task, pending_task) if watcher is not None),
+                return_exceptions=True,
+            )
 
         # Only a completely successful pool is a safe resume cache entry.
         # Caching a partial result would make a resumed call silently reuse a

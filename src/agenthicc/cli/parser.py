@@ -95,6 +95,13 @@ def _add_global_flags(parser: argparse.ArgumentParser) -> None:
         help="Start with MODE selected (for example: Safe, Plan, or Yolo).",
     )
     parser.add_argument(
+        "--agent",
+        metavar="NAME",
+        default=None,
+        dest="agent_name",
+        help="Talk to the primary agent NAME (see: agenthicc agents definitions list).",
+    )
+    parser.add_argument(
         "--config",
         metavar="PATH",
         default=None,
@@ -255,6 +262,7 @@ def _build_ctx(
         continue_session=getattr(ns, "continue_session", False),
         workflow_name=getattr(ns, "workflow_name", None),
         mode_name=getattr(ns, "mode_name", None),
+        agent_name=vars(ns).get("agent_name"),
         goal=vars(ns).get("goal"),
         goal_priority=goal_priority if isinstance(goal_priority, str) else "normal",
         detach=bool(vars(ns).get("detach", False)),

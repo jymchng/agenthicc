@@ -1,0 +1,195 @@
+{
+  "metrics": {
+    "agents.change_visible_10k.wall_p95_ms": {
+      "budget": 250,
+      "gate_scopes": [
+        "local"
+      ],
+      "scope": "weekly",
+      "tolerance": 0.3
+    },
+    "agents.change_visible_1k.wall_p95_ms": {
+      "budget": 250,
+      "gate_scopes": [
+        "local"
+      ],
+      "scope": "ci",
+      "tolerance": 0.3
+    },
+    "agents.first_page_10k.cpu_p95_ms": {
+      "budget": 250,
+      "scope": "weekly",
+      "tolerance": 0.3
+    },
+    "agents.first_page_1k.cpu_p95_ms": {
+      "budget": 250,
+      "scope": "ci",
+      "tolerance": 0.3
+    },
+    "agents.idle_10k.cpu_fraction": {
+      "budget": 0.01,
+      "scope": "weekly",
+      "tolerance": 0.3
+    },
+    "agents.idle_10k.events_appended": {
+      "budget": 0,
+      "ratchet": "two_way",
+      "scope": "weekly",
+      "tolerance": 0
+    },
+    "agents.idle_1k.cpu_fraction": {
+      "budget": 0.01,
+      "scope": "ci",
+      "tolerance": 0.3
+    },
+    "agents.idle_1k.events_appended": {
+      "budget": 0,
+      "ratchet": "two_way",
+      "scope": "ci",
+      "tolerance": 0
+    },
+    "agents.search_10k.cpu_p95_ms": {
+      "budget": 50,
+      "scope": "weekly",
+      "tolerance": 0.3
+    },
+    "agents.search_1k.cpu_p95_ms": {
+      "budget": 50,
+      "scope": "ci",
+      "tolerance": 0.3
+    },
+    "cli.agents_json.cpu_s": {
+      "budget": 0.3,
+      "scope": "local",
+      "tolerance": 0.3
+    },
+    "cli.agents_json.modules": {
+      "budget": 167.0,
+      "ratchet": "two_way",
+      "scope": "local",
+      "tolerance": 0
+    },
+    "cli.help.cpu_s": {
+      "budget": 0.25,
+      "scope": "local",
+      "tolerance": 0.3
+    },
+    "cli.help.modules": {
+      "budget": 115.0,
+      "ratchet": "two_way",
+      "scope": "local",
+      "tolerance": 0
+    },
+    "render.composer_10000.cpu_p95_ms": {
+      "budget": 16,
+      "scope": "local",
+      "tolerance": 0.3
+    },
+    "render.composer_10000.markup_parses_per_frame": {
+      "budget": 0.0,
+      "ratchet": "two_way",
+      "scope": "local",
+      "tolerance": 0
+    },
+    "render.composer_10000.wall_p95_ms": {
+      "budget": 16,
+      "gate_scopes": [
+        "local"
+      ],
+      "scope": "local",
+      "tolerance": 0.3
+    },
+    "render.composer_200_lines.cpu_p95_ms": {
+      "budget": 16,
+      "scope": "local",
+      "tolerance": 0.3
+    },
+    "render.composer_200_lines.wall_p95_ms": {
+      "budget": 16,
+      "gate_scopes": [
+        "local"
+      ],
+      "scope": "local",
+      "tolerance": 0.3
+    },
+    "render.spinner_frame.bytes_p50": {
+      "budget": 56.0,
+      "ratchet": "two_way",
+      "scope": "local",
+      "tolerance": 0.2
+    },
+    "render.spinner_frame.cpu_p95_ms": {
+      "budget": 16,
+      "scope": "local",
+      "tolerance": 0.3
+    },
+    "render.spinner_frame.wall_p95_ms": {
+      "budget": 16,
+      "gate_scopes": [
+        "local"
+      ],
+      "scope": "local",
+      "tolerance": 0.3
+    },
+    "tui.first_frame.cpu_s": {
+      "budget": 1.2,
+      "scope": "local",
+      "tolerance": 0.3
+    },
+    "tui.first_frame.wall_s": {
+      "budget": 1,
+      "gate_scopes": [
+        "local"
+      ],
+      "scope": "local",
+      "tolerance": 0.3
+    },
+    "tui.first_prompt.cpu_s": {
+      "budget": 1.2,
+      "scope": "local",
+      "tolerance": 0.3
+    },
+    "tui.first_prompt.modules": {
+      "budget": 377,
+      "scope": "local",
+      "tolerance": 0
+    },
+    "tui.first_prompt.wall_s": {
+      "budget": 1,
+      "gate_scopes": [
+        "local"
+      ],
+      "scope": "local",
+      "tolerance": 0.3
+    },
+    "tui.idle.cpu_fraction": {
+      "budget": 0.01,
+      "scope": "local",
+      "tolerance": 0.3
+    },
+    "tui.idle.frames_per_minute": {
+      "budget": 0.0,
+      "ratchet": "two_way",
+      "scope": "local",
+      "tolerance": 0
+    },
+    "turn.replay_goal_flow.cpu_s": {
+      "budget": 165,
+      "scope": "ci",
+      "tolerance": 0.3
+    },
+    "turn.replay_goal_flow.deepcopies_per_step": {
+      "budget": 0.068627,
+      "ratchet": "two_way",
+      "scope": "ci",
+      "tolerance": 0
+    },
+    "turn.replay_goal_flow.full_validations_per_step": {
+      "budget": 0.003922,
+      "ratchet": "two_way",
+      "scope": "ci",
+      "tolerance": 0
+    }
+  },
+  "version": 1
+}

@@ -150,7 +150,7 @@ def _append_heartbeats(event_path: Path, session_id: str, count: int) -> None:
         handle.writelines(lines)
 
 
-def _percentiles(samples_ms: list[float]) -> dict[str, float]:
+def _percentiles(samples_ms: list[float], prefix: str = "") -> dict[str, float]:
     ordered = sorted(samples_ms)
     if not ordered:
         return {"p50_ms": 0.0, "p95_ms": 0.0, "p99_ms": 0.0}
@@ -160,7 +160,7 @@ def _percentiles(samples_ms: list[float]) -> dict[str, float]:
         return round(ordered[index], 3)
 
     return {
-        f"p{percentile_value}_ms": percentile(percentile_value / 100)
+        f"{prefix}p{percentile_value}_ms": percentile(percentile_value / 100)
         for percentile_value in (50, 95, 99)
     }
 
@@ -174,11 +174,14 @@ def _fresh_process_first_page(registry_root: Path, samples: int) -> dict[str, fl
     probe = (
         "import json, sys, time\n"
         "from agenthicc.background import BackgroundStore\n"
-        "started = time.perf_counter()\n"
+        "cpu_started = time.process_time()\n"
+        "wall_started = time.perf_counter()\n"
         "BackgroundStore(sys.argv[1]).query_window(limit=25)\n"
-        "print(json.dumps((time.perf_counter() - started) * 1000))\n"
+        'print(json.dumps({"cpu_ms": (time.process_time() - cpu_started) * 1000, '
+        '"wall_ms": (time.perf_counter() - wall_started) * 1000}))\n'
     )
-    timings: list[float] = []
+    cpu_timings: list[float] = []
+    wall_timings: list[float] = []
     for _ in range(max(1, min(samples, 20))):
         output = subprocess.run(
             [sys.executable, "-c", probe, str(registry_root)],
@@ -186,29 +189,44 @@ def _fresh_process_first_page(registry_root: Path, samples: int) -> dict[str, fl
             capture_output=True,
             text=True,
         ).stdout
-        timings.append(float(json.loads(output)))
-    return _percentiles(timings)
+        payload: object = json.loads(output)
+        if not isinstance(payload, dict):
+            raise TypeError("fresh-process probe returned a non-object")
+        cpu = payload.get("cpu_ms")
+        wall = payload.get("wall_ms")
+        if not isinstance(cpu, (int, float)) or not isinstance(wall, (int, float)):
+            raise TypeError("fresh-process probe returned invalid timing values")
+        cpu_timings.append(float(cpu))
+        wall_timings.append(float(wall))
+    return {**_percentiles(wall_timings), **_percentiles(cpu_timings, "cpu_")}
 
 
 def _timed(samples: int, operation: Callable[[], object]) -> dict[str, float]:
-    timings: list[float] = []
+    wall_timings: list[float] = []
+    cpu_timings: list[float] = []
     for _ in range(samples):
-        started = time.perf_counter()
+        wall_started = time.perf_counter()
+        cpu_started = time.process_time()
         operation()
-        timings.append((time.perf_counter() - started) * 1_000)
-    return _percentiles(timings)
+        wall_timings.append((time.perf_counter() - wall_started) * 1_000)
+        cpu_timings.append((time.process_time() - cpu_started) * 1_000)
+    return {**_percentiles(wall_timings), **_percentiles(cpu_timings, "cpu_")}
 
 
 async def _measure(registry_root: Path, samples: int) -> dict[str, object]:
     store = BackgroundStore(registry_root)
+    rebuild_cpu_started = time.process_time()
     rebuild_started = time.perf_counter()
     store.query_window(limit=25)
     index_rebuild_ms = (time.perf_counter() - rebuild_started) * 1_000
+    index_rebuild_cpu_ms = (time.process_time() - rebuild_cpu_started) * 1_000
     store.close()
+    reopened_cpu_started = time.process_time()
     reopened_started = time.perf_counter()
     store = BackgroundStore(registry_root)
     first = store.query_window(limit=25)
     reopened_first_page_ms = (time.perf_counter() - reopened_started) * 1_000
+    reopened_first_page_cpu_ms = (time.process_time() - reopened_cpu_started) * 1_000
     refresh = _timed(samples, lambda: store.query_window(limit=25))
     search = _timed(
         samples, lambda: store.query_window(SessionFilter(query="session 99"), limit=25)
@@ -245,9 +263,11 @@ async def _measure(registry_root: Path, samples: int) -> dict[str, object]:
         supervisor=BackgroundSupervisor(store),
         prefs=HubPrefs(path=Path(prefs.name) / "hub.json"),
     )
+    first_frame_cpu_started = time.process_time()
     first_frame_started = time.perf_counter()
     manager.render(120, 25)
     first_frame_ms = (time.perf_counter() - first_frame_started) * 1_000
+    first_frame_cpu_ms = (time.process_time() - first_frame_cpu_started) * 1_000
     await manager.snapshot()
     manager._loop = asyncio.get_running_loop()
     key_samples: list[float] = []
@@ -309,8 +329,11 @@ async def _measure(registry_root: Path, samples: int) -> dict[str, object]:
     prefs.cleanup()
     return {
         "first_frame_ms": round(first_frame_ms, 3),
+        "first_frame_cpu_ms": round(first_frame_cpu_ms, 3),
         "index_rebuild_ms": round(index_rebuild_ms, 3),
+        "index_rebuild_cpu_ms": round(index_rebuild_cpu_ms, 3),
         "reopened_first_page_ms": round(reopened_first_page_ms, 3),
+        "reopened_first_page_cpu_ms": round(reopened_first_page_cpu_ms, 3),
         "fresh_process_first_page": fresh_process,
         "page_refresh": refresh,
         "search": search,
@@ -389,7 +412,9 @@ async def _measure_live(registry_root: Path, idle_s: float, samples: int) -> dic
         manager = AgentsHub(
             Console(width=120, height=25, file=io.StringIO()),
             store=store,
-            supervisor=BackgroundSupervisor(store),
+            # Heartbeat expiry is a separate lifecycle probe, not idle-screen
+            # write churn; keep synthetic workers fresh for this window.
+            supervisor=BackgroundSupervisor(store, stale_after_s=max(60.0, idle_s * 2)),
             settings=AgentsHubSettings(metrics=True),
             prefs=HubPrefs(path=Path(prefs.name) / "hub.json"),
         )
@@ -401,10 +426,20 @@ async def _measure_live(registry_root: Path, idle_s: float, samples: int) -> dic
             name: _metric_count(manager, name)
             for name in ("load_requested", "maintenance_started", "frame_requested")
         }
+        event_log = registry_root / "events.jsonl"
+        idle_bytes_before = event_log.stat().st_size
         cpu_started = time.process_time()
         wall_started = time.perf_counter()
         await asyncio.sleep(idle_s)
-        idle_cpu = (time.process_time() - cpu_started) / (time.perf_counter() - wall_started)
+        idle_elapsed = time.perf_counter() - wall_started
+        idle_cpu = (time.process_time() - cpu_started) / idle_elapsed
+        idle_appended_bytes = event_log.stat().st_size - idle_bytes_before
+        if idle_appended_bytes:
+            with event_log.open("rb") as handle:
+                handle.seek(idle_bytes_before)
+                idle_appended_events = sum(bool(line.strip()) for line in handle)
+        else:
+            idle_appended_events = 0
         idle_work = {name: _metric_count(manager, name) - value for name, value in counts.items()}
 
         writer = BackgroundStore(registry_root)
@@ -436,6 +471,8 @@ async def _measure_live(registry_root: Path, idle_s: float, samples: int) -> dic
     return {
         "idle_seconds": idle_s,
         "idle_cpu_fraction": round(idle_cpu, 4),
+        "idle_appended_bytes": idle_appended_bytes,
+        "idle_appended_events": idle_appended_events,
         "idle_work": idle_work,
         "change_to_visible": _percentiles(latencies),
         "writer_append": _percentiles(append_ms),

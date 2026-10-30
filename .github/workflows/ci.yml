@@ -8,8 +8,8 @@ on:
     branches: ["main", "dev"]
   pull_request:
     branches: ["main", "dev"]
-    # labeled/unlabeled re-run the type ratchet when the explicit
-    # "type-baseline-increase" approval label is added or removed.
+    # labeled/unlabeled re-run the ratchets when an explicit type-baseline or
+    # performance-budget approval label is added or removed.
     types: [opened, synchronize, reopened, labeled, unlabeled]
   workflow_call:
 
@@ -104,6 +104,41 @@ jobs:
           enable-cache: false
       - run: uv tool install nox
       - run: nox -s docs
+
+  perf:
+    name: Performance budgets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install worktree command sandbox
+        run: sudo apt-get update -qq && sudo apt-get install -y bubblewrap
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: false
+      - run: uv tool install nox
+      - name: Check performance-budget approval label
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: origin/${{ github.base_ref }}
+          INCREASE_APPROVED: ${{ contains(github.event.pull_request.labels.*.name, 'perf-budget-increase') }}
+        run: |
+          baseline="${RUNNER_TEMP}/performance-budgets.base.json"
+          if git cat-file -e "${BASE_REF}:docs/reference/performance-budgets.json" 2>/dev/null; then
+            git show "${BASE_REF}:docs/reference/performance-budgets.json" > "${baseline}"
+          else
+            printf '{"version":1,"metrics":{}}\\n' > "${baseline}"
+          fi
+          args=(--baseline "${baseline}")
+          if [[ "${INCREASE_APPROVED}" == "true" ]]; then
+            args+=(--increase-approved)
+          fi
+          PYTHONPATH=src python scripts/check_performance_budget_policy.py "${args[@]}"
+      - run: nox -s perf
 
   unit:
     name: Unit tests (Python ${{ matrix.python-version }})
@@ -212,7 +247,7 @@ jobs:
   required:
     name: Required checks
     if: always()
-    needs: [lint, typecheck, type-audit, llms, docs, unit, integration, e2e, windows, coverage]
+    needs: [lint, typecheck, type-audit, llms, docs, perf, unit, integration, e2e, windows, coverage]
     runs-on: ubuntu-latest
     steps:
       - name: Fail unless every gate succeeded

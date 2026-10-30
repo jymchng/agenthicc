@@ -219,6 +219,70 @@ def build_safe_mode(
     )
 
 
+def build_plan_mode(
+    *,
+    default_workflow: str | None = None,
+    workflows: tuple[str, ...] = (),
+) -> RuntimeMode:
+    """Return the canonical Plan policy for a default-state boundary."""
+    return RuntimeMode(
+        name="Plan",
+        badge="◈",
+        color="yellow",
+        description="Read-only planning; side-effecting actions are hard-blocked.",
+        system_prompt_suffix=(
+            "## PLAN MODE\n"
+            "You are operating in PLAN MODE. You MUST NOT write files, execute "
+            "commands, or make changes to the filesystem or repository. Analyse "
+            "the request and produce a structured action plan."
+        ),
+        blocked_capabilities=_restricted_capabilities(),
+        default_workflow=default_workflow,
+        workflows=workflows,
+    )
+
+
+def build_yolo_mode(
+    *,
+    default_workflow: str | None = None,
+    workflows: tuple[str, ...] = (),
+) -> RuntimeMode:
+    """Return the canonical Yolo policy for a default-state boundary."""
+    return RuntimeMode(
+        name="Yolo",
+        badge="⏵⏵",
+        color="green",
+        description="Full automatic mode; all tools are allowed without prompts.",
+        default_workflow=default_workflow,
+        workflows=workflows,
+    )
+
+
+def builtin_mode(name: str) -> RuntimeMode:
+    """Return a canonical selectable built-in mode without loading plugins."""
+    canonical = canonical_mode_name(name)
+    if canonical == "Safe":
+        return build_safe_mode()
+    if canonical == "Plan":
+        return build_plan_mode()
+    if canonical == "Yolo":
+        return build_yolo_mode()
+    raise UnknownModeError(name, SELECTABLE_MODE_NAMES)
+
+
+def restrict_mode(active: RuntimeMode, ceiling: RuntimeMode) -> RuntimeMode:
+    """Intersect two mode policies, preserving the active mode's identity."""
+    blocked = active.blocked_capabilities | ceiling.blocked_capabilities
+    approval_required = (active.approval_required | ceiling.approval_required) - blocked
+    if blocked == active.blocked_capabilities and approval_required == active.approval_required:
+        return active
+    return replace(
+        active,
+        blocked_capabilities=blocked,
+        approval_required=approval_required,
+    )
+
+
 def build_default_registry(
     default_map: dict[str, str] | None = None,
     available_map: dict[str, list[str]] | None = None,
@@ -232,7 +296,6 @@ def build_default_registry(
     """
     from agenthicc.tools.capabilities import ToolCapability
 
-    restricted = _restricted_capabilities()
     defaults = _canonical_workflow_map(default_map or {})
     available = _canonical_available_map(available_map or {})
 
@@ -244,28 +307,13 @@ def build_default_registry(
         )
     )
     registry.register(
-        RuntimeMode(
-            name="Plan",
-            badge="◈",
-            color="yellow",
-            description="Read-only planning; side-effecting actions are hard-blocked.",
-            system_prompt_suffix=(
-                "## PLAN MODE\n"
-                "You are operating in PLAN MODE. You MUST NOT write files, execute "
-                "commands, or make changes to the filesystem or repository. Analyse "
-                "the request and produce a structured action plan."
-            ),
-            blocked_capabilities=restricted,
+        build_plan_mode(
             default_workflow=defaults.get("Plan"),
             workflows=tuple(available.get("Plan", [])),
         )
     )
     registry.register(
-        RuntimeMode(
-            name="Yolo",
-            badge="⏵⏵",
-            color="green",
-            description="Full automatic mode; all tools are allowed without prompts.",
+        build_yolo_mode(
             default_workflow=defaults.get("Yolo"),
             workflows=tuple(available.get("Yolo", [])),
         )

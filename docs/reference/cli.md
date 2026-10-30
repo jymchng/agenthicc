@@ -22,6 +22,7 @@ own (`agenthicc --version`).
 | `--json` | Emit machine-readable goal/control output |
 | `--workflow NAME` | Start the TUI with `NAME` selected, or run `NAME` for each stdin line in headless mode; cannot be combined with `--goal` |
 | `--mode MODE` | Start with `MODE` selected (for example `Safe`, `Plan`, or `Yolo`); an explicit CLI mode overrides a persisted session mode |
+| `--agent NAME` | Start with primary agent `NAME` selected; see `agenthicc agents definitions list` |
 | `--config PATH` | Path to `agenthicc.toml` |
 | `--version` | Print the package CLI version string (currently `agenthicc 0.1.0`) |
 | `--continue` | Continue the most recent session for this directory; a busy latest session fails with `session_already_active` |
@@ -62,8 +63,8 @@ interactive TUI sessions.
 
 ## Command groups
 
-Nine groups have subcommands. Each group name is also callable on its own
-(`agenthicc mcp`, `agenthicc config`) and prints that group's help;
+Ten groups have subcommands. Each group name is also callable on its own
+(`agenthicc mcp`, `agenthicc config`, `agenthicc perf`) and prints that group's help;
 `agenthicc agents` alone opens the agents hub instead.
 
 | Group | Purpose |
@@ -71,6 +72,7 @@ Nine groups have subcommands. Each group name is also callable on its own
 | `agents` | The agents hub and its scriptable commands (background agents, their inbox) |
 | `config` | Manage configuration |
 | `mcp` | Manage configured MCP servers |
+| `perf` | Run offline performance diagnostics |
 | `schedules` | Manage durable repository-scoped workflow automations |
 | `session` | Inspect, control, and attach to client-neutral sessions |
 | `sessions` | Manage saved sessions |
@@ -112,6 +114,9 @@ help string the command registers.
 | `config profiles` | List configured provider profiles |
 | `config init [--force]` | Create a template `agenthicc.toml` in `.agenthicc/` |
 | `agents list [--json] [--all] [--trash]` | List background agents, with the hub's status labels |
+| `agents definitions list [--json]` | List all agent definitions and their source, state, and policy metadata |
+| `agents definitions show NAME` | Show all candidates for a definition name and each valid prompt |
+| `agents definitions validate` | Report invalid or untrusted definitions (exit status 1 when attention is required) |
 | `agents status SESSION_ID [--json]` | Show one background agent |
 | `agents cancel SESSION_ID` | Stop a background agent |
 | `agents resume SESSION_ID` | Resume a background agent |
@@ -142,6 +147,7 @@ help string the command registers.
 | `mcp auth NAME` | Check configured MCP authentication |
 | `mcp logout NAME` | Remove stored MCP authentication |
 | `mcp doctor [NAME] [--json]` | Validate and diagnose MCP server connectivity |
+| `perf report` | Run offline CLI, TUI startup, composer, spinner and idle-render diagnostics beside their budgets |
 | `sessions list [--page N] [--page-size N]` | On a terminal, open the agents hub's History tab (saved sessions with finished agents); piped, print one page of saved sessions |
 | `sessions show SESSION_ID` | Show detail for one session |
 | `sessions inspect SESSION_ID [--json]` | Inspect one session's durable state |
@@ -170,6 +176,43 @@ See [worktree environments and actions](../guides/worktree-environments.md)
 for manifest format, trust, cache isolation, and action execution behavior.
 See [scheduled workflows](../guides/scheduled-workflows.md) for recurrence,
 timezone/DST, scheduler-service, coalescing, revision, and recovery semantics.
+
+## Offline performance diagnostics
+
+`agenthicc perf report` runs the fixture-free local probes for CLI CPU and
+imports, interactive startup, composer rendering, spinner output and idle TUI
+work. It uses temporary homes, does not contact a provider, and prints the
+measurements beside the checked-in budgets. The report includes Python,
+platform, CPU and load context; wall time is diagnostic and is not gated by the
+shared-runner CI scope. `PASS`, `OVER`, and `STALE` distinguish budget status;
+`DIAG` marks metrics not gated in the selected scope.
+
+Maintainers can run the complete CI probe set (including the 1,000-session
+agents profile and hermetic 510-step goal-flow replay) and save its report:
+
+```bash
+uv run python scripts/perf_budget.py --scope ci --check --report .nox/perf-report.json
+```
+
+The weekly scope also runs the full synthetic 10,000-session / 1,000,000-event
+agents profile and retains the raw benchmark results in the JSON report. It gates
+CPU-time budgets for first-page access and search, along with idle CPU and zero
+appended events; change-to-visible wall time is diagnostic:
+
+```bash
+uv run nox -s perf_weekly
+```
+
+The Nox session uses the CI Python 3.12 interpreter and writes
+`.nox/perf-weekly-report.json`.
+
+`--update` lowers two-way exact-count budgets after a measured improvement; it
+refuses to raise them. A budget increase requires explicit review under the
+repository's performance-budget policy.
+
+!!! warning "The 10k benchmark is resource intensive"
+    The weekly profile builds a temporary 1,000,000-event fixture and can take
+    several minutes. It does not overwrite user session data.
 
 !!! warning "`session send` takes a positional message"
     The message is the second positional argument, not a `--text` flag:

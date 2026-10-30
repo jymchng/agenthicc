@@ -43,15 +43,17 @@ _KEYS: dict[str, tuple[Key, str]] = {
     "end": (Key.END, ""),
     "up": (Key.UP, ""),
     "down": (Key.DOWN, ""),
+    "tab": (Key.TAB, ""),
     "shift+tab": (Key.SHIFT_TAB, ""),
     "alt+enter": (Key.MODIFIED, "alt+enter"),
     "ctrl+g": (Key.CTRL_G, ""),
     "ctrl+o": (Key.CTRL_O, ""),
+    "ctrl+b": (Key.CTRL_B, ""),
 }
 
 
 def _session(state: AppState, action: Action) -> UnifiedInputSession:
-    if "subagents" in action.when:
+    if action.when & {"subagents", "subagents_running"}:
         from agenthicc.subagents.pool import SubagentPoolState, WorkerState
 
         state.conversation.subagent_pool_state.set(

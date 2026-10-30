@@ -70,6 +70,38 @@ def tests_performance(session: nox.Session) -> None:
     session.run("pytest", "tests/performance", *session.posargs)
 
 
+@nox.session(python=PRIMARY_PYTHON, name="perf")
+def perf(session: nox.Session) -> None:
+    """Run uninstrumented CPU and deterministic-count performance budgets."""
+    _install_dev(session)
+    session.run(
+        "python",
+        "scripts/perf_budget.py",
+        "--scope",
+        "ci",
+        "--check",
+        "--report",
+        ".nox/perf-report.json",
+        *session.posargs,
+    )
+
+
+@nox.session(python=PRIMARY_PYTHON, name="perf_weekly")
+def perf_weekly(session: nox.Session) -> None:
+    """Run the resource-intensive 10k-session weekly performance profile."""
+    _install_dev(session)
+    session.run(
+        "python",
+        "scripts/perf_budget.py",
+        "--scope",
+        "weekly",
+        "--check",
+        "--report",
+        ".nox/perf-weekly-report.json",
+        *session.posargs,
+    )
+
+
 @nox.session(python=PRIMARY_PYTHON, name="tests_windows")
 def tests_windows(session: nox.Session) -> None:
     """Run the platform-sensitive lock, filesystem and terminal tests (Windows CI)."""
@@ -149,6 +181,7 @@ def typecheck_contracts(session: nox.Session) -> None:
         "tests/unit/test_kernel_event_typing.py",
         "tests/unit/test_type_audit.py",
         "scripts/type_audit.py",
+        "scripts/check_performance_budget_policy.py",
         *session.posargs,
     )
 

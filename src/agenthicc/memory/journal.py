@@ -352,9 +352,33 @@ class ConversationJournal:
             }
         )
 
-    def append_message(self, message: object) -> None:
-        """Durably record one appended message."""
-        self._write({"seq": self._seq, "kind": "append", "message": message})
+    def append_message(self, message: object, *, message_id: str = "") -> None:
+        """Durably record one appended message, optionally with a stable receipt ID."""
+        entry: dict[str, object] = {"seq": self._seq, "kind": "append", "message": message}
+        if message_id:
+            entry["message_id"] = str(message_id)[:160]
+        self._write(entry)
+
+    def has_message_id(self, message_id: str) -> bool:
+        """Whether an idempotent message append with *message_id* is durable."""
+        if not message_id or not self._path.exists():
+            return False
+        with self._path.open("r", encoding="utf-8") as fh:
+            for raw in fh:
+                line = raw.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    break
+                if (
+                    isinstance(entry, dict)
+                    and entry.get("kind") == "append"
+                    and entry.get("message_id") == message_id
+                ):
+                    return True
+        return False
 
     def reset(
         self,
@@ -868,6 +892,7 @@ class ConversationJournal:
         duration_ms: float,
         tool_calls: list[str],
         changed_paths: list[str],
+        status: Literal["completed", "failed", "cancelled", "interrupted"] | None = None,
     ) -> None:
         """Persist one worker result, including its complete final text.
 
@@ -875,24 +900,25 @@ class ConversationJournal:
         result is therefore the durable representation of work produced before
         the parent tool exchange commits.
         """
-        self._write(
-            {
-                "seq": self._seq,
-                "kind": "subagent_worker_result",
-                "schema_version": 1,
-                "pool_id": pool_id,
-                "fingerprint": fingerprint,
-                "task_id": task_id,
-                "agent_type": agent_type,
-                "label": label,
-                "ok": ok,
-                "text": text,
-                "error": error,
-                "duration_ms": duration_ms,
-                "tool_calls": list(tool_calls),
-                "changed_paths": list(changed_paths),
-            }
-        )
+        entry: dict[str, object] = {
+            "seq": self._seq,
+            "kind": "subagent_worker_result",
+            "schema_version": 1,
+            "pool_id": pool_id,
+            "fingerprint": fingerprint,
+            "task_id": task_id,
+            "agent_type": agent_type,
+            "label": label,
+            "ok": ok,
+            "text": text,
+            "error": error,
+            "duration_ms": duration_ms,
+            "tool_calls": list(tool_calls),
+            "changed_paths": list(changed_paths),
+        }
+        if status is not None:
+            entry["status"] = status
+        self._write(entry)
 
     def subagent_pool_result(
         self,
@@ -923,6 +949,271 @@ class ConversationJournal:
                 "text": text,
             }
         )
+
+    def subagent_pool_started(
+        self,
+        *,
+        pool_id: str,
+        fingerprint: str,
+        parent_run_id: str,
+        tasks: list[dict[str, str]],
+    ) -> None:
+        """Persist a pool's identity before any worker can produce side effects."""
+        self._write(
+            {
+                "seq": self._seq,
+                "kind": "subagent_pool_started",
+                "schema_version": 1,
+                "pool_id": str(pool_id)[:128],
+                "fingerprint": str(fingerprint)[:128],
+                "parent_run_id": str(parent_run_id)[:128],
+                "tasks": [dict(task) for task in tasks],
+            }
+        )
+
+    def subagent_pool_backgrounded(
+        self,
+        *,
+        pool_id: str,
+        tool_result: Mapping[str, object],
+    ) -> None:
+        """Persist the exact provider receipt before returning control to the composer."""
+        self._write(
+            {
+                "seq": self._seq,
+                "kind": "subagent_pool_backgrounded",
+                "schema_version": 1,
+                "pool_id": str(pool_id)[:128],
+                "tool_result": dict(tool_result),
+            }
+        )
+
+    def subagent_pool_finished(
+        self,
+        *,
+        pool_id: str,
+        total: int,
+        succeeded: int,
+        failed: int,
+        text: str,
+    ) -> None:
+        """Persist a terminal pool aggregate, including partial failures."""
+        self._write(
+            {
+                "seq": self._seq,
+                "kind": "subagent_pool_finished",
+                "schema_version": 1,
+                "pool_id": str(pool_id)[:128],
+                "total": max(0, int(total)),
+                "succeeded": max(0, int(succeeded)),
+                "failed": max(0, int(failed)),
+                "text": str(text),
+            }
+        )
+
+    def subagent_pool_cancelled(self, *, pool_id: str, reason: str = "session closed") -> None:
+        """Persist a graceful session cancellation and terminalize unfinished workers."""
+        lifecycle = next(
+            (
+                record
+                for record in self.fold_subagent_pool_lifecycle()
+                if record.get("pool_id") == pool_id
+            ),
+            None,
+        )
+        if lifecycle is None or lifecycle.get("status") not in {"running", "backgrounded"}:
+            return
+        total, succeeded, text = self._record_unfinished_subagent_workers(
+            lifecycle, f"cancelled: {reason}"
+        )
+        self._write(
+            {
+                "seq": self._seq,
+                "kind": "subagent_pool_cancelled",
+                "schema_version": 1,
+                "pool_id": str(pool_id)[:128],
+                "total": total,
+                "succeeded": succeeded,
+                "failed": max(0, total - succeeded),
+                "text": text,
+                "reason": str(reason)[:256],
+            }
+        )
+
+    def subagent_pool_notification_delivered(
+        self,
+        *,
+        pool_id: str,
+        message_id: str,
+    ) -> None:
+        """Record that a background result reached provider conversation memory."""
+        self._write(
+            {
+                "seq": self._seq,
+                "kind": "subagent_pool_notification_delivered",
+                "schema_version": 1,
+                "pool_id": str(pool_id)[:128],
+                "message_id": str(message_id)[:160],
+            }
+        )
+
+    def delivered_subagent_pool_notifications(self) -> frozenset[str]:
+        """Return pool IDs whose notification append has been acknowledged."""
+        return frozenset(
+            str(record["pool_id"])
+            for record in self._fold_subagent_kind("subagent_pool_notification_delivered")
+            if isinstance(record.get("pool_id"), str) and record.get("pool_id")
+        )
+
+    def _record_unfinished_subagent_workers(
+        self,
+        lifecycle: Mapping[str, object],
+        reason: str,
+    ) -> tuple[int, int, str]:
+        """Record missing task outcomes and return aggregate counts and text."""
+        pool_id = str(lifecycle.get("pool_id", ""))
+        tasks_value = lifecycle.get("tasks", [])
+        tasks = tasks_value if isinstance(tasks_value, list) else []
+        latest_workers: dict[str, dict[str, object]] = {}
+        for record in self.fold_subagent_worker_results():
+            if record.get("pool_id") == pool_id and isinstance(record.get("task_id"), str):
+                latest_workers[str(record["task_id"])] = record
+
+        type_indices: dict[str, int] = {}
+        for task in tasks:
+            if not isinstance(task, dict):
+                continue
+            task_id = task.get("task_id")
+            agent_type = task.get("agent_type")
+            if not isinstance(task_id, str) or not task_id or not isinstance(agent_type, str):
+                continue
+            type_indices[agent_type] = type_indices.get(agent_type, 0) + 1
+            if task_id in latest_workers:
+                continue
+            label = f"{agent_type} #{type_indices[agent_type]}"
+            worker_record: dict[str, object] = {
+                "seq": self._seq,
+                "kind": "subagent_worker_result",
+                "schema_version": 1,
+                "pool_id": pool_id,
+                "fingerprint": str(lifecycle.get("fingerprint", "")),
+                "task_id": task_id,
+                "agent_type": agent_type,
+                "label": label,
+                "status": "cancelled" if reason.startswith("cancelled:") else "interrupted",
+                "ok": False,
+                "text": "",
+                "error": reason,
+                "duration_ms": 0.0,
+                "tool_calls": [],
+                "changed_paths": [],
+            }
+            self._write(worker_record)
+            latest_workers[task_id] = worker_record
+
+        succeeded = sum(1 for record in latest_workers.values() if record.get("ok") is True)
+        sections: list[str] = []
+        for task in tasks:
+            if not isinstance(task, dict):
+                continue
+            task_id = task.get("task_id")
+            worker = latest_workers.get(task_id) if isinstance(task_id, str) else None
+            if worker is None:
+                continue
+            label = str(worker.get("label", task_id))
+            status = "✓" if worker.get("ok") is True else f"✗ {worker.get('error', reason)}"
+            text = str(worker.get("text", ""))
+            sections.append(f"=== {label} ({status}) ===\n{text}".rstrip())
+        return len(tasks), succeeded, "\n\n".join(sections)
+
+    def fold_subagent_pool_lifecycle(self) -> list[dict[str, object]]:
+        """Fold each pool's latest durable lifecycle state in journal order."""
+        kinds = {
+            "subagent_pool_started",
+            "subagent_pool_backgrounded",
+            "subagent_pool_finished",
+            "subagent_pool_interrupted",
+            "subagent_pool_cancelled",
+        }
+        records = [record for kind in kinds for record in self._fold_subagent_kind(kind)]
+
+        def sequence(record: Mapping[str, object]) -> int:
+            value = record.get("seq")
+            return value if isinstance(value, int) and not isinstance(value, bool) else -1
+
+        records.sort(key=sequence)
+        latest: dict[str, dict[str, object]] = {}
+        terminal_kinds = {
+            "subagent_pool_finished": "completed",
+            "subagent_pool_interrupted": "interrupted",
+            "subagent_pool_cancelled": "cancelled",
+        }
+        for record in records:
+            kind = record.get("kind")
+            pool_id = record.get("pool_id")
+            if not isinstance(pool_id, str) or not pool_id:
+                continue
+            if kind == "subagent_pool_started":
+                latest[pool_id] = {**record, "status": "running", "backgrounded": False}
+                continue
+            value = latest.get(pool_id)
+            if value is None:
+                continue
+            value.update(record)
+            if kind == "subagent_pool_backgrounded":
+                value["status"] = "backgrounded"
+                value["backgrounded"] = True
+            elif kind in terminal_kinds:
+                value["status"] = terminal_kinds[kind]
+        return list(latest.values())
+
+    def find_subagent_pool(self, parent_run_id: str, fingerprint: str) -> dict[str, object] | None:
+        """Find the latest pool created by one logical parent turn and task set."""
+        for lifecycle in reversed(self.fold_subagent_pool_lifecycle()):
+            if (
+                lifecycle.get("parent_run_id") == parent_run_id
+                and lifecycle.get("fingerprint") == fingerprint
+            ):
+                return lifecycle
+        return None
+
+    def recover_interrupted_subagent_pools(self) -> list[str]:
+        """Mark pools left active by a crashed process without rerunning workers."""
+        recovered: list[str] = []
+        for lifecycle in self.fold_subagent_pool_lifecycle():
+            if lifecycle.get("status") not in {"running", "backgrounded"}:
+                continue
+            pool_id = lifecycle.get("pool_id")
+            if not isinstance(pool_id, str) or not pool_id:
+                continue
+            total, succeeded, text = self._record_unfinished_subagent_workers(
+                lifecycle, "interrupted by process restart"
+            )
+            self._write(
+                {
+                    "seq": self._seq,
+                    "kind": "subagent_pool_interrupted",
+                    "schema_version": 1,
+                    "pool_id": pool_id,
+                    "total": total,
+                    "succeeded": succeeded,
+                    "failed": max(0, total - succeeded),
+                    "text": text,
+                }
+            )
+            recovered.append(pool_id)
+        return recovered
+
+    def completed_background_subagent_pools(self) -> list[dict[str, object]]:
+        """Return backgrounded pools with a completed, interrupted, or cancelled outcome."""
+        delivered = self.delivered_subagent_pool_notifications()
+        return [
+            record
+            for record in self.fold_subagent_pool_lifecycle()
+            if record.get("pool_id") not in delivered
+            and record.get("backgrounded") is True
+            and record.get("status") in {"completed", "interrupted", "cancelled"}
+        ]
 
     def agent_message_event(
         self,

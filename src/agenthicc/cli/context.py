@@ -38,6 +38,7 @@ class CLIContext:
     continue_session: bool = False
     workflow_name: str | None = None
     mode_name: str | None = None
+    agent_name: str | None = None
     goal: str | None = None
     goal_priority: str = "normal"
     detach: bool = False

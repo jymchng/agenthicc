@@ -29,13 +29,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import math
 import time
 import uuid
 from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, cast
+from typing import TYPE_CHECKING, Literal, Protocol, cast
 
 from agenthicc.subagents.types import (
     DEFAULT_REGISTRY,
@@ -84,6 +85,8 @@ __all__ = [
     "_make_child_app_state",
     "_make_child_workspace_access",
 ]
+
+log = logging.getLogger(__name__)
 
 # Only presentation projections are bounded. The provider-facing aggregate
 # and the durable journal retain the complete worker response so a worker that
@@ -646,13 +649,18 @@ class SubagentWorker:
         self._index = index
         self._parent_runner = parent_runner
         self._parent_model = parent_model
+        self._model_id = spec.model or parent_model
         self._all_tools = all_tools
         # Child policy is isolated from the parent TUI state, but the effective
         # mode is inherited from the immutable snapshot rather than replaced by
         # an unconditional Yolo policy.
-        self._policy = policy or SubagentExecutionPolicy.from_app_state(
-            app_state,
-            visible_tool_names=frozenset(tool_name(item) for item in all_tools),
+        self._policy = (
+            spec.policy
+            or policy
+            or SubagentExecutionPolicy.from_app_state(
+                app_state,
+                visible_tool_names=frozenset(tool_name(item) for item in all_tools),
+            )
         )
         self._app_state = _make_child_app_state(self._policy)
         self._registry = registry
@@ -846,7 +854,7 @@ class SubagentWorker:
             system = f"{system}\n\n[ADDITIONAL CONTEXT]\n{self._task.context}"
 
         # Construct the @agent class and runner.
-        @agent_decorator(model=self._parent_model, system=system)
+        @agent_decorator(model=self._model_id, system=system)
         @use_tools(*filtered)
         class _SubAgent: ...  # type: ignore[type-var]  # lauren-ai dynamic subagent class
 
@@ -937,7 +945,7 @@ class SubagentWorker:
                 self._usage_ledger,
                 run_id=f"{self._parent_run_id}:subagent:{self._task.task_id}",
                 provider="unknown",
-                model=self._parent_model,
+                model=self._model_id,
                 category="subagent",
                 agent_name=self.label,
             )
@@ -1178,12 +1186,24 @@ class SubagentPool:
         self._state = SubagentPoolState(self.pool_id, len(tasks), limit=max_concurrent)
         self._worker_tasks: dict[str, asyncio.Task[SubagentResult]] = {}
         self._stopped: set[str] = set()
+        self._background_requested = asyncio.Event()
         self._redactor: _Redactor | None = None
 
     @property
     def state(self) -> SubagentPoolState:
         """The pool's latest snapshot."""
         return self._state
+
+    def request_background(self) -> bool:
+        """Detach the active pool from its parent tool call (Ctrl+B)."""
+        if not self._state.active:
+            return False
+        self._background_requested.set()
+        return True
+
+    async def wait_for_background_request(self) -> None:
+        """Wait until the composer requests that this pool run in background."""
+        await self._background_requested.wait()
 
     def stop_worker(self, worker_id: str) -> bool:
         """Stop one worker; the others and the parent turn go on (AGX-08 §5.4).
@@ -1281,7 +1301,26 @@ class SubagentPool:
         self._publish()
         _ACTIVE_POOLS[self.pool_id] = self
         try:
-            return await self._run(workers, worker_states, progress)
+            result = await self._run(workers, worker_states, progress)
+            if self._journal is not None:
+                self._journal.subagent_pool_finished(
+                    pool_id=result.pool_id,
+                    total=result.total,
+                    succeeded=result.succeeded,
+                    failed=result.failed,
+                    text=result.text,
+                )
+            return result
+        except asyncio.CancelledError:
+            if self._journal is not None:
+                try:
+                    self._persist_cancelled_workers()
+                    self._journal.subagent_pool_cancelled(pool_id=self.pool_id)
+                except OSError:
+                    log.exception(
+                        "failed to persist cancellation for subagent pool %s", self.pool_id
+                    )
+            raise
         finally:
             _ACTIVE_POOLS.pop(self.pool_id, None)
             if self._transcripts is not None:
@@ -1461,6 +1500,9 @@ class SubagentPool:
         """Persist the complete result before exposing worker completion."""
         if self._journal is None:
             return
+        status: Literal["completed", "failed", "cancelled"] = (
+            "cancelled" if result.error == "cancelled" else "completed" if result.ok else "failed"
+        )
         self._journal.subagent_worker_result(
             pool_id=self.pool_id,
             fingerprint=self._task_fingerprint,
@@ -1473,7 +1515,36 @@ class SubagentPool:
             duration_ms=result.duration_ms,
             tool_calls=list(result.tool_calls),
             changed_paths=list(result.changed_paths),
+            status=status,
         )
+
+    def _persist_cancelled_workers(self) -> None:
+        """Persist explicit cancellation outcomes for workers still in flight."""
+        if self._journal is None:
+            return
+        for worker in self._state.workers:
+            if not worker.live:
+                continue
+            task = next(
+                (candidate for candidate in self._tasks if candidate.task_id == worker.worker_id),
+                None,
+            )
+            if task is None:
+                continue
+            self._journal.subagent_worker_result(
+                pool_id=self.pool_id,
+                fingerprint=self._task_fingerprint,
+                task_id=task.task_id,
+                agent_type=task.agent_type,
+                label=worker.label,
+                ok=False,
+                text="",
+                error="cancelled: session closed",
+                duration_ms=0.0,
+                tool_calls=[],
+                changed_paths=[],
+                status="cancelled",
+            )
 
     # ── kernel event helpers ─────────────────────────────────────────────────
 

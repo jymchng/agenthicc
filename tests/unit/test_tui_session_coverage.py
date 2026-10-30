@@ -55,6 +55,7 @@ def _make_session(
     *, initial_workflow: str | None = None
 ) -> tuple[object, SimpleNamespace, _Workspace, _Input]:
     from agenthicc.runners.tui_session import TUISession
+    from agenthicc.agents.registry import build_agents_registry
 
     app = AppState.create()
     modes = ModeRegistry()
@@ -91,7 +92,7 @@ def _make_session(
         semantic_index=None,
         cmd_registry=UnifiedCommandRegistry(),
         workflow_registry=WorkflowRegistry(),
-        agents_registry=AgentsRegistry(),
+        agents_registry=build_agents_registry(load_external=False),
         mode_manager=mode_manager,
         command_bus=bus,
         session_id="tui-coverage",
@@ -108,6 +109,49 @@ def _make_session(
     workspace = _Workspace(app)
     input_session = _Input()
     return TUISession(ctx, workspace, input_session), ctx, workspace, input_session
+
+
+def test_completed_background_subagent_is_delivered_once(tmp_path: Path) -> None:
+    """A terminal background result enters provider memory at a turn boundary."""
+    from agenthicc.memory.journal import ConversationJournal
+    from agenthicc.memory.journaled import JournaledShortTermMemory
+    from agenthicc.runners.tui_session import TUISession
+
+    session, ctx, _workspace, _input = _make_session()
+    assert isinstance(session, TUISession)
+    journal = ConversationJournal(tmp_path / "conversation-journal.jsonl")
+    memory = JournaledShortTermMemory(journal, max_tokens=32_000)
+    ctx.session_conversation = SimpleNamespace(journal=journal, memory=memory)
+    journal.subagent_pool_started(
+        pool_id="pool-1",
+        fingerprint="tasks-1",
+        parent_run_id="turn-1",
+        tasks=[{"task_id": "worker-1", "agent_type": "researcher"}],
+    )
+    journal.subagent_pool_backgrounded(
+        pool_id="pool-1",
+        tool_result={"status": "backgrounded", "pool_id": "pool-1"},
+    )
+    journal.subagent_pool_finished(
+        pool_id="pool-1",
+        total=1,
+        succeeded=1,
+        failed=0,
+        text="The durable worker result.",
+    )
+
+    try:
+        session._deliver_completed_background_subagents()
+        session._deliver_completed_background_subagents()
+
+        message_id = "subagent-completion:pool-1"
+        assert len(memory._messages) == 1
+        assert "The durable worker result." in str(memory._messages[0]["content"])
+        event = ctx.app_state.conversation._events_by_id[message_id]
+        assert event.payload["source"] == "subagent_completion"
+        assert journal.delivered_subagent_pool_notifications() == frozenset({"pool-1"})
+    finally:
+        journal.close()
 
 
 def test_tui_initial_workflow_selection_is_visible_and_active() -> None:

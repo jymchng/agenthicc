@@ -151,6 +151,22 @@ benchmark result is diagnostic; CI thresholds should be applied on stable
 hardware and should distinguish local startup from intentionally slow remote
 dependencies.
 
+For the fixture-free startup, render, import-count and idle-TUI baseline, run
+`agenthicc perf report`. It performs its CLI probes in isolated temporary homes
+and prints the values beside the versioned budgets without contacting a model
+provider. Maintainers can run the extended CI suite (agents-registry probes and
+hermetic goal-flow replay) with:
+
+```bash
+uv run python scripts/perf_budget.py --scope ci --check --report .nox/perf-report.json
+```
+
+The weekly scope adds the synthetic 10k-session / 1m-event profile. Run it with
+`uv run nox -s perf_weekly`, which uses the same Python 3.12 session as the CI
+performance gate. It gates CPU-time budgets for first-page access and search,
+plus idle CPU and zero appended events; change-to-visible wall time remains
+diagnostic.
+
 ## Extension contract for generated workflows
 
 Generated workflows from create_workflow use the same session-owned

@@ -3,10 +3,10 @@
   "bare_list_annotations": 4,
   "explicit_any_annotations": 10,
   "functions_with_missing_annotations": 12,
-  "getattr_calls": 489,
+  "getattr_calls": 483,
   "hasattr_calls": 32,
   "missing_parameter_annotations": 11,
   "missing_return_annotations": 12,
   "mypy_module_suppressions": 6,
-  "type_ignore_comments": 42
+  "type_ignore_comments": 35
 }

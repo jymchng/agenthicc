@@ -178,6 +178,69 @@ class TestDurabilityAndCrash:
         assert reopened.fold_subagent_pool_results()[0]["text"] == full_output
         reopened.close()
 
+    def test_background_pool_recovery_is_durable_and_does_not_rerun(self, tmp_path) -> None:
+        jp = tmp_path / "j.jsonl"
+        journal = ConversationJournal(jp)
+        journal.subagent_pool_started(
+            pool_id="pool-1",
+            fingerprint="fp-1",
+            parent_run_id="turn-1",
+            tasks=[
+                {"task_id": "task-0", "agent_type": "explorer"},
+                {"task_id": "task-1", "agent_type": "tester"},
+            ],
+        )
+        journal.subagent_worker_result(
+            pool_id="pool-1",
+            fingerprint="fp-1",
+            task_id="task-0",
+            agent_type="explorer",
+            label="explorer #1",
+            ok=True,
+            text="completed work",
+            error="",
+            duration_ms=3.0,
+            tool_calls=[],
+            changed_paths=[],
+        )
+        receipt = {
+            "ok": True,
+            "status": "backgrounded",
+            "pool_id": "pool-1",
+            "results": "running",
+        }
+        journal.subagent_pool_backgrounded(pool_id="pool-1", tool_result=receipt)
+        journal.close()
+
+        recovered = ConversationJournal(jp)
+        assert recovered.recover_interrupted_subagent_pools() == ["pool-1"]
+        assert recovered.recover_interrupted_subagent_pools() == []
+        lifecycle = recovered.find_subagent_pool("turn-1", "fp-1")
+        assert lifecycle is not None
+        assert lifecycle["status"] == "interrupted"
+        assert lifecycle["backgrounded"] is True
+        assert lifecycle["tool_result"] == receipt
+        workers = recovered.fold_subagent_worker_results()
+        interrupted = next(worker for worker in workers if worker["task_id"] == "task-1")
+        assert interrupted["status"] == "interrupted"
+        assert interrupted["ok"] is False
+        assert recovered.completed_background_subagent_pools()[0]["failed"] == 1
+        recovered.subagent_pool_notification_delivered(
+            pool_id="pool-1",
+            message_id="subagent-completion:pool-1",
+        )
+        assert recovered.completed_background_subagent_pools() == []
+        recovered.close()
+
+    def test_message_receipt_survives_state_replacement(self, tmp_path) -> None:
+        jp = tmp_path / "j.jsonl"
+        journal = ConversationJournal(jp)
+        message_id = "subagent-completion:pool-1"
+        journal.append_message(_msg("user", "finished"), message_id=message_id)
+        journal.replace_state([_msg("user", "compacted")], None)
+        assert journal.has_message_id(message_id)
+        journal.close()
+
 
 class TestPathHelper:
     def test_journal_path_for_structure(self) -> None:

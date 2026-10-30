@@ -13,6 +13,8 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, NotRequired, TypedDict
 
+from agenthicc.supervised_tasks import SupervisedTasks
+
 
 @dataclass(frozen=True)
 class QueuedMessageSource:
@@ -30,6 +32,24 @@ _queued_message_source: ContextVar[QueuedMessageSource | None] = ContextVar(
 _provider_diagnostic_context: ContextVar[dict[str, str | int] | None] = ContextVar(
     "agenthicc_provider_diagnostic_context", default=None
 )
+_background_task_owner: ContextVar[SupervisedTasks | None] = ContextVar(
+    "agenthicc_background_task_owner", default=None
+)
+
+
+@contextmanager
+def bind_background_task_owner(owner: SupervisedTasks) -> Iterator[None]:
+    """Bind the owning session supervisor to background work started by a turn."""
+    token = _background_task_owner.set(owner)
+    try:
+        yield
+    finally:
+        _background_task_owner.reset(token)
+
+
+def current_background_task_owner() -> SupervisedTasks | None:
+    """Return the session supervisor bound to the current turn, if any."""
+    return _background_task_owner.get()
 
 
 @contextmanager
@@ -89,6 +109,9 @@ if TYPE_CHECKING:
     from agenthicc.runners.usage_ledger import UsageLedger
     from agenthicc.runners.prompt_contract import PromptContract
     from agenthicc.tools.workspace_access import WorkspaceAccessPolicy
+    from agenthicc.agents.definitions import AgentSpec
+    from agenthicc.agents.registry import AgentsRegistry
+    from agenthicc.config import AgenthiccConfig
 
 
 class AgentTurnOptions(TypedDict):
@@ -121,6 +144,9 @@ class AgentTurnOptions(TypedDict):
     allowed_tool_names: NotRequired[frozenset[str] | None]
     workspace_access: NotRequired["WorkspaceAccessPolicy | None"]
     provider_diagnostic_context: NotRequired[dict[str, str | int] | None]
+    agent_spec: NotRequired["AgentSpec | None"]
+    agents_registry: NotRequired["AgentsRegistry | None"]
+    agent_config: NotRequired["AgenthiccConfig | None"]
 
 
 @dataclass(frozen=True)
@@ -154,6 +180,11 @@ class AgentTurnContext:
 
     # ── agent identity ────────────────────────────────────────────────────────
     active_agent: "str | None" = None  # None → "default"
+    #: The primary agent's definition for a direct turn (AGX-09).
+    agent_spec: "AgentSpec | None" = None
+    #: Registry for primary selection and explicit @agent mentions.
+    agents_registry: "AgentsRegistry | None" = None
+    agent_config: "AgenthiccConfig | None" = None
     completed_turns: int = 0
 
     # ── approval / hooks ──────────────────────────────────────────────────────

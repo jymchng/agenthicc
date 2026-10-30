@@ -70,8 +70,14 @@ _DENIED = (
     "rich._emoji_codes",
 )
 
-#: asyncio and its transports alone account for about 90 of these modules.
-_FIRST_FRAME_MODULE_BUDGET = 370
+#: Per-minor budgets account for the standard-library modules loaded by each
+#: supported Python version while keeping the application import ceiling fixed.
+_FIRST_FRAME_MODULE_BUDGETS = {"3.11": 372, "3.12": 374, "3.13": 377}
+
+
+def _module_budget() -> int:
+    version = f"{sys.version_info.major}.{sys.version_info.minor}"
+    return _FIRST_FRAME_MODULE_BUDGETS.get(version, max(_FIRST_FRAME_MODULE_BUDGETS.values()))
 
 
 def _run_tui_probe(tmp_path: Path) -> dict[str, object]:
@@ -90,6 +96,9 @@ def _run_tui_probe(tmp_path: Path) -> dict[str, object]:
         PYTHONPATH=str(Path(__file__).parents[2] / "src"),
         TERM="xterm-256color",
     )
+    # These probes measure normal interpreter imports, not coverage startup modules.
+    environment.pop("COVERAGE_PROCESS_START", None)
+    environment.pop("COVERAGE_PROCESS_CONFIG", None)
     for name in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "AGENTHICC_CONFIG"):
         environment.pop(name, None)
 
@@ -133,7 +142,8 @@ def test_first_frame_loads_no_agent_runtime_and_stays_within_budget(tmp_path: Pa
         name for name in modules if any(name == d or name.startswith(f"{d}.") for d in _DENIED)
     )
     assert not denied, denied
-    assert len(modules) <= _FIRST_FRAME_MODULE_BUDGET, len(modules)
+    budget = _module_budget()
+    assert len(modules) <= budget, f"{len(modules)} modules exceed the {budget} budget"
 
     assert result["state"] == "ready"
     milestones = result["milestones"]

@@ -2,19 +2,26 @@
 
 from __future__ import annotations
 
+import asyncio
+from pathlib import Path
+
 import pytest
 from lauren_ai._agents._runner import AgentRunnerBase
 from lauren_ai._tools import tool
 from lauren_ai._transport import Completion, TokenUsage
 from lauren_ai._transport._mock import MockTransport
 
+from agenthicc.memory.journal import ConversationJournal
+from agenthicc.runners.agent_turn_context import bind_background_task_owner
+from agenthicc.subagents.pool import active_pool
 from agenthicc.subagents.tool import make_spawn_subagents_tool
 from agenthicc.subagents.types import SubagentTypeRegistry, SubagentTypeSpec
-from agenthicc.tui.conversation_store import AppState
-from agenthicc.tui.runtime.mode_manager import build_default_registry
+from agenthicc.supervised_tasks import SupervisedTasks
 from agenthicc.tools.approval import ApprovalResponse
 from agenthicc.tools.capabilities import tool_write
 from agenthicc.tools.fs.agent_tools import write_file
+from agenthicc.tui.conversation_store import AppState, ConversationStore
+from agenthicc.tui.runtime.mode_manager import build_default_registry
 
 pytestmark = pytest.mark.integration
 
@@ -107,6 +114,147 @@ async def test_real_subagent_executes_mock_requested_tool_and_continues() -> Non
         "fact:chapter-7" in str(_message_content(message))
         for message in transport.calls[1].messages
     )
+
+
+async def test_ctrl_b_backgrounds_a_pool_and_keeps_it_session_owned(
+    tmp_path: Path,
+) -> None:
+    """A durable receipt detaches workers, which remain owned by the session."""
+    release = asyncio.Event()
+
+    @tool()
+    async def wait_for_release(topic: str) -> str:
+        """Wait until the test releases the worker."""
+        await release.wait()
+        return f"released:{topic}"
+
+    transport = MockTransport()
+    transport.queue_tool_use(
+        "wait_for_release",
+        {"topic": "background"},
+        tool_use_id="wait-background",
+    )
+    transport.queue_response(_final("worker complete", "final-background"))
+    runner = AgentRunnerBase(transport=transport)
+    journal = ConversationJournal(tmp_path / "conversation-journal.jsonl")
+    conv_store = ConversationStore()
+    supervisor = SupervisedTasks("background pool test")
+    spawn = make_spawn_subagents_tool(
+        runner,
+        "mock-model",
+        [wait_for_release],
+        registry=_registry("wait_for_release"),
+        conversation_id="conversation-1",
+        parent_run_id="turn-1",
+        conversation_journal=journal,
+        conv_store=conv_store,
+    )
+
+    try:
+        with bind_background_task_owner(supervisor):
+            spawn_task = asyncio.create_task(
+                spawn(
+                    tasks=[{"type": "researcher", "task": "Wait for the test release."}],
+                    timeout_s=30,
+                )
+            )
+        for _ in range(200):
+            state = conv_store.subagent_pool_state()
+            if state is not None and state.active:
+                break
+            await asyncio.sleep(0.01)
+        else:
+            pytest.fail("subagent pool did not start")
+
+        pool = active_pool(state.pool_id)
+        assert pool is not None
+        assert pool.request_background()
+        receipt = await asyncio.wait_for(spawn_task, timeout=2)
+        assert receipt["status"] == "backgrounded"
+        replayed = await spawn(
+            tasks=[{"type": "researcher", "task": "Wait for the test release."}],
+            timeout_s=30,
+        )
+        assert replayed == receipt
+        assert supervisor.pending == 1
+        assert len(journal.fold_subagent_pool_lifecycle()) == 1
+
+        release.set()
+        assert await supervisor.wait(timeout=5)
+        lifecycle = journal.fold_subagent_pool_lifecycle()[0]
+        assert lifecycle["status"] == "completed"
+        assert lifecycle["tool_result"] == receipt
+        assert lifecycle["text"]
+        assert supervisor.pending == 0
+    finally:
+        release.set()
+        await supervisor.aclose(timeout=0.1)
+        journal.close()
+
+
+async def test_session_shutdown_cancels_a_backgrounded_pool(tmp_path: Path) -> None:
+    """Closing the owning session records cancellation rather than orphaning workers."""
+    release = asyncio.Event()
+
+    @tool()
+    async def wait_for_release(topic: str) -> str:
+        """Wait until the test releases the worker."""
+        await release.wait()
+        return topic
+
+    transport = MockTransport()
+    transport.queue_tool_use(
+        "wait_for_release",
+        {"topic": "background"},
+        tool_use_id="wait-background-cancel",
+    )
+    runner = AgentRunnerBase(transport=transport)
+    journal = ConversationJournal(tmp_path / "conversation-journal.jsonl")
+    conv_store = ConversationStore()
+    supervisor = SupervisedTasks("background pool cancellation test")
+    spawn = make_spawn_subagents_tool(
+        runner,
+        "mock-model",
+        [wait_for_release],
+        registry=_registry("wait_for_release"),
+        conversation_id="conversation-1",
+        parent_run_id="turn-2",
+        conversation_journal=journal,
+        conv_store=conv_store,
+    )
+
+    try:
+        with bind_background_task_owner(supervisor):
+            spawn_task = asyncio.create_task(
+                spawn(
+                    tasks=[{"type": "researcher", "task": "Wait for shutdown."}],
+                    timeout_s=30,
+                )
+            )
+        for _ in range(200):
+            state = conv_store.subagent_pool_state()
+            if state is not None and state.active:
+                break
+            await asyncio.sleep(0.01)
+        else:
+            pytest.fail("subagent pool did not start")
+        pool = active_pool(state.pool_id)
+        assert pool is not None and pool.request_background()
+        receipt = await asyncio.wait_for(spawn_task, timeout=2)
+        assert receipt["status"] == "backgrounded"
+
+        await supervisor.aclose(timeout=0)
+        lifecycle = journal.fold_subagent_pool_lifecycle()[0]
+        assert lifecycle["status"] == "cancelled"
+        assert lifecycle["total"] == 1
+        assert lifecycle["failed"] == 1
+        worker = journal.fold_subagent_worker_results()[0]
+        assert worker["status"] == "cancelled"
+        assert supervisor.pending == 0
+    finally:
+        release.set()
+        await supervisor.aclose(timeout=0.1)
+        journal.close()
 
 
 async def test_real_pool_runs_two_tool_workers_and_filters_unallowed_tools() -> None:

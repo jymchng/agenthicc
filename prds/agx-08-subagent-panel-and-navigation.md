@@ -1,6 +1,6 @@
 ---
 title: "AGX-08: Subagent panel and child-session navigation"
-status: Implemented (phase 1)
+status: Implemented (phases 1 and 2)
 version: 0.1.0
 date: 2026-10-23
 repository: jymchng/agenthicc
@@ -12,10 +12,23 @@ tags: [subagents, tui, ux, approvals, transcripts]
 
 # AGX-08 — Subagent panel and child-session navigation
 
-## Implementation status (2026-10-24)
+## Implementation status (2026-10-30)
 
-Phase 1 is implemented; phase 2 (§5.6) is not, as this PRD gates it on its own
-replay-safety review.
+Phases 1 and 2 are implemented in the integration branch. Phase 2 persists a
+pool's identity before workers start and the exact backgrounded tool receipt
+before returning control. The session supervises the worker task; graceful close
+records cancellation, and resume marks unfinished pools/workers interrupted
+without rerunning them. A completed, interrupted, or cancelled background
+aggregate is appended at the next non-resume turn boundary using a stable
+message ID and a durable delivery receipt, without changing the parent
+tool-result boundary.
+
+Evidence: `test_ctrl_b_backgrounds_a_pool_and_keeps_it_session_owned`,
+`test_session_shutdown_cancels_a_backgrounded_pool`,
+`test_background_pool_recovery_is_durable_and_does_not_rerun`, and
+`test_completed_background_subagent_is_delivered_once`. Focused verification on
+2026-10-30 passed 128 tests across the subagent, journal, keymap, and TUI session
+unit/integration files.
 
 - **Panel (§5.1).** `SubagentPool` publishes an immutable `SubagentPoolState`
   (`WorkerState` per worker: status, activity, start and finish times, tokens)

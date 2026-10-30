@@ -3,9 +3,10 @@
 `spawn_subagents` is the session-wide delegation tool. It lets the current
 agent explicitly fan out independent pieces of work to typed workers, wait for
 all of them, and receive one complete text digest. It is normally synchronous
-from the parent agent's point of view. If a worker needs a decision, the pool
-returns a structured clarification request; the parent answers it through a
-continuation tool and then collects the still-running pool.
+from the parent agent's point of view, but the TUI can background a running pool
+with Ctrl+B. If a worker needs a decision, the pool returns a structured
+clarification request; the parent answers it through a continuation tool and
+then collects the still-running pool.
 The TUI and kernel projections still use bounded previews so a long chapter or
 source file does not make the screen unusable.
 
@@ -20,7 +21,8 @@ authoritative implementation is split across:
 | Parent/child/peer communication broker and tools | `src/agenthicc/subagents/communication.py` |
 | Built-in role prompts and allow-lists | `src/agenthicc/subagents/types.py` |
 | Per-turn injection into the parent agent | `src/agenthicc/runners/agent_turn.py` |
-| Durable worker/pool result records | `src/agenthicc/memory/journal.py` |
+| Durable worker/pool lifecycle and result records | `src/agenthicc/memory/journal.py` |
+| Session-owned background tasks | `src/agenthicc/supervised_tasks.py` and `src/agenthicc/runners/agent_turn_context.py` |
 | Reactive pool status | `src/agenthicc/tui/conversation_store.py` and `src/agenthicc/tui/workspace/` |
 | Usage accounting | `src/agenthicc/runners/usage_ledger.py` |
 
@@ -436,10 +438,9 @@ Only a pool with `failed == 0` is cached. Partial results are deliberately not
 treated as successful on resume. A cached call returns `pool_id: "cached"`,
 does not call the provider, and appends a small “Resumed” system event for the
 TUI. Every worker result—including failed and timed-out results—is retained in
-the journal for diagnostics, but only a complete aggregate is eligible for
-automatic replay. The system does not yet replay five completed workers and
-rerun only three from an interrupted eight-worker pool; an incomplete pool is
-rerun as a whole.
+the journal for diagnostics. AGX-08 phase two additionally records pool
+identity and lifecycle before execution; a resumed call returns the saved
+receipt or interrupted result instead of rerunning workers.
 
 ## TUI and kernel observability
 
@@ -506,6 +507,27 @@ it returns to the prompt. Esc denies that single call without stopping the
 worker. `ApprovalRequest.requester` carries an `ApprovalRequester` (label,
 role, pool and worker IDs); a background session records it in the inbox item,
 so the agents hub's request card shows it too.
+
+### Backgrounding a pool (AGX-08 phase two)
+
+While a pool is active in the TUI, Ctrl+B returns a durable
+`status: "backgrounded"` receipt from `spawn_subagents` and lets the parent turn
+continue. The pool task is owned by the TUI session, not detached from its
+lifecycle. Its identity and task list are fsync'd before workers start, and the
+exact tool receipt is fsync'd before the tool returns. Pressing Ctrl+B without an
+active pool has no effect beyond a transient notice.
+
+When the pool completes, its complete aggregate is stored in the journal. The
+next direct turn appends a synthetic user message with the result, identified by
+a stable pool-scoped message ID, and acknowledges delivery in the journal. A
+crash between those writes is safe to replay; the message is not injected twice.
+This notification is separate from the original parent tool-result boundary.
+
+A graceful session close cancels its active background pools and records the
+cancelled outcomes. On session resume, any pool still marked running or
+backgrounded is marked interrupted, including explicit outcomes for unfinished
+workers. Recovery never reruns those workers or their tool side effects; the
+interrupted aggregate is delivered once at the next direct-turn boundary.
 
 ### Events
 

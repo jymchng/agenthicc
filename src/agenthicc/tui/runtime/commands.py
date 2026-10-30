@@ -36,6 +36,11 @@ class InterruptAgentCommand(Command):
 
 
 @dataclass(frozen=True)
+class CycleAgentCommand(Command):
+    """Talk to the next primary agent from the next turn (AGX-09 §5.3)."""
+
+
+@dataclass(frozen=True)
 class OpenAgentsHubCommand(Command):
     """Open the agents hub over the conversation (AGX-05 §5.2).
 
@@ -50,6 +55,11 @@ class OpenAgentsHubCommand(Command):
 @dataclass(frozen=True)
 class OpenSubagentsCommand(Command):
     """Move focus to the subagent panel (Ctrl+O, ``/subagents``; AGX-08 §5.2)."""
+
+
+@dataclass(frozen=True)
+class BackgroundSubagentsCommand(Command):
+    """Detach the active subagent pool from its foreground tool call (Ctrl+B)."""
 
 
 C = TypeVar("C", bound=Command)
