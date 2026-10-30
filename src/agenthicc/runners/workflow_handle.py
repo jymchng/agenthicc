@@ -646,14 +646,15 @@ class WorkflowRunHandle:
         members = _optional_attribute(state_type, "__members__", {})
         candidate = members.get(phase.upper()) if isinstance(members, Mapping) else None
         # Workflow contexts are plugin-defined types; mirror the phase only
-        # where the context declares and accepts these attributes.
+        # where the context declares and accepts these attributes. Use setattr
+        # to preserve descriptors and plugin-defined assignment behavior.
         if candidate is not None:
             try:
-                setattr(context, "state", candidate)
+                setattr(context, "state", candidate)  # noqa: B010
             except (AttributeError, TypeError):
                 pass
         try:
-            setattr(context, "current_phase", phase)
+            setattr(context, "current_phase", phase)  # noqa: B010
         except (AttributeError, TypeError):
             pass
 

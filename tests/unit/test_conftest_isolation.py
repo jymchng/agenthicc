@@ -24,6 +24,7 @@ deterministic.
 from __future__ import annotations
 
 import os
+from importlib import import_module
 
 import pytest
 
@@ -65,7 +66,8 @@ class TestAutouseFixtureIsWired:
         # process.  If someone deletes ``tests/unit/conftest.py``
         # entirely, every other test in this directory will start
         # failing — but this one fails *first* with a clear error.
-        import tests.unit.conftest
+        module = import_module("tests.unit.conftest")
+        assert module.__name__ == "tests.unit.conftest"
 
 
 class TestScrubbedSetIsComplete:

@@ -178,7 +178,10 @@ def test_menu_driver_no_widget_returns_continue():
 
 def test_command_registry_register_and_get():
     reg = CommandMenuRegistry()
-    factory = lambda ctx: EchoWidget()
+
+    def factory(ctx: RendererContext) -> EchoWidget:
+        return EchoWidget()
+
     reg.register("/config", factory)
     assert reg.get("/config") is factory
 
@@ -209,8 +212,13 @@ def test_command_registry_len():
 
 def test_command_registry_overwrite():
     reg = CommandMenuRegistry()
-    f1 = lambda ctx: EchoWidget()
-    f2 = lambda ctx: EchoWidget()
+
+    def f1(ctx: RendererContext) -> EchoWidget:
+        return EchoWidget()
+
+    def f2(ctx: RendererContext) -> EchoWidget:
+        return EchoWidget()
+
     reg.register("/config", f1)
     reg.register("/config", f2)
     assert reg.get("/config") is f2

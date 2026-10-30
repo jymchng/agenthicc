@@ -19,9 +19,11 @@ class Overlay(ABC):
 
     def on_mount(self) -> None:
         """Called when overlay becomes active."""
+        return None
 
     def on_unmount(self) -> None:
         """Called when overlay is dismissed."""
+        return None
 
     def set_viewport(self, width: int, height: int) -> None:
         """Receive the available Live-region viewport before rendering.
@@ -30,6 +32,7 @@ class Overlay(ABC):
         default is intentionally a no-op so existing overlays and plugins keep
         the original ``render()`` contract.
         """
+        return None
 
     @abstractmethod
     def render(self) -> RenderableType:

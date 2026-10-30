@@ -11,16 +11,12 @@ from __future__ import annotations
 import datetime
 import sys
 import types
+from importlib.util import find_spec
 from unittest.mock import MagicMock
 
 import pytest
 
-try:
-    import moto
-
-    HAS_MOTO = True
-except ImportError:
-    HAS_MOTO = False
+HAS_MOTO = find_spec("moto") is not None
 
 pytestmark = pytest.mark.unit
 skip_no_moto = pytest.mark.skipif(not HAS_MOTO, reason="moto not installed")

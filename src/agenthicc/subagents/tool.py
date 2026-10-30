@@ -822,7 +822,7 @@ def make_spawn_subagents_tool(
             )
         )
     # Metadata on a tool function object; callables have no typed attributes.
-    setattr(spawn_subagents, "__agenthicc_subagent_communication_tools__", communication_tools)
+    spawn_subagents.__dict__["__agenthicc_subagent_communication_tools__"] = communication_tools
     return spawn_subagents
 
 

@@ -3098,7 +3098,7 @@ class AgentTurnRunner:
                 error_event_id: str | None = f"agent-turn-error:{self._intent_id}"
                 try:
                     # Tag an arbitrary (possibly third-party) exception object.
-                    setattr(exc, "_agenthicc_error_event_id", error_event_id)
+                    exc.__dict__["_agenthicc_error_event_id"] = error_event_id
                 except Exception:  # noqa: BLE001 - third-party exceptions may be slotted
                     error_event_id = None
                 missing_session_diagnostic = _missing_opencode_session_diagnostic(exc)
