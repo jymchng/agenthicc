@@ -276,7 +276,7 @@ Review carefully.
     )
     runner = AgentTurnRunner(context)
 
-    registry = runner._build_definition_subagent_registry(ToolRegistry(), [])
+    registry = runner._build_definition_subagent_registry(ToolRegistry(), [], context.app_state)
 
     assert registry.get("workspace-checker") is None
     error = runner._definition_agent_errors["workspace-checker"]

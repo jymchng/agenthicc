@@ -441,7 +441,7 @@ class TestSubagentLifecycleSettings:
         defaults = load_config(project_path=missing, user_path=missing)
 
         assert defaults.subagents.max_workers == 32
-        assert defaults.subagents.max_concurrent == 4
+        assert defaults.subagents.max_concurrent == 16
         assert defaults.subagents.max_tool_calls == 256
         assert defaults.subagents.max_iterations == 128
         assert defaults.subagents.max_tokens == 200_000
@@ -452,7 +452,7 @@ class TestSubagentLifecycleSettings:
         project = tmp_path / "agenthicc.toml"
         _write(
             project,
-            '''
+            """
             [subagents]
             max_workers = 12
             max_concurrent = 3
@@ -462,7 +462,7 @@ class TestSubagentLifecycleSettings:
             max_total_time_s = 90.0
             on_budget_exceeded = "abort"
             stop_grace_s = 2.5
-            ''',
+            """,
         )
         config = load_config(project_path=project, user_path=missing)
 
@@ -489,9 +489,7 @@ class TestSubagentLifecycleSettings:
             "max_total_time_s = inf",
         ),
     )
-    def test_invalid_lifecycle_settings_are_rejected(
-        self, tmp_path: Path, settings: str
-    ) -> None:
+    def test_invalid_lifecycle_settings_are_rejected(self, tmp_path: Path, settings: str) -> None:
         project = tmp_path / "agenthicc.toml"
         _write(project, f"[subagents]\n{settings}\n")
 
@@ -503,12 +501,12 @@ class TestSubagentLifecycleSettings:
 
         template = build_commented_config_template()
 
-        assert '# max_workers = 32' in template
-        assert '# max_concurrent = 4' in template
-        assert '# max_tool_calls = 256' in template
-        assert '# max_iterations = 128' in template
-        assert '# max_tokens = 200000' in template
-        assert '# max_total_time_s = 600.0' in template
+        assert "# max_workers = 32" in template
+        assert "# max_concurrent = 4" in template
+        assert "# max_tool_calls = 256" in template
+        assert "# max_iterations = 128" in template
+        assert "# max_tokens = 200000" in template
+        assert "# max_total_time_s = 600.0" in template
         assert '# on_budget_exceeded = "drain"' in template
         assert "# stop_grace_s = 5.0" in template
 

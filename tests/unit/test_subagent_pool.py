@@ -1161,6 +1161,7 @@ class TestSpawnSubagentsTool:
                 failed=0,
                 text="done",
                 values=(),
+                budget_exceeded_reason="",
             )
             with (
                 patch.object(SubagentPool, "__init__", new=capture_init),
@@ -1226,6 +1227,7 @@ class TestSpawnSubagentsTool:
             failed=0,
             text="routed",
             values=(),
+            budget_exceeded_reason="",
         )
         fn = make_spawn_subagents_tool(
             object(),

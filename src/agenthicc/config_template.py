@@ -257,7 +257,7 @@ def build_commented_config_template() -> str:
     _field(lines, "allow_call_overrides", False)
     _field(lines, "max_depth", 1, "workers cannot delegate at the default depth")
     _field(lines, "max_tasks", 64, "maximum tasks admitted by one pool")
-    _field(lines, "max_concurrent", 16, "hard ceiling; spawn_subagents defaults to 4")
+    _field(lines, "max_concurrent", 16, "hard ceiling; spawn_subagents defaults to 16")
     _field(lines, "max_active_pools", 16, "process-wide active-pool ceiling")
     _field(lines, "max_workers", 32, "maximum worker count in one pool")
     _field(lines, "max_tool_calls", 256, "maximum tool calls across one pool")

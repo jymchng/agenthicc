@@ -491,6 +491,9 @@ class WorkflowCheckpoint:
     # Non-secret identity only. The named profile is resolved from the
     # current environment when the owning session is rebuilt.
     provider_profile: str = ""
+    provider_profile_fingerprint: str = ""
+    provider_profile_origin: str = ""
+    provider_profile_history: tuple[str, ...] = ()
     # Canonical workspace root used for the run. It is an identity boundary,
     # not a list of files or a permission grant.
     workspace_root: str = ""
@@ -554,6 +557,9 @@ class WorkflowCheckpoint:
             "reason": self.reason,
             "browser": self.browser,
             "provider_profile": self.provider_profile,
+            "provider_profile_fingerprint": self.provider_profile_fingerprint,
+            "provider_profile_origin": self.provider_profile_origin,
+            "provider_profile_history": list(self.provider_profile_history),
             "workspace_root": self.workspace_root,
             "cache_contract_version": self.cache_contract_version,
             "cache_epoch": self.cache_epoch,
@@ -641,8 +647,31 @@ class WorkflowCheckpoint:
         if not isinstance(browser, dict):
             raise CheckpointValidationError("checkpoint browser metadata must be an object")
         provider_profile = raw.get("provider_profile", "")
+        provider_profile_fingerprint = raw.get("provider_profile_fingerprint", "")
+        provider_profile_origin = raw.get("provider_profile_origin", provider_profile)
+        provider_profile_history_raw = raw.get(
+            "provider_profile_history", [provider_profile] if provider_profile else []
+        )
         if not isinstance(provider_profile, str):
             raise CheckpointValidationError("provider_profile must be a string")
+        if (
+            not isinstance(provider_profile_fingerprint, str)
+            or len(provider_profile_fingerprint) > 128
+        ):
+            raise CheckpointValidationError("provider_profile_fingerprint must be a bounded string")
+        if not isinstance(provider_profile_origin, str) or len(provider_profile_origin) > 128:
+            raise CheckpointValidationError("provider_profile_origin must be a bounded string")
+        if (
+            not isinstance(provider_profile_history_raw, list)
+            or len(provider_profile_history_raw) > 32
+            or not all(
+                isinstance(value, str) and len(value) <= 128
+                for value in provider_profile_history_raw
+            )
+        ):
+            raise CheckpointValidationError(
+                "provider_profile_history must be a bounded string list"
+            )
         workspace_root = raw.get("workspace_root", "")
         if not isinstance(workspace_root, str):
             raise CheckpointValidationError("workspace_root must be a string")
@@ -773,6 +802,9 @@ class WorkflowCheckpoint:
             if isinstance(raw.get("browser", {}), dict)
             else {},
             provider_profile=provider_profile,
+            provider_profile_fingerprint=provider_profile_fingerprint,
+            provider_profile_origin=provider_profile_origin,
+            provider_profile_history=tuple(provider_profile_history_raw),
             workspace_root=workspace_root,
             cache_contract_version=str(raw.get("cache_contract_version", "")),
             cache_epoch=str(raw.get("cache_epoch", "")),

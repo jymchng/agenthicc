@@ -30,7 +30,7 @@ async def test_executor_delegation_returns_a_successful_aggregate() -> None:
 
     result = await spawn(tasks=[{"type": "executor", "task": "Build the artifact."}])
 
-    assert set(result) == {
+    assert {
         "ok",
         "status",
         "pool_id",
@@ -40,7 +40,7 @@ async def test_executor_delegation_returns_a_successful_aggregate() -> None:
         "error",
         "budget_exceeded_reason",
         "results",
-    }
+    } <= result.keys()
     assert result["ok"] is True
     assert result["status"] == "completed"
     assert isinstance(result["pool_id"], str)

@@ -32,12 +32,12 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
     from agenthicc.subagents.types import SubagentPermissionConstraints
 
-from agenthicc.result_contracts import JSONMapping, parse_output_schema
+from agenthicc.result_contracts import JSONMapping, JSONValue, parse_output_schema
 
 __all__ = [
     "AGENT_MODES",
@@ -227,7 +227,7 @@ def _parse_front(
     lines: dict[str, int] = {}
     current_list: list[Scalar] | None = None
     current_list_indent = 0
-    permissions: dict[str, Scalar | list[Scalar]] | None = None
+    permissions: JSONMapping | None = None
     for number, raw in front:
         stripped = raw.strip()
         if not stripped or stripped.startswith("#"):
@@ -248,11 +248,11 @@ def _parse_front(
             lines[f"permissions.{key}"] = number
             if not rest:
                 nested_list: list[Scalar] = []
-                permissions[key] = nested_list
+                permissions[key] = cast(JSONValue, nested_list)
                 current_list = nested_list
                 current_list_indent = 4
             elif rest.startswith("[") and rest.endswith("]"):
-                permissions[key] = _inline_list(rest, path, number)
+                permissions[key] = cast(JSONValue, _inline_list(rest, path, number))
                 current_list = None
             else:
                 permissions[key] = _scalar(rest, path, number)
@@ -277,7 +277,7 @@ def _parse_front(
                 except ValueError as exc:
                     raise DefinitionError(path, number, f"output: {exc}") from exc
             elif not rest and key == "permissions":
-                nested: dict[str, Scalar | list[Scalar]] = {}
+                nested: JSONMapping = {}
                 values[key] = nested
                 permissions = nested
             elif not rest:

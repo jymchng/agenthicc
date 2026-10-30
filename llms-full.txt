@@ -2296,7 +2296,12 @@ running/pausing/paused/resuming checkpoints, validate plugin/profile/workspace,
 conversation cursor, typed context, and tool-tail state, atomically claim one
 run, and rehydrate its context with the existing `SessionConversation` memory.
 They never start an LLM turn during discovery and never fall back to a fresh
-phase-one run when a recoverable checkpoint is incompatible.
+phase-one run when a recoverable checkpoint is incompatible. Workflow checkpoints
+store non-secret provider-profile identity and a routing fingerprint, not
+credentials. Resume resolves current credentials before dispatch; a missing or
+changed saved binding requires an explicit profile choice, and failed resuming
+checkpoint writes leave the prior paused binding intact. TUI resume accepts
+`--profile <name|none>`; headless callers use `--set execution.profile=<name>`.
 
 `WorkflowRunHandle.finalize_failure()` is the common workflow error boundary.
 `WorkflowFailureKind` is the typed stable vocabulary used by that boundary
@@ -2313,6 +2318,46 @@ diagnostic-only `recovery-error.json` fallback when possible. The legacy
 valid typed checkpoint. `WorkflowPlugin.create_initial_context()` is an
 optional hook for custom plugins that can construct typed state before runner
 setup; the framework always creates a durable bootstrap identity first.
+
+### ResumeProviderProfile
+
+`agenthicc.runners.workflow_profile.ResumeProviderProfile` is the immutable,
+credential-resolved choice for one workflow resume. It carries the selected
+configuration, profile identity, source, non-secret binding fingerprint, and
+whether the choice differs from the checkpoint.
+
+### WorkflowProfileResolutionError
+
+`agenthicc.runners.workflow_profile.WorkflowProfileResolutionError` is a safe,
+stable profile-selection failure. Its `code` distinguishes unavailable,
+invalid, and changed bindings without exposing credential values.
+
+### execution_profile_override
+
+`agenthicc.runners.workflow_profile.execution_profile_override(overrides)`
+returns the final explicit `execution.profile` value from repeated CLI
+`--set` overrides. It returns `None` when no profile override was supplied and
+preserves an explicit empty value for legacy execution settings.
+
+### provider_profile_fingerprint
+
+`agenthicc.runners.workflow_profile.provider_profile_fingerprint(config,
+profile_name)` hashes non-secret provider-routing identity. It excludes
+credential values and secret header/query values.
+
+### resolve_resume_provider_profile
+
+`agenthicc.runners.workflow_profile.resolve_resume_provider_profile(config,
+*, saved_profile, saved_binding_fingerprint="", explicit_profile=None)`
+validates the current provider profile and credentials before dispatch. It
+requires explicit acknowledgement when an inherited saved binding changed.
+
+### workflow_resume_agent_runner
+
+`agenthicc.runners.workflow_profile.workflow_resume_agent_runner(existing_runner,
+selection, *, conversation_id)` returns a runner scoped to the selected
+execution settings. The TUI lazy runner forks without constructing its prior
+provider and shares signal state across the fork.
 
 ### WorkflowCheckpointTopology
 

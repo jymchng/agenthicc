@@ -102,7 +102,15 @@ class TranscriptEvent:
             payload["ok"] = self.ok
         if self.dropped:
             payload["dropped"] = self.dropped
-        for name in ("request_id", "mode", "source", "reason", "phase", "stop_reason", "cleanup_error"):
+        for name in (
+            "request_id",
+            "mode",
+            "source",
+            "reason",
+            "phase",
+            "stop_reason",
+            "cleanup_error",
+        ):
             value = getattr(self, name)
             if value:
                 payload[name] = value

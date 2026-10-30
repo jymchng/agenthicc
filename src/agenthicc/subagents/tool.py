@@ -260,7 +260,7 @@ def make_spawn_subagents_tool(
             if isinstance(max_concurrent, int) and not isinstance(max_concurrent, bool)
             else 1
         )
-        effective_max_concurrent = min(max(1, requested_concurrency), concurrency_ceiling)
+        effective_max_concurrent = max(1, requested_concurrency)
         pool_metadata: dict[str, object] = {
             "depth": pool_depth,
             "parent_pool_id": parent_pool_id,
@@ -323,15 +323,25 @@ def make_spawn_subagents_tool(
 
         if not isinstance(tasks, list):
             return {"ok": False, "error": "tasks must be a list of task objects"}
-        if len(tasks) > subagent_settings.max_workers:
+        if len(tasks) > _settings.max_workers:
             return {
                 "ok": False,
-                "error": (f"tasks exceeds configured max_workers={subagent_settings.max_workers}"),
+                "error": (f"tasks exceeds configured max_workers={_settings.max_workers}"),
             }
         if isinstance(max_concurrent, bool) or not isinstance(max_concurrent, int):
             return {"ok": False, "error": "max_concurrent must be an integer", **pool_metadata}
         if max_concurrent < 1:
             return {"ok": False, "error": "max_concurrent must be a positive integer"}
+        if max_concurrent > concurrency_ceiling:
+            return {
+                "ok": False,
+                "status": "refused",
+                "error": (
+                    f"requested max_concurrent={max_concurrent} exceeds configured "
+                    f"max_concurrent={concurrency_ceiling} from {concurrency_limit_source}"
+                ),
+                **pool_metadata,
+            }
         if len(tasks) > task_ceiling:
             return {
                 "ok": False,

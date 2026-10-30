@@ -1129,17 +1129,36 @@ class SubagentWorker:
         inherited_scope = (
             self._policy.capability_scope
             if self._policy is not None
-            else AgentCapabilityScope(allowed_tools=inherited_names)
+            else AgentCapabilityScope(
+                allowed_tools=(
+                    inherited_names | frozenset({"spawn_subagents"})
+                    if depth < max_depth
+                    and "spawn_subagents" in _expand_allowed(spec.allowed_tools, registry)
+                    else inherited_names
+                )
+            )
+        )
+        inherited_names = frozenset(tool_name(item) for item in all_tools)
+        nested_spawn_allowed = (
+            depth < max_depth
+            and "spawn_subagents" in _expand_allowed(spec.allowed_tools, registry)
+            and inherited_scope.is_tool_allowed("spawn_subagents")
+        )
+        visible_names = inherited_names | (
+            frozenset({"spawn_subagents"}) if nested_spawn_allowed else frozenset()
         )
         inherited_scope = inherited_scope.restrict(
-            AgentCapabilityScope(allowed_tools=inherited_names)
+            AgentCapabilityScope(allowed_tools=visible_names)
         )
         if self._policy is not None and self._policy.visible_tool_names:
             inherited_scope = inherited_scope.restrict(
                 AgentCapabilityScope(allowed_tools=self._policy.visible_tool_names)
             )
+        declared_allowed = _expand_allowed(spec.allowed_tools, registry)
+        if self._depth_tier is not None and self._depth_tier.allowed_tools is not None:
+            declared_allowed &= self._depth_tier.allowed_tools
         declared_scope = AgentCapabilityScope(
-            allowed_tools=_expand_allowed(spec.allowed_tools, registry),
+            allowed_tools=declared_allowed,
             denied_tools=permissions.deny_tools if permissions is not None else frozenset(),
         )
         self._capability_scope = inherited_scope.restrict(declared_scope)
@@ -1369,7 +1388,6 @@ class SubagentWorker:
                 parent_runner=self._parent_runner,
                 parent_model=self._model_id,
                 all_tools=list(filtered),
-                max_concurrent=self._subagent_settings.max_concurrent,
                 app_state=self._app_state,
                 processor=self._processor,
                 conv_store=self._conv_store,
@@ -2576,14 +2594,10 @@ class SubagentPool:
             worker_id = ws.worker_id
 
             def _last_completed_text() -> str:
-                if hasattr(worker, "_last_completed_text"):
-                    return worker._last_completed_text
-                return ""
+                return worker._last_completed_text
 
             async def _undelivered_message_count() -> int:
-                if hasattr(worker, "_undelivered_message_count"):
-                    return await worker._undelivered_message_count()
-                return 0
+                return await worker._undelivered_message_count()
 
             def _cancelled_result(reason: str) -> SubagentResult:
                 partial_text = _last_completed_text()

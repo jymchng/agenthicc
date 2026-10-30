@@ -34,6 +34,7 @@ if TYPE_CHECKING:
     from lauren_ai._agents._runner import AgentRunnerBase
     from lauren_ai._config import LLMConfig
     from lauren_ai._memory import ShortTermMemory
+    from lauren_ai._signals import SignalBus
 
     from agenthicc.agents.registry import AgentsRegistry
     from agenthicc.background.agents_service import AgentsService
@@ -45,7 +46,12 @@ if TYPE_CHECKING:
     from agenthicc.commands.busy_policy import BusyDecision
     from agenthicc.commands.command import Command, UsageSnapshot
     from agenthicc.commands.registry import UnifiedCommandRegistry
-    from agenthicc.config import AgenthiccConfig, CloakBrowserSettings, PlaywrightSettings
+    from agenthicc.config import (
+        AgenthiccConfig,
+        CloakBrowserSettings,
+        ExecutionSettings,
+        PlaywrightSettings,
+    )
     from agenthicc.memory.router import MemoryRouter
     from agenthicc.memory.tool_history import ToolHistoryRecoveryState
     from agenthicc.memory.vector import SemanticIndex
@@ -53,6 +59,7 @@ if TYPE_CHECKING:
     from agenthicc.runners.session_context import SessionContext
     from agenthicc.runners.startup import StartupCoordinator
     from agenthicc.runners.workflow_handle import WorkflowRunHandle
+    from agenthicc.runners.workflow_profile import ResumeProviderProfile
     from agenthicc.runners.workflow_recovery import WorkflowRecoveryRecord
     from agenthicc.skills.loader import SkillDef, SkillDiscoveryResult
     from agenthicc.subagents.pool import SubagentPool
@@ -147,6 +154,22 @@ def _preserve_interrupted_memory(memory: ShortTermMemory | None) -> bool:
     return preserve(memory)
 
 
+class _LazySignalBus:
+    """Share one signal bus across provider-scoped lazy runner forks."""
+
+    def __init__(self) -> None:
+        self._bus: SignalBus | None = None
+        self._lock = threading.Lock()
+
+    def get(self) -> SignalBus:
+        with self._lock:
+            if self._bus is None:
+                from lauren_ai._signals import SignalBus
+
+                self._bus = SignalBus()
+            return self._bus
+
+
 class _LazyAgentRunner:
     """First-use proxy for lauren-ai's provider runner."""
 
@@ -156,14 +179,38 @@ class _LazyAgentRunner:
         *,
         cassette_dir: Path | None,
         startup: StartupCoordinator | None = None,
+        signal_state: _LazySignalBus | None = None,
     ) -> None:
         self._llm_config = llm_config
         self._cassette_dir = cassette_dir
         self._startup = startup
         self._delegate: AgentRunnerBase | None = None
+        self._signal_state = signal_state or _LazySignalBus()
         # The warm-up thread and the event loop may race to build the runner;
         # whichever loses waits for the same instance.
         self._lock = threading.Lock()
+
+    @property
+    def _signals(self) -> SignalBus:
+        return self._signal_state.get()
+
+    def for_execution(
+        self,
+        execution: ExecutionSettings,
+        *,
+        conversation_id: str,
+    ) -> _LazyAgentRunner:
+        """Fork a lazy runner without constructing this runner's provider."""
+        from functools import partial
+
+        from agenthicc.config import build_llm_config
+
+        return _LazyAgentRunner(
+            partial(build_llm_config, execution, conversation_id=conversation_id),
+            cassette_dir=self._cassette_dir,
+            startup=None,
+            signal_state=self._signal_state,
+        )
 
     def _ensure(self) -> AgentRunnerBase:
         delegate = self._delegate
@@ -199,7 +246,6 @@ class _LazyAgentRunner:
         """Build the real runner, importing lauren-ai only on demand."""
         from lauren_ai._agents._runner import AgentRunnerBase
         from lauren_ai._module import _build_transport
-        from lauren_ai._signals import SignalBus
 
         transport = _build_transport(self._llm_config())
         if self._cassette_dir is not None:
@@ -207,7 +253,7 @@ class _LazyAgentRunner:
 
             self._cassette_dir.mkdir(parents=True, exist_ok=True)
             transport = RecordingTransport(transport, self._cassette_dir / "cassette.jsonl")
-        return AgentRunnerBase(transport=transport, signals=SignalBus())
+        return AgentRunnerBase(transport=transport, signals=self._signals)
 
     async def warm_up(self) -> None:
         """Build the runner on a worker thread, recording the provider phase.
@@ -1806,6 +1852,8 @@ class TUISession:
         handle: WorkflowRunHandle,
         context: object,
         *,
+        provider_selection: ResumeProviderProfile,
+        provider_runner: object,
         continuation: str | None = None,
         turn_id: str | None = None,
     ) -> None:
@@ -1834,6 +1882,8 @@ class TUISession:
             self._resume_workflow_task(
                 definition,
                 context,
+                provider_selection=provider_selection,
+                provider_runner=provider_runner,
                 continuation=continuation,
                 turn_id=turn_id,
             ),
@@ -2133,13 +2183,12 @@ class TUISession:
         conversation = self._ctx.session_conversation
         if conversation is None:
             return
-        active_profile = self._ctx.cfg.execution.profile
         workspace_scope = self._ctx.workspace_scope
         workspace_root = str(workspace_scope.primary_root) if workspace_scope is not None else ""
         records = self._workflow_recovery.inspect(
             workflow_registry=self._ctx.workflow_registry,
             conversation=conversation,
-            provider_profile=active_profile,
+            provider_profile=None,
             workspace_root=workspace_root,
         )
         self._workflow_recovery_records = {
@@ -2190,13 +2239,12 @@ class TUISession:
         conversation = self._ctx.session_conversation
         if conversation is None:
             return None
-        active_profile = self._ctx.cfg.execution.profile
         workspace_scope = self._ctx.workspace_scope
         workspace_root = str(workspace_scope.primary_root) if workspace_scope is not None else ""
         return self._workflow_recovery.select_latest_for_resume(
             workflow_registry=self._ctx.workflow_registry,
             conversation=conversation,
-            provider_profile=active_profile,
+            provider_profile=None,
             workspace_root=workspace_root,
         )
 
@@ -3473,11 +3521,37 @@ class TUISession:
         conv = self._ctx.app_state.conversation
         resume_parts = name.split()
         if resume_parts and resume_parts[0] == "resume":
-            if len(resume_parts) > 2:
-                conv.notify_transient("⚠ Usage: /workflow resume [run-id]")
-                return True
-            run_id = resume_parts[1] if len(resume_parts) == 2 else None
-            return self._handle_workflow_resume(run_id)
+            run_id: str | None = None
+            explicit_profile: str | None = None
+            remaining = iter(resume_parts[1:])
+            for token in remaining:
+                if token == "--profile":
+                    try:
+                        if explicit_profile is not None:
+                            raise ValueError
+                        explicit_profile = next(remaining)
+                    except (StopIteration, ValueError):
+                        conv.notify_transient(
+                            "⚠ Usage: /workflow resume [run-id] --profile <name|none>"
+                        )
+                        return True
+                elif token.startswith("--profile="):
+                    if explicit_profile is not None:
+                        conv.notify_transient(
+                            "⚠ Usage: /workflow resume [run-id] --profile <name|none>"
+                        )
+                        return True
+                    explicit_profile = token.partition("=")[2]
+                elif token.startswith("-") or run_id is not None:
+                    conv.notify_transient(
+                        "⚠ Usage: /workflow resume [run-id] --profile <name|none>"
+                    )
+                    return True
+                else:
+                    run_id = token
+            if explicit_profile is not None and explicit_profile.casefold() == "none":
+                explicit_profile = ""
+            return self._handle_workflow_resume(run_id, explicit_profile=explicit_profile)
         if not name or name == "reset" or name.startswith("reset "):
             requested_reset_id = name.partition(" ")[2].strip() or None
             # `/workflow reset` must always clear the session-local selector.
@@ -3596,7 +3670,43 @@ class TUISession:
         conv.notify_transient(f"⚡ Workflow → {name}")
         return True
 
-    def _handle_workflow_resume(self, run_id: str | None) -> bool:
+    def _resolve_workflow_resume_provider(
+        self,
+        handle: WorkflowRunHandle,
+        *,
+        explicit_profile: str | None = None,
+    ) -> tuple[ResumeProviderProfile, object]:
+        """Resolve a checkpoint's profile before claiming or dispatching its runner."""
+        from agenthicc.runners.workflow_profile import (
+            resolve_resume_provider_profile,
+            workflow_resume_agent_runner,
+        )
+
+        ctx = self._ctx
+        selection = resolve_resume_provider_profile(
+            ctx.cfg,
+            saved_profile=handle.provider_profile,
+            saved_binding_fingerprint=handle.provider_profile_fingerprint,
+            explicit_profile=explicit_profile,
+        )
+        conversation_id = (
+            ctx.session_conversation.conversation_id
+            if ctx.session_conversation is not None
+            else ctx.session_id
+        )
+        runner = workflow_resume_agent_runner(
+            ctx.agent_runner,
+            selection,
+            conversation_id=conversation_id,
+        )
+        return selection, runner
+
+    def _handle_workflow_resume(
+        self,
+        run_id: str | None,
+        *,
+        explicit_profile: str | None = None,
+    ) -> bool:
         """Claim and resume one paused or process-interrupted workflow.
 
         An omitted ID selects the newest eligible durable checkpoint, then
@@ -3724,6 +3834,22 @@ class TUISession:
         if definition is None or handle.context is None:
             conv.notify_transient(f"⚠ Workflow '{handle.workflow_name}' is not available to resume")
             return True
+        from agenthicc.runners.workflow_profile import WorkflowProfileResolutionError
+
+        try:
+            provider_selection, provider_runner = self._resolve_workflow_resume_provider(
+                handle,
+                explicit_profile=explicit_profile,
+            )
+        except WorkflowProfileResolutionError as exc:
+            conv.notify_transient(f"⚠ {exc}")
+            return True
+        except Exception as exc:  # noqa: BLE001 - profile must fail before dispatch
+            conv.notify_transient(
+                f"⚠ provider_profile_invalid: could not prepare workflow provider "
+                f"({type(exc).__name__})."
+            )
+            return True
         if handle.claim_owner_id is None:
             try:
                 handle.claim(f"{self._workflow_owner_prefix}:{handle.run_id}")
@@ -3745,15 +3871,34 @@ class TUISession:
                         f"{type(exc).__name__}: {exc}"
                     )
                 return True
+        previous_profile_state = (
+            handle.provider_profile,
+            handle.provider_profile_fingerprint,
+            handle.provider_profile_origin,
+            handle.provider_profile_history,
+        )
         try:
             # Move to RESUMING before creating the task. This closes the small
             # race where Esc arrives after the command claims the run but
             # before the task reaches its first await; request_pause() can
             # then convert RESUMING to PAUSING instead of misclassifying the
             # cancellation as a failure.
+            handle.select_provider_profile(
+                provider_selection.profile_name,
+                provider_selection.binding_fingerprint,
+            )
             handle.mark_resuming()
             handle.persist_checkpoint(reason="resuming")
         except Exception as exc:  # noqa: BLE001
+            (
+                handle.provider_profile,
+                handle.provider_profile_fingerprint,
+                handle.provider_profile_origin,
+                handle.provider_profile_history,
+            ) = previous_profile_state
+            if handle.lifecycle == "resuming":
+                handle.lifecycle = "paused"
+                handle.pause_requested = True
             self._release_workflow_claim(handle)
             conv.notify_transient(
                 f"⚠ resume_transition_failed: cannot start workflow {handle.run_id!r}: "
@@ -3762,7 +3907,13 @@ class TUISession:
             return True
         context = handle.context
         assert context is not None  # validated above; narrows the runner input
-        self._dispatch_workflow_resume(definition, handle, context)
+        self._dispatch_workflow_resume(
+            definition,
+            handle,
+            context,
+            provider_selection=provider_selection,
+            provider_runner=provider_runner,
+        )
         conv.notify_transient(f"↻ Resuming workflow '{handle.workflow_name}'…")
         return True
 
@@ -3939,6 +4090,21 @@ class TUISession:
                 f"⚠ Workflow '{handle.workflow_name}' is not available to resume"
             )
             return True
+        from agenthicc.runners.workflow_profile import WorkflowProfileResolutionError
+
+        try:
+            provider_selection, provider_runner = self._resolve_workflow_resume_provider(handle)
+        except WorkflowProfileResolutionError as exc:
+            self._ctx.app_state.conversation.notify_transient(f"⚠ {exc}")
+            self._msg_queue.insert(0, text)
+            return True
+        except Exception as exc:  # noqa: BLE001 - profile must fail before dispatch
+            self._ctx.app_state.conversation.notify_transient(
+                f"⚠ provider_profile_invalid: could not prepare workflow provider "
+                f"({type(exc).__name__})."
+            )
+            self._msg_queue.insert(0, text)
+            return True
         if handle.claim_owner_id is None:
             try:
                 handle.claim(f"{self._workflow_owner_prefix}:{handle.run_id}")
@@ -3960,10 +4126,29 @@ class TUISession:
                 self._ctx.app_state.conversation.notify_transient(message)
                 self._msg_queue.insert(0, text)
                 return True
+        previous_profile_state = (
+            handle.provider_profile,
+            handle.provider_profile_fingerprint,
+            handle.provider_profile_origin,
+            handle.provider_profile_history,
+        )
         try:
+            handle.select_provider_profile(
+                provider_selection.profile_name,
+                provider_selection.binding_fingerprint,
+            )
             handle.mark_resuming()
             handle.persist_checkpoint(reason="resuming")
         except Exception as exc:  # noqa: BLE001
+            (
+                handle.provider_profile,
+                handle.provider_profile_fingerprint,
+                handle.provider_profile_origin,
+                handle.provider_profile_history,
+            ) = previous_profile_state
+            if handle.lifecycle == "resuming":
+                handle.lifecycle = "paused"
+                handle.pause_requested = True
             self._release_workflow_claim(handle)
             self._ctx.app_state.conversation.notify_transient(
                 f"⚠ resume_transition_failed: cannot continue workflow {handle.run_id!r}: "
@@ -3978,6 +4163,8 @@ class TUISession:
             definition,
             handle,
             context,
+            provider_selection=provider_selection,
+            provider_runner=provider_runner,
             continuation=text,
             turn_id=turn_id,
         )
@@ -4177,6 +4364,15 @@ class TUISession:
 
                     session_conversation = ctx.session_conversation
                     if session_conversation is not None:
+                        from agenthicc.config import AgenthiccConfig
+                        from agenthicc.runners.workflow_profile import provider_profile_fingerprint
+
+                        provider_profile = ctx.cfg.execution.profile
+                        profile_fingerprint = (
+                            provider_profile_fingerprint(ctx.cfg, provider_profile)
+                            if isinstance(ctx.cfg, AgenthiccConfig)
+                            else ""
+                        )
                         new_handle = WorkflowRunHandle.create(
                             run_id=uuid.uuid4().hex,
                             workflow=_plugin_cls,
@@ -4184,7 +4380,8 @@ class TUISession:
                             intent=text,
                             checkpoint_store=WorkflowCheckpointStore(ctx.session_id),
                             browser_manager=ctx.browser_manager,
-                            provider_profile=ctx.cfg.execution.profile,
+                            provider_profile=provider_profile,
+                            provider_profile_fingerprint=profile_fingerprint,
                             workspace_root=str(
                                 getattr(ctx.workspace_scope, "primary_root", "") or ""
                             ),
@@ -4754,6 +4951,8 @@ class TUISession:
         wf_defn: type[WorkflowPlugin],
         context: object,
         *,
+        provider_selection: ResumeProviderProfile,
+        provider_runner: object,
         continuation: str | None = None,
         turn_id: str | None = None,
     ) -> None:
@@ -4761,6 +4960,8 @@ class TUISession:
         from agenthicc.tui.input.unified_session import InputMode
 
         ctx = self._ctx
+        selected_config = provider_selection.config
+        selected_runner = provider_runner
         handle = self._workflow_handle
         conversation = ctx.session_conversation
         owner_id = turn_id or (
@@ -4776,7 +4977,15 @@ class TUISession:
         try:
             import dataclasses as _dc
 
-            await self._await_agent_runtime()
+            startup = ctx.startup
+            if startup is not None:
+                from agenthicc.runners.startup import ReadinessState
+
+                if (
+                    startup.report("provider_journal_restore").state
+                    is not ReadinessState.NOT_STARTED
+                ):
+                    await startup.wait_for("provider_journal_restore")
             if conversation is not None:
                 await conversation.acquire(owner_id)
                 acquired = True
@@ -4802,6 +5011,9 @@ class TUISession:
                         },
                     )
                 )
+            prepare_provider = getattr(selected_runner, "prepare", None)
+            if callable(prepare_provider):
+                prepare_provider()
             if ctx.session_memory is not None:
                 if _preserve_interrupted_memory(ctx.session_memory):
                     ctx.app_state.conversation.append_event(
@@ -4833,17 +5045,25 @@ class TUISession:
             )
             if required_phases:
                 startup = ctx.startup
-                if startup is None:
-                    raise RuntimeError(
-                        "workflow declares startup dependencies but readiness is unavailable"
-                    )
-                for phase in required_phases:
-                    _prepare_startup_dependency(ctx, phase)
-                await startup.wait_for(*required_phases)
-            _wf_params = wf_defn.build_params(ctx.cfg.workflows.get(wf_defn.name, {}))
+                deferred_phases = tuple(phase for phase in required_phases if phase != "provider")
+                if "provider" in required_phases:
+                    prepare = getattr(selected_runner, "prepare", None)
+                    if callable(prepare):
+                        prepare()
+                if deferred_phases:
+                    if startup is None:
+                        raise RuntimeError(
+                            "workflow declares startup dependencies but readiness is unavailable"
+                        )
+                    for phase in deferred_phases:
+                        _prepare_startup_dependency(ctx, phase)
+                    await startup.wait_for(*deferred_phases)
+            _wf_params = wf_defn.build_params(selected_config.workflows.get(wf_defn.name, {}))
             _phase_specs = wf_defn.phases
             _wf_config = _dc.replace(
                 self._wf_config_base,
+                agent_runner=cast("AgentRunnerBase", selected_runner),
+                cfg=selected_config,
                 params=_wf_params,
                 workflow_handle=handle,
                 session_memory=ctx.session_memory,

@@ -94,6 +94,29 @@ checkpoint.conversation_id
   → runner.resume(typed_context)
 ```
 
+### Provider profile selection during resume
+
+A workflow checkpoint stores the selected provider profile, a fingerprint of its
+non-secret routing identity, and bounded origin/history labels. Credentials are
+resolved from the current configuration each time; credential values are never
+written to the checkpoint. Recovery discovery does not reject a run merely
+because its saved profile differs from the session default.
+
+`/workflow resume [run-id]` inherits the saved profile. If that profile is no
+longer configured, or its provider/model/endpoint binding changed, resume stops
+before provider dispatch and leaves the checkpoint untouched. Choose a current
+binding explicitly with `/workflow resume [run-id] --profile <name>`. Use
+`--profile none` to acknowledge the current legacy `[execution]` settings.
+Headless callers can make the same explicit choice with
+`--set execution.profile=<name>` (or an empty value for legacy settings).
+
+A successful selection is persisted with the `resuming` transition before the
+workflow runner is built. If that checkpoint write fails, the prior paused
+checkpoint and profile binding remain authoritative, the run claim is released,
+and no workflow phase starts. Provider runners are forked lazily for the
+selected execution settings, without constructing the session's previous
+provider configuration.
+
 A successful interactive `/workflow resume [run-id]` also selects the workflow
 stored in that validated checkpoint for the rest of the current TUI session.
 The footer shows the same `⬡ workflow-name` selection, and subsequent ordinary
