@@ -1230,7 +1230,6 @@ async def test_background_workflow_resume_accepts_an_explicit_run_id(
         resume_run_id: str | None = None,
         continuation: str | None = None,
         resume_plan: object | None = None,
-        profile_override: str | None = None,
     ) -> object:
         assert (workflow_name, intent, resume_run_id, continuation) == (
             "goal_flow",
@@ -1239,7 +1238,6 @@ async def test_background_workflow_resume_accepts_an_explicit_run_id(
             None,
         )
         assert resume_plan is None
-        assert profile_override == "replacement"
         return SimpleNamespace(status="complete", error=None)
 
     registry = Workflows()
@@ -1259,7 +1257,7 @@ async def test_background_workflow_resume_accepts_an_explicit_run_id(
 
     result = await _handle_background_workflow_command(
         session,
-        "resume explicit-run-id --profile replacement",
+        "resume explicit-run-id",
         store=store,
         attempt=session_record.attempt,
         lease_token=session_record.lease_token,

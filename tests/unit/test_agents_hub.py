@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import subprocess
-from collections.abc import AsyncIterator
+import threading
+from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
+from typing import Literal
 
 import pytest
 from rich.console import Console
 
+from agenthicc.agents.definitions import AgentSpec
 from agenthicc.background import (
     BackgroundInteractionInbox,
     BackgroundSession,
@@ -75,6 +79,8 @@ async def _open(
     app_state: AppState | None = None,
     in_session: bool = False,
     run_id: str = "",
+    effective_tools: Callable[[AgentSpec, AppState], tuple[str, ...]] | None = None,
+    external_editor: Callable[[Path, Literal["project", "user"]], Awaitable[None]] | None = None,
 ) -> AgentsHub:
     hub = AgentsHub(
         Console(width=120, color_system=None),
@@ -88,6 +94,8 @@ async def _open(
         cwd=tmp_path,
         in_session=in_session,
         run_id=run_id,
+        effective_tools=effective_tools,
+        external_editor=external_editor,
         clock=lambda: NOW,
     )
     await hub.start()
@@ -548,6 +556,10 @@ async def test_every_hub_action_is_in_help_and_resolves_in_its_context(seeded: A
             "collapsed",
             "expanded",
             "running_tab",
+            "library_tab",
+            "definition",
+            "editable_definition",
+            "primary_definition",
             "transcript",
             "changes",
         }
@@ -616,9 +628,7 @@ async def test_rebinding_approve_applies_without_restart(
 async def test_a_click_selects_a_row_and_the_wheel_scrolls(seeded: AgentsHub) -> None:
     _text(seeded)  # lays out the frame the clicks refer to
     rows = seeded._geometry.rows
-    line, index = next(
-        (line, index) for line, index in rows.items() if seeded.rows[index].key == "session:docs"
-    )
+    line = next(line for line, index in rows.items() if seeded.rows[index].key == "session:docs")
     seeded.handle_key(Key.MOUSE, MouseEvent(0, 5, line + 1, pressed=True).encode())
     assert seeded.selected_row() is not None and seeded.selected_row().key == "session:docs"  # type: ignore[union-attr]
     # A second click opens it.
@@ -629,7 +639,7 @@ async def test_a_click_selects_a_row_and_the_wheel_scrolls(seeded: AgentsHub) ->
     seeded.handle_key(Key.MOUSE, MouseEvent(MouseEvent.WHEEL_UP, 1, 1, pressed=True).encode())
     assert seeded.selected_row() != before
     # A click on a tab switches to it.
-    start, _end, tab = seeded._geometry.tabs[2]
+    start, _end, _tab = seeded._geometry.tabs[2]
     seeded.handle_key(Key.MOUSE, MouseEvent(0, start + 1, 1, pressed=True).encode())
     assert seeded.tab is Tab.HISTORY
 
@@ -770,3 +780,366 @@ def test_unseen_activity_is_remembered_per_user(tmp_path: Path) -> None:
     prefs.mark_seen(changed)
     prefs.save()
     assert not HubPrefs.load(tmp_path / "prefs.json").unseen(changed)
+
+
+def _library_sources(project_root: Path, user_root: Path) -> HubSources:
+    from agenthicc.plugins.trust import ExtensionTrust, override_extension_trust
+    from agenthicc.tui.workspace.agents_hub.model import LibraryEntry
+    from agenthicc.tui.workspace.agents_hub.sources import load_library
+
+    def load() -> list[LibraryEntry]:
+        trust = ExtensionTrust(
+            store_path=project_root.parent / ".test-extension-trust.json",
+            trusted_roots=(project_root, user_root),
+        )
+        with override_extension_trust(trust):
+            return load_library(project_root, user_root)
+
+    return HubSources(library=load)
+
+
+def _submit_library_text(hub: AgentsHub, value: str) -> None:
+    for character in value:
+        hub.handle_key(Key.CHAR, character)
+    hub.handle_key(Key.ENTER, "")
+
+
+async def test_library_detail_loads_effective_tools_from_the_active_session(
+    store: BackgroundStore, tmp_path: Path
+) -> None:
+    from agenthicc.agents.library import write_definition
+
+    spec = AgentSpec(
+        name="tool-inspector",
+        description="Shows the effective session tools",
+        prompt="Inspect tools.",
+        mode="primary",
+    )
+    path = write_definition(spec, scope="project", project_root=tmp_path)
+    app_state = AppState.create()
+    calls: list[tuple[str, AppState]] = []
+
+    def effective_tools(candidate: AgentSpec, policy_state: AppState) -> tuple[str, ...]:
+        calls.append((candidate.name, policy_state))
+        return ("fs_read", "git_diff")
+
+    hub = await _open(
+        store,
+        tmp_path,
+        tab=Tab.LIBRARY,
+        sources=_library_sources(tmp_path / ".agenthicc", tmp_path / "home" / ".agenthicc"),
+        app_state=app_state,
+        effective_tools=effective_tools,
+    )
+    try:
+        entry = next(row.entry for row in hub.rows if row.entry and row.entry.name == spec.name)
+        assert entry is not None
+        hub._show_library_entry(entry)
+        assert any("calculating…" in line for line in hub._library_view_lines or ())
+        await hub.settle()
+
+        assert calls and calls[0][0] == spec.name
+        assert calls[0][1] is not app_state
+        assert any(
+            line.endswith("fs_read, git_diff")
+            for line in hub._library_view_lines or ()
+            if line.startswith("Effective tools (model-visible;")
+        )
+        assert str(path) in "\n".join(hub._library_view_lines or ())
+    finally:
+        await hub.stop()
+
+
+async def test_library_create_reviews_before_writing_a_definition(
+    store: BackgroundStore, tmp_path: Path
+) -> None:
+    from agenthicc.agents.definitions import parse_definition
+
+    agent_dir = tmp_path / ".agenthicc"
+    hub = await _open(
+        store,
+        tmp_path,
+        tab=Tab.LIBRARY,
+        sources=_library_sources(agent_dir, tmp_path / "home" / ".agenthicc"),
+    )
+    path = agent_dir / "agents" / "hub-created.md"
+    try:
+        hub.handle_key(Key.CHAR, "n")
+        hub.handle_key(Key.ENTER, "")  # project scope
+        _submit_library_text(hub, "hub-created")
+        _submit_library_text(hub, "Created from the Library")
+        _submit_library_text(hub, "primary")
+        hub.handle_key(Key.ENTER, "")  # session model
+        hub.handle_key(Key.ENTER, "")  # session tools
+        _submit_library_text(hub, "Follow the requested review checklist.")
+
+        assert hub._choice is not None and hub._choice.kind == "library_save"
+        assert not path.exists()
+        assert any(
+            "Follow the requested review checklist." in line
+            for line in hub._library_view_lines or ()
+        )
+
+        hub.handle_key(Key.ENTER, "")
+        await hub.settle()
+
+        spec = parse_definition(path.read_text(encoding="utf-8"), path=path, source="project")
+        assert spec.name == "hub-created"
+        assert spec.mode == "primary"
+        assert spec.prompt == "Follow the requested review checklist."
+        assert any(row.entry is not None and row.entry.name == spec.name for row in hub.rows)
+    finally:
+        await hub.stop()
+
+
+async def test_library_generated_definition_is_reviewed_then_saved(
+    store: BackgroundStore, tmp_path: Path
+) -> None:
+    from agenthicc.agents.definitions import AgentSpec, render_definition
+
+    calls: list[tuple[str, str]] = []
+
+    async def generate(name: str, description: str) -> str:
+        calls.append((name, description))
+        return render_definition(
+            AgentSpec(
+                name=name,
+                description=description,
+                prompt="Generated prompt for review.",
+                mode="subagent",
+            )
+        )
+
+    agent_dir = tmp_path / ".agenthicc"
+    hub = await _open(
+        store,
+        tmp_path,
+        tab=Tab.LIBRARY,
+        sources=_library_sources(agent_dir, tmp_path / "home" / ".agenthicc"),
+    )
+    hub._generate_definition = generate
+    path = agent_dir / "agents" / "generated-reviewer.md"
+    try:
+        hub.handle_key(Key.CHAR, "g")
+        hub.handle_key(Key.ENTER, "")
+        _submit_library_text(hub, "generated-reviewer")
+        _submit_library_text(hub, "Reviews generated changes")
+        await hub.settle()
+
+        assert calls == [("generated-reviewer", "Reviews generated changes")]
+        assert hub._choice is not None and hub._choice.kind == "library_save"
+        assert not path.exists()
+        assert any("Generated prompt for review." in line for line in hub._library_view_lines or ())
+
+        hub.handle_key(Key.ENTER, "")
+        await hub.settle()
+
+        assert path.is_file()
+        assert "Generated prompt for review." in path.read_text(encoding="utf-8")
+    finally:
+        await hub.stop()
+
+
+async def test_library_edit_uses_external_editor_and_reloads_definition(
+    store: BackgroundStore, tmp_path: Path
+) -> None:
+    from agenthicc.agents.definitions import AgentSpec, render_definition
+    from agenthicc.agents.library import write_definition
+    from agenthicc.plugins.trust import current_extension_trust
+
+    original = AgentSpec(
+        name="external-edit",
+        description="Before edit",
+        prompt="Initial prompt.",
+        mode="primary",
+    )
+    path = write_definition(original, scope="project", project_root=tmp_path)
+    calls: list[tuple[Path, str]] = []
+
+    async def edit(path: Path, scope: Literal["project", "user"]) -> None:
+        calls.append((path, scope))
+        updated = AgentSpec(
+            name=original.name,
+            description="After external edit",
+            prompt="Changed in $EDITOR.",
+            mode="primary",
+        )
+        path.write_text(render_definition(updated), encoding="utf-8")
+        current_extension_trust().trust(path, kind="agent")
+
+    hub = await _open(
+        store,
+        tmp_path,
+        tab=Tab.LIBRARY,
+        sources=_library_sources(tmp_path / ".agenthicc", tmp_path / "home" / ".agenthicc"),
+        external_editor=edit,
+    )
+    try:
+        hub._selected_key = f"definition:project:{path}"
+        hub.handle_key(Key.CHAR, "e")
+        await hub.settle()
+
+        assert calls == [(path, "project")]
+        assert "Changed in $EDITOR." in path.read_text(encoding="utf-8")
+        assert "reloaded" in hub._notice
+        entry = next(row.entry for row in hub.rows if row.entry and row.entry.name == original.name)
+        assert entry is not None and entry.spec is not None
+        assert entry.spec.description == "After external edit"
+    finally:
+        await hub.stop()
+
+
+async def test_full_screen_hub_runs_external_editor_outside_raw_mode(
+    store: BackgroundStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    hub = await _open(store, tmp_path)
+    loop = asyncio.get_running_loop()
+    wake = threading.Event()
+    raw_depth = 0
+    reads = 0
+    editor_raw_depths: list[int] = []
+
+    class Backend:
+        def is_interactive(self) -> bool:
+            return True
+
+        def enter_raw_mode(self) -> object:
+            class RawMode:
+                def __enter__(self) -> None:
+                    nonlocal raw_depth
+                    raw_depth += 1
+
+                def __exit__(self, *args: object) -> None:
+                    nonlocal raw_depth
+                    raw_depth -= 1
+
+            return RawMode()
+
+        def read_key(self) -> tuple[Key, str]:
+            nonlocal reads
+            reads += 1
+            if reads == 1:
+                loop.call_soon_threadsafe(
+                    lambda: asyncio.create_task(hub.run_terminal_handoff(edit))
+                )
+                if not wake.wait(timeout=2):
+                    raise TimeoutError("terminal handoff did not wake hub input")
+                raise OSError("terminal input stopped")
+            return Key.UNKNOWN, ""
+
+        def restore(self) -> None:
+            wake.set()
+
+        def close(self) -> None:
+            wake.clear()
+
+        def set_reporting(self, *, focus: bool | None = None, mouse: bool | None = None) -> None:
+            return None
+
+    async def edit() -> None:
+        editor_raw_depths.append(raw_depth)
+
+    class Live:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def start(self) -> None:
+            pass
+
+        def stop(self) -> None:
+            pass
+
+    backend = Backend()
+    monkeypatch.setattr("agenthicc.tui.terminal.backend.get_backend", lambda: backend)
+    monkeypatch.setattr("agenthicc.tui.workspace.live_region.LiveRegion", Live)
+    monkeypatch.setattr(hub, "_draw", lambda _live: None)
+    monkeypatch.setattr(hub, "handle_key", lambda _key, _char="": HubResult("exit"))
+
+    result = await hub.run()
+
+    assert result == HubResult("exit")
+    assert editor_raw_depths == [0]
+    assert raw_depth == 0
+    assert reads == 2
+
+
+async def test_library_edit_default_and_confirmed_delete(
+    store: BackgroundStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agenthicc.agents.definitions import AgentSpec, render_definition
+    from agenthicc.agents.library import write_definition
+    from agenthicc.agents.selection import project_default
+
+    monkeypatch.setenv("AGENTHICC_AGENT_DEFAULTS", str(tmp_path / "agent-defaults.json"))
+    spec = AgentSpec(
+        name="hub-primary",
+        description="Before edit",
+        prompt="Initial prompt.",
+        mode="primary",
+    )
+    path = write_definition(spec, scope="project", project_root=tmp_path)
+    agent_dir = tmp_path / ".agenthicc"
+    hub = await _open(
+        store,
+        tmp_path,
+        tab=Tab.LIBRARY,
+        sources=_library_sources(agent_dir, tmp_path / "home" / ".agenthicc"),
+    )
+    try:
+        entry = next(row.entry for row in hub.rows if row.entry and row.entry.name == spec.name)
+        assert entry is not None
+        hub._selected_key = f"definition:project:{path}"
+        hub.handle_key(Key.CHAR, "*")
+        await hub.settle()
+        assert project_default(tmp_path) == spec.name
+
+        hub.handle_key(Key.CHAR, "e")
+        await hub.settle()
+        updated = AgentSpec(
+            name=spec.name,
+            description="After edit",
+            prompt="Updated prompt.",
+            mode="primary",
+        )
+        hub.handle_key(Key.CTRL_U, "")
+        hub.handle_key(Key.PASTE, render_definition(updated))
+        hub.handle_key(Key.ENTER, "")
+        await hub.settle()
+        content = path.read_text(encoding="utf-8")
+        assert "description: After edit" in content
+        assert "Updated prompt." in content
+
+        hub.handle_key(Key.CTRL_X, "")
+        assert hub._choice is not None and hub._choice.kind == "library_delete"
+        assert path.exists()
+        hub.handle_key(Key.CHAR, "y")
+        await hub.settle()
+        assert not path.exists()
+        assert project_default(tmp_path) is None
+    finally:
+        await hub.stop()
+
+
+async def test_library_validate_shows_file_and_parse_error(
+    store: BackgroundStore, tmp_path: Path
+) -> None:
+    agent_dir = tmp_path / ".agenthicc" / "agents"
+    agent_dir.mkdir(parents=True)
+    invalid = agent_dir / "broken.md"
+    invalid.write_text("not a definition", encoding="utf-8")
+    hub = await _open(
+        store,
+        tmp_path,
+        tab=Tab.LIBRARY,
+        sources=_library_sources(tmp_path / ".agenthicc", tmp_path / "home" / ".agenthicc"),
+    )
+    try:
+        hub.handle_key(Key.CHAR, "v")
+        await hub.settle()
+
+        text = "\n".join(hub._library_view_lines or ())
+        assert "broken" in text
+        assert str(invalid) in text
+        assert "frontmatter" in text
+    finally:
+        await hub.stop()

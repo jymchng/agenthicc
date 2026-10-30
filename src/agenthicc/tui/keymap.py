@@ -319,11 +319,12 @@ class Keymap:
                 return action
         raise KeymapError(f"unknown action {name!r}")
 
-    def _in(self, context: str) -> list[Action]:
-        """The actions of *context*: its own, then inherited ones, then ``global``.
+    def _in(self, context: str, conditions: frozenset[str] | None = None) -> list[Action]:
+        """Actions in *context*, with active child bindings shadowing parents.
 
-        An inherited action loses the keys a more specific context binds; one
-        left without keys does not apply in *context* at all.
+        Help omits *conditions* and shows every possible inherited action. At
+        dispatch time, a child action claims its keys only while it applies, so
+        a conditional binding cannot hide its parent's action in other states.
         """
         chain = list(_lineage(context))
         if context != "global":
@@ -333,13 +334,16 @@ class Keymap:
         for index, name in enumerate(chain):
             own = [action for action in self.actions if action.context == name]
             for action in own:
-                if index == 0:
+                if index == 0 or conditions is None:
                     actions.append(action)
                     continue
                 keys = tuple(key for key in action.keys if key not in claimed)
                 if keys:
                     actions.append(action if keys == action.keys else replace(action, keys=keys))
-            claimed.update(key for action in own for key in action.keys)
+            if conditions is not None:
+                claimed.update(
+                    key for action in own if action.applies(conditions) for key in action.keys
+                )
         return actions
 
     def resolve(
@@ -348,7 +352,7 @@ class Keymap:
         """Return the action *key* triggers in *context* under *conditions*."""
         if not key:
             return None
-        for action in self._in(context):
+        for action in self._in(context, conditions):
             if key in action.keys and action.applies(conditions):
                 return action
         return None
@@ -357,7 +361,7 @@ class Keymap:
         """Whether *context* has a two-step ``<leader>`` binding that applies."""
         return self.leader is not None and any(
             key.startswith(LEADER) and action.applies(conditions)
-            for action in self._in(context)
+            for action in self._in(context, conditions)
             for key in action.keys
         )
 
@@ -368,7 +372,7 @@ class Keymap:
         ranked = sorted(
             (
                 action
-                for action in self._in(context)
+                for action in self._in(context, conditions)
                 if action.hint_priority > 0 and action.keys and action.applies(conditions)
             ),
             key=lambda action: -action.hint_priority,

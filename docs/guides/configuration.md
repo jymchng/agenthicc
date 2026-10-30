@@ -69,7 +69,8 @@ settings and commented examples for dynamic tables such as:
 
 - `[providers."profile-name"]` and its headers/request options;
 - `[[tools.mcp_servers]]`;
-- `[memory.context_windows]`; and
+- `[memory.context_windows]`;
+- `[subagents]` routing defaults and model restrictions; and
 - `[agents."agent-name"]` and `[workflows."workflow-name"]`.
 
 Uncomment and edit only the settings needed by the project. Existing files are
@@ -194,13 +195,8 @@ printing their values.
 `extra_headers` and `extra_query` for per-request additions, plus optional
 `timeout_s`, `max_retries`, and `include_raw_response`. `default_headers`,
 `default_query`, and `client_options` configure the underlying provider client.
-Profile secrets are resolved from the current environment when workflow resume
-is requested. A workflow checkpoint stores the profile name, a non-secret
-provider-binding fingerprint, and bounded profile-switch provenance; it never
-stores resolved credentials. `/workflow resume [run-id] --profile <name|none>`
-selects a different profile for that run only. A changed endpoint/provider
-binding under the saved name requires this explicit acknowledgement, while
-rotating a credential does not.
+Profile secrets are resolved again when a resumed session starts; workflow
+checkpoints store only the profile name and never store resolved credentials.
 OpenAI-compatible endpoints may omit token-usage fields; spawned subagents
 normalize those unavailable counts so the response remains usable instead of
 failing with an `int + NoneType` error.
@@ -263,6 +259,78 @@ For very large files, prefer a chunked write — `write_file` for the first chun
 
 For project workflow definitions and per-phase model overrides, see the
 [custom workflows and TOML configuration guide](custom-workflows-and-config.md).
+
+## Subagents
+
+Operator defaults, routing restrictions, and pool budgets for `spawn_subagents`
+live under `[subagents]`:
+
+```toml
+[subagents]
+default_model = ""          # empty inherits the parent; may name a model or provider profile
+default_effort = ""         # empty inherits the parent's provider effort
+# default_context = 16000   # worker memory budget in tokens; omitted keeps 8000
+# allowed_models = ["model-id", "openai/other-model"]
+allow_call_overrides = false # expose model/effort tool overrides only when true
+max_depth = 1               # default: workers cannot delegate
+max_tasks = 64              # finite task-list ceiling at every depth
+max_concurrent = 16         # default concurrency and hard ceiling
+max_active_pools = 16       # process-wide active-pool ceiling
+max_workers = 32            # maximum workers admitted by one pool
+max_tool_calls = 256        # aggregate tool-call budget per pool
+max_iterations = 128        # aggregate model-iteration budget per pool
+max_tokens = 200000         # aggregate token budget per pool
+max_total_time_s = 600.0    # pool wall-clock budget
+on_budget_exceeded = "drain" # abort | drain
+stop_grace_s = 5.0          # cleanup grace for cancelled workers
+
+# Nesting is opt-in: raise max_depth and add spawn_subagents to a type's
+# allowed_tools before workers of that type can delegate.
+# [subagents.depth_limits."2"]
+# max_tasks = 12
+# max_concurrent = 4
+#
+# [subagents.depth_tiers."2".reviewer]
+# allowed_tools = ["read_file", "search_files"]
+# allowed_models = ["model-id"]
+```
+
+A definition's `model`, `effort`, and `context` values take precedence over
+these operator defaults, except `model: inherit`, which explicitly selects the
+parent model. When per-call overrides are enabled, those values take precedence
+over definitions and defaults. `allowed_models` constrains routed models;
+provider-qualified entries are matched against the active provider. Subagents
+cannot change the session's provider endpoint. Context budgets are clamped to
+the selected model's window from `[memory.context_windows]`; an unsupported
+provider effort is warned about and retried once without that effort option.
+
+`max_depth = 1` preserves today's flat behavior. A pool at depth 1 does not
+expose `spawn_subagents` to its workers; if nesting is enabled, the tool is only
+added to a worker whose type explicitly permits it, and never at the depth cap.
+Each refusal names the current limit and its setting. Per-depth task/concurrency
+ceilings inherit independently from the nearest configured depth; the model may
+request less concurrency, but requests above the ceiling are clamped and reported.
+Task-count and active-pool limits refuse admission before workers are constructed.
+Depth tiers may only narrow a type's declared tools and finite model ceiling; a
+widening or unknown type is a configuration error. See
+[subagent routing and governance](subagents.md#depth-and-fan-out-governance) for
+examples and reporting details. See [subagent routing](subagents.md#memory-and-provider-calls)
+for the complete precedence rules.
+
+The pool limits bound each invocation: worker count and concurrency control
+admission, while tool-call, model-iteration, and aggregate-token ceilings are
+counted across all workers. `max_total_time_s` triggers the stop policy after
+the elapsed wall-clock threshold; it is not a hard completion deadline because
+`drain` lets active workers wind down and `abort` may use the configured cleanup
+grace period. Count limits are crossed when an event would exceed them (the
+configured number is permitted). When a budget is crossed, `on_budget_exceeded`
+applies the pool's stop policy: `drain` lets active workers finish and prevents
+queued work from starting; `abort` cancels active workers. A budget-limited
+result is not stored as a successful resume-cache entry. `stop_grace_s` bounds
+how long the pool waits for cancelled-worker cleanup before recording an
+overrun; zero requests immediate cancellation. See the
+[subagent guide](subagents.md#concurrency-timeout-and-failure-semantics) for
+partial-result, retry, and reporting behavior.
 
 ## Tools and MCP
 
@@ -553,7 +621,7 @@ reader.
 | A secret ends up in the file | A literal value was used instead of an environment reference | Use `--set-secret section.key=ENV_VAR`; the value is read from the environment, never stored |
 | Validation passes but a value is still wrong | Validation checks the schema, not your intent | `config validate` confirms syntax and known keys; `config show` (or `config profiles`) shows what actually resolved |
 | The wrong config file is read | A relative path or a different project root | Pass `--config PATH`, and confirm with the `path` field of `agenthicc mcp list --json` |
-| A section is ignored | The section name is not one of the recognised ones | Real sections: `execution`, `providers`, `behaviour`, `tools`, `memory.context_windows`, `security`, `plugins`, `skills`, `agents`, `loops`, `background`, `workflows.<name>` |
+| A section is ignored | The section name is not one of the recognised ones | Real sections: `execution`, `providers`, `behaviour`, `tools`, `memory.context_windows`, `security`, `plugins`, `skills`, `agents`, `subagents`, `loops`, `background`, `workflows.<name>` |
 | A `[behavior]` section has no effect | The real key is spelled `behaviour` with a British `-our` | Rename the section. This is a config key, not prose, so it must stay byte-accurate in every example |
 | A profile is not applied | Profiles select a bundle of execution settings | List them with `agenthicc config profiles`, then select one with `[execution] profile` |
 | A new config file is needed | None exists or it was moved | `agenthicc config init` creates one; `--force` overwrites, so inspect first |

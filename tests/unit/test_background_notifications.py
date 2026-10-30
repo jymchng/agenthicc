@@ -5,7 +5,9 @@ import hmac
 import json
 import sqlite3
 import time
+from datetime import datetime
 from pathlib import Path
+from typing import ClassVar, Self
 
 import pytest
 
@@ -14,8 +16,8 @@ from agenthicc.background.notifications import (
     BackgroundNotificationCoordinator,
     BackgroundNotificationOutbox,
     NotificationDelivery,
-    _PolicyResolver,
     _backoff,
+    _PolicyResolver,
     _post_webhook,
     _send_local_notification,
     build_notification_descriptor,
@@ -38,11 +40,9 @@ def _webhook_settings(**overrides: object) -> BackgroundNotificationSettings:
                 "url": "https://hooks.example.test/agenthicc",
                 "secret_env": "AGENTHICC_WEBHOOK_SECRET",
                 "events": [
-                    "completed",
-                    "failed",
-                    "waiting_input",
-                    "waiting_approval",
-                    "recovery_required",
+                    "agent_finished",
+                    "agent_failed",
+                    "agent_needs_input",
                 ],
             }
         ]
@@ -73,7 +73,7 @@ def _session(
 def _descriptor(
     event_id: str = "evt_123",
     *,
-    event_type: str = "completed",
+    event_type: str = "agent_finished",
     destinations: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     return {
@@ -85,7 +85,7 @@ def _descriptor(
             "session_id": "session-a",
             "run_id": "run-a",
             "workspace": "private-project",
-            "state": "completed" if event_type == "completed" else event_type,
+            "state": "completed" if event_type == "agent_finished" else event_type,
             "event_time": 42.5,
             "summary": "Background run completed.",
         },
@@ -140,11 +140,9 @@ def test_notifications_are_opt_in_and_configuration_is_validated() -> None:
     configured = _webhook_settings()
     assert configured.enabled
     assert configured.webhooks[0].events == (
-        "completed",
-        "failed",
-        "waiting_input",
-        "waiting_approval",
-        "recovery_required",
+        "agent_finished",
+        "agent_failed",
+        "agent_needs_input",
     )
 
 
@@ -262,7 +260,7 @@ def test_descriptor_is_redacted_and_only_created_for_meaningful_edges() -> None:
     payload = descriptor["event"]
     assert isinstance(payload, dict)
     assert payload["event_id"].startswith("evt_")
-    assert payload["type"] == "completed"
+    assert payload["type"] == "agent_finished"
     assert payload["workspace"] == "private-project"
     assert payload["state"] == "completed"
     serialized = json.dumps(descriptor)
@@ -293,11 +291,11 @@ def test_descriptor_is_redacted_and_only_created_for_meaningful_edges() -> None:
 def test_descriptor_emits_all_supported_attention_states() -> None:
     settings = _webhook_settings()
     for status, event_type in (
-        (SessionStatus.WAITING_APPROVAL, "waiting_approval"),
-        (SessionStatus.WAITING_INPUT, "waiting_input"),
-        (SessionStatus.ORPHANED, "recovery_required"),
-        (SessionStatus.FAILED, "failed"),
-        (SessionStatus.COMPLETED, "completed"),
+        (SessionStatus.WAITING_APPROVAL, "agent_needs_input"),
+        (SessionStatus.WAITING_INPUT, "agent_needs_input"),
+        (SessionStatus.ORPHANED, "agent_failed"),
+        (SessionStatus.FAILED, "agent_failed"),
+        (SessionStatus.COMPLETED, "agent_finished"),
     ):
         prior = _session()
         current = prior.evolve(status=status, state_changed_at=50.0)
@@ -307,7 +305,37 @@ def test_descriptor_emits_all_supported_attention_states() -> None:
         assert isinstance(event, dict) and event["type"] == event_type
 
 
-def test_outbox_is_idempotent_and_operator_projection_hides_payload_and_target(
+def test_quiet_hours_suppress_only_local_destinations() -> None:
+    settings = _webhook_settings(
+        local_enabled=True,
+        quiet_hours={"start": "22:00", "end": "07:00"},
+    )
+    previous = _session()
+    completed = previous.evolve(status=SessionStatus.COMPLETED, state_changed_at=50.0)
+
+    quiet = build_notification_descriptor(
+        previous,
+        completed,
+        settings,
+        now=datetime(2026, 10, 29, 23, 0),
+    )
+    assert quiet is not None
+    assert [item["kind"] for item in quiet["destinations"]] == ["webhook"]  # type: ignore[index]
+
+    awake = build_notification_descriptor(
+        previous,
+        completed,
+        settings,
+        now=datetime(2026, 10, 29, 7, 0),
+    )
+    assert awake is not None
+    assert [item["kind"] for item in awake["destinations"]] == [  # type: ignore[index]
+        "local",
+        "webhook",
+    ]
+
+
+def test_outbox_enqueue_is_idempotent_and_redacts_delivery_secrets(
     tmp_path: Path,
 ) -> None:
     outbox = BackgroundNotificationOutbox(tmp_path)
@@ -448,9 +476,9 @@ async def test_signed_webhook_headers_cover_timestamp_and_exact_payload(
 
     class Response:
         status = 202
-        headers: dict[str, str] = {}
+        headers: ClassVar[dict[str, str]] = {}
 
-        async def __aenter__(self) -> Response:
+        async def __aenter__(self) -> Self:
             return self
 
         async def __aexit__(self, *_args: object) -> None:
@@ -463,7 +491,7 @@ async def test_signed_webhook_headers_cover_timestamp_and_exact_payload(
         def __init__(self, **kwargs: object) -> None:
             self.kwargs = kwargs
 
-        async def __aenter__(self) -> Client:
+        async def __aenter__(self) -> Self:
             return self
 
         async def __aexit__(self, *_args: object) -> None:
@@ -575,6 +603,30 @@ def test_local_notifications_degrade_quietly_without_a_display(
     )
 
 
+def test_local_notification_is_suppressed_while_a_tui_owns_the_terminal(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from agenthicc.background.attention import TUIAttentionLease, tui_is_active
+
+    lease = TUIAttentionLease(tmp_path)
+    lease.acquire()
+    assert tui_is_active(tmp_path)
+    try:
+        assert (
+            _send_local_notification(
+                {"workspace": "demo", "summary": "Done"},
+                "terminal",
+                background_root=tmp_path,
+            )
+            == "delivered"
+        )
+        captured = capsys.readouterr()
+        assert captured.out == captured.err == ""
+    finally:
+        lease.close()
+    assert not tui_is_active(tmp_path)
+
+
 def test_store_transition_persists_redacted_descriptor_and_reconciles_after_crash(
     tmp_path: Path,
 ) -> None:
@@ -627,7 +679,7 @@ def test_event_filters_prevent_unsubscribed_outbox_records(tmp_path: Path) -> No
                     "name": "only-failures",
                     "url": "https://hooks.example.test/agenthicc",
                     "secret_env": "AGENTHICC_WEBHOOK_FAILURES",
-                    "events": ["failed"],
+                    "events": ["agent_failed"],
                 }
             ]
         }

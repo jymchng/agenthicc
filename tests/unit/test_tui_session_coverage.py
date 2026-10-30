@@ -5,11 +5,12 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 from types import SimpleNamespace
+from typing import ClassVar
 
 import pytest
 from rich.console import Console
 
-from agenthicc.agents.registry import AgentsRegistry
+from agenthicc.agents.registry import AgentsRegistry, build_agents_registry
 from agenthicc.commands.command import Command
 from agenthicc.commands.registry import UnifiedCommandRegistry
 from agenthicc.config import AgenthiccConfig
@@ -17,9 +18,9 @@ from agenthicc.tui.conversation_store import AppState
 from agenthicc.tui.runtime import CommandBus, ModeManager, ModeRegistry, RuntimeMode
 from agenthicc.tui.runtime.commands import InterruptAgentCommand, SendMessageCommand
 from agenthicc.tui.workspace.overlay import OverlayHost
+from agenthicc.workflows.plugin import WorkflowPlugin
 from agenthicc.workflows.registry import WorkflowRegistry
 from tests.session_fakes import session_context
-from agenthicc.workflows.plugin import WorkflowPlugin
 
 pytestmark = pytest.mark.unit
 
@@ -55,7 +56,7 @@ def _make_session(
     *, initial_workflow: str | None = None
 ) -> tuple[object, SimpleNamespace, _Workspace, _Input]:
     from agenthicc.runners.tui_session import TUISession
-    from agenthicc.agents.registry import build_agents_registry
+    from agenthicc.subagents.types import DEFAULT_REGISTRY
 
     app = AppState.create()
     modes = ModeRegistry()
@@ -93,6 +94,7 @@ def _make_session(
         cmd_registry=UnifiedCommandRegistry(),
         workflow_registry=WorkflowRegistry(),
         agents_registry=build_agents_registry(load_external=False),
+        subagent_registry=DEFAULT_REGISTRY.copy(),
         mode_manager=mode_manager,
         command_bus=bus,
         session_id="tui-coverage",
@@ -230,8 +232,8 @@ async def test_tui_does_not_fall_through_to_new_workflow_when_recovery_exists() 
 
 
 def test_tui_routing_workflow_commands_and_skill_reload(monkeypatch: pytest.MonkeyPatch) -> None:
-    from agenthicc.skills.loader import SkillDef, SkillDiscoveryResult
     from agenthicc.runners import tui_session
+    from agenthicc.skills.loader import SkillDef, SkillDiscoveryResult
 
     session, ctx, _workspace, _input = _make_session()
     handled: list[str] = []
@@ -609,7 +611,7 @@ async def test_activated_custom_workflow_receives_and_answers_next_message() -> 
     class CustomWorkflow(WorkflowPlugin):
         name = "copy_website"
         description = "copy a website"
-        phases = [PhaseSpec(name="copy", next=None)]
+        phases: ClassVar[list[PhaseSpec]] = [PhaseSpec(name="copy", next=None)]
 
         @classmethod
         def build_params(cls, raw: object) -> object:
@@ -653,7 +655,7 @@ async def test_workflow_startup_failure_is_visible_when_no_agent_turn_exists() -
     class BrokenWorkflow(WorkflowPlugin):
         name = "copy_website"
         description = "copy a website"
-        phases = [PhaseSpec(name="copy", next=None)]
+        phases: ClassVar[list[PhaseSpec]] = [PhaseSpec(name="copy", next=None)]
 
         @classmethod
         def build_params(cls, raw: object) -> object:
@@ -906,17 +908,17 @@ async def test_build_session_context_fresh_and_resume_paths(
     """Exercise the real session assembly boundary without a network call."""
     from agenthicc.agents import registry as agents_registry
     from agenthicc.commands import plugin_loader
+    from agenthicc.commands.plugin_loader import CommandPluginSet
     from agenthicc.memory import journal as memory_journal
     from agenthicc.memory import layers
     from agenthicc.plugins import discovery
+    from agenthicc.plugins.discovery import PluginToolSet
     from agenthicc.runners import tui_session
+    from agenthicc.session_service import SessionService
     from agenthicc.skills import bootstrap, loader
+    from agenthicc.skills.loader import SkillDiscoveryResult
     from agenthicc.workflows import registry as workflows_registry
     from agenthicc.workflows.plugin import WorkflowPlugin
-    from agenthicc.plugins.discovery import PluginToolSet
-    from agenthicc.commands.plugin_loader import CommandPluginSet
-    from agenthicc.skills.loader import SkillDiscoveryResult
-    from agenthicc.session_service import SessionService
 
     session_root = tmp_path / "sessions"
     monkeypatch.setattr(tui_session, "_SESSIONS_DIR", session_root)

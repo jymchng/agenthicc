@@ -38,7 +38,7 @@ class PyodideFilesystemBackend(FilesystemBackend):  # type: ignore[misc]
 
     def __init__(self, root: str = "/workspace") -> None:
         try:
-            import pyodide  # noqa: F401
+            import pyodide
         except ImportError:
             raise ImportError("PyodideFilesystemBackend requires Pyodide environment") from None
 

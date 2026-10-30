@@ -1112,22 +1112,28 @@ async def _run_direct_turn(
         raise RuntimeError("No LLM configured for background session")
     app_state = session.app_state
     cfg = session.cfg
+    from agenthicc.agents.selection import turn_agent
+
+    # The session's primary agent (AGX-09); an unavailable one fails the turn.
+    agent = turn_agent(session.agents_registry, app_state.agent(), cfg)
     await _run_agent_turn(
         request.intent,
         agent_runner,
         session.processor,
         session_memory=session.session_memory,
         conversation_id=str(session.session_id),
-        max_agent_turns=cfg.execution.max_agent_turns,
+        max_agent_turns=agent.max_agent_turns,
         conv_store=app_state.conversation,
         app_state=app_state,
-        exec_cfg=cfg.execution,
+        exec_cfg=agent.exec_cfg,
         skills=session.skills,
-        skill_permissions=cfg.agents.skill_permissions_for("default"),
+        skill_permissions=cfg.agents.skill_permissions_for(agent.spec.name),
         mention_cache=session.mention_cache,
         project_plugin_tools=list(getattr(session.project_plugins, "all_tools", ())),
         mcp_registry=session.mcp_registry,
-        active_agent="default",
+        subagent_registry=session.subagent_registry,
+        active_agent=agent.spec.name,
+        agent_spec=agent.spec,
         completed_turns=0,
         approval_svc=session.approval_svc,
         workspace_access=session.workspace_access,
@@ -1185,6 +1191,9 @@ def _assess_direct_turn_recovery(
             WorkflowRecoveryCoordinator,
         )
 
+        config = _request_attribute(session, "cfg", None)
+        execution = _request_attribute(config, "execution", None)
+        profile = _request_attribute(execution, "profile", "")
         registry = _request_attribute(session, "workflow_registry", None)
         workspace_scope = _request_attribute(session, "workspace_scope", None)
         workspace_root = _request_attribute(workspace_scope, "primary_root", "")
@@ -1194,6 +1203,7 @@ def _assess_direct_turn_recovery(
             ).inspect(
                 workflow_registry=cast("WorkflowRegistry | None", registry),
                 conversation=cast("SessionConversation | None", conversation),
+                provider_profile=str(profile or ""),
                 workspace_root=str(workspace_root or ""),
             )
             recoverable_run_ids = [record.run_id for record in records if record.recoverable]
@@ -1430,6 +1440,7 @@ async def _handle_background_workflow_command(
     subcommand = parts[0] if parts else ""
     registry = session.workflow_registry
     conversation = session.session_conversation
+    profile = str(session.cfg.execution.profile or "")
     workspace_scope = session.workspace_scope
     workspace_root = str(workspace_scope.primary_root or "") if workspace_scope else ""
 
@@ -1464,6 +1475,7 @@ async def _handle_background_workflow_command(
             records = coordinator.inspect(
                 workflow_registry=registry,
                 conversation=conversation,
+                provider_profile=profile,
                 workspace_root=workspace_root,
                 include_terminal=include_terminal,
             )
@@ -1584,35 +1596,8 @@ async def _handle_background_workflow_command(
             )
 
         if subcommand == "resume":
-            run_id: str | None = None
-            profile_override: str | None = None
-            index = 1
-            while index < len(parts):
-                part = parts[index]
-                if part == "--profile" and index + 1 < len(parts):
-                    if profile_override is not None:
-                        return _BackgroundWorkflowCommandResult(
-                            error="Usage: /workflow resume [run-id] [--profile <name|none>]"
-                        )
-                    raw_profile = parts[index + 1]
-                    profile_override = "" if raw_profile.casefold() == "none" else raw_profile
-                    index += 2
-                    continue
-                if part.startswith("--profile=") and profile_override is None:
-                    raw_profile = part.partition("=")[2]
-                    if not raw_profile:
-                        return _BackgroundWorkflowCommandResult(
-                            error="Usage: /workflow resume [run-id] [--profile <name|none>]"
-                        )
-                    profile_override = "" if raw_profile.casefold() == "none" else raw_profile
-                    index += 1
-                    continue
-                if part.startswith("-") or run_id is not None:
-                    return _BackgroundWorkflowCommandResult(
-                        error="Usage: /workflow resume [run-id] [--profile <name|none>]"
-                    )
-                run_id = part
-                index += 1
+            if len(parts) > 2:
+                return _BackgroundWorkflowCommandResult(error="Usage: /workflow resume [run-id]")
             if conversation is None:
                 return _BackgroundWorkflowCommandResult(
                     error="Workflow resume requires the durable session conversation.",
@@ -1620,14 +1605,15 @@ async def _handle_background_workflow_command(
                 )
             coordinator = WorkflowRecoveryCoordinator(session.session_id)
             try:
-                if run_id is not None:
-                    record, error = find_run_record(run_id, include_terminal=False)
+                if len(parts) == 2:
+                    record, error = find_run_record(parts[1], include_terminal=False)
                     if error:
                         return _BackgroundWorkflowCommandResult(error=error)
                 else:
                     record = coordinator.select_latest_for_resume(
                         workflow_registry=registry,
                         conversation=conversation,
+                        provider_profile=profile,
                         workspace_root=workspace_root,
                     )
             except Exception as exc:  # noqa: BLE001
@@ -1700,23 +1686,13 @@ async def _handle_background_workflow_command(
                 return _BackgroundWorkflowCommandResult(
                     error="The selected workflow checkpoint has no resumable intent."
                 )
-            if profile_override is None:
-                result = await execute_workflow(
-                    session,
-                    workflow_name,
-                    intent,
-                    resume_run_id=record.run_id,
-                    resume_plan=input_resume_plan,
-                )
-            else:
-                result = await execute_workflow(
-                    session,
-                    workflow_name,
-                    intent,
-                    resume_run_id=record.run_id,
-                    resume_plan=input_resume_plan,
-                    profile_override=profile_override,
-                )
+            result = await execute_workflow(
+                session,
+                workflow_name,
+                intent,
+                resume_run_id=record.run_id,
+                resume_plan=input_resume_plan,
+            )
             # The workflow resume may have completed the exact interrupted
             # journal turn. Re-fold the authoritative journal before deciding
             # whether deferred ordinary input can be delivered.

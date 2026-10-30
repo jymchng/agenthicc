@@ -67,7 +67,7 @@ def test_background_completion_delivers_local_notification_in_sender_process(
     notice_args = json.loads(receipt_file.read_text(encoding="utf-8"))
     rendered = json.dumps(notice_args)
     assert "example-workspace" in rendered
-    assert "Background run completed." in rendered
+    assert "Background agent finished." in rendered
     assert "Sensitive session title" not in rendered
     assert "sensitive prompt" not in rendered
     assert store.get("e2e-notification-session").status is SessionStatus.COMPLETED

@@ -1,6 +1,6 @@
 ---
 title: "SUBAGENT-03: Structured result contracts and schema-validated findings"
-status: Proposed
+status: Implemented (2026-10-30)
 version: 0.1.0
 date: 2026-10-29
 scope: "the optional per-type contract a worker's result value must satisfy, how that value is delivered and validated, and what failure means when it does not conform"
@@ -18,6 +18,18 @@ tags:
 ---
 
 # SUBAGENT-03: Structured result contracts and schema-validated findings
+
+## Implementation status (2026-10-30)
+
+Implemented: bounded JSON Schema definition parsing, contract-specific
+`submit_subagent_result`, projection/validation/rendering with typed failure
+codes, structured result envelopes through aggregation and journal/cache paths,
+schema-sensitive fingerprints, active-schema cache revalidation, and secret
+redaction before delivery and persistence. Types without `output:` retain their
+prose and tool-summary behavior.
+
+Focused evidence: the SUBAGENT-03 unit and integration suites passed (154 tests);
+Ruff check/format, mypy, strict MkDocs build, and `nox -s llms_check` passed.
 
 ## 1. Executive summary
 

@@ -139,7 +139,7 @@ def make_replay_stub(original: ToolLike, log: ReplayToolLog) -> ToolLike:
     _replayed.__doc__ = getattr(original, "__doc__", None)
     _replayed.__module__ = getattr(original, "__module__", __name__)
     _replayed.__annotations__ = dict(hints)
-    setattr(_replayed, "__signature__", signature)  # noqa: B010 — functions accept the attribute; mypy does not model it
+    setattr(_replayed, "__signature__", signature)
 
     stub = _tool(
         name=name,

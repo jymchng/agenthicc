@@ -103,6 +103,9 @@ async def test_unified_input_trigger_overlay_and_interactive_loop(
     assert sent == ["/x"]
 
     class Backend:
+        def __init__(self) -> None:
+            self.reporting: list[dict[str, bool | None]] = []
+
         def is_interactive(self) -> bool:
             return True
 
@@ -116,11 +119,16 @@ async def test_unified_input_trigger_overlay_and_interactive_loop(
 
             return Raw()
 
+        def set_reporting(self, *, focus: bool | None = None, mouse: bool | None = None) -> None:
+            self.reporting.append({"focus": focus, "mouse": mouse})
+
         def read_key(self) -> tuple[Key, str]:
             return Key.CTRL_C, ""
 
-    monkeypatch.setattr("agenthicc.tui.terminal.backend.get_backend", lambda: Backend())
+    backend = Backend()
+    monkeypatch.setattr("agenthicc.tui.terminal.backend.get_backend", lambda: backend)
     await session.run()
+    assert backend.reporting == [{"focus": True, "mouse": False}]
 
 
 def test_trigger_handlers_and_picker_navigation(tmp_path: Path) -> None:

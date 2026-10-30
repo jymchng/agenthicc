@@ -219,68 +219,54 @@ def build_safe_mode(
     )
 
 
-def build_plan_mode(
+def builtin_mode(
+    name: str,
     *,
     default_workflow: str | None = None,
     workflows: tuple[str, ...] = (),
 ) -> RuntimeMode:
-    """Return the canonical Plan policy for a default-state boundary."""
-    return RuntimeMode(
-        name="Plan",
-        badge="◈",
-        color="yellow",
-        description="Read-only planning; side-effecting actions are hard-blocked.",
-        system_prompt_suffix=(
-            "## PLAN MODE\n"
-            "You are operating in PLAN MODE. You MUST NOT write files, execute "
-            "commands, or make changes to the filesystem or repository. Analyse "
-            "the request and produce a structured action plan."
-        ),
-        blocked_capabilities=_restricted_capabilities(),
-        default_workflow=default_workflow,
-        workflows=workflows,
-    )
+    """The canonical Safe, Plan or Yolo mode, without loading mode plugins."""
+    if name == "Safe":
+        return build_safe_mode(default_workflow=default_workflow, workflows=workflows)
+    if name == "Plan":
+        return RuntimeMode(
+            name="Plan",
+            badge="◈",
+            color="yellow",
+            description="Read-only planning; side-effecting actions are hard-blocked.",
+            system_prompt_suffix=(
+                "## PLAN MODE\n"
+                "You are operating in PLAN MODE. You MUST NOT write files, execute "
+                "commands, or make changes to the filesystem or repository. Analyse "
+                "the request and produce a structured action plan."
+            ),
+            blocked_capabilities=_restricted_capabilities(),
+            default_workflow=default_workflow,
+            workflows=workflows,
+        )
+    if name == "Yolo":
+        return RuntimeMode(
+            name="Yolo",
+            badge="⏵⏵",
+            color="green",
+            description="Full automatic mode; all tools are allowed without prompts.",
+            default_workflow=default_workflow,
+            workflows=workflows,
+        )
+    raise ValueError(f"{name!r} is not a built-in mode (Safe, Plan or Yolo)")
 
 
-def build_yolo_mode(
-    *,
-    default_workflow: str | None = None,
-    workflows: tuple[str, ...] = (),
-) -> RuntimeMode:
-    """Return the canonical Yolo policy for a default-state boundary."""
-    return RuntimeMode(
-        name="Yolo",
-        badge="⏵⏵",
-        color="green",
-        description="Full automatic mode; all tools are allowed without prompts.",
-        default_workflow=default_workflow,
-        workflows=workflows,
-    )
+def restrict_mode(mode: RuntimeMode, ceiling: RuntimeMode) -> RuntimeMode:
+    """*mode* restricted by *ceiling*: neither one's blocks or approvals are lost.
 
-
-def builtin_mode(name: str) -> RuntimeMode:
-    """Return a canonical selectable built-in mode without loading plugins."""
-    canonical = canonical_mode_name(name)
-    if canonical == "Safe":
-        return build_safe_mode()
-    if canonical == "Plan":
-        return build_plan_mode()
-    if canonical == "Yolo":
-        return build_yolo_mode()
-    raise UnknownModeError(name, SELECTABLE_MODE_NAMES)
-
-
-def restrict_mode(active: RuntimeMode, ceiling: RuntimeMode) -> RuntimeMode:
-    """Intersect two mode policies, preserving the active mode's identity."""
-    blocked = active.blocked_capabilities | ceiling.blocked_capabilities
-    approval_required = (active.approval_required | ceiling.approval_required) - blocked
-    if blocked == active.blocked_capabilities and approval_required == active.approval_required:
-        return active
-    return replace(
-        active,
-        blocked_capabilities=blocked,
-        approval_required=approval_required,
-    )
+    A ceiling never widens a mode (AGX-09): what either blocks is blocked, and
+    what either requires approval for (and neither blocks) needs approval.
+    """
+    blocked = frozenset(mode.blocked_capabilities) | frozenset(ceiling.blocked_capabilities)
+    approval = (frozenset(mode.approval_required) | frozenset(ceiling.approval_required)) - blocked
+    if blocked == mode.blocked_capabilities and approval == mode.approval_required:
+        return mode
+    return replace(mode, blocked_capabilities=blocked, approval_required=approval)
 
 
 def build_default_registry(
@@ -307,13 +293,15 @@ def build_default_registry(
         )
     )
     registry.register(
-        build_plan_mode(
+        builtin_mode(
+            "Plan",
             default_workflow=defaults.get("Plan"),
             workflows=tuple(available.get("Plan", [])),
         )
     )
     registry.register(
-        build_yolo_mode(
+        builtin_mode(
+            "Yolo",
             default_workflow=defaults.get("Yolo"),
             workflows=tuple(available.get("Yolo", [])),
         )

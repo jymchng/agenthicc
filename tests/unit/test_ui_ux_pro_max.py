@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Sequence
 from pathlib import Path
 from types import MethodType, SimpleNamespace
 
@@ -19,8 +20,8 @@ from agenthicc.workflows.ui_ux_pro_max.definition import UiUxProMax, UiUxProMaxP
 from agenthicc.workflows.ui_ux_pro_max.phase_tools import (
     make_design_acceptance_tools,
     make_design_research_tools,
-    make_design_system_synthesis_tools,
     make_design_system_review_tools,
+    make_design_system_synthesis_tools,
     make_experience_architecture_tools,
     make_product_discovery_tools,
     make_stack_adaptation_tools,
@@ -40,11 +41,11 @@ from agenthicc.workflows.ui_ux_pro_max.state import (
 pytestmark = pytest.mark.unit
 
 
-def _tool_map(tools: list[object]) -> dict[str, object]:
+def _tool_map(tools: Sequence[object]) -> dict[str, object]:
     return {tool.__name__: tool for tool in tools}  # type: ignore[attr-defined]
 
 
-async def _call(tools: list[object], name: str, **kwargs: object) -> object:
+async def _call(tools: Sequence[object], name: str, **kwargs: object) -> object:
     function = _tool_map(tools)[name]
     assert callable(function)
     return await function(**kwargs)
@@ -333,6 +334,73 @@ async def test_implementation_provider_failure_keeps_exact_phase_cursor(tmp_path
             runner._implementation_tools(),
             "complete_design_implementation",
         )
+    assert context.state is UiUxProMaxState.DESIGN_IMPLEMENTATION
+    assert context.phase_attempts["design_implementation"] == 1
+
+
+@pytest.mark.asyncio
+async def test_phase_continues_when_a_turn_ends_without_its_transition_tool(
+    tmp_path: Path,
+) -> None:
+    runner = _make_runner(tmp_path)
+    context = UiUxProMaxContext(intent="Implement the approved component", run_id="implementation")
+    tools = runner._implementation_tools()
+    calls: list[str] = []
+
+    async def finish_on_retry(self: UiUxProMaxRunner, **kwargs: object) -> None:
+        text = kwargs.get("text")
+        calls.append(text if isinstance(text, str) else "")
+        if len(calls) == 2:
+            result = await _call(
+                tools,
+                "complete_design_implementation",
+                summary="Implemented the approved component and its empty state.",
+                modified_files=["src/component.tsx"],
+                implemented_components=["AlertList"],
+                implemented_states=["empty"],
+                design_deviations=[],
+                deviation_reasons=[],
+                remaining_work=[],
+            )
+            assert result["ok"] is True  # type: ignore[index]
+
+    runner.run_phase = MethodType(finish_on_retry, runner)  # type: ignore[method-assign]
+    result = await runner._run_phase(
+        context,
+        "design_implementation",
+        "Implement the approved changes.",
+        tools,
+        "complete_design_implementation",
+    )
+
+    assert len(calls) == 2
+    assert calls[0] == "Implement the approved changes."
+    assert "Continue from the existing conversation" in calls[1]
+    assert result["decision"] == "complete_design_implementation"
+    assert result["modified_files"] == ["src/component.tsx"]
+
+
+@pytest.mark.asyncio
+async def test_phase_fails_after_bounded_missing_transition_retries(tmp_path: Path) -> None:
+    runner = _make_runner(tmp_path)
+    context = UiUxProMaxContext(intent="Implement the approved component", run_id="implementation")
+    calls: list[str] = []
+
+    async def no_transition(self: UiUxProMaxRunner, **kwargs: object) -> None:
+        text = kwargs.get("text")
+        calls.append(text if isinstance(text, str) else "")
+
+    runner.run_phase = MethodType(no_transition, runner)  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError, match="complete_design_implementation.*3 attempts"):
+        await runner._run_phase(
+            context,
+            "design_implementation",
+            "Implement the approved changes.",
+            runner._implementation_tools(),
+            "complete_design_implementation",
+        )
+
+    assert len(calls) == 3
     assert context.state is UiUxProMaxState.DESIGN_IMPLEMENTATION
     assert context.phase_attempts["design_implementation"] == 1
 

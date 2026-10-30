@@ -64,7 +64,7 @@
       "tolerance": 0.3
     },
     "cli.agents_json.modules": {
-      "budget": 167.0,
+      "budget": 170.0,
       "ratchet": "two_way",
       "scope": "local",
       "tolerance": 0

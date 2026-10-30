@@ -122,7 +122,12 @@ Model override keys are `<phase>_model` for `product_discovery`,
 `design_system_synthesis`, `design_system_review`, `stack_adaptation`,
 `experience_architecture`, `design_implementation`, `visual_ux_audit`,
 `design_remediation`, `design_acceptance`, and `delivery`. Empty values use the
-session model. Phase transitions are tool-call gated. The typed checkpoint
+session model. Phase transitions are tool-call gated. If an agent turn ends
+without its phase transition tool, the runner continues the same phase with the
+shared conversation and session memory for up to three bounded attempts,
+reminding the agent to finish without repeating completed work. If all attempts
+end without a transition, the phase remains the resume cursor and the workflow
+reports the expected transition tool so it can be resumed. The typed checkpoint
 stores bounded phase state and artifact references, not full research reports
 or source files; the existing workflow checkpoint/resume mechanism remains the
 source of durable execution state.

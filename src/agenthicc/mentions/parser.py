@@ -29,8 +29,11 @@ class MentionKind(str, Enum):
     AGENT = "agent"
 
 
-#: ``@agent:NAME`` invokes a subagent definition instead of reading a file.
+#: ``@agent:NAME`` invokes a subagent definition instead of reading a file
+#: (AGX-09 §5.3); the mention's ``path`` is the definition name.
 AGENT_PREFIX = "agent:"
+# The definition-name rule of ``agents.definitions`` (a unit test keeps the
+# two equal); the parser stays free of the agents package on every message.
 _AGENT_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
 
@@ -214,19 +217,25 @@ def _scan_token_end(text: str, start: int) -> int:
 
 def _agent_name(token: str) -> str | None:
     """The definition name of an ``agent:NAME`` token, without prose punctuation."""
+
     if not token.startswith(AGENT_PREFIX):
         return None
     name = token[len(AGENT_PREFIX) :].rstrip("".join(_TRAILING_SENTENCE_PUNCTUATION))
-    return name if _AGENT_NAME_RE.fullmatch(name) else None
+    return name if _AGENT_NAME_RE.match(name) else None
 
 
 def agent_mentions(text: str) -> list[Mention]:
-    """Find ``@agent:NAME`` mentions without filesystem access."""
+    """The ``@agent:NAME`` mentions in *text*, in order, without filesystem access.
+
+    The boundary and Markdown-code rules are those of :func:`parse_mentions`,
+    so the two never disagree about which tokens invoke an agent.
+    """
+
     found: list[Mention] = []
     protected_ranges = _markdown_code_ranges(text)
     protected_index = 0
     index = text.find("@")
-    while index >= 0:
+    while 0 <= index < len(text):
         protected, next_index, protected_index = _protected_range_at(
             index, protected_ranges, protected_index
         )
@@ -402,7 +411,8 @@ def parse_mentions(
 
     Returns:
         Ordered list of Mention objects.  Markdown code spans and fenced code
-        blocks are treated as literal text.
+        blocks are treated as literal text.  ``@agent:NAME`` tokens are
+        :attr:`MentionKind.AGENT` mentions and never touch the filesystem.
     """
 
     base = (cwd or Path.cwd()).resolve()

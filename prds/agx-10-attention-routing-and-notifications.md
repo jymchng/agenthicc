@@ -1,6 +1,6 @@
 ---
 title: "AGX-10: Attention routing — badges, notifications and cross-session approvals"
-status: Proposed
+status: Implemented
 version: 0.1.0
 date: 2026-10-23
 repository: jymchng/agenthicc
@@ -9,6 +9,23 @@ series: AGX
 related_prds: [agx-00, agx-05, agx-06, agx-07, agx-08, agx-13, prd-144, prd-165, prd-226, prd-227]
 tags: [agents, notifications, approvals, tui, ux]
 ---
+
+## Implementation status (2026-10-29)
+
+Implemented in the reactive TUI and background notification dispatcher.
+
+- Registry and inbox changes update cross-session badges, the temporary agents
+  hint, terminal title and coalesced toasts without render-path polling.
+- Ctrl+G and the empty-composer gesture open the hub on the oldest pending
+  item; a visible toast routes to its session and selects the appropriate tab.
+- The TUI attention lease prevents the detached notification sender from writing
+  directly to the terminal while the TUI owns it. Unfocused terminal
+  notifications use filtered OSC 9; desktop notifications remain available.
+- Modal deferral, coalescing, quiet hours and `/dnd` are covered, including
+  preserving badge counts while notifications are suppressed.
+- Verification: 300 focused unit, integration and E2E tests passed; full project
+  typecheck and type-audit gates passed; focused Ruff checks passed; strict docs
+  build and `llms_check` passed.
 
 # AGX-10 — Attention routing: badges, notifications and cross-session approvals
 

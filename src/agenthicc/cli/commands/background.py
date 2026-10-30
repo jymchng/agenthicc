@@ -9,9 +9,9 @@ from typing import TYPE_CHECKING
 
 from agenthicc.background import (
     BackgroundSession,
+    BackgroundSettings,
     BackgroundStore,
     BackgroundSupervisor,
-    BackgroundSettings,
     background_enabled,
     load_background_settings,
 )

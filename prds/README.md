@@ -119,10 +119,6 @@ against the current source before implementing them.
 - [PRD-248 — Make Workflow Recovery Context-Identity Checks Schema-Aware (implemented)](prd-248-workflow-context-identity-semantics.md)
 - [PRD-249 — Resolve Workflow Checkpoint Phases Through Typed Context Semantics (proposed)](prd-249-workflow-phase-cursor-context-state-semantics.md)
 - [PRD-250 — Code Quality Evaluation and Improvement Programme (in progress: WS-1, WS-2 and WS-3.1–3.3 implemented)](prd-250-code-quality-evaluation-and-improvement-programme.md)
-- [PRD-251 — Provider-Profile-Aware Workflow Resume (implemented)](prd-251-provider-profile-aware-workflow-resume.md)
-- [PRD-252 — `make_book` Chart Clarity, Chapter Voice, and Punctuation (implemented)](prd-252-make-book-chart-clarity-and-chapter-voice.md)
-- [PRD-253 — Preserve Timestamped `make_book` Build Outputs (implemented)](prd-253-make-book-preserve-timestamped-build-outputs.md)
-- [PRD-254 — Recover Background Registry Schema Before `/detach` (implemented)](prd-254-recover-background-index-schema-on-detach.md)
 
 ### AGX series — Agents experience (in progress)
 
@@ -146,35 +142,6 @@ the roadmap; the others each own one improvement.
 - [AGX-12 — Agent-turn hot path: copy-on-write memory and incremental validation (implemented: agenthicc side)](agx-12-agent-turn-hot-path.md)
 - [AGX-13 — Unified keymap, generated help, mouse and accessibility (implemented)](agx-13-unified-keymap-and-accessibility.md)
 - [AGX-14 — CPU-time performance budgets in CI and perf diagnostics](agx-14-performance-budgets-and-diagnostics.md)
-
-### SUBAGENT series — Subagent capability expansion (proposed)
-
-The SUBAGENT PRDs (prefix `SUBAGENT-`, separate from the numbered sequence) come
-from an evidence-based comparison of six coding-agent harnesses: Grok CLI,
-Claude Code, Codex CLI, opencode, the DeepSeek Harness and Qoder CLI. The
-unnumbered research report holds the agenthicc baseline, the comparison, the
-locked capability taxonomy and the house-format contract these documents follow;
-the nine numbered PRDs each own exactly one locked area, `A-1` to `A-9`, and no
-PRD exists without an area. The report labels each harness's evidence depth — a
-cloned repository, design notes, or vendor documentation only — rather than
-presenting a docs-only reading as verified behaviour.
-
-All eleven documents are `Proposed` or `Historical`; none is implemented. Each
-PRD opens with the current agenthicc source at a pinned commit and states which
-existing PRD it extends, narrows or supersedes; the closing record holds the
-series' coverage and scope audit.
-
-- [SUBAGENT research — How coding-agent harnesses manage subagents and their tools (historical)](SUBAGENT-research-harness-comparison.md)
-- [SUBAGENT-01 — Declarative subagent type definitions and discovery (proposed)](SUBAGENT-01-declarative-subagent-types.md)
-- [SUBAGENT-02 — Per-type model, reasoning-effort and context routing (proposed)](SUBAGENT-02-per-type-model-and-context-routing.md)
-- [SUBAGENT-03 — Structured result contracts and schema-validated findings (proposed)](SUBAGENT-03-structured-result-contracts.md)
-- [SUBAGENT-04 — Nesting depth and fan-out governance (proposed)](SUBAGENT-04-nesting-depth-and-fan-out.md)
-- [SUBAGENT-05 — Per-type permission narrowing (proposed)](SUBAGENT-05-per-type-permission-narrowing.md)
-- [SUBAGENT-06 — Pool budgets and limits (proposed)](SUBAGENT-06-pool-budgets-and-limits.md)
-- [SUBAGENT-07 — Background and non-blocking orchestration (proposed)](SUBAGENT-07-background-orchestration.md)
-- [SUBAGENT-08 — Worker lifecycle controls (proposed)](SUBAGENT-08-worker-lifecycle-controls.md)
-- [SUBAGENT-09 — Observability and the transcript/event contract (proposed)](SUBAGENT-09-observability-and-transcript-contract.md)
-- [SUBAGENT audit — Final coverage and scope audit (historical)](SUBAGENT-series-audit.md)
 
 ### PRD-220–239 — OpenCode, Claude Code, and Codex feature study
 
@@ -666,32 +633,6 @@ ID supplied during implementation showed a separate `goal_flow` cancellation
 in its readable event projection and did not reproduce this identity error;
 the PRD records that evidence limitation rather than attributing the bug to
 that session.
-
-PRD-252 is implemented: both the asset and chapter prompts forbid Matplotlib
-legends, annotations, callouts, and floating data-label overlays while keeping
-axis/category labels readable; chapter prompts consistently require natural
-first-person “I”, direct “you”/“your” voice, and varied connective phrases.
-Chapter, front-matter, and back-matter prompts ban em dashes in generated
-Markdown. Static metadata and live phase prompts share the same policy text.
-Prompt-contract tests cover the static metadata and runtime prompt paths; the
-make_book unit/integration/E2E suites passed (20 tests), and Ruff, mypy, and
-the strict docs build passed. See
-[PRD-252](prd-252-make-book-chart-clarity-and-chapter-voice.md).
-
-PRD-253 is implemented: the compile prompt explicitly requires unique
-timestamped deliverables and forbids pruning or overwriting prior `dist/`
-outputs. The generated builder defaults to collision-safe microsecond-stamped
-names, and the completion gate distinguishes the current output pair from
-historical builds while checking that older files remain unchanged. See
-[PRD-253](prd-253-make-book-preserve-timestamped-build-outputs.md).
-
-PRD-254 fixes `/detach` failures caused by an existing background SQLite index
-whose `sessions` table lacks `idempotency_key`. The index validates actual
-schema shape, transactionally migrates and backfills the known additive column,
-and rebuilds unsupported layouts from the authoritative event log. Unit,
-multiprocess, and real detach/resume regression tests cover migration recovery.
-See
-[PRD-254](prd-254-recover-background-index-schema-on-detach.md).
 
 PRD-218 fixes foreground `/detach` when the prior background attempt is
 completed. It reactivates the same session for eligible work, preserves the

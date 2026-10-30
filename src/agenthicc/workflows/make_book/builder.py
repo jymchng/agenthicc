@@ -319,15 +319,25 @@ def postprocess_tex(path: Path, image_map: dict[str, str] | None = None) -> None
         "\\frontmatter\n\\tableofcontents\n\\mainmatter\n",
         1,
     )
-    # Tables need no clamping: Pandoc emits every table as a longtable whose
-    # columns are already fractions of \linewidth, so a table cannot overflow
-    # the content width, and longtable breaks a tall table across pages rather
-    # than overflowing one.  Boxing a longtable in adjustbox (the previous
-    # behaviour here) is invalid LaTeX, because the environment must be
-    # terminated by \end{{longtable}} before any enclosing box closes; it failed
-    # with "Paragraph ended before \LT@array was complete" and left a
-    # truncated PDF.  Table size is therefore bounded at the source: the
-    # layout gate keeps every table within 6.175in wide and 8.05in tall.
+    longtable_open = re.compile(r"(\\begin\\{{longtable\\}}[^\n]*\n)")
+    source = longtable_open.sub(
+        lambda match: (
+            match.group(1)
+            + "\n"
+            + r"\begin{{adjustbox}}{{max width=0.95\textwidth, max height=0.7\paperheight, center}}"
+            + r"\begingroup\small"
+            + "\n"
+        ),
+        source,
+    )
+    source = source.replace(
+        r"\end{{longtable}}",
+        r"\endgroup"
+        + "\n"
+        + r"\end{{adjustbox}}"
+        + "\n"
+        + r"\end{{longtable}}",
+    )
     if image_map:
         image_pattern = re.compile(r"(\\includegraphics(?:\[[^]]*\])?\{{)([^}}]+)(\}})")
 
@@ -487,13 +497,8 @@ def attach_cover(pdf_path: Path) -> Path:
 
 
 def default_output() -> Path:
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
-    output = ROOT / "dist" / f"{{SLUG}} {{stamp}}.pdf"
-    collision = 1
-    while output.exists() or output.with_suffix(".epub").exists():
-        output = ROOT / "dist" / f"{{SLUG}} {{stamp}}-{{collision}}.pdf"
-        collision += 1
-    return output
+    stamp = datetime.now().strftime("%d %b %Y %H%M")
+    return ROOT / "dist" / f"{{SLUG}} {{stamp}}.pdf"
 
 
 def build(output: Path, *, keep_intermediates: bool = False) -> Path:

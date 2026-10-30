@@ -670,6 +670,7 @@ class WorkflowRunner(BaseWorkflowRunner):
             "next_queued_message": self._cfg.next_queued_message,
             "usage_ledger": self._cfg.usage_ledger,
             "browser_manager": self._cfg.browser_manager,
+            "subagent_registry": self._cfg.subagent_registry,
             "system_prompt_suffix": role_prompt,
             "prompt_contract": prompt_contract,
         }

@@ -1,6 +1,6 @@
 ---
 title: "AGX-08: Subagent panel and child-session navigation"
-status: Implemented (phases 1 and 2)
+status: Implemented (workspace snapshot)
 version: 0.1.0
 date: 2026-10-23
 repository: jymchng/agenthicc
@@ -12,23 +12,24 @@ tags: [subagents, tui, ux, approvals, transcripts]
 
 # AGX-08 — Subagent panel and child-session navigation
 
-## Implementation status (2026-10-30)
+## Implementation status (2026-10-29)
 
-Phases 1 and 2 are implemented in the integration branch. Phase 2 persists a
-pool's identity before workers start and the exact backgrounded tool receipt
-before returning control. The session supervises the worker task; graceful close
-records cancellation, and resume marks unfinished pools/workers interrupted
-without rerunning them. A completed, interrupted, or cancelled background
-aggregate is appended at the next non-resume turn boundary using a stable
-message ID and a durable delivery receipt, without changing the parent
-tool-result boundary.
+Phases 1 and 2 are implemented in the designated workspace snapshot; no
+agenthicc commit or push was made. Phase 2 persists the pool identity before
+workers start and the exact backgrounded tool receipt before returning control.
+A replay of that logical tool call returns the saved receipt rather than starting
+another pool. The session supervises the worker task; graceful close records
+cancellation, and resume marks unfinished pools/workers interrupted without
+rerunning them. A completed, interrupted, or cancelled background aggregate is
+appended at a direct next-turn boundary using a stable message ID and a durable
+delivery receipt, without changing the parent tool-result boundary.
 
 Evidence: `test_ctrl_b_backgrounds_a_pool_and_keeps_it_session_owned`,
 `test_session_shutdown_cancels_a_backgrounded_pool`,
 `test_background_pool_recovery_is_durable_and_does_not_rerun`, and
 `test_completed_background_subagent_is_delivered_once`. Focused verification on
-2026-10-30 passed 128 tests across the subagent, journal, keymap, and TUI session
-unit/integration files.
+2026-10-29 passed 18 subagent integration tests; the Python 3.12 unit suite
+passed 4,508 tests with 14 skips.
 
 - **Panel (§5.1).** `SubagentPool` publishes an immutable `SubagentPoolState`
   (`WorkerState` per worker: status, activity, start and finish times, tokens)
@@ -211,8 +212,8 @@ Ctrl+B while a pool runs returns control to the composer:
 4. Cancelling the session cancels the pool; resume after a crash marks unfinished
    workers `interrupted` rather than re-running them.
 
-Phase 2 changes the turn model and needs its own replay-safety review before
-implementation.
+Phase 2 changes the turn model; its replay-safety review and recovery evidence
+are recorded in the implementation status above.
 
 ## 6. Budgets and acceptance criteria
 

@@ -893,6 +893,29 @@ class ConversationJournal:
         tool_calls: list[str],
         changed_paths: list[str],
         status: Literal["completed", "failed", "cancelled", "interrupted"] | None = None,
+        error_code: str = "",
+        value: Mapping[str, object] | None = None,
+        partial: bool = False,
+        stop_reason: str = "",
+        undelivered_messages: int = 0,
+        request_id: str = "",
+        stop_mode: Literal["abort", "drain"] | None = None,
+        stop_source: str = "",
+        phase: Literal[
+            "pending",
+            "running",
+            "waiting",
+            "requested",
+            "cancelling",
+            "completed",
+            "failed",
+            "cancelled",
+            "drained",
+        ]
+        | None = None,
+        attempt: int = 1,
+        cleanup_error: str = "",
+        not_started: bool = False,
     ) -> None:
         """Persist one worker result, including its complete final text.
 
@@ -916,8 +939,32 @@ class ConversationJournal:
             "tool_calls": list(tool_calls),
             "changed_paths": list(changed_paths),
         }
+        if error_code:
+            entry["error_code"] = error_code
+        if value is not None:
+            entry["value"] = dict(value)
         if status is not None:
             entry["status"] = status
+        if partial:
+            entry["partial"] = True
+        if stop_reason:
+            entry["stop_reason"] = str(stop_reason)[:240]
+        if undelivered_messages > 0:
+            entry["undelivered_messages"] = max(0, int(undelivered_messages))
+        if request_id:
+            entry["request_id"] = str(request_id)[:128]
+        if stop_mode is not None:
+            entry["stop_mode"] = stop_mode
+        if stop_source:
+            entry["stop_source"] = str(stop_source)[:80]
+        if phase is not None:
+            entry["phase"] = phase
+        if attempt != 1:
+            entry["attempt"] = max(1, int(attempt))
+        if cleanup_error:
+            entry["cleanup_error"] = str(cleanup_error)[:240]
+        if not_started:
+            entry["not_started"] = True
         self._write(entry)
 
     def subagent_pool_result(
@@ -929,6 +976,7 @@ class ConversationJournal:
         succeeded: int,
         failed: int,
         text: str,
+        values: list[Mapping[str, object]] | None = None,
     ) -> None:
         """Persist a complete aggregate used by ``spawn_subagents`` resume.
 
@@ -936,19 +984,20 @@ class ConversationJournal:
         successful cache entries. Their individual worker records remain
         available for diagnostics without hiding failed work on resume.
         """
-        self._write(
-            {
-                "seq": self._seq,
-                "kind": "subagent_pool_result",
-                "schema_version": 1,
-                "pool_id": pool_id,
-                "fingerprint": fingerprint,
-                "total": total,
-                "succeeded": succeeded,
-                "failed": failed,
-                "text": text,
-            }
-        )
+        entry: dict[str, object] = {
+            "seq": self._seq,
+            "kind": "subagent_pool_result",
+            "schema_version": 1,
+            "pool_id": pool_id,
+            "fingerprint": fingerprint,
+            "total": total,
+            "succeeded": succeeded,
+            "failed": failed,
+            "text": text,
+        }
+        if values is not None:
+            entry["values"] = [dict(value) for value in values]
+        self._write(entry)
 
     def subagent_pool_started(
         self,
@@ -996,20 +1045,22 @@ class ConversationJournal:
         succeeded: int,
         failed: int,
         text: str,
+        values: list[Mapping[str, object]] | None = None,
     ) -> None:
         """Persist a terminal pool aggregate, including partial failures."""
-        self._write(
-            {
-                "seq": self._seq,
-                "kind": "subagent_pool_finished",
-                "schema_version": 1,
-                "pool_id": str(pool_id)[:128],
-                "total": max(0, int(total)),
-                "succeeded": max(0, int(succeeded)),
-                "failed": max(0, int(failed)),
-                "text": str(text),
-            }
-        )
+        entry: dict[str, object] = {
+            "seq": self._seq,
+            "kind": "subagent_pool_finished",
+            "schema_version": 1,
+            "pool_id": str(pool_id)[:128],
+            "total": max(0, int(total)),
+            "succeeded": max(0, int(succeeded)),
+            "failed": max(0, int(failed)),
+            "text": str(text),
+        }
+        if values is not None:
+            entry["values"] = [dict(value) for value in values]
+        self._write(entry)
 
     def subagent_pool_cancelled(self, *, pool_id: str, reason: str = "session closed") -> None:
         """Persist a graceful session cancellation and terminalize unfinished workers."""
@@ -1023,19 +1074,13 @@ class ConversationJournal:
         )
         if lifecycle is None or lifecycle.get("status") not in {"running", "backgrounded"}:
             return
-        total, succeeded, text = self._record_unfinished_subagent_workers(
-            lifecycle, f"cancelled: {reason}"
-        )
+        self._record_unfinished_subagent_workers(lifecycle, f"cancelled: {reason}")
         self._write(
             {
                 "seq": self._seq,
                 "kind": "subagent_pool_cancelled",
                 "schema_version": 1,
                 "pool_id": str(pool_id)[:128],
-                "total": total,
-                "succeeded": succeeded,
-                "failed": max(0, total - succeeded),
-                "text": text,
                 "reason": str(reason)[:256],
             }
         )

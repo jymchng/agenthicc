@@ -153,7 +153,7 @@ def test_workflow_resume_rejects_more_than_one_run_id_argument() -> None:
 
     assert session.route("/workflow resume run-a run-b") is True
     notification = ctx.app_state.conversation.notification() or ""
-    assert notification == "⚠ Usage: /workflow resume [run-id] [--profile <name|none>]"
+    assert notification == "⚠ Usage: /workflow resume [run-id]"
 
 
 def test_workflow_claim_error_is_reported_without_repeating_exception_type() -> None:
@@ -252,11 +252,6 @@ def test_resume_checkpoint_transition_failure_preserves_workflow_selection() -> 
         checkpoint_supported = True
         context = object()
         claim_owner_id = None
-        provider_profile = ""
-        provider_profile_fingerprint = ""
-        provider_profile_origin = ""
-        provider_profile_history: tuple[str, ...] = ()
-        pause_requested = False
         released = False
 
         def claim(self, owner_id: str) -> None:
@@ -264,18 +259,6 @@ def test_resume_checkpoint_transition_failure_preserves_workflow_selection() -> 
 
         def mark_resuming(self) -> None:
             self.lifecycle = "resuming"
-
-        def apply_provider_profile(
-            self,
-            profile_name: str,
-            binding_fingerprint: str,
-            *,
-            record_switch: bool,
-        ) -> None:
-            self.provider_profile = profile_name
-            self.provider_profile_fingerprint = binding_fingerprint
-            if record_switch:
-                self.provider_profile_history += (profile_name,)
 
         def persist_checkpoint(self, *, reason: str) -> None:
             assert reason == "resuming"

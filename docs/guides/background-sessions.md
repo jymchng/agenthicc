@@ -83,12 +83,6 @@ TUI reacquires that lease only after the store confirms the worker attempt is
 terminal; otherwise it exits safely so the session can be reopened with
 `agenthicc --continue`.
 
-If the background registry's authoritative event log cannot be accessed,
-`/detach` fails closed before starting a worker: it keeps foreground ownership,
-leaves the durable request and event history untouched, and asks you to restore
-registry access before retrying. The derived SQLite index is never rebuilt as
-an empty registry merely because reading the event log failed.
-
 There is an important ordering detail in the current implementation: step 4
 requests cancellation, but does not await the agent task before steps 5–6
 release ownership and launch the worker. TUI teardown later awaits that task,
@@ -155,7 +149,6 @@ command from that detail view with `i`, for example:
 
 ```text
 /workflow resume <run-id>
-/workflow resume <run-id> --profile <name|none>
 /workflow reset <run-id>
 ```
 
@@ -482,11 +475,6 @@ assuming it was inserted by the input transport.
 - `/workflow` and `/workflow reset` restore the active mode's default workflow.
 - `/workflow resume [run-id]` validates and resumes a saved checkpoint through
   the normal recovery coordinator and ownership claim path.
-- `/workflow resume [run-id] --profile <name|none>` resumes with the checkpoint's
-  saved profile by default, or explicitly selects another configured provider
-  profile (`none` selects legacy execution settings). The target validates the
-  profile and persists the choice before dispatching provider work; the hub
-  forwards this command unchanged like any other input.
 - `/workflow reset <run-id>` marks that checkpoint discarded through the
   checkpoint store's guarded discard path, then restores the mode default.
 
@@ -544,14 +532,7 @@ background service; navigation and operations never wait for registry reads,
 process checks, artifact moves or journal parsing. Rows, counts and search are
 queries against the derived SQLite index (`index.sqlite3`): a reader applies
 only the events appended since the index's recorded position, and the event
-log remains authoritative. On open, its actual schema is checked even when
-the version marker is absent or claims to be current. A missing
-`sessions.idempotency_key` column is transactionally added and backfilled from
-the stored records before its index is created; interruption rolls the
-migration back for a safe retry. Unsupported layouts reset only the derived
-SQLite schema and are replayed from `events.jsonl`. SQLite busy/locked errors
-remain contention rather than triggering schema repair, while unrelated I/O
-errors are surfaced. When the index has to be built from the log — its
+log remains authoritative. When the index has to be built from the log — its
 first use, or after corruption — a progress line shows and the Running tab
 lists recent agents read from the end of the log; leaving the hub cancels the
 rebuild. If a read fails the hub says so, with Ctrl+R to retry; automatic
@@ -727,6 +708,10 @@ retry_base_delay_s = 1.0
 retry_max_delay_s = 300.0
 retry_rate_limits = false
 
+[background.notifications.quiet_hours]
+start = "22:00"
+end = "07:00"
+
 [[background.notifications.webhooks]]
 name = "build-alerts"
 url = "https://hooks.example.test/agenthicc" # HTTPS; no query or credentials
@@ -757,6 +742,15 @@ Use `agenthicc agents notifications [--status pending|sending|delivered|failed]
 [--session-id ID] [--json]` to inspect receipts. The command omits webhook
 URLs, secret references, and payloads. Headless environments without a local
 notification service quietly record `local_notifier_unavailable`.
+
+During an interactive TUI session, local lifecycle notices are routed through
+the foreground renderer rather than written as visible text to stdout or
+stderr. The TUI shows coalesced badges and toasts; `/dnd` suppresses those
+notices without hiding counts. Local system notifications are sent only while
+the terminal is unfocused. `local_backend = "terminal"` uses OSC 9 on supported
+terminals, and `auto` falls back to OSC 9 when no platform notifier is
+available. `[background.notifications.quiet_hours]` suppresses local attention
+notices during the configured recurring local-time window.
 
 The background registry is an append-only, fsync'd JSONL event stream. It is a
 derived lifecycle index; the canonical conversation, workflow, kernel, and

@@ -26,16 +26,16 @@ if TYPE_CHECKING:
     from agenthicc.tools.approval import ApprovalBroker, ApprovalRequest, ApprovalResponse
 
 __all__ = [
-    "WorkspaceAccessMode",
-    "WorkspacePathStatus",
     "ResolvedWorkspacePath",
-    "WorkspaceScope",
+    "WorkspaceAccessMode",
+    "WorkspaceAccessPolicy",
     "WorkspaceAccessRequest",
     "WorkspaceAccessResult",
-    "WorkspaceAccessPolicy",
+    "WorkspacePathStatus",
+    "WorkspaceScope",
     "current_workspace_access",
-    "set_current_workspace_access",
     "reset_current_workspace_access",
+    "set_current_workspace_access",
 ]
 
 
@@ -108,6 +108,32 @@ class WorkspaceScope:
         roots = tuple(sorted(unique.values(), key=lambda path: (-len(path.parts), str(path))))
         digest = hashlib.sha256("\0".join(str(path) for path in roots).encode()).hexdigest()[:16]
         return cls(primary_root=primary, allowed_roots=roots, scope_id=digest)
+
+    def restrict(self, allowed_paths: Iterable[str | Path]) -> "WorkspaceScope":
+        """Return a scope narrowed to roots contained by this scope."""
+        candidates: list[Path] = []
+        for raw in allowed_paths:
+            value = Path(raw)
+            if not value.is_absolute():
+                value = self.primary_root / value
+            candidate = _realpath(value)
+            if not any(_contains(root, candidate) for root in self.allowed_roots):
+                raise ValueError(f"workspace path {raw!s} is outside the inherited workspace scope")
+            candidates.append(candidate)
+
+        roots = tuple(
+            sorted(
+                {str(path): path for path in candidates}.values(),
+                key=lambda path: (-len(path.parts), str(path)),
+            )
+        )
+        primary = (
+            max(roots, key=lambda path: (len(path.parts), str(path)))
+            if roots
+            else self.primary_root
+        )
+        digest = hashlib.sha256("\0".join(str(path) for path in roots).encode()).hexdigest()[:16]
+        return WorkspaceScope(primary_root=primary, allowed_roots=roots, scope_id=digest)
 
     def resolve(
         self,
@@ -575,6 +601,7 @@ class WorkspaceAccessPolicy:
             )
 
         import asyncio
+
         from agenthicc.tools.approval import ApprovalRequest
 
         req = ApprovalRequest(

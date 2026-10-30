@@ -19,10 +19,11 @@ import asyncio
 import sys
 import time
 from collections import OrderedDict
-from typing import TYPE_CHECKING, Callable
+from collections.abc import Callable
+from typing import TYPE_CHECKING
 
+from agenthicc.tui.preferences import ui_settings as _ui
 from agenthicc.tui.workspace.appender import ScrollBufferAppender
-from agenthicc.tui.conversation_store import ui_settings as _ui
 from agenthicc.tui.workspace.components import ComposerComponent, FooterComponent, StatusComponent
 from agenthicc.tui.workspace.frames import FrameScheduler, FrameStats
 from agenthicc.tui.workspace.live_region import Line, LiveRegion
@@ -30,9 +31,10 @@ from agenthicc.tui.workspace.overlay import OverlayHost
 
 if TYPE_CHECKING:
     from rich.console import Console, RenderableType
-    from agenthicc.tui.workspace.announcer import Announcer
-    from agenthicc.tui.conversation_store import AppState, ConversationEvent
+
     from agenthicc.runners.startup import StartupCoordinator
+    from agenthicc.tui.conversation_store import AppState, ConversationEvent
+    from agenthicc.tui.workspace.announcer import Announcer
 
 # Rendered markup rows kept for reuse: a few frames' worth of distinct rows.
 _MARKUP_CACHE_SIZE = 256
@@ -155,6 +157,11 @@ class Workspace:
             conv.terminal_wait_label,
             conv.terminal_wait_elapsed_s,
             conv.terminal_running_count,
+            conv.background_needs_you,
+            conv.background_running,
+            conv.background_dnd,
+            conv.background_toast,
+            conv.agents_hint,
         ):
             self._unsubs.append(sig.subscribe(self._redraw))
         # Activity timing is a visible signal during active work, but its
@@ -176,6 +183,29 @@ class Workspace:
         except (AttributeError, OSError):
             pass
 
+    def suspend_for_external_process(self) -> None:
+        """Leave the terminal available while a foreground editor runs."""
+        if self._live is None:
+            return
+        if self.frames.pending:
+            self.frames.cancel()
+        live, self._live = self._live, None
+        live.stop()
+
+    def resume_after_external_process(self) -> None:
+        """Restore the inline workspace after an external process exits."""
+        if self._live is not None:
+            return
+        from agenthicc.tui.terminal.capabilities import capabilities
+
+        self._live = LiveRegion(
+            self._console,
+            transient=True,
+            synchronized_output=lambda: capabilities.synchronized_output,
+        )
+        self._live.start()
+        self._flush_redraw()
+
     def stop(self) -> None:
         """Stop the Live block. Call ONCE at application shutdown."""
         try:
@@ -188,7 +218,7 @@ class Workspace:
         for unsub in self._unsubs:
             try:
                 unsub()
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001 - teardown continues after cleanup failures
                 pass
         self._unsubs.clear()
         # Like Rich's Live, draw the final state before the block is cleared,
@@ -209,7 +239,7 @@ class Workspace:
         if self._live is not None:
             try:
                 self._live.stop()
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001 - teardown continues after cleanup failures
                 pass
             self._live = None
 
@@ -227,7 +257,7 @@ class Workspace:
         """
         self.scroll.flush()
 
-    async def replay_transcript(self, events: list["ConversationEvent"]) -> None:
+    async def replay_transcript(self, events: list[ConversationEvent]) -> None:
         """Display a resumed transcript while showing a loading state.
 
         Replay is deliberately chunked. A single large appender batch would
@@ -312,7 +342,7 @@ class Workspace:
             if _ov > 0:
                 _ov_word = "call" if _ov == 1 else "calls"
                 lines += self._markup(f"  [dim]⎿ ...and {_ov} more tool {_ov_word}[/dim]", cols)
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 - the overflow row is best-effort
             pass
 
         # Blank separator between the scroll buffer (or overflow bridge) and
@@ -348,7 +378,7 @@ class Workspace:
             return []
         from agenthicc.tui.workspace.subagent_panel import panel_lines
 
-        hint = self._state.require_keymap().hint("subagents.focus")
+        hint = self._state.keymap().hint("subagents.focus")
         lines: list[Line] = []
         for row in panel_lines(
             pool,
@@ -383,7 +413,7 @@ class Workspace:
         started = time.perf_counter()
         try:
             lines = self._build_lines()
-        except Exception:
+        except Exception:  # noqa: BLE001 - render failures should not disable input
             import traceback
 
             traceback.print_exc(file=sys.stderr)
@@ -454,5 +484,5 @@ class Workspace:
                 self._reset_live_after_resize()
                 self._resize_pending = False
                 self._flush_redraw()
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 - SIGWINCH can race terminal teardown
             pass

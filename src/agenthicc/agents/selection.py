@@ -119,6 +119,38 @@ class TurnAgent:
     max_agent_turns: int
 
 
+def _resolve_model_reference(model_reference: str, *, agent_name: str, cfg: AgenthiccConfig) -> str:
+    """Resolve one model/profile reference without switching session endpoints."""
+    from agenthicc.config import SUPPORTED_PROVIDERS
+
+    if not model_reference or model_reference.casefold() == "inherit":
+        return ""
+    session_profile = cfg.providers.get(cfg.execution.profile) if cfg.execution.profile else None
+    session_provider = session_profile.provider if session_profile else cfg.execution.provider
+    profile = cfg.providers.get(model_reference)
+    if profile is not None:
+        if session_profile is None or (profile.provider, profile.base_url) != (
+            session_profile.provider,
+            session_profile.base_url,
+        ):
+            raise AgentUnavailable(
+                f"Agent {agent_name!r} uses the provider profile {model_reference!r}, which is not "
+                "this session's endpoint. Start agenthicc with that profile or change the "
+                "agent's model."
+            )
+        return profile.model or cfg.execution.model
+    provider, _, model = model_reference.partition("/")
+    if model and provider.casefold() in SUPPORTED_PROVIDERS:
+        if provider.casefold() != session_provider.casefold():
+            raise AgentUnavailable(
+                f"Agent {agent_name!r} uses {model_reference}, but this session talks to "
+                f"{session_provider}. Start agenthicc with that provider or change the "
+                "agent's model."
+            )
+        return model
+    return model_reference
+
+
 def resolve_agent_model(spec: AgentSpec, cfg: AgenthiccConfig) -> str:
     """The model a turn of *spec* uses; empty means the session's model.
 
@@ -126,34 +158,7 @@ def resolve_agent_model(spec: AgentSpec, cfg: AgenthiccConfig) -> str:
     the session's provider. A definition cannot switch the session to another
     provider or endpoint: that fails before any provider call.
     """
-    from agenthicc.config import SUPPORTED_PROVIDERS
-
-    if not spec.model:
-        return ""
-    session_profile = cfg.providers.get(cfg.execution.profile) if cfg.execution.profile else None
-    session_provider = session_profile.provider if session_profile else cfg.execution.provider
-    profile = cfg.providers.get(spec.model)
-    if profile is not None:
-        if session_profile is None or (profile.provider, profile.base_url) != (
-            session_profile.provider,
-            session_profile.base_url,
-        ):
-            raise AgentUnavailable(
-                f"Agent {spec.name!r} uses the provider profile {spec.model!r}, which is not "
-                "this session's endpoint. Start agenthicc with that profile or change the "
-                "agent's model."
-            )
-        return profile.model or cfg.execution.model
-    provider, _, model = spec.model.partition("/")
-    if model and provider in SUPPORTED_PROVIDERS:
-        if provider != session_provider:
-            raise AgentUnavailable(
-                f"Agent {spec.name!r} uses {spec.model}, but this session talks to "
-                f"{session_provider}. Start agenthicc with that provider or change the "
-                "agent's model."
-            )
-        return model
-    return spec.model
+    return _resolve_model_reference(spec.model, agent_name=spec.name, cfg=cfg)
 
 
 def turn_agent(registry: AgentsRegistry, name: str, cfg: AgenthiccConfig) -> TurnAgent:

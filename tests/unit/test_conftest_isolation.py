@@ -65,7 +65,7 @@ class TestAutouseFixtureIsWired:
         # process.  If someone deletes ``tests/unit/conftest.py``
         # entirely, every other test in this directory will start
         # failing — but this one fails *first* with a clear error.
-        import tests.unit.conftest  # noqa: F401
+        import tests.unit.conftest
 
 
 class TestScrubbedSetIsComplete:

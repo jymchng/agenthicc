@@ -17,7 +17,7 @@ PRIMARY_PYTHON = "3.12"
 SUPPORTED_PYTHONS = ["3.11", "3.12", "3.13"]
 
 nox.options.default_venv_backend = "uv"
-nox.options.sessions = ["lint", "typecheck", "type_audit", "tests_unit", "coverage"]
+nox.options.sessions = ["lint", "typecheck", "type_audit", "tests_unit", "perf", "coverage"]
 nox.options.reuse_venv = "yes"
 
 

@@ -23,7 +23,6 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from textwrap import wrap
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -35,7 +34,7 @@ from agenthicc.tui.trigger import MatchItem, TriggerContext, TriggerHandlerBase,
 
 
 class AtMentionTrigger(TriggerHandlerBase):
-    """File/directory mention trigger for the '@' character."""
+    """File/directory and subagent trigger for the '@' character."""
 
     char = "@"
     label = "Mention File or Agent"
@@ -82,6 +81,9 @@ class AtMentionTrigger(TriggerHandlerBase):
         """
         cwd = ctx.cwd
 
+        # Typing ``@agent`` opens the visible subagent definitions; selecting
+        # one inserts ``@agent:NAME``. Hidden definitions remain invocable by
+        # exact name but are never offered in this picker (AGX-09 §5.3).
         if self._agents is not None and fragment.casefold().startswith("agent"):
             query = fragment[len("agent") :].removeprefix(":").casefold()
             return [
@@ -146,9 +148,11 @@ class AtMentionTrigger(TriggerHandlerBase):
         return filter_and_rank(fragment, candidates)
 
     def get_lines(self, item: MatchItem, available_width: int) -> list[str]:
-        """Render agent matches with their descriptions on wrapped lines."""
+        """Render agent matches as a labelled entry with a wrapped description."""
         if not item.label:
             return super().get_lines(item, available_width)
+        from textwrap import wrap
+
         label_width = min(max(len(item.label), 16), max(available_width - 16, 16))
         detail_width = max(available_width - label_width - 1, 16)
         detail = wrap(item.detail, width=detail_width) or [""]

@@ -343,16 +343,6 @@ unreadable, stale, or plugin-mismatched checkpoints fail closed. Workflow
 contexts have no framework-imposed serialized byte ceiling; they must still be
 JSON-compatible, and available filesystem capacity is the practical limit.
 
-Provider-profile-aware resume adds only non-secret checkpoint fields:
-`provider_profile_fingerprint` (a SHA-256 digest of canonical provider/model/
-endpoint/protocol and routing-field identity), `provider_profile_origin`, and
-bounded `provider_profile_history`. The digest excludes credentials, header and
-query values, and environment contents. These additive fields keep earlier
-schema-v1 checkpoints readable; an absent digest means the old binding is
-unknown. Resume persists the selected effective profile with the `resuming`
-checkpoint before dispatching provider work, so restart cannot silently revert
-an accepted override. Current secrets are resolved at resume time.
-
 Recovery identity follows the context schema rather than matching attribute
 names by convention. `WorkflowCheckpoint.workflow_name` is the canonical run
 owner. The default `WorkflowPlugin.checkpoint_context_owner_workflow_name()`
@@ -732,7 +722,6 @@ Background execution adds a local registry at `~/.agenthicc/background/`
 |---|---|---|---|
 | `events.jsonl` | `background.BackgroundStore` | Authoritative ordered create/update/delete lifecycle events; `created` carries the full record, `updated` only the changed fields plus `last_active` | Rebuilds the derived index when it is missing or incompatible; same-inode appends apply only the complete tail |
 | `index.sqlite3` (+ `-wal`, `-shm`) | `background.BackgroundStore` | Derived session index: full records, ordering/filter columns, FTS5 trigram search text, and the applied inode/offset/mtime/sequence | WAL mode, `synchronous=NORMAL`, mode 600; readers apply the complete tail; schema/inode mismatch, truncation, same-size rewrite, sequence gap, or corruption rebuilds it from `events.jsonl` |
-| `index.sqlite3.maintenance.lock` | `background.SessionIndex` | Cross-process lock for schema initialization and derived-index recovery | Recreated automatically; SQLite transactions continue to coordinate normal index reads and writes |
 | `registry.lock` | `BackgroundStore` | Cross-process advisory lock | Recreated automatically |
 | `queue-scheduler-v1.json` | `BackgroundSupervisor` | Last-dispatched project cursor for round-robin fairness | Advisory state; accepted queue records remain in the event log |
 | `queue-scheduler.lock` | `BackgroundSupervisor` | Cross-process queue admission/dispatch lock | Serializes slot reservations and prevents duplicate effective dispatch |
@@ -747,18 +736,8 @@ byte offset, modification time and sequence — and a reader that finds the log
 longer applies only the complete tail, inside one `BEGIN IMMEDIATE`
 transaction that re-reads the position first, so two processes never apply the
 same events twice. A writer applies its own append before releasing the
-registry lock. On open, the actual schema is checked even when the version
-marker is missing or claims to be current. A missing
-`sessions.idempotency_key` column is transactionally added and backfilled from
-the stored records before its index is created; interruption rolls the
-migration back for a safe retry. Unsupported layouts reset only the derived
-SQLite schema and are replayed from `events.jsonl`. SQLite busy/locked errors
-remain contention rather than triggering schema repair, while unrelated I/O
-errors are surfaced. If the authoritative event log cannot be accessed, replay
-fails closed instead of publishing an empty index, and `/detach` retains
-foreground ownership while asking the user to restore registry access. Truncation,
-rotation, a same-size rewrite, a sequence gap, a schema change or a corrupt file
-rebuilds the index from the log; the rebuild
+registry lock. Truncation, rotation, a same-size rewrite, a sequence gap, a
+schema change or a corrupt file rebuilds the index from the log; the rebuild
 reports its progress, the agents hub shows recent sessions read from the
 end of the log until it finishes, and closing the hub cancels it (its
 transaction rolls back). A registry written before the index still holds a

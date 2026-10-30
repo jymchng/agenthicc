@@ -48,30 +48,135 @@ cancellation. The next message uses the same session memory and
 
 `spawn_subagents` is the session-bound delegation tool described in
 `docs/guides/subagents.md`. The parent explicitly calls it with task objects
-containing required `type` and `task` strings plus optional `context`; the
-tool runs isolated typed workers concurrently and returns one complete,
-labelled plain-text digest. Each worker receives the intersection of the
-parent-visible tool list and its role allow-list, the parent's capability
-gate, and—when supplied—the same approval service and workspace policy. It
-does not share the parent's short-term message memory and cannot recursively
-spawn workers. Empty provider finals receive one bounded finalisation turn.
-Worker and complete-pool results are fsync'd to the session conversation
-journal; only TUI/kernel diagnostic previews are bounded. Ctrl+B in the TUI can
-return a durable background receipt while the session-owned pool continues.
-Resume never reruns an unfinished pool: it records interruption and delivers a
-completed/interrupted/cancelled aggregate once at the next non-resume turn
-boundary, using a stable message ID outside the parent tool-result boundary.
+containing required `type` and `task` strings plus optional `context`; the tool
+runs isolated typed workers concurrently and returns a labelled plain-text
+digest plus ordered structured value envelopes for contract-declaring types.
+Each worker receives the intersection of the parent-visible tool list and its
+role allow-list, the parent's capability gate, and—when supplied—the same
+approval service and workspace policy, further narrowed by type permissions.
+Workers do not share the parent's short-term message memory. The default
+`subagents.max_depth = 1` withholds delegation; a type can delegate only when
+explicitly permitted and below the configured depth limit. Pools have finite
+task, concurrency, process-wide active-pool, and aggregate worker-budget
+ceilings; they carry bounded ancestry for cycle refusal and report depth and
+parent-pool identity. Empty provider finals receive one bounded finalisation
+turn for prose types; contract types must call `submit_subagent_result` using
+the declared JSON Schema. Worker and complete-pool results are fsync'd to the
+session conversation journal; only TUI/kernel diagnostic previews are bounded.
+Ctrl+B in the TUI can return a durable background receipt while the
+session-owned pool continues. Resume never reruns an unfinished pool: it records
+interruption and delivers a completed/interrupted/cancelled aggregate once at
+the next non-resume turn boundary, using a stable message ID outside the parent
+tool-result boundary. Kernel pool events are drained before the spawn result is
+returned.
+
+A session owns its subagent type registry. It starts with built-in types and
+merges trusted plugin `SUBAGENT_TYPES` exports and discovered user/project
+Markdown agent definitions; type descriptions appear in the provider-facing tool
+description while the JSON-schema enum contains the same registered names.
+`research` can be registered as an exact custom type name; it is not an alias for
+`researcher`. Project Markdown definitions require
+`override: true` to replace a built-in worker role. Direct registration through
+`DEFAULT_REGISTRY` remains a deprecated compatibility path, and changes made
+after session construction are not visible to that session.
 
 Its `timeout_s` argument is a finite wall-clock deadline in seconds for each
 worker and defaults to `DEFAULT_SUBAGENT_TIMEOUT_S` (`3600`, one hour). A
 timed-out or otherwise failed worker is represented in the aggregate; a pool
 with any failure is not placed in the resume cache. Complete cache keys include
-role, task, and context, so changed context cannot reuse stale output.
+role, task, context, inherited parent policy, per-type permission and routing
+revisions, and the effective output schema, so changed constraints, routing, or
+contracts cannot reuse stale output. Structured cached values are revalidated
+against the active schema before reuse. A journaled pool lifecycle is keyed by
+parent logical-run ID and task fingerprint: replay returns the exact background
+receipt or existing status/result rather than spawning duplicate side effects.
+Ctrl+B backgrounds an active pool under the owning session's task supervisor.
+Completed, cancelled, and crash-interrupted results are delivered once as a
+synthetic user message at a later logical-turn boundary. Session shutdown
+cancels active pools; crash recovery marks unfinished workers `interrupted` and
+never automatically reruns them. A new parent logical turn may start a new
+pool, but partial workers are not automatically resumed.
 
 ### DEFAULT_SUBAGENT_TIMEOUT_S
 
 `3600.0`, the default finite worker timeout in seconds used by
 `spawn_subagents`.
+
+## Structured result contracts — `agenthicc.result_contracts`
+
+`output:` definitions use a bounded local JSON Schema subset. Contract workers
+submit object-valued arguments through `submit_subagent_result`; the runtime
+projects, validates and renders them. No prose is parsed for structure. Submitted
+values pass through existing secret redaction before parent delivery and durable
+persistence.
+
+### JSONValue
+
+Recursive JSON scalar, list, or string-keyed object type alias.
+
+### JSONMapping
+
+String-keyed JSON object type alias.
+
+### MAX_SCHEMA_BYTES
+
+`16384`, the maximum encoded schema size.
+
+### MAX_RESULT_BYTES
+
+`65536`, the maximum encoded structured-result size.
+
+### ResultProjectionError
+
+`ValueError` subtype raised when a submitted value cannot be projected to
+bounded finite JSON.
+
+### ResultValidationError
+
+`ValueError` subtype raised when a projected value violates its declared schema;
+its message includes the failing field path and constraint.
+
+### parse_output_schema
+
+```python
+def parse_output_schema(raw: str) -> JSONMapping
+```
+
+Parse one JSON Schema object and validate supported keywords, root type, size,
+depth, node count and secret-shaped property names.
+
+### normalize_output_schema
+
+```python
+def normalize_output_schema(schema: Mapping[str, object]) -> JSONMapping
+```
+
+Validate and isolate a bounded local schema copy.
+
+### project_result_value
+
+```python
+def project_result_value(value: Mapping[str, object]) -> JSONMapping
+```
+
+Project supported values into bounded finite JSON; rejects non-string keys,
+unsupported objects, non-finite numbers, and oversize or overdeep values.
+
+### validate_result_value
+
+```python
+def validate_result_value(schema: Mapping[str, JSONValue], value: Mapping[str, JSONValue]) -> None
+```
+
+Validate one projected result against its schema or raise `ResultValidationError`.
+
+### render_result_value
+
+```python
+def render_result_value(value: Mapping[str, JSONValue]) -> str
+```
+
+Render a stable, sorted, indented JSON object.
 
 ---
 
@@ -1528,11 +1633,15 @@ Durable conversation journal (PRD-129 Phases 2 & 3).
 class ConversationJournal
 ```
 
-Append-only, ``fsync``-ed JSONL journal of conversation transitions. It also
-stores subagent pool start, background receipt, completion, cancellation,
-interruption, and notification-delivery records outside the provider-message
-fold. These lifecycle records make background receipts replayable and let
-resume report interrupted work without restarting worker side effects.
+Append-only, ``fsync``-ed JSONL journal of conversation transitions. Subagent
+lifecycle records are auxiliary and do not enter the provider-message fold:
+`subagent_pool_started()` is written before worker side effects;
+`subagent_pool_backgrounded()` stores the exact tool receipt;
+`subagent_pool_finished()`, `subagent_pool_cancelled()`, and
+`recover_interrupted_subagent_pools()` record terminal outcomes. Recovery marks
+unfinished workers interrupted and does not rerun them. Stable message IDs on
+`append_message()` and `has_message_id()` support exactly-once synthetic
+completion delivery across resume and compaction.
 
 ### IncompleteTurn
 
@@ -1594,9 +1703,6 @@ returns `False` without copying when the tool history is already valid, and
 references, the summary and a deep copy of the active tool exchange — instead
 of a deep copy of the history (AGX-12). Both rely on messages being values:
 code changes a message by replacing it, never by editing it in place.
-`add_user_once(content, message_id=...)` appends a synthetic user message with a
-durable stable receipt, so session notifications can be retried without
-inserting the same message twice.
 
 ## Current TUI — `agenthicc.tui.workspace` and reactive state
 
@@ -1680,18 +1786,6 @@ the session with `TUISession.switch` set to a frozen
 (`action` is `"attach"`, `"open_saved"` or `"hub"` after `/background`); the
 driver runs the target in its own project directory and reopens the origin
 session when the target ends. A switch waits for a running turn to finish.
-
-### BackgroundSubagentsCommand
-
-```python
-@dataclass(frozen=True)
-class BackgroundSubagentsCommand(Command): ...  # Ctrl+B
-```
-
-The composer's `subagents.background` action is available while a turn and an
-active worker pool are both present. The capability dispatches this command to
-`TUISession`, which requests backgrounding from the active pool; it does not
-cancel the session-owned task.
 
 ### Keymap — `agenthicc.tui.keymap`
 
@@ -2388,9 +2482,12 @@ accessibility audits. The broad route is
 DESIGN_SYSTEM_REVIEW → STACK_ADAPTATION → EXPERIENCE_ARCHITECTURE →
 DESIGN_IMPLEMENTATION → VISUAL_UX_AUDIT → DESIGN_REMEDIATION →
 DESIGN_ACCEPTANCE → DELIVERY`. Targeted and accessibility-only routes skip
-unneeded phases. All transitions are phase-tool gated, review/remediation loops
-are bounded, and critical failed or unverified acceptance criteria cannot be
-reported as success.
+unneeded phases. All transitions are phase-tool gated. A phase turn that ends
+without its transition tool is retried in the same phase and shared conversation
+with a bounded reminder for up to three attempts, reusing session memory. After
+exhaustion, the workflow remains resumable at that phase and raises an error
+naming the expected tool. Review/remediation loops are bounded, and critical
+failed or unverified acceptance criteria cannot be reported as success.
 
 The optional upstream UI/UX Pro Max skill is used only when loaded in
 Agenthicc's skill catalog. The workflow checks the actual skill instructions,
@@ -3065,8 +3162,11 @@ class AgenthiccConfig:
     plugins: PluginSettings
     skills: SkillsSettings
     agents: AgentsSettings
+    subagents: SubagentSettings
     workflows: dict[str, dict[str, object]]
     loops: LoopSettings
+    ui: UISettings
+    subagents: SubagentSettings
 
     def to_system_settings(self) -> SystemSettings: ...
     def to_security_policy(self) -> SecurityPolicy: ...
@@ -3074,6 +3174,63 @@ class AgenthiccConfig:
                                  strict: bool = True) -> ResolvedProviderProfile | None: ...
     def redacted_dict(self) -> dict[str, object]: ...
 ```
+
+### SubagentDepthLimit
+
+```python
+@dataclass(frozen=True)
+class SubagentDepthLimit:
+    max_tasks: int | None = None
+    max_concurrent: int | None = None
+```
+
+Per-depth fan-out ceilings; each omitted field independently inherits the nearest
+configured ancestor's value.
+
+### SubagentDepthTier
+
+```python
+@dataclass(frozen=True)
+class SubagentDepthTier:
+    allowed_tools: tuple[str, ...] | None = None
+    allowed_models: tuple[str, ...] | None = None
+```
+
+A per-type depth profile that may only narrow the type's tools and finite model
+ceiling. The TOML tables are pool settings, not Markdown definition keys.
+
+### SubagentSettings
+
+```python
+@dataclass(frozen=True)
+class SubagentSettings:
+    default_model: str = ""
+    default_effort: str = ""
+    default_context: int | None = None
+    allowed_models: tuple[str, ...] | None = None
+    allow_call_overrides: bool = False
+    max_depth: int = 1
+    max_tasks: int = 64
+    max_concurrent: int = 16
+    max_active_pools: int = 16
+    max_workers: int = 32
+    max_tool_calls: int = 256
+    max_iterations: int = 128
+    max_tokens: int = 200_000
+    max_total_time_s: float = 600.0
+    on_budget_exceeded: Literal["abort", "drain"] = "drain"
+    stop_grace_s: float = 5.0
+    depth_limits: Mapping[int, SubagentDepthLimit]
+    depth_tiers: Mapping[int, Mapping[str, SubagentDepthTier]]
+
+    def limits_for_depth(self, depth: int) -> tuple[int, int, str, str]: ...
+```
+
+Operator model/effort/context defaults, a model allowlist, the opt-in for per-call
+model and effort overrides, pool governance, and per-pool resource budgets. The
+corresponding TOML section is `[subagents]`; see the configuration and subagent
+guides for routing, depth, fan-out, budget behavior, validation, and inheritance
+rules.
 
 ### build_commented_config_template — `agenthicc.config_template`
 
@@ -3084,7 +3241,7 @@ def build_commented_config_template() -> str
 Return a valid-but-empty TOML document whose every section and assignment is
 commented. The template is derived from the typed configuration settings and
 adds commented examples for dynamic provider, MCP, agent, workflow,
-context-window and background tables.
+context-window, subagent-routing and background tables.
 
 Top-level typed configuration. Every field has a reader: settings nothing read
 (the `[api]`, `[hooks]`, `[memory]` storage keys and `[storage]` sections, among
@@ -3330,10 +3487,13 @@ a provisional view. A search (`list(query=…)`, `SessionFilter(query=…)`) is
 split into words and every word must occur, in any order, as a case-insensitive
 substring of ID, title, intent, labels, latest activity, workspace and
 workflow; `search_mode` is `"fts5"` (FTS5 trigram index) or
-`"like"` (plain scan, also selectable with `search_mode="like"`).
-`invalidate_index()` makes the next read re-check the log; `close()` closes the
-index connection; `cancel_rebuild()` stops a rebuild in progress, which raises
-`IndexRebuildCancelled` and rolls back. A registry from before the index is
+`"like"` (plain scan, also selectable with `search_mode="like"`). In FTS5
+mode, queries whose words are all at least three characters use quoted trigram
+`MATCH` phrases; if any word is shorter, all terms use literal substring checks
+against the stored lowercase text. `invalidate_index()` makes the next read
+re-check the log; `close()` closes the index connection; `cancel_rebuild()` stops
+a rebuild in progress, which raises `IndexRebuildCancelled` and rolls back.
+A registry from before the index is
 migrated once by importing its `projection-v1.json` snapshot and replaying the
 log after it; the snapshot is then deleted. An append whose index update finds
 the index busy (another process rebuilding) still succeeds — the log is the
@@ -3426,6 +3586,28 @@ store/supervisor APIs. `maintain_async(trigger)` runs one pass of the
 service's `scheduler` (a `MaintenanceScheduler`) off the event loop and
 returns its `MaintenanceOutcome`.
 
+### TUIAttentionLease
+
+```python
+class TUIAttentionLease:  # agenthicc.background.attention
+    def __init__(self, background_root: Path | str) -> None: ...
+    def acquire(self) -> None: ...
+    def close(self) -> None: ...
+```
+
+A cross-process advisory lease held while a TUI owns a background store. Local
+notification dispatchers use it to avoid writing visible text into the TUI's
+terminal; the foreground router presents registry changes through the renderer.
+
+### tui_is_active
+
+```python
+def tui_is_active(background_root: Path | str) -> bool: ...
+```
+
+Whether any process currently holds a TUI attention lease for this background
+store. Unreadable lease markers fail closed to avoid corrupting an active TUI.
+
 ### MaintenanceScheduler
 
 ```python
@@ -3481,6 +3663,7 @@ class AgentsHub:  # agenthicc.tui.workspace.agents_hub
     def handle_key(self, key: Key, ch: str = "") -> HubResult | None: ...
     def render(self, width: int, height: int) -> RenderableType: ...
     async def settle(self, timeout_s: float = 10.0) -> None: ...
+    def select_attention_target(self, session_id: str | None, item_id: str | None = None) -> None: ...
 ```
 
 The agents hub (AGX-05–07): one component for every agent, behind
@@ -3492,7 +3675,9 @@ or lost agents, oldest first), History (finished agents and saved foreground
 sessions, newest first, read in windows) and Library (agent definitions). Rows
 are status-first with responsive columns (`layout()`), grouped, searchable
 (`parse_search`: words plus `status:`, `project:`, `agent:`, `label:`, `run:`)
-and keep the selection on the same agent across updates. Space opens a peek
+and keep the selection on the same agent across updates. `select_attention_target`
+selects a specific pending inbox item or session and retains that target until
+the list's first load completes. Space opens a peek
 panel, Enter the detail view: the Needs you card (the inbox item's canonical
 target, redacted; `y`/`n` resolve that exact item), Now, a redacted transcript
 tail that follows the journal, a worktree `git diff --stat` summary, attempts
@@ -3782,6 +3967,17 @@ Concurrent typed subagents for agenthicc (PRD-124).
 DEFAULT_SUBAGENT_TIMEOUT_S = 3600.0
 ```
 
+### SubagentPermissionConstraints
+
+```python
+@dataclass(frozen=True, slots=True)
+class SubagentPermissionConstraints
+```
+
+Per-type permission constraints that only narrow inherited policy: wildcard tool
+denials, hard capability denials, additional approval requirements, and optional
+workspace roots constrained to the inherited scope.
+
 ### SubagentTypeSpec
 
 ```python
@@ -3790,7 +3986,11 @@ class SubagentTypeSpec
 ```
 
 Fields: `name`, `allowed_tools`, `max_turns`, `system_prompt`,
-`max_turn_time_s`.
+`max_turn_time_s`, `model`, `policy`, `description` (defaults to an empty string
+for plugin compatibility), `effort`, `context`, `output_schema`, and `permissions`.
+`effort` is provider reasoning effort, `context` is the optional worker memory
+token budget, `output_schema` is a bounded JSON Schema contract required from
+workers of that type, and `permissions` narrows the inherited execution policy.
 
 ### SubagentAggregator
 
@@ -3810,9 +4010,9 @@ Maps type name → SubagentTypeSpec and optionally → SubagentAggregator.
 
 ### DEFAULT_REGISTRY
 
-```python
-DEFAULT_REGISTRY = <agenthicc.subagents.types.SubagentTypeRegistry object at 0x7df3d2626120>
-```
+`DEFAULT_REGISTRY` is a deprecated compatibility registry for plugin type
+registration. Sessions snapshot it at construction and keep a session-owned copy;
+late registrations do not alter an existing session.
 
 ### SubagentTask
 
@@ -3831,7 +4031,9 @@ class SubagentResult
 ```
 
 Fields: `task_id`, `agent_type`, `label`, `ok`, `text`, `error`,
-`duration_ms`, `tool_calls`, `changed_paths`.
+`duration_ms`, `tool_calls`, `changed_paths`, `error_code`, and `value` (optional
+validated structured JSON object), plus lifecycle fields `partial`, `stop_reason`,
+`undelivered_messages`, and `not_started`.
 
 ### AggregatedResult
 
@@ -3840,7 +4042,9 @@ Fields: `task_id`, `agent_type`, `label`, `ok`, `text`, `error`,
 class AggregatedResult
 ```
 
-Fields: `pool_id`, `total`, `succeeded`, `failed`, `text`.
+Fields: `pool_id`, `total`, `succeeded`, `failed`, `text`, ordered `values`
+(structured envelopes containing `task_id`, `agent_type`, `label`, and `value`),
+`not_started_workers`, and `budget_exceeded_reason`.
 
 ### SubagentWorker
 
@@ -3854,29 +4058,104 @@ Executes one SubagentTask using an isolated AgentRunnerBase instance.
 
 ```python
 class SubagentPool:
-    def __init__(self, tasks, parent_runner, parent_model, all_tools, max_concurrent=4, …, transcript_root: Path | None = None) -> None: ...
+    def __init__(self, tasks, parent_runner, parent_model, all_tools, max_concurrent=4, …, transcript_root: Path | None = None, max_workers: int = 32, max_tool_calls: int = 256, max_iterations: int = 128, max_tokens: int = 200_000, max_total_time_s: float = 600.0, on_budget_exceeded: WorkerStopMode = "drain", stop_grace_s: float = 5.0) -> None: ...
     async def run(self) -> AggregatedResult: ...
     @property
     def state(self) -> SubagentPoolState: ...
     def request_background(self) -> bool: ...
     async def wait_for_background_request(self) -> None: ...
     def stop_worker(self, worker_id: str) -> bool: ...
+    def request_stop(self, worker_id: str, *, mode: WorkerStopMode = "abort", source: str, reason: str) -> WorkerStopRequest | None: ...
+    def request_pool_stop(self, *, mode: WorkerStopMode = "abort", source: str, reason: str) -> tuple[WorkerLifecycle, ...]: ...
+    def budget_exceeded(self, reason: str) -> tuple[WorkerLifecycle, ...]: ...
+    async def retry_worker(self, worker_id: str) -> SubagentResult | None: ...
+    def lifecycle(self, worker_id: str) -> WorkerLifecycle | None: ...
     def dismiss_worker(self, worker_id: str) -> bool: ...
 
-def active_pool(pool_id: str) -> SubagentPool | None: ...  # agenthicc.subagents.pool
+def active_pool(pool_id: str) -> SubagentPool | None: ...  # running pool
+def retryable_pool(pool_id: str) -> SubagentPool | None: ...  # finished TUI pool
 ```
 
-Runs a set of SubagentTasks concurrently bounded by *max_concurrent*. It
+Runs a set of SubagentTasks concurrently bounded by *max_concurrent*. The
+pool enforces aggregate worker, tool-call, model-iteration, token, and wall-clock
+budgets. `budget_exceeded(reason)` applies the configured `abort` or `drain`
+policy once; the first reason is included in `AggregatedResult` and returned by
+the spawn tool as `status="budget_exceeded"`. Budget-limited pools are persisted
+as cancelled and are excluded from successful resume caching, even if drain
+lets all active workers finish. Completion projection events and the TUI
+summary carry the budget reason. The wall-clock budget triggers the stop policy
+rather than guaranteeing completion by the threshold: drain can extend while
+active workers finish, and abort can use the configured cleanup grace. It
 publishes an immutable `SubagentPoolState` on the conversation store for every
 change (AGX-08) and keeps the finished snapshot published while the panel shows
-rows. `stop_worker` cancels one running worker (or keeps a waiting one from
-starting): it is recorded as failed with `stopped by user` and the rest of the
-pool, and the parent turn, go on. `request_background()` sets the pool's
-background request flag; `wait_for_background_request()` lets the provider tool
-return its durable receipt while the session-owned task continues. `active_pool`
-finds a running pool by ID. Worker transcripts are written under
-`transcript_root`, by default `<session dir>/subagents` beside the conversation
-journal.
+rows. `request_background()` detaches
+an active pool from its parent tool call; the session supervisor retains
+ownership and cancels it during shutdown. `request_stop` is idempotent: `abort`
+cancels a worker immediately and retains completed-turn text as partial output;
+`drain` lets a running worker finish and keeps queued workers from starting.
+`stop_worker` is the user-panel abort shorthand. `retry_worker` starts another
+attempt for one failed or cancelled worker after the pool has finished; it never
+reruns successful siblings and preserves attempt history. Retries are refused
+after a budget crossing and remain subject to the pool's original wall-clock
+budget. `active_pool` returns running pools; `retryable_pool` retains the finished
+TUI pool while a failed worker can be retried. Worker transcripts are written
+under `transcript_root`, by default `<session dir>/subagents` beside the
+conversation journal.
+
+### WorkerLifecycle
+
+```python
+@dataclass(frozen=True, slots=True)
+class WorkerLifecycle:  # agenthicc.subagents.pool
+    worker_id: str
+    pool_id: str
+    attempt: int = 1
+    phase: WorkerLifecyclePhase = "pending"
+    stop_request: WorkerStopRequest | None = None
+    partial_result: SubagentResult | None = None
+    undelivered_messages: int = 0
+    cleanup_error: str = ""
+    previous_attempts: tuple[SubagentResult, ...] = ()
+```
+
+Authoritative immutable control state for one worker, distinct from its panel
+status. It records stop requests, cleanup outcomes, partial results, message
+acknowledgements, and retry history.
+
+### WorkerLifecyclePhase
+
+```python
+WorkerLifecyclePhase = Literal["pending", "running", "waiting", "requested", "cancelling", "completed", "failed", "cancelled", "drained"]
+```
+
+### WorkerStopMode
+
+```python
+WorkerStopMode = Literal["abort", "drain"]
+```
+
+### WorkerStopRequest
+
+```python
+@dataclass(frozen=True, slots=True)
+class WorkerStopRequest:  # agenthicc.subagents.pool
+    request_id: str
+    mode: WorkerStopMode
+    source: str
+    reason: str
+    requested_at: float
+    phase: Literal["requested", "cancelling", "cancelled", "drained", "completed", "failed"] = "requested"
+    cleanup_error: str = ""
+```
+
+### retryable_pool
+
+```python
+def retryable_pool(pool_id: str) -> SubagentPool | None: ...  # agenthicc.subagents.pool
+```
+
+Returns the finished TUI pool while it has a non-dismissed failed or cancelled
+worker eligible for a per-worker retry.
 
 ### WorkerState and SubagentPoolState
 
@@ -3892,6 +4171,8 @@ class WorkerState:  # agenthicc.subagents.pool
     finished_at: float | None = None
     tokens: int = 0
     dismissed: bool = False
+    depth: int = 1
+    parent_pool_id: str = ""
 
 @dataclass(frozen=True, slots=True)
 class SubagentPoolState:
@@ -3901,12 +4182,17 @@ class SubagentPoolState:
     limit: int = 0
     finished_at: float | None = None
     transcripts: Path | None = None
+    depth: int = 1
+    parent_pool_id: str = ""
+    lifecycles: tuple[WorkerLifecycle, ...] = ()
     done: int                  # property
     active: bool               # property: any worker unfinished
     def shown(self, now: float) -> tuple[WorkerState, ...]: ...
     def expired(self, now: float) -> bool: ...
     def worker(self, worker_id: str) -> WorkerState | None: ...
     def with_worker(self, worker: WorkerState) -> SubagentPoolState: ...
+    def lifecycle(self, worker_id: str) -> WorkerLifecycle | None: ...
+    def with_lifecycle(self, lifecycle: WorkerLifecycle) -> SubagentPoolState: ...
 ```
 
 The subagent panel's model (AGX-08 §5.1). `shown(now)` lists unfinished
@@ -3922,12 +4208,22 @@ context) and Enter opens a worker's transcript (`transcript` context).
 ```python
 @dataclass(frozen=True, slots=True)
 class TranscriptEvent:
-    kind: str     # prompt | text | tool_started | tool_finished | approval_requested | approval_resolved | finished | truncated
+    kind: str     # prompt | text | tool_started | tool_finished | approval_requested | approval_resolved | finished | stop_requested | lifecycle | message_acknowledged | attempt_started | truncated
     at: float
     text: str = ""
     tool: str = ""
     ok: bool | None = None
     dropped: int = 0
+    request_id: str = ""
+    mode: str = ""
+    source: str = ""
+    reason: str = ""
+    phase: str = ""
+    partial: bool = False
+    stop_reason: str = ""
+    undelivered_messages: int = 0
+    attempt: int = 1
+    cleanup_error: str = ""
 
 class TranscriptWriter:
     def __init__(self, root: Path, pool_id: str, *, limit: int = MAX_TRANSCRIPT_BYTES) -> None: ...
@@ -3946,7 +4242,9 @@ One pool's `pool.json` and one `<worker_id>.jsonl` per worker under
 `<session dir>/subagents/<pool_id>/`. Writes are queued to one background
 thread in order and redacted with the session-export redactor; a worker's file
 stays under `MAX_TRANSCRIPT_BYTES` (2 MiB) by dropping its oldest events behind
-a `truncated` marker that counts them. The parent agent never reads them.
+a `truncated` marker that counts them. Stop requests, lifecycle changes, message
+acknowledgements, and attempt boundaries are recorded with per-attempt metadata.
+The parent agent never reads them.
 
 ### SubagentExecutionPolicy
 
@@ -3956,9 +4254,11 @@ class SubagentExecutionPolicy
 ```
 
 Immutable snapshot of the parent turn's effective mode, blocked and
-approval-required capabilities, visible-tool ceiling, workspace identity,
-prompt suffix, workflow coordinates, and policy revision. Workers construct
-isolated local mode and workspace adapters from this value.
+approval-required capabilities, visible-tool ceiling, capability scope, type
+permission constraints, workspace identity, prompt suffix, workflow coordinates,
+and policy revision. Workers construct isolated local mode and workspace
+adapters from this value. Type denials remain hard blocks and cannot be widened
+by changing the worker's mode.
 
 ### AgentMessageEnvelope
 
@@ -3972,11 +4272,14 @@ Bounded, correlated parent/child/peer message metadata for one pool.
 ### AgentMessageBroker
 
 ```python
-class AgentMessageBroker
+class AgentMessageBroker:
+    def for_retry(self, worker_id: str) -> AgentMessageBroker: ...
 ```
 
 Session-scoped per-pool broker for ordered mailboxes, clarification futures,
 membership validation, bounded payloads, lifecycle journaling, and replay.
+`for_retry` creates a fresh broker for one new attempt, preserving its identity
+and limits but not replaying messages from peers that have already stopped.
 `open_questions(sender=...)` lists the questions a worker asked whose answer it
 has not received — including one answered before it looked — and
 `wait_for_answer` delivers it.
@@ -4011,18 +4314,28 @@ Correlated continuation handle containing the pool broker and live task.
 ### run_pool
 
 ```python
-def run_pool(tasks: 'list[SubagentTask]', parent_runner: 'AgentRunnerBase', parent_model: 'str', all_tools: 'list[object]', max_concurrent: 'int' = 4, app_state: 'AppState | None' = None, processor: 'EventProcessor | None' = None, conv_store: 'ConversationStore | None' = None, registry: 'SubagentTypeRegistry' = <agenthicc.subagents.types.SubagentTypeRegistry object at 0x7df3d2626120>, tool_registry: 'ToolRegistry | None' = None, usage_ledger: "'UsageLedger | None'" = None, conversation_id: 'str' = '', parent_run_id: 'str' = '', provider_options: 'Mapping[str, object] | None' = None, timeout_s: 'float | None' = None, approval_svc: "'ApprovalService | None'" = None, workspace_access: "'WorkspaceAccessPolicy | None'" = None, conversation_journal: "'ConversationJournal | None'" = None, task_fingerprint: 'str' = '', policy: 'SubagentExecutionPolicy | None' = None, communication: 'AgentMessageBroker | None' = None) -> 'AggregatedResult'
+def run_pool(tasks: 'list[SubagentTask]', parent_runner: 'AgentRunnerBase', parent_model: 'str', all_tools: 'list[object]', max_concurrent: 'int' = 4, app_state: 'AppState | None' = None, processor: 'EventProcessor | None' = None, conv_store: 'ConversationStore | None' = None, registry: 'SubagentTypeRegistry' = <agenthicc.subagents.types.SubagentTypeRegistry object at 0x7df3d2626120>, tool_registry: 'ToolRegistry | None' = None, usage_ledger: "'UsageLedger | None'" = None, conversation_id: 'str' = '', parent_run_id: 'str' = '', provider_options: 'Mapping[str, object] | None' = None, timeout_s: 'float | None' = None, approval_svc: "'ApprovalService | None'" = None, workspace_access: "'WorkspaceAccessPolicy | None'" = None, conversation_journal: "'ConversationJournal | None'" = None, task_fingerprint: 'str' = '', policy: 'SubagentExecutionPolicy | None' = None, communication: 'AgentMessageBroker | None' = None, provider: 'str' = 'unknown', default_model: 'str' = '', default_effort: 'str' = '', default_context: 'int | None' = None, call_model: 'str | None' = None, call_effort: 'str | None' = None, execution_settings: 'ExecutionSettings | None' = None, allowed_models: 'frozenset[str] | None' = None) -> 'AggregatedResult'
 ```
 
-Create a SubagentPool and run it.  Convenience wrapper.
+Create a SubagentPool and run it. Convenience wrapper; it forwards provider,
+model/effort/context defaults and overrides, execution settings, and the model
+allowlist to workers.
 
 ### make_spawn_subagents_tool
 
 ```python
-def make_spawn_subagents_tool(parent_runner: 'AgentRunnerBase', parent_model: str, all_tools: list[object], max_concurrent: int = 4, app_state: 'AppState | None' = None, processor: 'EventProcessor | None' = None, conv_store: 'ConversationStore | None' = None, registry: agenthicc.subagents.types.SubagentTypeRegistry | None = None, tool_registry: 'ToolRegistry | None' = None, retry_config: 'RetryConfig | None' = None, usage_ledger: 'UsageLedger | None' = None, conversation_id: str = '', parent_run_id: str = '', provider_options: collections.abc.Mapping[str, object] | None = None, approval_svc: 'ApprovalService | None' = None, workspace_access: 'WorkspaceAccessPolicy | None' = None, conversation_journal: 'ConversationJournal | None' = None, policy: 'SubagentExecutionPolicy | None' = None) -> collections.abc.Callable[..., object]
+def make_spawn_subagents_tool(parent_runner: 'AgentRunnerBase', parent_model: str, all_tools: list[object], max_concurrent: int = 4, app_state: 'AppState | None' = None, processor: 'EventProcessor | None' = None, conv_store: 'ConversationStore | None' = None, registry: agenthicc.subagents.types.SubagentTypeRegistry | None = None, tool_registry: 'ToolRegistry | None' = None, retry_config: 'RetryConfig | None' = None, usage_ledger: 'UsageLedger | None' = None, conversation_id: str = '', parent_run_id: str = '', provider_options: collections.abc.Mapping[str, object] | None = None, approval_svc: 'ApprovalService | None' = None, workspace_access: 'WorkspaceAccessPolicy | None' = None, conversation_journal: 'ConversationJournal | None' = None, policy: 'SubagentExecutionPolicy | None' = None, provider: str = 'unknown', execution_settings: 'ExecutionSettings | None' = None, subagent_settings: 'SubagentSettings | None' = None, default_model: str = '', allowed_models: frozenset[str] | None = None, parent_depth: int = 0, parent_pool_id: str = '', ancestry: tuple[tuple[str, str], ...] = ()) -> collections.abc.Callable[..., object]
 ```
 
-Return a ``spawn_subagents`` @tool()-decorated function.
+Return a ``spawn_subagents`` @tool()-decorated function. It receives the active
+provider, execution/subagent settings, resolved operator default model and model
+allowlist for worker routing. Type ``model``, ``effort`` and ``context`` values
+are resolved against operator defaults and inherited parent values; explicit
+``model: inherit`` selects the parent model. Per-call model/effort overrides are
+hidden and rejected unless ``subagents.allow_call_overrides`` is enabled.
+Worker context is clamped to the selected model window, provider/model are
+recorded in usage accounting, and effective routing participates in resume
+fingerprints.
 
 ## Extension trust and plugin dependencies — `agenthicc.plugins`
 
@@ -4168,7 +4481,14 @@ class AgentSpec
 ```
 
 Fields: `name`, `description`, `prompt`, `mode`, `model`, `tools`,
-`capabilities`, `max_steps`, `ceiling`, `color`, `hidden`, `source`, and `path`.
+`capabilities`, `max_steps`, `ceiling`, `color`, `hidden`, `source`, `path`,
+`override`, `effort`, `context`, `output_schema`, and optional `permissions`.
+`output_schema` is an optional bounded JSON Schema object for a structured
+subagent result; `permissions` narrows subagent tool, capability, approval, and
+workspace access. For subagent definitions, blank `model` uses the configured
+`subagents.default_model` or parent model; `model: inherit` selects the parent
+explicitly. `effort` and `context` inherit operator defaults before provider
+effort and the legacy 8,000-token context budget, respectively.
 
 ### DefinitionError
 

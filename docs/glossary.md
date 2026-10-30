@@ -371,11 +371,11 @@ session over a stable protocol.
 
 ### Role
 
-An agent's declared function. The built-in roles are `default`, `planner`,
-`executor`, `reviewer`, `explorer`, `verifier`, `human`, and `auto`. Their
-Markdown definitions are listed by the agent registry.
+An agent's declared function. The seven built-in roles are `planner`,
+`executor`, `reviewer`, `explorer`, `verifier`, `human`, and `auto`. Phases
+name a role, which is how a workflow says who should do the work.
 
-**Provenance:** `agenthicc.agents.registry.BUILTIN_NAMES` · `src/agenthicc/agents/builtin/`
+**Provenance:** `agenthicc.agents.builtin.BUILTIN_AGENT_DEFINITIONS` · `src/agenthicc/agents/builtin.py:89`
 
 ### Subagent
 

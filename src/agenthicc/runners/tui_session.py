@@ -10,11 +10,12 @@ import os
 import sys
 import threading
 import uuid
-from collections.abc import Awaitable, Callable, Iterable
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable, Iterable, Iterator
+from dataclasses import dataclass, replace
+from datetime import UTC
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Iterator, Literal, NoReturn, cast
+from typing import TYPE_CHECKING, Literal, NoReturn, cast
 
 from agenthicc.supervised_tasks import SupervisedTasks
 
@@ -32,48 +33,48 @@ def _optional_field(value: object, name: str, default: object = None) -> object:
 if TYPE_CHECKING:
     from lauren_ai._agents._runner import AgentRunnerBase
     from lauren_ai._config import LLMConfig
-    from lauren_ai._signals import SignalBus
     from lauren_ai._memory import ShortTermMemory
+
+    from agenthicc.agents.registry import AgentsRegistry
+    from agenthicc.background.agents_service import AgentsService
+    from agenthicc.background.attention import TUIAttentionLease
+    from agenthicc.background.settings import BackgroundSettings
+    from agenthicc.background.supervisor import BackgroundSupervisor
+    from agenthicc.background.terminals import TerminalManager
     from agenthicc.cli.context import CLIContext, CLIFlags
-    from agenthicc.config import AgenthiccConfig
-    from agenthicc.config import ExecutionSettings
-    from agenthicc.config import CloakBrowserSettings, PlaywrightSettings
+    from agenthicc.commands.busy_policy import BusyDecision
+    from agenthicc.commands.command import Command, UsageSnapshot
+    from agenthicc.commands.registry import UnifiedCommandRegistry
+    from agenthicc.config import AgenthiccConfig, CloakBrowserSettings, PlaywrightSettings
     from agenthicc.memory.router import MemoryRouter
+    from agenthicc.memory.tool_history import ToolHistoryRecoveryState
     from agenthicc.memory.vector import SemanticIndex
+    from agenthicc.plugins.discovery import PluginToolSet
     from agenthicc.runners.session_context import SessionContext
-    from agenthicc.tui.workspace import Workspace
+    from agenthicc.runners.startup import StartupCoordinator
+    from agenthicc.runners.workflow_handle import WorkflowRunHandle
+    from agenthicc.runners.workflow_recovery import WorkflowRecoveryRecord
+    from agenthicc.skills.loader import SkillDef, SkillDiscoveryResult
+    from agenthicc.subagents.pool import SubagentPool
+    from agenthicc.tools.approval import ApprovalBroker, ApprovalRequest, ApprovalRequester
+    from agenthicc.tools.base import ToolLike
+    from agenthicc.tools.cloakbrowser.session import BrowserSessionManager
     from agenthicc.tui.input.unified_session import UnifiedInputSession
     from agenthicc.tui.runtime import (
         BackgroundSubagentsCommand,
+        CycleAgentCommand,
         InterruptAgentCommand,
         OpenAgentsHubCommand,
         OpenSubagentsCommand,
         SendMessageCommand,
     )
-    from agenthicc.tools.approval import ApprovalBroker, ApprovalRequest, ApprovalRequester
+    from agenthicc.tui.workspace import Workspace
+    from agenthicc.tui.workspace.agents_hub import HubResult
     from agenthicc.tui.workspace.overlay import Overlay
     from agenthicc.tui.workspace.overlays.subagents import TranscriptTarget
-    from agenthicc.commands.command import Command
-    from agenthicc.commands.command import UsageSnapshot
-    from agenthicc.commands.busy_policy import BusyDecision
-    from agenthicc.commands.registry import UnifiedCommandRegistry
-    from agenthicc.skills.loader import SkillDef, SkillDiscoveryResult
-    from agenthicc.plugins.discovery import PluginToolSet
-    from agenthicc.agents.registry import AgentsRegistry
-    from agenthicc.workflows.registry import WorkflowRegistry
+    from agenthicc.subagents.types import SubagentTypeRegistry
     from agenthicc.workflows.plugin import WorkflowPlugin
-    from agenthicc.runners.workflow_handle import WorkflowRunHandle
-    from agenthicc.background.agents_service import AgentsService
-    from agenthicc.background.settings import BackgroundSettings
-    from agenthicc.background.supervisor import BackgroundSupervisor
-    from agenthicc.tui.workspace.agents_hub import HubResult
-    from agenthicc.runners.workflow_recovery import WorkflowRecoveryRecord
-    from agenthicc.runners.workflow_profile import ResumeProviderProfile
-    from agenthicc.runners.startup import StartupCoordinator
-    from agenthicc.tools.base import ToolLike
-    from agenthicc.tools.cloakbrowser.session import BrowserSessionManager
-    from agenthicc.background.terminals import TerminalManager
-    from agenthicc.memory.tool_history import ToolHistoryRecoveryState
+    from agenthicc.workflows.registry import WorkflowRegistry
 
 
 def _make_session_tools(
@@ -107,7 +108,7 @@ def _build_agent_runner(
     return _LazyAgentRunner(llm_config, cassette_dir=cassette_dir, startup=startup)
 
 
-def _prepare_startup_dependency(ctx: "SessionContext", phase: str) -> None:
+def _prepare_startup_dependency(ctx: SessionContext, phase: str) -> None:
     """Materialize a dependency explicitly declared by a workflow.
 
     Most readiness phases are already started by session construction or the
@@ -155,13 +156,11 @@ class _LazyAgentRunner:
         *,
         cassette_dir: Path | None,
         startup: StartupCoordinator | None = None,
-        signals: "SignalBus | None" = None,
     ) -> None:
         self._llm_config = llm_config
         self._cassette_dir = cassette_dir
         self._startup = startup
         self._delegate: AgentRunnerBase | None = None
-        self._signals = signals
         # The warm-up thread and the event loop may race to build the runner;
         # whichever loses waits for the same instance.
         self._lock = threading.Lock()
@@ -208,40 +207,7 @@ class _LazyAgentRunner:
 
             self._cassette_dir.mkdir(parents=True, exist_ok=True)
             transport = RecordingTransport(transport, self._cassette_dir / "cassette.jsonl")
-        if self._signals is None:
-            self._signals = SignalBus()
-        return AgentRunnerBase(transport=transport, signals=self._signals)
-
-    def for_execution(
-        self,
-        execution: "ExecutionSettings",
-        *,
-        conversation_id: str,
-    ) -> "_LazyAgentRunner":
-        """Create a workflow-scoped runner with this session's signal bus.
-
-        The regular session runner stays bound to its normal configuration;
-        only the resumed workflow receives the selected provider profile.
-        """
-
-        from agenthicc.config import build_llm_config
-        from lauren_ai._signals import SignalBus
-
-        # Do not materialize the session's default provider here: it may be
-        # precisely the invalid or unavailable profile the user is switching
-        # away from. Reuse its bus if already built; otherwise initialize the
-        # session bus without constructing any provider transport.
-        with self._lock:
-            signals = self._signals
-            if signals is None:
-                signals = SignalBus()
-                self._signals = signals
-        return _LazyAgentRunner(
-            partial(build_llm_config, execution, conversation_id=conversation_id),
-            cassette_dir=self._cassette_dir,
-            startup=None,
-            signals=signals,
-        )
+        return AgentRunnerBase(transport=transport, signals=SignalBus())
 
     async def warm_up(self) -> None:
         """Build the runner on a worker thread, recording the provider phase.
@@ -278,7 +244,7 @@ class _LazyBrowserSession:
         settings: object,
         conversation_id: str,
         workspace_root: Path,
-        startup: "StartupCoordinator | None" = None,
+        startup: StartupCoordinator | None = None,
     ) -> None:
         self._backend = backend
         self._settings = settings
@@ -385,7 +351,7 @@ class _LazyBrowserTools:
         self,
         backend: str,
         manager: _LazyBrowserSession,
-        startup: "StartupCoordinator | None" = None,
+        startup: StartupCoordinator | None = None,
     ) -> None:
         self._backend = backend
         self._manager = manager
@@ -435,11 +401,11 @@ class _LazyBrowserTools:
 class _LazySemanticIndex:
     """Keep vector-store imports off startup while preserving memory tooling."""
 
-    def __init__(self, startup: "StartupCoordinator | None" = None) -> None:
+    def __init__(self, startup: StartupCoordinator | None = None) -> None:
         self._delegate: SemanticIndex | None = None
         self._startup = startup
 
-    def _ensure(self) -> "SemanticIndex":
+    def _ensure(self) -> SemanticIndex:
         if self._delegate is None:
             from agenthicc.runners.startup import ReadinessState
 
@@ -504,7 +470,7 @@ def _workflow_failure_kind(exc: object) -> str:
     return disposition.kind
 
 
-def _build_skill_command(slug: str, skill: "SkillDef") -> "Command":
+def _build_skill_command(slug: str, skill: SkillDef) -> Command:
     """Build the dollar-prefixed command owned by one discovered skill."""
     from agenthicc.commands.builtins import _make_skill_handler
     from agenthicc.commands.command import Command
@@ -521,8 +487,8 @@ def _build_skill_command(slug: str, skill: "SkillDef") -> "Command":
 
 
 def _register_skill_commands(
-    registry: "UnifiedCommandRegistry",
-    skills: "dict[str, SkillDef]",
+    registry: UnifiedCommandRegistry,
+    skills: dict[str, SkillDef],
 ) -> None:
     """Register the current skill commands in the unified command registry."""
     for slug, skill in skills.items():
@@ -552,17 +518,6 @@ def _reset_terminal_on_exit() -> None:
         pass
 
 
-from agenthicc.tui.runtime.session_log import (  # noqa: E402
-    create_session_id,
-    register_session,
-    update_session_mode,
-    load_session_mode,
-    load_session_agent,
-    update_session_agent,
-    touch_session,
-    find_latest_session_for_cwd,
-    SessionEventLog,
-)
 from agenthicc.runners.session_lease import (  # noqa: E402
     SessionAlreadyActiveError,
     SessionOpenCoordinator,
@@ -570,7 +525,17 @@ from agenthicc.runners.session_lease import (  # noqa: E402
     SessionStorageError,
     format_session_conflict,
 )
-
+from agenthicc.tui.runtime.session_log import (  # noqa: E402
+    SessionEventLog,
+    create_session_id,
+    find_latest_session_for_cwd,
+    load_session_agent,
+    load_session_mode,
+    register_session,
+    touch_session,
+    update_session_agent,
+    update_session_mode,
+)
 
 _SESSIONS_DIR = Path.home() / ".agenthicc" / "sessions"
 # Slash commands that hand the foreground session to the background service.
@@ -588,6 +553,7 @@ class _ExtensionDiscovery:
     project_plugins: PluginToolSet
     project_commands: list[Command]
     agents_registry: AgentsRegistry
+    subagent_registry: SubagentTypeRegistry
     installed_skills: int = 0
     diagnostics: tuple[object, ...] = ()
 
@@ -595,17 +561,26 @@ class _ExtensionDiscovery:
 _EXTENSION_RESULT_CACHE: dict[str, _ExtensionDiscovery] = {}
 
 
-def _discover_extensions_sync(cfg: "AgenthiccConfig") -> _ExtensionDiscovery:
-    """Discover skills, tools, and commands without mutating live state."""
+def _discover_extensions_sync(
+    cfg: "AgenthiccConfig",
+    *,
+    subagent_registry: "SubagentTypeRegistry | None" = None,
+) -> _ExtensionDiscovery:
+    """Discover extensions without mutating live state or process registries."""
     from agenthicc.agents.registry import build_agents_registry
     from agenthicc.commands.plugin_loader import discover_command_plugins
     from agenthicc.plugins.discovery import discover_project_tools
-    from agenthicc.skills.bootstrap import bootstrap_default_skills
-    from agenthicc.skills.loader import discover_skills_with_diagnostics
     from agenthicc.runners.discovery_cache import (
         fingerprint_sources,
         read_discovery_cache,
         write_discovery_cache,
+    )
+    from agenthicc.subagents.types import DEFAULT_REGISTRY
+    from agenthicc.skills.bootstrap import bootstrap_default_skills
+    from agenthicc.skills.loader import discover_skills_with_diagnostics
+
+    base_subagent_registry = (
+        DEFAULT_REGISTRY.copy() if subagent_registry is None else subagent_registry.copy()
     )
 
     skill_global_dir = (
@@ -645,14 +620,23 @@ def _discover_extensions_sync(cfg: "AgenthiccConfig") -> _ExtensionDiscovery:
                 write_discovery_cache(cache_path, source_fingerprint)
             except OSError:
                 log.debug("could not refresh extension discovery cache", exc_info=True)
-        return cached
+        subagent_registry = base_subagent_registry.copy()
+        for plugin_result in cached.project_plugins.results:
+            for subagent_spec in plugin_result.subagent_types:
+                subagent_registry.register(subagent_spec)
+                aggregator = cached.subagent_registry.get_aggregator(subagent_spec.name)
+                if aggregator is not None:
+                    subagent_registry.register_aggregator(aggregator)
+        return replace(cached, subagent_registry=subagent_registry)
     skill_discovery = discover_skills_with_diagnostics(
         project_dir=Path(".agenthicc"),
         user_dir=skill_global_dir,
     )
+    subagent_registry = base_subagent_registry.copy()
     project_plugins = discover_project_tools(
         project_dir=Path(".agenthicc"),
         user_dir=Path.home() / ".agenthicc",
+        subagent_registry=subagent_registry,
     )
     project_commands = discover_command_plugins(
         project_dir=Path(".agenthicc"),
@@ -668,6 +652,7 @@ def _discover_extensions_sync(cfg: "AgenthiccConfig") -> _ExtensionDiscovery:
         project_plugins=project_plugins,
         project_commands=list(project_commands),
         agents_registry=agents_registry,
+        subagent_registry=subagent_registry,
         installed_skills=installed_skills,
         diagnostics=tuple(skill_discovery.diagnostics),
     )
@@ -679,7 +664,7 @@ def _discover_extensions_sync(cfg: "AgenthiccConfig") -> _ExtensionDiscovery:
     return result
 
 
-def _apply_extension_discovery(ctx: "SessionContext", discovery: _ExtensionDiscovery) -> None:
+def _apply_extension_discovery(ctx: SessionContext, discovery: _ExtensionDiscovery) -> None:
     """Publish a validated discovery result on the event-loop owner."""
     from agenthicc.plugins.discovery import warn_conflicts
 
@@ -688,6 +673,7 @@ def _apply_extension_discovery(ctx: "SessionContext", discovery: _ExtensionDisco
     ctx.project_plugins.results.clear()
     ctx.project_plugins.results.extend(discovery.project_plugins.results)
     ctx.agents_registry.replace_with(discovery.agents_registry)
+    ctx.subagent_registry.replace_with(discovery.subagent_registry)
     _check_session_agent(ctx)
     if ctx.project_plugins.all_tools:
         warn_conflicts(ctx.project_plugins)
@@ -700,8 +686,13 @@ def _apply_extension_discovery(ctx: "SessionContext", discovery: _ExtensionDisco
     _register_skill_commands(ctx.cmd_registry, ctx.skills)
 
 
-def _check_session_agent(ctx: "SessionContext") -> None:
-    """Fall back when the selected primary agent disappeared during discovery."""
+def _check_session_agent(ctx: SessionContext) -> None:
+    """Fall back to ``default`` when the session's agent no longer exists (AGX-09).
+
+    An explicit ``--agent`` was checked at startup; this covers the agent a
+    resumed session last used and the project's default, either of which may
+    have been deleted or become invalid since.
+    """
     from agenthicc.agents.selection import DEFAULT_AGENT
 
     name = ctx.app_state.agent()
@@ -713,7 +704,7 @@ def _check_session_agent(ctx: "SessionContext") -> None:
         )
 
 
-def _discover_workflow_registry_sync() -> "WorkflowRegistry":
+def _discover_workflow_registry_sync() -> WorkflowRegistry:
     """Load external workflow modules outside the interactive event loop."""
     from agenthicc.workflows.registry import build_workflow_registry
 
@@ -739,7 +730,7 @@ async def _build_session_context(
     workflow_name: str | None = None,
     agent_name: str | None = None,
     owner_lease: SessionOwnerLease | None = None,
-    config: "AgenthiccConfig | None" = None,
+    config: AgenthiccConfig | None = None,
 ) -> SessionContext:
     """Acquire the session owner before constructing any durable resources."""
 
@@ -830,22 +821,25 @@ async def _build_session_context_impl(
     agent_name: str | None = None,
     owner_lease: SessionOwnerLease,
     startup: StartupCoordinator | None = None,
-    config: "AgenthiccConfig | None" = None,
+    config: AgenthiccConfig | None = None,
 ) -> SessionContext:
     """Construct all session-scoped singletons and return a SessionContext."""
     from agenthicc.runners.startup import ReadinessState, StartupCoordinator
 
     startup = startup or StartupCoordinator()
     from rich.console import Console
+
+    from agenthicc.config import build_llm_config, load_config
     from agenthicc.kernel import (
         AppState as KAppState,
+    )
+    from agenthicc.kernel import (
         EventProcessor,
         SecurityPolicy,
         SystemSettings,
     )
-    from agenthicc.kernel.reducer import root_reducer
     from agenthicc.kernel.processor import restore_from_log
-    from agenthicc.config import load_config, build_llm_config
+    from agenthicc.kernel.reducer import root_reducer
     from agenthicc.runners.session_context import SessionContext
     from agenthicc.tui.conversation_store import AppState
     from agenthicc.tui.runtime import (
@@ -1026,7 +1020,7 @@ async def _build_session_context_impl(
     model_label = f"{cfg.execution.provider}/{cfg.execution.effective_model()}"
 
     # ── reactive state ────────────────────────────────────────────────────────
-    app_state = AppState.create(defer_keymap=not headless)
+    app_state = AppState.create()
     app_state.conversation.model_name.set(model_label)
     app_state.conversation.session_id.set(session_id)
     app_state.ui.set(cfg.ui)
@@ -1089,9 +1083,7 @@ async def _build_session_context_impl(
     startup.begin("workflow_registry")
     from agenthicc.workflows.registry import build_workflow_registry
 
-    load_external = (
-        headless or resume_id is not None or workflow_name is not None or agent_name is not None
-    )
+    load_external = headless or resume_id is not None or workflow_name is not None
 
     workflow_registry = build_workflow_registry(
         project_dir=Path(".agenthicc"),
@@ -1120,24 +1112,6 @@ async def _build_session_context_impl(
         user_dir=Path.home() / ".agenthicc",
         load_external=load_external,
     )
-    from agenthicc.agents.selection import DEFAULT_AGENT, initial_agent, project_default
-
-    if agent_name:
-        agent_name = initial_agent(
-            agents_registry,
-            requested=agent_name,
-            persisted=None,
-            project_root=Path.cwd(),
-        )
-    app_state.agent.set(
-        agent_name
-        or (load_session_agent(resume_id) if resume_id else None)
-        or project_default(Path.cwd())
-        or DEFAULT_AGENT
-    )
-    app_state.agent.subscribe(lambda: update_session_agent(session_id, app_state.agent()))
-    if agent_name:
-        update_session_agent(session_id, agent_name)
     startup.finish("agent_registry")
 
     # ── mode manager ──────────────────────────────────────────────────────────
@@ -1183,13 +1157,40 @@ async def _build_session_context_impl(
         # future resumes never need to carry the legacy identity forward.
         update_session_mode(session_id, mode_manager.active_name)
 
+    # AGX-09: the primary agent. ``--agent`` wins, then the agent the resumed
+    # session last used, then the project's default. User and project
+    # definitions load after the first frame, so the name is checked then.
+    from agenthicc.agents.selection import DEFAULT_AGENT, initial_agent, project_default
+
+    if agent_name:
+        # An explicit choice is checked now, against every definition.
+        checked = (
+            agents_registry
+            if load_external
+            else build_agents_registry(
+                project_dir=Path(".agenthicc"), user_dir=Path.home() / ".agenthicc"
+            )
+        )
+        agent_name = initial_agent(
+            checked, requested=agent_name, persisted=None, project_root=Path.cwd()
+        )
+    app_state.agent.set(
+        agent_name
+        or (load_session_agent(resume_id) if resume_id else None)
+        or project_default(Path.cwd())
+        or DEFAULT_AGENT
+    )
+    app_state.agent.subscribe(lambda: update_session_agent(session_id, app_state.agent()))
+    if agent_name:
+        update_session_agent(session_id, agent_name)
+
     # PRD-168: construct one immutable scope for the entire parent session.
     # Every direct turn, workflow phase, mention resolver, and command receives
     # this policy through SessionContext/WorkflowConfig; agent turns bind it
     # task-locally for legacy tool wrappers without leaking across sessions.
     from agenthicc.tools.workspace_access import (
-        WorkspaceScope,
         WorkspaceAccessPolicy,
+        WorkspaceScope,
     )
 
     startup.begin("workspace_policy")
@@ -1211,7 +1212,9 @@ async def _build_session_context_impl(
     # operation needs the complete extension contract before returning.
     defer_extensions = not headless and resume_id is None and workflow_name is None
     from agenthicc.plugins.discovery import PluginToolSet
+    from agenthicc.subagents.types import DEFAULT_REGISTRY
 
+    subagent_registry = DEFAULT_REGISTRY.copy()
     if not defer_extensions:
         startup.begin("extensions")
     if defer_extensions:
@@ -1220,7 +1223,11 @@ async def _build_session_context_impl(
         project_commands: list[Command] = []
         command_plugin_names: set[str] = set()
     else:
-        discovered_extensions = _discover_extensions_sync(cfg)
+        discovered_extensions = _discover_extensions_sync(
+            cfg,
+            subagent_registry=subagent_registry,
+        )
+        subagent_registry = discovered_extensions.subagent_registry
         skills = discovered_extensions.skills
         project_plugins = discovered_extensions.project_plugins
         project_commands = discovered_extensions.project_commands
@@ -1377,8 +1384,8 @@ async def _build_session_context_impl(
 
     # ── three-tier memory (PRD-101) ───────────────────────────────────────────
     from agenthicc.memory.layers import (
-        ProjectMemoryLayer,
         GlobalMemoryLayer,
+        ProjectMemoryLayer,
         SessionMemoryLayer,
     )
     from agenthicc.memory.router import MemoryRouter
@@ -1395,13 +1402,13 @@ async def _build_session_context_impl(
     startup.finish("memory")
 
     # ── command registry + trigger registry ──────────────────────────────────
+    from agenthicc.commands import build_builtin_registry
     from agenthicc.tui.trigger import TriggerManager
     from agenthicc.tui.triggers.at_mention import AtMentionTrigger
     from agenthicc.tui.triggers.slash_command import (
         SkillTrigger,
         SlashCommandTrigger,
     )
-    from agenthicc.commands import build_builtin_registry
 
     cmd_registry = build_builtin_registry()
     for command in project_commands:
@@ -1463,6 +1470,7 @@ async def _build_session_context_impl(
         command_bus=command_bus,
         workflow_registry=workflow_registry,
         agents_registry=agents_registry,
+        subagent_registry=subagent_registry,
         cmd_registry=cmd_registry,
         trigger_registry=trigger_registry,
         agent_runner=cast("AgentRunnerBase", agent_runner),
@@ -1523,9 +1531,9 @@ class TUISession:
 
     def __init__(
         self,
-        ctx: "SessionContext",
-        workspace: "Workspace",
-        input_session: "UnifiedInputSession",
+        ctx: SessionContext,
+        workspace: Workspace,
+        input_session: UnifiedInputSession,
     ) -> None:
         self._ctx = ctx
         self._workspace = workspace
@@ -1546,6 +1554,8 @@ class TUISession:
         # the end of the session so reopening it costs no setup.
         self._agents_service: AgentsService | None = None
         self._agents_settings: BackgroundSettings | None = None
+        self._attention_lease: TUIAttentionLease | None = None
+        self._attention_task: asyncio.Task[None] | None = None
         self._background_prepared_supervisor: BackgroundSupervisor | None = None
         self._background_prepared_session_id: str | None = None
         self._turn_count: int = 0
@@ -1569,8 +1579,8 @@ class TUISession:
             self._terminal_unsub = lambda: None
 
         from agenthicc.commands import CommandDispatcher
-        from agenthicc.workflows.config import WorkflowConfig
         from agenthicc.runners.loop_scheduler import LoopManager, LoopStore
+        from agenthicc.workflows.config import WorkflowConfig
 
         self._cmd_dispatcher = CommandDispatcher(ctx.cmd_registry)
         self._loop_manager = LoopManager(
@@ -1595,6 +1605,7 @@ class TUISession:
             mcp_registry=ctx.mcp_registry,
             mention_cache=ctx.mention_cache,
             agents_registry=ctx.agents_registry,
+            subagent_registry=ctx.subagent_registry,
             memory_router=ctx.memory_router,
             semantic_index=ctx.semantic_index,
             # Each run binds the session memory when it starts; the journal is
@@ -1792,12 +1803,11 @@ class TUISession:
     def _dispatch_workflow_resume(
         self,
         definition: type[WorkflowPlugin],
-        handle: "WorkflowRunHandle",
+        handle: WorkflowRunHandle,
         context: object,
         *,
         continuation: str | None = None,
         turn_id: str | None = None,
-        profile_selection: "ResumeProviderProfile | None" = None,
     ) -> None:
         """Publish and schedule an already accepted resume transition.
 
@@ -1826,7 +1836,6 @@ class TUISession:
                 context,
                 continuation=continuation,
                 turn_id=turn_id,
-                profile_selection=profile_selection,
             ),
             name=f"resume-workflow-{handle.run_id}",
         )
@@ -1953,7 +1962,7 @@ class TUISession:
         self._release_workflow_claim(handle)
 
     @staticmethod
-    def _workflow_pause_notice(handle: "WorkflowRunHandle") -> str:
+    def _workflow_pause_notice(handle: WorkflowRunHandle) -> str:
         """Build a bounded, actionable pause message without secrets."""
         model = _optional_field(handle, "failure_model")
         provider = _optional_field(handle, "failure_provider")
@@ -2102,17 +2111,10 @@ class TUISession:
             checkpoint = record.checkpoint
             assert checkpoint is not None
             disposition = "interrupted" if record.interrupted else "paused"
-            saved_profile = checkpoint.provider_profile
-            profile_notice = (
-                f" Saved provider profile '{saved_profile}' is inherited on resume; "
-                "use --profile <name|none> to override."
-                if saved_profile
-                else " This older run uses the current provider configuration."
-            )
             self._ctx.app_state.conversation.notification.set(
                 f"Workflow '{checkpoint.workflow_name}' is {disposition} at "
                 f"{checkpoint.current_phase or 'its saved state'}. "
-                f"Use /workflow resume {record.run_id} to continue.{profile_notice}"
+                f"Use /workflow resume {record.run_id} to continue."
             )
         except Exception as exc:  # noqa: BLE001
             self._ctx.app_state.conversation.notify_transient(
@@ -2131,11 +2133,13 @@ class TUISession:
         conversation = self._ctx.session_conversation
         if conversation is None:
             return
+        active_profile = self._ctx.cfg.execution.profile
         workspace_scope = self._ctx.workspace_scope
         workspace_root = str(workspace_scope.primary_root) if workspace_scope is not None else ""
         records = self._workflow_recovery.inspect(
             workflow_registry=self._ctx.workflow_registry,
             conversation=conversation,
+            provider_profile=active_profile,
             workspace_root=workspace_root,
         )
         self._workflow_recovery_records = {
@@ -2186,11 +2190,13 @@ class TUISession:
         conversation = self._ctx.session_conversation
         if conversation is None:
             return None
+        active_profile = self._ctx.cfg.execution.profile
         workspace_scope = self._ctx.workspace_scope
         workspace_root = str(workspace_scope.primary_root) if workspace_scope is not None else ""
         return self._workflow_recovery.select_latest_for_resume(
             workflow_registry=self._ctx.workflow_registry,
             conversation=conversation,
+            provider_profile=active_profile,
             workspace_root=workspace_root,
         )
 
@@ -2239,10 +2245,10 @@ class TUISession:
 
     def _rehydrate_workflow_record(
         self,
-        record: "WorkflowRecoveryRecord",
+        record: WorkflowRecoveryRecord,
         *,
         claim: bool,
-    ) -> "WorkflowRunHandle":
+    ) -> WorkflowRunHandle:
         """Restore one validated record and optionally claim it for this TUI."""
         conversation = self._ctx.session_conversation
         if conversation is None or record.checkpoint is None:
@@ -2259,13 +2265,13 @@ class TUISession:
             owner_id=owner_id,
         )
 
-    def _release_workflow_claim(self, handle: "WorkflowRunHandle | None") -> None:
+    def _release_workflow_claim(self, handle: WorkflowRunHandle | None) -> None:
         """Release a terminal run's durable lease without masking cleanup errors."""
         if handle is None:
             return
         try:
             handle.release_claim()
-        except Exception:  # noqa: BLE001 — terminal cleanup must not mask the result
+        except Exception:  # noqa: BLE001 - terminal cleanup must not mask the result
             pass
 
     def _publish_session_event(
@@ -2370,6 +2376,37 @@ class TUISession:
         if callable(redraw):
             redraw()
 
+    async def _watch_agent_definitions(self) -> None:
+        """Apply trusted definition edits from the next turn onward (AGX-09 §5.4)."""
+        from agenthicc.agents.registry import build_agents_registry
+        from agenthicc.background.watch import FileWatcher
+
+        watcher = FileWatcher(fallback_interval_s=1.0)
+        watcher.watch_directory("project-agents", Path(".agenthicc") / "agents")
+        watcher.watch_directory("user-agents", Path.home() / ".agenthicc" / "agents")
+        try:
+            # The initial deferred scan and this watcher must not race to publish
+            # registries; later scans use the current registry as their last-good snapshot.
+            initial = self._deferred_startup_task
+            if initial is not None:
+                await asyncio.gather(initial, return_exceptions=True)
+            while True:
+                changes = await watcher.wait(None)
+                if not ({"project-agents", "user-agents"} & changes.keys()):
+                    continue
+                await asyncio.sleep(0.15)
+                refreshed = await asyncio.to_thread(
+                    build_agents_registry,
+                    project_dir=Path(".agenthicc"),
+                    user_dir=Path.home() / ".agenthicc",
+                    load_external=True,
+                    previous=self._ctx.agents_registry,
+                )
+                self._ctx.agents_registry.replace_with(refreshed)
+                _check_session_agent(self._ctx)
+        finally:
+            watcher.close()
+
     def _start_deferred_startup(self) -> None:
         """Start optional discovery only after the first Live frame exists."""
         from agenthicc.runners.startup import ReadinessState
@@ -2380,7 +2417,11 @@ class TUISession:
 
         async def load() -> object:
             discovery, workflow_registry = await asyncio.gather(
-                asyncio.to_thread(_discover_extensions_sync, self._ctx.cfg),
+                asyncio.to_thread(
+                    _discover_extensions_sync,
+                    self._ctx.cfg,
+                    subagent_registry=self._ctx.subagent_registry.copy(),
+                ),
                 asyncio.to_thread(_discover_workflow_registry_sync),
             )
             # Shutdown can win while the worker threads are unwinding. Never
@@ -2537,16 +2578,45 @@ class TUISession:
 
     def open_agents_hub(self, tab: str = "", run_id: str = "") -> None:
         """Show the agents hub over the conversation (``/agents``, Ctrl+G, ←)."""
+        from agenthicc.agents.definitions import AgentSpec
+        from agenthicc.tui.conversation_store import AppState
         from agenthicc.tui.workspace.agents_hub import AgentsHub, DispatchDefaults, Tab
         from agenthicc.tui.workspace.agents_hub.overlay import AgentsHubOverlay
         from agenthicc.tui.workspace.agents_hub.sources import HubSources
 
         ctx = self._ctx
+        ctx.app_state.conversation.agents_hint.set(False)
         overlays = self._workspace.overlays
         current = overlays.widget
         if isinstance(current, AgentsHubOverlay):
+            conversation = ctx.app_state.conversation
             if tab:
-                current.hub.switch_tab(Tab(tab))
+                hub_tab = Tab(tab)
+                current.hub.switch_tab(hub_tab)
+                if hub_tab is Tab.NEEDS_YOU:
+                    current.hub.select_attention_target(
+                        conversation.agents_target(),
+                        conversation.agents_item_target(),
+                    )
+            elif conversation.agents_toast_target() is not None:
+                hub_tab = (
+                    Tab.NEEDS_YOU
+                    if conversation.background_toast_kind() == "needs"
+                    else Tab.RUNNING
+                )
+                current.hub.switch_tab(hub_tab)
+                item_id = (
+                    conversation.agents_item_target()
+                    if conversation.agents_toast_target() == conversation.agents_target()
+                    else None
+                )
+                current.hub.select_attention_target(conversation.agents_toast_target(), item_id)
+            elif conversation.background_needs_you():
+                current.hub.switch_tab(Tab.NEEDS_YOU)
+                current.hub.select_attention_target(
+                    conversation.agents_target(),
+                    conversation.agents_item_target(),
+                )
             return
         service, settings = self._agents_hub_service()
         if service is None or settings is None:
@@ -2554,6 +2624,76 @@ class TUISession:
                 "Background agents are disabled by configuration"
             )
             return
+
+        async def generate_definition(name: str, description: str) -> str:
+            from agenthicc.agents.generation import generate_definition_draft
+
+            return await generate_definition_draft(
+                ctx.agent_runner,
+                model_id=ctx.cfg.execution.effective_model(),
+                name=name,
+                description=description,
+            )
+
+        def effective_tools(spec: AgentSpec, policy_state: AppState) -> tuple[str, ...]:
+            from agenthicc.plugins.registry import build_registry
+            from agenthicc.runners.agent_turn import _effective_agent_tool_names
+
+            mcp_tools = ctx.mcp_registry.all_tools() if ctx.mcp_registry is not None else []
+            project_tools: list[ToolLike] = [
+                *cast("list[ToolLike]", ctx.project_plugins.all_tools),
+                *_make_session_tools(
+                    ctx.approval_svc,
+                    memory_router=ctx.memory_router,
+                    semantic_index=ctx.semantic_index,
+                ),
+                *list(ctx.browser_tools),
+                *mcp_tools,
+            ]
+            registry = build_registry(
+                agent_name=spec.name,
+                project_plugin_tools=project_tools,
+            )
+            return _effective_agent_tool_names(spec, registry, policy_state)
+
+        external_editor: Callable[[Path, Literal["project", "user"]], Awaitable[None]] | None = None
+        from agenthicc.agents.external_editor import editor_is_configured, open_definition_in_editor
+
+        if editor_is_configured():
+
+            async def edit_definition(path: Path, scope: Literal["project", "user"]) -> None:
+                async def run_editor() -> None:
+                    self._workspace.suspend_for_external_process()
+                    try:
+                        await asyncio.to_thread(
+                            open_definition_in_editor,
+                            path,
+                            scope=scope,
+                            project_root=Path.cwd(),
+                        )
+                    finally:
+                        self._workspace.resume_after_external_process()
+
+                await self._input_session.run_terminal_handoff(run_editor)
+
+            external_editor = edit_definition
+
+        conversation = ctx.app_state.conversation
+        if tab:
+            hub_tab = Tab(tab)
+            selected_session = conversation.agents_target() if hub_tab is Tab.NEEDS_YOU else None
+        elif conversation.agents_toast_target() is not None:
+            hub_tab = (
+                Tab.NEEDS_YOU if conversation.background_toast_kind() == "needs" else Tab.RUNNING
+            )
+            selected_session = conversation.agents_toast_target()
+        elif conversation.background_needs_you():
+            hub_tab = Tab.NEEDS_YOU
+            selected_session = conversation.agents_target()
+        else:
+            hub_tab = Tab.RUNNING
+            selected_session = conversation.agents_target()
+
         hub = AgentsHub(
             ctx.console,
             store=service.store,
@@ -2562,7 +2702,8 @@ class TUISession:
             service=service,
             sources=HubSources.default(Path.cwd()),
             app_state=ctx.app_state,
-            tab=Tab(tab) if tab else Tab.RUNNING,
+            tab=hub_tab,
+            select=selected_session,
             run_id=run_id,
             in_session=True,
             dispatch=DispatchDefaults(
@@ -2571,7 +2712,16 @@ class TUISession:
                 set_secret_overrides=ctx.cfg_secret_overrides,
                 dangerously_skip_permissions=ctx.app_state.cli_flags.dangerously_skip_permissions,
             ),
+            generate_definition=generate_definition,
+            effective_tools=effective_tools,
+            external_editor=external_editor,
         )
+        item_target = (
+            conversation.agents_item_target()
+            if hub_tab is Tab.NEEDS_YOU and selected_session == conversation.agents_target()
+            else None
+        )
+        hub.select_attention_target(selected_session, item_target)
         overlays.show(
             AgentsHubOverlay(
                 hub,
@@ -2583,7 +2733,7 @@ class TUISession:
 
     def _agents_hub_service(self) -> tuple[AgentsService | None, BackgroundSettings | None]:
         """The session's agents service, created when the hub first opens."""
-        if self._agents_service is not None:
+        if self._agents_service is not None or self._agents_settings is not None:
             return self._agents_service, self._agents_settings
         from agenthicc.background import (
             AgentsService,
@@ -2597,8 +2747,9 @@ class TUISession:
         settings = load_background_settings(
             config_path=ctx.config_path, overrides=ctx.cfg_overrides
         )
+        self._agents_settings = settings
         if not background_enabled(settings):
-            return None, None
+            return None, settings
         store = BackgroundStore(settings.store_root)
         self._agents_service = AgentsService(
             store,
@@ -2606,8 +2757,42 @@ class TUISession:
             max_workers=settings.manager.max_in_flight_operations,
             poll_interval_s=settings.manager.maintenance_interval_s,
         )
-        self._agents_settings = settings
         return self._agents_service, settings
+
+    def _start_attention_routing(self) -> None:
+        """Publish TUI presence and start the event-driven attention projection."""
+        from agenthicc.background.attention import TUIAttentionLease
+        from agenthicc.background.store import default_background_root
+        from agenthicc.tui.attention import AgentAttentionRouter, _emit_terminal_notification
+
+        service, settings = self._agents_hub_service()
+        if settings is None:
+            return
+        root = settings.store_root or default_background_root()
+        lease = TUIAttentionLease(root)
+        try:
+            lease.acquire()
+        except OSError:
+            log.exception("could not acquire the TUI attention lease")
+        else:
+            self._attention_lease = lease
+
+        if service is None:
+            return
+
+        def set_title(title: str) -> None:
+            self._ctx.console.set_window_title(title)
+
+        router = AgentAttentionRouter(
+            service,
+            settings,
+            self._ctx.app_state,
+            set_terminal_title=set_title,
+            send_terminal_notification=lambda summary: _emit_terminal_notification(
+                self._ctx.console, summary
+            ),
+        )
+        self._attention_task = self._tasks.start(router.run(), name="background-attention-router")
 
     def _switch_to(self, result: HubResult) -> None:
         """Leave this session for another; this one reopens when that one ends."""
@@ -2651,6 +2836,47 @@ class TUISession:
 
     async def _open_agents_hub_command(self, command: OpenAgentsHubCommand) -> None:
         self.open_agents_hub(command.tab, command.run_id)
+
+    # ── the primary agent (AGX-09) ───────────────────────────────────────────
+
+    async def _cycle_agent_command(self, _command: CycleAgentCommand) -> None:
+        self.cycle_agent()
+
+    def cycle_agent(self) -> None:
+        """Tab: talk to the next primary agent from the next turn."""
+        names = [spec.name for spec in self._ctx.agents_registry.primary()]
+        if not names:
+            return
+        current = self._ctx.app_state.agent()
+        following = names[(names.index(current) + 1) % len(names)] if current in names else names[0]
+        self.select_agent(following)
+
+    def select_agent(self, name: str) -> str:
+        """Choose the primary agent; returns what happened, for ``/agent NAME``."""
+        spec = self._ctx.agents_registry.get(name)
+        if spec is None or not spec.primary:
+            available = ", ".join(sorted(item.name for item in self._ctx.agents_registry.primary()))
+            return f"{name!r} is not a primary agent. Choose one of: {available}."
+        self._ctx.app_state.agent.set(spec.name)
+        message = f"Agent: {spec.name} — from the next turn"
+        self._ctx.app_state.conversation.notify_transient(message)
+        return message
+
+    def open_agent_picker(self) -> None:
+        """``/agent``: choose among the primary agents."""
+        from agenthicc.agents.selection import DEFAULT_AGENT, project_default
+        from agenthicc.tui.workspace.overlays.agent_picker import AgentPickerOverlay
+
+        overlays = self._workspace.overlays
+        overlays.show(
+            AgentPickerOverlay(
+                self._ctx.agents_registry.primary(),
+                current=self._ctx.app_state.agent(),
+                default=project_default(Path.cwd()) or DEFAULT_AGENT,
+                choose=self.select_agent,
+                close=overlays.hide,
+            )
+        )
 
     # ── subagents (AGX-08) ───────────────────────────────────────────────────
 
@@ -2702,6 +2928,7 @@ class TUISession:
                 stop=self._stop_subagent,
                 dismiss=self._dismiss_subagent,
                 close=overlays.hide,
+                retry=self._retry_subagent,
             )
         )
 
@@ -2735,13 +2962,34 @@ class TUISession:
         self._ctx.app_state.conversation.notify_transient(f"Stopping {label}")
         return True
 
+    def _retry_subagent(self, pool_id: str, worker_id: str) -> bool:
+        """Retry one failed or cancelled worker without re-running its siblings."""
+        from agenthicc.subagents.pool import retryable_pool
+
+        pool = retryable_pool(pool_id)
+        if pool is None:
+            return False
+        self._tasks.start(
+            self._retry_subagent_async(pool, worker_id),
+            name=f"subagent-retry-{worker_id}",
+        )
+        self._ctx.app_state.conversation.notify_transient("Retrying subagent worker")
+        return True
+
+    async def _retry_subagent_async(self, pool: SubagentPool, worker_id: str) -> None:
+        result = await pool.retry_worker(worker_id)
+        if result is None:
+            self._ctx.app_state.conversation.notify_transient(
+                "This subagent worker can no longer be retried"
+            )
+
     def _dismiss_subagent(self, pool_id: str, worker_id: str) -> bool:
         """``x`` on a failed row: remove it from the panel."""
         from dataclasses import replace as dataclass_replace
 
-        from agenthicc.subagents.pool import active_pool
+        from agenthicc.subagents.pool import active_pool, retryable_pool
 
-        pool = active_pool(pool_id)
+        pool = active_pool(pool_id) or retryable_pool(pool_id)
         if pool is not None:
             return pool.dismiss_worker(worker_id)
         conversation = self._ctx.app_state.conversation
@@ -2826,7 +3074,7 @@ class TUISession:
             config=ctx.cfg,
             session_id=ctx.session_id,
             skills=ctx.skills,
-            active_agent=ctx.app_state.agent(),
+            active_agent="default",
             command_registry=ctx.cmd_registry,
             tools=tool_registry.tools,
             tool_sources=tool_registry.sources,
@@ -2856,44 +3104,28 @@ class TUISession:
             schedule_repository_root=schedule_repository_root,
             schedule_config_path=ctx.config_path or "",
             open_agents_hub=self.open_agents_hub,
+            toggle_dnd=self._toggle_dnd,
             open_subagents=self.open_subagents,
             select_agent=self.select_agent,
             open_agent_picker=self.open_agent_picker,
         )
         return bool(self._cmd_dispatcher.dispatch(text, context))
 
-    def select_agent(self, name: str) -> str:
-        """Choose the primary agent for the next turn."""
-        spec = self._ctx.agents_registry.get(name)
-        if spec is None or not spec.primary:
-            available = ", ".join(sorted(item.name for item in self._ctx.agents_registry.primary()))
-            return f"{name!r} is not a primary agent. Choose one of: {available}."
-        self._ctx.app_state.agent.set(spec.name)
-        message = f"Agent: {spec.name} — from the next turn"
-        self._ctx.app_state.conversation.notify_transient(message)
-        return message
-
-    def open_agent_picker(self) -> None:
-        """Show the primary-agent picker."""
-        from agenthicc.agents.selection import DEFAULT_AGENT, project_default
-        from agenthicc.tui.workspace.overlays.agent_picker import AgentPickerOverlay
-
-        overlays = self._workspace.overlays
-        overlays.show(
-            AgentPickerOverlay(
-                self._ctx.agents_registry.primary(),
-                current=self._ctx.app_state.agent(),
-                default=project_default(Path.cwd()) or DEFAULT_AGENT,
-                choose=self.select_agent,
-                close=overlays.hide,
-            )
-        )
+    def _toggle_dnd(self) -> bool:
+        conversation = self._ctx.app_state.conversation
+        enabled = not conversation.background_dnd()
+        conversation.background_dnd.set(enabled)
+        if enabled:
+            conversation.background_toast.set(None)
+            conversation.background_toast_kind.set(None)
+            conversation.agents_toast_target.set(None)
+        return enabled
 
     def _set_input_text(self, text: str) -> None:
         """Put a registry selection in the composer without submitting it."""
         self._input_session.set_text(text)
 
-    def _usage_snapshot(self) -> "UsageSnapshot":
+    def _usage_snapshot(self) -> UsageSnapshot:
         """Read one local usage snapshot without touching the active runner."""
         from agenthicc.commands.command import UsageSnapshot
 
@@ -2950,7 +3182,7 @@ class TUISession:
             # ESC → Ctrl+C exit attempt on Windows.
             self._input_session.set_mode(InputMode.IDLE)
 
-    def _busy_decision(self, text: str) -> "BusyDecision":
+    def _busy_decision(self, text: str) -> BusyDecision:
         from agenthicc.commands.busy_policy import classify_busy_command
 
         return classify_busy_command(text, self._ctx.cmd_registry)
@@ -2992,7 +3224,7 @@ class TUISession:
             f"⛔ Rejected while busy: {command} — {reason or 'try again after the run'}"
         )
 
-    def _run_busy_immediate(self, text: str, decision: "BusyDecision") -> None:
+    def _run_busy_immediate(self, text: str, decision: BusyDecision) -> None:
         """Run one approved local command through the normal route/dispatcher."""
         try:
             handled = self.route(text)
@@ -3009,7 +3241,7 @@ class TUISession:
             return
         self._ctx.app_state.conversation.notify_transient(f"▶ Ran now: {decision.command_name}")
 
-    def _reload_skills(self) -> "SkillDiscoveryResult":
+    def _reload_skills(self) -> SkillDiscoveryResult:
         """Rescan skill directories and refresh skill-owned dollar commands."""
         from agenthicc.skills.loader import discover_skills_with_diagnostics
 
@@ -3083,10 +3315,12 @@ class TUISession:
         """
         from agenthicc.plugins.discovery import discover_project_tools, warn_conflicts
 
+        subagent_registry = self._ctx.subagent_registry.copy()
         try:
             discovered = discover_project_tools(
                 project_dir=Path(".agenthicc"),
                 user_dir=Path.home() / ".agenthicc",
+                subagent_registry=subagent_registry,
             )
         except Exception as exc:  # noqa: BLE001
             return False, f"Tool reload failed; existing tools kept: {type(exc).__name__}: {exc}"
@@ -3234,49 +3468,16 @@ class TUISession:
         return True, "Commands reloaded — " + "; ".join(summary)
 
     def _handle_workflow_command(self, args: str) -> bool:
-        """Handle workflow selection and durable resume controls."""
+        """Handle /workflow <name> | reset | resume [run-id]."""
         name = args.strip()
         conv = self._ctx.app_state.conversation
         resume_parts = name.split()
         if resume_parts and resume_parts[0] == "resume":
-            run_id: str | None = None
-            profile_override: str | None = None
-            index = 1
-            while index < len(resume_parts):
-                part = resume_parts[index]
-                if part == "--profile":
-                    if profile_override is not None or index + 1 >= len(resume_parts):
-                        conv.notify_transient(
-                            "⚠ Usage: /workflow resume [run-id] [--profile <name|none>]"
-                        )
-                        return True
-                    raw_profile = resume_parts[index + 1]
-                    profile_override = "" if raw_profile.casefold() == "none" else raw_profile
-                    index += 2
-                    continue
-                if part.startswith("--profile="):
-                    if profile_override is not None:
-                        conv.notify_transient(
-                            "⚠ Usage: /workflow resume [run-id] [--profile <name|none>]"
-                        )
-                        return True
-                    raw_profile = part.partition("=")[2]
-                    if not raw_profile:
-                        conv.notify_transient(
-                            "⚠ Usage: /workflow resume [run-id] [--profile <name|none>]"
-                        )
-                        return True
-                    profile_override = "" if raw_profile.casefold() == "none" else raw_profile
-                    index += 1
-                    continue
-                if part.startswith("-") or run_id is not None:
-                    conv.notify_transient(
-                        "⚠ Usage: /workflow resume [run-id] [--profile <name|none>]"
-                    )
-                    return True
-                run_id = part
-                index += 1
-            return self._handle_workflow_resume(run_id, profile_override=profile_override)
+            if len(resume_parts) > 2:
+                conv.notify_transient("⚠ Usage: /workflow resume [run-id]")
+                return True
+            run_id = resume_parts[1] if len(resume_parts) == 2 else None
+            return self._handle_workflow_resume(run_id)
         if not name or name == "reset" or name.startswith("reset "):
             requested_reset_id = name.partition(" ")[2].strip() or None
             # `/workflow reset` must always clear the session-local selector.
@@ -3395,12 +3596,7 @@ class TUISession:
         conv.notify_transient(f"⚡ Workflow → {name}")
         return True
 
-    def _handle_workflow_resume(
-        self,
-        run_id: str | None,
-        *,
-        profile_override: str | None = None,
-    ) -> bool:
+    def _handle_workflow_resume(self, run_id: str | None) -> bool:
         """Claim and resume one paused or process-interrupted workflow.
 
         An omitted ID selects the newest eligible durable checkpoint, then
@@ -3528,11 +3724,9 @@ class TUISession:
         if definition is None or handle.context is None:
             conv.notify_transient(f"⚠ Workflow '{handle.workflow_name}' is not available to resume")
             return True
-        claimed_here = False
         if handle.claim_owner_id is None:
             try:
                 handle.claim(f"{self._workflow_owner_prefix}:{handle.run_id}")
-                claimed_here = True
             except Exception as exc:  # noqa: BLE001
                 from agenthicc.runners.workflow_checkpoint_store import WorkflowClaimError
 
@@ -3551,49 +3745,6 @@ class TUISession:
                         f"{type(exc).__name__}: {exc}"
                     )
                 return True
-
-        # Resolve the provider only after ownership is established. This keeps
-        # claim-conflict diagnostics independent of local provider config and
-        # ensures a rejected profile can never modify an unowned checkpoint.
-        from agenthicc.runners.workflow_profile import (
-            WorkflowProfileResolutionError,
-            execution_profile_override,
-            resolve_resume_provider_profile,
-        )
-
-        explicit_profile = profile_override
-        if explicit_profile is None:
-            explicit_profile = execution_profile_override(self._ctx.cfg_overrides)
-        try:
-            profile_selection = resolve_resume_provider_profile(
-                self._ctx.cfg,
-                saved_profile=handle.provider_profile,
-                saved_binding_fingerprint=handle.provider_profile_fingerprint,
-                explicit_profile=explicit_profile,
-            )
-        except WorkflowProfileResolutionError as exc:
-            if claimed_here:
-                self._release_workflow_claim(handle)
-            conv.notify_transient(f"⚠ Cannot resume {handle.run_id!r}: {exc}")
-            return True
-        old_binding = handle.provider_profile_fingerprint
-        record_switch = profile_selection.source == "explicit override" and (
-            profile_selection.switched
-            or (bool(old_binding) and old_binding != profile_selection.binding_fingerprint)
-        )
-        previous_profile_state = (
-            handle.provider_profile,
-            handle.provider_profile_fingerprint,
-            handle.provider_profile_origin,
-            handle.provider_profile_history,
-            handle.lifecycle,
-            handle.pause_requested,
-        )
-        handle.apply_provider_profile(
-            profile_selection.profile_name,
-            profile_selection.binding_fingerprint,
-            record_switch=record_switch,
-        )
         try:
             # Move to RESUMING before creating the task. This closes the small
             # race where Esc arrives after the command claims the run but
@@ -3603,44 +3754,16 @@ class TUISession:
             handle.mark_resuming()
             handle.persist_checkpoint(reason="resuming")
         except Exception as exc:  # noqa: BLE001
-            (
-                handle.provider_profile,
-                handle.provider_profile_fingerprint,
-                handle.provider_profile_origin,
-                handle.provider_profile_history,
-                handle.lifecycle,
-                handle.pause_requested,
-            ) = previous_profile_state
             self._release_workflow_claim(handle)
             conv.notify_transient(
                 f"⚠ resume_transition_failed: cannot start workflow {handle.run_id!r}: "
                 f"{type(exc).__name__}: {exc}"
             )
             return True
-        self._publish_session_event(
-            "workflow_resume_profile_selected",
-            {
-                "run_id": handle.run_id,
-                "saved_profile": profile_selection.saved_profile,
-                "selected_profile": profile_selection.profile_name,
-                "source": profile_selection.source,
-                "switched": record_switch,
-                "binding_fingerprint": profile_selection.binding_fingerprint,
-            },
-        )
         context = handle.context
         assert context is not None  # validated above; narrows the runner input
-        self._dispatch_workflow_resume(
-            definition,
-            handle,
-            context,
-            profile_selection=profile_selection,
-        )
-        conv.notify_transient(
-            f"↻ Resuming workflow '{handle.workflow_name}' with profile "
-            f"{profile_selection.profile_name or 'legacy execution settings'} "
-            f"({profile_selection.source})…"
-        )
+        self._dispatch_workflow_resume(definition, handle, context)
+        conv.notify_transient(f"↻ Resuming workflow '{handle.workflow_name}'…")
         return True
 
     async def _handle_compact_command(self) -> None:
@@ -3648,7 +3771,6 @@ class TUISession:
         from agenthicc.runners.session_conversation import (
             ConversationBusyError,
         )
-
         from agenthicc.runners.startup import StartupDependencyError
 
         ctx = self._ctx
@@ -3992,6 +4114,7 @@ class TUISession:
         async def _run_inner() -> None:
             if _plugin_cls is not None:
                 import dataclasses as _dc
+
                 from agenthicc.workflows.plugin import WorkflowContext
 
                 required_phases = tuple(
@@ -4051,7 +4174,6 @@ class TUISession:
                 ):
                     from agenthicc.runners.workflow_checkpoint_store import WorkflowCheckpointStore
                     from agenthicc.runners.workflow_handle import WorkflowRunHandle
-                    from agenthicc.runners.workflow_profile import provider_profile_fingerprint
 
                     session_conversation = ctx.session_conversation
                     if session_conversation is not None:
@@ -4063,9 +4185,6 @@ class TUISession:
                             checkpoint_store=WorkflowCheckpointStore(ctx.session_id),
                             browser_manager=ctx.browser_manager,
                             provider_profile=ctx.cfg.execution.profile,
-                            provider_profile_fingerprint=provider_profile_fingerprint(
-                                ctx.cfg, ctx.cfg.execution.profile
-                            ),
                             workspace_root=str(
                                 getattr(ctx.workspace_scope, "primary_root", "") or ""
                             ),
@@ -4148,12 +4267,9 @@ class TUISession:
                 from agenthicc.agents.selection import AgentUnavailable, turn_agent
 
                 try:
-                    selected_agent = turn_agent(
-                        ctx.agents_registry,
-                        ctx.app_state.agent(),
-                        ctx.cfg,
-                    )
+                    agent = turn_agent(ctx.agents_registry, ctx.app_state.agent(), ctx.cfg)
                 except AgentUnavailable as exc:
+                    # Before any provider call: never another agent silently.
                     ctx.app_state.conversation.append_event("error", {"message": f"⚠ {exc}"})
                     return
                 await _run_agent_turn(
@@ -4162,14 +4278,12 @@ class TUISession:
                     ctx.processor,
                     session_memory=ctx.session_memory,
                     conversation_id=ctx.session_id,
-                    max_agent_turns=selected_agent.max_agent_turns,
+                    max_agent_turns=agent.max_agent_turns,
                     conv_store=ctx.app_state.conversation,
                     app_state=ctx.app_state,
-                    exec_cfg=selected_agent.exec_cfg,
+                    exec_cfg=agent.exec_cfg,
                     skills=ctx.skills,
-                    skill_permissions=ctx.cfg.agents.skill_permissions_for(
-                        selected_agent.spec.name
-                    ),
+                    skill_permissions=ctx.cfg.agents.skill_permissions_for(agent.spec.name),
                     mention_cache=ctx.mention_cache,
                     project_plugin_tools=(
                         cast("list[ToolLike]", ctx.project_plugins.all_tools)
@@ -4181,9 +4295,10 @@ class TUISession:
                         + list(ctx.browser_tools)
                     ),
                     mcp_registry=ctx.mcp_registry,
-                    active_agent=selected_agent.spec.name,
-                    agent_spec=selected_agent.spec,
+                    active_agent=agent.spec.name,
+                    agent_spec=agent.spec,
                     agents_registry=ctx.agents_registry,
+                    subagent_registry=ctx.subagent_registry,
                     agent_config=ctx.cfg,
                     completed_turns=self._turn_count,
                     approval_svc=ctx.approval_svc,
@@ -4203,7 +4318,7 @@ class TUISession:
                 await asyncio.wait_for(_run_inner(), timeout=_timeout)
             else:
                 await _run_inner()
-        except asyncio.TimeoutError:
+        except TimeoutError:
             if self._workflow_handle is not None:
                 self._fail_workflow_run(
                     f"TimeoutError: Turn timed out after {_timeout:.0f}s",
@@ -4303,7 +4418,7 @@ class TUISession:
             # close_turn() is idempotent — inner layers may have already called it.
             conv.close_turn()
             self._input_session.set_mode(InputMode.IDLE)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - surface unexpected turn failures in the UI
             turn_failed = True
             error = _fmt_exc(exc)
             error_event_id = getattr(exc, "_agenthicc_error_event_id", None)
@@ -4341,7 +4456,7 @@ class TUISession:
             self._agent_task = None
             self.advance()
 
-    async def _finalize_workflow_pause(self, handle: "WorkflowRunHandle") -> None:
+    async def _finalize_workflow_pause(self, handle: WorkflowRunHandle) -> None:
         """Persist a paused workflow only after the runner has unwound."""
         from agenthicc.kernel import Event
 
@@ -4414,7 +4529,7 @@ class TUISession:
                 if self._workflow_handle is handle:
                     self._workflow_handle = None
 
-    async def handle_send(self, cmd: "SendMessageCommand") -> None:
+    async def handle_send(self, cmd: SendMessageCommand) -> None:
         """Route user message: slash → command dispatcher, text → agent."""
         text = cmd.text.strip()
         source_value = vars(cmd).get("source", "user")
@@ -4448,12 +4563,15 @@ class TUISession:
             self._notify_queued(text)
             return
 
-        if isinstance(self, TUISession) and not text.startswith(("/", "$")):
-            if self._start_workflow_continuation(text):
-                self._ctx.app_state.conversation.append_event(
-                    "user_message", {"text": text, "source": source}
-                )
-                return
+        if (
+            isinstance(self, TUISession)
+            and not text.startswith(("/", "$"))
+            and self._start_workflow_continuation(text)
+        ):
+            self._ctx.app_state.conversation.append_event(
+                "user_message", {"text": text, "source": source}
+            )
+            return
 
         if self.route(text):
             if self._pending_skill_body:
@@ -4494,7 +4612,7 @@ class TUISession:
             self._activate_streaming_input()
         self._agent_task = asyncio.create_task(task, name="agent-turn")
 
-    def handle_interrupt(self, cmd: "InterruptAgentCommand") -> None:
+    def handle_interrupt(self, cmd: InterruptAgentCommand) -> None:
         """Cancel, or cooperatively pause, the current agent task."""
         # Cancellation may happen before the agent's ``turn_complete`` event
         # is delivered.  Flush the appender first so a collapsed tool group is
@@ -4537,7 +4655,7 @@ class TUISession:
         except (asyncio.CancelledError, KeyboardInterrupt):
             ctx.app_state.conversation.notification.set("⏮ Replay cancelled.")
             raise
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - report replay failures in the session UI
             ctx.app_state.conversation.notification.set(f"⏮ Replay error: {exc}")
         finally:
             ctx.mode_manager.restore(prior_mode)
@@ -4638,7 +4756,6 @@ class TUISession:
         *,
         continuation: str | None = None,
         turn_id: str | None = None,
-        profile_selection: "ResumeProviderProfile | None" = None,
     ) -> None:
         """Resume a WorkflowRunner with the session conversation still attached."""
         from agenthicc.tui.input.unified_session import InputMode
@@ -4658,30 +4775,8 @@ class TUISession:
             self._publish_session_event("turn_started", turn_id=turn_id)
         try:
             import dataclasses as _dc
-            from agenthicc.runners.workflow_profile import (
-                resolve_resume_provider_profile,
-                workflow_resume_agent_runner,
-            )
 
-            startup = ctx.startup
-            if startup is not None:
-                await startup.wait_for("provider_journal_restore")
-            if profile_selection is None:
-                if handle is None:
-                    raise RuntimeError("workflow resume has no durable run handle")
-                profile_selection = resolve_resume_provider_profile(
-                    ctx.cfg,
-                    saved_profile=handle.provider_profile,
-                    saved_binding_fingerprint=handle.provider_profile_fingerprint,
-                )
-            resume_agent_runner = workflow_resume_agent_runner(
-                ctx.agent_runner,
-                profile_selection,
-                conversation_id=ctx.session_id,
-            )
-            prepare_provider = getattr(resume_agent_runner, "prepare", None)
-            if callable(prepare_provider):
-                await asyncio.to_thread(prepare_provider)
+            await self._await_agent_runtime()
             if conversation is not None:
                 await conversation.acquire(owner_id)
                 acquired = True
@@ -4743,17 +4838,12 @@ class TUISession:
                         "workflow declares startup dependencies but readiness is unavailable"
                     )
                 for phase in required_phases:
-                    if phase != "provider":
-                        _prepare_startup_dependency(ctx, phase)
-                wait_phases = tuple(phase for phase in required_phases if phase != "provider")
-                if wait_phases:
-                    await startup.wait_for(*wait_phases)
+                    _prepare_startup_dependency(ctx, phase)
+                await startup.wait_for(*required_phases)
             _wf_params = wf_defn.build_params(ctx.cfg.workflows.get(wf_defn.name, {}))
             _phase_specs = wf_defn.phases
             _wf_config = _dc.replace(
                 self._wf_config_base,
-                agent_runner=cast("AgentRunnerBase", resume_agent_runner),
-                cfg=profile_selection.config,
                 params=_wf_params,
                 workflow_handle=handle,
                 session_memory=ctx.session_memory,
@@ -4764,9 +4854,7 @@ class TUISession:
                     if hasattr(phase, "name") and hasattr(phase, "terminal_wait_policy")
                 },
                 startup=ctx.startup,
-                required_startup_phases=tuple(
-                    phase for phase in required_phases if phase != "provider"
-                ),
+                required_startup_phases=required_phases,
             )
             runner = wf_defn.build_runner(_wf_config, ctx.mode_manager)
             # The task argument is normally the same object as the handle's
@@ -4823,7 +4911,7 @@ class TUISession:
                 self._fail_workflow_run("cancelled", kind="user_cancelled")
             ctx.app_state.conversation.close_turn()
             self._input_session.set_mode(InputMode.IDLE)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - route unexpected workflow failures to the UI
             conv = ctx.app_state.conversation
             error = _fmt_exc(exc)
             error_event_id = getattr(exc, "_agenthicc_error_event_id", None)
@@ -4876,6 +4964,7 @@ class TUISession:
         """Start tasks, run input session, tear down."""
         from agenthicc.tui.runtime import (
             BackgroundSubagentsCommand,
+            CycleAgentCommand,
             InterruptAgentCommand,
             OpenAgentsHubCommand,
             OpenSubagentsCommand,
@@ -4885,6 +4974,7 @@ class TUISession:
         ctx = self._ctx
 
         ctx.command_bus.register(SendMessageCommand, self.handle_send)
+        ctx.command_bus.register(CycleAgentCommand, self._cycle_agent_command)
         ctx.command_bus.register(InterruptAgentCommand, self.handle_interrupt)
         ctx.command_bus.register(OpenAgentsHubCommand, self._open_agents_hub_command)
         ctx.command_bus.register(OpenSubagentsCommand, self._open_subagents_command)
@@ -4919,6 +5009,7 @@ class TUISession:
         # project extension code, so it starts only after that first frame and
         # is joined at the agent-operation boundary.
         self._start_deferred_startup()
+        self._tasks.start(self._watch_agent_definitions(), name="agent-definitions-watch")
         self._start_agent_runtime()
         if ctx.resumed:
             from agenthicc.runners.startup import ReadinessState
@@ -5028,6 +5119,7 @@ class TUISession:
             keymap_service.watch() if keymap_service is not None else asyncio.sleep(0)
         )
         try:
+            self._start_attention_routing()
             await self._input_session.run()
         finally:
             # Input can exit while an ESC-triggered cancellation is still
@@ -5066,6 +5158,9 @@ class TUISession:
             agents_service, self._agents_service = self._agents_service, None
             if agents_service is not None:
                 await agents_service.close()
+            attention_lease, self._attention_lease = self._attention_lease, None
+            if attention_lease is not None:
+                attention_lease.close()
 
 
 # ── thin factory (≤60 lines) ──────────────────────────────────────────────────
@@ -5088,7 +5183,7 @@ async def _run_tui_session(
     workflow_name: str | None = None,
     agent_name: str | None = None,
     owner_lease: SessionOwnerLease | None = None,
-    config: "AgenthiccConfig | None" = None,
+    config: AgenthiccConfig | None = None,
 ) -> None:
     """Run the reactive TUI, optionally from a resumed session's project.
 
@@ -5144,9 +5239,12 @@ async def _run_tui_session(
                 config=config,
             )
             switch = None
-            if result is not None and result.session_id is not None:
-                if result.action in ("attach", "open_saved"):
-                    switch = await run_target(result.action, result.session_id)
+            if (
+                result is not None
+                and result.session_id is not None
+                and result.action in ("attach", "open_saved")
+            ):
+                switch = await run_target(result.action, result.session_id)
         else:
             returns.append((switch.origin, switch.origin_cwd))
             switch = await run_target(switch.action, switch.target)
@@ -5192,7 +5290,7 @@ async def _agents_hub_after_background(
     config_path: str | None,
     overrides: tuple[str, ...],
     secret_overrides: tuple[str, ...],
-    config: "AgenthiccConfig | None",
+    config: AgenthiccConfig | None,
 ) -> HubResult | None:
     """After ``/background``: the agents hub with the new background agent selected."""
     from rich.console import Console
@@ -5242,7 +5340,7 @@ async def _run_tui_session_in(
     workflow_name: str | None,
     agent_name: str | None,
     owner_lease: SessionOwnerLease | None,
-    config: "AgenthiccConfig | None",
+    config: AgenthiccConfig | None,
 ) -> SessionSwitch | None:
     """Run one session, in *cwd* when given; return where to go next."""
     if cwd is None:
@@ -5291,19 +5389,19 @@ async def _run_tui_session_impl(
     workflow_name: str | None = None,
     agent_name: str | None = None,
     owner_lease: SessionOwnerLease | None = None,
-    config: "AgenthiccConfig | None" = None,
+    config: AgenthiccConfig | None = None,
 ) -> SessionSwitch | None:
     """Reactive TUI session — single entry point, no legacy branches.
 
     Returns where to go when the session ends (:class:`SessionSwitch`).
     """
-    from agenthicc.tui.workspace import Workspace
     from agenthicc.tui.input.unified_session import UnifiedInputSession
     from agenthicc.tui.welcome import (
         fetch_changelog,
         load_cached_changelog,
         print_welcome,
     )
+    from agenthicc.tui.workspace import Workspace
 
     cassette_base: Path | None = Path(record_cassette) if record_cassette else None
     cached_changelog = load_cached_changelog()
@@ -5389,7 +5487,7 @@ async def _run_tui_session_impl(
                 await asyncio.gather(changelog_task, return_exceptions=True)
             if ctx is not None:
                 await _close_tui_session_resources(ctx, None, None, None)
-        except BaseException:
+        except BaseException:  # noqa: BLE001 - preserve the startup failure
             pass
         raise
     try:
@@ -5409,9 +5507,9 @@ async def _run_tui_session_impl(
 
 
 async def _close_tui_session_resources(
-    ctx: "SessionContext",
+    ctx: SessionContext,
     session: TUISession | None,
-    terminal_context_token: contextvars.Token["TerminalManager | None"] | None,
+    terminal_context_token: contextvars.Token[TerminalManager | None] | None,
     cassette_base: Path | None,
 ) -> None:
     """Close TUI resources and release the outer session lease last."""
@@ -5469,11 +5567,11 @@ async def _close_tui_session_resources(
 def _write_cassette_meta(cassette_dir: Path, session_id: str) -> None:
     """Write meta.json alongside the cassette files."""
     import json as _json
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     meta = {
         "session_id": session_id,
-        "recorded_at": datetime.now(timezone.utc).isoformat(),
+        "recorded_at": datetime.now(UTC).isoformat(),
         "intent": "",  # filled in manually or from history
     }
     try:
@@ -5508,9 +5606,9 @@ def _exit_for_session_owner_conflict(exc: SessionAlreadyActiveError) -> NoReturn
 
 
 def _run_tui(ctx: CLIContext) -> None:
-    try:
-        from rich.console import Console  # noqa: F401
-    except ImportError:
+    from importlib.util import find_spec
+
+    if find_spec("rich") is None:
         print("error: TUI requires rich — pip install agenthicc", file=sys.stderr)
         sys.exit(1)
 
@@ -5567,7 +5665,7 @@ def _run_tui(ctx: CLIContext) -> None:
     except SessionStorageError as exc:
         print(f"error: {exc.code}: {exc}", file=sys.stderr)
         sys.exit(1)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - render unexpected startup errors for the operator
         print(f"TUI error: {exc}", file=sys.stderr)
         sys.exit(1)
     except KeyboardInterrupt:

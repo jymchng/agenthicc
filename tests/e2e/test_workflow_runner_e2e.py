@@ -194,12 +194,12 @@ async def test_e2e_opt_in_cap_stops_rejection_loop(app_state, processor, tmp_pat
     assert len(phase_names) <= 3
 
 
-async def test_e2e_agents_registry_resolves_system_prompt(app_state, processor, tmp_path):
-    """make_instance() reads the system prompt from the built-in Markdown spec."""
+async def test_e2e_agents_registry_resolves_markdown_system_prompt(app_state, processor, tmp_path):
+    """The built-in planner's Markdown body is its system prompt."""
     registry = build_agents_registry()
-    definition = registry.get("planner")
-    assert definition is not None
-    assert "planning" in definition.prompt.lower()
+    defn = registry.get("planner")
+    assert defn is not None
+    assert "planning" in defn.prompt.lower()
 
 
 async def test_e2e_workflow_context_injected(app_state, processor, tmp_path):

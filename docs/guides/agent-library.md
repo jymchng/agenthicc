@@ -10,11 +10,14 @@ the `agenthicc agents definitions` commands.
 - User definitions live in `~/.agenthicc/agents/*.md`.
 - Project definitions live in `.agenthicc/agents/*.md`.
 
-When names collide, project definitions win over user definitions, Python agent
-plugins, and built-ins. The Library and CLI retain shadowed entries and show
-which source wins. Project Markdown definitions must have digest-bound trust
-before they are loaded; creating one in the Library records trust, while editing
-an existing project definition revokes its prior trust so changed content is
+Among valid definitions, project definitions take precedence over user definitions,
+Python agent plugins, and built-ins. The Library and CLI retain shadowed entries
+and show which source wins. For subagent definitions, a project definition that
+shadows a built-in worker role must set `override: true`; otherwise that subagent definition is refused. Invalid or untrusted
+higher-precedence definitions do not fall through
+to a broader built-in subagent. Project Markdown definitions need digest-bound
+trust before they are loaded. Creating one in the Library records trust, while
+editing an existing project definition revokes trust so changed content is
 reviewed before use. See [Extensions](plugins.md#trust-and-dependencies).
 
 ## Markdown format
@@ -27,30 +30,70 @@ as the role prompt:
 name: reviewer
 description: Reviews a change for correctness and security.
 mode: subagent
-model: ""
+model: ""                # model id or provider profile; blank uses session/default
+effort: high
+context: 24000
+output: {"type":"object","properties":{"summary":{"type":"string"},"findings":{"type":"array","items":{"type":"string"}}},"required":["summary","findings"],"additionalProperties":false}
 tools: [read_file, git_diff]
 capabilities: [read, git_read, search]
 max_steps: 30
 ceiling: Plan
 color: cyan
 hidden: false
+override: false
+permissions:
+  deny_tools: [outlook_*]
+  deny_capabilities: [write]
+  require_approval: [execute]
+  workspace_paths: [docs]
 ---
 
 Review the change carefully. Report actionable findings with file and line.
 ```
 
 `name` and `description` are required. `mode` is `primary`, `subagent`, or
-`all`; blank `model` uses the session's configured model. `tools` and
-`capabilities` are optional allow-lists and are intersected with the session's
-available tools and policy. `ceiling` can only restrict the active mode. Unknown
-fields, malformed values, and invalid names are errors with file and line
-information; they are not silently ignored.
+`all`. For subagent definitions, blank `model` uses the operator's
+`subagents.default_model` when set, otherwise the parent model; `model: inherit`
+explicitly selects the parent and bypasses that default. Primary definitions use
+the session's configured model when `model` is blank. `effort` may be `none`,
+`minimal`, `low`, `medium`, `high`, or `xhigh`; `context` is a positive token
+budget. These fields may also use operator defaults from `[subagents]`; context
+is clamped to the selected model's window. See [subagent routing](subagents.md#memory-and-provider-calls)
+for precedence and provider-fallback behavior. `tools` and `capabilities` are
+optional allow-lists and are intersected with the session's available tools and
+policy. `ceiling` can only restrict the active mode. Set `override: true` only
+when a project subagent definition is intended to replace a built-in worker
+role. Unknown fields, malformed values, and invalid names are errors with file
+and line information; they are not silently ignored.
+
+`output` is an optional, single-line JSON Schema object for subagent definitions.
+When present, the worker must submit its result with `submit_subagent_result`;
+prose alone cannot satisfy the contract. The declared schema becomes that tool's
+input schema, and the runtime validates the submitted object before returning it
+as a structured value. Schemas are bounded to 16 KiB and a restricted local
+Draft 2020-12 subset; remote references and secret-shaped property names are
+rejected. Submitted JSON is bounded to 64 KiB. Types without `output` continue
+to return plain text. See [structured subagent results](subagents.md#structured-result-contracts).
 
 The supported frontmatter fields are `name`, `description`, `mode`, `model`,
-`tools`, `capabilities`, `max_steps`, `ceiling`, `color`, and `hidden`. Lists may
-use `[item, item]` or one `- item` per indented line. The parser intentionally
-supports a small YAML subset; YAML features such as anchors and block scalars
-are not accepted.
+`tools`, `capabilities`, `max_steps`, `ceiling`, `color`, `hidden`, `override`,
+`effort`, `context`, `output`, and the optional nested `permissions` mapping.
+Permission constraints apply to subagent execution (`mode: subagent` or
+`mode: all`) and can only reduce the inherited session policy; a primary-only
+definition with `permissions` is rejected:
+
+- `deny_tools` blocks matching tool names; `fnmatch` patterns such as
+  `outlook_*` are supported and take precedence over allow-lists.
+- `deny_capabilities` hard-blocks those capability classes for this type.
+- `require_approval` adds approval requirements for those capabilities where
+  the inherited mode does not already block them.
+- `workspace_paths` narrows filesystem access to roots within the inherited
+  workspace scope. An empty list denies all workspace paths; a path outside the
+  inherited scope makes the definition unavailable rather than widening access.
+
+Lists may use `[item, item]` or one `- item` per indented line, including under
+`permissions`. The parser intentionally supports a small YAML subset; YAML
+features such as anchors and block scalars are not accepted.
 
 ## Manage definitions
 

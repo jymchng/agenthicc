@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, NotRequired, TypedDict
 
 from agenthicc.supervised_tasks import SupervisedTasks
@@ -111,7 +111,14 @@ if TYPE_CHECKING:
     from agenthicc.tools.workspace_access import WorkspaceAccessPolicy
     from agenthicc.agents.definitions import AgentSpec
     from agenthicc.agents.registry import AgentsRegistry
+    from agenthicc.subagents.types import SubagentTypeRegistry
     from agenthicc.config import AgenthiccConfig
+
+
+def _new_subagent_registry() -> "SubagentTypeRegistry":
+    from agenthicc.subagents.types import DEFAULT_REGISTRY
+
+    return DEFAULT_REGISTRY.copy()
 
 
 class AgentTurnOptions(TypedDict):
@@ -146,6 +153,7 @@ class AgentTurnOptions(TypedDict):
     provider_diagnostic_context: NotRequired[dict[str, str | int] | None]
     agent_spec: NotRequired["AgentSpec | None"]
     agents_registry: NotRequired["AgentsRegistry | None"]
+    subagent_registry: NotRequired["SubagentTypeRegistry"]
     agent_config: NotRequired["AgenthiccConfig | None"]
 
 
@@ -180,10 +188,13 @@ class AgentTurnContext:
 
     # ── agent identity ────────────────────────────────────────────────────────
     active_agent: "str | None" = None  # None → "default"
-    #: The primary agent's definition for a direct turn (AGX-09).
+    #: The primary agent's definition for a direct turn (AGX-09): its prompt,
+    #: tool and capability allow-lists and ceiling restrict this turn.
     agent_spec: "AgentSpec | None" = None
-    #: Registry for primary selection and explicit @agent mentions.
+    #: Definitions and provider profiles for ``@agent:NAME`` invocation (AGX-09).
     agents_registry: "AgentsRegistry | None" = None
+    #: Session-owned base registry for spawn_subagents, before agent definitions project in.
+    subagent_registry: "SubagentTypeRegistry" = field(default_factory=_new_subagent_registry)
     agent_config: "AgenthiccConfig | None" = None
     completed_turns: int = 0
 

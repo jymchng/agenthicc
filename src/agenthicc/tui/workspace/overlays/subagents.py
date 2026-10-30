@@ -112,7 +112,7 @@ def _first_line(text: str) -> str:
 def _hints(app_state: AppState, context: str, conditions: frozenset[str]) -> str:
     from rich.markup import escape
 
-    hints = app_state.require_keymap().hints(context, conditions)
+    hints = app_state.keymap().hints(context, conditions)
     return "   ".join(f"[bold]{escape(h.keys)}[/bold] [dim]{escape(h.label)}[/dim]" for h in hints)
 
 
@@ -130,6 +130,7 @@ class SubagentsOverlay(Overlay):
         stop: Callable[[str, str], bool],
         dismiss: Callable[[str, str], bool],
         close: Callable[[], None],
+        retry: Callable[[str, str], bool] | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self._state = app_state
@@ -137,12 +138,13 @@ class SubagentsOverlay(Overlay):
         self._open = open_transcript
         self._stop = stop
         self._dismiss = dismiss
+        self._retry = retry
         self._close = close
         self._clock = clock
         self._selected: tuple[str, str] | None = None
         self._height = 12
         self._width = 80
-        self._dispatcher = Dispatcher(app_state.require_keymap())
+        self._dispatcher = Dispatcher(app_state.keymap())
 
     def set_viewport(self, width: int, height: int) -> None:
         self._width = max(20, width)
@@ -190,6 +192,16 @@ class SubagentsOverlay(Overlay):
             flags.add("running_worker")
         if entry.current and entry.worker.status == "failed" and not entry.worker.dismissed:
             flags.add("failed_worker")
+        if entry.current:
+            current = self._state.conversation.subagent_pool_state()
+            lifecycle = current.lifecycle(entry.worker.worker_id) if current is not None else None
+            if (
+                current is not None
+                and not current.active
+                and lifecycle is not None
+                and lifecycle.phase in {"failed", "cancelled"}
+            ):
+                flags.add("retryable_worker")
         return frozenset(flags)
 
     def render(self) -> RenderableType:
@@ -234,7 +246,7 @@ class SubagentsOverlay(Overlay):
         return Group(*(Text.from_markup(line, emoji=False) for line in lines))
 
     def handle_key(self, key: Key, ch: str) -> bool:
-        self._dispatcher.keymap = self._state.require_keymap()
+        self._dispatcher.keymap = self._state.keymap()
         action = self._dispatcher.dispatch("subagents", key_name(key, ch), self.conditions())
         if action is None:
             return True
@@ -254,6 +266,8 @@ class SubagentsOverlay(Overlay):
             )
         elif action.name == "subagents.stop" and entry is not None:
             self._stop(entry.pool_id, entry.worker.worker_id)
+        elif action.name == "subagents.retry" and entry is not None and self._retry is not None:
+            self._retry(entry.pool_id, entry.worker.worker_id)
         elif action.name == "subagents.dismiss" and entry is not None:
             if self._dismiss(entry.pool_id, entry.worker.worker_id) and len(rows) > 1:
                 neighbour = rows[index + 1] if index + 1 < len(rows) else rows[index - 1]
@@ -341,7 +355,7 @@ class SubagentTranscriptOverlay(Overlay):
         self._follow = True
         self._height = 12
         self._width = 80
-        self._dispatcher = Dispatcher(app_state.require_keymap())
+        self._dispatcher = Dispatcher(app_state.keymap())
         self._reset_scroll()
 
     @property
@@ -412,7 +426,7 @@ class SubagentTranscriptOverlay(Overlay):
         return Group(*(Text.from_markup(line, emoji=False) for line in lines))
 
     def handle_key(self, key: Key, ch: str) -> bool:
-        self._dispatcher.keymap = self._state.require_keymap()
+        self._dispatcher.keymap = self._state.keymap()
         action = self._dispatcher.dispatch("transcript", key_name(key, ch), self.conditions())
         if action is None:
             return True

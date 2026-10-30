@@ -232,11 +232,17 @@ async def test_history_input_ready_callback_marks_noninteractive_and_interactive
     class Backend:
         interactive = False
 
+        def __init__(self) -> None:
+            self.reporting: list[dict[str, bool | None]] = []
+
         def is_interactive(self) -> bool:
             return self.interactive
 
         def enter_raw_mode(self):
             return nullcontext()
+
+        def set_reporting(self, *, focus: bool | None = None, mouse: bool | None = None) -> None:
+            self.reporting.append({"focus": focus, "mouse": mouse})
 
         def read_key(self):
             return Key.CTRL_D, ""
@@ -251,6 +257,7 @@ async def test_history_input_ready_callback_marks_noninteractive_and_interactive
     backend.interactive = True
     await session.run()
     assert result == [False, True]
+    assert backend.reporting == [{"focus": True, "mouse": False}]
 
 
 def test_transcript_history_detail_serializes_event_without_hidden_or_private_fields() -> None:

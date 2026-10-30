@@ -249,10 +249,20 @@ def _mark_shadowed(
 ) -> tuple[CatalogEntry, ...]:
     """Mark each active entry that is not the registered winner as shadowed."""
     result: list[CatalogEntry] = []
+    reported: set[tuple[str, str, str]] = set()
     for entry in entries:
         winner = registry.get(entry.name)
         if entry.state == "active" and winner is not None and entry.spec is not winner:
             entry = replace(entry, state="shadowed", shadowed_by=winner.source)
+            report = (entry.name, entry.source, winner.source)
+            if report not in reported:
+                log.warning(
+                    "Agent definition %r from %s is shadowed by %s",
+                    entry.name,
+                    entry.source,
+                    winner.source,
+                )
+                reported.add(report)
         result.append(entry)
     return tuple(result)
 
@@ -270,10 +280,17 @@ def _scan_markdown(
     kept: dict[Path, AgentSpec],
 ) -> list[CatalogEntry]:
     entries: list[CatalogEntry] = []
+    builtin_subagent_names: frozenset[str] = frozenset()
+    if source == "project":
+        from agenthicc.subagents.types import _BUILTIN_REGISTRY
+
+        builtin_subagent_names = frozenset(_BUILTIN_REGISTRY.names())
     try:
         paths = sorted(directory.glob("*.md"))
     except OSError:
         return entries
+
+    parsed: dict[Path, AgentSpec] = {}
     for path in paths:
         if path.name.startswith(("_", ".")):
             continue
@@ -282,7 +299,9 @@ def _scan_markdown(
             entries.append(CatalogEntry(name, source, "untrusted", path=path))
             continue
         try:
-            spec = parse_definition(path.read_text(encoding="utf-8"), path=path, source=source)
+            parsed[path] = parse_definition(
+                path.read_text(encoding="utf-8"), path=path, source=source
+            )
         except (DefinitionError, OSError, UnicodeDecodeError) as exc:
             error = (
                 exc
@@ -302,6 +321,38 @@ def _scan_markdown(
                     error=error,
                     kept_previous=previous is not None,
                 )
+            )
+
+    paths_by_name: dict[str, list[Path]] = {}
+    for path, spec in parsed.items():
+        paths_by_name.setdefault(spec.name, []).append(path)
+
+    for path, spec in parsed.items():
+        matching_paths = paths_by_name[spec.name]
+        if len(matching_paths) > 1:
+            other_paths = [other for other in matching_paths if other != path]
+            other_names = ", ".join(str(other) for other in other_paths)
+            error = DefinitionError(
+                path,
+                1,
+                f"duplicate agent name {spec.name!r} in {source} definitions; also declared by {other_names}",
+            )
+            entries.append(CatalogEntry(spec.name, source, "invalid", path=path, error=error))
+            continue
+        if (
+            source == "project"
+            and spec.subagent
+            and spec.name in builtin_subagent_names
+            and not spec.override
+        ):
+            error = DefinitionError(
+                path,
+                1,
+                f"project definition for built-in subagent type {spec.name!r} "
+                "requires override: true",
+            )
+            entries.append(
+                CatalogEntry(spec.name, source, "invalid", spec=spec, path=path, error=error)
             )
             continue
         registry.register(spec)

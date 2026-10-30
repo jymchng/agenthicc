@@ -226,6 +226,7 @@ async def test_resumed_tui_replays_transcript_before_accepting_input(
     session._msg_queue = []
     session._tasks = SupervisedTasks("test tui session")
     session._wire_approval_overlay = lambda: None
+    session._start_attention_routing = lambda: None
     # The post-frame agent runtime and account check are covered elsewhere.
     session._start_agent_runtime = lambda: None
     session._start_account_check = lambda: None
@@ -233,6 +234,8 @@ async def test_resumed_tui_replays_transcript_before_accepting_input(
     session._account_task = None
     session._ad_task = None
     session._agents_service = None
+    session._agents_settings = None
+    session._attention_lease = None
     input_session.on_ready = lambda interactive: startup.finish(
         "time_to_interactive_input",
         ReadinessState.READY if interactive else ReadinessState.DEGRADED,

@@ -978,6 +978,7 @@ class CodePlanRunner(BaseWorkflowRunner):
                 mention_cache=self._cfg.mention_cache,
                 project_plugin_tools=tools,
                 mcp_registry=self._cfg.mcp_registry,
+                subagent_registry=self._cfg.subagent_registry,
                 active_agent="auto",
                 completed_turns=self._cfg.completed_turns,
                 approval_svc=self._cfg.approval_svc,

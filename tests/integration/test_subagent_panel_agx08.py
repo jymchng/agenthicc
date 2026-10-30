@@ -190,7 +190,7 @@ async def test_stopping_one_worker_leaves_the_others_running(tmp_path: Path) -> 
     release.set()
     result = await run
     assert (result.succeeded, result.failed) == (2, 1)
-    assert "stopped by user" in result.text
+    assert "user_requested" in result.text
     assert "Done" in result.text
     assert not pool.stop_worker("task-0")  # finished workers cannot be stopped
     finished = conversation.subagent_pool_state()

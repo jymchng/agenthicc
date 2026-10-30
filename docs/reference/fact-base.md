@@ -254,19 +254,18 @@ Registry mechanics live in `src/agenthicc/workflows/registry.py`
 
 ## Agent roles
 
-The agent registry's `BUILTIN_NAMES` and Markdown files in
-`src/agenthicc/agents/builtin/` define the built-in roles:
+`BUILTIN_AGENT_DEFINITIONS` (`src/agenthicc/agents/builtin.py:89`) declares
+seven roles:
 
 | Role | Evidence |
 |---|---|
-| `default` | `src/agenthicc/agents/builtin/default.md` |
-| `planner` | `src/agenthicc/agents/builtin/planner.md` |
-| `executor` | `src/agenthicc/agents/builtin/executor.md` |
-| `reviewer` | `src/agenthicc/agents/builtin/reviewer.md` |
-| `explorer` | `src/agenthicc/agents/builtin/explorer.md` |
-| `verifier` | `src/agenthicc/agents/builtin/verifier.md` |
-| `human` | `src/agenthicc/agents/builtin/human.md` |
-| `auto` | `src/agenthicc/agents/builtin/auto.md` |
+| `planner` | `src/agenthicc/agents/builtin.py:91` |
+| `executor` | `src/agenthicc/agents/builtin.py:96` |
+| `reviewer` | `src/agenthicc/agents/builtin.py:101` |
+| `explorer` | `src/agenthicc/agents/builtin.py:106` |
+| `verifier` | `src/agenthicc/agents/builtin.py:111` |
+| `human` | `src/agenthicc/agents/builtin.py:116` |
+| `auto` | `src/agenthicc/agents/builtin.py:121` |
 
 ---
 

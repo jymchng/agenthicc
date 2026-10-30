@@ -80,46 +80,6 @@ make_book cache contract:
   continue from its recorded phase.
 """.strip()
 
-# Keep these phase-specific policies identical in static workflow metadata and
-# the live prompts used by the custom runner. The asset and chapter agents both
-# create Matplotlib graphs, while only chapter agents need the narrative voice.
-MATPLOTLIB_CHART_RULES = (
-    "MATPLOTLIB CHART CLARITY (mandatory): Never add a legend, annotation, callout box, "
-    "floating note, or in-plot text/data-label overlay to a Matplotlib chart. Do not use "
-    "ax.legend(), plt.legend(), ax.annotate(), plt.annotate(), bar_label(), or ax.text() "
-    "for overlays. This restriction does not remove the chart title, axis labels, tick "
-    "labels, category labels, or scale information. Prefer a single series; when several "
-    "series are necessary, use small multiples with clear per-panel titles instead of a "
-    "legend. Explain series, values, and caveats in the figure caption or surrounding "
-    "prose, outside the plot. Use constrained_layout=True or tight_layout() and inspect "
-    "the saved chart to ensure axis/category labels do not overlap or clip."
-)
-
-CHAPTER_VOICE_RULES = (
-    "FIRST-PERSON AUTHOR VOICE (mandatory): Sustain a human first-person singular voice "
-    "throughout the chapter. Use ‘I’ naturally to explain your reasoning, interpretation, "
-    "and editorial choices, and address the reader directly as ‘you’ or ‘your’ when guiding "
-    "them through concepts, procedures, and trade-offs. Both forms must recur across the "
-    "chapter's substantive sections, not just its opening or conclusion; vary them naturally "
-    "rather than inserting pronouns mechanically into every paragraph. Do not substitute "
-    "an impersonal passive voice or editorial ‘we’ for this requested voice. Never invent "
-    "personal history, experiments, credentials, or experience. Use a rich variety of "
-    "connective words and transitional phrases throughout every chapter to connect ideas, "
-    "link paragraphs logically, and create a cohesive, flowing narrative. Draw naturally "
-    "from transitions such as although, however, moreover, furthermore, nevertheless, "
-    "consequently, therefore, meanwhile, in contrast, for instance, in addition, despite "
-    "this, and as a result. Use transitions frequently and naturally, varying them without "
-    "making the writing repetitive or forced. Keep every technical claim precise, cited, "
-    "and grounded in the research."
-)
-
-NO_EM_DASH_RULES = (
-    "EM DASH BAN (mandatory): Do not use the em dash character (—, U+2014) anywhere in "
-    "the generated chapter, preface, or index Markdown, including headings. Replace it "
-    "with a comma, parentheses, a colon, a semicolon, or a separate sentence. This ban "
-    "is specific to em dashes; retain hyphens and en dashes where they are appropriate."
-)
-
 
 #: MathJax node renderer template injected into the compile prompt. Used by the
 #: CHROMIUM-HEADLESS fallback tier of the PDF pipeline: it replaces pandoc's
@@ -631,17 +591,6 @@ def _files_under(directory: Path, suffixes: frozenset[str]) -> list[Path]:
         files,
         key=lambda path: str(path),
     )
-
-
-def _snapshot_compile_outputs(directory: Path) -> dict[Path, tuple[int, int]]:
-    """Capture existing PDF/EPUB identities before this compile produces outputs."""
-
-    paths = _files_under(directory, frozenset({".pdf", ".epub"}))
-    snapshot: dict[Path, tuple[int, int]] = {}
-    for path in paths:
-        stat = path.stat()
-        snapshot[path] = (stat.st_size, stat.st_mtime_ns)
-    return snapshot
 
 
 def _chapter_slug(title: str) -> str:
@@ -1402,7 +1351,6 @@ def _make_compile_tools(
     from agenthicc.tools.capabilities import tool_read
 
     reference_path = Path(__file__).with_name("build_book.py")
-    compile_output_baseline: dict[Path, tuple[int, int]] | None = None
 
     @tool_read
     @tool()
@@ -1513,26 +1461,11 @@ def _make_compile_tools(
         dist/. Call this before running the builder.
         """
 
-        nonlocal compile_output_baseline
-        if not output_dir.strip():
-            return _create_builder()
-        if compile_output_baseline is None:
-            try:
-                root = await asyncio.to_thread(_resolved_path, output_dir)
-                compile_output_baseline = await asyncio.to_thread(
-                    _snapshot_compile_outputs, root / "dist"
-                )
-            except OSError as exc:
-                return {
-                    "ok": False,
-                    "error": f"Could not inventory existing dist outputs: {exc}",
-                    "fix": "Preserve existing dist files and retry after checking directory access.",
-                }
         return _create_builder()
 
     @tool()
     async def mark_book_complete(summary: str) -> dict[str, object]:
-        """Validate the PDF and EPUB produced since this compile began."""
+        """Discover, validate, and accept the compiled PDF and EPUB under dist/."""
         if not summary.strip():
             return {
                 "ok": False,
@@ -1553,50 +1486,13 @@ def _make_compile_tools(
                 "error": f"reusable builder is missing under '{root}'.",
                 "fix": "Call create_build_book() first, run the builder, then retry mark_book_complete(summary=...).",
             }
-        if compile_output_baseline is None:
-            return {
-                "ok": False,
-                "error": "The compile output baseline was not captured before building.",
-                "fix": "Call create_build_book() before running build_book.py, then retry.",
-            }
         dist = root / "dist"
-        try:
-            current_outputs = await asyncio.to_thread(_snapshot_compile_outputs, dist)
-        except OSError as exc:
-            return {
-                "ok": False,
-                "error": f"Could not inspect compile outputs under '{dist}': {exc}",
-                "fix": "Preserve existing dist files and retry after checking directory access.",
-            }
-        missing_old = sorted(
-            (path for path in compile_output_baseline if path not in current_outputs),
-            key=str,
-        )
-        overwritten_old = sorted(
-            (
-                path
-                for path, signature in compile_output_baseline.items()
-                if current_outputs.get(path) not in (None, signature)
-            ),
-            key=str,
-        )
-        if missing_old or overwritten_old:
-            changed = [*missing_old, *overwritten_old]
-            return {
-                "ok": False,
-                "error": "One or more pre-existing dist outputs were removed or overwritten: "
-                + ", ".join(path.name for path in changed),
-                "fix": "Restore pre-existing outputs if possible, then create a new timestamped PDF/EPUB pair without modifying old files.",
-            }
-        new_outputs = [path for path in current_outputs if path not in compile_output_baseline]
-        candidates = sorted(
-            (path for path in new_outputs if path.suffix.lower() == ".pdf"), key=str
-        )
+        candidates = await asyncio.to_thread(_files_under, dist, frozenset({".pdf"}))
         if len(candidates) != 1:
             return {
                 "ok": False,
-                "error": f"expected exactly one new PDF from this compile under '{dist}', found {len(candidates)}.",
-                "fix": "Run the builder once to create one timestamped PDF/EPUB pair. Keep all existing dist outputs; do not prune them.",
+                "error": f"expected exactly one PDF under '{dist}', found {len(candidates)}.",
+                "fix": "Run the builder and remove stale PDFs, then retry mark_book_complete(summary=...).",
             }
         pdf = candidates[0]
         if pdf.suffix.lower() != ".pdf":
@@ -1607,14 +1503,12 @@ def _make_compile_tools(
             return _path_error(str(pdf), root, "could not be read") | {"detail": str(exc)}
         if header != b"%PDF-":
             return _path_error(str(pdf), root, "does not have a valid PDF header")
-        epub_candidates = sorted(
-            (path for path in new_outputs if path.suffix.lower() == ".epub"), key=str
-        )
+        epub_candidates = _files_under(dist, frozenset({".epub"}))
         if len(epub_candidates) != 1:
             return {
                 "ok": False,
-                "error": f"expected exactly one new EPUB from this compile under '{dist}', found {len(epub_candidates)}.",
-                "fix": "Run the builder to create one timestamped EPUB matching the new PDF. Keep all existing dist outputs; do not prune them.",
+                "error": f"expected exactly one EPUB under '{dist}', found {len(epub_candidates)}.",
+                "fix": "Run build_book.py to produce the matching EPUB, then remove stale EPUBs and retry.",
             }
         epub = epub_candidates[0]
         if epub.stem != pdf.stem:
@@ -2336,7 +2230,7 @@ class MakeBookRunner(CodePlanRunner):
                 text=text,
                 system_prompt=(
                     "You are in the CHAPTER phase of make_book. One phase runs per "
-                    "chapter: write exactly ONE technical chapter now, in full.\n\n"
+                    "chapter — write exactly ONE technical chapter now, in full.\n\n"
                     f"Book: {ctx.title}\nAuthor: {ctx.author}\n"
                     f"Audience: {ctx.audience or '(specialist reader)'}\n"
                     f"Technical level: {ctx.technical_level}\n"
@@ -2344,7 +2238,7 @@ class MakeBookRunner(CodePlanRunner):
                     f"Rich content enabled: {', '.join(ctx.content_types)}\n"
                     f"Assets dir: {ctx.assets_dir or '(not set)'}\n"
                     f"Chapter {index + 1} of {len(ctx.chapters)}: {chapter.title}\n\n"
-                    "Research for this chapter (use it to ground the writing in these facts, "
+                    "Research for this chapter (use it — ground the writing in these facts, "
                     "data, and sources):\n"
                     "The research handoff is file-backed. Read these files from disk; "
                     "do not expect their full contents in the prompt:\n"
@@ -2369,8 +2263,6 @@ class MakeBookRunner(CodePlanRunner):
                     "tell: give the exact value, the exact step, the exact trade-off.\n"
                     "- Cover limitations, edge cases, and pitfalls honestly.\n\n"
                     "WRITE LIKE A HUMAN (the most important instruction in this phase):\n"
-                    f"{CHAPTER_VOICE_RULES}\n"
-                    f"{NO_EM_DASH_RULES}\n"
                     "- Write as ONE human author who knows this material cold and is "
                     "explaining it to a specialist colleague - warm, confident, "
                     "unhurried. Not documentation, not an essay, not a wiki page.\n"
@@ -2397,22 +2289,20 @@ class MakeBookRunner(CodePlanRunner):
                     "sounds assembled from a template, rewrite it until it sounds "
                     "spoken.\n\n"
                     "BEAUTY & STRUCTURE (the finished book must look professional):\n"
-                    "- Use a single '# ' chapter title and '## ' section headings. The typesetter colours these automatically with the accent colour planned in the TOC; never style headings with raw HTML or inline colours.\n"
+                    "- Use a single '# ' chapter title and '## ' section headings — the typesetter colours these automatically with the accent colour planned in the TOC; never style headings with raw HTML or inline colours.\n"
                     "- HEADING RULES (mandatory, enforced across the WHOLE book):\n"
-                    "   (a) Chapter titles carry NO 'Chapter N:' prefix. Write the bare title only (e.g. '# Introduction to Codex', NOT '# Chapter 1: Introduction to Codex').\n"
-                    "   (b) Every '## ' section subheading must be UNIQUE across ALL chapters. No two chapters may share the same section heading text. Vary each heading so it is original to its chapter while remaining recognisable for its section type.\n"
-                    "- Mark every key indexable term in **bold** on first use. The index section collects these, so consistent marking makes the index accurate.\n"
+                    "   (a) Chapter titles carry NO 'Chapter N:' prefix — write the bare title only (e.g. '# Introduction to Codex', NOT '# Chapter 1: Introduction to Codex').\n"
+                    "   (b) Every '## ' section subheading must be UNIQUE across ALL chapters — no two chapters may share the same section heading text. Vary each heading so it is original to its chapter while remaining recognisable for its section type.\n"
+                    "- Mark every key indexable term in **bold** on first use — the index section collects these, so consistent marking makes the index accurate.\n"
                     "- Keep paragraphs, lists, and spacing clean; prefer short, scannable sections over dense walls of text.\n"
-                    "RICH CONTENT: use every enabled content type where it adds value:\n"
+                    "RICH CONTENT — use every enabled content type where it adds value:\n"
                     + (
                         "- IMAGES: create BOTH mermaid diagrams AND matplotlib graphs "
                         "for the figures the outline/research calls for. For "
                         "structural/flow diagrams write a .mmd source and render it "
                         "to a PNG via mermaid-cli (npx -y @mermaid-js/mermaid-cli "
                         "-i fig.mmd -o fig.png); for data charts write a small "
-                        "matplotlib script and run it to produce a PNG. "
-                        f"{MATPLOTLIB_CHART_RULES}\n"
-                        "Save the "
+                        "matplotlib script and run it to produce a PNG. Save the "
                         "PNGs under <output_dir>/assets/ (create the folder), then "
                         "reference them with Markdown: ![Figure caption]"
                         "(assets/fig-NN-name.png). Keep the caption descriptive. "
@@ -2431,7 +2321,7 @@ class MakeBookRunner(CodePlanRunner):
                         else ""
                     )
                     + (
-                        "- EQUATIONS: write mathematics in LaTeX: $...$ for inline and "
+                        "- EQUATIONS: write mathematics in LaTeX — $...$ for inline and "
                         "$$...$$ for display equations. At build time these are typeset "
                         "natively in the PDF (typst or LaTeX render them as selectable, "
                         "crisp math), so use proper LaTeX (\\frac, \\sum, \\int, \\sqrt, "
@@ -2471,12 +2361,12 @@ class MakeBookRunner(CodePlanRunner):
                     "chapter (technical books run denser than general ones).\n"
                     "5. PAGE BREAKS: Each chapter MUST begin on a new page. Put the page "
                     "break IMMEDIATELY AFTER the '# ' title line of the chapter file. "
-                    "CRITICAL: use the page-break syntax that matches the COMPILE "
+                    "CRITICAL \u2014 use the page-break syntax that matches the COMPILE "
                     "tier, because the wrong one renders as literal text in the PDF:\n"
                     "   - LaTeX/pdflatex tier (the default for the PDF book): put a raw "
                     "LaTeX line '\\newpage' (or '\\clearpage') on its own line. pandoc "
                     "passes raw LaTeX through to the .tex, so this starts a new page. "
-                    "'#pagebreak()' is typst syntax ONLY. In the LaTeX tier pandoc "
+                    "'#pagebreak()' is typst syntax ONLY \u2014 in the LaTeX tier pandoc "
                     "renders it as literal '#pagebreak()' text on the page, it does NOT "
                     "break the page. NEVER use '#pagebreak()' in the PDF-book chapter "
                     "files.\n"
@@ -2490,7 +2380,7 @@ class MakeBookRunner(CodePlanRunner):
                     "   Content here...\n"
                     "   ```\n"
                     "6. End with a short transition that sets up the next chapter.\n"
-                    "6. Do NOT include the book title or author in the file; include just the "
+                    "6. Do NOT include the book title or author in the file — just the "
                     "chapter content. The PDF metadata handles title/author.\n\n"
                     "Write the file with the write tool, then call confirm_chapter_complete(summary=...). "
                     "The runner knows the current chapter, finds the canonical file, counts "
@@ -2568,7 +2458,6 @@ class MakeBookRunner(CodePlanRunner):
                     f"Book: {ctx.title}\nAssets dir: {ctx.assets_dir or '<output_dir>/assets'}\n"
                     f"Rich content: {', '.join(ctx.content_types)}\n"
                     f"Chapter outlines:\n{ctx.toc_summary or '(see plan)'}\n\n"
-                    f"{MATPLOTLIB_CHART_RULES}\n\n"
                     "600-DPI ASSET REQUIREMENT (mandatory): every rasterized figure, "
                     "chart, photograph, and Mermaid diagram must be generated at a "
                     "minimum of 600 DPI in both axes. For matplotlib use "
@@ -2615,15 +2504,26 @@ class MakeBookRunner(CodePlanRunner):
                     "   - Keep the grid minimal: horizontal gridlines only (no vertical), "
                     "thin baseline spines (bottom+left only), no top/right spines, and "
                     "zero-length or hidden ticks.\n"
-                    "   - Use subtle fills only when they clarify the data. Use a clear "
-                    "title, axis labels, readable ticks, and category labels; leave room "
-                    "for them and verify the saved figure has no clipped or overlapping text.\n"
+                    "   - Add subtle gradient/soft area fills under curves, rounded "
+                    "callout panels with soft tinted backgrounds for key annotations, and "
+                    "clean legends without frames.\n"
+                    "   - Use clear, left-aligned bold titles and readable font sizes; "
+                    "never clip labels at the figure edge (test with tight bbox).\n"
                     "   - Render charts via a small matplotlib script (e.g. "
                     "assets/make_charts.py) so they are reproducible, then regenerate "
                     "the PNGs.\n"
-                    "   TEXT CONTRAST: use a colorblind-aware palette and dark, legible "
-                    "title/axis/tick text against a light chart background; ensure data "
-                    "marks remain distinguishable without relying on a legend.\n"
+                    "   TEXT CONTRAST (mandatory for EVERY box/panel label): every "
+                    "label must be readable against its fill. Compute the WCAG "
+                    "relative-luminance contrast ratio for every (text, fill) pair "
+                    "and require >= 4.5:1 (WCAG AA). Rules: dark text (e.g. #1F2A44) "
+                    "on light fills; white text ONLY on dark fills (e.g. navy or "
+                    "dark orange #CC450E/#B93B0D/#A93409 \u2014 deepen mid-tone fills "
+                    "until they pass). Never put white text on a light fill or light "
+                    "text on a mid-tone fill. Add a programmatic contrast check to "
+                    "the figure script (a verify() helper that computes the ratio "
+                    "for every (fill, text) pair and exits non-zero if any box is "
+                    "below 4.5:1) and run it before confirming the assets. Keep "
+                    "labels short and legible.\n"
                     "3. Keep every image bounded and PNG at a reasonable resolution (1024x768 or similar); "
                     "never let a referenced image or diagram exceed 6.175in rendered width "
                     "(95% of the 6.5in content width) or 8.05in rendered height (70% of the "
@@ -2755,20 +2655,19 @@ class MakeBookRunner(CodePlanRunner):
                     "Create the preface as a Markdown file in the project for the PDF:\n"
                     "NOTE: the COVER page is supplied by the END USER (e.g. "
                     "<output_dir>/assets/cover.png). Do NOT build, generate, or design "
-                    "a cover page. The compile phase places the user-supplied cover "
+                    "a cover page \u2014 the compile phase places the user-supplied cover "
                     "as page 1 / the library cover.\n"
                     "PREFACE: write a short preface (why this book, who it is for, what "
                     "the reader will learn). Do NOT create contents.md, any other "
                     "hand-written TOC, or a TOC page container. build_book.py generates "
                     "the real table of contents from the chapter headings with the "
                     "typesetting toolchain.\n"
-                    f"{NO_EM_DASH_RULES}\n"
                     "Use a clean, consistent style. The compile phase will assemble "
                     "the preface, then chapters; build_book.py inserts the generated TOC "
                     "after the cover and before the preface.\n"
                     "PAGE BREAKS: the user-supplied cover is page 1 and carries NO leading page "
                     "break (it would create a blank first page); the preface must begin on a "
-                    "new page: put a raw '\\newpage' (LaTeX tier; pandoc passes it through) "
+                    "new page \u2014 put a raw '\\newpage' (LaTeX tier; pandoc passes it through) "
                     "or '#pagebreak()' (typst tier) on its own line right after the '# ' title "
                     "in the preface file. Do not create a contents file to hold a page break.\n\n"
                     "Then call confirm_front_matter_ready(summary=...). The runner scans and verifies "
@@ -2815,12 +2714,11 @@ class MakeBookRunner(CodePlanRunner):
                     "term (concepts, names, methods) plus the research-phase index-term "
                     "notes, then produce an INDEX page: an alphabetised list of terms "
                     "each pointing to its chapter by chapter number.\n"
-                    f"{NO_EM_DASH_RULES}\n"
                     "Do NOT create contents.md, a TOC file, or a hand-written table of "
                     "contents in back-matter/. build_book.py generates the table of "
                     "contents automatically from the chapter headings. Back matter "
                     "contains the index only.\n"
-                    "The index page must begin on a NEW PAGE: put a raw "
+                    "The index page must begin on a NEW PAGE \u2014 put a raw "
                     "'\\newpage' (LaTeX tier) or '#pagebreak()' (typst tier) on its "
                     "own line right after the index title.\n\n"
                     "Then call confirm_back_matter_ready(summary=...). The runner scans and verifies "
@@ -2932,15 +2830,12 @@ class MakeBookRunner(CodePlanRunner):
                     "'Rerun to get cross-references right' / 'Label(s) may have "
                     "changed'. Do NOT skip passes when pdflatex exits non-zero on "
                     "Unicode warnings; the PDF is still produced, keep going.\n"
-                    "  3. Use build_book.py's default unique, timestamped output path for "
-                    "the PDF and matching EPUB under <output_dir>/dist/ (create dist/). "
-                    "Never delete, prune, or overwrite outputs that were already in dist/ "
-                    "when this compile began. Keep every prior PDF and EPUB. If you pass "
-                    "--out, choose a new timestamped basename that does not already exist.\n"
+                    "  3. Copy the final PDF into <output_dir>/dist/<title-slug>.pdf "
+                    "and the matching EPUB into <output_dir>/dist/<title-slug>.epub "
+                    "(create dist/).\n"
                     "  4. Delete ALL intermediate artifacts (book.tex, book.typ, *.aux, "
                     "*.log, *.toc, *.out, *.fls, .math-render/, etc.) so "
-                    "only the sources, the build script, and dist/ remain. This cleanup "
-                    "applies only to intermediates from this build; never clean or prune dist/.\n"
+                    "only the sources, the build script, and dist/ remain.\n"
                     "  5. Enforce PAGE BREAKS: every chapter plus the preface, contents, "
                     "appendices and index must start on a new page (raw '\\newpage' in "
                     "the LaTeX tier, '#pagebreak()' in the typst tier, placed right "
@@ -2956,9 +2851,7 @@ class MakeBookRunner(CodePlanRunner):
                     '      description = "A short, compelling blurb for the Amazon listing."\n'
                     '      keywords = ["keyword one", "keyword two", "keyword three", "keyword four", "keyword five", "keyword six", "keyword seven"]\n'
                     "Call mark_book_complete(summary=...) after the builder produces both "
-                    "new timestamped artifacts; the runner validates only outputs created "
-                    "since create_build_book() captured the compile baseline and requires "
-                    "older dist files to remain unchanged. If compilation fails, call "
+                    "artifacts; the runner discovers and validates the dist/ outputs. If compilation fails, call "
                     "reject_book(summary=...) with a concise diagnosis.\n"
                     "Compile strategy — try in order until one produces a valid PDF:\n"
                     "1. TYPST (preferred — native typeset math, single static binary, "
@@ -3090,17 +2983,15 @@ class MakeBookRunner(CodePlanRunner):
                     "  7. TOC has NO dotted leaders: the extracted TOC text shows no dotted-leader runs \u2014 no sequences of 3+ dots between entry titles and page numbers. If dots appear, re-apply the tocloft \\renewcommand{\\cftdotfill}[1]{\\hfill} header fix (LaTeX tier) or the no-fill outline style (typst tier) and recompile.\n"
                     "  8. NO 'Chapter N:' prefixed headings: the extracted text and the chapter sources contain no heading that starts with 'Chapter N:' (titles are bare, e.g. 'Introduction to Codex').\n"
                     "  9. UNIQUE subheadings: grep the chapter sources for '## ' section headings and confirm NO heading text is duplicated across different chapters.\n"
-                    "Output path convention: use build_book.py's default unique, timestamped "
-                    "<output_dir>/dist/<title-slug> <timestamp>.pdf and matching .epub. "
-                    "Never delete, prune, or overwrite outputs that existed in dist/ before "
-                    "this compile; retain all historical deliverables.\n\n"
+                    "Output path convention: <output_dir>/dist/<title-slug>.pdf (e.g. "
+                    "Kalman-Filtering/dist/Kalman-Filtering.pdf), produced by the "
+                    "build script.\n\n"
                     "RENDERER TEMPLATE (only needed for tiers 3–4) — write this exactly "
                     "to .math-render/render-math.js and run with node:\n"
                     + _MATHJAX_RENDERER_JS
                     + "\n\n"
-                    "On success call mark_book_complete(summary=...); the runner validates "
-                    "exactly one new PDF and one matching EPUB from this compile, without "
-                    "requiring dist/ to contain only one historical pair. On failure call "
+                    "On success call mark_book_complete(summary=...); the runner discovers "
+                    "and validates exactly one PDF and one matching EPUB under dist/. On failure call "
                     "reject_book(summary=...) with a concise diagnosis; the runner sends "
                     "the whole book back for correction. You MUST call one."
                 ),
@@ -3240,10 +3131,11 @@ class MakeBookWorkflow(WorkflowPlugin):
                 "reproducible matplotlib script (e.g. assets/make_charts.py). Every "
                 "data chart must look beautiful and modern: refined cohesive palette "
                 "(navy/blue/teal/coral/amber), minimal horizontal-only grid, thin "
-                "baseline spines, restrained fills where they clarify data, and no "
-                "clipped labels. "
-                + MATPLOTLIB_CHART_RULES
-                + " Use high-contrast chart text and distinguishable data marks. You MUST use "
+                "baseline spines, subtle gradient area fills, rounded callout panels, "
+                "clean frameless legends, no clipped labels. TEXT CONTRAST (mandatory): "
+                "every label vs its box fill must pass WCAG AA (contrast ratio >= 4.5:1) "
+                "\u2014 dark text on light fills, white text only on dark fills \u2014 enforced "
+                "by a programmatic contrast check inside the figure script. You MUST use "
                 "an available retrieval capability (prefer a configured unsplash_images "
                 "tool; otherwise use approved browser/network tools) to fetch ready-made, "
                 "high-quality photos from the free Unsplash service for photographic/"
@@ -3266,16 +3158,11 @@ class MakeBookWorkflow(WorkflowPlugin):
                 "citations grounded in the research). Where the chapter needs "
                 "figures, create BOTH mermaid diagrams (write a .mmd source and "
                 "render it to a PNG via mermaid-cli) AND matplotlib graphs (write a "
-                "matplotlib script and run it to produce a PNG). "
-                + MATPLOTLIB_CHART_RULES
-                + " Save them under "
+                "matplotlib script and run it to produce a PNG), save them under "
                 "<output_dir>/assets/, and reference them in the chapter. Then call "
-                "confirm_chapter_complete(summary=...). Write in a natural, human authorial style "
-                + CHAPTER_VOICE_RULES
-                + " "
-                + NO_EM_DASH_RULES
-                + " Vary sentence rhythm, open sections with a concrete hook, "
-                "and never use mechanical transitions. Every "
+                "confirm_chapter_complete(summary=...). Write it in a natural human authorial "
+                "voice - no formulaic AI prose: vary sentence rhythm, open sections "
+                "with a concrete hook, and never use mechanical transitions. Every "
                 "image you include must be appropriately sized for print - cap it at "
                 "6.175in wide (95% of the 6.5in content width) and 8.05in tall (70% of the "
                 "11.5in page height), and pre-resize or crop wider/taller sources so figures "
@@ -3308,12 +3195,10 @@ class MakeBookWorkflow(WorkflowPlugin):
             next="back_matter",
             on_reject="front_matter",
             system_prompt_override=(
-                "You are in the FRONT_MATTER phase of make_book. "
-                + NO_EM_DASH_RULES
-                + " Build the preface only; "
+                "You are in the FRONT_MATTER phase of make_book. Build the preface only; "
                 "build_book.py generates the TOC from chapter headings, so do not create "
                 "contents.md, a TOC page container, or a hand-written listing. Do NOT build "
-                "a cover page. The cover is "
+                "a cover page \u2014 the cover is "
                 "supplied by the END USER; then call confirm_front_matter_ready(summary=...)."
             ),
         ),
@@ -3325,9 +3210,7 @@ class MakeBookWorkflow(WorkflowPlugin):
             next="final_layout_review",
             on_reject="back_matter",
             system_prompt_override=(
-                "You are in the BACK_MATTER phase of make_book. "
-                + NO_EM_DASH_RULES
-                + " Build the index page "
+                "You are in the BACK_MATTER phase of make_book. Build the index page "
                 "from the bold-marked terms. Do NOT create contents.md, a TOC file, or a "
                 "hand-written table of contents; build_book.py generates the TOC from chapter "
                 "headings. Back matter contains the index only; then call "
@@ -3367,10 +3250,9 @@ class MakeBookWorkflow(WorkflowPlugin):
                 "pypdf chapter-title + no-leak + image-count checks), call "
                 "create_build_book() to create the reusable builder at "
                 "<output_dir>/build_book.py, then run "
-                "it to rebuild the PDF and EPUB end-to-end into dist/ using a unique timestamped "
-                "basename by default. Never delete, prune, or overwrite existing dist outputs; "
-                "clean only build intermediates (compile at least twice so TOC page numbers resolve; "
-                "user cover → TOC → preface ordering), run it, and call "
+                "it to rebuild the PDF and EPUB end-to-end into dist/ "
+                "(compile at least twice so TOC page numbers resolve; user cover → TOC → "
+                "preface ordering; clean all intermediates), run it, and call "
                 "mark_book_complete(summary=...) after verification or reject_book(summary=...)."
             ),
         ),

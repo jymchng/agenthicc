@@ -1,6 +1,6 @@
 ---
 title: "AGX-14: CPU-time performance budgets in CI and perf diagnostics"
-status: Implemented (weekly 10k search target unmet)
+status: Implemented (workspace snapshot)
 version: 0.1.0
 date: 2026-10-23
 repository: jymchng/agenthicc
@@ -12,19 +12,30 @@ tags: [performance, ci, benchmarks, diagnostics, process]
 
 # AGX-14 — CPU-time performance budgets in CI and perf diagnostics
 
-## Implementation status (2026-10-30)
+## Implementation evidence (2026-10-30)
 
-The CPU-time and deterministic-count probe suite, checked budget ratchet,
-`agenthicc perf report` command, required CI performance session, and scheduled
-weekly profile are integrated. The `cli.agents_json.modules` exact-count budget
-was lowered from 170 to the measured 167; the ratchet prevents the measured
-improvement from going stale. `nox -s perf` and the coverage session pass; the
-coverage run completed in 9 minutes. The full Nox run found one unmet weekly
-target: `agents.search_10k.cpu_p95_ms` measured 220.379 ms against a 50 ms
-budget (30% tolerance). The benchmark query includes the two-character term
-`99`, below the FTS5 trigram index's three-character lookup threshold. This
-weekly search target remains open; all other sessions in the recorded run
-passed.
+Implemented in the designated workspace snapshot; no agenthicc commit or push
+was made. The PR CI workflow now runs the budget-change policy and `nox -s
+perf` inside the aggregate **Required checks** job. The weekly workflow runs the
+10k-session profile and opens or updates a regression issue only when its JSON
+report contains budget violations. Budget deletions are prohibited; other
+weakened gates require the `perf-budget-increase` label. The GitHub label is not
+currently provisioned and must be created by a repository maintainer before it
+can be applied.
+
+Verification: the updated policy tests pass (22); the Python 3.12 unit suite
+passes (4,508 passed, 14 skipped); typecheck, typecheck-contracts, type audit,
+strict docs, llms symbols, and the CI-scope performance profile pass. The full
+`nox -s coverage` session passes (5,023 passed, 18 skipped, 3 warnings; 81.7%
+coverage against the 81.5% floor). The exact import-budget probes clear coverage's
+subprocess configuration so instrumentation does not distort their module counts.
+The new Python files pass targeted Ruff and format checks. Workflow YAML, embedded
+shell, JavaScript, and the budget-policy CLI were validated locally. The full
+`nox -s lint` session still fails on repository-wide Ruff findings; the workflow
+itself has not been executed by GitHub from this uncommitted snapshot. A prior
+weekly-profile run passed without budget violations; the updated weekly
+issue-classifier was syntax-checked but the resource-intensive profile was not
+rerun for this policy-only change.
 
 ## 1. Summary
 
@@ -110,9 +121,11 @@ tolerance:
 - It also fails when a metric is better than `budget × (1 − tolerance)` for an
   exact count, so improvements are locked in with `--update` (the same
   two-directional ratchet `scripts/type_audit.py` uses).
-- The file is owned in `.github/CODEOWNERS` with the other quality baselines;
-  raising a budget needs the `perf-budget-increase` label, mirroring
-  `type-baseline-increase`.
+- The file is owned in `.github/CODEOWNERS` with the other quality baselines.
+  CI compares a pull request with its target-branch budget file: deleted metrics
+  always fail; a higher budget or tolerance, a later scope, removed gate scopes,
+  or a weaker ratchet requires the `perf-budget-increase` label. New metrics and
+  stronger gates need no label.
 
 ### 4.3 CI
 
@@ -120,8 +133,10 @@ tolerance:
   fixtures; it becomes a job inside the aggregate **Required checks** in
   `.github/workflows/ci.yml`.
 - A scheduled weekly workflow runs the 10k probes (`agents.fresh_first_page.10k`,
-  the full `benchmark_agents_manager.py` profile) and uploads the report; a
-  regression opens an issue rather than failing unrelated pull requests.
+  the full `benchmark_agents_manager.py` profile) and uploads the report. It
+  opens or updates a regression issue only when the completed report contains
+  budget violations; probe/setup failures remain visible as failed workflow runs
+  without being mislabeled as budget regressions.
 - Fixtures are generated deterministically by the existing benchmark helpers
   (`_write_fixture`), cached between runs.
 - Reports record CPU model, CPU count, Python version and load average, so a

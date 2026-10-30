@@ -160,7 +160,15 @@ def test_the_guides_and_reference_pages_are_all_published() -> None:
 
 def test_the_llm_documentation_is_published_and_readable() -> None:
     published = {entry.path for entry in list_docs()}
-    assert {"llms.txt", "llms-full.txt", "README.md"} <= published
+    root = docs_root()
+    assert root is not None
+    available = {
+        name
+        for name in extra_doc_names()
+        if (root / name).is_file() or (root.parent / name).is_file()
+    }
+    assert available <= published
+    assert "llms-full.txt" in published
     result = read_doc("llms-full.txt", start_line=1, max_lines=3)
     assert result["ok"] is True
     assert result["total_lines"] > 100

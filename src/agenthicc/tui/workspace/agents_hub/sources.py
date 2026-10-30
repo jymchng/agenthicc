@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from agenthicc.tui.workspace.agents_hub.model import (
     LibraryEntry,
@@ -19,8 +20,13 @@ from agenthicc.tui.workspace.agents_hub.model import (
     project_name,
 )
 
+if TYPE_CHECKING:
+    from agenthicc.agents.definitions import AgentSpec
+    from agenthicc.agents.registry import AgentsRegistry
+
 __all__ = [
     "HubSources",
+    "library_entries",
     "load_library",
     "load_saved_sessions",
     "load_scheduled",
@@ -114,52 +120,56 @@ def load_saved_sessions() -> list[SavedSession]:
     return list(records)
 
 
-def load_library(project_dir: Path, user_dir: Path) -> list[LibraryEntry]:
-    """Every catalog candidate, including definitions that need attention."""
-    from agenthicc.agents.registry import build_agents_registry
+def _tools_summary(spec: AgentSpec) -> str:
+    if spec.tools is not None:
+        return " ".join(spec.tools) if spec.tools else "no tools"
+    if spec.capabilities is not None:
+        return " ".join(spec.capabilities) if spec.capabilities else "no tools"
+    return "all tools"
+
+
+def library_entries(registry: AgentsRegistry, *, project_root: Path) -> list[LibraryEntry]:
+    """The registry's catalog as Library rows (AGX-09 §5.2)."""
     from agenthicc.agents.selection import project_default
 
-    registry = build_agents_registry(project_dir, user_dir, load_external=True)
-    default_name = project_default(project_dir.parent)
+    default = project_default(project_root) or "default"
     entries: list[LibraryEntry] = []
-    for candidate in registry.catalog:
-        spec = candidate.spec
-        if spec is None or spec.tools is None and spec.capabilities is None:
-            tools = "all tools"
-        elif spec.tools is not None:
-            tools = " ".join(spec.tools) or "no tools"
-        else:
-            tools = " ".join(spec.capabilities or ()) or "no tools"
-
-        if candidate.error is not None:
-            note = str(candidate.error)
-        elif candidate.state == "shadowed":
-            note = f"shadowed by {candidate.shadowed_by}"
-        elif candidate.state == "untrusted":
-            note = "requires explicit trust before use"
-        elif candidate.kept_previous:
-            note = "previous valid version remains active"
+    for item in registry.catalog:
+        spec = item.spec
+        if item.state == "shadowed":
+            note = f"shadowed by the {item.shadowed_by} definition"
+        elif item.state == "invalid" and item.error is not None:
+            note = f"invalid: {item.error.message} (line {item.error.line})"
+            if item.kept_previous:
+                note += "; the last valid version is in use"
+        elif item.state == "untrusted":
+            note = "untrusted: review it with agenthicc trust add"
         else:
             note = ""
-
         entries.append(
             LibraryEntry(
-                name=candidate.name,
-                source=candidate.source,
-                description=spec.description if spec is not None else "",
-                tools=tools,
+                name=item.name,
+                source=item.source,
+                description=spec.description[:200] if spec is not None else "",
+                tools=_tools_summary(spec) if spec is not None else "",
                 mode=spec.mode if spec is not None else "",
                 model=spec.model if spec is not None else "",
-                state=candidate.state,
+                state=item.state,
                 note=note,
-                path=str(candidate.path) if candidate.path is not None else "",
+                path=str(item.path) if item.path is not None else "",
+                default=item.state == "active" and item.name == default,
                 spec=spec,
-                default=(
-                    candidate.state == "active" and spec is not None and spec.name == default_name
-                ),
             )
         )
     return entries
+
+
+def load_library(project_dir: Path, user_dir: Path) -> list[LibraryEntry]:
+    """Every agent definition with its state; untrusted project files are not loaded."""
+    from agenthicc.agents.registry import build_agents_registry
+
+    registry = build_agents_registry(project_dir, user_dir, load_external=True)
+    return library_entries(registry, project_root=project_dir.parent)
 
 
 def load_scheduled(limit: int = SCHEDULED_LIMIT) -> list[ScheduledEntry]:

@@ -337,7 +337,7 @@ async def resolve_mention(
     """Resolve a single Mention to an InjectedContent block."""
 
     if mention.kind == MentionKind.AGENT:
-        # ``@agent:NAME`` runs a subagent; it has no injected file content.
+        # ``@agent:NAME`` runs a subagent (the turn does that); it has no content.
         return InjectedContent(mention=mention, block="")
 
     if mention.kind == MentionKind.UNRESOLVED:
@@ -527,6 +527,7 @@ async def build_context_prefix(
                 cfg.workspace_access.scope if cfg.workspace_access is not None else None
             ),
         )
+        # ``@agent:NAME`` invokes a subagent rather than adding context (AGX-09).
         if mention.kind is not MentionKind.AGENT
     ]
     if not mentions:

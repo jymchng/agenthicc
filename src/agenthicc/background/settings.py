@@ -12,6 +12,7 @@ import os
 import re
 import tomllib
 from dataclasses import dataclass
+from datetime import datetime, time
 from pathlib import Path
 from typing import Mapping
 from urllib.parse import urlsplit
@@ -19,11 +20,9 @@ from urllib.parse import urlsplit
 
 NOTIFICATION_EVENT_TYPES = frozenset(
     {
-        "completed",
-        "failed",
-        "waiting_approval",
-        "waiting_input",
-        "recovery_required",
+        "agent_needs_input",
+        "agent_finished",
+        "agent_failed",
     }
 )
 _SECRET_ENV_NAME = re.compile(r"^AGENTHICC_WEBHOOK_[A-Za-z0-9_]{1,240}$")
@@ -107,12 +106,55 @@ class WebhookDestinationSettings:
 
 
 @dataclass(frozen=True)
+class QuietHoursSettings:
+    """Recurring quiet window in the machine's local time zone."""
+
+    start: time
+    end: time
+
+    @classmethod
+    def from_mapping(cls, raw: Mapping[str, object]) -> QuietHoursSettings:
+        unknown = set(raw) - {"start", "end"}
+        if unknown:
+            raise ValueError(
+                "background.notifications.quiet_hours has unknown fields: "
+                + ", ".join(sorted(str(item) for item in unknown))
+            )
+
+        def parse_clock(name: str) -> time:
+            value = raw.get(name)
+            if not isinstance(value, str) or not re.fullmatch(
+                r"(?:[01][0-9]|2[0-3]):[0-5][0-9]", value
+            ):
+                raise ValueError(
+                    f"background.notifications.quiet_hours.{name} must use HH:MM 24-hour time"
+                )
+            hour, minute = (int(part) for part in value.split(":"))
+            return time(hour, minute)
+
+        start = parse_clock("start")
+        end = parse_clock("end")
+        if start == end:
+            raise ValueError("background.notifications.quiet_hours start and end must differ")
+        return cls(start=start, end=end)
+
+    def active_at(self, now: datetime) -> bool:
+        """Whether *now* falls in the recurring interval, including overnight windows."""
+        local = now.astimezone() if now.tzinfo is not None else now
+        current = local.time().replace(tzinfo=None)
+        if self.start < self.end:
+            return self.start <= current < self.end
+        return current >= self.start or current < self.end
+
+
+@dataclass(frozen=True)
 class BackgroundNotificationSettings:
     """Opt-in local and webhook notification policy."""
 
     local_enabled: bool = False
     local_backend: str = "auto"
     webhooks: tuple[WebhookDestinationSettings, ...] = ()
+    quiet_hours: QuietHoursSettings | None = None
     allow_private_network: bool = False
     request_timeout_s: float = 5.0
     max_attempts: int = 5
@@ -132,6 +174,7 @@ class BackgroundNotificationSettings:
             "local_enabled",
             "local_backend",
             "webhooks",
+            "quiet_hours",
             "allow_private_network",
             "request_timeout_s",
             "max_attempts",
@@ -159,6 +202,13 @@ class BackgroundNotificationSettings:
             raise ValueError(
                 "background.notifications.local_backend must be auto, desktop, or terminal"
             )
+        quiet_hours_raw = raw.get("quiet_hours")
+        if quiet_hours_raw is None:
+            quiet_hours = None
+        elif isinstance(quiet_hours_raw, Mapping):
+            quiet_hours = QuietHoursSettings.from_mapping(quiet_hours_raw)
+        else:
+            raise ValueError("background.notifications.quiet_hours must be a table")
 
         def finite_number(name: str, default: float, minimum: float, maximum: float) -> float:
             value = raw.get(name, default)
@@ -204,6 +254,7 @@ class BackgroundNotificationSettings:
             local_enabled=local_enabled,
             local_backend=str(backend),
             webhooks=tuple(webhooks),
+            quiet_hours=quiet_hours,
             allow_private_network=allow_private,
             request_timeout_s=finite_number("request_timeout_s", 5.0, 0.1, 60.0),
             max_attempts=max_attempts,

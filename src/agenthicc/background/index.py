@@ -13,9 +13,10 @@ index from the log.
 
 Search keeps the registry's case-insensitive substring semantics, per word:
 every word of a query must occur, in any order (AGX-06). SQLite's FTS5
-``trigram`` tokenizer indexes the searchable text so patterns of three or more
-characters use the index; without FTS5 the same ``LIKE`` runs over a plain
-column.
+``trigram`` tokenizer indexes the searchable text so queries whose words are all
+three or more characters use the index; if a query has a shorter word, all its
+terms use literal substring checks against the stored lowercase text. Without
+FTS5, ``LIKE`` runs over the plain column.
 """
 
 from __future__ import annotations
@@ -29,8 +30,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from agenthicc.runners.process_lease import InterProcessLock
-
 from .model import BackgroundSession, SessionStatus
 
 __all__ = [
@@ -42,24 +41,24 @@ __all__ = [
     "SessionOrder",
 ]
 
-#: Bumped whenever a column, table or search representation changes; known
-#: additive migrations are applied in place, while unsupported layouts rebuild.
+#: Bumped whenever a column, table or search representation changes; a file
+#: stamped with another version is discarded and rebuilt from the log.
 INDEX_SCHEMA_VERSION = 4
 
 SearchMode = Literal["fts5", "like"]
 
 _ATTENTION_STATUSES = (SessionStatus.WAITING_APPROVAL.value, SessionStatus.WAITING_INPUT.value)
 
-_BASE_TABLES = (
-    "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
-    """CREATE TABLE IF NOT EXISTS position (
+_TABLES = """
+CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS position (
     id               INTEGER PRIMARY KEY CHECK (id = 1),
     events_inode     INTEGER NOT NULL,
     applied_offset   INTEGER NOT NULL,
     applied_mtime_ns INTEGER NOT NULL,
     applied_sequence INTEGER NOT NULL
-);""",
-    """CREATE TABLE IF NOT EXISTS sessions (
+);
+CREATE TABLE IF NOT EXISTS sessions (
     rowid             INTEGER PRIMARY KEY,
     session_id        TEXT NOT NULL UNIQUE,
     status            TEXT NOT NULL,
@@ -79,59 +78,21 @@ _BASE_TABLES = (
     idempotency_key   TEXT NOT NULL,
     search_text       TEXT NOT NULL,
     record            TEXT NOT NULL
-);""",
-)
-_INDEXES = (
-    "CREATE INDEX IF NOT EXISTS sessions_order ON sessions (pinned DESC, last_active DESC, session_id)",
-    "CREATE INDEX IF NOT EXISTS sessions_recent ON sessions (last_active DESC, session_id)",
-    "CREATE INDEX IF NOT EXISTS sessions_created ON sessions (created_at DESC, session_id)",
-    "CREATE INDEX IF NOT EXISTS sessions_status ON sessions (status, last_active DESC)",
-    "CREATE INDEX IF NOT EXISTS sessions_attention ON sessions (needs_attention, last_active DESC)",
-    "CREATE INDEX IF NOT EXISTS sessions_cwd ON sessions (cwd, last_active DESC)",
-    "CREATE INDEX IF NOT EXISTS sessions_workflow ON sessions (workflow_name, last_active DESC)",
-    "CREATE INDEX IF NOT EXISTS sessions_run ON sessions (run_id) WHERE run_id <> ''",
-    "CREATE INDEX IF NOT EXISTS sessions_parent ON sessions (parent_session_id) WHERE parent_session_id <> ''",
-    "CREATE INDEX IF NOT EXISTS sessions_idempotency ON sessions (idempotency_key) WHERE idempotency_key <> ''",
-)
-_SESSION_REQUIRED_COLUMNS = frozenset(
-    {
-        "session_id",
-        "status",
-        "dispatch_state",
-        "needs_attention",
-        "priority",
-        "pinned",
-        "cwd",
-        "workflow_name",
-        "run_id",
-        "parent_session_id",
-        "role",
-        "title",
-        "last_active",
-        "created_at",
-        "worker_pid",
-        "idempotency_key",
-        "search_text",
-        "record",
-    }
-)
-_POSITION_REQUIRED_COLUMNS = frozenset(
-    {"id", "events_inode", "applied_offset", "applied_mtime_ns", "applied_sequence"}
-)
-
-
-def _is_schema_operational_error(error: sqlite3.OperationalError) -> bool:
-    message = str(error).casefold()
-    return any(
-        marker in message
-        for marker in (
-            "no such column",
-            "no such table",
-            "has no column named",
-            "malformed database schema",
-        )
-    )
-
+);
+CREATE INDEX IF NOT EXISTS sessions_order
+    ON sessions (pinned DESC, last_active DESC, session_id);
+CREATE INDEX IF NOT EXISTS sessions_recent ON sessions (last_active DESC, session_id);
+CREATE INDEX IF NOT EXISTS sessions_created ON sessions (created_at DESC, session_id);
+CREATE INDEX IF NOT EXISTS sessions_status ON sessions (status, last_active DESC);
+CREATE INDEX IF NOT EXISTS sessions_attention ON sessions (needs_attention, last_active DESC);
+CREATE INDEX IF NOT EXISTS sessions_cwd ON sessions (cwd, last_active DESC);
+CREATE INDEX IF NOT EXISTS sessions_workflow ON sessions (workflow_name, last_active DESC);
+CREATE INDEX IF NOT EXISTS sessions_run ON sessions (run_id) WHERE run_id <> '';
+CREATE INDEX IF NOT EXISTS sessions_parent
+    ON sessions (parent_session_id) WHERE parent_session_id <> '';
+CREATE INDEX IF NOT EXISTS sessions_idempotency
+    ON sessions (idempotency_key) WHERE idempotency_key <> '';
+"""
 
 # An external-content index over ``sessions.search_text``: it stores trigrams,
 # not a second copy of the text. Triggers keep it in step, and an update
@@ -273,13 +234,9 @@ def _suffix_pattern(suffix: str) -> str:
     return f"%{escaped}"
 
 
-def _glob_pattern(query: str) -> str:
-    # FTS5 uses the trigram index for GLOB but not for LIKE ... ESCAPE; a
-    # bracket expression matches GLOB's special characters literally. The
-    # stored text and the query are both lower-cased, so case-sensitive GLOB
-    # still matches case-insensitively.
-    escaped = "".join(f"[{character}]" if character in "*?[" else character for character in query)
-    return f"*{escaped}*"
+def _fts_phrase(query: str) -> str:
+    escaped = query.replace('"', '""')
+    return f'"{escaped}"'
 
 
 def _row(session: BackgroundSession) -> tuple[object, ...]:
@@ -308,7 +265,7 @@ def _row(session: BackgroundSession) -> tuple[object, ...]:
 def _decode(record: str) -> BackgroundSession:
     value = json.loads(record)
     if not isinstance(value, dict):
-        raise ValueError("index record is not an object")
+        raise TypeError("index record is not an object")
     return BackgroundSession.from_mapping(value)
 
 
@@ -329,9 +286,6 @@ class SessionIndex:
         self.path = path
         self._requested_search_mode = search_mode
         self._connection: sqlite3.Connection | None = None
-        self._connection_identity: tuple[int, int] | None = None
-        self._failure_identity: tuple[int, int] | None = None
-        self._failure_observed = False
         self._search_mode: SearchMode = "like"
         # Decoding a stored record validates ~50 fields; reuse the frozen
         # session when the row still holds exactly the text it came from.
@@ -342,106 +296,29 @@ class SessionIndex:
     def _connect(self) -> sqlite3.Connection:
         connection = self._connection
         if connection is not None:
-            if self.connection_matches_path():
-                return connection
-            self.close()
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        # Serialize connection/schema initialization with corruption recovery.
-        # SQLite transactions still coordinate normal reads and writes; this
-        # lock protects the short interval when the derived file is replaced.
-        with InterProcessLock(self._maintenance_lock_path):
-            connection = self._connection
-            if connection is not None and self.connection_matches_path():
-                return connection
-            if connection is not None:
-                self.close()
-            try:
-                connection = self._open()
-            except sqlite3.DatabaseError:
-                self._failure_identity = self._path_identity()
-                self._failure_observed = True
-                raise
-            try:
-                connection.execute("PRAGMA journal_mode=WAL")
-                connection.execute("PRAGMA synchronous=NORMAL")
-                connection.execute("BEGIN IMMEDIATE")
-                if not self._schema_is_compatible(connection):
-                    self._reset_schema_tables(connection)
-                for statement in _BASE_TABLES:
-                    connection.execute(statement)
-                for statement in _INDEXES:
-                    connection.execute(statement)
-                mode = self._stored_search_mode(connection)
-                has_fts = connection.execute(
-                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sessions_fts'"
-                ).fetchone()
-                if mode == "like":
-                    self._search_mode = "like"
-                elif mode == "fts5" and has_fts is not None:
-                    self._create_fts_objects(connection)
-                    self._search_mode = "fts5"
-                else:
-                    self._search_mode = self._choose_search_mode(connection)
-                connection.execute("COMMIT")
-            except sqlite3.OperationalError as exc:
-                if connection.in_transaction:
-                    connection.execute("ROLLBACK")
-                if not _is_schema_operational_error(exc):
-                    self._failure_identity = self._path_identity()
-                    self._failure_observed = True
-                    connection.close()
-                    raise
-                try:
-                    connection.execute("BEGIN IMMEDIATE")
-                    self._reset_schema_tables(connection)
-                    for statement in _BASE_TABLES:
-                        connection.execute(statement)
-                    for statement in _INDEXES:
-                        connection.execute(statement)
-                    self._search_mode = self._choose_search_mode(connection)
-                    connection.execute("COMMIT")
-                except BaseException:
-                    if connection.in_transaction:
-                        connection.execute("ROLLBACK")
-                    self._failure_identity = self._path_identity()
-                    self._failure_observed = True
-                    connection.close()
-                    raise
-            except BaseException:
-                if connection.in_transaction:
-                    connection.execute("ROLLBACK")
-                self._failure_identity = self._path_identity()
-                self._failure_observed = True
-                connection.close()
-                raise
-            try:
-                os.chmod(self.path, 0o600)
-            except OSError:
-                pass
-            self._connection = connection
-            self._connection_identity = self._path_identity()
-            self._failure_identity = None
-            self._failure_observed = False
             return connection
-
-    @property
-    def _maintenance_lock_path(self) -> Path:
-        return self.path.with_name(f"{self.path.name}.maintenance.lock")
-
-    def _path_identity(self) -> tuple[int, int] | None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        connection = self._open()
+        if self._foreign_schema(connection):
+            # Tables from another layout would survive CREATE IF NOT EXISTS.
+            connection.close()
+            self._delete_files()
+            connection = self._open()
         try:
-            stat = self.path.stat()
+            connection.execute("PRAGMA journal_mode=WAL")
+            connection.execute("PRAGMA synchronous=NORMAL")
+            connection.executescript(_TABLES)
+            mode = self._stored_search_mode(connection) or self._choose_search_mode(connection)
+            self._search_mode = mode
+        except BaseException:
+            connection.close()
+            raise
+        try:
+            os.chmod(self.path, 0o600)
         except OSError:
-            return None
-        return stat.st_dev, stat.st_ino
-
-    def connection_matches_path(self) -> bool:
-        """Whether this open connection still refers to the published index."""
-        return (
-            self._connection is not None
-            and self._connection_identity is not None
-            and self._connection_identity == self._path_identity()
-        )
+            pass
+        self._connection = connection
+        return connection
 
     def _open(self) -> sqlite3.Connection:
         return sqlite3.connect(
@@ -449,108 +326,14 @@ class SessionIndex:
         )
 
     @staticmethod
-    def _table_columns(connection: sqlite3.Connection, table: str) -> frozenset[str]:
-        return frozenset(str(row[1]) for row in connection.execute(f'PRAGMA table_info("{table}")'))
-
-    def _schema_is_compatible(self, connection: sqlite3.Connection) -> bool:
-        """Migrate the known additive column gap or report that a rebuild is needed."""
-
-        tables = {
-            str(row[0])
-            for row in connection.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
-            )
-        }
-        if not tables:
-            return True
-
-        version: int | None = None
-        if "meta" in tables:
-            meta_columns = self._table_columns(connection, "meta")
-            if not {"key", "value"} <= meta_columns:
-                return False
-            row = connection.execute(
-                "SELECT value FROM meta WHERE key = 'schema_version'"
-            ).fetchone()
-            if row is not None:
-                try:
-                    version = int(row[0])
-                except (TypeError, ValueError):
-                    return False
-                if version not in {INDEX_SCHEMA_VERSION - 1, INDEX_SCHEMA_VERSION}:
-                    return False
-
-        if "position" in tables and not _POSITION_REQUIRED_COLUMNS <= self._table_columns(
-            connection, "position"
-        ):
+    def _foreign_schema(connection: sqlite3.Connection) -> bool:
+        has_meta = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'meta'"
+        ).fetchone()
+        if has_meta is None:
             return False
-
-        if "sessions" in tables:
-            columns = self._table_columns(connection, "sessions")
-            missing = _SESSION_REQUIRED_COLUMNS - columns
-            if missing:
-                if missing != {"idempotency_key"}:
-                    return False
-                connection.execute(
-                    "ALTER TABLE sessions ADD COLUMN idempotency_key TEXT NOT NULL DEFAULT ''"
-                )
-                self._backfill_idempotency_keys(connection)
-
-        return True
-
-    @staticmethod
-    def _backfill_idempotency_keys(connection: sqlite3.Connection) -> None:
-        """Backfill the new index column from its serialized authoritative row."""
-
-        # Bound temporary memory for registries with many persisted sessions.
-        cursor = connection.execute("SELECT session_id, record FROM sessions")
-        while rows := cursor.fetchmany(512):
-            updates: list[tuple[str, str]] = []
-            for session_id, record in rows:
-                key = ""
-                try:
-                    value = json.loads(record)
-                except (TypeError, json.JSONDecodeError):
-                    value = None
-                if isinstance(value, dict):
-                    candidate = value.get("idempotency_key", "")
-                    if isinstance(candidate, str):
-                        key = candidate[:256]
-                updates.append((key, str(session_id)))
-            connection.executemany(
-                "UPDATE sessions SET idempotency_key = ? WHERE session_id = ?", updates
-            )
-
-    @staticmethod
-    def _quote_identifier(identifier: str) -> str:
-        return '"' + identifier.replace('"', '""') + '"'
-
-    def _reset_schema_tables(self, connection: sqlite3.Connection) -> None:
-        """Drop only this derived database's schema, retaining the SQLite file/WAL."""
-
-        objects = connection.execute(
-            "SELECT type, name, sql FROM sqlite_master "
-            "WHERE name NOT LIKE 'sqlite_%' AND type IN ('trigger', 'view', 'table')"
-        ).fetchall()
-        for object_type, name, _sql in objects:
-            if object_type == "trigger":
-                connection.execute(f"DROP TRIGGER IF EXISTS {self._quote_identifier(str(name))}")
-        for object_type, name, _sql in objects:
-            if object_type == "view":
-                connection.execute(f"DROP VIEW IF EXISTS {self._quote_identifier(str(name))}")
-        # Drop virtual tables first; SQLite removes their shadow tables too.
-        virtual_tables = [
-            str(name)
-            for object_type, name, sql in objects
-            if object_type == "table"
-            and isinstance(sql, str)
-            and "CREATE VIRTUAL TABLE" in sql.upper()
-        ]
-        for name in virtual_tables:
-            connection.execute(f"DROP TABLE IF EXISTS {self._quote_identifier(name)}")
-        for object_type, name, _sql in objects:
-            if object_type == "table":
-                connection.execute(f"DROP TABLE IF EXISTS {self._quote_identifier(str(name))}")
+        row = connection.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
+        return row is not None and row[0] != str(INDEX_SCHEMA_VERSION)
 
     def _delete_files(self) -> None:
         for suffix in ("", "-wal", "-shm"):
@@ -568,27 +351,10 @@ class SessionIndex:
         if self._requested_search_mode == "like":
             return "like"
         try:
-            self._create_fts_objects(connection)
-        except sqlite3.OperationalError as exc:
-            message = str(exc).casefold()
-            if any(
-                marker in message
-                for marker in (
-                    "no such module: fts5",
-                    "no such tokenizer: trigram",
-                    "error in tokenizer constructor",
-                )
-            ):
-                return "like"
-            raise
+            connection.executescript(_FTS_TABLE + _FTS_TRIGGERS)
+        except sqlite3.OperationalError:
+            return "like"
         return "fts5"
-
-    @staticmethod
-    def _create_fts_objects(connection: sqlite3.Connection) -> None:
-        connection.execute(_FTS_TABLE)
-        for statement in _FTS_TRIGGERS.split("END;"):
-            if statement.strip():
-                connection.execute(statement + "END;")
 
     @property
     def search_mode(self) -> SearchMode:
@@ -599,40 +365,8 @@ class SessionIndex:
     def close(self) -> None:
         connection = self._connection
         self._connection = None
-        self._connection_identity = None
         if connection is not None:
             connection.close()
-
-    def reset_schema(self) -> None:
-        """Recreate the derived index schema in-place, preserving its database file."""
-
-        connection = self._connection or self._open()
-        owns_connection = self._connection is None
-        try:
-            connection.execute("BEGIN IMMEDIATE")
-            self._reset_schema_tables(connection)
-            for statement in _BASE_TABLES:
-                connection.execute(statement)
-            for statement in _INDEXES:
-                connection.execute(statement)
-            self._search_mode = self._choose_search_mode(connection)
-            connection.execute("COMMIT")
-        except BaseException:
-            if connection.in_transaction:
-                connection.execute("ROLLBACK")
-            if owns_connection:
-                connection.close()
-            raise
-        if owns_connection:
-            self._connection = connection
-            self._connection_identity = self._path_identity()
-            self._failure_identity = None
-            self._failure_observed = False
-        self._decoded.clear()
-        try:
-            os.chmod(self.path, 0o600)
-        except OSError:
-            pass
 
     def _session(self, session_id: str, record: str) -> BackgroundSession:
         cached = self._decoded.get(session_id)
@@ -650,32 +384,10 @@ class SessionIndex:
             del decoded[next(iter(decoded))]
 
     def discard(self) -> None:
-        """Discard an unusable derived file so the next access rebuilds it.
-
-        This is reserved for SQLite-level database corruption. Compatible but
-        structurally stale schemas use :meth:`reset_schema`, which preserves
-        the database file and its WAL coordination.
-        """
+        """Delete the index files so the next access rebuilds them."""
         self._decoded.clear()
-        with InterProcessLock(self._maintenance_lock_path):
-            path_identity = self._path_identity()
-            observed_identity = (
-                self._connection_identity
-                if self._connection is not None
-                else self._failure_identity
-            )
-            observed = self._connection is not None or self._failure_observed
-            if observed and observed_identity != path_identity:
-                # Another process already replaced this corrupt projection.
-                # Close our stale handle, but never delete the new index.
-                self.close()
-                self._failure_identity = None
-                self._failure_observed = False
-                return
-            self.close()
-            self._failure_identity = None
-            self._failure_observed = False
-            self._delete_files()
+        self.close()
+        self._delete_files()
 
     # ── state ────────────────────────────────────────────────────────────────
 
@@ -819,11 +531,21 @@ class SessionIndex:
         if query_filter.pinned is not None:
             clauses.append("pinned = ?")
             parameters.append(1 if query_filter.pinned else 0)
-        for word in query_filter.query.lower().split():
-            if self._search_mode == "fts5":
-                clauses.append("rowid IN (SELECT rowid FROM sessions_fts WHERE search_text GLOB ?)")
-                parameters.append(_glob_pattern(word))
-            else:
+        words = query_filter.query.lower().split()
+        if self._search_mode == "fts5" and all(len(word) >= 3 for word in words):
+            for word in words:
+                clauses.append(
+                    "rowid IN (SELECT rowid FROM sessions_fts WHERE sessions_fts MATCH ?)"
+                )
+                parameters.append(_fts_phrase(word))
+        elif self._search_mode == "fts5":
+            # A short word cannot use the trigram index. Scan the stored text
+            # once instead of combining a broad FTS result with that scan.
+            for word in words:
+                clauses.append("instr(search_text, ?) > 0")
+                parameters.append(word)
+        else:
+            for word in words:
                 clauses.append("search_text LIKE ? ESCAPE '\\'")
                 parameters.append(_like_pattern(word))
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""

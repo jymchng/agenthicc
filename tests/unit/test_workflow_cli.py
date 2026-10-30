@@ -201,7 +201,7 @@ async def test_execute_workflow_resume_uses_existing_run_and_runner_resume(
     # Load the recovery module before replacing the store constructor.  Its
     # type alias is intentionally imported at module scope; importing it only
     # after the patch would leak the test lambda into later TUI tests.
-    from agenthicc.runners.workflow_recovery import WorkflowRecoveryCoordinator  # noqa: F401
+    from agenthicc.runners.workflow_recovery import WorkflowRecoveryCoordinator
 
     resumed_contexts: list[object] = []
 
@@ -299,7 +299,7 @@ async def test_execute_workflow_pauses_429_at_typed_phase_then_resumes_same_run(
     tmp_path, monkeypatch
 ) -> None:
     from agenthicc.runners.headless import execute_workflow
-    from agenthicc.runners.workflow_recovery import WorkflowRecoveryCoordinator  # noqa: F401
+    from agenthicc.runners.workflow_recovery import WorkflowRecoveryCoordinator
 
     resumed_contexts: list[object] = []
 

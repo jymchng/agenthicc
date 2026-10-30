@@ -37,14 +37,16 @@ a child write succeeds while the parent approval service denies it. The pool
 unit test also expects a child workspace request to return `yolo_bypass` when
 the parent is `Safe`.
 
-The child’s workspace *scope*, parent model, selected provider options, retry
-settings, visible-tool ceiling, conversation correlation IDs, and durable
-journal are partially carried across. The child’s effective mode, blocked
-capabilities, approval requirements, mode prompt suffix, and several other
-turn-level policies are not. The result is a mixed and difficult-to-reason
-contract: a child cannot necessarily see tools excluded from the parent’s
-visible-tool list, but any visible mutating tool is evaluated under a new Yolo
-policy.
+The child’s workspace *scope*, inherited parent model by default, selected
+provider options, retry settings, visible-tool ceiling, conversation correlation
+IDs, and durable journal are partially carried across. SUBAGENT-02 adds
+operator-configured and per-type model/effort routing, and an opt-in for per-call
+routing; workers remain on the active provider endpoint. The child’s effective
+mode, blocked capabilities, approval requirements, mode prompt suffix, and
+several other turn-level policies are not. The result is a mixed and
+difficult-to-reason contract: a child cannot necessarily see tools excluded from
+the parent’s visible-tool list, but any visible mutating tool is evaluated under
+a new Yolo policy.
 
 This PRD defines a safe inheritance contract. A subagent receives an immutable
 snapshot of the parent turn’s *effective* execution policy and uses an isolated
@@ -105,7 +107,7 @@ The investigation found the following current contracts:
 | Workspace root/scope | Copied into a new policy | Child remains scoped to the same workspace |
 | Parent visible tools | Passed as the child’s input ceiling | Child cannot recover tools omitted before spawn |
 | Role `allowed_tools` | Intersected with the supplied tool list | Role-specific narrowing works |
-| Model | Parent model ID is reused | Provider/model identity is consistent |
+| Model | Parent model ID is reused unless operator defaults, trusted subagent-type routing, or explicitly enabled per-call routing in SUBAGENT-02 selects another | Provider/model identity is consistent; routing remains on the active provider endpoint |
 | Provider options | Temperature, top-p, completion limit, and request options are copied | Only a subset of execution configuration is inherited |
 | Retry and usage correlation | Retry settings, conversation ID, run ID, ledger, and journal are passed | Observability and retry integration are partially inherited |
 | Conversation history | Not copied; worker memory is fresh | Concurrent workers remain isolated |
@@ -173,8 +175,10 @@ The implementation MUST:
    complete parent system prompt, transcript, hidden reasoning, secrets, or
    tool results.
 8. Continue to inherit the effective model and provider request settings that
-   are safe and relevant to a worker, while making the copied field set
-   explicit and typed.
+   are safe and relevant to a worker, while making the copied field set explicit
+   and typed. Under SUBAGENT-02 operator defaults and trusted type settings may
+   route model and effort; per-call overrides remain disabled unless explicitly
+   enabled by the operator. Routing cannot switch the active provider endpoint.
 9. Keep worker memory and conversation history isolated by default. A worker
    receives its task and explicit task context, not all parent messages.
 10. Preserve existing retry, usage-ledger, durable-journal, cancellation, and
@@ -509,7 +513,7 @@ The implementation and documentation MUST publish and test this matrix:
 | Parent visible tools | Inherit as hard ceiling |
 | Role allow-list | Apply as an additional narrowing filter |
 | Workspace scope | Inherit exact scope, never broaden |
-| Provider/model and safe request options | Inherit the resolved effective values |
+| Provider/model and safe request options | Inherit resolved effective values unless SUBAGENT-02 operator defaults, trusted type settings, or explicitly enabled call overrides select a model/effort within policy; do not switch provider endpoints |
 | Retry policy | Inherit current retry contract |
 | Usage/journal/run correlation | Inherit existing correlation contract |
 | Skills/MCP/browser integrations | Use only integrations represented by the inherited visible tool surface; do not auto-discover broader tools |
@@ -816,10 +820,12 @@ must not widen the canonical root.
 
 ### AC-9 — Configuration and accounting
 
-The child uses the effective parent model/provider settings, retry policy,
-conversation correlation, usage ledger, journal, and timeout contract. A
-nullable or missing provider usage field does not change policy inheritance or
-fail a worker’s accounting.
+The child uses the effective parent model/provider settings by default; an
+operator default, trusted subagent type, or explicitly enabled call override may
+select model or effort under SUBAGENT-02 without switching the active provider
+endpoint. Retry policy, conversation correlation, usage ledger, journal, and
+timeout contract remain inherited. A nullable or missing provider usage field
+does not change policy inheritance or fail a worker’s accounting.
 
 ### AC-10 — Recovery and cancellation
 

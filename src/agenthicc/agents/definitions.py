@@ -27,18 +27,25 @@ is silently ignored.
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from agenthicc.subagents.types import SubagentPermissionConstraints
+
+from agenthicc.result_contracts import JSONMapping, parse_output_schema
 
 __all__ = [
     "AGENT_MODES",
-    "AgentSpec",
     "CAPABILITY_NAMES",
     "CEILINGS",
-    "DefinitionError",
     "FIELDS",
+    "AgentSpec",
+    "DefinitionError",
     "parse_definition",
     "render_definition",
 ]
@@ -64,20 +71,29 @@ FIELDS = (
     "description",
     "mode",
     "model",
+    "effort",
+    "context",
+    "output",
     "tools",
     "capabilities",
     "max_steps",
     "ceiling",
     "color",
     "hidden",
+    "override",
+    "permissions",
 )
 
 _NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 _KEY = re.compile(r"^([A-Za-z_][A-Za-z0-9_-]*)\s*:(.*)$")
 _COLOR = re.compile(r"^[a-z_]{1,32}$")
 _TOOL = re.compile(r"^[A-Za-z0-9_.*-]{1,128}$")
+_MODEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}$")
+_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh")
+_MAX_CONTEXT_TOKENS = 10_000_000
 
 Scalar = str | int | bool
+FrontValue = Scalar | list[Scalar] | JSONMapping
 
 
 class DefinitionError(ValueError):
@@ -100,7 +116,7 @@ class AgentSpec:
     #: The system prompt (the Markdown body); empty adds nothing to the base prompt.
     prompt: str = ""
     mode: str = "all"
-    #: A model ID or provider profile name; empty means the session's model.
+    #: A model ID or provider profile; empty uses the session model or subagent default.
     model: str = ""
     #: Tool names (or ``group.*`` patterns) the agent may use; ``None`` means
     #: every tool the session allows.
@@ -112,9 +128,19 @@ class AgentSpec:
     ceiling: str = ""
     color: str = ""
     hidden: bool = False
+    #: Optional per-type constraints that can only narrow inherited permissions.
+    permissions: SubagentPermissionConstraints | None = None
     #: ``builtin``, ``user`` or ``project``.
     source: str = "builtin"
     path: Path | None = None
+    #: Explicit permission to shadow a built-in subagent type.
+    override: bool = False
+    #: Reasoning effort passed through provider request options for subagents.
+    effort: str = ""
+    #: Per-worker memory budget in tokens; clamped to the selected model window.
+    context: int | None = None
+    #: Optional JSON Schema object required from a structured worker result.
+    output_schema: JSONMapping | None = None
 
     @property
     def primary(self) -> bool:
@@ -195,42 +221,79 @@ def _inline_list(raw: str, path: Path | None, line: int) -> list[Scalar]:
 
 def _parse_front(
     front: list[tuple[int, str]], path: Path | None
-) -> tuple[dict[str, Scalar | list[Scalar]], dict[str, int]]:
-    """Frontmatter values and the line each key is on."""
-    values: dict[str, Scalar | list[Scalar]] = {}
+) -> tuple[dict[str, FrontValue], dict[str, int]]:
+    """Frontmatter values and the line each top-level or permission key is on."""
+    values: dict[str, FrontValue] = {}
     lines: dict[str, int] = {}
     current_list: list[Scalar] | None = None
+    current_list_indent = 0
+    permissions: dict[str, Scalar | list[Scalar]] | None = None
     for number, raw in front:
         stripped = raw.strip()
         if not stripped or stripped.startswith("#"):
             continue
+        indent = len(raw) - len(raw.lstrip())
         if stripped.startswith("- ") or stripped == "-":
-            if current_list is None or not raw[:1].isspace():
+            if current_list is None or indent < current_list_indent:
                 raise DefinitionError(path, number, "a list item outside a list")
             current_list.append(_scalar(_strip_comment(stripped[1:]), path, number))
             continue
-        if raw[:1].isspace():
-            raise DefinitionError(path, number, "unexpected indentation")
-        match = _KEY.match(stripped)
-        if match is None:
-            raise DefinitionError(path, number, f"expected 'key: value', found {stripped!r}")
-        key, rest = match.group(1), _strip_comment(match.group(2))
-        if key in values:
-            raise DefinitionError(path, number, f"{key!r} is set twice")
-        lines[key] = number
-        current_list = None
-        if not rest:
-            current_list = []
-            values[key] = current_list
-        elif rest.startswith("[") and rest.endswith("]"):
-            values[key] = _inline_list(rest, path, number)
+        if indent == 2 and permissions is not None:
+            match = _KEY.match(stripped)
+            if match is None:
+                raise DefinitionError(path, number, f"expected 'key: value', found {stripped!r}")
+            key, rest = match.group(1), _strip_comment(match.group(2))
+            if key in permissions:
+                raise DefinitionError(path, number, f"permissions.{key!s} is set twice")
+            lines[f"permissions.{key}"] = number
+            if not rest:
+                nested_list: list[Scalar] = []
+                permissions[key] = nested_list
+                current_list = nested_list
+                current_list_indent = 4
+            elif rest.startswith("[") and rest.endswith("]"):
+                permissions[key] = _inline_list(rest, path, number)
+                current_list = None
+            else:
+                permissions[key] = _scalar(rest, path, number)
+                current_list = None
+            continue
+        if indent:
+            if current_list is None or indent < current_list_indent:
+                raise DefinitionError(path, number, "unexpected indentation")
         else:
-            values[key] = _scalar(rest, path, number)
+            match = _KEY.match(stripped)
+            if match is None:
+                raise DefinitionError(path, number, f"expected 'key: value', found {stripped!r}")
+            key, rest = match.group(1), _strip_comment(match.group(2))
+            if key in values:
+                raise DefinitionError(path, number, f"{key!r} is set twice")
+            lines[key] = number
+            current_list = None
+            permissions = None
+            if key == "output":
+                try:
+                    values[key] = parse_output_schema(rest)
+                except ValueError as exc:
+                    raise DefinitionError(path, number, f"output: {exc}") from exc
+            elif not rest and key == "permissions":
+                nested: dict[str, Scalar | list[Scalar]] = {}
+                values[key] = nested
+                permissions = nested
+            elif not rest:
+                current: list[Scalar] = []
+                values[key] = current
+                current_list = current
+                current_list_indent = 1
+            elif rest.startswith("[") and rest.endswith("]"):
+                values[key] = _inline_list(rest, path, number)
+            else:
+                values[key] = _scalar(rest, path, number)
     return values, lines
 
 
 def _text(
-    values: dict[str, Scalar | list[Scalar]],
+    values: dict[str, FrontValue],
     lines: dict[str, int],
     key: str,
     path: Path | None,
@@ -249,7 +312,7 @@ def _text(
 
 
 def _names(
-    values: dict[str, Scalar | list[Scalar]],
+    values: dict[str, FrontValue],
     lines: dict[str, int],
     key: str,
     path: Path | None,
@@ -288,6 +351,25 @@ def parse_definition(text: str, *, path: Path | None = None, source: str = "buil
     if mode not in AGENT_MODES:
         raise DefinitionError(path, lines["mode"], f"mode must be one of {', '.join(AGENT_MODES)}")
     model = _text(values, lines, "model", path, limit=200)
+    if model and model.casefold() != "inherit" and not _MODEL.fullmatch(model):
+        raise DefinitionError(path, lines["model"], "model must be an identifier or 'inherit'")
+    effort = _text(values, lines, "effort", path, limit=16).casefold()
+    if effort and effort not in _EFFORTS:
+        raise DefinitionError(path, lines["effort"], f"effort must be one of {', '.join(_EFFORTS)}")
+    context: int | None = None
+    if "context" in values:
+        raw_context = values["context"]
+        if (
+            isinstance(raw_context, bool)
+            or not isinstance(raw_context, int)
+            or not 1 <= raw_context <= _MAX_CONTEXT_TOKENS
+        ):
+            raise DefinitionError(
+                path,
+                lines["context"],
+                f"context must be a whole number from 1 to {_MAX_CONTEXT_TOKENS}",
+            )
+        context = raw_context
     tools = _names(values, lines, "tools", path)
     for tool in tools or ():
         if not _TOOL.match(tool):
@@ -326,6 +408,96 @@ def parse_definition(text: str, *, path: Path | None = None, source: str = "buil
     hidden = values.get("hidden", False)
     if not isinstance(hidden, bool):
         raise DefinitionError(path, lines["hidden"], "hidden must be true or false")
+    override = values.get("override", False)
+    if not isinstance(override, bool):
+        raise DefinitionError(path, lines["override"], "override must be true or false")
+    output_schema = values.get("output")
+    if output_schema is not None and not isinstance(output_schema, dict):
+        raise DefinitionError(path, lines["output"], "output must be a JSON Schema object")
+    permissions: SubagentPermissionConstraints | None = None
+    raw_permissions = values.get("permissions")
+    if raw_permissions is not None:
+        if not isinstance(raw_permissions, dict):
+            raise DefinitionError(
+                path, lines["permissions"], "permissions must be a nested mapping"
+            )
+        permission_fields = {
+            "deny_tools",
+            "deny_capabilities",
+            "require_approval",
+            "workspace_paths",
+        }
+        for key in raw_permissions:
+            if key not in permission_fields:
+                raise DefinitionError(
+                    path,
+                    lines.get(f"permissions.{key}", lines["permissions"]),
+                    f"unknown permissions key {key!r}",
+                )
+
+        def permission_names(key: str, *, capabilities: bool = False) -> frozenset[str]:
+            raw_names = raw_permissions.get(key, [])
+            line = lines.get(f"permissions.{key}", lines["permissions"])
+            if not isinstance(raw_names, list) or not all(
+                isinstance(item, str) for item in raw_names
+            ):
+                raise DefinitionError(path, line, f"permissions.{key} must be a list of names")
+            names = frozenset(str(item).strip() for item in raw_names)
+            for name in names:
+                if not name:
+                    raise DefinitionError(
+                        path, line, f"permissions.{key} entries must not be empty"
+                    )
+                if capabilities and name not in CAPABILITY_NAMES:
+                    raise DefinitionError(
+                        path,
+                        line,
+                        f"{name!r} is not a capability ({', '.join(CAPABILITY_NAMES)})",
+                    )
+            return names
+
+        denied_tools = permission_names("deny_tools")
+        for tool in denied_tools:
+            if not _TOOL.match(tool):
+                raise DefinitionError(
+                    path,
+                    lines.get("permissions.deny_tools", lines["permissions"]),
+                    f"permissions.deny_tools pattern {tool!r} is not a tool name",
+                )
+        denied_capabilities = permission_names("deny_capabilities", capabilities=True)
+        required_approvals = permission_names("require_approval", capabilities=True)
+        workspace_paths: tuple[str, ...] | None = None
+        if "workspace_paths" in raw_permissions:
+            raw_paths = raw_permissions["workspace_paths"]
+            line = lines.get("permissions.workspace_paths", lines["permissions"])
+            if not isinstance(raw_paths, list) or not all(
+                isinstance(item, str) for item in raw_paths
+            ):
+                raise DefinitionError(
+                    path, line, "permissions.workspace_paths must be a list of paths"
+                )
+            paths = tuple(str(item).strip() for item in raw_paths)
+            if any(not item or "\x00" in item for item in paths):
+                raise DefinitionError(
+                    path, line, "permissions.workspace_paths entries must be non-empty paths"
+                )
+            workspace_paths = paths
+        from agenthicc.subagents.types import (
+            SubagentPermissionConstraints as _PermissionConstraints,
+        )
+
+        permissions = _PermissionConstraints(
+            deny_tools=denied_tools,
+            deny_capabilities=denied_capabilities,
+            require_approval=required_approvals,
+            workspace_paths=workspace_paths,
+        )
+    if permissions is not None and mode == "primary":
+        raise DefinitionError(
+            path,
+            lines["permissions"],
+            "permissions constraints apply only to subagent definitions",
+        )
     return AgentSpec(
         name=name,
         description=description,
@@ -338,8 +510,13 @@ def parse_definition(text: str, *, path: Path | None = None, source: str = "buil
         ceiling=ceiling,
         color=color,
         hidden=hidden,
+        permissions=permissions,
         source=source,
         path=path,
+        override=override,
+        effort=effort,
+        context=context,
+        output_schema=output_schema,
     )
 
 
@@ -369,6 +546,15 @@ def render_definition(spec: AgentSpec) -> str:
     lines.append(f"mode: {spec.mode}")
     if spec.model:
         lines.append(f"model: {_quoted(spec.model)}")
+    if spec.effort:
+        lines.append(f"effort: {spec.effort}")
+    if spec.context is not None:
+        lines.append(f"context: {spec.context}")
+    if spec.output_schema is not None:
+        output = json.dumps(
+            spec.output_schema, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+        lines.append(f"output: {output}")
     if spec.tools is not None:
         lines.append(f"tools: {_list(spec.tools)}")
     if spec.capabilities is not None:
@@ -381,6 +567,20 @@ def render_definition(spec: AgentSpec) -> str:
         lines.append(f"color: {spec.color}")
     if spec.hidden:
         lines.append("hidden: true")
+    if spec.override:
+        lines.append("override: true")
+    if spec.permissions is not None:
+        lines.append("permissions:")
+        if spec.permissions.deny_tools:
+            lines.append(f"  deny_tools: {_list(sorted(spec.permissions.deny_tools))}")
+        if spec.permissions.deny_capabilities:
+            lines.append(
+                f"  deny_capabilities: {_list(sorted(spec.permissions.deny_capabilities))}"
+            )
+        if spec.permissions.require_approval:
+            lines.append(f"  require_approval: {_list(sorted(spec.permissions.require_approval))}")
+        if spec.permissions.workspace_paths is not None:
+            lines.append(f"  workspace_paths: {_list(spec.permissions.workspace_paths)}")
     lines.append("---")
     lines.append("")
     if spec.prompt:

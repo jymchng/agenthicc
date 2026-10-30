@@ -195,6 +195,18 @@ class TestScrollBufferRenderers:
         )
         assert "failed" in out.lower() or "1" in out
 
+    def test_pool_done_shows_budget_exceeded_reason(self) -> None:
+        out = self._render_event(
+            "subagent_pool_done",
+            {
+                "succeeded": 2,
+                "total": 2,
+                "failed": 0,
+                "budget_exceeded_reason": "max_tokens_exceeded",
+            },
+        )
+        assert "budget exceeded: max tokens exceeded" in out.lower()
+
 
 # ── StatusComponent N/M counter ───────────────────────────────────────────────
 

@@ -136,6 +136,134 @@ async def test_agents_opens_the_hub_over_the_conversation_and_esc_restores_it(
     assert not service._closed  # the hub does not close what the session owns
 
 
+async def test_reopening_the_hub_selects_the_oldest_attention_item(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    from agenthicc.background import BackgroundSession, SessionStatus
+    from agenthicc.background.inbox import BackgroundInboxItem, BackgroundInteractionInbox
+
+    session = _session(tmp_path, monkeypatch)
+    service, settings = session._agents_hub_service()
+    assert service is not None and settings is not None
+    inbox = BackgroundInteractionInbox(service.store)
+
+    def add_waiting_item(session_id: str, *, created_at: float) -> BackgroundInboxItem:
+        service.store.create(
+            BackgroundSession.create(
+                session_id,
+                title=session_id,
+                cwd=str(tmp_path),
+                workflow_name="",
+                intent="",
+            ).evolve(
+                status=SessionStatus.RUNNING,
+                worker_pid=os.getpid(),
+                lease_token=f"lease-{session_id}",
+                attempt=1,
+            )
+        )
+        item = inbox.register(
+            session_id=session_id,
+            attempt=1,
+            request_id=f"request-{session_id}",
+            kind="input",
+            target={"prompt": "continue?"},
+            expires_at=None,
+            now=created_at,
+        )
+        service.store.transition(
+            session_id,
+            SessionStatus.WAITING_INPUT,
+            expected_status=SessionStatus.RUNNING,
+            input_item_id=item.item_id,
+        )
+        inbox.activate(item.item_id)
+        return item
+
+    oldest = add_waiting_item("oldest", created_at=10.0)
+    newer = add_waiting_item("newer", created_at=20.0)
+    conversation = session._ctx.app_state.conversation
+    conversation.background_needs_you.set(2)
+    conversation.agents_target.set("oldest")
+    conversation.agents_item_target.set(oldest.item_id)
+    session.open_agents_hub("needs-you")
+    overlay = session._workspace.overlays.widget
+    assert isinstance(overlay, AgentsHubOverlay)
+
+    try:
+        await asyncio.sleep(0.05)
+        await overlay.hub.settle()
+        selected = overlay.hub.selected_row()
+        assert selected is not None and selected.item is not None
+        assert selected.item.item_id == oldest.item_id
+
+        newer_index = next(
+            index for index, row in enumerate(overlay.hub._rows) if row.session_id == "newer"
+        )
+        overlay.hub._select_index(newer_index)
+        assert overlay.hub.selected_session_id == newer.session_id
+        selected = overlay.hub.selected_row()
+        assert selected is not None and selected.item is not None
+        assert selected.item.item_id == newer.item_id
+
+        session.open_agents_hub("")
+        await overlay.hub.settle()
+        selected = overlay.hub.selected_row()
+        assert selected is not None and selected.item is not None
+        assert selected.item.item_id == oldest.item_id
+    finally:
+        overlay.handle_key(Key.ESC, "")
+        await asyncio.sleep(0.05)
+        await service.close()
+
+
+async def test_opening_the_hub_prioritizes_the_visible_attention_toast(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agenthicc.background import BackgroundSession, SessionStatus
+
+    session = _session(tmp_path, monkeypatch)
+    service, settings = session._agents_hub_service()
+    assert service is not None and settings is not None
+    for session_id, status in (
+        ("waiting", SessionStatus.WAITING_INPUT),
+        ("running", SessionStatus.RUNNING),
+    ):
+        service.store.create(
+            BackgroundSession.create(
+                session_id,
+                title=session_id,
+                cwd=str(tmp_path),
+                workflow_name="",
+                intent="",
+            ).evolve(status=status)
+        )
+
+    conversation = session._ctx.app_state.conversation
+    conversation.background_needs_you.set(1)
+    conversation.agents_target.set("waiting")
+    conversation.agents_item_target.set("waiting-item")
+    conversation.background_toast.set("✓ running finished")
+    conversation.background_toast_kind.set("finished")
+    conversation.agents_toast_target.set("running")
+
+    session.open_agents_hub()
+    overlay = session._workspace.overlays.widget
+    assert isinstance(overlay, AgentsHubOverlay)
+
+    try:
+        await asyncio.sleep(0.05)
+        await overlay.hub.settle()
+        assert overlay.hub.tab is Tab.RUNNING
+        assert overlay.hub.selected_session_id == "running"
+    finally:
+        overlay.handle_key(Key.ESC, "")
+        await asyncio.sleep(0.05)
+        await service.close()
+
+
 async def test_approving_from_the_overlay_leaves_a_running_turn_and_its_transcript_alone(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

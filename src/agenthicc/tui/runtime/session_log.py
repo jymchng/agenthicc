@@ -224,7 +224,7 @@ def update_session_agent(session_id: str, agent: str) -> None:
 
 
 def load_session_agent(session_id: str) -> str | None:
-    """The session's persisted primary agent, or ``None`` for old metadata."""
+    """The session's persisted primary agent, or ``None`` for old/corrupt metadata."""
     path = _SESSIONS_DIR / session_id / "metadata.json"
     try:
         value = json.loads(path.read_text(encoding="utf-8"))

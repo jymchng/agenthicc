@@ -34,6 +34,7 @@ from agenthicc.workflows.ui_ux_pro_max.state import (
 
 if TYPE_CHECKING:
     from lauren_ai._memory import ShortTermMemory
+
     from agenthicc.tui.runtime.mode_manager import ModeManager
     from agenthicc.workflows.config import WorkflowConfig
     from agenthicc.workflows.ui_ux_pro_max.definition import UiUxProMaxParams
@@ -56,6 +57,7 @@ PHASE_NAMES: tuple[str, ...] = (
     "delivery",
 )
 PHASE_INDEX = {name: index for index, name in enumerate(PHASE_NAMES)}
+_MAX_PHASE_TRANSITION_ATTEMPTS = 3
 
 CACHE_CONTRACT = """
 [UI_UX_PRO_MAX CACHE CONTRACT]
@@ -753,22 +755,35 @@ class UiUxProMaxRunner(BaseWorkflowRunner):
             + "\n\n"
             + phase_transition_instruction(tools, phase_name=phase, expected_tool_names=expected)
         )
-        await self.run_phase(
-            intent=context.intent,
-            text=bounded_text(text, 20_000),
-            system_prompt=prompt,
-            stable_system_prompt=CACHE_CONTRACT,
-            mode=None,
-            max_turns=self._max_phase_turns,
-            shared_memory=context.shared_memory,
-            tools=cast("list[ToolLike]", tools),
-            model_override=self._phase_model(phase),
-        )
-        if not tools.event.is_set():
-            raise RuntimeError(
-                f"{phase} phase ended without its transition tool; resume the workflow to continue"
+        for attempt in range(1, _MAX_PHASE_TRANSITION_ATTEMPTS + 1):
+            attempt_text = text
+            if attempt > 1:
+                expected_names = ", ".join(expected)
+                attempt_text = (
+                    f"[CONTINUE {phase.upper()} — ATTEMPT {attempt}]\n"
+                    "The previous turn ended before this phase transition was recorded. "
+                    "Continue from the existing conversation and completed work; do not repeat "
+                    "finished steps. Complete any remaining phase work and call the required "
+                    f"transition tool ({expected_names}) with the evidence-based result."
+                )
+            await self.run_phase(
+                intent=context.intent,
+                text=bounded_text(attempt_text, 20_000),
+                system_prompt=prompt,
+                stable_system_prompt=CACHE_CONTRACT,
+                mode=None,
+                max_turns=self._max_phase_turns,
+                shared_memory=context.shared_memory,
+                tools=cast("list[ToolLike]", tools),
+                model_override=self._phase_model(phase),
             )
-        return tools.data
+            if tools.event.is_set():
+                return tools.data
+        expected_names = ", ".join(expected)
+        raise RuntimeError(
+            f"{phase} phase ended without its transition tool ({expected_names}) after "
+            f"{_MAX_PHASE_TRANSITION_ATTEMPTS} attempts; resume the workflow to continue"
+        )
 
     async def run_phase(
         self,

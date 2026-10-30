@@ -106,12 +106,16 @@ class _Conversation:
 
 class _AppState:
     def __init__(self) -> None:
+        from agenthicc.reactive import Signal
+
         self.conversation = _Conversation()
         self.cli_flags = None
+        self.agent = Signal("default", name="agent")
 
 
 class _Session:
     def __init__(self) -> None:
+        from agenthicc.agents.registry import build_agents_registry
         from agenthicc.commands import build_builtin_registry
 
         # Start from every SessionContext field at its default, as the worker
@@ -120,6 +124,7 @@ class _Session:
         self.session_id = "worker-session"
         self.processor = _Processor()
         self.app_state = _AppState()
+        self.agents_registry = build_agents_registry(load_external=False)
         self.agent_runner = object()
         self.cfg = SimpleNamespace(
             execution=SimpleNamespace(max_agent_turns=5, profile=""),
@@ -1680,7 +1685,7 @@ async def test_worker_first_turn_sees_attested_mode_from_production_session_buil
 ) -> None:
     """The real turn adapter sees attested AppState before fake provider dispatch."""
     from agenthicc.agents import registry as agents_registry
-    from agenthicc.agents.registry import AgentsRegistry
+    from agenthicc.agents.registry import build_agents_registry as build_builtin_agents_registry
     from agenthicc.commands import plugin_loader
     from agenthicc.memory import journal as memory_journal
     from agenthicc.memory import layers
@@ -1723,7 +1728,11 @@ async def test_worker_first_turn_sees_attested_mode_from_production_session_buil
     monkeypatch.setattr(
         workflows_registry, "build_workflow_registry", lambda **kwargs: workflow_registry
     )
-    monkeypatch.setattr(agents_registry, "build_agents_registry", lambda **kwargs: AgentsRegistry())
+    monkeypatch.setattr(
+        agents_registry,
+        "build_agents_registry",
+        lambda **kwargs: build_builtin_agents_registry(load_external=False),
+    )
     monkeypatch.setattr(discovery, "discover_project_tools", lambda **kwargs: PluginToolSet())
     monkeypatch.setattr(discovery, "warn_conflicts", lambda tools: None)
     monkeypatch.setattr(

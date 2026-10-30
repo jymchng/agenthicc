@@ -151,19 +151,23 @@ class SavedSession:
 
 @dataclass(frozen=True, slots=True)
 class LibraryEntry:
-    """One agent definition in the Library tab."""
+    """One agent definition in the Library tab (AGX-09 §5.2)."""
 
     name: str
     source: str
     description: str = ""
+    #: The tools or capability classes it may use, as one line.
     tools: str = ""
     mode: str = ""
     model: str = ""
+    #: ``active``, ``shadowed``, ``invalid`` or ``untrusted``.
     state: str = "active"
+    #: Why it is not active: the error (with its line) or what shadows it.
     note: str = ""
     path: str = ""
-    spec: AgentSpec | None = None
+    #: The project's default primary agent (★).
     default: bool = False
+    spec: AgentSpec | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -465,8 +469,14 @@ def history_rows(
     return grouped
 
 
-_SOURCE_ORDER = ("project", "user", "plugin", "builtin")
-_SOURCE_TITLES = {"project": "Project", "user": "User", "plugin": "Plugin", "builtin": "Built-in"}
+_SOURCE_ORDER = ("project", "user", "python-project", "python-user", "builtin")
+_SOURCE_TITLES = {
+    "project": "Project",
+    "user": "User",
+    "python-project": "Project (Python)",
+    "python-user": "User (Python)",
+    "builtin": "Built-in",
+}
 
 
 def library_rows(entries: Sequence[LibraryEntry]) -> list[HubRow]:
@@ -485,7 +495,7 @@ def library_rows(entries: Sequence[LibraryEntry]) -> list[HubRow]:
         rows.extend(
             HubRow(
                 RowKind.DEFINITION,
-                f"definition:{entry.source}:{entry.name}",
+                f"definition:{entry.source}:{entry.path or entry.name}",
                 group=title,
                 entry=entry,
             )

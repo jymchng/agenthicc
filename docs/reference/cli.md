@@ -63,8 +63,8 @@ interactive TUI sessions.
 
 ## Command groups
 
-Ten groups have subcommands. Each group name is also callable on its own
-(`agenthicc mcp`, `agenthicc config`, `agenthicc perf`) and prints that group's help;
+Nine groups have subcommands. Each group name is also callable on its own
+(`agenthicc mcp`, `agenthicc config`) and prints that group's help;
 `agenthicc agents` alone opens the agents hub instead.
 
 | Group | Purpose |
@@ -72,7 +72,6 @@ Ten groups have subcommands. Each group name is also callable on its own
 | `agents` | The agents hub and its scriptable commands (background agents, their inbox) |
 | `config` | Manage configuration |
 | `mcp` | Manage configured MCP servers |
-| `perf` | Run offline performance diagnostics |
 | `schedules` | Manage durable repository-scoped workflow automations |
 | `session` | Inspect, control, and attach to client-neutral sessions |
 | `sessions` | Manage saved sessions |

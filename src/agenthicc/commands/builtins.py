@@ -281,8 +281,24 @@ def _cmd_agents(ctx: CommandContext) -> bool:
     return True
 
 
+def _cmd_dnd(ctx: CommandContext) -> bool:
+    """Toggle attention notifications without hiding the status badge (AGX-10)."""
+
+    if ctx.args.strip():
+        ctx.console.print("/dnd takes no arguments; run it again to toggle", markup=False)
+        return True
+    if ctx.toggle_dnd is None:
+        ctx.console.print("/dnd needs the interactive TUI", markup=False)
+        return True
+    enabled = ctx.toggle_dnd()
+    label = "on" if enabled else "off"
+    ctx.console.print(f"Do not disturb {label}", markup=False)
+    return True
+
+
 def _cmd_agent(ctx: CommandContext) -> bool:
     """Choose the primary agent: ``/agent`` opens the picker, ``/agent NAME`` switches."""
+
     name = ctx.args.strip()
     if ctx.select_agent is None or ctx.open_agent_picker is None:
         ctx.console.print(
@@ -1422,12 +1438,11 @@ BUILTIN_COMMANDS: list[Command] = [
         handler=_cmd_agents,
     ),
     Command(
-        name="/agent",
-        description="Choose the primary agent the session talks to (also Tab)",
-        argument_hint="[name]",
+        name="/dnd",
+        description="Toggle do-not-disturb for background agent attention",
         group="Built-in",
         busy_policy=BusyPolicy.IMMEDIATE_CONTROL,
-        handler=_cmd_agent,
+        handler=_cmd_dnd,
     ),
     Command(
         name="/inbox",
@@ -1435,6 +1450,14 @@ BUILTIN_COMMANDS: list[Command] = [
         group="Built-in",
         busy_policy=BusyPolicy.IMMEDIATE_CONTROL,
         handler=_cmd_inbox,
+    ),
+    Command(
+        name="/agent",
+        description="Choose the primary agent the session talks to (also Tab)",
+        argument_hint="[name]",
+        group="Built-in",
+        busy_policy=BusyPolicy.IMMEDIATE_CONTROL,
+        handler=_cmd_agent,
     ),
     Command(
         name="/subagents",

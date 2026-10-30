@@ -255,6 +255,42 @@ def test_builtin_registry_has_standard_commands():
         assert reg.get(name) is not None, f"Expected {name} in built-in registry"
 
 
+def test_dnd_command_toggles_without_arguments() -> None:
+    from rich.console import Console
+
+    from agenthicc.commands import CommandContext, build_builtin_registry
+    from agenthicc.config import AgenthiccConfig
+
+    state = False
+
+    def toggle() -> bool:
+        nonlocal state
+        state = not state
+        return state
+
+    registry = build_builtin_registry()
+    command = registry.get("/dnd")
+    assert command is not None and command.handler is not None
+    console = Console(record=True, force_terminal=False)
+    context = CommandContext(
+        text="/dnd",
+        args="",
+        model="test/model",
+        console=console,
+        config=AgenthiccConfig(),
+        toggle_dnd=toggle,
+    )
+
+    assert command.handler(context) is True
+    assert state
+    assert "Do not disturb on" in console.export_text()
+
+    context.args = "now"
+    assert command.handler(context) is True
+    assert state
+    assert "takes no arguments" in console.export_text()
+
+
 # ---------------------------------------------------------------------------
 # SlashCommandTrigger with unified registry
 # ---------------------------------------------------------------------------

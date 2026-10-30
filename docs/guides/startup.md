@@ -40,12 +40,6 @@ commands are loaded after the first frame for a fresh interactive session.
 Built-in workflow and agent descriptors remain available for safe metadata and
 are materialized only when selected.
 
-The initial composer footer uses the standard default key hints, so it can be
-drawn before the key-action registry is imported. Immediately after that frame,
-the keymap service loads the user's bindings and installs the active map before
-the input reader starts. Other callers still construct `AppState` with its
-default keymap eagerly; only interactive startup uses this deferred path.
-
 The agent runtime itself also loads after the first frame. Building the
 provider configuration and folding the conversation journal into provider
 memory both import lauren-ai, so the TUI starts an `agent_runtime` phase as soon

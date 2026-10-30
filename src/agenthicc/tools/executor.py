@@ -696,13 +696,13 @@ def _make_lauren_tool(
     if is_exploratory_tool(tool):
         lauren_metadata[PRESENTATION_KEY] = {"exploratory": True}
     # Tool metadata lives on the function object; callables have no typed attributes.
-    setattr(implementation, "__lauren_ai_tool_metadata__", lauren_metadata)  # noqa: B010
+    setattr(implementation, "__lauren_ai_tool_metadata__", lauren_metadata)
     implementation.__name__ = metadata.name
     implementation.__qualname__ = metadata.name
     implementation.__doc__ = metadata.description
     canonical_name = tool.name
     if canonical_name:
-        setattr(implementation, "__agenthicc_tool_name__", canonical_name)  # noqa: B010
+        setattr(implementation, "__agenthicc_tool_name__", canonical_name)
     return implementation
 
 

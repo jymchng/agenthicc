@@ -1,6 +1,6 @@
 ---
 title: "AGX-09: Agent library — Markdown definitions, management and switching"
-status: Implemented (live external-file reload deferred)
+status: Implemented (workspace snapshot)
 version: 0.1.0
 date: 2026-10-23
 repository: jymchng/agenthicc
@@ -12,24 +12,17 @@ tags: [agents, profiles, tui, ux, configuration]
 
 # AGX-09 — Agent library: Markdown definitions, management and switching
 
-## Implementation status (2026-10-30)
+## Implementation evidence (2026-10-29)
 
-The Markdown `AgentSpec` registry and catalog, built-in Markdown definitions,
-Python plugin adaptation, policy ceilings, definition CLI, Library management
-flows, primary-agent selection, and `@agent:NAME` invocation are integrated.
-Invalid Markdown definitions retain a previous valid version, and catalog
-entries expose active, shadowed, invalid, and untrusted states.
+The agent-library and switching implementation is present in the designated
+workspace snapshot; no agenthicc commit or push was made. The snapshot includes
+Markdown definitions and validation, definitions CLI operations, library/editor
+flows, agent selection, and application of trusted edits from the next turn.
 
-**Deferred:** the live-session registry is populated during startup discovery
-but is not watched for subsequent external file edits. The Library can refresh
-its catalog, but external edits do not update the active session; startup
-rebuilds the runtime registry for a new session. The no-restart hot-reload
-acceptance in §6 remains open.
-
-Focused evidence: `tests/unit/test_agent_definitions_cli.py`,
-`test_agent_library.py`, `test_agent_library_editor.py`,
-`test_agent_generation.py`, `test_agent_mentions_agx09.py`, and
-`test_agents_registry_coverage.py`.
+Focused verification passed 12 tests across
+`test_agent_library.py`, `test_agent_library_editor.py`, and
+`test_agent_definitions_cli.py`; the Python 3.12 unit suite passed 4,508 tests
+with 14 skips.
 
 ## 1. Summary
 
@@ -97,11 +90,16 @@ name: reviewer
 description: Reviews a diff for correctness and security; use after code changes.
 mode: subagent            # primary | subagent | all
 model: anthropic/claude-sonnet   # or a provider profile name (PRD-162)
+effort: high                   # optional reasoning-effort routing (SUBAGENT-02)
+context: 24000                 # optional worker memory budget (tokens)
+output: {"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"],"additionalProperties":false} # optional SUBAGENT-03 result contract
 tools: [read, grep, glob, git_diff]   # allow-list, intersected with the session
+capabilities: [read, search, git_read]
 max_steps: 30
 ceiling: Plan             # may only restrict the session mode (PRD-155)
 color: cyan
 hidden: false             # hide from the @ picker
+override: false           # explicitly replace a built-in subagent role
 ---
 
 You are a careful code reviewer. Report findings with file:line references…
@@ -110,6 +108,20 @@ You are a careful code reviewer. Report findings with file:line references…
 - `name` and `description` are required; the body is the system prompt.
 - Unknown keys are validation errors, not silently ignored (PRD-250's inert-field
   rule).
+- `model` may be a model identifier or PRD-162 provider profile. For subagents,
+  blank/omitted uses the operator default when configured, otherwise the parent;
+  `model: inherit` explicitly selects the parent. `effort` and `context` are
+  subagent routing settings defined by SUBAGENT-02; operator defaults and model
+  window clamping are documented there.
+- `tools` and `capabilities` are optional ceilings intersected with the session;
+  `ceiling` may only restrict the active mode. `override: true` is required
+  before a project subagent definition can replace a built-in role. `output` is
+  an optional single-line JSON Schema object; for subagent types it requires a
+  validated `submit_subagent_result` value (SUBAGENT-03).
+- Supported fields in the current format: `name`, `description`, `mode`,
+  `model`, `tools`, `capabilities`, `max_steps`, `ceiling`, `color`, `hidden`,
+  `override`, `effort`, `context`, and `output`. SUBAGENT-05 adds its permissions
+  key with the corresponding reader.
 - Locations and precedence: project `.agenthicc/agents/` > user
   `~/.agenthicc/agents/` > Python plugins > built-in. A shadowed definition is
   listed with "shadowed by …".

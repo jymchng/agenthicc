@@ -88,6 +88,9 @@ def summary_line(
     if state.limit and running:
         parts.append(f"limit {state.limit}")
     left = f"  [bold magenta]Subagents[/bold magenta] {separator.join(parts)}"
+    if state.depth > 1:
+        depth_label = f"depth {state.depth}"
+        left += f" {depth_label}" if plain else f" [dim]{depth_label}[/dim]"
     if hint:
         right = f"[dim]{escape(hint)}[/dim]"
         gap = cols - visible_len(left) - visible_len(right) - 1

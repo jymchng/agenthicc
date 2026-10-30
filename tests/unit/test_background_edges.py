@@ -11,8 +11,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from agenthicc.tools.approval import ApprovalRequest
-
 from agenthicc.background import (
     BackgroundSession,
     BackgroundStore,
@@ -33,6 +31,7 @@ from agenthicc.background.worker import (
     _run_direct_turn,
     run_worker,
 )
+from agenthicc.tools.approval import ApprovalRequest
 from tests.session_fakes import session_context
 
 pytestmark = pytest.mark.unit
@@ -709,9 +708,15 @@ async def test_direct_turn_requires_runner_and_delegates_to_canonical_runner(
         calls.append(str(args[0]))
 
     monkeypatch.setattr("agenthicc.runners.agent_turn._run_agent_turn", runner)
+    from agenthicc.agents.registry import build_agents_registry
+    from agenthicc.tui.conversation_store import AppState
+
+    app_state = AppState.create()
+    app_state.agent.set("default")
     session = session_context(
         agent_runner=object(),
-        app_state=session_context(conversation=object()),
+        agents_registry=build_agents_registry(load_external=False),
+        app_state=app_state,
         cfg=SimpleNamespace(
             execution=SimpleNamespace(max_agent_turns=3),
             agents=SimpleNamespace(skill_permissions_for=lambda name: object()),
@@ -836,9 +841,9 @@ def test_background_cli_list_status_and_mutations(
 async def test_background_cli_manager_attach_and_handler_errors(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    from agenthicc.background.settings import BackgroundSettings
     from agenthicc.cli.commands import background
     from agenthicc.cli.context import CLIContext
-    from agenthicc.background.settings import BackgroundSettings
     from agenthicc.tui.workspace.agents_hub import HubResult
 
     store = BackgroundStore(tmp_path / "background")
@@ -929,7 +934,7 @@ async def test_foreground_tui_wrapper_uses_recorded_cwd_and_restores_process_cwd
 ) -> None:
     import os
 
-    import agenthicc.runners.tui_session as tui_session
+    from agenthicc.runners import tui_session
 
     original_cwd = os.getcwd()
     observed: list[str] = []
@@ -982,7 +987,7 @@ def test_foreground_handoff_extracts_latest_user_request_and_handles_missing_req
     assert session._input_session._exit_requested is True
     empty = _tui_session(
         _ctx=SimpleNamespace(
-            app_state=SimpleNamespace(conversation=SimpleNamespace(turns=lambda: [])),
+            app_state=SimpleNamespace(conversation=SimpleNamespace(turns=list)),
             console=SimpleNamespace(print=lambda text: print(text)),
         )
     )

@@ -29,9 +29,9 @@ async def generate_definition_draft(
     from lauren_ai._agents import agent as agent_decorator
     from lauren_ai._agents import use_tools
 
-    draft_agent_class: type[object] = agent_decorator(model=model_id, system=_SYSTEM)(
-        use_tools()(type("_DefinitionDraftAgent", (), {}))
-    )
+    @agent_decorator(model=model_id, system=_SYSTEM)
+    @use_tools()
+    class _DefinitionDraftAgent: ...  # type: ignore[type-var]  # lauren-ai dynamic class
 
     prompt = (
         f"Create an agent definition named {name!r} from this description:\n\n"
@@ -39,7 +39,7 @@ async def generate_definition_draft(
         "Use a short, actionable description field and a useful, bounded system prompt."
     )
     stream = await runner.run_stream(
-        draft_agent_class(),
+        _DefinitionDraftAgent(),
         prompt,
         conversation_id=f"agent-definition-{uuid.uuid4().hex}",
     )

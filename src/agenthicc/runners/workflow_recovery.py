@@ -140,27 +140,6 @@ class WorkflowRecoveryRecord:
         return self.checkpoint.provider_profile if self.checkpoint is not None else ""
 
     @property
-    def provider_profile_fingerprint(self) -> str:
-        """Return the non-secret routing-binding fingerprint, if present."""
-        return self.checkpoint.provider_profile_fingerprint if self.checkpoint is not None else ""
-
-    @property
-    def provider_profile_origin(self) -> str:
-        """Return the initial non-secret provider profile for audit display."""
-        if self.checkpoint is None:
-            return ""
-        return self.checkpoint.provider_profile_origin or self.checkpoint.provider_profile
-
-    @property
-    def provider_profile_history(self) -> tuple[str, ...]:
-        """Return bounded profile-switch provenance."""
-        if self.checkpoint is None:
-            return ()
-        return self.checkpoint.provider_profile_history or (
-            (self.checkpoint.provider_profile,) if self.checkpoint.provider_profile else ()
-        )
-
-    @property
     def workspace_root(self) -> str:
         """Return the saved canonical workspace identity."""
         return self.checkpoint.workspace_root if self.checkpoint is not None else ""
@@ -264,11 +243,7 @@ class WorkflowRecoveryCoordinator:
 
         Invalid records are retained in the result so callers can display a
         useful diagnostic and leave the checkpoint available for inspection or
-        explicit reset. Terminal records are omitted by default. The legacy
-        ``provider_profile`` argument is accepted for API compatibility but is
-        intentionally not a recoverability filter; the shared resume-profile
-        resolver validates the saved or explicitly selected binding at the
-        execution boundary.
+        explicit reset. Terminal records are omitted by default.
         """
         records: list[WorkflowRecoveryRecord] = []
         for run_id in self.store.list_run_ids():
@@ -773,6 +748,15 @@ class WorkflowRecoveryCoordinator:
             return (
                 "conversation_cursor_mismatch",
                 "session conversation is older than the workflow checkpoint",
+            )
+        if (
+            provider_profile is not None
+            and checkpoint.provider_profile
+            and checkpoint.provider_profile != provider_profile
+        ):
+            return (
+                "provider_profile_mismatch",
+                f"checkpoint requires provider profile {checkpoint.provider_profile!r}",
             )
         if (
             workspace_root is not None

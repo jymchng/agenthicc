@@ -87,6 +87,28 @@ Land AGX-14 first so every later PRD is held to a measured budget. AGX-01,
 AGX-03 and AGX-05/06 are the largest user-visible wins; AGX-03 also supplies the
 search index AGX-06 needs, and AGX-04 needs AGX-03's change cursor.
 
+### 2.2 Implementation evidence for the current sequence (2026-10-30)
+
+The following sequence has implementation evidence in the designated workspace
+snapshot. No agenthicc commit or push was made. AGX-00 remains a proposed
+programme: this evidence closes these milestones, not the full AGX series.
+
+| Milestone | Scope and evidence | Verification / remaining boundary |
+|---|---|---|
+| AGX-08 | Phases 1 and 2: live panel/navigation, durable background-pool receipt and lifecycle, crash interruption without rerun, session-owned cancellation, exactly-once next-turn result delivery. See [AGX-08](agx-08-subagent-panel-and-navigation.md). | 18 focused subagent integration tests passed; lifecycle/recovery and delivery-idempotence tests are present. Full Python 3.12 unit suite: 4,508 passed, 14 skipped. |
+| AGX-09 | Markdown agent definitions, library/editor and CLI, agent selection and trusted next-turn reload. See [AGX-09](agx-09-agent-library-and-switching.md). | 12 focused definition/editor/CLI tests passed; full Python 3.12 unit suite: 4,508 passed, 14 skipped. |
+| AGX-12 | agenthicc implements §§4.1/4.3. §§4.2/4.4 are upstream lauren-ai work, merged as PR #5 and published as 1.6.1; this snapshot pins `>=1.6.1,<2` and locks 1.6.1. See [AGX-12](agx-12-agent-turn-hot-path.md). | Published-package cassette replay: 5 passed; combined focused copy-on-write/replay tests: 11 passed. Upstream validation: 1,421 unit passed/1 skipped, 1,010 integration passed; release CI passed. |
+| AGX-14 | CPU/count budgets, PR baseline policy and aggregate CI gate, weekly 10k profile/report and regression-issue classifier. See [AGX-14](agx-14-performance-budgets-and-diagnostics.md). | Python 3.12 unit suite 4,508 passed/14 skipped; after clearing subprocess coverage instrumentation from the exact import probes, a separate full coverage rerun passed 5,023/18 skipped/3 warnings at 81.7% against the 81.5% floor. Typecheck, typecheck-contracts, type audit, strict docs, llms symbols, and CI-scope `perf` passed. `nox -s lint` remains red on repository-wide Ruff findings. The weekly profile passed in an earlier run; its updated classifier was syntax-checked but the expensive profile was not rerun. GitHub has no `perf-budget-increase` label yet, and the workflow has not run from this snapshot. |
+
+On 2026-10-30, the default Nox run passed typecheck, type audit, the Python
+3.11–3.13 unit matrix, and perf. The coverage session initially exposed probe
+pollution from coverage's subprocess instrumentation; after excluding that
+instrumentation from exact import-budget probes, a separate full coverage rerun
+passed (5,023 passed, 18 skipped; 81.7% against the 81.5% floor). The default
+run is not green: `nox -s lint` still reports repository-wide Ruff findings.
+These local results do not claim that the GitHub workflow has run; the
+`perf-budget-increase` label is also not provisioned.
+
 ## 3. How `agenthicc agents` works today
 
 - **Entry.** `agenthicc agents` (`src/agenthicc/cli/commands/background.py:295`)
