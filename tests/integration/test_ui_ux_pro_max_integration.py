@@ -105,13 +105,15 @@ async def test_experience_plan_approval_controls_transition_and_emits_kernel_eve
     assert response["approved"] is allowed  # type: ignore[index]
     result = await submit(
         summary="Mapped dashboard states and components",
-        screen_inventory=["dashboard", "alert detail"],
-        interaction_state_matrix=["dashboard: loading, empty, success, error"],
-        component_dependency_graph=["Dashboard → AlertList"],
-        page_component_specs=["AlertList exposes keyboard-operable filters"],
-        acceptance_mapping=["keyboard navigation → tab-order test"],
-        implementation_tasks=["update AlertList", "add narrow viewport test"],
-        artifact_refs=["docs/design/experience.md"],
+        details={
+            "screen_inventory": ["dashboard", "alert detail"],
+            "interaction_state_matrix": ["dashboard: loading, empty, success, error"],
+            "component_dependency_graph": ["Dashboard → AlertList"],
+            "page_component_specs": ["AlertList exposes keyboard-operable filters"],
+            "acceptance_mapping": ["keyboard navigation → tab-order test"],
+            "implementation_tasks": ["update AlertList", "add narrow viewport test"],
+            "artifact_refs": ["docs/design/experience.md"],
+        },
     )
     await processor.drain()
 

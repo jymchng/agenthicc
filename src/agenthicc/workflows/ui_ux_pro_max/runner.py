@@ -205,8 +205,8 @@ PHASE_PROMPTS: dict[str, str] = {
         "'UNVERIFIED | exact criterion | why evidence is unavailable', or "
         "'NOT_APPLICABLE | exact criterion | reason'. PASS requires concrete observed evidence. "
         "Do not turn unavailable screenshot/visual tools into a PASS. Call "
-        "complete_design_acceptance(...); the tool rejects missing, duplicate, unknown, or "
-        "evidence-free entries."
+        "complete_design_acceptance(summary, details) to record the result; the transition tool "
+        "does not verify or reject the supplied details."
     ),
     "delivery": (
         "Write the user-facing final report: product/design direction, research capability actually "
@@ -692,7 +692,7 @@ class UiUxProMaxRunner(BaseWorkflowRunner):
             context,
             "design_acceptance",
             self._phase_context(context, "design_acceptance"),
-            self._design_acceptance_tools(context),
+            self._design_acceptance_tools(),
             "complete_design_acceptance",
         )
         context.acceptance_summary = _str(data, "summary")
@@ -701,19 +701,41 @@ class UiUxProMaxRunner(BaseWorkflowRunner):
         context.failed_criteria = []
         context.unverified_criteria = []
         context.not_applicable_criteria = []
+        expected = {
+            " ".join(criterion.split()).casefold(): criterion
+            for criterion in context.acceptance_criteria
+        }
+        parsed: dict[str, tuple[str, str]] = {}
+        invalid_results = len(expected) != len(context.acceptance_criteria)
         for result in context.criterion_results:
-            parts = result.split("|", 2)
-            if len(parts) != 3:
+            parts = [part.strip() for part in result.split("|", 2)]
+            if len(parts) != 3 or parts[0].upper() not in {
+                "PASS",
+                "FAIL",
+                "UNVERIFIED",
+                "NOT_APPLICABLE",
+            }:
+                invalid_results = True
                 continue
-            status, criterion = parts[0].strip().upper(), parts[1].strip()
-            if status == "PASS":
-                context.passed_criteria.append(criterion)
-            elif status == "FAIL":
-                context.failed_criteria.append(criterion)
-            elif status == "UNVERIFIED":
-                context.unverified_criteria.append(criterion)
-            elif status == "NOT_APPLICABLE":
-                context.not_applicable_criteria.append(criterion)
+            status, criterion, evidence = parts[0].upper(), parts[1], parts[2]
+            key = " ".join(criterion.split()).casefold()
+            if key not in expected or key in parsed or not evidence:
+                invalid_results = True
+                continue
+            parsed[key] = (status, evidence)
+        if invalid_results or set(parsed) != set(expected):
+            context.unverified_criteria = list(context.acceptance_criteria)
+        else:
+            for key, criterion in expected.items():
+                status, _evidence = parsed[key]
+                if status == "PASS":
+                    context.passed_criteria.append(criterion)
+                elif status == "FAIL":
+                    context.failed_criteria.append(criterion)
+                elif status == "UNVERIFIED":
+                    context.unverified_criteria.append(criterion)
+                elif status == "NOT_APPLICABLE":
+                    context.not_applicable_criteria.append(criterion)
         context.audit_limitations = bounded_list(
             [*context.audit_limitations, *_list(data, "limitations")]
         )
@@ -730,8 +752,17 @@ class UiUxProMaxRunner(BaseWorkflowRunner):
         )
         context.delivery_summary = _str(data, "summary")
         context.add_artifact("delivery", "final_report", context.delivery_summary)
-        all_criteria_accepted = bool(context.acceptance_criteria) and not (
-            context.failed_criteria or context.unverified_criteria
+        accepted_criteria = {
+            " ".join(criterion.split()).casefold()
+            for criterion in [*context.passed_criteria, *context.not_applicable_criteria]
+        }
+        required_criteria = {
+            " ".join(criterion.split()).casefold() for criterion in context.acceptance_criteria
+        }
+        all_criteria_accepted = (
+            bool(required_criteria)
+            and required_criteria <= accepted_criteria
+            and not (context.failed_criteria or context.unverified_criteria or context.fail_reason)
         )
         if all_criteria_accepted:
             return UiUxProMaxState.COMPLETE
@@ -1151,13 +1182,10 @@ class UiUxProMaxRunner(BaseWorkflowRunner):
 
         return _phase_tools(make_remediation_tools)
 
-    def _design_acceptance_tools(self, context: UiUxProMaxContext) -> PhaseToolSet:
+    def _design_acceptance_tools(self) -> PhaseToolSet:
         from agenthicc.workflows.ui_ux_pro_max.phase_tools import make_design_acceptance_tools
 
-        return _phase_tools(
-            make_design_acceptance_tools,
-            acceptance_criteria=context.acceptance_criteria,
-        )
+        return _phase_tools(make_design_acceptance_tools)
 
     def _delivery_tools(self) -> PhaseToolSet:
         from agenthicc.workflows.ui_ux_pro_max.phase_tools import make_delivery_tools

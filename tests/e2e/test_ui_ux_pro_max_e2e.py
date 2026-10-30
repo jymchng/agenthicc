@@ -60,38 +60,38 @@ def _broad_provider(*, new_project: bool = False) -> MockTransport:
             (
                 "complete_product_discovery",
                 {
-                    "summary": (
-                        "Greenfield web product request; repository has no established product UI."
+                    "summary": "Greenfield web product request; repository has no established product UI."
+                    if new_project
+                    else "Existing web application inspected; this is a substantial dashboard redesign.",
+                    "details": {
+                        "scope": "broad",
+                        "project_name": "Ops Console",
+                        "project_type": "operations dashboard",
+                        "platform": "web",
+                        "stack": "React + TypeScript",
+                        "request_kind": "new product" if new_project else "redesign",
+                        "target_users": ["operations staff"],
+                        "user_journeys": ["find and resolve active alerts"],
+                        "required_surfaces": ["dashboard", "alert list"],
+                        "functional_requirements": ["preserve alert filtering"],
+                        "ux_requirements": ["improve status scanability"],
+                        "accessibility_expectations": ["keyboard navigation", "visible focus"],
+                        "technical_constraints": [
+                            "use the repository's existing React and TypeScript stack"
+                        ]
                         if new_project
-                        else "Existing web application inspected; this is a substantial dashboard redesign."
-                    ),
-                    "scope": "broad",
-                    "project_name": "Ops Console",
-                    "project_type": "operations dashboard",
-                    "platform": "web",
-                    "stack": "React + TypeScript",
-                    "request_kind": "new product" if new_project else "redesign",
-                    "target_users": ["operations staff"],
-                    "user_journeys": ["find and resolve active alerts"],
-                    "required_surfaces": ["dashboard", "alert list"],
-                    "functional_requirements": ["preserve alert filtering"],
-                    "ux_requirements": ["improve status scanability"],
-                    "accessibility_expectations": ["keyboard navigation", "visible focus"],
-                    "technical_constraints": (
-                        ["use the repository's existing React and TypeScript stack"]
+                        else ["preserve existing routes"],
+                        "existing_visual_conventions": [
+                            "no established product design system; create one from evidence"
+                        ]
                         if new_project
-                        else ["preserve existing routes"]
-                    ),
-                    "existing_visual_conventions": (
-                        ["no established product design system; create one from evidence"]
-                        if new_project
-                        else ["reuse blue brand token"]
-                    ),
-                    "acceptance_criteria": [
-                        "alert filtering remains available",
-                        "empty and error states are represented",
-                    ],
-                    "assumptions": ["desktop and mobile are both in scope"],
+                        else ["reuse blue brand token"],
+                        "acceptance_criteria": [
+                            "alert filtering remains available",
+                            "empty and error states are represented",
+                        ],
+                        "assumptions": ["desktop and mobile are both in scope"],
+                    },
                 },
             ),
             "Product brief submitted.",
@@ -99,16 +99,22 @@ def _broad_provider(*, new_project: bool = False) -> MockTransport:
                 "submit_design_research",
                 {
                     "summary": "Upstream design search is unavailable in this session; findings are repository-grounded.",
-                    "queries": ["operations dashboard alert hierarchy"],
-                    "datasets_consulted": [],
-                    "findings": ["Existing tokens favor a blue primary and compact data surfaces."],
-                    "source_provenance": ["src/styles/tokens.css"],
-                    "applicable_recommendations": ["Reuse the product's token system."],
-                    "rejected_recommendations": ["Do not add a separate visual language."],
-                    "conflicts": [],
-                    "confidence": "medium; upstream dataset search unavailable",
-                    "limitations": ["UI/UX Pro Max script/data not loaded in the skill catalog."],
-                    "artifact_refs": ["docs/design/research-report.md"],
+                    "details": {
+                        "queries": ["operations dashboard alert hierarchy"],
+                        "datasets_consulted": [],
+                        "findings": [
+                            "Existing tokens favor a blue primary and compact data surfaces."
+                        ],
+                        "source_provenance": ["src/styles/tokens.css"],
+                        "applicable_recommendations": ["Reuse the product's token system."],
+                        "rejected_recommendations": ["Do not add a separate visual language."],
+                        "conflicts": [],
+                        "confidence": "medium; upstream dataset search unavailable",
+                        "limitations": [
+                            "UI/UX Pro Max script/data not loaded in the skill catalog."
+                        ],
+                        "artifact_refs": ["docs/design/research-report.md"],
+                    },
                 },
             ),
             "Design research submitted.",
@@ -124,28 +130,34 @@ def _broad_provider(*, new_project: bool = False) -> MockTransport:
                 "submit_design_system",
                 {
                     "summary": "A coherent token-led master system preserves existing product identity.",
-                    "artifact_refs": ["design-system/ops-console/MASTER.md"],
-                    "visual_direction": "calm operational clarity",
-                    "rationale": ["Existing visual conventions provide the brand baseline."],
-                    "style": "data-dense utility with clear hierarchy",
-                    "color_tokens": [
-                        "primary = existing brand blue",
-                        "error = semantic destructive token",
-                    ],
-                    "typography_tokens": [
-                        "existing sans family; numeric labels use tabular figures"
-                    ],
-                    "spacing_rules": ["reuse the 4px spacing scale"],
-                    "layout_rules": ["responsive grid collapses to one column"],
-                    "component_rules": ["reuse existing cards and alert list"],
-                    "interaction_states": ["loading", "empty", "success", "error", "disabled"],
-                    "responsive_behavior": ["avoid horizontal overflow at narrow widths"],
-                    "accessibility_rules": [
-                        "visible keyboard focus",
-                        "status not conveyed by color alone",
-                    ],
-                    "motion_rules": ["respect reduced motion; use short state transitions only"],
-                    "anti_patterns": ["do not replace established tokens with generic gradients"],
+                    "details": {
+                        "artifact_refs": ["design-system/ops-console/MASTER.md"],
+                        "visual_direction": "calm operational clarity",
+                        "rationale": ["Existing visual conventions provide the brand baseline."],
+                        "style": "data-dense utility with clear hierarchy",
+                        "color_tokens": [
+                            "primary = existing brand blue",
+                            "error = semantic destructive token",
+                        ],
+                        "typography_tokens": [
+                            "existing sans family; numeric labels use tabular figures"
+                        ],
+                        "spacing_rules": ["reuse the 4px spacing scale"],
+                        "layout_rules": ["responsive grid collapses to one column"],
+                        "component_rules": ["reuse existing cards and alert list"],
+                        "interaction_states": ["loading", "empty", "success", "error", "disabled"],
+                        "responsive_behavior": ["avoid horizontal overflow at narrow widths"],
+                        "accessibility_rules": [
+                            "visible keyboard focus",
+                            "status not conveyed by color alone",
+                        ],
+                        "motion_rules": [
+                            "respect reduced motion; use short state transitions only"
+                        ],
+                        "anti_patterns": [
+                            "do not replace established tokens with generic gradients"
+                        ],
+                    },
                 },
             ),
             "Master design system submitted.",
@@ -153,7 +165,9 @@ def _broad_provider(*, new_project: bool = False) -> MockTransport:
                 "request_design_system_revision",
                 {
                     "summary": "Review found a missing contrast rationale.",
-                    "actionable_findings": ["Document contrast pairing for muted status text."],
+                    "details": {
+                        "actionable_findings": ["Document contrast pairing for muted status text."]
+                    },
                 },
             ),
             "Revision requested.",
@@ -161,26 +175,30 @@ def _broad_provider(*, new_project: bool = False) -> MockTransport:
                 "submit_design_system",
                 {
                     "summary": "The revised master system documents status contrast and remains token coherent.",
-                    "artifact_refs": ["design-system/ops-console/MASTER.md"],
-                    "visual_direction": "calm operational clarity",
-                    "rationale": ["Status contrast is checked against existing semantic tokens."],
-                    "style": "data-dense utility with clear hierarchy",
-                    "color_tokens": [
-                        "brand blue primary",
-                        "status labels meet project contrast target",
-                    ],
-                    "typography_tokens": ["existing sans family with tabular numeric labels"],
-                    "spacing_rules": ["reuse the 4px spacing scale"],
-                    "layout_rules": ["responsive grid collapses to one column"],
-                    "component_rules": ["reuse existing cards and alert list"],
-                    "interaction_states": ["loading", "empty", "success", "error", "disabled"],
-                    "responsive_behavior": ["avoid horizontal overflow at narrow widths"],
-                    "accessibility_rules": [
-                        "visible focus",
-                        "status has text and icon, not color alone",
-                    ],
-                    "motion_rules": ["respect reduced motion"],
-                    "anti_patterns": ["avoid status conveyed by color alone"],
+                    "details": {
+                        "artifact_refs": ["design-system/ops-console/MASTER.md"],
+                        "visual_direction": "calm operational clarity",
+                        "rationale": [
+                            "Status contrast is checked against existing semantic tokens."
+                        ],
+                        "style": "data-dense utility with clear hierarchy",
+                        "color_tokens": [
+                            "brand blue primary",
+                            "status labels meet project contrast target",
+                        ],
+                        "typography_tokens": ["existing sans family with tabular numeric labels"],
+                        "spacing_rules": ["reuse the 4px spacing scale"],
+                        "layout_rules": ["responsive grid collapses to one column"],
+                        "component_rules": ["reuse existing cards and alert list"],
+                        "interaction_states": ["loading", "empty", "success", "error", "disabled"],
+                        "responsive_behavior": ["avoid horizontal overflow at narrow widths"],
+                        "accessibility_rules": [
+                            "visible focus",
+                            "status has text and icon, not color alone",
+                        ],
+                        "motion_rules": ["respect reduced motion"],
+                        "anti_patterns": ["avoid status conveyed by color alone"],
+                    },
                 },
             ),
             "Revised system submitted.",
@@ -188,7 +206,7 @@ def _broad_provider(*, new_project: bool = False) -> MockTransport:
                 "approve_design_system",
                 {
                     "summary": "Approved: coherent, evidence-based, accessible, and feasible.",
-                    "findings": ["Status contrast rationale is now explicit."],
+                    "details": {"findings": ["Status contrast rationale is now explicit."]},
                 },
             ),
             "Design system approved.",
@@ -196,22 +214,26 @@ def _broad_provider(*, new_project: bool = False) -> MockTransport:
                 "submit_implementation_guide",
                 {
                     "summary": "Detected React and TypeScript from package metadata and existing components.",
-                    "detected_stack": "React + TypeScript",
-                    "stack_evidence": ["package.json", "src/components/"],
-                    "relevant_guidance": ["No local UI/UX Pro Max stack dataset was available."],
-                    "token_mappings": ["map color tokens to existing CSS variables"],
-                    "component_strategy": ["extend the current AlertList"],
-                    "responsive_strategy": ["use existing CSS grid breakpoints"],
-                    "state_handling_conventions": ["retain existing query-state model"],
-                    "accessibility_strategy": [
-                        "semantic list, keyboard-operable filters, visible focus"
-                    ],
-                    "test_tools": ["existing component test suite"],
-                    "performance_constraints": ["do not add client-side dependencies"],
-                    "anti_patterns": ["do not create parallel token sources"],
-                    "validation_commands": ["npm test", "npm run build"],
-                    "limitations": ["stack-specific upstream guidance unavailable"],
-                    "artifact_refs": ["docs/design/implementation-guide.md"],
+                    "details": {
+                        "detected_stack": "React + TypeScript",
+                        "stack_evidence": ["package.json", "src/components/"],
+                        "relevant_guidance": [
+                            "No local UI/UX Pro Max stack dataset was available."
+                        ],
+                        "token_mappings": ["map color tokens to existing CSS variables"],
+                        "component_strategy": ["extend the current AlertList"],
+                        "responsive_strategy": ["use existing CSS grid breakpoints"],
+                        "state_handling_conventions": ["retain existing query-state model"],
+                        "accessibility_strategy": [
+                            "semantic list, keyboard-operable filters, visible focus"
+                        ],
+                        "test_tools": ["existing component test suite"],
+                        "performance_constraints": ["do not add client-side dependencies"],
+                        "anti_patterns": ["do not create parallel token sources"],
+                        "validation_commands": ["npm test", "npm run build"],
+                        "limitations": ["stack-specific upstream guidance unavailable"],
+                        "artifact_refs": ["docs/design/implementation-guide.md"],
+                    },
                 },
             ),
             "Implementation guide submitted.",
@@ -225,13 +247,15 @@ def _broad_provider(*, new_project: bool = False) -> MockTransport:
                 "submit_experience_architecture",
                 {
                     "summary": "Dashboard and alert-list states are mapped to the existing component structure.",
-                    "screen_inventory": ["dashboard", "alert detail"],
-                    "interaction_state_matrix": ["AlertList: loading, empty, success, error"],
-                    "component_dependency_graph": ["Dashboard → AlertList → AlertRow"],
-                    "page_component_specs": ["filters remain keyboard operable"],
-                    "acceptance_mapping": ["filter preservation → existing filter tests"],
-                    "implementation_tasks": ["extend AlertList", "test empty/error states"],
-                    "artifact_refs": ["docs/design/experience-architecture.md"],
+                    "details": {
+                        "screen_inventory": ["dashboard", "alert detail"],
+                        "interaction_state_matrix": ["AlertList: loading, empty, success, error"],
+                        "component_dependency_graph": ["Dashboard → AlertList → AlertRow"],
+                        "page_component_specs": ["filters remain keyboard operable"],
+                        "acceptance_mapping": ["filter preservation → existing filter tests"],
+                        "implementation_tasks": ["extend AlertList", "test empty/error states"],
+                        "artifact_refs": ["docs/design/experience-architecture.md"],
+                    },
                 },
             ),
             "Experience architecture submitted.",
@@ -247,12 +271,14 @@ def _broad_provider(*, new_project: bool = False) -> MockTransport:
                 "complete_design_implementation",
                 {
                     "summary": "AlertList now implements the approved empty-state behavior while retaining the existing component boundary.",
-                    "modified_files": ["src/alert-list.tsx"],
-                    "implemented_components": ["AlertList"],
-                    "implemented_states": ["success", "empty"],
-                    "design_deviations": [],
-                    "deviation_reasons": [],
-                    "remaining_work": [],
+                    "details": {
+                        "modified_files": ["src/alert-list.tsx"],
+                        "implemented_components": ["AlertList"],
+                        "implemented_states": ["success", "empty"],
+                        "design_deviations": [],
+                        "deviation_reasons": [],
+                        "remaining_work": [],
+                    },
                 },
             ),
             "Implementation submitted.",
@@ -260,16 +286,18 @@ def _broad_provider(*, new_project: bool = False) -> MockTransport:
                 "submit_visual_ux_audit",
                 {
                     "summary": "Automated source and test inspection found an unhandled error state; browser inspection was unavailable.",
-                    "findings": [
-                        "High | AlertList | source returns empty state only | error feedback required | error is not represented | add explicit error state | component test"
-                    ],
-                    "visual_inspection_status": "unavailable",
-                    "visual_evidence_refs": [],
-                    "command_results": ["npm test: passed"],
-                    "acceptance_evidence": ["Existing filter code path is unchanged."],
-                    "limitations": [
-                        "No browser screenshot tooling was available; visual rendering remains unverified."
-                    ],
+                    "details": {
+                        "findings": [
+                            "High | AlertList | source returns empty state only | error feedback required | error is not represented | add explicit error state | component test"
+                        ],
+                        "visual_inspection_status": "unavailable",
+                        "visual_evidence_refs": [],
+                        "command_results": ["npm test: passed"],
+                        "acceptance_evidence": ["Existing filter code path is unchanged."],
+                        "limitations": [
+                            "No browser screenshot tooling was available; visual rendering remains unverified."
+                        ],
+                    },
                 },
             ),
             "Audit submitted.",
@@ -277,10 +305,12 @@ def _broad_provider(*, new_project: bool = False) -> MockTransport:
                 "complete_design_remediation",
                 {
                     "summary": "Added explicit error-state handling without changing the filter behavior.",
-                    "resolved_findings": ["AlertList error state is represented."],
-                    "unresolved_findings": [],
-                    "modified_files": ["src/alert-list.tsx"],
-                    "verification_results": ["npm test: passed"],
+                    "details": {
+                        "resolved_findings": ["AlertList error state is represented."],
+                        "unresolved_findings": [],
+                        "modified_files": ["src/alert-list.tsx"],
+                        "verification_results": ["npm test: passed"],
+                    },
                 },
             ),
             "Remediation submitted.",
@@ -288,12 +318,14 @@ def _broad_provider(*, new_project: bool = False) -> MockTransport:
                 "submit_visual_ux_audit",
                 {
                     "summary": "Source and automated tests confirm required interaction states; screenshot inspection remains unavailable.",
-                    "findings": [],
-                    "visual_inspection_status": "unavailable",
-                    "visual_evidence_refs": [],
-                    "command_results": ["npm test: passed", "npm run build: passed"],
-                    "acceptance_evidence": ["Error handling is covered by the component test."],
-                    "limitations": ["No screenshot or browser tool was available."],
+                    "details": {
+                        "findings": [],
+                        "visual_inspection_status": "unavailable",
+                        "visual_evidence_refs": [],
+                        "command_results": ["npm test: passed", "npm run build: passed"],
+                        "acceptance_evidence": ["Error handling is covered by the component test."],
+                        "limitations": ["No screenshot or browser tool was available."],
+                    },
                 },
             ),
             "Final audit submitted.",
@@ -301,11 +333,13 @@ def _broad_provider(*, new_project: bool = False) -> MockTransport:
                 "complete_design_acceptance",
                 {
                     "summary": "Both product criteria are evidenced; visual screenshot inspection was not an acceptance criterion and remains disclosed as a limitation.",
-                    "criterion_results": [
-                        "PASS | alert filtering remains available | Existing filter code path unchanged; filter test passed.",
-                        "PASS | empty and error states are represented | Source includes empty and error branches; component tests passed.",
-                    ],
-                    "limitations": ["Rendered visual appearance was not inspected."],
+                    "details": {
+                        "criterion_results": [
+                            "PASS | alert filtering remains available | Existing filter code path unchanged; filter test passed.",
+                            "PASS | empty and error states are represented | Source includes empty and error branches; component tests passed.",
+                        ],
+                        "limitations": ["Rendered visual appearance was not inspected."],
+                    },
                 },
             ),
             "Acceptance submitted.",
@@ -330,22 +364,24 @@ def _accessibility_provider() -> MockTransport:
                 "complete_product_discovery",
                 {
                     "summary": "Repository inspection identifies a terminal UI keyboard-accessibility audit only.",
-                    "scope": "accessibility_audit",
-                    "project_name": "sample TUI",
-                    "project_type": "terminal application",
-                    "platform": "terminal",
-                    "stack": "Textual",
-                    "request_kind": "accessibility audit only",
-                    "target_users": ["keyboard-only users"],
-                    "user_journeys": ["navigate the session list"],
-                    "required_surfaces": ["session list", "details panel"],
-                    "functional_requirements": ["do not modify the application"],
-                    "ux_requirements": ["clear focus and key hints"],
-                    "accessibility_expectations": ["focus visibility", "keyboard operation"],
-                    "technical_constraints": ["terminal rendering"],
-                    "existing_visual_conventions": ["use current TUI colors"],
-                    "acceptance_criteria": ["keyboard focus is visible"],
-                    "assumptions": ["audit only; no code changes requested"],
+                    "details": {
+                        "scope": "accessibility_audit",
+                        "project_name": "sample TUI",
+                        "project_type": "terminal application",
+                        "platform": "terminal",
+                        "stack": "Textual",
+                        "request_kind": "accessibility audit only",
+                        "target_users": ["keyboard-only users"],
+                        "user_journeys": ["navigate the session list"],
+                        "required_surfaces": ["session list", "details panel"],
+                        "functional_requirements": ["do not modify the application"],
+                        "ux_requirements": ["clear focus and key hints"],
+                        "accessibility_expectations": ["focus visibility", "keyboard operation"],
+                        "technical_constraints": ["terminal rendering"],
+                        "existing_visual_conventions": ["use current TUI colors"],
+                        "acceptance_criteria": ["keyboard focus is visible"],
+                        "assumptions": ["audit only; no code changes requested"],
+                    },
                 },
             ),
             "Brief submitted.",
@@ -353,18 +389,20 @@ def _accessibility_provider() -> MockTransport:
                 "submit_design_research",
                 {
                     "summary": "No UI/UX Pro Max skill was loaded; the audit uses inspected TUI implementation and focused accessibility fallback.",
-                    "queries": ["terminal focus visibility keyboard navigation"],
-                    "datasets_consulted": [],
-                    "findings": ["Current TUI focus model should be inspected directly."],
-                    "source_provenance": ["src/agenthicc/tui/workspace/"],
-                    "applicable_recommendations": ["Use non-color focus indicators."],
-                    "rejected_recommendations": [
-                        "Browser viewport breakpoints do not apply to terminal layout."
-                    ],
-                    "conflicts": [],
-                    "confidence": "fallback; no upstream dataset execution",
-                    "limitations": ["Skill not loaded in this session."],
-                    "artifact_refs": ["audit/accessibility-research.md"],
+                    "details": {
+                        "queries": ["terminal focus visibility keyboard navigation"],
+                        "datasets_consulted": [],
+                        "findings": ["Current TUI focus model should be inspected directly."],
+                        "source_provenance": ["src/agenthicc/tui/workspace/"],
+                        "applicable_recommendations": ["Use non-color focus indicators."],
+                        "rejected_recommendations": [
+                            "Browser viewport breakpoints do not apply to terminal layout."
+                        ],
+                        "conflicts": [],
+                        "confidence": "fallback; no upstream dataset execution",
+                        "limitations": ["Skill not loaded in this session."],
+                        "artifact_refs": ["audit/accessibility-research.md"],
+                    },
                 },
             ),
             "Research submitted.",
@@ -372,20 +410,22 @@ def _accessibility_provider() -> MockTransport:
                 "submit_implementation_guide",
                 {
                     "summary": "Textual TUI conventions selected from repository evidence; no web design system is generated.",
-                    "detected_stack": "Textual terminal UI",
-                    "stack_evidence": ["pyproject.toml", "src/agenthicc/tui/"],
-                    "relevant_guidance": ["Terminal-specific repository patterns only."],
-                    "token_mappings": ["existing terminal palette"],
-                    "component_strategy": ["audit existing screen widgets without changes"],
-                    "responsive_strategy": ["check narrow terminal sizes and wrapping"],
-                    "state_handling_conventions": ["preserve current reactive state"],
-                    "accessibility_strategy": ["visible focus plus keyboard hints"],
-                    "test_tools": ["existing TUI tests"],
-                    "performance_constraints": [],
-                    "anti_patterns": ["do not apply CSS or browser-specific guidance"],
-                    "validation_commands": ["pytest tests/unit/test_tui_*"],
-                    "limitations": ["No screen-reader terminal emulator available."],
-                    "artifact_refs": ["audit/tui-implementation-guide.md"],
+                    "details": {
+                        "detected_stack": "Textual terminal UI",
+                        "stack_evidence": ["pyproject.toml", "src/agenthicc/tui/"],
+                        "relevant_guidance": ["Terminal-specific repository patterns only."],
+                        "token_mappings": ["existing terminal palette"],
+                        "component_strategy": ["audit existing screen widgets without changes"],
+                        "responsive_strategy": ["check narrow terminal sizes and wrapping"],
+                        "state_handling_conventions": ["preserve current reactive state"],
+                        "accessibility_strategy": ["visible focus plus keyboard hints"],
+                        "test_tools": ["existing TUI tests"],
+                        "performance_constraints": [],
+                        "anti_patterns": ["do not apply CSS or browser-specific guidance"],
+                        "validation_commands": ["pytest tests/unit/test_tui_*"],
+                        "limitations": ["No screen-reader terminal emulator available."],
+                        "artifact_refs": ["audit/tui-implementation-guide.md"],
+                    },
                 },
             ),
             "Guide submitted.",
@@ -393,14 +433,18 @@ def _accessibility_provider() -> MockTransport:
                 "submit_visual_ux_audit",
                 {
                     "summary": "Audit inspection reports focus behavior from source and tests; no live terminal visual session was available.",
-                    "findings": [],
-                    "visual_inspection_status": "unavailable",
-                    "visual_evidence_refs": [],
-                    "command_results": ["TUI source review completed"],
-                    "acceptance_evidence": [
-                        "Focus indicator logic exists in the inspected widget."
-                    ],
-                    "limitations": ["No live terminal resize or screen-reader run was possible."],
+                    "details": {
+                        "findings": [],
+                        "visual_inspection_status": "unavailable",
+                        "visual_evidence_refs": [],
+                        "command_results": ["TUI source review completed"],
+                        "acceptance_evidence": [
+                            "Focus indicator logic exists in the inspected widget."
+                        ],
+                        "limitations": [
+                            "No live terminal resize or screen-reader run was possible."
+                        ],
+                    },
                 },
             ),
             "Audit submitted.",
@@ -408,10 +452,12 @@ def _accessibility_provider() -> MockTransport:
                 "complete_design_acceptance",
                 {
                     "summary": "The source-level criterion is verified; live terminal inspection remains unverified and is disclosed.",
-                    "criterion_results": [
-                        "PASS | keyboard focus is visible | Focus indicator branch found in the widget and its unit test passes."
-                    ],
-                    "limitations": ["Live terminal rendering was unavailable."],
+                    "details": {
+                        "criterion_results": [
+                            "PASS | keyboard focus is visible | Focus indicator branch found in the widget and its unit test passes."
+                        ],
+                        "limitations": ["Live terminal rendering was unavailable."],
+                    },
                 },
             ),
             "Acceptance submitted.",
@@ -436,22 +482,24 @@ def _targeted_provider() -> MockTransport:
                 "complete_product_discovery",
                 {
                     "summary": "Repository inspection identifies a localized dialog focus bug.",
-                    "scope": "targeted",
-                    "project_name": "Sample app",
-                    "project_type": "web application",
-                    "platform": "web",
-                    "stack": "React",
-                    "request_kind": "targeted component fix",
-                    "target_users": ["keyboard users"],
-                    "user_journeys": ["open and close the settings dialog"],
-                    "required_surfaces": ["settings dialog"],
-                    "functional_requirements": ["preserve dialog behavior"],
-                    "ux_requirements": ["keep focus inside the open dialog"],
-                    "accessibility_expectations": ["keyboard focus management"],
-                    "technical_constraints": ["reuse the existing Dialog component"],
-                    "existing_visual_conventions": ["keep current dialog styling"],
-                    "acceptance_criteria": ["focus remains in dialog until it closes"],
-                    "assumptions": [],
+                    "details": {
+                        "scope": "targeted",
+                        "project_name": "Sample app",
+                        "project_type": "web application",
+                        "platform": "web",
+                        "stack": "React",
+                        "request_kind": "targeted component fix",
+                        "target_users": ["keyboard users"],
+                        "user_journeys": ["open and close the settings dialog"],
+                        "required_surfaces": ["settings dialog"],
+                        "functional_requirements": ["preserve dialog behavior"],
+                        "ux_requirements": ["keep focus inside the open dialog"],
+                        "accessibility_expectations": ["keyboard focus management"],
+                        "technical_constraints": ["reuse the existing Dialog component"],
+                        "existing_visual_conventions": ["keep current dialog styling"],
+                        "acceptance_criteria": ["focus remains in dialog until it closes"],
+                        "assumptions": [],
+                    },
                 },
             ),
             "Targeted brief submitted.",
@@ -459,16 +507,20 @@ def _targeted_provider() -> MockTransport:
                 "submit_design_research",
                 {
                     "summary": "The installed search command failed, so no external design findings are claimed.",
-                    "queries": ["dialog keyboard focus behavior"],
-                    "datasets_consulted": [],
-                    "findings": [],
-                    "source_provenance": [],
-                    "applicable_recommendations": [],
-                    "rejected_recommendations": [],
-                    "conflicts": [],
-                    "confidence": "low; repository inspection only",
-                    "limitations": ["Search command returned non-zero; UX dataset unavailable."],
-                    "artifact_refs": ["docs/design/dialog-research.md"],
+                    "details": {
+                        "queries": ["dialog keyboard focus behavior"],
+                        "datasets_consulted": [],
+                        "findings": [],
+                        "source_provenance": [],
+                        "applicable_recommendations": [],
+                        "rejected_recommendations": [],
+                        "conflicts": [],
+                        "confidence": "low; repository inspection only",
+                        "limitations": [
+                            "Search command returned non-zero; UX dataset unavailable."
+                        ],
+                        "artifact_refs": ["docs/design/dialog-research.md"],
+                    },
                 },
             ),
             "Research limitation recorded.",
@@ -476,22 +528,26 @@ def _targeted_provider() -> MockTransport:
                 "submit_implementation_guide",
                 {
                     "summary": "The repository does not expose enough metadata to identify a supported component framework.",
-                    "detected_stack": "unknown",
-                    "stack_evidence": [],
-                    "relevant_guidance": [],
-                    "token_mappings": [],
-                    "component_strategy": ["inspect and preserve the existing Dialog boundary"],
-                    "responsive_strategy": ["do not alter current dialog sizing"],
-                    "state_handling_conventions": [],
-                    "accessibility_strategy": [
-                        "preserve focus on close; constrain focus while open"
-                    ],
-                    "test_tools": [],
-                    "performance_constraints": [],
-                    "anti_patterns": ["do not add a new UI dependency"],
-                    "validation_commands": [],
-                    "limitations": ["Stack remains unknown; adapt to local source conventions."],
-                    "artifact_refs": ["docs/design/dialog-stack-guide.md"],
+                    "details": {
+                        "detected_stack": "unknown",
+                        "stack_evidence": [],
+                        "relevant_guidance": [],
+                        "token_mappings": [],
+                        "component_strategy": ["inspect and preserve the existing Dialog boundary"],
+                        "responsive_strategy": ["do not alter current dialog sizing"],
+                        "state_handling_conventions": [],
+                        "accessibility_strategy": [
+                            "preserve focus on close; constrain focus while open"
+                        ],
+                        "test_tools": [],
+                        "performance_constraints": [],
+                        "anti_patterns": ["do not add a new UI dependency"],
+                        "validation_commands": [],
+                        "limitations": [
+                            "Stack remains unknown; adapt to local source conventions."
+                        ],
+                        "artifact_refs": ["docs/design/dialog-stack-guide.md"],
+                    },
                 },
             ),
             "Stack limitation recorded.",
@@ -505,13 +561,15 @@ def _targeted_provider() -> MockTransport:
                 "submit_experience_architecture",
                 {
                     "summary": "A single dialog component and its open/close states are in scope.",
-                    "screen_inventory": ["settings dialog"],
-                    "interaction_state_matrix": ["closed → open → close"],
-                    "component_dependency_graph": ["Settings → Dialog"],
-                    "page_component_specs": ["focus stays in dialog while open"],
-                    "acceptance_mapping": ["keyboard focus → focus-cycle regression test"],
-                    "implementation_tasks": ["correct the existing focus trap"],
-                    "artifact_refs": ["docs/design/dialog-spec.md"],
+                    "details": {
+                        "screen_inventory": ["settings dialog"],
+                        "interaction_state_matrix": ["closed → open → close"],
+                        "component_dependency_graph": ["Settings → Dialog"],
+                        "page_component_specs": ["focus stays in dialog while open"],
+                        "acceptance_mapping": ["keyboard focus → focus-cycle regression test"],
+                        "implementation_tasks": ["correct the existing focus trap"],
+                        "artifact_refs": ["docs/design/dialog-spec.md"],
+                    },
                 },
             ),
             "Targeted experience plan submitted.",
@@ -519,12 +577,14 @@ def _targeted_provider() -> MockTransport:
                 "complete_design_implementation",
                 {
                     "summary": "The existing dialog focus trap was corrected without changing its styling.",
-                    "modified_files": ["src/dialog.tsx", "tests/dialog.test.tsx"],
-                    "implemented_components": ["Dialog"],
-                    "implemented_states": ["open focus cycle", "close restores trigger focus"],
-                    "design_deviations": [],
-                    "deviation_reasons": [],
-                    "remaining_work": [],
+                    "details": {
+                        "modified_files": ["src/dialog.tsx", "tests/dialog.test.tsx"],
+                        "implemented_components": ["Dialog"],
+                        "implemented_states": ["open focus cycle", "close restores trigger focus"],
+                        "design_deviations": [],
+                        "deviation_reasons": [],
+                        "remaining_work": [],
+                    },
                 },
             ),
             "Targeted implementation submitted.",
@@ -532,14 +592,16 @@ def _targeted_provider() -> MockTransport:
                 "submit_visual_ux_audit",
                 {
                     "summary": "Source and keyboard tests verify focus behavior; live browser inspection was unavailable.",
-                    "findings": [],
-                    "visual_inspection_status": "unavailable",
-                    "visual_evidence_refs": [],
-                    "command_results": ["dialog keyboard test: passed"],
-                    "acceptance_evidence": [
-                        "Regression test covers focus cycling and restoration."
-                    ],
-                    "limitations": ["No browser visual inspection tool was available."],
+                    "details": {
+                        "findings": [],
+                        "visual_inspection_status": "unavailable",
+                        "visual_evidence_refs": [],
+                        "command_results": ["dialog keyboard test: passed"],
+                        "acceptance_evidence": [
+                            "Regression test covers focus cycling and restoration."
+                        ],
+                        "limitations": ["No browser visual inspection tool was available."],
+                    },
                 },
             ),
             "Targeted audit submitted.",
@@ -547,10 +609,12 @@ def _targeted_provider() -> MockTransport:
                 "complete_design_acceptance",
                 {
                     "summary": "The single targeted criterion is covered by a passing keyboard regression test.",
-                    "criterion_results": [
-                        "PASS | focus remains in dialog until it closes | Keyboard regression test covers focus cycle and trigger restoration."
-                    ],
-                    "limitations": ["Rendered appearance was not inspected."],
+                    "details": {
+                        "criterion_results": [
+                            "PASS | focus remains in dialog until it closes | Keyboard regression test covers focus cycle and trigger restoration."
+                        ],
+                        "limitations": ["Rendered appearance was not inspected."],
+                    },
                 },
             ),
             "Targeted acceptance submitted.",

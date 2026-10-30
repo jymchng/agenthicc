@@ -2534,15 +2534,20 @@ exhaustion, the workflow remains resumable at that phase and raises an error
 naming the expected tool. Review/remediation loops are bounded, and critical
 failed or unverified acceptance criteria cannot be reported as success.
 
+Phase-transition tools take a required `summary` and optional `details` object.
+They record supplied content without inspecting workspace artifacts or verifying
+evidence, completeness, or correctness. The runner separately enforces approval,
+retry, and delivery-state policies. Full reports and source files remain
+workspace artifacts; bounded typed summaries and references are stored in the checkpoint,
+and session memory is reattached rather than serialized.
+
 The optional upstream UI/UX Pro Max skill is used only when loaded in
 Agenthicc's skill catalog. The workflow checks the actual skill instructions,
 search CLI, supported datasets/domains, and stack options before claiming or
 using a capability. It never installs or clones the skill, performs
 unrestricted web searches, or automatically persists generated skill output.
 If unavailable or failing, it records an explicit limitation and uses
-repository-grounded evidence. Full reports and source files remain workspace
-artifacts; bounded typed summaries and references are stored in the checkpoint,
-and session memory is reattached rather than serialized.
+repository-grounded evidence.
 
 ### UiUxProMaxContext
 

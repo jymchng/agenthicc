@@ -204,27 +204,23 @@ def test_checkpoint_rejects_invalid_route_profile_and_filters_malformed_counts()
 
 
 @pytest.mark.asyncio
-async def test_product_discovery_requires_scope_and_acceptance_criteria() -> None:
+async def test_product_discovery_transition_records_without_validating_details() -> None:
     event, data = asyncio.Event(), {}
     tools = make_product_discovery_tools(event, data)
     assert all(ToolCapability.CONTROL in get_tool_capabilities(tool) for tool in tools)
 
-    invalid_scope = _discovery_payload("unknown")
-    result = await _call(tools, "complete_product_discovery", **invalid_scope)
-    assert result["ok"] is False  # type: ignore[index]
-    assert not event.is_set()
+    details = {"scope": "unknown", "acceptance_criteria": []}
+    result = await _call(
+        tools,
+        "complete_product_discovery",
+        summary="Discovery summary",
+        details=details,
+    )
 
-    missing_criteria = _discovery_payload()
-    missing_criteria["acceptance_criteria"] = []
-    result = await _call(tools, "complete_product_discovery", **missing_criteria)
-    assert result["ok"] is False  # type: ignore[index]
-    assert not event.is_set()
-
-    valid = await _call(tools, "complete_product_discovery", **_discovery_payload("targeted"))
-    assert valid["ok"] is True  # type: ignore[index]
+    assert result["ok"] is True  # type: ignore[index]
     assert event.is_set()
-    assert data["scope"] == "targeted"
-    assert data["acceptance_criteria"] == ["keyboard navigation", "alert status is scannable"]
+    assert data["scope"] == "unknown"
+    assert data["acceptance_criteria"] == []
 
 
 @pytest.mark.asyncio
@@ -355,12 +351,7 @@ async def test_phase_continues_when_a_turn_ends_without_its_transition_tool(
                 tools,
                 "complete_design_implementation",
                 summary="Implemented the approved component and its empty state.",
-                modified_files=["src/component.tsx"],
-                implemented_components=["AlertList"],
-                implemented_states=["empty"],
-                design_deviations=[],
-                deviation_reasons=[],
-                remaining_work=[],
+                details={"modified_files": ["src/component.tsx"]},
             )
             assert result["ok"] is True  # type: ignore[index]
 
@@ -413,7 +404,7 @@ async def test_design_system_review_uses_explicit_outcomes_and_bounds_revisions(
         tools,
         "request_design_system_revision",
         summary="Review found an inconsistency",
-        actionable_findings=["Contrast token fails for body text"],
+        details={"actionable_findings": ["Contrast token fails for body text"]},
     )
     assert revision["ok"] is True  # type: ignore[index]
     assert data["decision"] == "request_design_system_revision"
@@ -424,7 +415,7 @@ async def test_design_system_review_uses_explicit_outcomes_and_bounds_revisions(
         blocked_tools,
         "request_design_system_revision",
         summary="The same issue remains",
-        actionable_findings=["Contrast token still fails"],
+        details={"actionable_findings": ["Contrast token still fails"]},
     )
     assert exhausted["ok"] is True  # type: ignore[index]
     assert data["decision"] == "block_design_system"
@@ -466,16 +457,18 @@ async def test_research_tool_accepts_explicit_unavailable_dataset_report() -> No
         tools,
         "submit_design_research",
         summary="Search failed and no upstream guidance is claimed.",
-        queries=["accessible terminal focus", "recorded failed search attempt"],
-        datasets_consulted=[],
-        findings=[],
-        source_provenance=[],
-        applicable_recommendations=[],
-        rejected_recommendations=[],
-        conflicts=[],
-        confidence="unknown",
-        limitations=["dataset missing", "search command returned non-zero"],
-        artifact_refs=["research/findings.md"],
+        details={
+            "queries": ["accessible terminal focus", "recorded failed search attempt"],
+            "datasets_consulted": [],
+            "findings": [],
+            "source_provenance": [],
+            "applicable_recommendations": [],
+            "rejected_recommendations": [],
+            "conflicts": [],
+            "confidence": "unknown",
+            "limitations": ["dataset missing", "search command returned non-zero"],
+            "artifact_refs": ["research/findings.md"],
+        },
     )
 
     assert result["ok"] is True  # type: ignore[index]
@@ -484,168 +477,114 @@ async def test_research_tool_accepts_explicit_unavailable_dataset_report() -> No
 
 
 @pytest.mark.asyncio
-async def test_stack_tool_accepts_unknown_but_requires_an_explicit_stack_value() -> None:
+async def test_stack_transition_records_unknown_stack_without_validation() -> None:
     event, data = asyncio.Event(), {}
     tools = make_stack_adaptation_tools(event, data)
-    args = {
-        "summary": "Stack detection had insufficient evidence.",
-        "detected_stack": "",
-        "stack_evidence": [],
-        "relevant_guidance": [],
-        "token_mappings": [],
-        "component_strategy": [],
-        "responsive_strategy": [],
-        "state_handling_conventions": [],
-        "accessibility_strategy": [],
-        "test_tools": [],
-        "performance_constraints": [],
-        "anti_patterns": [],
-        "validation_commands": [],
-        "limitations": ["Framework could not be identified."],
-        "artifact_refs": [],
-    }
-    invalid = await _call(tools, "submit_implementation_guide", **args)
-    assert invalid["ok"] is False  # type: ignore[index]
-    assert not event.is_set()
+    accepted = await _call(
+        tools,
+        "submit_implementation_guide",
+        summary="Stack detection had insufficient evidence.",
+        details={"detected_stack": "", "stack_evidence": []},
+    )
 
-    args["detected_stack"] = "unknown"
-    accepted = await _call(tools, "submit_implementation_guide", **args)
     assert accepted["ok"] is True  # type: ignore[index]
-    assert data["detected_stack"] == "unknown"
+    assert data["detected_stack"] == ""
 
 
 @pytest.mark.asyncio
-async def test_design_system_synthesis_rejects_incomplete_system_before_transition() -> None:
+async def test_design_system_transition_records_incomplete_details() -> None:
     event, data = asyncio.Event(), {}
     tools = make_design_system_synthesis_tools(event, data)
+    details = {"color_tokens": [], "artifact_refs": []}
     result = await _call(
         tools,
         "submit_design_system",
         summary="A vague design direction",
-        artifact_refs=[],
-        visual_direction="",
-        rationale=[],
-        style="",
-        color_tokens=[],
-        typography_tokens=[],
-        spacing_rules=[],
-        layout_rules=[],
-        component_rules=[],
-        interaction_states=[],
-        responsive_behavior=[],
-        accessibility_rules=[],
-        motion_rules=[],
-        anti_patterns=[],
+        details=details,
     )
-    assert result["ok"] is False  # type: ignore[index]
-    assert "color tokens" in result["missing"]  # type: ignore[index]
-    assert not event.is_set()
+
+    assert result["ok"] is True  # type: ignore[index]
+    assert event.is_set()
+    assert data["color_tokens"] == []
 
 
 @pytest.mark.asyncio
-async def test_experience_architecture_cannot_submit_before_approval() -> None:
+async def test_experience_architecture_requires_approval_not_content_verification() -> None:
     event, data = asyncio.Event(), {}
     tools = make_experience_architecture_tools(None, event, data)
-    submission = _tool_map(tools)["submit_experience_architecture"]
-    assert callable(submission)
-    args = {
-        "summary": "Screens and states mapped",
-        "screen_inventory": ["dashboard"],
-        "interaction_state_matrix": ["dashboard: loading, empty, success, error"],
-        "component_dependency_graph": ["Dashboard → AlertList"],
-        "page_component_specs": ["AlertList has keyboard-operable filters"],
-        "acceptance_mapping": ["keyboard navigation → focus order check"],
-        "implementation_tasks": ["update AlertList"],
-        "artifact_refs": ["docs/design/experience.md"],
-    }
-    denied = await submission(**args)
+    by_name = _tool_map(tools)
+    submission = by_name["submit_experience_architecture"]
+    request = by_name["request_implementation_approval"]
+    assert callable(submission) and callable(request)
+
+    details = {"implementation_tasks": ["update the dashboard"]}
+    denied = await submission(summary="Screens and states mapped", details=details)
     assert denied["ok"] is False  # type: ignore[index]
     assert not event.is_set()
 
-    request = _tool_map(tools)["request_implementation_approval"]
-    assert callable(request)
-    approved = await request("Implement the AlertList changes")
+    approved = await request("Implement the dashboard")
     assert approved["approved"] is True  # type: ignore[index]
-    submitted = await submission(**args)
-    assert submitted["ok"] is True  # type: ignore[index]
-    assert data["implementation_tasks"] == ["update AlertList"]
+    result = await submission(summary="Screens and states mapped", details=details)
+    assert result["ok"] is True  # type: ignore[index]
+    assert data["implementation_tasks"] == ["update the dashboard"]
 
 
 @pytest.mark.asyncio
-async def test_acceptance_tool_requires_complete_unique_evidence_statuses() -> None:
-    criteria = ["keyboard navigation", "alert status is scannable"]
+async def test_acceptance_transition_records_results_without_verifying_them() -> None:
     event, data = asyncio.Event(), {}
-    tools = make_design_acceptance_tools(event, data, acceptance_criteria=criteria)
+    tools = make_design_acceptance_tools(event, data)
+    unverified_results = [
+        "PASS | keyboard navigation |",
+        "PASS | unknown criterion | no evidence",
+        "FAIL | keyboard navigation | duplicate result",
+    ]
 
-    incomplete = await _call(
+    result = await _call(
         tools,
         "complete_design_acceptance",
-        summary="Acceptance review",
-        criterion_results=["PASS | keyboard navigation | tab order verified"],
-        limitations=[],
+        summary="Acceptance review submitted.",
+        details={"criterion_results": unverified_results},
     )
-    assert incomplete["ok"] is False  # type: ignore[index]
-    assert not event.is_set()
 
-    duplicate = await _call(
-        tools,
-        "complete_design_acceptance",
-        summary="Acceptance review",
-        criterion_results=[
-            "PASS | keyboard navigation | tab order verified",
-            "FAIL | keyboard navigation | focus trap remains",
-            "PASS | alert status is scannable | visual hierarchy inspected",
-        ],
-        limitations=[],
-    )
-    assert duplicate["ok"] is False  # type: ignore[index]
-    assert not event.is_set()
-
-    unknown = await _call(
-        tools,
-        "complete_design_acceptance",
-        summary="Acceptance review",
-        criterion_results=[
-            "PASS | keyboard navigation | tab order verified",
-            "PASS | another criterion | screenshot checked",
-        ],
-        limitations=[],
-    )
-    assert unknown["ok"] is False  # type: ignore[index]
-    assert not event.is_set()
-
-    valid = await _call(
-        tools,
-        "complete_design_acceptance",
-        summary="One criterion is not met and one is not verified.",
-        criterion_results=[
-            "FAIL | keyboard navigation | focus is lost after filtering",
-            "UNVERIFIED | alert status is scannable | visual inspection unavailable",
-        ],
-        limitations=["No screenshot tool was available"],
-    )
-    assert valid["ok"] is True  # type: ignore[index]
-    assert data["decision"] == "complete_design_acceptance"
-    assert len(data["criterion_results"]) == 2  # type: ignore[arg-type]
+    assert result["ok"] is True  # type: ignore[index]
+    assert event.is_set()
+    assert data["criterion_results"] == unverified_results
 
 
 @pytest.mark.asyncio
-async def test_visual_audit_rejects_unknown_inspection_status() -> None:
+async def test_acceptance_runner_marks_missing_results_unverified(tmp_path: Path) -> None:
+    runner = _make_runner(tmp_path)
+    criteria = ["keyboard navigation", "visible focus"]
+    context = UiUxProMaxContext(
+        intent="Audit the interface", run_id="incomplete-acceptance", acceptance_criteria=criteria
+    )
+
+    async def acceptance(
+        self: UiUxProMaxRunner, *_args: object, **_kwargs: object
+    ) -> dict[str, object]:
+        return {"summary": "Acceptance summary", "criterion_results": []}
+
+    runner._run_phase = MethodType(acceptance, runner)  # type: ignore[method-assign]
+
+    next_state = await runner._design_acceptance(context)
+
+    assert next_state is UiUxProMaxState.DELIVERY
+    assert context.unverified_criteria == criteria
+
+
+@pytest.mark.asyncio
+async def test_visual_audit_transition_does_not_validate_inspection_status() -> None:
     event, data = asyncio.Event(), {}
     tools = make_visual_audit_tools(event, data)
     result = await _call(
         tools,
         "submit_visual_ux_audit",
         summary="Audit done",
-        findings=[],
-        visual_inspection_status="looks good",
-        visual_evidence_refs=[],
-        command_results=[],
-        acceptance_evidence=[],
-        limitations=[],
+        details={"visual_inspection_status": "looks good"},
     )
-    assert result["ok"] is False  # type: ignore[index]
-    assert not event.is_set()
+
+    assert result["ok"] is True  # type: ignore[index]
+    assert data["visual_inspection_status"] == "looks good"
 
 
 @pytest.mark.asyncio
