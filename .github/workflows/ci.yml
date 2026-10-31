@@ -25,28 +25,30 @@ jobs:
     name: Lint and format
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
-      - uses: astral-sh/setup-uv@v4
+      - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4
         with:
           enable-cache: false
-      - run: uv tool install nox
+          version: "0.12.4"
+      - run: uv tool install nox==2026.7.11
       - run: nox -s lint
 
   typecheck:
     name: Type check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
-      - uses: astral-sh/setup-uv@v4
+      - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4
         with:
           enable-cache: false
-      - run: uv tool install nox
+          version: "0.12.4"
+      - run: uv tool install nox==2026.7.11
       - run: nox -s typecheck
       - run: nox -s typecheck_contracts
 
@@ -54,16 +56,17 @@ jobs:
     name: Type-safety ratchet
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0  # --baseline-ref compares against the target branch
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
-      - uses: astral-sh/setup-uv@v4
+      - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4
         with:
           enable-cache: false
-      - run: uv tool install nox
+          version: "0.12.4"
+      - run: uv tool install nox==2026.7.11
       - name: Check the baseline (it may only decrease)
         if: >-
           github.event_name == 'pull_request' &&
@@ -79,48 +82,56 @@ jobs:
     name: llms-full.txt symbols
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
-      - uses: astral-sh/setup-uv@v4
+      - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4
         with:
           enable-cache: false
-      - run: uv tool install nox
+          version: "0.12.4"
+      - run: uv tool install nox==2026.7.11
       - run: nox -s llms_check
 
   docs:
     name: Docs (strict)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
-      - uses: astral-sh/setup-uv@v4
+      - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4
         with:
           enable-cache: false
-      - run: uv tool install nox
+          version: "0.12.4"
+      - run: uv tool install nox==2026.7.11
       - run: nox -s docs
 
   perf:
     name: Performance budgets
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
       - name: Install worktree command sandbox
-        run: sudo apt-get update -qq && sudo apt-get install -y bubblewrap
-      - uses: actions/setup-python@v5
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y bubblewrap
+          bwrap_path="$(command -v bwrap)"
+          sudo chmod u+s "$bwrap_path"
+          bwrap --unshare-user --ro-bind / / true
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
-      - uses: astral-sh/setup-uv@v4
+      - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4
         with:
           enable-cache: false
-      - run: uv tool install nox
+          version: "0.12.4"
+      - run: uv tool install nox==2026.7.11
       - name: Check performance-budget approval label
         if: github.event_name == 'pull_request'
         env:
@@ -131,7 +142,7 @@ jobs:
           if git cat-file -e "${BASE_REF}:docs/reference/performance-budgets.json" 2>/dev/null; then
             git show "${BASE_REF}:docs/reference/performance-budgets.json" > "${baseline}"
           else
-            printf '{"version":1,"metrics":{}}\\n' > "${baseline}"
+            printf '%s\n' '{"version":1,"metrics":{}}' > "${baseline}"
           fi
           args=(--baseline "${baseline}")
           if [[ "${INCREASE_APPROVED}" == "true" ]]; then
@@ -148,16 +159,22 @@ jobs:
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install worktree command sandbox
-        run: sudo apt-get update -qq && sudo apt-get install -y bubblewrap
-      - uses: actions/setup-python@v5
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y bubblewrap
+          bwrap_path="$(command -v bwrap)"
+          sudo chmod u+s "$bwrap_path"
+          bwrap --unshare-user --ro-bind / / true
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: ${{ matrix.python-version }}
-      - uses: astral-sh/setup-uv@v4
+      - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4
         with:
           enable-cache: false
-      - run: uv tool install nox
+          version: "0.12.4"
+      - run: uv tool install nox==2026.7.11
       - run: nox -s "tests_unit-${{ matrix.python-version }}" -- -q
 
   integration:
@@ -168,32 +185,44 @@ jobs:
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install worktree command sandbox
-        run: sudo apt-get update -qq && sudo apt-get install -y bubblewrap
-      - uses: actions/setup-python@v5
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y bubblewrap
+          bwrap_path="$(command -v bwrap)"
+          sudo chmod u+s "$bwrap_path"
+          bwrap --unshare-user --ro-bind / / true
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: ${{ matrix.python-version }}
-      - uses: astral-sh/setup-uv@v4
+      - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4
         with:
           enable-cache: false
-      - run: uv tool install nox
+          version: "0.12.4"
+      - run: uv tool install nox==2026.7.11
       - run: nox -s "tests_integration-${{ matrix.python-version }}" -- -q
 
   e2e:
     name: E2E and performance tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install worktree command sandbox
-        run: sudo apt-get update -qq && sudo apt-get install -y bubblewrap
-      - uses: actions/setup-python@v5
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y bubblewrap
+          bwrap_path="$(command -v bwrap)"
+          sudo chmod u+s "$bwrap_path"
+          bwrap --unshare-user --ro-bind / / true
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
-      - uses: astral-sh/setup-uv@v4
+      - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4
         with:
           enable-cache: false
-      - run: uv tool install nox
+          version: "0.12.4"
+      - run: uv tool install nox==2026.7.11
       - run: nox -s tests_e2e -- -q
       - run: nox -s tests_performance -- -q
 
@@ -201,41 +230,48 @@ jobs:
     name: Windows lock, filesystem and terminal tests
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
-      - uses: astral-sh/setup-uv@v4
+      - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4
         with:
           enable-cache: false
-      - run: uv tool install nox
+          version: "0.12.4"
+      - run: uv tool install nox==2026.7.11
       - run: nox -s tests_windows -- -q
 
   coverage:
     name: Coverage (branch and subprocess)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install worktree command sandbox
-        run: sudo apt-get update -qq && sudo apt-get install -y bubblewrap
-      - uses: actions/setup-python@v5
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y bubblewrap
+          bwrap_path="$(command -v bwrap)"
+          sudo chmod u+s "$bwrap_path"
+          bwrap --unshare-user --ro-bind / / true
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
-      - uses: astral-sh/setup-uv@v4
+      - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4
         with:
           enable-cache: false
-      - run: uv tool install nox
+          version: "0.12.4"
+      - run: uv tool install nox==2026.7.11
       - run: nox -s coverage -- -q
       - name: Upload coverage report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: coverage-report
           path: |
             htmlcov/
             coverage.xml
       - name: Upload to Codecov
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238 # v4
         continue-on-error: true
         with:
           files: coverage.xml
