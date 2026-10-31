@@ -28,12 +28,13 @@ The TUI status and idle header are display-only projections: large counts may be
 rounded for scanning (for example, `230M`), while `/usage`, session inspection,
 and exports retain exact integers. Partial usage may use a compact `?` beside
 the live token counts, with `usage partial` written explicitly on the metadata
-row; screen-reader output spells out exact input/output counts, units, and
-quality. Unavailable usage is labeled `usage unavailable`, never formatted as
-zero. Cost provenance is independent: estimated cost is shown as `~$0.123`
-(or spoken as `estimated cost $0.123`), while unavailable cost is `cost unknown`.
-The live TUI shows the full session ID on its own row; the current directory is
-shown as a separate, cell-wrapped row without labels.
+row. Screen-reader output spells out exact input/output counts, units, and
+quality. Unavailable usage is labeled `usage unavailable` on the secondary
+metadata row, never formatted as zero. Cost provenance is independent: estimated
+cost is shown as `~$0.123` (or spoken as `estimated cost $0.123`), while
+unavailable cost is `cost unknown`. The live TUI shows the full session ID on its
+own row; the current directory is shown as a separate, cell-wrapped row without
+labels.
 
 ## Workflows and generated workflows
 

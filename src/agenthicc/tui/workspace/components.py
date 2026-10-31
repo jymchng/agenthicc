@@ -423,15 +423,20 @@ class StatusComponent:
         inp = _signal_int(conv, "tokens_in", 0)
         out = _signal_int(conv, "tokens_out", 0)
         usage_status = _signal_text(conv, "usage_status", "unavailable")
-        usage = _usage_text(inp, out, usage_status, screen_reader=reader)
-        usage_segment = (
-            _e(usage)
-            if reader
-            else f"[yellow]{_e(usage)}[/yellow]"
-            if usage_status != "complete"
-            else f"[cyan]↑ {compact_token_count(inp)}[/cyan] [green]↓ {compact_token_count(out)}[/green]"
-        )
-        usage_visible = append_status(usage_segment)
+        # Unavailable usage is static metadata, not part of the animated status
+        # row. Keep its explicit label on the secondary row without rewriting it
+        # on every spinner frame.
+        usage_visible = False
+        if usage_status != "unavailable":
+            usage = _usage_text(inp, out, usage_status, screen_reader=reader)
+            usage_segment = (
+                _e(usage)
+                if reader
+                else f"[yellow]{_e(usage)}[/yellow]"
+                if usage_status != "complete"
+                else f"[cyan]↑ {compact_token_count(inp)}[/cyan] [green]↓ {compact_token_count(out)}[/green]"
+            )
+            usage_visible = append_status(usage_segment)
         line1 = _fit(line1, cols)
 
         model = _signal_text(conv, "model_name", "")

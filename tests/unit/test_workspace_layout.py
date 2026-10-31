@@ -68,11 +68,11 @@ def test_status_height_with_model_is_six():
     assert comp.height(80) == 6
 
 
-def test_status_height_without_model_is_four():
+def test_status_height_without_model_includes_usage_metadata():
     from agenthicc.tui.workspace.components import StatusComponent
 
     comp = StatusComponent(_make_app_state(""))
-    assert comp.height(80) == 4
+    assert comp.height(80) == 5
 
 
 # ── height() matches render() line count (invariant I-10) ────────────────────

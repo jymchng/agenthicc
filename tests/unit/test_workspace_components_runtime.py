@@ -178,6 +178,30 @@ def test_status_preserves_priority_and_fits_display_cells() -> None:
     assert "openai · deepseek-v4.1-flash" in wide_rows[1]
 
 
+def test_unavailable_usage_stays_on_secondary_metadata_row() -> None:
+    from rich.text import Text
+
+    state = _state()
+    conv = state.conversation
+    conv.agent_state.return_value = SimpleNamespace(name="THINKING")
+    conv.is_running.return_value = True
+    conv.compaction_active.return_value = False
+    conv.tokens_in.return_value = 0
+    conv.tokens_out.return_value = 0
+    conv.usage_status.return_value = "unavailable"
+    conv.cost_status.return_value = "unavailable"
+    conv.subagent_pool_state.return_value = None
+    state.workflow_run.return_value = None
+
+    rows = [
+        Text.from_markup(row).plain for row in components.StatusComponent(state).markup_lines(120)
+    ]
+
+    assert "usage unavailable" not in rows[0]
+    assert any("usage unavailable" in row for row in rows[1:])
+    assert all("↑ 0" not in row and "↓ 0" not in row for row in rows)
+
+
 def test_screen_reader_status_spells_out_exact_usage_and_quality() -> None:
     from rich.text import Text
 
