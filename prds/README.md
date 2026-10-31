@@ -639,10 +639,33 @@ completed. It reactivates the same session for eligible work, preserves the
 conversation and goal-run identity, resumes only a recoverable workflow when
 the foreground is idle, and avoids replaying a completed goal.
 
+### BEAU series — Scrollback presentation (proposed)
+
+The BEAU PRDs define a shared art direction, official-product research record,
+complete appender-event ownership map, and normative render blocks for each
+scrollback component. They refine presentation without changing conversation
+events, persistence, execution, or AGX-11's live-rendering pipeline. Research
+covers OpenCode, Claude Code, Codex, Qoder, Grok Build, and DeepSeek Harness;
+where a product's public docs do not specify a TUI layout, the PRDs state that
+limit rather than inventing a visual pattern. PRD-161, PRD-255, PRD-256, and
+PRD-257 retain their existing event/state ownership and are harmonized through
+explicit example blocks without duplicating their behavior.
+
+- [BEAU-1 — Scrollback Art Direction, Research, and Full Renderer Map](beau-1-scrollback-art-direction-and-coverage.md)
+- [BEAU-2 — Conversation Narrative, Progress, and Mention Blocks](beau-2-conversation-narrative-and-message-blocks.md)
+- [BEAU-3 — Tool Activity, Exploratory Groups, and File Changes](beau-3-tool-activity-and-file-change-rendering.md)
+- [BEAU-4 — Notices, Errors, Recovery, and Accessible Announcements](beau-4-notices-errors-and-recovery-rendering.md)
+- [BEAU-5 — Workflow and Plan Mutation Render Blocks](beau-5-workflow-and-plan-mutation-rendering.md)
+
+Implement BEAU-1 as the shared visual contract, then BEAU-2 through BEAU-5.
+Review PRD-161, PRD-255, PRD-256, and PRD-257 output against BEAU-1 while
+preserving their established event and state semantics.
+
 ## Existing PRDs
 
 The numbered PRDs in this directory record individual feature decisions and
-acceptance criteria. Use `rg '^# PRD|^#' prds -g '*.md'` to search them by title.
+acceptance criteria. Use
+`rg '^# PRD|^#|^# BEAU' prds -g '*.md'` to search them by title.
 When a PRD is implemented, update its status and link the implementation and
 verification evidence. When superseded, keep the file and add a superseded-by
 link rather than deleting the design history.

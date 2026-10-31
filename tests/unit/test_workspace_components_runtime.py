@@ -109,17 +109,19 @@ def test_needs_you_footer_row_precedes_submit_hints() -> None:
     conv = state.conversation
     conv.is_running.return_value = False
     conv.background_needs_you.return_value = 4
-    conv.background_running.return_value = 0
+    conv.background_running.return_value = 3
     conv.background_dnd.return_value = False
     conv.subagent_pool_state.return_value = None
     conv.notification.return_value = None
     conv.loop_status.return_value = None
     conv.background_toast.return_value = None
+    state.agent.return_value = "reviewer"
 
     rows = FooterComponent(state).markup_lines(120)
     plain = [Text.from_markup(row).plain for row in rows]
 
-    assert "◆ 4 need you" in plain[1]
+    assert "reviewer |" in plain[0]
+    assert "◆ 4 need you  |  ● 3 running" in plain[1]
     assert "Enter submit" in plain[2]
 
 
@@ -175,7 +177,8 @@ def test_status_preserves_priority_and_fits_display_cells() -> None:
     assert "1/4 workers" in wide_rows[0]  # failures do not count as successful completions
     assert "run_tests" in wide_rows[0]
     assert "230M" in wide_rows[0] and "1.5M" in wide_rows[0]
-    assert "openai · deepseek-v4.1-flash" in wide_rows[1]
+    assert " | " in wide_rows[0]
+    assert "openai | deepseek-v4.1-flash" in wide_rows[1]
 
 
 def test_unavailable_usage_stays_on_secondary_metadata_row() -> None:

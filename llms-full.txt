@@ -1736,6 +1736,17 @@ when more than half the rows changed), repaints itself below anything printed
 while it is live (the scroll buffer, or stdout/stderr), and brackets each write
 with synchronized-output mode 2026 when the terminal reported support.
 `frame_stats()` returns counts and render/write percentiles, shown by `/perf`.
+The default assistant turn header reads `Assistant Turn`; custom agent labels
+remain intact. Headers include the local timezone abbreviation and numeric UTC
+offset and have one blank row before the next block, except when `mention_chips`
+follows: resolved read rows stay directly beneath the heading, with one blank row
+after the mention group. Level-1 subagent rows align with tool headings while
+worker previews are indented children; completed `⎋ Compacted` notices are also
+indented. A pool that does not fully succeed is labeled `Subagents Failed`; its
+completion row is followed by one blank row before subsequent scrollback. The
+live status and footer use `|` between visual segments (screen-reader status
+retains comma-separated, spoken labels). Activity recaps use one separator before
+a next scrollback event or the persistent live status block.
 
 ### ComposerComponent
 

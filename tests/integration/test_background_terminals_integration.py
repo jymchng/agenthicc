@@ -141,7 +141,8 @@ def test_wait_status_is_width_safe_and_contains_control_hints(
     assert "6m 11s" in text
     assert "Esc" in text
     assert "2 running" in text
-    assert "/ps · /stop" in text
+    assert "/ps | /stop" in text
+
     assert "usage unavailable" in text
     assert "cost unknown" in text
     assert "└ uv run pytest tests/unit -q" in text

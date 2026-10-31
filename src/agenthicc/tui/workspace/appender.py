@@ -139,7 +139,7 @@ def _lang_for_path(path: str) -> str:
 def _hhmmss(ts: float) -> str:
     import time
 
-    return time.strftime("%H:%M:%S", time.localtime(ts))
+    return time.strftime("%H:%M:%S %Z %z", time.localtime(ts))
 
 
 def _fmt_args(args: Mapping[str, object]) -> str:
@@ -281,6 +281,13 @@ class ScrollBufferAppender:
         # The canonical ConversationStore still receives one event per call.
         self._exploration_count: int = 0
         self._exploration_hidden: int = 0
+        # Workspace supplies the live-boundary gap; add scrollback spacing only
+        # when another visible event follows the completion recap.
+        self._activity_complete_separator_pending: bool = False
+        # Defer the turn-heading gap so mention reads can stay attached to it.
+        self._turn_start_separator_pending: bool = False
+        # Put the gap after the mention rows when they follow a turn heading.
+        self._mention_chips_separator_pending: bool = False
 
     def mount(self) -> None:
         self._unsub = self._state.conversation.on_event(self._queue_event)
@@ -372,6 +379,19 @@ class ScrollBufferAppender:
 
     def _render_one(self, ev: ConversationEvent) -> None:
         """Dispatch to the registered renderer for ev.kind; silently ignore unknown kinds."""
+        if self._activity_complete_separator_pending and ev.kind in _RENDERERS:
+            self._console.print()
+            self._activity_complete_separator_pending = False
+        if ev.kind in _RENDERERS:
+            if self._turn_start_separator_pending:
+                if ev.kind == "mention_chips":
+                    self._mention_chips_separator_pending = True
+                else:
+                    self._console.print()
+                self._turn_start_separator_pending = False
+            elif self._mention_chips_separator_pending and ev.kind != "mention_chips":
+                self._console.print()
+                self._mention_chips_separator_pending = False
         if ev.kind != "tool_complete":
             self._flush_exploration_group()
             # Close regular tool groups before any boundary event. In
@@ -651,12 +671,16 @@ class ScrollBufferAppender:
 @register_renderer("turn_start")
 def _render_turn_start(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
     self._group_count = 0
-    agent_name = ev.payload.get("agent_name", "assistant")
+    agent_name = _text(ev.payload, "agent_name", "assistant")
+    label = "Assistant Turn" if agent_name == "assistant" else agent_name
+    from rich.markup import escape as _e
+
     self._console.print(
-        f"[bold cyan]●[/bold cyan] [bold]{agent_name}[/bold]  [dim]{_hhmmss(ev.timestamp)}[/dim]",
+        f"[bold cyan]●[/bold cyan] [bold]{_e(label)}[/bold]  [dim]{_hhmmss(ev.timestamp)}[/dim]",
         markup=True,
         highlight=False,
     )
+    self._turn_start_separator_pending = True
 
 
 @register_renderer("user_message")
@@ -799,7 +823,7 @@ def _render_activity_complete(self: ScrollBufferAppender, ev: ConversationEvent)
             markup=True,
             highlight=False,
         )
-        self._console.print()
+        self._activity_complete_separator_pending = True
 
 
 @register_renderer("mention_chips")
@@ -841,7 +865,8 @@ def _render_system(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
 
     text = str(ev.payload.get("text", ""))
     if text:
-        self._console.print(f"[dim]{_e(text)}[/dim]", markup=True, highlight=False)
+        prefix = "  " if text.startswith("⎋ Compacted") else ""
+        self._console.print(f"{prefix}[dim]{_e(text)}[/dim]", markup=True, highlight=False)
         self._console.print()
 
 
@@ -1055,7 +1080,7 @@ def _render_subagent_pool_started(self: ScrollBufferAppender, ev: ConversationEv
     total = max(_nonnegative_int(ev.payload, "total"), len(workers))
     title = f"◈ Subagents · {total} worker{'s' if total != 1 else ''} started"
     title = fit(_e(title), max(1, cols - 2))
-    self._console.print(f"  [bold]{title}[/bold]", markup=True, highlight=False)
+    self._console.print(f"[bold]{title}[/bold]", markup=True, highlight=False)
 
     for worker in workers[:3]:
         raw_label = worker.get("label", "Worker")
@@ -1094,14 +1119,14 @@ def _render_subagent_worker_done(self: ScrollBufferAppender, ev: ConversationEve
             summary = str(ev.payload.get("summary", "")).strip().splitlines()[0:1]
             detail = f"  {_e(summary[0][:120])}" if summary else ""
         self._console.print(
-            f"  [green]✓[/green] [{done}/{total}] [cyan]{label}[/cyan]{dur}{detail}",
+            f"[green]✓[/green] [{done}/{total}] [cyan]{label}[/cyan]{dur}{detail}",
             markup=True,
             highlight=False,
         )
     else:
         error = _e(str(ev.payload.get("error", "failed"))[:80])
         self._console.print(
-            f"  [red]✗[/red] [{done}/{total}] [cyan]{label}[/cyan]  [dim]{error}[/dim]",
+            f"[red]✗[/red] [{done}/{total}] [cyan]{label}[/cyan]  [dim]{error}[/dim]",
             markup=True,
             highlight=False,
         )
@@ -1115,7 +1140,7 @@ def _render_subagent_pool_done(self: ScrollBufferAppender, ev: ConversationEvent
     total = _nonnegative_int(ev.payload, "total")
     failed = _nonnegative_int(ev.payload, "failed")
     reason = ev.payload.get("budget_exceeded_reason", "")
-    status = "complete" if failed == 0 and not reason else "finished"
+    status = "complete" if succeeded == total and failed == 0 and not reason else "Failed"
     parts = [f"{succeeded}/{total} done"]
     if failed:
         parts.append(f"{failed} unsuccessful (failed or stopped)")
@@ -1123,7 +1148,8 @@ def _render_subagent_pool_done(self: ScrollBufferAppender, ev: ConversationEvent
     if isinstance(reason, str) and reason:
         suffix += f" · budget exceeded: {_e(reason.replace('_', ' '))}"
     self._console.print(
-        f"  [bold]◈ Subagents {status} · {suffix}[/bold]",
+        f"[bold]◈ Subagents {status} · {suffix}[/bold]",
         markup=True,
         highlight=False,
     )
+    self._console.print()

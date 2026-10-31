@@ -95,8 +95,12 @@ class TestScrollBufferRenderers:
         return buf.getvalue()
 
     def test_system_renderer_prints_text(self) -> None:
-        out = self._render_event("system", {"text": "compacting…"})
-        assert "compacting" in out
+        out = self._render_event("system", {"text": "⎋ Compacting conversation…"})
+        assert out.splitlines()[0].startswith("⎋ Compacting")
+
+    def test_system_renderer_indents_completed_compaction_notice(self) -> None:
+        out = self._render_event("system", {"text": "⎋ Compacted → ~215 tokens"})
+        assert out.splitlines()[0].startswith("  ⎋ Compacted")
 
     def test_system_renderer_empty_payload_is_silent(self) -> None:
         out = self._render_event("system", {})
@@ -115,6 +119,7 @@ class TestScrollBufferRenderers:
             },
         )
         assert "3" in out or "Spawning" in out
+        assert out.splitlines()[0].startswith("◈ Subagents")
 
     def test_pool_started_lists_workers(self) -> None:
         out = self._render_event(
@@ -129,6 +134,7 @@ class TestScrollBufferRenderers:
         )
         assert "explorer #1" in out
         assert "tester #1" in out
+        assert any(row.startswith("  └") and "explorer #1" in row for row in out.splitlines())
 
     def test_pool_started_bounds_previews_and_fits_each_row(self) -> None:
         from agenthicc.tui.rendering import visible_len
@@ -165,6 +171,7 @@ class TestScrollBufferRenderers:
         )
         assert "explorer #1" in out
         assert "1/3" in out
+        assert out.splitlines()[0].startswith("✓ [1/3]")
 
     def test_worker_done_success_shows_changed_paths(self) -> None:
         out = self._render_event(
@@ -194,6 +201,7 @@ class TestScrollBufferRenderers:
         )
         assert "tester #1" in out
         assert "timeout" in out
+        assert out.splitlines()[0].startswith("✗ [0/2]")
 
     def test_pool_done_shows_summary(self) -> None:
         out = self._render_event(
@@ -205,6 +213,23 @@ class TestScrollBufferRenderers:
             },
         )
         assert "3/4" in out or "3" in out
+        assert out.splitlines()[0].startswith("◈ Subagents Failed")
+        assert out.endswith("\n\n")
+
+    def test_pool_done_marks_incomplete_pool_failed(self) -> None:
+        out = self._render_event(
+            "subagent_pool_done",
+            {"succeeded": 0, "total": 2, "failed": 0},
+        )
+        assert out.splitlines()[0].startswith("◈ Subagents Failed")
+
+    def test_pool_done_marks_all_success_complete(self) -> None:
+        out = self._render_event(
+            "subagent_pool_done",
+            {"succeeded": 2, "total": 2, "failed": 0},
+        )
+        assert out.splitlines()[0].startswith("◈ Subagents complete")
+        assert out.endswith("\n\n")
 
     def test_pool_done_shows_failed_count(self) -> None:
         out = self._render_event(
@@ -227,6 +252,7 @@ class TestScrollBufferRenderers:
                 "budget_exceeded_reason": "max_tokens_exceeded",
             },
         )
+        assert out.splitlines()[0].startswith("◈ Subagents Failed")
         assert "budget exceeded: max tokens exceeded" in out.lower()
 
 

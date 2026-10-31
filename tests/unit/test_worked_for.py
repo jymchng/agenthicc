@@ -137,7 +137,7 @@ class TestCompletionRecapRenderers:
             ),
         )
 
-        assert buf.getvalue() == "  Total · 1m 5s\n\n"
+        assert buf.getvalue() == "  Total · 1m 5s\n"
 
     def test_subsecond_activity_total_is_omitted(self) -> None:
         from agenthicc.tui.conversation_store import ConversationEvent
@@ -181,7 +181,7 @@ class TestCompletionRecapRenderers:
         for event in events:
             appender._render_one(event)
 
-        assert console.export_text() == ("✾ Turn · 18s\n✾ Turn · 29s\n  Total · 54s\n\n")
+        assert console.export_text() == ("✾ Turn · 18s\n✾ Turn · 29s\n  Total · 54s\n")
 
     def test_error_timing_rows_do_not_claim_success(self) -> None:
         from agenthicc.tui.conversation_store import AppState, ConversationEvent
