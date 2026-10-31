@@ -31,6 +31,21 @@ def compact_token_count(count: int) -> str:
         unit_index += 1
 
 
+def compact_duration(seconds: float) -> str:
+    """Format elapsed seconds with concise, non-redundant time units."""
+    remaining = max(0, int(seconds))
+    hours, remaining = divmod(remaining, 3_600)
+    minutes, seconds_part = divmod(remaining, 60)
+    units: list[str] = []
+    if hours:
+        units.append(f"{hours}h")
+    if minutes:
+        units.append(f"{minutes}m")
+    if seconds_part or not units:
+        units.append(f"{seconds_part}s")
+    return " ".join(units)
+
+
 def wrap_display_text(value: str, width: int) -> list[str]:
     """Wrap plain display text by terminal cells without discarding content."""
     from rich.console import Console

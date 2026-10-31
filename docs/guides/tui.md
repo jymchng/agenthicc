@@ -329,10 +329,13 @@ the activity returns to IDLE. Resize redraws do not derive a new timestamp
 directly; while a prompt owns the terminal, the tick retains the activity
 start point without publishing a timer redraw every 50 ms. The older per-turn
 active-work clock remains available for turn-level telemetry and waiting-modal
-behavior. When the activity returns to IDLE, the scroll buffer
-prints a final `✾ Total wall clock time since last IDLE: …` line after the per-turn
-`✾ Worked for …` line; the latter is separated from following output by a blank
-line.
+behavior. When the activity returns to IDLE, the scroll buffer emits a compact
+completion recap after the final turn. It shows each eligible per-turn duration
+(for example, `✾ Turn · 1m 5s`) and an indented `Total · 2m 5s` row for the
+enclosing activity. The total spans the outer user activity across internal turns
+and workflow phases; it is not model-only time or the sum of the visible turn rows.
+Durations use whole-second `s`, `m`, and `h` units, and the recap ends with one
+blank separator before subsequent output.
 
 The Windows backend uses `ReadConsoleInputW` so Shift+Tab preserves its
 modifier. POSIX raw mode is a no-op for non-TTY file descriptors and restores

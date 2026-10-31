@@ -1,53 +1,36 @@
-"""Tests for the 'Worked for' turn-completion line (close_turn → scroll buffer)."""
+"""Tests for compact turn and activity completion recaps."""
 
 from __future__ import annotations
 
+from io import StringIO
+from unittest.mock import MagicMock
+
 import pytest
+from rich.console import Console
+
 from agenthicc.tui.conversation_store import ConversationStore
-from agenthicc.tui.workspace.appender import _fmt_worked
+from agenthicc.tui.workspace.formatters import compact_duration
 
 pytestmark = pytest.mark.unit
 
 
-# ── _fmt_worked ───────────────────────────────────────────────────────────────
-
-
-class TestFmtWorked:
-    def test_zero_seconds(self) -> None:
-        assert _fmt_worked(0) == "0 seconds"
-
-    def test_one_second_singular(self) -> None:
-        assert _fmt_worked(1) == "1 second"
-
-    def test_two_seconds_plural(self) -> None:
-        assert _fmt_worked(2) == "2 seconds"
-
-    def test_fifty_nine_seconds(self) -> None:
-        assert _fmt_worked(59) == "59 seconds"
-
-    def test_exactly_one_minute_no_seconds(self) -> None:
-        assert _fmt_worked(60) == "1 min"
-
-    def test_one_minute_singular(self) -> None:
-        assert "1 min" in _fmt_worked(61)
-        assert "min" in _fmt_worked(61)
-        assert "mins" not in _fmt_worked(61)
-
-    def test_one_minute_one_second(self) -> None:
-        assert _fmt_worked(61) == "1 min 1 second"
-
-    def test_one_minute_thirty_seconds(self) -> None:
-        assert _fmt_worked(90) == "1 min 30 seconds"
-
-    def test_two_minutes_plural_no_seconds(self) -> None:
-        assert _fmt_worked(120) == "2 mins"
-
-    def test_two_minutes_plural_with_seconds(self) -> None:
-        assert _fmt_worked(121) == "2 mins 1 second"
-
-    def test_fractional_seconds_truncated(self) -> None:
-        assert _fmt_worked(1.9) == "1 second"
-        assert _fmt_worked(59.9) == "59 seconds"
+@pytest.mark.parametrize(
+    ("elapsed", "expected"),
+    [
+        (0, "0s"),
+        (1, "1s"),
+        (59, "59s"),
+        (60, "1m"),
+        (61, "1m 1s"),
+        (3_599, "59m 59s"),
+        (3_600, "1h"),
+        (3_724, "1h 2m 4s"),
+        (1.9, "1s"),
+        (-1, "0s"),
+    ],
+)
+def test_compact_duration(elapsed: float, expected: str) -> None:
+    assert compact_duration(elapsed) == expected
 
 
 # ── close_turn emits elapsed ──────────────────────────────────────────────────
@@ -99,48 +82,52 @@ class TestCloseTurnElapsed:
         assert conv.elapsed_s == 0.0
 
 
-# ── renderer threshold ────────────────────────────────────────────────────────
-
-
-class TestTurnCompleteRenderer:
-    def _make_event(self, elapsed: float) -> object:
-        from agenthicc.tui.conversation_store import ConversationEvent
-
-        return ConversationEvent(event_id="x", kind="turn_complete", payload={"elapsed_s": elapsed})
-
-    def _render(self, elapsed: float) -> str:
-        from io import StringIO
-        from rich.console import Console
-        from unittest.mock import MagicMock
-        from agenthicc.tui.workspace.appender import _render_turn_complete
-
+class TestCompletionRecapRenderers:
+    @staticmethod
+    def _make_console() -> tuple[Console, StringIO, MagicMock]:
         buf = StringIO()
         console = Console(file=buf, highlight=False, markup=False, no_color=True)
         stub = MagicMock()
         stub._console = console
-        _render_turn_complete(stub, self._make_event(elapsed))
-        return buf.getvalue()
+        return console, buf, stub
 
-    def test_worked_for_shown_when_elapsed_ge_one(self) -> None:
-        out = self._render(5.0)
-        assert "Worked for" in out
-        assert "5 seconds" in out
+    def test_turn_row_uses_compact_duration_without_trailing_blank(self) -> None:
+        from agenthicc.tui.conversation_store import ConversationEvent
+        from agenthicc.tui.workspace.appender import _render_turn_complete
 
-    def test_worked_for_not_shown_when_elapsed_lt_one(self) -> None:
-        out = self._render(0.5)
-        assert "Worked for" not in out
+        _, buf, stub = self._make_console()
+        _render_turn_complete(
+            stub,
+            ConversationEvent(
+                event_id="turn",
+                kind="turn_complete",
+                payload={"elapsed_s": 65.0},
+            ),
+        )
 
-    def test_total_activity_duration_is_rendered(self) -> None:
-        from io import StringIO
-        from rich.console import Console
-        from unittest.mock import MagicMock
+        assert buf.getvalue() == "✾ Turn · 1m 5s\n"
+
+    def test_turn_row_is_omitted_below_one_second(self) -> None:
+        from agenthicc.tui.conversation_store import ConversationEvent
+        from agenthicc.tui.workspace.appender import _render_turn_complete
+
+        _, buf, stub = self._make_console()
+        _render_turn_complete(
+            stub,
+            ConversationEvent(
+                event_id="turn",
+                kind="turn_complete",
+                payload={"elapsed_s": 0.5},
+            ),
+        )
+
+        assert buf.getvalue() == ""
+
+    def test_activity_total_uses_compact_duration_and_one_separator(self) -> None:
         from agenthicc.tui.conversation_store import ConversationEvent
         from agenthicc.tui.workspace.appender import _render_activity_complete
 
-        buf = StringIO()
-        console = Console(file=buf, highlight=False, markup=False, no_color=True)
-        stub = MagicMock()
-        stub._console = console
+        _, buf, stub = self._make_console()
         _render_activity_complete(
             stub,
             ConversationEvent(
@@ -150,31 +137,88 @@ class TestTurnCompleteRenderer:
             ),
         )
 
-        out = buf.getvalue()
-        assert "Total wall clock time since last IDLE: 1 min 5 seconds" in out
-        assert out.endswith("\n\n")
+        assert buf.getvalue() == "  Total · 1m 5s\n\n"
 
-    def test_blank_line_always_appended(self) -> None:
-        assert self._render(5.0).endswith("\n\n")
-        assert self._render(0.3).endswith("\n")
-
-    def test_no_elapsed_key_treated_as_zero(self) -> None:
-        from io import StringIO
-        from rich.console import Console
-        from unittest.mock import MagicMock
+    def test_subsecond_activity_total_is_omitted(self) -> None:
         from agenthicc.tui.conversation_store import ConversationEvent
-        from agenthicc.tui.workspace.appender import _render_turn_complete
+        from agenthicc.tui.workspace.appender import _render_activity_complete
 
-        ev = ConversationEvent(event_id="x", kind="turn_complete", payload={})
-        buf = StringIO()
-        console = Console(file=buf, highlight=False, markup=False, no_color=True)
-        stub = MagicMock()
-        stub._console = console
-        _render_turn_complete(stub, ev)
-        assert "Worked for" not in buf.getvalue()
+        _, buf, stub = self._make_console()
+        _render_activity_complete(
+            stub,
+            ConversationEvent(
+                event_id="activity",
+                kind="activity_complete",
+                payload={"elapsed_s": 0.5},
+            ),
+        )
 
-    def test_activity_duration_then_error_has_one_blank_line(self) -> None:
-        from rich.console import Console
+        assert buf.getvalue() == ""
+
+    def test_turns_and_total_render_as_one_group(self) -> None:
+        from agenthicc.tui.conversation_store import AppState, ConversationEvent
+        from agenthicc.tui.workspace.appender import ScrollBufferAppender
+
+        console = Console(record=True, markup=False, no_color=True)
+        appender = ScrollBufferAppender(AppState.create(), console)
+        events = (
+            ConversationEvent(
+                event_id="turn-1",
+                kind="turn_complete",
+                payload={"elapsed_s": 18.0},
+            ),
+            ConversationEvent(
+                event_id="turn-2",
+                kind="turn_complete",
+                payload={"elapsed_s": 29.0},
+            ),
+            ConversationEvent(
+                event_id="activity",
+                kind="activity_complete",
+                payload={"elapsed_s": 54.0},
+            ),
+        )
+        for event in events:
+            appender._render_one(event)
+
+        assert console.export_text() == ("✾ Turn · 18s\n✾ Turn · 29s\n  Total · 54s\n\n")
+
+    def test_error_timing_rows_do_not_claim_success(self) -> None:
+        from agenthicc.tui.conversation_store import AppState, ConversationEvent
+        from agenthicc.tui.workspace.appender import ScrollBufferAppender
+
+        console = Console(record=True, markup=False, no_color=True)
+        appender = ScrollBufferAppender(AppState.create(), console)
+        appender._render_one(
+            ConversationEvent(
+                event_id="error",
+                kind="error",
+                payload={"message": "boom"},
+            )
+        )
+        appender._render_one(
+            ConversationEvent(
+                event_id="turn",
+                kind="turn_complete",
+                payload={"elapsed_s": 2.0},
+            )
+        )
+        appender._render_one(
+            ConversationEvent(
+                event_id="activity",
+                kind="activity_complete",
+                payload={"elapsed_s": 3.0},
+            )
+        )
+
+        output = console.export_text()
+        assert "ERROR boom" in output
+        assert "✾ Turn · 2s" in output
+        assert "  Total · 3s" in output
+        assert "Completed" not in output
+        assert "since last IDLE" not in output
+
+    def test_activity_total_then_error_has_one_blank_line(self) -> None:
         from agenthicc.tui.conversation_store import AppState, ConversationEvent
         from agenthicc.tui.workspace.appender import ScrollBufferAppender
 
@@ -196,6 +240,18 @@ class TestTurnCompleteRenderer:
         )
 
         rendered = console.export_text()
-        suffix = rendered.split("Total wall clock time since last IDLE: 2 seconds", 1)[1]
+        suffix = rendered.split("  Total · 2s", 1)[1]
         assert suffix.startswith("\n\nERROR MCP server 'asyncmove' failed to start")
         assert not suffix.startswith("\n\n\n")
+
+    def test_missing_turn_elapsed_does_not_render_a_row(self) -> None:
+        from agenthicc.tui.conversation_store import ConversationEvent
+        from agenthicc.tui.workspace.appender import _render_turn_complete
+
+        _, buf, stub = self._make_console()
+        _render_turn_complete(
+            stub,
+            ConversationEvent(event_id="turn", kind="turn_complete", payload={}),
+        )
+
+        assert buf.getvalue() == ""

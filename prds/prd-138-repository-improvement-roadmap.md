@@ -414,9 +414,11 @@ forward compatibility rather than silently ignored.
 Test terminal widths, Unicode fallback, color-disabled mode, non-TTY startup,
 Windows key decoding, resize handling, pasted input, and screen-reader-friendly
 text. Keep Rich workspace rendering and input backends independently testable.
-Detailed proposals for responsive subagent activity and compact status/usage
-presentation are in [PRD-255](prd-255-subagent-activity-visual-hierarchy.md)
-and [PRD-256](prd-256-compact-status-and-usage-strip.md).
+Detailed proposals for responsive subagent activity, compact status/usage, and
+activity-completion presentation are in:
+[PRD-255](prd-255-subagent-activity-visual-hierarchy.md),
+[PRD-256](prd-256-compact-status-and-usage-strip.md), and
+[PRD-257](prd-257-compact-tui-activity-completion-recap.md).
 
 #### P2.4 Extension SDK
 

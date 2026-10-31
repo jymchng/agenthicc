@@ -335,8 +335,8 @@ class ConversationStore:
         self._advance_activity_clock(time.monotonic())
         elapsed = self.activity_elapsed_s()
         # Publish the final wall-clock value before resetting the reactive
-        # clock.  The scroll renderer uses this event to report the complete
-        # user-intent duration after the last per-turn "Worked for" line.
+        # clock.  The scroll renderer reports the complete activity duration
+        # after the final per-turn duration row.
         self.agent_state.set(AgentState.IDLE)
         self.append_event("activity_complete", {"elapsed_s": elapsed})
         self._activity_active = False
@@ -533,7 +533,7 @@ class ConversationStore:
             else:
                 self._current_turn.state = AgentState.COMPLETE
             # Always emit turn_complete (with elapsed) so the scroll buffer can
-            # print "✾ Worked for …" regardless of success or error path.
+            # print the turn duration regardless of success or error path.
             self.append_event("turn_complete", {"elapsed_s": elapsed})
         activity_active = self._activity_active
         external_activity = self._activity_external_scope

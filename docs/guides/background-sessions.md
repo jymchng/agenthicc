@@ -96,10 +96,10 @@ When the cancelled foreground task belongs to a running workflow, its
 cancellation handler currently records a workflow failure with reason
 `cancelled` and closes the foreground turn. The scroll appender can therefore
 show `ERROR cancelled` even though the background worker has been launched.
-The subsequent `Total wall clock time since last IDLE` line is emitted when
-the foreground activity ends; it describes that activity's elapsed duration,
-not necessarily additional work after cancellation. A plain non-workflow turn
-can take the cancellation path without emitting the same workflow failure.
+The subsequent indented `Total · …` recap row is emitted when the foreground
+activity ends. Its duration describes the entire outer activity, not necessarily
+additional work after cancellation. A plain non-workflow turn can take this path
+without emitting the same workflow failure.
 
 For a goal-backed session, `/detach` is the explicit foreground-to-background
 handoff. It does not copy the conversation or create a second workflow run.
