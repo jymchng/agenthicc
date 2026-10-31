@@ -219,6 +219,56 @@ def build_safe_mode(
     )
 
 
+def builtin_mode(
+    name: str,
+    *,
+    default_workflow: str | None = None,
+    workflows: tuple[str, ...] = (),
+) -> RuntimeMode:
+    """The canonical Safe, Plan or Yolo mode, without loading mode plugins."""
+    if name == "Safe":
+        return build_safe_mode(default_workflow=default_workflow, workflows=workflows)
+    if name == "Plan":
+        return RuntimeMode(
+            name="Plan",
+            badge="◈",
+            color="yellow",
+            description="Read-only planning; side-effecting actions are hard-blocked.",
+            system_prompt_suffix=(
+                "## PLAN MODE\n"
+                "You are operating in PLAN MODE. You MUST NOT write files, execute "
+                "commands, or make changes to the filesystem or repository. Analyse "
+                "the request and produce a structured action plan."
+            ),
+            blocked_capabilities=_restricted_capabilities(),
+            default_workflow=default_workflow,
+            workflows=workflows,
+        )
+    if name == "Yolo":
+        return RuntimeMode(
+            name="Yolo",
+            badge="⏵⏵",
+            color="green",
+            description="Full automatic mode; all tools are allowed without prompts.",
+            default_workflow=default_workflow,
+            workflows=workflows,
+        )
+    raise ValueError(f"{name!r} is not a built-in mode (Safe, Plan or Yolo)")
+
+
+def restrict_mode(mode: RuntimeMode, ceiling: RuntimeMode) -> RuntimeMode:
+    """*mode* restricted by *ceiling*: neither one's blocks or approvals are lost.
+
+    A ceiling never widens a mode (AGX-09): what either blocks is blocked, and
+    what either requires approval for (and neither blocks) needs approval.
+    """
+    blocked = frozenset(mode.blocked_capabilities) | frozenset(ceiling.blocked_capabilities)
+    approval = (frozenset(mode.approval_required) | frozenset(ceiling.approval_required)) - blocked
+    if blocked == mode.blocked_capabilities and approval == mode.approval_required:
+        return mode
+    return replace(mode, blocked_capabilities=blocked, approval_required=approval)
+
+
 def build_default_registry(
     default_map: dict[str, str] | None = None,
     available_map: dict[str, list[str]] | None = None,
@@ -232,7 +282,6 @@ def build_default_registry(
     """
     from agenthicc.tools.capabilities import ToolCapability
 
-    restricted = _restricted_capabilities()
     defaults = _canonical_workflow_map(default_map or {})
     available = _canonical_available_map(available_map or {})
 
@@ -244,28 +293,15 @@ def build_default_registry(
         )
     )
     registry.register(
-        RuntimeMode(
-            name="Plan",
-            badge="◈",
-            color="yellow",
-            description="Read-only planning; side-effecting actions are hard-blocked.",
-            system_prompt_suffix=(
-                "## PLAN MODE\n"
-                "You are operating in PLAN MODE. You MUST NOT write files, execute "
-                "commands, or make changes to the filesystem or repository. Analyse "
-                "the request and produce a structured action plan."
-            ),
-            blocked_capabilities=restricted,
+        builtin_mode(
+            "Plan",
             default_workflow=defaults.get("Plan"),
             workflows=tuple(available.get("Plan", [])),
         )
     )
     registry.register(
-        RuntimeMode(
-            name="Yolo",
-            badge="⏵⏵",
-            color="green",
-            description="Full automatic mode; all tools are allowed without prompts.",
+        builtin_mode(
+            "Yolo",
             default_workflow=defaults.get("Yolo"),
             workflows=tuple(available.get("Yolo", [])),
         )

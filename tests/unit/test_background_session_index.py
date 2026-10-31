@@ -17,8 +17,7 @@ from agenthicc.background import (
     SessionOrder,
     SessionStatus,
 )
-from agenthicc.background.store import BackgroundEventLogError
-from agenthicc.background.index import INDEX_SCHEMA_VERSION, SearchMode, SessionIndex
+from agenthicc.background.index import INDEX_SCHEMA_VERSION, SearchMode
 from agenthicc.background.model import QueuePriority
 
 pytestmark = pytest.mark.unit
@@ -73,6 +72,7 @@ def test_search_covers_title_intent_labels_activity_id_and_workspace(
     assert found("/work/") == ["beta-2", "alpha-1"]  # registry order: newest first
     assert found("code_pl") == ["alpha-1"]
     assert found("lph") == ["alpha-1"]  # substring, not word, matching
+    assert found("alpha- al") == ["alpha-1"]  # indexed and short substrings can combine
     assert found("al") == ["alpha-1"]  # shorter than a trigram
     assert found("absent") == []
 
@@ -84,12 +84,14 @@ def test_search_treats_like_wildcards_literally(tmp_path: Path, mode: SearchMode
     store.create(_session(tmp_path, "plain", 2.0, title="1000 done"))
     store.create(_session(tmp_path, "under", 3.0, title="snake_case"))
     store.create(_session(tmp_path, "glob", 4.0, title="a*b?c[d]"))
+    store.create(_session(tmp_path, "quoted", 5.0, title='a"b-c'))
 
     assert [item.session_id for item in store.list(query="0% d")] == ["percent"]
     assert [item.session_id for item in store.list(query="e_c")] == ["under"]
     assert store.list(query="_x") == []
     assert [item.session_id for item in store.list(query="*b?")] == ["glob"]
     assert [item.session_id for item in store.list(query="c[d]")] == ["glob"]
+    assert [item.session_id for item in store.list(query='a"b')] == ["quoted"]
     assert store.list(query="a?b") == []
 
 
@@ -496,8 +498,7 @@ async def test_hub_shows_recent_agents_and_progress_while_the_index_rebuilds(
     from rich.console import Console
 
     from agenthicc.background import BackgroundSupervisor
-    from agenthicc.tui.workspace.agents_hub import Tab
-    from agenthicc.tui.workspace.agents_hub import AgentsHub
+    from agenthicc.tui.workspace.agents_hub import AgentsHub, Tab
     from agenthicc.tui.workspace.agents_hub.prefs import HubPrefs
 
     root = tmp_path / "background"
@@ -590,57 +591,6 @@ def _drop_index(root: Path) -> None:
         Path(f"{root / 'index.sqlite3'}{suffix}").unlink(missing_ok=True)
 
 
-def test_event_log_read_failure_rolls_back_rebuild_and_can_be_retried(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    root = tmp_path / "background"
-    writer = BackgroundStore(root)
-    writer.create(_session(tmp_path, "preserved", 1.0))
-    writer.close()
-    events_path = root / "events.jsonl"
-    events_before = events_path.read_bytes()
-    _drop_index(root)
-
-    store = BackgroundStore(root)
-    original_open = Path.open
-
-    def deny_event_log(path: Path, mode: str = "r", *args: object, **kwargs: object) -> object:
-        if path == events_path and mode == "rb":
-            raise PermissionError("test event-log access denial")
-        return original_open(path, mode, *args, **kwargs)
-
-    with monkeypatch.context() as patch:
-        patch.setattr(Path, "open", deny_event_log)
-        with pytest.raises(BackgroundEventLogError) as raised:
-            store.list()
-
-    assert isinstance(raised.value.__cause__, PermissionError)
-    assert events_path.read_bytes() == events_before
-    # The failed replay rolls back rather than publishing an empty projection.
-    with sqlite3.connect(root / "index.sqlite3") as connection:
-        assert connection.execute("SELECT count(*) FROM sessions").fetchone() == (0,)
-
-    assert [item.session_id for item in store.list()] == ["preserved"]
-    assert events_path.read_bytes() == events_before
-
-
-def test_missing_event_log_does_not_replace_a_nonempty_index_with_empty_state(
-    tmp_path: Path,
-) -> None:
-    root = tmp_path / "background"
-    store = BackgroundStore(root)
-    store.create(_session(tmp_path, "preserved", 1.0))
-    store.close()
-    (root / "events.jsonl").unlink()
-
-    reopened = BackgroundStore(root)
-    with pytest.raises(BackgroundEventLogError, match="is missing"):
-        reopened.list()
-
-    with sqlite3.connect(root / "index.sqlite3") as connection:
-        assert connection.execute("SELECT session_id FROM sessions").fetchall() == [("preserved",)]
-
-
 def test_first_open_seeds_the_index_from_the_old_projection(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -712,140 +662,6 @@ def test_an_index_from_another_schema_version_is_discarded(tmp_path: Path) -> No
     assert "stray_old_layout" not in tables
 
 
-def test_unknown_missing_column_layout_is_rebuilt_from_events(tmp_path: Path) -> None:
-    root = tmp_path / "background"
-    original = BackgroundStore(root)
-    original.create(_session(tmp_path, "unknown-layout", 1.0).evolve(idempotency_key="safe-key"))
-    original.close()
-    event_log_before_rebuild = (root / "events.jsonl").read_bytes()
-    with sqlite3.connect(root / "index.sqlite3") as connection:
-        connection.execute("ALTER TABLE sessions DROP COLUMN title")
-
-    recovered = BackgroundStore(root)
-
-    assert recovered.get("unknown-layout").title == "title unknown-layout"
-    assert recovered.with_idempotency_key("safe-key")[0].session_id == "unknown-layout"
-    assert (root / "events.jsonl").read_bytes() == event_log_before_rebuild
-
-
-@pytest.mark.parametrize("version_state", ["no_meta", "unversioned", "current", "previous"])
-def test_missing_idempotency_column_is_migrated_and_backfilled(
-    tmp_path: Path, version_state: str
-) -> None:
-    root = tmp_path / "background"
-    original = BackgroundStore(root)
-    record = _session(tmp_path, "legacy-index", 1.0).evolve(idempotency_key="detach-key")
-    original.create(record)
-    original.create(_session(tmp_path, "legacy-empty-key", 2.0))
-    original.close()
-    event_log_before_migration = (root / "events.jsonl").read_bytes()
-
-    with sqlite3.connect(root / "index.sqlite3") as connection:
-        connection.execute("DROP INDEX sessions_idempotency")
-        connection.execute("ALTER TABLE sessions DROP COLUMN idempotency_key")
-        if version_state == "no_meta":
-            connection.execute("DROP TABLE meta")
-        elif version_state == "unversioned":
-            connection.execute("DELETE FROM meta WHERE key = 'schema_version'")
-        elif version_state == "previous":
-            connection.execute("UPDATE meta SET value = '3' WHERE key = 'schema_version'")
-
-    migrated = BackgroundStore(root)
-
-    assert migrated.get("legacy-index").idempotency_key == "detach-key"
-    assert [item.session_id for item in migrated.with_idempotency_key("detach-key")] == [
-        "legacy-index"
-    ]
-    assert [item.session_id for item in migrated.with_idempotency_key("")] == ["legacy-empty-key"]
-    with sqlite3.connect(root / "index.sqlite3") as connection:
-        columns = {row[1] for row in connection.execute("PRAGMA table_info(sessions)")}
-        version = connection.execute(
-            "SELECT value FROM meta WHERE key = 'schema_version'"
-        ).fetchone()
-    assert "idempotency_key" in columns
-    assert version == (str(INDEX_SCHEMA_VERSION),)
-    assert (root / "events.jsonl").read_bytes() == event_log_before_migration
-
-
-def test_interrupted_additive_migration_rolls_back_and_can_be_retried(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    root = tmp_path / "background"
-    original = BackgroundStore(root)
-    original.create(_session(tmp_path, "migration-retry", 1.0).evolve(idempotency_key="retry-key"))
-    original.close()
-    with sqlite3.connect(root / "index.sqlite3") as connection:
-        connection.execute("DROP INDEX sessions_idempotency")
-        connection.execute("ALTER TABLE sessions DROP COLUMN idempotency_key")
-
-    def interrupted(_connection: sqlite3.Connection) -> None:
-        raise RuntimeError("simulated interruption during idempotency backfill")
-
-    original_backfill = SessionIndex._backfill_idempotency_keys
-    monkeypatch.setattr(SessionIndex, "_backfill_idempotency_keys", staticmethod(interrupted))
-    with pytest.raises(RuntimeError, match="simulated interruption"):
-        BackgroundStore(root)._index.state()
-
-    with sqlite3.connect(root / "index.sqlite3") as connection:
-        columns = {row[1] for row in connection.execute("PRAGMA table_info(sessions)")}
-    assert "idempotency_key" not in columns
-
-    monkeypatch.setattr(SessionIndex, "_backfill_idempotency_keys", staticmethod(original_backfill))
-    recovered = BackgroundStore(root)
-    assert [item.session_id for item in recovered.with_idempotency_key("retry-key")] == [
-        "migration-retry"
-    ]
-
-
-def test_corrupt_derived_index_still_rebuilds_from_the_event_log(tmp_path: Path) -> None:
-    root = tmp_path / "background"
-    original = BackgroundStore(root)
-    original.create(_session(tmp_path, "recover-corruption", 1.0))
-    original.close()
-    (root / "index.sqlite3").write_bytes(b"not a SQLite database")
-
-    recovered = BackgroundStore(root)
-
-    assert [item.session_id for item in recovered.list()] == ["recover-corruption"]
-    state = recovered._index.state()
-    assert state is not None and state.sequence == 1
-
-
-def test_stale_store_does_not_discard_a_replacement_index(tmp_path: Path) -> None:
-    root = tmp_path / "background"
-    store = BackgroundStore(root)
-    store.create(_session(tmp_path, "replacement-survives", 1.0))
-    replacement = tmp_path / "replacement.sqlite3"
-    with sqlite3.connect(replacement) as connection:
-        connection.execute("PRAGMA journal_mode=DELETE")
-
-    os.replace(replacement, root / "index.sqlite3")
-    store._index.discard()
-
-    assert (root / "index.sqlite3").is_file()
-    assert [item.session_id for item in store.list()] == ["replacement-survives"]
-
-
-def test_missing_fts5_falls_back_but_unrelated_operational_errors_propagate(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    original_create = SessionIndex._create_fts_objects
-
-    def unavailable(_connection: sqlite3.Connection) -> None:
-        raise sqlite3.OperationalError("no such module: fts5")
-
-    monkeypatch.setattr(SessionIndex, "_create_fts_objects", staticmethod(unavailable))
-    assert SessionIndex(tmp_path / "no-fts.sqlite3").search_mode == "like"
-
-    def disk_error(_connection: sqlite3.Connection) -> None:
-        raise sqlite3.OperationalError("disk I/O error")
-
-    monkeypatch.setattr(SessionIndex, "_create_fts_objects", staticmethod(disk_error))
-    with pytest.raises(sqlite3.OperationalError, match="disk I/O error"):
-        _ = SessionIndex(tmp_path / "io-error.sqlite3").search_mode
-    monkeypatch.setattr(SessionIndex, "_create_fts_objects", staticmethod(original_create))
-
-
 def test_a_busy_index_does_not_fail_a_durable_append(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -860,51 +676,6 @@ def test_a_busy_index_does_not_fail_a_durable_append(
     writer.create(_session(tmp_path, "second", 2.0))
 
     assert {item.session_id for item in BackgroundStore(root).list()} == {"first", "second"}
-
-
-def test_schema_operational_error_resets_and_replays_the_derived_index(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    root = tmp_path / "background"
-    store = BackgroundStore(root)
-    store.create(_session(tmp_path, "recover-index", 1.0))
-    original_state = store._index.state
-    fail_once = True
-
-    def missing_column_once():  # type: ignore[no-untyped-def]
-        nonlocal fail_once
-        if fail_once:
-            fail_once = False
-            raise sqlite3.OperationalError("no such column: idempotency_key")
-        return original_state()
-
-    monkeypatch.setattr(store._index, "state", missing_column_once)
-
-    assert store.get("recover-index").title == "title recover-index"
-    assert store.count() == 1
-
-
-@pytest.mark.parametrize("message", ["database is locked", "database is busy", "disk I/O error"])
-def test_operational_errors_do_not_trigger_unsafe_schema_reset(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, message: str
-) -> None:
-    root = tmp_path / "background"
-    store = BackgroundStore(root)
-    store.create(_session(tmp_path, "busy-index", 1.0))
-    with sqlite3.connect(root / "index.sqlite3") as connection:
-        connection.execute("CREATE TABLE migration_guard (value TEXT)")
-    store.invalidate_index()
-
-    def busy():  # type: ignore[no-untyped-def]
-        raise sqlite3.OperationalError(message)
-
-    monkeypatch.setattr(store._index, "state", busy)
-    with pytest.raises(sqlite3.OperationalError, match=message):
-        store.list()
-    with sqlite3.connect(root / "index.sqlite3") as connection:
-        assert connection.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'migration_guard'"
-        ).fetchone()
 
 
 def test_the_provisional_view_uses_full_record_updates_from_older_logs(

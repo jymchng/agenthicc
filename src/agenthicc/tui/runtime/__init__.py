@@ -11,8 +11,10 @@ from agenthicc.tui.runtime.commands import (
     Command,
     SendMessageCommand,
     InterruptAgentCommand,
+    BackgroundSubagentsCommand,
     OpenAgentsHubCommand,
     OpenSubagentsCommand,
+    CycleAgentCommand,
 )
 from agenthicc.tui.runtime.mode_manager import (
     DEFAULT_MODE_NAME,
@@ -33,8 +35,10 @@ __all__ = [
     "Command",
     "SendMessageCommand",
     "InterruptAgentCommand",
+    "BackgroundSubagentsCommand",
     "OpenAgentsHubCommand",
     "OpenSubagentsCommand",
+    "CycleAgentCommand",
     "ModeManager",
     "ModeRegistry",
     "RuntimeMode",

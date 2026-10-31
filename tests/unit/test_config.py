@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import textwrap
 import tomllib
+from pathlib import Path
 
 import pytest
 
@@ -33,6 +34,96 @@ class TestDeepMerge:
 
 
 class TestLoadConfig:
+    def test_subagent_model_routing_settings_load_and_redact(self, tmp_path):
+        project = tmp_path / "agenthicc.toml"
+        _write(
+            project,
+            """
+            [subagents]
+            default_model = "anthropic/worker-model"
+            default_effort = " HIGH "
+            default_context = 12000
+            allowed_models = ["worker-model", "anthropic/other-model"]
+            allow_call_overrides = true
+            """,
+        )
+
+        config = load_config(project_path=project, user_path=tmp_path / "missing.toml")
+
+        assert config.subagents.default_model == "anthropic/worker-model"
+        assert config.subagents.default_effort == "high"
+        assert config.subagents.default_context == 12_000
+        assert config.subagents.allowed_models == ("worker-model", "anthropic/other-model")
+        assert config.subagents.allow_call_overrides is True
+        assert config.redacted_dict()["subagents"]["default_model"] == "anthropic/worker-model"
+
+    def test_subagent_governance_settings_load_and_inherit_depth_limits(self, tmp_path):
+        project = tmp_path / "agenthicc.toml"
+        _write(
+            project,
+            """
+            [subagents]
+            max_depth = 3
+            max_tasks = 64
+            max_concurrent = 16
+            max_active_pools = 8
+
+            [subagents.depth_limits."2"]
+            max_tasks = 12
+
+            [subagents.depth_limits."3"]
+            max_concurrent = 4
+
+            [subagents.depth_tiers."2".reviewer]
+            allowed_tools = ["read_file"]
+            """,
+        )
+
+        config = load_config(project_path=project, user_path=tmp_path / "missing.toml")
+        assert config.subagents.max_depth == 3
+        assert config.subagents.max_active_pools == 8
+        assert config.subagents.limits_for_depth(1) == (
+            64,
+            16,
+            "subagents.max_tasks",
+            "subagents.max_concurrent",
+        )
+        assert config.subagents.limits_for_depth(2) == (
+            12,
+            16,
+            "subagents.depth_limits.2.max_tasks",
+            "subagents.max_concurrent",
+        )
+        assert config.subagents.limits_for_depth(3) == (
+            12,
+            4,
+            "subagents.depth_limits.2.max_tasks",
+            "subagents.depth_limits.3.max_concurrent",
+        )
+        redacted = config.redacted_dict()["subagents"]
+        assert redacted["depth_limits"]["2"]["max_tasks"] == 12
+        assert redacted["depth_tiers"]["2"]["reviewer"]["allowed_tools"] == ["read_file"]
+
+    def test_subagent_governance_settings_reject_boolean_limits(self, tmp_path):
+        project = tmp_path / "agenthicc.toml"
+        _write(project, "[subagents]\nmax_depth = true\n")
+
+        with pytest.raises(ValueError, match="subagents.max_depth must be an integer"):
+            load_config(project_path=project, user_path=tmp_path / "missing.toml")
+
+    def test_subagent_model_routing_settings_reject_invalid_effort(self, tmp_path):
+        project = tmp_path / "agenthicc.toml"
+        _write(
+            project,
+            """
+            [subagents]
+            default_effort = "turbo"
+            """,
+        )
+
+        with pytest.raises(ValueError, match="subagents.default_effort must be one of"):
+            load_config(project_path=project, user_path=tmp_path / "missing.toml")
+
     def test_project_overrides_user_global(self, tmp_path):
         """Per-project config wins over user-global config (Git-style layering)."""
         project = tmp_path / "agenthicc.toml"
@@ -128,6 +219,10 @@ class TestLoadConfig:
         assert config.behaviour.resume_transcript_turns == 20
         assert config.tools.allowed == []
         assert config.tools.denied == []
+        assert config.subagents.max_depth == 1
+        assert config.subagents.max_tasks == 64
+        assert config.subagents.max_concurrent == 16
+        assert config.subagents.max_active_pools == 16
 
     def test_provider_request_timeout_default_is_overridable(self, tmp_path):
         project = tmp_path / "agenthicc.toml"
@@ -338,6 +433,82 @@ resume_transcript_max_event_bytes = 1
         # mcp_servers entries are McpServerConfig objects; fall back to dict access for compat
         name = mcp_entry.name if hasattr(mcp_entry, "name") else mcp_entry["name"]
         assert name == "filesystem"
+
+
+class TestSubagentLifecycleSettings:
+    def test_defaults_and_toml_overrides(self, tmp_path: Path) -> None:
+        missing = tmp_path / "missing.toml"
+        defaults = load_config(project_path=missing, user_path=missing)
+
+        assert defaults.subagents.max_workers == 32
+        assert defaults.subagents.max_concurrent == 16
+        assert defaults.subagents.max_tool_calls == 256
+        assert defaults.subagents.max_iterations == 128
+        assert defaults.subagents.max_tokens == 200_000
+        assert defaults.subagents.max_total_time_s == 600.0
+        assert defaults.subagents.on_budget_exceeded == "drain"
+        assert defaults.subagents.stop_grace_s == 5.0
+
+        project = tmp_path / "agenthicc.toml"
+        _write(
+            project,
+            """
+            [subagents]
+            max_workers = 12
+            max_concurrent = 3
+            max_tool_calls = 48
+            max_iterations = 24
+            max_tokens = 50000
+            max_total_time_s = 90.0
+            on_budget_exceeded = "abort"
+            stop_grace_s = 2.5
+            """,
+        )
+        config = load_config(project_path=project, user_path=missing)
+
+        assert config.subagents.max_workers == 12
+        assert config.subagents.max_concurrent == 3
+        assert config.subagents.max_tool_calls == 48
+        assert config.subagents.max_iterations == 24
+        assert config.subagents.max_tokens == 50_000
+        assert config.subagents.max_total_time_s == 90.0
+        assert config.subagents.on_budget_exceeded == "abort"
+        assert config.subagents.stop_grace_s == 2.5
+
+    @pytest.mark.parametrize(
+        "settings",
+        (
+            'on_budget_exceeded = "ignore"',
+            "stop_grace_s = -1.0",
+            "stop_grace_s = true",
+            "stop_grace_s = nan",
+            "max_workers = 0",
+            "max_concurrent = 4\nmax_workers = 2",
+            "max_iterations = 1.5",
+            "max_tokens = true",
+            "max_total_time_s = inf",
+        ),
+    )
+    def test_invalid_lifecycle_settings_are_rejected(self, tmp_path: Path, settings: str) -> None:
+        project = tmp_path / "agenthicc.toml"
+        _write(project, f"[subagents]\n{settings}\n")
+
+        with pytest.raises(ValueError, match="subagents\\."):
+            load_config(project_path=project, user_path=tmp_path / "missing.toml")
+
+    def test_commented_template_contains_lifecycle_settings(self) -> None:
+        from agenthicc.config_template import build_commented_config_template
+
+        template = build_commented_config_template()
+
+        assert "# max_workers = 32" in template
+        assert "# max_concurrent = 4" in template
+        assert "# max_tool_calls = 256" in template
+        assert "# max_iterations = 128" in template
+        assert "# max_tokens = 200000" in template
+        assert "# max_total_time_s = 600.0" in template
+        assert '# on_budget_exceeded = "drain"' in template
+        assert "# stop_grace_s = 5.0" in template
 
 
 class TestConverters:

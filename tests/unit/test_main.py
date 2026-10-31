@@ -806,10 +806,6 @@ class TestRunHeadless:
             return next(input_lines, "")
 
         async def instant_timeout(coro, timeout):
-            # The real asyncio.wait_for owns and cancels this coroutine. The
-            # immediate test double must close it explicitly to avoid leaking
-            # the Queue.get() coroutine passed by the headless runner.
-            coro.close()
             raise asyncio.TimeoutError()
 
         loop.run_in_executor = fake_executor

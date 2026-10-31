@@ -110,7 +110,7 @@ def optional_positionals(*names: str) -> Callable[[Handler], Handler]:
 
     def decorator(fn: Handler) -> Handler:
         # Metadata on a function object; callables have no typed attributes.
-        setattr(fn, "_optional_positionals", frozenset(names))  # noqa: B010
+        fn.__dict__["_optional_positionals"] = frozenset(names)
         return fn
 
     return decorator

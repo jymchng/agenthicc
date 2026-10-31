@@ -1016,7 +1016,10 @@ def _render_subagent_pool_done(self: ScrollBufferAppender, ev: ConversationEvent
     succeeded = ev.payload.get("succeeded", 0)
     total = ev.payload.get("total", 0)
     failed = ev.payload.get("failed", 0)
+    reason = ev.payload.get("budget_exceeded_reason", "")
     suffix = f"  [red]{failed} failed[/red]" if failed else ""
+    if isinstance(reason, str) and reason:
+        suffix += f"  [yellow]budget exceeded: {reason.replace('_', ' ')}[/yellow]"
     self._console.print(
         f"  [bold]◈ {succeeded}/{total} subagent{'s' if total != 1 else ''} complete[/bold]{suffix}",
         markup=True,

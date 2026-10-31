@@ -8,7 +8,7 @@ import logging
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 from agenthicc.plugins.deps import (
     PluginDependencyError,
@@ -17,6 +17,9 @@ from agenthicc.plugins.deps import (
 )
 from agenthicc.plugins.trust import current_extension_trust
 from agenthicc.tools.base import tool_name
+
+if TYPE_CHECKING:
+    from agenthicc.subagents.types import SubagentTypeRegistry, SubagentTypeSpec
 
 log = logging.getLogger(__name__)
 
@@ -43,6 +46,7 @@ class LoadResult:
     missing_deps: list[str] = field(default_factory=list)
     commands: list[object] = field(default_factory=list)  # Command objects from COMMANDS export
     untrusted: bool = False  # skipped without import: not trusted (agenthicc trust)
+    subagent_types: list["SubagentTypeSpec"] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -108,7 +112,11 @@ def _infer_missing_from_ast(path: Path) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def _load_plugin_file(path: Path) -> LoadResult:
+def _load_plugin_file(
+    path: Path,
+    *,
+    subagent_registry: "SubagentTypeRegistry | None" = None,
+) -> LoadResult:
     """Check trust and declared dependencies, then import the plugin exactly once."""
     if not current_extension_trust().permits(path, kind="tool"):
         return LoadResult(path=path, untrusted=True)
@@ -119,6 +127,7 @@ def _load_plugin_file(path: Path) -> LoadResult:
     if missing:
         return LoadResult(path=path, missing_deps=missing)
 
+    plugin_subagent_registry = subagent_registry.copy() if subagent_registry is not None else None
     # Import the plugin, once.
     module_name = f"_agenthicc_plugin_{path.stem}_{abs(hash(str(path)))}"
     try:
@@ -127,7 +136,13 @@ def _load_plugin_file(path: Path) -> LoadResult:
             return LoadResult(path=path, error="could not create module spec")
         module = importlib.util.module_from_spec(spec)
         sys.modules[module_name] = module
-        spec.loader.exec_module(module)
+        if plugin_subagent_registry is None:
+            spec.loader.exec_module(module)
+        else:
+            from agenthicc.subagents.types import _bind_registration_target
+
+            with _bind_registration_target(plugin_subagent_registry):
+                spec.loader.exec_module(module)
     except ImportError as exc:
         inferred = _infer_missing_from_ast(path)
         if inferred:
@@ -162,22 +177,41 @@ def _load_plugin_file(path: Path) -> LoadResult:
         result_commands = []
 
     # PRD-124 Phase 5: extract optional SUBAGENT_TYPES list.
-    # Plugin files may export SUBAGENT_TYPES = [SubagentTypeSpec(...), ...]
-    # to register custom subagent types into the global DEFAULT_REGISTRY.
+    # Session discovery supplies its registry; direct legacy loader callers keep
+    # registering through DEFAULT_REGISTRY for compatibility.
     raw_sa_types = getattr(module, "SUBAGENT_TYPES", None)
+    registered_subagent_types: list[SubagentTypeSpec] = []
     if raw_sa_types is not None:
         from agenthicc.subagents.types import SubagentTypeSpec, DEFAULT_REGISTRY
 
-        for spec in raw_sa_types if isinstance(raw_sa_types, (list, tuple)) else []:
-            if isinstance(spec, SubagentTypeSpec):
-                DEFAULT_REGISTRY.register(spec)
-                log.debug("Plugin %s: registered subagent type %r", path, spec.name)
+        target_registry = plugin_subagent_registry
+        if target_registry is None:
+            target_registry = DEFAULT_REGISTRY
+            log.warning(
+                "Plugin %s: SUBAGENT_TYPES registration through DEFAULT_REGISTRY is deprecated; "
+                "session registries snapshot this compatibility registry at construction",
+                path,
+            )
+        for subagent_spec in raw_sa_types if isinstance(raw_sa_types, (list, tuple)) else []:
+            if isinstance(subagent_spec, SubagentTypeSpec):
+                target_registry.register(subagent_spec)
+                registered_subagent_types.append(subagent_spec)
+                log.debug("Plugin %s: registered subagent type %r", path, subagent_spec.name)
             else:
                 log.warning(
-                    "Plugin %s: non-SubagentTypeSpec item in SUBAGENT_TYPES skipped: %r", path, spec
+                    "Plugin %s: non-SubagentTypeSpec item in SUBAGENT_TYPES skipped: %r",
+                    path,
+                    subagent_spec,
                 )
 
-    return LoadResult(path=path, tools=valid, commands=result_commands)
+    if subagent_registry is not None and plugin_subagent_registry is not None:
+        subagent_registry.replace_with(plugin_subagent_registry)
+    return LoadResult(
+        path=path,
+        tools=valid,
+        commands=result_commands,
+        subagent_types=registered_subagent_types,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -185,7 +219,11 @@ def _load_plugin_file(path: Path) -> LoadResult:
 # ---------------------------------------------------------------------------
 
 
-def _scan_directory(root: Path) -> list[LoadResult]:
+def _scan_directory(
+    root: Path,
+    *,
+    subagent_registry: "SubagentTypeRegistry | None" = None,
+) -> list[LoadResult]:
     """Recursively load all *.py files under *root*."""
     if not root.is_dir():
         return []
@@ -197,7 +235,10 @@ def _scan_directory(root: Path) -> list[LoadResult]:
         # must not prevent later files from being attempted; the caller can
         # publish successful results and report this file as failed.
         try:
-            result = _load_plugin_file(py_file)
+            if subagent_registry is None:
+                result = _load_plugin_file(py_file)
+            else:
+                result = _load_plugin_file(py_file, subagent_registry=subagent_registry)
         except Exception as exc:  # noqa: BLE001
             result = LoadResult(path=py_file, error=f"{type(exc).__name__}: {exc}")
             log.error(
@@ -233,18 +274,21 @@ def _scan_directory(root: Path) -> list[LoadResult]:
 def discover_project_tools(
     project_dir: Path | None = None,
     user_dir: Path | None = None,
+    *,
+    subagent_registry: "SubagentTypeRegistry | None" = None,
 ) -> PluginToolSet:
     """Discover all project-wide tools (both user-global and project-local).
 
     User-global tools are loaded first; project tools are appended and may
-    shadow user-global tools with the same name.
+    shadow user-global tools with the same name. When supplied, subagent types
+    are registered into the caller's session-owned registry.
     """
     user_root = (user_dir or Path.home() / ".agenthicc") / "tools"
     project_root = (project_dir or Path(".agenthicc")) / "tools"
 
     results: list[LoadResult] = []
-    results.extend(_scan_directory(user_root))
-    results.extend(_scan_directory(project_root))
+    results.extend(_scan_directory(user_root, subagent_registry=subagent_registry))
+    results.extend(_scan_directory(project_root, subagent_registry=subagent_registry))
     return PluginToolSet(results=results)
 
 

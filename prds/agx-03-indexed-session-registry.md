@@ -38,9 +38,10 @@ authoritative and the JSON projection and its snapshot code are gone.
   sessions are cached per index, keyed by their exact stored record.
 - **Search.** Case-insensitive substring of ID, title, intent, labels, latest
   activity, workspace and workflow — the old substring semantics over more
-  fields, and results stay in registry order. FTS5 accelerates `GLOB`
-  (wildcards bracket-escaped) but not `LIKE … ESCAPE`, so the FTS path uses
-  `GLOB`; without FTS5, `LIKE … ESCAPE` runs over a plain column.
+  fields, and results stay in registry order. FTS5 trigram `MATCH` phrases
+  accelerate queries whose words all have three or more characters; if a query
+  has a shorter word, all terms use literal substring checks against the
+  stored lowercase text. Without FTS5, `LIKE … ESCAPE` scans the plain column.
 - **Rebuild (§4.5).** Progress via `rebuild_progress()`; the agents screen
   shows recent sessions read from the end of the log (created, or rewritten in
   full by a pre-AGX-04 update) until it finishes; leaving the screen cancels

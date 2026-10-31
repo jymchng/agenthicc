@@ -31,6 +31,37 @@ def _policy(mode_name: str = "Safe") -> SubagentExecutionPolicy:
 
 
 @pytest.mark.asyncio
+async def test_retry_broker_starts_fresh_with_the_same_pool_limits() -> None:
+    broker = AgentMessageBroker(
+        conversation_id="conversation-1",
+        parent_run_id="run-1",
+        pool_id="pool-1",
+        message_timeout_s=12.0,
+        max_message_bytes=2048,
+        max_mailbox_messages=8,
+        max_pending_questions=3,
+    )
+    broker.register_worker("worker-a")
+    await broker.send(
+        sender="main",
+        recipient="worker-a",
+        kind="instruction",
+        payload="previous-attempt message",
+    )
+    await broker.close()
+
+    retry = broker.for_retry("worker-a")
+
+    assert retry.members == frozenset({"main", "worker-a"})
+    assert await retry.poll("worker-a") == []
+    assert await retry.undelivered_count("worker-a") == 0
+    assert retry._message_timeout_s == 12.0
+    assert retry._max_message_bytes == 2048
+    assert retry._max_mailbox_messages == 8
+    assert retry._max_pending_questions == 3
+
+
+@pytest.mark.asyncio
 async def test_parent_and_peer_messages_are_ordered_and_acknowledgeable() -> None:
     broker = AgentMessageBroker(
         conversation_id="conversation-1",

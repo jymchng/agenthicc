@@ -691,18 +691,18 @@ def _make_lauren_tool(
     # executor, but the implementation is intentionally an internal adapter
     # function. Mark it as a first-class Lauren tool before exposing it to
     # @use_tools.
-    setattr(implementation, TOOL_META, registered.lauren_meta)
+    implementation.__dict__[TOOL_META] = registered.lauren_meta
     lauren_metadata: dict[str, object] = {CAPABILITIES_KEY: metadata.capabilities}
     if is_exploratory_tool(tool):
         lauren_metadata[PRESENTATION_KEY] = {"exploratory": True}
     # Tool metadata lives on the function object; callables have no typed attributes.
-    setattr(implementation, "__lauren_ai_tool_metadata__", lauren_metadata)  # noqa: B010
+    implementation.__dict__["__lauren_ai_tool_metadata__"] = lauren_metadata
     implementation.__name__ = metadata.name
     implementation.__qualname__ = metadata.name
     implementation.__doc__ = metadata.description
     canonical_name = tool.name
     if canonical_name:
-        setattr(implementation, "__agenthicc_tool_name__", canonical_name)  # noqa: B010
+        implementation.__dict__["__agenthicc_tool_name__"] = canonical_name
     return implementation
 
 

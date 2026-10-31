@@ -40,7 +40,7 @@ def test_cli_notification_status_exposes_safe_receipts(
         {
             "event": {
                 "event_id": "evt-cli-safe",
-                "type": "completed",
+                "type": "agent_finished",
                 "session_id": "cli-session",
             },
             "destinations": [
@@ -74,7 +74,7 @@ def _settings() -> BackgroundNotificationSettings:
                     "name": "ci",
                     "url": "https://hooks.example.test/agenthicc",
                     "secret_env": "AGENTHICC_WEBHOOK_CI",
-                    "events": ["completed", "waiting_input"],
+                    "events": ["agent_finished", "agent_needs_input"],
                 }
             ],
             "retry_base_delay_s": 0.1,
@@ -107,7 +107,7 @@ async def test_lifecycle_transition_survives_restart_and_delivery_is_idempotent(
     outbox = BackgroundNotificationOutbox(store.root)
     rows = outbox.list_deliveries()
     assert len(rows) == 1
-    assert rows[0]["event_type"] == "waiting_input"
+    assert rows[0]["event_type"] == "agent_needs_input"
     assert rows[0]["status"] == "pending"
     assert launches
     assert store.configure_notifications(settings) is store._notification_coordinator
@@ -124,9 +124,12 @@ async def test_lifecycle_transition_survives_restart_and_delivery_is_idempotent(
     assert str(tmp_path) not in json.dumps(event_descriptor)
 
     async def successful_delivery(
-        delivery: NotificationDelivery, *, now: float | None = None
+        delivery: NotificationDelivery,
+        *,
+        now: float | None = None,
+        background_root: Path | None = None,
     ) -> tuple[str, int, None, bool]:
-        del delivery, now
+        del delivery, now, background_root
         return "delivered", 202, None, True
 
     monkeypatch.setattr("agenthicc.background.notifications.deliver_one", successful_delivery)
@@ -149,7 +152,7 @@ async def test_retry_receipt_is_durable_across_store_reopen(tmp_path: Path) -> N
         {
             "event": {
                 "event_id": "evt-retry",
-                "type": "completed",
+                "type": "agent_finished",
                 "session_id": "session-retry",
             },
             "destinations": [
@@ -283,7 +286,7 @@ async def test_signed_webhook_uses_local_https_server_and_blocks_redirects(
             {
                 "event": {
                     "event_id": f"evt-{path}",
-                    "type": "completed",
+                    "type": "agent_finished",
                     "session_id": "local-server-session",
                 },
                 "destinations": [

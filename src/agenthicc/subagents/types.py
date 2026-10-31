@@ -11,18 +11,25 @@ text aggregators without changing the worker lifecycle.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from agenthicc.result_contracts import JSONMapping, normalize_output_schema
+
 if TYPE_CHECKING:
+    from agenthicc.subagents.policy import SubagentExecutionPolicy
     from agenthicc.subagents.pool import SubagentResult
 
 __all__ = [
-    "DEFAULT_SUBAGENT_TIMEOUT_S",
-    "SubagentTypeSpec",
-    "SubagentAggregator",
-    "SubagentTypeRegistry",
     "DEFAULT_REGISTRY",
+    "DEFAULT_SUBAGENT_TIMEOUT_S",
+    "SubagentAggregator",
+    "SubagentPermissionConstraints",
+    "SubagentTypeRegistry",
+    "SubagentTypeSpec",
 ]
 
 # Research and build tasks can legitimately take longer than a normal agent
@@ -57,6 +64,16 @@ class SubagentAggregator:
         raise NotImplementedError
 
 
+@dataclass(frozen=True, slots=True)
+class SubagentPermissionConstraints:
+    """Optional per-type constraints that can only narrow inherited policy."""
+
+    deny_tools: frozenset[str] = frozenset()
+    deny_capabilities: frozenset[str] = frozenset()
+    require_approval: frozenset[str] = frozenset()
+    workspace_paths: tuple[str, ...] | None = None
+
+
 @dataclass
 class SubagentTypeSpec:
     """Complete specification for one subagent type.
@@ -78,10 +95,10 @@ class SubagentTypeSpec:
         Wall-clock timeout per worker execution.  Default: one hour.
 
     A role is not a separate conversation participant with access to the
-    parent's transcript.  The worker gets a fresh 8,000-token short-term
-    memory and receives task-specific context from ``spawn_subagents``.
-    ``allowed_tools`` is a ceiling that is applied after the parent phase and
-    mode have filtered the session tool list.
+    parent's transcript.  The worker gets a fresh memory sized from ``context``
+    (or the legacy 8,000-token default) and receives task-specific context from
+    ``spawn_subagents``. ``allowed_tools`` is a ceiling that is applied after
+    the parent phase and mode have filtered the session tool list.
     """
 
     name: str
@@ -89,6 +106,20 @@ class SubagentTypeSpec:
     max_turns: int
     system_prompt: str
     max_turn_time_s: float = DEFAULT_SUBAGENT_TIMEOUT_S
+    #: Optional per-definition model; empty inherits the parent model.
+    model: str = ""
+    #: A stricter mode/capability snapshot for this definition.
+    policy: "SubagentExecutionPolicy | None" = None
+    description: str = ""
+    effort: str = ""
+    context: int | None = None
+    output_schema: JSONMapping | None = None
+    #: Additional type-specific permission constraints; never grants access.
+    permissions: SubagentPermissionConstraints | None = None
+
+    def __post_init__(self) -> None:
+        if self.output_schema is not None:
+            self.output_schema = normalize_output_schema(self.output_schema)
 
 
 # ── system prompts ────────────────────────────────────────────────────────────
@@ -309,18 +340,21 @@ _RESEARCHER_TOOLS = frozenset(
 _BUILTIN_SPECS: list[SubagentTypeSpec] = [
     SubagentTypeSpec(
         name="explorer",
+        description="Read-only codebase exploration and evidence gathering.",
         allowed_tools=_EXPLORER_TOOLS,
         max_turns=15,
         system_prompt=_EXPLORER_PROMPT,
     ),
     SubagentTypeSpec(
         name="planner",
+        description="Analyze the request and produce a file-scoped implementation plan.",
         allowed_tools=_PLANNER_TOOLS,
         max_turns=10,
         system_prompt=_PLANNER_PROMPT,
     ),
     SubagentTypeSpec(
         name="implementer",
+        description="Implement a narrowly scoped code change and verify it.",
         allowed_tools=_IMPLEMENTER_TOOLS,
         max_turns=20,
         system_prompt=_IMPLEMENTER_PROMPT,
@@ -328,6 +362,7 @@ _BUILTIN_SPECS: list[SubagentTypeSpec] = [
     ),
     SubagentTypeSpec(
         name="executor",
+        description="Carry out an implementation or build task end to end.",
         allowed_tools=_EXECUTOR_TOOLS,
         max_turns=24,
         system_prompt=_EXECUTOR_PROMPT,
@@ -335,6 +370,7 @@ _BUILTIN_SPECS: list[SubagentTypeSpec] = [
     ),
     SubagentTypeSpec(
         name="tester",
+        description="Write and run tests for the requested component.",
         allowed_tools=_TESTER_TOOLS,
         max_turns=20,
         system_prompt=_TESTER_PROMPT,
@@ -342,12 +378,14 @@ _BUILTIN_SPECS: list[SubagentTypeSpec] = [
     ),
     SubagentTypeSpec(
         name="reviewer",
+        description="Review code for correctness, clarity, security issues, and bugs.",
         allowed_tools=_REVIEWER_TOOLS,
         max_turns=10,
         system_prompt=_REVIEWER_PROMPT,
     ),
     SubagentTypeSpec(
         name="documenter",
+        description="Write or update accurate documentation for the requested change.",
         allowed_tools=_DOCUMENTER_TOOLS,
         max_turns=15,
         system_prompt=_DOCUMENTER_PROMPT,
@@ -355,6 +393,7 @@ _BUILTIN_SPECS: list[SubagentTypeSpec] = [
     ),
     SubagentTypeSpec(
         name="verifier",
+        description="Adversarially verify a requirement using source evidence and tests.",
         allowed_tools=_VERIFIER_TOOLS,
         max_turns=12,
         system_prompt=_VERIFIER_PROMPT,
@@ -362,6 +401,7 @@ _BUILTIN_SPECS: list[SubagentTypeSpec] = [
     ),
     SubagentTypeSpec(
         name="researcher",
+        description="Research a technical question and return a concise answer with sources.",
         allowed_tools=_RESEARCHER_TOOLS,
         max_turns=8,
         system_prompt=_RESEARCHER_PROMPT,
@@ -402,10 +442,38 @@ class SubagentTypeRegistry:
     def __init__(self) -> None:
         self._types: dict[str, SubagentTypeSpec] = {}
         self._aggregators: dict[str, SubagentAggregator] = {}
+        self._compatibility_registry = False
 
     def register(self, spec: SubagentTypeSpec) -> None:
         """Register or replace a subagent type."""
+        target = _registration_target.get()
+        if self._compatibility_registry and target is not None:
+            target.register(spec)
+            return
         self._types[spec.name] = spec
+
+    def unregister(self, name: str) -> None:
+        """Remove a subagent type and its custom aggregator, if present."""
+        target = _registration_target.get()
+        if self._compatibility_registry and target is not None:
+            target.unregister(name)
+            return
+        self._types.pop(name, None)
+        self._aggregators.pop(name, None)
+
+    def copy(self) -> SubagentTypeRegistry:
+        """Return an independent snapshot of registered types and aggregators."""
+        copied = SubagentTypeRegistry()
+        copied._types = dict(self._types)
+        copied._aggregators = dict(self._aggregators)
+        return copied
+
+    def replace_with(self, other: SubagentTypeRegistry) -> None:
+        """Replace this registry's contents while preserving session identity."""
+        if other is self:
+            return
+        self._types = dict(other._types)
+        self._aggregators = dict(other._aggregators)
 
     def get(self, name: str) -> SubagentTypeSpec | None:
         """Return the spec for *name*, or ``None`` if not registered."""
@@ -416,6 +484,10 @@ class SubagentTypeRegistry:
 
         Only one aggregator per type is kept; calling this again replaces it.
         """
+        target = _registration_target.get()
+        if self._compatibility_registry and target is not None:
+            target.register_aggregator(aggregator)
+            return
         self._aggregators[aggregator.agent_type] = aggregator
 
     def get_aggregator(self, name: str) -> SubagentAggregator | None:
@@ -430,6 +502,21 @@ class SubagentTypeRegistry:
         return name in self._types
 
 
+_registration_target: ContextVar[SubagentTypeRegistry | None] = ContextVar(
+    "agenthicc_subagent_registry_registration_target", default=None
+)
+
+
+@contextmanager
+def _bind_registration_target(registry: SubagentTypeRegistry) -> Iterator[None]:
+    """Route legacy DEFAULT_REGISTRY mutations into a plugin's session registry."""
+    token = _registration_target.set(registry)
+    try:
+        yield
+    finally:
+        _registration_target.reset(token)
+
+
 def _build_default_registry() -> SubagentTypeRegistry:
     reg = SubagentTypeRegistry()
     for spec in _BUILTIN_SPECS:
@@ -437,5 +524,10 @@ def _build_default_registry() -> SubagentTypeRegistry:
     return reg
 
 
-#: Process-level default registry pre-loaded with all 9 built-in types.
+#: Built-in types are the lowest-precedence source for every session.
+_BUILTIN_REGISTRY: SubagentTypeRegistry = _build_default_registry()
+
+#: Deprecated compatibility registry for plugin ``SUBAGENT_TYPES`` exports.
+#: Sessions copy it into their own registry at construction time.
 DEFAULT_REGISTRY: SubagentTypeRegistry = _build_default_registry()
+DEFAULT_REGISTRY._compatibility_registry = True

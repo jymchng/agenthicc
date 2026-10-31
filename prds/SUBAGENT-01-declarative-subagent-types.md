@@ -193,10 +193,9 @@ commitments:
 - **What a type may do with its tools.** A definition's `tools:` key remains a
   ceiling with today's semantics; deny-lists, approval overrides and per-type
   narrowing are SUBAGENT-05 (A-5).
-- **Which model a type runs on.** `model:` in the file is parsed and preserved
-  but does not change worker routing until SUBAGENT-02 (A-2). Until then a
-  definition that sets `model:` is accepted and warned about as not yet
-  effective — it is not silently dropped.
+- **Model, effort and context routing.** SUBAGENT-02 owns the semantics and
+  implementation of those fields. This PRD owns only the definition format and
+  discovery/projection; it does not duplicate routing policy here.
 - **The registry's runtime lookup API.** `SubagentTypeRegistry.get`,
   `register`, `names` and `__contains__` stay as they are; this PRD changes who
   builds registries and where definitions come from, not how lookup works.
@@ -294,27 +293,28 @@ own §7. Left in those places alone, the format would be extended independently
 four times with no statement of the result. The union is recorded here, once;
 the other PRDs cite this table rather than restating it.
 
-| Key | Owner | In AGX-09 §5.1 today | Absent means | What the `:92` rule requires |
+| Key | Owner | In AGX-09 §5.1 now | Absent means | What the `:92` rule requires |
 |---|---|---|---|---|
 | `description` | SUBAGENT-01 §4 goals 2 and 4 | **yes, and required** (`prds/agx-09-agent-library-and-switching.md:78`, `:91`) | required in a definition file; on the runtime record `SubagentTypeSpec.description` defaults to `""` so plugin-registered types keep working (§7 migration step 1) | nothing — the key is already known. What changes is the runtime home and the model-facing projection, not the format |
-| `override` | SUBAGENT-01 §4 goal 7 | **no** | `false`: a project definition whose name shadows a built-in is refused, naming the built-in | add it to the key list, the schema and the validator in the same change as SUBAGENT-01. Until then every definition that sets it is refused as an unknown key, which makes the shadowing refusal indistinguishable from a typo |
-| `effort` | SUBAGENT-02 §4 goal 2, §7 | **no** | inherit the parent's resolved provider options; an absent key adds no effort entry, exactly as today | same, in the same change as SUBAGENT-02 |
-| `context` | SUBAGENT-02 §4 goal 3, §7 | **no** | 8,000 tokens — `ShortTermMemory(max_tokens=8_000)` (`src/agenthicc/subagents/pool.py:960`), observed through the probe wrapper at `:958` | same, in the same change as SUBAGENT-02 |
-| `output` | SUBAGENT-03 §4 goal 1, §7 | **no** | no contract: plain-text `SubagentResult.text`, no validation, no parser | same, in the same change as SUBAGENT-03 |
-| `permissions` | SUBAGENT-05 §4 goal 1, §7 | **no** | no block: today's effective scope and an unchanged `policy_revision` | same, in the same change as SUBAGENT-05. Nested on purpose, so the next permission field extends a block instead of arriving as another key |
+| `model` | SUBAGENT-02 §4 goal 1, §7 | **yes** (`prds/agx-09-agent-library-and-switching.md:99`) | operator `subagents.default_model`, then parent; `model: inherit` explicitly selects the parent | no new key; SUBAGENT-02 implements its existing key's runtime behavior |
+| `capabilities` | PRD-233 policy contract, consumed by AGX-09 | **yes** | no additional per-definition capability restriction; session policy still applies | AGX-09 lists it and the loader validates/projects it; it does not widen the session ceiling |
+| `override` | SUBAGENT-01 §4 goal 7 | **yes** (`prds/agx-09-agent-library-and-switching.md:108`) | `false`: a project definition whose name shadows a built-in is refused, naming the built-in | SUBAGENT-01 added the key, schema and validator together; a shadowing definition without it is refused |
+| `effort` | SUBAGENT-02 §4 goal 2, §7 | **yes** (`prds/agx-09-agent-library-and-switching.md:100`) | operator `subagents.default_effort`, then inherited provider effort; an absent key adds no effort entry if no default is set | SUBAGENT-02 adds the key and reader together; unsupported provider effort warns and retries without that option |
+| `context` | SUBAGENT-02 §4 goal 3, §7 | **yes** (`prds/agx-09-agent-library-and-switching.md:101`) | operator `subagents.default_context`, then 8,000 tokens | SUBAGENT-02 adds the key and reader together; budgets above the model window are clamped |
+| `output` | SUBAGENT-03 §4 goal 1, §7 | **yes** (`prds/agx-09-agent-library-and-switching.md:102`) | no contract: plain-text `SubagentResult.text`, no validation, no parser | SUBAGENT-03 adds the key, bounded JSON Schema parser, validator, and structured-result submission path together |
+| `permissions` | SUBAGENT-05 §4 goal 1, §7 | **no** | no block: today's effective scope and an unchanged `policy_revision` | add it to the key list, schema and validator with SUBAGENT-05; nested on purpose, so the next permission field extends a block instead of arriving as another key |
 
-The other eight keys — `name`, `mode`, `model`, `tools`, `max_steps`, `ceiling`,
-`color`, `hidden` (`prds/agx-09-agent-library-and-switching.md:77-85`) — stay
-exactly as AGX-09 writes them. `mode:` is what makes a definition a subagent type
-at all (`mode: subagent`, reused here rather than replaced by an `is_subagent`
-flag, §3), and `model:` gains *behaviour* in SUBAGENT-02 §4 goal 1 without
-becoming a new key. SUBAGENT-04 §4 goal 10, SUBAGENT-06 §7, SUBAGENT-07,
+The other seven keys — `name`, `mode`, `tools`, `max_steps`, `ceiling`,
+`color`, and `hidden` (`prds/agx-09-agent-library-and-switching.md:96-108`)
+— stay exactly as AGX-09 writes them. `mode:` is what makes a definition a
+subagent type at all (`mode: subagent`, reused here rather than replaced by an
+`is_subagent` flag, §3). SUBAGENT-04 §4 goal 10, SUBAGENT-06 §7, SUBAGENT-07,
 SUBAGENT-08 and SUBAGENT-09 add none: their subjects are pools, calls, workers
-and transcripts, not type records. **After the series the key set is fourteen
-keys — AGX-09's nine plus the five above that AGX-09 does not already have.**
-SUBAGENT-04 §7 and SUBAGENT-06 §7 had each counted three extending PRDs, because
-both were written before SUBAGENT-05 and neither counted `permissions:`; both now
-cite this table instead of carrying a count.
+and transcripts, not type records. **After the series the key set is fifteen:
+AGX-09's nine, `capabilities` from the PRD-233 policy contract, and the five
+keys added by this series.** SUBAGENT-04 §7 and SUBAGENT-06 §7 had each counted
+three extending PRDs, because both were written before SUBAGENT-05 and neither
+counted `permissions:`; both now cite this table instead of carrying a count.
 
 The table sits in §7 rather than in a second appendix because the research
 report's contract allows nine numbered sections and one appendix, and its §6.7
@@ -332,19 +332,19 @@ Three consequences, and they are the reason the table exists at all:
 - **Refused beats ignored, and this PRD does not soften it.** Because the
   unknown-key rule makes these errors, a definition using a key whose owning PRD
   has not landed fails at load with the file path — the correct outcome, and the
-  reason no key here may be introduced as "accepted and ignored". The one
-  existing key that cannot take effect until SUBAGENT-02 lands is `model:`,
-  which §5 *warns* about instead of dropping.
+  reason no key here may be introduced as "accepted and ignored". The existing
+  `model:` key now takes effect under SUBAGENT-02; it is not accepted and ignored.
 - **An unknown value is a different axis from an unknown key.** The unknown-key
   rule governs keys only. A known key with an unusable value fails closed at the
-  owning PRD's load check — `model:` and an unrecognised `effort:` (SUBAGENT-02
-  §6 criterion 8), `output:` (SUBAGENT-03 §6 criterion 7), `permissions:`
-  (SUBAGENT-05 §4 goal 8) — with two deliberate exceptions that are
-  quality-of-execution knobs rather than identity or permission claims: an
-  `effort:` the named model does not support warns once and runs at the model's
-  default (SUBAGENT-02 §7), and a `context:` larger than the model's resolved
-  window is clamped rather than refused (SUBAGENT-02 §6 criterion 5), because an
-  oversized budget bounds memory, it does not misreport which model ran.
+  owning PRD's load check — a malformed `model:` identifier and an unrecognised
+  `effort:` value (SUBAGENT-02 §6 criterion 8), `output:` (SUBAGENT-03 §6
+  criterion 7), `permissions:` (SUBAGENT-05 §4 goal 8) — with two deliberate
+  exceptions that are quality-of-execution knobs rather than identity or
+  permission claims: an `effort:` the named model does not support warns once
+  and runs at the model's default (SUBAGENT-02 §7), and a `context:` larger than
+  the model's resolved window is clamped rather than refused (SUBAGENT-02 §6
+  criterion 5), because an oversized budget bounds memory, it does not misreport
+  which model ran.
 
 ## 8. Verification
 

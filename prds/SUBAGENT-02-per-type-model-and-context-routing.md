@@ -178,30 +178,41 @@ goal 4 and §6 criterion 6.
 ## 4. Goals
 
 1. A type definition may set `model:`, and that model is the one the worker
-   actually runs on. Absent, or `model: inherit`, means the parent's model.
+   actually runs on. An omitted/blank value uses the operator default when
+   configured and otherwise the parent's model; `model: inherit` explicitly
+   selects the parent model.
 2. A type definition may set `effort:`, and that value reaches the worker's
-   provider options instead of being filtered out. Absent means inherit.
+   provider options instead of being filtered out. Absent means the operator
+   default, then the inherited provider effort.
 3. A type definition may set `context:`, which sizes worker memory and installs
-   the parent's pre-send guard; absent means today's 8,000-token behaviour,
-   unchanged. A declared budget larger than the model's resolved window is
-   clamped, not honoured. (Gap G-2)
+   the parent's pre-send guard. Absent means the operator default, then today's
+   8,000-token behaviour. A declared budget larger than the model's resolved
+   window is clamped, not honoured. (Gap G-2)
 4. One precedence chain per knob, written once and implemented once:
-   definition value > operator-set session default > parent value. A per-call
-   `model`/`effort` argument on `spawn_subagents` is **not** part of the chain
-   unless the operator enables it explicitly, because PRD-197 forbids
-   model-supplied policy arguments.
-5. Provider options stay intersected with the inherited safe set. A type may
+   definition value > operator-set session default > parent value. If the
+   operator enables per-call overrides, those values are highest precedence;
+   otherwise model/effort inputs are absent from the model-facing schema and
+   rejected at the tool boundary. `model: inherit` explicitly bypasses the
+   operator default and selects the parent. These inputs are not part of the
+   chain by default because PRD-197 forbids model-supplied policy arguments.
+5. Operator controls live in `[subagents]`: `default_model` (model or profile
+   identifier, empty means no override), `default_effort` (supported effort
+   value or empty), `default_context` (positive token budget), `allowed_models`
+   (optional non-empty model-ID list), and `allow_call_overrides` (false by
+   default). A routed model remains on the active provider endpoint and must
+   satisfy the operator allowlist.
+6. Provider options stay intersected with the inherited safe set. A type may
    narrow `temperature`/`top_p`/`max_completion_tokens`/`request_options` and may
    add an effort value; it may not widen or replace the session's resolved
    request options.
-6. The usage record for a worker carries the model and provider that actually
+7. The usage record for a worker carries the model and provider that actually
    served it, so PRD-157's totals stay correct per model once goal 1 is true.
-7. If worker model names become visible to the model — in the tool description
+8. If worker model names become visible to the model — in the tool description
    or the enum, as SUBAGENT-01 makes types visible — that list is context and
    must be regenerated from the same source and invalidated on change, rather
    than typed into a docstring. (Research report §5.5 R-6.)
-8. Every default reproduces today's behaviour exactly: no definition, no
-   change.
+9. Every default reproduces today's behaviour exactly: no definition, no
+   operator default, no call override means no change.
 
 ## 5. Non-goals
 
@@ -232,52 +243,61 @@ The A-2 boundaries from the research report §5.3, restated as commitments:
 
 Each criterion names the check that decides it.
 
-1. With no per-type settings, a worker is decorated with the parent model and
-   built with `ShortTermMemory(max_tokens=8_000)`: a new case captures the model
-   handed to `agent_decorator` and the memory budget. The existing cases in
-   `tests/unit/test_subagent_pool_runtime_coverage.py` — which construct pools
-   with `parent_model="model"` (`:39`, `:88`) but assert only usage
-   normalisation — must stay green unedited, proving no behavioural drift.
+1. With no per-type, operator, or call routing settings, a worker is decorated
+   with the parent model and built with `ShortTermMemory(max_tokens=8_000)`: a
+   new case captures the model handed to `agent_decorator` and the memory
+   budget. Existing runtime-coverage cases remain green unchanged.
 2. A definition declaring `model: <id>` produces workers decorated with that id
    and usage records naming it: new cases in
    `tests/unit/test_subagent_pool.py`.
-3. `model: inherit` and an omitted `model:` both resolve to the parent model:
-   `tests/unit/test_subagent_pool.py`.
+3. An omitted type model uses the operator default when configured and otherwise
+   the parent; `model: inherit` always selects the parent even when an operator
+   default exists: `tests/unit/test_subagent_pool.py`.
 4. A definition declaring `effort:` yields that value in the worker's resolved
-   provider options, and a definition declaring none yields the inherited
-   value: `tests/unit/test_subagent_pool.py`.
+   provider options; with no type or operator effort, the inherited provider
+   value is preserved: `tests/unit/test_subagent_pool.py`.
 5. A definition declaring `context: N` produces
    `ShortTermMemory(max_tokens=N)` when `N` fits the model's window, and the
    clamped window value when it does not: `tests/unit/test_subagent_pool.py`.
-6. A per-call `model` argument on `spawn_subagents` is rejected unless the
-   operator-enabled switch is on, and the rejection names PRD-197:
-   `tests/unit/test_subagent_plugin.py`.
+6. Per-call model/effort arguments on `spawn_subagents` are rejected unless
+   the operator-enabled switch is on, and the rejection names PRD-197:
+   `tests/unit/test_subagent_pool.py`.
 7. The usage record for a worker carries the effective model rather than
    `self._parent_model`: extended cases in
    `tests/integration/test_usage_ledger_integration.py`.
-8. An unknown model or effort value is refused at definition-load time with the
-   file path and the offending key, and the type is not registered:
-   `tests/unit/test_subagent_plugin.py`.
+8. A malformed model identifier or unsupported effort is rejected at definition
+   parse time with the file path and offending key:
+   `tests/unit/test_agent_library.py`. An invalid catalog definition does not
+   register a subagent type: `tests/unit/test_subagent_plugin.py`.
 9. `pytest tests/integration/test_subagent_tool_execution.py -q` and
    `pytest tests/integration/test_subagent_executor_integration.py -q` pass
    unchanged, proving the spawn boundary did not shift.
 
 ## 7. Rollout, migration and security
 
-**Defaults.** Every new field defaults to the inherited value:
+**Defaults.** With the operator defaults unset, every new field reproduces the
+inherited value; per-type settings are optional:
 
-| Key | Absent means | Today's behaviour | Change for existing users |
+| Key | Definition absent means | Today's behaviour with no operator override | Change for existing users |
 |---|---|---|---|
-| `model:` | parent model | parent model | none |
-| `effort:` | parent's resolved provider options | filtered out (four keys only) | none — an unset effort still yields no effort key |
-| `context:` | 8,000 tokens | 8,000 tokens | none |
+| `model:` | operator default, then parent model; explicit `inherit` selects parent | parent model | none |
+| `effort:` | operator default, then parent's resolved provider effort | inherited provider options; no new effort entry unless one was already set | none |
+| `context:` | operator default, then 8,000 tokens | 8,000 tokens | none |
+
+The operator-only `[subagents]` settings are `default_model`, `default_effort`,
+`default_context`, `allowed_models`, and `allow_call_overrides`. They do not
+switch provider endpoints. With `allow_call_overrides = false`, `model` and
+`effort` are omitted from the provider-facing tool schema and rejected if
+supplied. When enabled, they are validated and checked against the provider and
+allowlist before worker construction.
 
 **Migration of the shipped contract.** PRD-197's table is a record of behaviour,
-so it is amended in the same change set: `:108` ("Parent model ID is reused")
-gains the qualifier *unless the type declares `model:`*, and `:512` ("Inherit
-the resolved effective values") becomes *inherit unless the type narrows*. The
-rest of PRD-197 — mode, capability blocks, approvals, workspace scope, transcripts
-— is untouched, and this PRD does not restate it.
+so it is amended in the same change set: `:108` (parent model reuse) now includes
+operator defaults, per-type routing, and explicitly enabled per-call overrides;
+`:512` (inherit resolved effective values) now describes those routing
+exceptions and retains the no-endpoint-switch boundary. The rest of PRD-197 —
+mode, capability blocks, approvals, workspace scope, transcripts — is untouched,
+and this PRD does not restate it.
 
 **Definition-format coordination.** AGX-09 §5.1 fixes the frontmatter key set and
 makes unknown keys a validation error by PRD-250's inert-field rule
@@ -291,11 +311,12 @@ SUBAGENT-02 adds and does not restate the other PRDs' keys.
 
 **Security, and where it fails closed.**
 
-- *Unknown model or effort → fail closed.* The definition is refused at load
-  with the file path (§6 criterion 8). There is no model registry to validate
-  against (§3), so the check happens where the value is first used, and a type
-  that names a model the provider rejects spawns nothing rather than silently
-  falling back to the parent's model — a silent fallback would let a definition
+- *Invalid model or effort identifier → fail closed.* Malformed model syntax or
+  an unrecognised effort value is rejected during definition parsing with the
+  file path (§6 criterion 8). There is no model registry to validate actual
+  provider model availability against (§3), so a syntactically valid model that
+  the provider rejects fails the worker at spawn time rather than silently
+  falling back to the parent model — such a fallback would let a definition
   claim `opus` and quietly run `haiku`, which is a correctness lie, not a
   degradation.
 - *Unsupported effort for a known model → fail open, once.* Effort is a quality
@@ -312,7 +333,7 @@ SUBAGENT-02 adds and does not restate the other PRDs' keys.
 
 **Cost.** Per-worker model choice makes spend per type legible, which is the
 point and also the risk: a type pointed at an expensive model multiplies. This
-PRD stops at making the cost *attributable* (`§4` goal 6) and visible through the
+PRD stops at making the cost *attributable* (`§4` goal 7) and visible through the
 existing ledger. Stopping a pool that has spent too much is SUBAGENT-08 (A-8),
 acting on the limit SUBAGENT-06 (A-6) declares (research report §5.4 M-1).
 

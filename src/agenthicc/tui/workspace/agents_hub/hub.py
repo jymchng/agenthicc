@@ -24,10 +24,23 @@ import threading
 import time
 import uuid
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, TypeVar, cast
 
+from agenthicc.agents.definitions import (
+    AgentSpec,
+    DefinitionError,
+    parse_definition,
+    render_definition,
+)
+from agenthicc.agents.library import (
+    DefinitionScope,
+    agent_directory,
+    delete_definition,
+    write_definition,
+)
+from agenthicc.agents.selection import project_default, set_project_default
 from agenthicc.background.agents_service import AgentsService, ManagerOperationResult
 from agenthicc.background.deletion import DeleteFailure, DeleteResult
 from agenthicc.background.inbox import BackgroundInboxItem, response_from_text
@@ -79,6 +92,7 @@ if TYPE_CHECKING:
     from agenthicc.config import UISettings
     from agenthicc.tui.conversation_store import AppState
     from agenthicc.tui.input.unified_session import UnifiedInputSession
+    from agenthicc.tui.terminal.backend import TerminalBackend
     from agenthicc.tui.workspace.live_region import LiveRegion
     from agenthicc.tui.workspace.overlay import OverlayHost
 
@@ -142,11 +156,21 @@ def _consume_task_result(task: asyncio.Task[object]) -> None:
         pass
 
 
+def _read_library_definition(path: Path, scope: DefinitionScope, project_root: Path) -> str:
+    """Read a definition only when it is a regular file inside its scope."""
+    expected = agent_directory(scope, project_root=project_root).resolve()
+    if path.is_symlink() or path.parent.resolve() != expected or not path.is_file():
+        raise ValueError("the definition path is not a regular file in its agent directory")
+    return path.read_text(encoding="utf-8")
+
+
 @dataclass
 class _Prompt:
     """A one-line editor at the bottom of the hub, and what Enter does with it."""
 
-    kind: Literal["search", "dispatch", "rename", "labels", "priority", "answer", "feedback"]
+    kind: Literal[
+        "search", "dispatch", "rename", "labels", "priority", "answer", "feedback", "library"
+    ]
     label: str
     editor: LineEditor
     target: str = ""
@@ -154,10 +178,33 @@ class _Prompt:
 
 
 @dataclass
+class _LibraryDraft:
+    """Values collected by the Library's guided definition form."""
+
+    operation: Literal["create", "duplicate", "generate"]
+    scope: DefinitionScope = "project"
+    source: AgentSpec | None = None
+    name: str = ""
+    description: str = ""
+    mode: str = "all"
+    model: str = ""
+    tools: tuple[str, ...] | None = None
+    prompt: str = ""
+
+
+@dataclass
 class _Choice:
     """A choice between a few options (an approval mode, switching sessions)."""
 
-    kind: Literal["approve_mode", "switch", "priority", "trust"]
+    kind: Literal[
+        "approve_mode",
+        "switch",
+        "priority",
+        "trust",
+        "library_scope",
+        "library_save",
+        "library_delete",
+    ]
     label: str
     options: tuple[str, ...]
     index: int = 0
@@ -223,6 +270,9 @@ class AgentsHub:
         cwd: Path | None = None,
         in_session: bool = False,
         dispatch: DispatchDefaults | None = None,
+        generate_definition: Callable[[str, str], Awaitable[str]] | None = None,
+        effective_tools: Callable[[AgentSpec, AppState], tuple[str, ...]] | None = None,
+        external_editor: Callable[[Path, DefinitionScope], Awaitable[None]] | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         from agenthicc.tui.conversation_store import AppState
@@ -249,6 +299,15 @@ class AgentsHub:
         self.in_session = in_session
         self._open_session = open_session
         self._dispatch_defaults = dispatch or DispatchDefaults()
+        self._generate_definition = generate_definition
+        self._effective_tools = effective_tools
+        self._external_editor = external_editor
+        self._terminal_handoff: (
+            tuple[Callable[[], Awaitable[None]], asyncio.Future[None]] | None
+        ) = None
+        self._backend: TerminalBackend | None = None
+        self._library_effective_task: asyncio.Task[None] | None = None
+        self._library_effective_generation = 0
         #: ``/mode`` and ``/model`` typed alone set these for later dispatches.
         self._dispatch_mode: str | None = None
         self._dispatch_model = ""
@@ -266,6 +325,14 @@ class AgentsHub:
         self._saved_loaded = False
         self._library: list[LibraryEntry] = []
         self._library_loaded = False
+        self._library_draft: _LibraryDraft | None = None
+        self._library_pending: tuple[AgentSpec, DefinitionScope] | None = None
+        self._library_task: asyncio.Task[None] | None = None
+        self._library_edit_entry: LibraryEntry | None = None
+        self._library_editor_scroll = 0
+        self._library_view_title = ""
+        self._library_view_lines: list[str] | None = None
+        self._library_view_scroll = 0
         self._scheduled: list[ScheduledEntry] = []
         self._queue_positions: dict[str, int] = {}
         self._sessions: dict[str, BackgroundSession] = {}
@@ -281,6 +348,7 @@ class AgentsHub:
         # The selected row; ``select`` (after /background) picks an agent.
         self._selected_key: str | None = f"session:{select}" if select else None
         self._selected_by_tab: dict[Tab, str] = {}
+        self._pending_attention_target: tuple[Tab, str] | None = None
         self._top = 0
         self._list_height = 10
         self._search = Search()
@@ -441,11 +509,11 @@ class AgentsHub:
 
     @property
     def keymap(self) -> Keymap:
-        return self._state.require_keymap()
+        return self._state.keymap()
 
     @property
     def ui(self) -> UISettings | None:
-        from agenthicc.tui.conversation_store import ui_settings
+        from agenthicc.tui.preferences import ui_settings
 
         return ui_settings(self._state)
 
@@ -486,6 +554,32 @@ class AgentsHub:
     def selected_session_id(self) -> str | None:
         row = self.selected_row()
         return row.session_id if row is not None else None
+
+    def select_attention_target(self, session_id: str | None, item_id: str | None = None) -> None:
+        """Select an attention row, retaining the request until the list loads."""
+        if session_id is None:
+            return
+        key = f"inbox:{item_id}" if item_id else f"session:{session_id}"
+        index = self._row_index.get(key)
+        if index is None and not item_id:
+            index = next(
+                (
+                    row_index
+                    for row_index, row in enumerate(self._rows)
+                    if row.selectable and row.session_id == session_id
+                ),
+                None,
+            )
+            if index is not None:
+                key = self._rows[index].key
+        if index is None:
+            self._selected_key = key
+            self._selected_by_tab[self.tab] = key
+            self._pending_attention_target = (self.tab, key)
+            self._mark_dirty("attention_target")
+            return
+        self._pending_attention_target = None
+        self._select_index(index)
 
     def session(self, session_id: str | None) -> BackgroundSession | None:
         return self._sessions.get(session_id or "")
@@ -559,6 +653,16 @@ class AgentsHub:
         flags: set[str] = set()
         if self.tab is Tab.RUNNING:
             flags.add("running_tab")
+        if self.tab is Tab.LIBRARY:
+            flags.add("library_tab")
+            row = self.selected_row()
+            entry = row.entry if row is not None else None
+            if entry is not None:
+                flags.add("definition")
+                if entry.source in ("project", "user") and entry.path.endswith(".md"):
+                    flags.add("editable_definition")
+                if entry.spec is not None and entry.spec.primary:
+                    flags.add("primary_definition")
         row, session, item = self._target()
         if row is not None and row.selectable:
             flags.add("row")
@@ -951,6 +1055,18 @@ class AgentsHub:
 
     def _reconcile_selection(self, previous_index: int) -> None:
         """Keep the selection on the same agent; else the nearest selectable row."""
+        pending = self._pending_attention_target
+        if pending is not None and pending[0] is self.tab:
+            pending_key = pending[1]
+            pending_index = self._row_index.get(pending_key)
+            if pending_index is not None and self._rows[pending_index].selectable:
+                self._pending_attention_target = None
+                self._select_index(pending_index)
+                return
+            if not self._loaded:
+                self._selected_key = pending_key
+                return
+            self._pending_attention_target = None
         key = self._selected_key
         index = self._row_index.get(key or "")
         if index is not None and self._rows[index].selectable:
@@ -1080,6 +1196,8 @@ class AgentsHub:
                     self._side_task,
                     self._history_task,
                     self._detail_task,
+                    self._library_task,
+                    self._library_effective_task,
                     self._maintenance_task,
                     self._composer_build_task,
                     self._composer_task,
@@ -1116,6 +1234,8 @@ class AgentsHub:
                 self._provisional_task,
                 self._maintenance_task,
                 self._detail_task,
+                self._library_task,
+                self._library_effective_task,
                 self._composer_build_task,
                 self._deletion_task,
                 *self._operation_tasks.values(),
@@ -1993,7 +2113,7 @@ class AgentsHub:
             return
         try:
             await asyncio.wait_for(asyncio.shield(task), timeout=0.25)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             # The supervisor claims the exact target before moving artifacts; a
             # cancelled deletion is finished by the next hub's recovery.
             task.cancel()
@@ -2021,6 +2141,9 @@ class AgentsHub:
             return self._handle_choice(key, ch)
         if self._prompt is not None:
             self._handle_prompt(key, ch)
+            return None
+        if self._library_view_lines is not None:
+            self._handle_library_view_key(key, ch)
             return None
         if self._composer_open:
             overlay_active = self._composer_overlay is not None and self._composer_overlay.active
@@ -2091,6 +2214,13 @@ class AgentsHub:
             "agents.tab_needs_you": functools.partial(self.switch_tab, Tab.NEEDS_YOU),
             "agents.tab_history": functools.partial(self.switch_tab, Tab.HISTORY),
             "agents.tab_library": functools.partial(self.switch_tab, Tab.LIBRARY),
+            "agents.library_create": self._act_library_create,
+            "agents.library_generate": self._act_library_generate,
+            "agents.library_edit": self._act_library_edit,
+            "agents.library_duplicate": self._act_library_duplicate,
+            "agents.library_delete": self._act_library_delete,
+            "agents.library_default": self._act_library_default,
+            "agents.library_validate": self._act_library_validate,
             "agents.dispatch": self._act_dispatch,
             "agents.refresh": self._act_refresh,
             "agents.pause": self._act_pause,
@@ -2185,6 +2315,11 @@ class AgentsHub:
         """Show *tab*, keeping each tab's own selection."""
         if tab is self.tab and self._detail_id is None:
             return
+        if (
+            self._pending_attention_target is not None
+            and self._pending_attention_target[0] is not tab
+        ):
+            self._pending_attention_target = None
         if self._selected_key is not None:
             self._selected_by_tab[self.tab] = self._selected_key
         self._close_detail()
@@ -2217,16 +2352,493 @@ class AgentsHub:
         if session_id is not None:
             self._open_detail(session_id, item_id=row.item.item_id if row.item else None)
         elif row.entry is not None:
-            self._notice = (
-                f"{row.entry.name} ({row.entry.source}) · {row.entry.tools}"
-                + (f" · {row.entry.description}" if row.entry.description else "")
-            )[:240]
+            self._show_library_entry(row.entry)
         elif row.scheduled is not None:
             self._notice = (
                 f"Schedule {row.scheduled.schedule_id}: {row.scheduled.name}. "
                 "Manage it with /schedules or agenthicc schedules."
             )[:240]
         return None
+
+    def _selected_library_entry(self) -> LibraryEntry | None:
+        row = self.selected_row()
+        return row.entry if row is not None and row.kind is RowKind.DEFINITION else None
+
+    def _show_library_entry(self, entry: LibraryEntry) -> None:
+        spec = entry.spec
+        if self._library_effective_task is not None and not self._library_effective_task.done():
+            self._library_effective_task.cancel()
+        self._library_effective_generation += 1
+        generation = self._library_effective_generation
+        if self._effective_tools is None:
+            effective_tools_line = (
+                "Effective tools: session-specific; "
+                "open this definition in an active session to calculate."
+            )
+        elif self._loop is None:
+            effective_tools_line = (
+                "Effective tools: unavailable until the active session is running."
+            )
+        else:
+            effective_tools_line = (
+                "Effective tools (model-visible; mode gates apply at invocation): calculating…"
+            )
+        lines = [
+            f"Name: {entry.name}",
+            f"Source: {entry.source} · state: {entry.state}",
+            f"Description: {entry.description or '(none)'}",
+            f"Mode: {entry.mode or '(unknown)'} · model: {entry.model or '(session default)'}",
+            f"Declared tools: {entry.tools or '(none)'}",
+        ]
+        if spec is not None:
+            lines.extend(
+                (
+                    f"Capabilities: {', '.join(spec.capabilities) if spec.capabilities is not None else 'all session-allowed capabilities'}",
+                    f"Ceiling: {spec.ceiling or '(session mode)'} · max steps: {spec.max_steps or '(session default)'}",
+                    f"Color: {spec.color or '(default)'} · hidden: {spec.hidden}",
+                    effective_tools_line,
+                    "",
+                    "Rendered prompt:",
+                    *(spec.prompt.splitlines() or ["(empty)"]),
+                )
+            )
+        if entry.path:
+            lines.extend(("", f"Path: {entry.path}"))
+        if entry.note:
+            lines.extend(("", f"Status: {entry.note}"))
+        self._library_view_title = f"Agent definition · {entry.name}"
+        self._library_view_lines = lines
+        self._library_view_scroll = 0
+        if spec is not None and self._effective_tools is not None and self._loop is not None:
+            self._library_effective_task = self._owned(
+                asyncio.create_task(
+                    self._load_library_effective_tools(spec, generation),
+                    name="agenthicc-library-effective-tools",
+                )
+            )
+        self._mark_dirty("library_view")
+
+    def _effective_tool_policy_snapshot(self) -> AppState:
+        """Copy the UI state read by agent restrictions before using a worker."""
+        snapshot = type(self._state).create()
+        snapshot.active_mode.set(self._state.active_mode())
+        snapshot.cli_flags = self._state.cli_flags
+        return snapshot
+
+    async def _load_library_effective_tools(self, spec: AgentSpec, generation: int) -> None:
+        callback = self._effective_tools
+        if callback is None:
+            return
+        try:
+            policy_state = self._effective_tool_policy_snapshot()
+            names = cast(
+                "tuple[str, ...]", await self._service.run_blocking(callback, spec, policy_state)
+            )
+            detail = ", ".join(names) if names else "(none)"
+        except Exception as exc:  # noqa: BLE001 - details must not hide the definition
+            detail = f"unavailable ({type(exc).__name__})"
+        if generation != self._library_effective_generation or self._library_view_lines is None:
+            return
+        prefix = "Effective tools (model-visible; mode gates apply at invocation):"
+        for index, line in enumerate(self._library_view_lines):
+            if line.startswith(prefix):
+                self._library_view_lines[index] = f"{prefix} {detail}"
+                break
+        self._mark_dirty("library_effective_tools")
+
+    def _handle_library_view_key(self, key: Key, ch: str) -> None:
+        lines = self._library_view_lines or []
+        page = max(1, self._list_height - 2)
+        if key in (Key.ESC, Key.ENTER) or (key is Key.CHAR and ch == "q"):
+            self._library_effective_generation += 1
+            if self._library_effective_task is not None and not self._library_effective_task.done():
+                self._library_effective_task.cancel()
+            self._library_view_lines = None
+            self._library_view_title = ""
+        elif key is Key.UP or (key is Key.CHAR and ch == "k"):
+            self._library_view_scroll = max(0, self._library_view_scroll - 1)
+        elif key is Key.DOWN or (key is Key.CHAR and ch == "j"):
+            self._library_view_scroll = min(max(0, len(lines) - 1), self._library_view_scroll + 1)
+        elif key is Key.PAGE_UP:
+            self._library_view_scroll = max(0, self._library_view_scroll - page)
+        elif key is Key.PAGE_DOWN:
+            self._library_view_scroll = min(
+                max(0, len(lines) - 1), self._library_view_scroll + page
+            )
+        elif key is Key.HOME:
+            self._library_view_scroll = 0
+        elif key is Key.END:
+            self._library_view_scroll = max(0, len(lines) - page)
+        self._mark_dirty("library_view_scroll")
+
+    def _act_library_create(self) -> None:
+        self._begin_library_flow("create")
+
+    def _act_library_generate(self) -> None:
+        if self._generate_definition is None:
+            self._notice = (
+                "Draft generation is available only in a session with a configured model."
+            )
+            return
+        self._begin_library_flow("generate")
+
+    def _act_library_duplicate(self) -> None:
+        entry = self._selected_library_entry()
+        if entry is None or entry.spec is None:
+            self._notice = (
+                "This definition cannot be duplicated because it has no valid Markdown spec."
+            )
+            return
+        self._begin_library_flow("duplicate", source=entry.spec)
+
+    def _act_library_edit(self) -> None:
+        entry = self._selected_library_entry()
+        if (
+            entry is None
+            or entry.source not in ("project", "user")
+            or not entry.path.endswith(".md")
+        ):
+            self._notice = "Only project and user Markdown definitions can be edited."
+            return
+        if self._loop is None:
+            self._notice = "The Library editor is not ready."
+            return
+        self._library_edit_entry = entry
+        self._library_editor_scroll = 0
+        if self._external_editor is not None:
+            self._library_task = self._owned(
+                asyncio.create_task(
+                    self._edit_library_with_external_editor(entry),
+                    name="agenthicc-library-external-edit",
+                )
+            )
+            return
+        self._library_task = self._owned(
+            asyncio.create_task(self._load_library_editor(entry), name="agenthicc-library-edit")
+        )
+
+    async def _edit_library_with_external_editor(self, entry: LibraryEntry) -> None:
+        path = Path(entry.path)
+        scope: DefinitionScope = "project" if entry.source == "project" else "user"
+        try:
+            value = await self._service.run_blocking(
+                _read_library_definition,
+                path,
+                scope,
+                self._cwd,
+            )
+            if not isinstance(value, str):
+                raise OSError("the definition file could not be read")
+            editor = self._external_editor
+            if editor is None:
+                return
+            await editor(path, scope)
+            self._library_loaded = False
+            await self._show_library()
+            self._notice = f"Edited {entry.name}; the Library was reloaded."
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - surface editor and path errors in the Library
+            self._notice = f"Could not edit definition: {type(exc).__name__}: {exc}"[:240]
+        finally:
+            self._library_edit_entry = None
+            self._mark_dirty("library_external_edit_finished")
+
+    async def _load_library_editor(self, entry: LibraryEntry) -> None:
+        path = Path(entry.path)
+        scope: DefinitionScope = "project" if entry.source == "project" else "user"
+        try:
+            value = await self._service.run_blocking(
+                _read_library_definition,
+                path,
+                scope,
+                self._cwd,
+            )
+            if not isinstance(value, str):
+                raise OSError("the definition file could not be read")
+            self._prompt = _Prompt(
+                "library",
+                f"Edit {entry.name}",
+                LineEditor(value, multiline=True, limit=32_000),
+                target="edit",
+            )
+            self._notice = "Edit the Markdown; Enter saves, Ctrl+J inserts a newline."
+        except (OSError, UnicodeError, ValueError) as exc:
+            self._library_edit_entry = None
+            self._notice = f"Could not open definition: {exc}"[:240]
+        self._mark_dirty("library_editor_opened")
+
+    def _act_library_delete(self) -> None:
+        entry = self._selected_library_entry()
+        if (
+            entry is None
+            or entry.source not in ("project", "user")
+            or not entry.path.endswith(".md")
+        ):
+            self._notice = "Only project and user Markdown definitions can be deleted."
+            return
+        self._choice = _Choice(
+            "library_delete",
+            f"Delete {entry.name} at {entry.path}? This cannot be undone.",
+            ("Delete", "Cancel"),
+            target=entry.path,
+        )
+        self._mark_dirty("library_delete_confirm")
+
+    def _act_library_default(self) -> None:
+        entry = self._selected_library_entry()
+        if entry is None or entry.spec is None or not entry.spec.primary or entry.state != "active":
+            self._notice = "Only an active primary definition can be the project default."
+            return
+        self._start_library_task(
+            lambda: self._change_library(
+                "set default", lambda: set_project_default(self._cwd, entry.name)
+            )
+        )
+
+    def _act_library_validate(self) -> None:
+        self._start_library_task(self._validate_library)
+
+    def _begin_library_flow(
+        self,
+        operation: Literal["create", "duplicate", "generate"],
+        *,
+        source: AgentSpec | None = None,
+    ) -> None:
+        self._library_draft = _LibraryDraft(operation=operation, source=source)
+        label = {
+            "create": "Create a definition in:",
+            "duplicate": "Duplicate to:",
+            "generate": "Generate a draft in:",
+        }[operation]
+        self._choice = _Choice("library_scope", label, ("Project", "User"), target=operation)
+        self._mark_dirty("library_scope_choice")
+
+    def _library_scope_chosen(self, choice: _Choice) -> None:
+        draft = self._library_draft
+        if draft is None:
+            return
+        draft.scope = "project" if choice.index == 0 else "user"
+        if draft.operation == "create":
+            self._library_prompt("Name", "name")
+        elif draft.operation == "duplicate":
+            source = draft.source
+            if source is None:
+                self._notice = "The selected definition is no longer available."
+                return
+            self._library_prompt("New name", "name", f"{source.name}-copy")
+        else:
+            self._library_prompt("Name", "name")
+
+    def _library_prompt(self, label: str, target: str, initial: str = "") -> None:
+        multiline = target in ("create_prompt", "edit")
+        self._prompt = _Prompt(
+            "library", label, LineEditor(initial, multiline=multiline, limit=32_000), target=target
+        )
+        self._library_editor_scroll = 0
+        self._mark_dirty("library_prompt")
+
+    def _submit_library_prompt(self, prompt: _Prompt) -> None:
+        draft = self._library_draft
+        text = prompt.editor.text
+        target = prompt.target
+        if target == "edit":
+            self._submit_library_edit(prompt)
+            return
+        if draft is None:
+            self._notice = "The definition form was cancelled."
+            return
+        if target == "name":
+            draft.name = text.strip()
+            if draft.operation == "duplicate":
+                source = draft.source
+                if source is None:
+                    self._notice = "The selected definition is no longer available."
+                    self._library_draft = None
+                    return
+                spec = replace(source, name=draft.name, source=draft.scope, path=None)
+                self._review_library_spec(spec, draft.scope)
+            elif draft.operation == "generate":
+                self._library_prompt("One-line description", "description")
+            else:
+                self._library_prompt("Description", "description")
+        elif target == "description":
+            draft.description = text.strip()
+            if draft.operation == "generate":
+                self._start_library_task(lambda: self._generate_library_draft(draft))
+            else:
+                self._library_prompt("Mode (primary, subagent, all)", "mode")
+        elif target == "mode":
+            draft.mode = text.strip() or "all"
+            self._library_prompt("Model (blank uses the session model)", "model")
+        elif target == "model":
+            draft.model = text.strip()
+            self._library_prompt("Tools, comma separated (blank allows session tools)", "tools")
+        elif target == "tools":
+            values = tuple(dict.fromkeys(part.strip() for part in text.split(",") if part.strip()))
+            draft.tools = values or None
+            self._library_prompt("System prompt", "create_prompt")
+        elif target == "create_prompt":
+            draft.prompt = text.strip()
+            spec = AgentSpec(
+                name=draft.name,
+                description=draft.description,
+                prompt=draft.prompt,
+                mode=draft.mode,
+                model=draft.model,
+                tools=draft.tools,
+                source=draft.scope,
+            )
+            self._review_library_spec(spec, draft.scope)
+
+    def _submit_library_edit(self, prompt: _Prompt) -> None:
+        entry = self._library_edit_entry
+        if entry is None:
+            self._notice = "The definition being edited is no longer selected."
+            return
+        try:
+            path = Path(entry.path)
+            spec = parse_definition(prompt.editor.text, path=path, source=entry.source)
+            if spec.name != path.stem:
+                raise ValueError(
+                    "renaming in the editor is not supported; duplicate, then delete the old definition"
+                )
+        except (DefinitionError, ValueError) as exc:
+            self._notice = str(exc)[:240]
+            self._prompt = prompt
+            return
+        scope: DefinitionScope = "project" if entry.source == "project" else "user"
+        self._library_edit_entry = None
+        self._start_library_task(
+            lambda: self._change_library(
+                f"Updated {spec.name}",
+                lambda: write_definition(spec, scope=scope, project_root=self._cwd, overwrite=True),
+            )
+        )
+
+    def _review_library_spec(self, spec: AgentSpec, scope: DefinitionScope) -> None:
+        try:
+            rendered = render_definition(spec)
+            parse_definition(rendered, source=scope)
+        except (DefinitionError, ValueError) as exc:
+            self._notice = str(exc)[:240]
+            self._library_draft = None
+            return
+        self._library_pending = (replace(spec, source=scope, path=None), scope)
+        self._library_draft = None
+        self._library_view_title = f"Review definition · {spec.name}"
+        self._library_view_lines = rendered.splitlines()
+        self._library_view_scroll = 0
+        self._choice = _Choice(
+            "library_save", "Save this reviewed definition?", ("Save", "Discard")
+        )
+        self._mark_dirty("library_draft_review")
+
+    async def _generate_library_draft(self, draft: _LibraryDraft) -> None:
+        generator = self._generate_definition
+        if generator is None:
+            self._notice = "Draft generation requires a configured session model."
+            return
+        self._notice = "Generating definition draft…"
+        self._mark_dirty("library_generation_started")
+        try:
+            content = await generator(draft.name, draft.description)
+            spec = parse_definition(content, source=draft.scope)
+            if spec.name != draft.name:
+                raise ValueError(
+                    f"the generated definition used name {spec.name!r}, not {draft.name!r}"
+                )
+        except (DefinitionError, ValueError, RuntimeError) as exc:
+            self._notice = f"Could not generate a valid definition: {exc}"[:240]
+            self._library_draft = None
+            self._mark_dirty("library_generation_failed")
+            return
+        self._review_library_spec(spec, draft.scope)
+
+    def _start_library_task(self, operation: Callable[[], Awaitable[None]]) -> None:
+        if self._loop is None:
+            self._notice = "The Library is not ready for this operation."
+            return
+        if self._library_task is not None and not self._library_task.done():
+            self._notice = "A Library operation is already running."
+            return
+
+        async def run() -> None:
+            await operation()
+
+        self._library_task = self._owned(
+            asyncio.create_task(run(), name="agenthicc-library-operation")
+        )
+
+    async def _change_library(self, label: str, operation: Callable[[], object]) -> None:
+        try:
+            result = await self._service.run_blocking(operation)
+        except Exception as exc:  # noqa: BLE001 - surface file and trust errors in the Library
+            self._notice = f"{label} failed: {type(exc).__name__}: {exc}"[:240]
+            self._mark_dirty("library_operation_failed")
+            return
+        if isinstance(result, Path):
+            self._notice = f"{label}: {result}"
+        else:
+            self._notice = f"{label} completed."
+        self._library_loaded = False
+        await self._show_library()
+        self._mark_dirty("library_operation_complete")
+
+    async def _validate_library(self) -> None:
+        try:
+            loaded = await self._service.run_blocking(self._sources.library)
+        except Exception as exc:  # noqa: BLE001 - validation results belong in the Library
+            self._notice = f"Could not validate definitions: {type(exc).__name__}: {exc}"[:240]
+            self._mark_dirty("library_validation_failed")
+            return
+        entries = (
+            [item for item in loaded if isinstance(item, LibraryEntry)]
+            if isinstance(loaded, list)
+            else []
+        )
+        self._library = entries
+        self._library_loaded = True
+        self._rebuild_rows()
+        problems = [entry for entry in entries if entry.state != "active"]
+        lines = [f"{len(entries)} definition(s) checked."]
+        if problems:
+            lines.extend(("", "Definitions needing attention:"))
+            for entry in problems:
+                lines.append(f"{entry.name} · {entry.state}: {entry.note or 'not active'}")
+                if entry.path:
+                    lines.append(f"  {entry.path}")
+        else:
+            lines.append("All agent definitions are valid and active.")
+        self._library_view_title = "Agent definition validation"
+        self._library_view_lines = lines
+        self._library_view_scroll = 0
+        self._mark_dirty("library_validation_complete")
+
+    def _save_library_pending(self) -> None:
+        pending, self._library_pending = self._library_pending, None
+        self._library_view_lines = None
+        self._library_view_title = ""
+        if pending is None:
+            self._notice = "No definition draft is waiting to be saved."
+            return
+        spec, scope = pending
+        self._start_library_task(
+            lambda: self._change_library(
+                f"Saved {spec.name}",
+                lambda: write_definition(spec, scope=scope, project_root=self._cwd),
+            )
+        )
+
+    def _delete_library_path(self, value: str) -> None:
+        path = Path(value)
+
+        def delete() -> None:
+            delete_definition(path, project_root=self._cwd)
+            if project_default(self._cwd) == path.stem:
+                set_project_default(self._cwd, None)
+
+        self._start_library_task(lambda: self._change_library(f"Deleted {path.stem}", delete))
 
     def _open_detail(self, session_id: str, *, item_id: str | None = None) -> None:
         # Opening reads the change summary afresh.
@@ -2676,6 +3288,11 @@ class AgentsHub:
             return
         if result is EditResult.CANCEL:
             self._prompt = None
+            if prompt.kind == "library":
+                if prompt.target == "edit":
+                    self._library_edit_entry = None
+                else:
+                    self._library_draft = None
         elif result is EditResult.SUBMIT:
             self._prompt = None
             self._submit_prompt(prompt)
@@ -2714,6 +3331,8 @@ class AgentsHub:
             self._respond(prompt.item, approval, "approve")
         elif prompt.kind == "dispatch":
             self._submit_dispatch(text)
+        elif prompt.kind == "library":
+            self._submit_library_prompt(prompt)
 
     def _handle_choice(self, key: Key, ch: str) -> HubResult | None:
         choice = self._choice
@@ -2726,6 +3345,13 @@ class AgentsHub:
             if choice.kind == "trust":
                 self._pending_dispatch = None
                 self._notice = "Not started: the project's extensions are not trusted"
+            elif choice.kind == "library_scope":
+                self._library_draft = None
+            elif choice.kind == "library_save":
+                self._library_pending = None
+                self._library_view_lines = None
+                self._library_view_title = ""
+                self._notice = "Definition draft discarded."
             return None
         if key in (Key.LEFT, Key.UP, Key.SHIFT_TAB):
             choice.index = (choice.index - 1) % count
@@ -2766,6 +3392,19 @@ class AgentsHub:
                 self._start_attach(result.session_id)
                 return None
             return result
+        elif choice.kind == "library_scope":
+            self._library_scope_chosen(choice)
+        elif choice.kind == "library_save":
+            if choice.index == 0:
+                self._save_library_pending()
+            else:
+                self._library_pending = None
+                self._library_view_lines = None
+                self._library_view_title = ""
+                self._notice = "Definition draft discarded."
+        elif choice.kind == "library_delete":
+            if choice.index == 0:
+                self._delete_library_path(choice.target)
         return None
 
     # ── dispatch (AGX-05 §5.3) ───────────────────────────────────────────────
@@ -3053,6 +3692,14 @@ class AgentsHub:
         body_height = max(1, height - len(lines) - len(bottom) - 1)
         if self._diff_lines is not None:
             body = self._pager_lines(width, body_height)
+        elif self._library_view_lines is not None:
+            body = self._library_view_body(width, body_height)
+        elif (
+            self._prompt is not None
+            and self._prompt.kind == "library"
+            and self._prompt.target in ("edit", "create_prompt")
+        ):
+            body = self._library_editor_body(width, body_height)
         elif self._detail_id is not None and width >= 140 and not plain:
             list_width = max(40, width * 9 // 20)
             left = self._list_lines(list_width, body_height, plain, geometry, offset=len(lines))
@@ -3079,6 +3726,50 @@ class AgentsHub:
         lines.append(footer)
         self._geometry = geometry
         return lines[:height]
+
+    def _library_view_body(self, width: int, height: int) -> list[Text]:
+        from rich.text import Text
+
+        output = [Text(self._library_view_title, style="bold cyan")]
+        for raw in self._library_view_lines or []:
+            wrapped = Text(raw).wrap(self.console, max(1, width - 2), overflow="fold")
+            output.extend(wrapped or [Text("")])
+        start = min(self._library_view_scroll, max(0, len(output) - height))
+        return output[start : start + height]
+
+    def _library_editor_body(self, width: int, height: int) -> list[Text]:
+        from rich.text import Text
+
+        prompt = self._prompt
+        if prompt is None:
+            return []
+        value = prompt.editor.text
+        content = value.split("\n")
+        cursor_line = value.count("\n", 0, prompt.editor.cursor)
+        cursor_start = value.rfind("\n", 0, prompt.editor.cursor) + 1
+        cursor_column = prompt.editor.cursor - cursor_start
+        start = self._library_editor_scroll
+        visible = max(1, height - 1)
+        if cursor_line < start:
+            start = cursor_line
+        elif cursor_line >= start + visible:
+            start = cursor_line - visible + 1
+        self._library_editor_scroll = max(0, start)
+        output: list[Text] = [Text(prompt.label, style="bold cyan")]
+        for row, raw in enumerate(content[start : start + visible], start=start):
+            line = Text(no_wrap=True, overflow="crop")
+            if row == cursor_line:
+                horizontal = max(0, cursor_column - width + 1)
+                shown = raw[horizontal : horizontal + width]
+                column = min(len(shown), cursor_column - horizontal)
+                line.append(shown[:column])
+                line.append(shown[column : column + 1] or " ", style="reverse")
+                line.append(shown[column + 1 :])
+            else:
+                line.append(raw)
+            line.truncate(width, overflow="crop")
+            output.append(line)
+        return output
 
     def _tab_spans(self, plain: bool) -> list[tuple[int, int, Tab]]:
         from agenthicc.tui.workspace.agents_hub.render import tab_label
@@ -3131,22 +3822,27 @@ class AgentsHub:
             line.truncate(width, overflow="crop")
             lines.append(line)
         elif prompt is not None and prompt.kind != "search":
-            hint = {
-                "dispatch": "Enter start · Ctrl+J newline · @dir /workflow /mode /model · Esc cancel",
-                "answer": "Enter send · Ctrl+J newline · Esc cancel",
-                "feedback": "Enter approve · Ctrl+J newline · Esc cancel",
-            }.get(prompt.kind, "Enter save · Esc cancel")
-            label = f" {prompt.label} "
-            room = max(8, width - len(label) - len(hint) - 4)
-            shown, cursor = prompt.editor.view(room)
-            line = Text(no_wrap=True, overflow="crop")
-            line.append(label, style="bold cyan")
-            line.append(shown[:cursor])
-            line.append(shown[cursor : cursor + 1] or " ", style="reverse")
-            line.append(shown[cursor + 1 :])
-            line.append("  " + hint, style="dim")
-            line.truncate(width, overflow="crop")
-            lines.append(line)
+            if prompt.kind == "library" and prompt.target in ("edit", "create_prompt"):
+                lines.append(
+                    Text(" Ctrl+J newline · ↑↓ move · Enter save · Esc cancel", style="dim")
+                )
+            else:
+                hint = {
+                    "dispatch": "Enter start · Ctrl+J newline · @dir /workflow /mode /model · Esc cancel",
+                    "answer": "Enter send · Ctrl+J newline · Esc cancel",
+                    "feedback": "Enter approve · Ctrl+J newline · Esc cancel",
+                }.get(prompt.kind, "Enter save · Esc cancel")
+                label = f" {prompt.label} "
+                room = max(8, width - len(label) - len(hint) - 4)
+                shown, cursor = prompt.editor.view(room)
+                line = Text(no_wrap=True, overflow="crop")
+                line.append(label, style="bold cyan")
+                line.append(shown[:cursor])
+                line.append(shown[cursor : cursor + 1] or " ", style="reverse")
+                line.append(shown[cursor + 1 :])
+                line.append("  " + hint, style="dim")
+                line.truncate(width, overflow="crop")
+                lines.append(line)
         notice = self._status_notice()
         if notice:
             lines.append(Text(fit(" " + notice, width), style="yellow"))
@@ -3452,6 +4148,25 @@ class AgentsHub:
         finally:
             self._loop = None
 
+    async def run_terminal_handoff(self, operation: Callable[[], Awaitable[None]]) -> None:
+        """Run *operation* with cooked terminal input, then resume the hub."""
+        backend = self._backend
+        if backend is None:
+            raise RuntimeError("the interactive agents hub is not running")
+        if self._terminal_handoff is not None:
+            raise RuntimeError("another terminal handoff is already pending")
+        completed = asyncio.get_running_loop().create_future()
+        handoff = (operation, completed)
+        self._terminal_handoff = handoff
+        backend.restore()
+        try:
+            await completed
+        except asyncio.CancelledError:
+            if self._terminal_handoff is handoff:
+                self._terminal_handoff = None
+                backend.restore()
+            raise
+
     async def run(self) -> HubResult:
         """Run full screen until the user leaves or hands off to a session."""
         from agenthicc.tui.terminal.backend import get_backend
@@ -3471,64 +4186,99 @@ class AgentsHub:
                     await self._service.close()
             return HubResult("exit")
         await self.start()
+        self._backend = backend
         ui = self.ui
         mouse = ui.mouse_enabled(fullscreen=True) if ui is not None else True
-        live = LiveRegion(
-            self.console,
-            transient=True,
-            synchronized_output=lambda: capabilities.synchronized_output,
-        )
-        read_finished = threading.Event()
-        read_future: asyncio.Future[tuple[Key, str]] | None = None
-        self.console.set_alt_screen(True)
-        live.start()
         try:
-            with backend.enter_raw_mode():
-                if mouse:
-                    backend.set_reporting(mouse=True)
-                loop = asyncio.get_running_loop()
+            while True:
+                live = LiveRegion(
+                    self.console,
+                    transient=True,
+                    synchronized_output=lambda: capabilities.synchronized_output,
+                )
+                read_finished = threading.Event()
+                read_future: asyncio.Future[tuple[Key, str]] | None = None
+                handoff: tuple[Callable[[], Awaitable[None]], asyncio.Future[None]] | None = None
+                self.console.set_alt_screen(True)
+                live.start()
+                try:
+                    with backend.enter_raw_mode():
+                        if mouse:
+                            backend.set_reporting(mouse=True)
+                        loop = asyncio.get_running_loop()
 
-                def blocking_read_key() -> tuple[Key, str]:
-                    try:
-                        return backend.read_key()
-                    finally:
-                        read_finished.set()
+                        def blocking_read_key(
+                            finished: threading.Event = read_finished,
+                        ) -> tuple[Key, str]:
+                            try:
+                                return backend.read_key()
+                            finally:
+                                finished.set()
 
-                read_finished.clear()
-                read_future = loop.run_in_executor(None, blocking_read_key)
-                self._draw(live)
-                self._record_metric("first_frame")
-                while True:
-                    done = await self.step(frozenset({read_future}))
-                    if read_future in done:
-                        key, ch = read_future.result()
-                        result = self.handle_key(key, ch)
-                        if result is not None:
-                            return result
                         read_finished.clear()
                         read_future = loop.run_in_executor(None, blocking_read_key)
-                    attached = self.attach_result
-                    if attached is not None:
-                        return attached
-                    if self._dirty:
-                        if self.settings.frame_debounce_ms and read_future.done() is False:
-                            await asyncio.sleep(self.settings.frame_debounce_ms / 1_000.0)
                         self._draw(live)
+                        self._record_metric("first_frame")
+                        while True:
+                            done = await self.step(frozenset({read_future}))
+                            if read_future in done:
+                                try:
+                                    key, ch = read_future.result()
+                                except OSError:
+                                    if self._terminal_handoff is None:
+                                        raise
+                                    handoff, self._terminal_handoff = self._terminal_handoff, None
+                                    break
+                                result = self.handle_key(key, ch)
+                                if result is not None:
+                                    return result
+                                read_finished.clear()
+                                read_future = loop.run_in_executor(None, blocking_read_key)
+                            attached = self.attach_result
+                            if attached is not None:
+                                return attached
+                            if self._dirty:
+                                if self.settings.frame_debounce_ms and read_future.done() is False:
+                                    await asyncio.sleep(self.settings.frame_debounce_ms / 1_000.0)
+                                self._draw(live)
+                finally:
+                    live.stop()
+                    self.console.set_alt_screen(False)
+                    # A POSIX read() is not cancelled with its Future: restoring the
+                    # terminal first lets the reader thread return.
+                    try:
+                        backend.restore()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    pending = read_future is not None and not read_future.done()
+                    if read_future is not None and pending:
+                        read_future.cancel()
+                        await asyncio.to_thread(read_finished.wait, 0.25)
+                    if read_future is None or read_finished.is_set() or not pending:
+                        backend.close()
+                if handoff is None:
+                    return HubResult("exit")
+                operation, completed = handoff
+                try:
+                    await operation()
+                except asyncio.CancelledError:
+                    if not completed.done():
+                        completed.cancel()
+                    raise
+                except Exception as exc:  # noqa: BLE001 - report failures to the caller
+                    if not completed.done():
+                        completed.set_exception(exc)
+                else:
+                    if not completed.done():
+                        completed.set_result(None)
         finally:
-            live.stop()
-            self.console.set_alt_screen(False)
-            # A POSIX read() is not cancelled with its Future: restoring the
-            # terminal first lets the reader thread return.
-            try:
-                backend.restore()
-            except Exception:  # noqa: BLE001
-                pass
-            pending = read_future is not None and not read_future.done()
-            if read_future is not None and pending:
-                read_future.cancel()
-                await asyncio.to_thread(read_finished.wait, 0.25)
-            if read_future is None or read_finished.is_set() or not pending:
-                backend.close()
+            self._backend = None
+            pending_handoff, self._terminal_handoff = self._terminal_handoff, None
+            if pending_handoff is not None and not pending_handoff[1].done():
+                pending_handoff[1].set_exception(
+                    RuntimeError("the agents hub stopped before terminal handoff")
+                )
+            backend.close()
             await self.stop()
 
 
@@ -3651,6 +4401,7 @@ async def run_agents_hub(
     run_id: str = "",
     dispatch: DispatchDefaults | None = None,
     ui: UISettings | None = None,
+    generate_definition: Callable[[str, str], Awaitable[str]] | None = None,
 ) -> HubResult:
     """Open the hub full screen (``agenthicc agents``) with the user's key bindings.
 
@@ -3663,6 +4414,24 @@ async def run_agents_hub(
     if ui is not None:
         state.ui.set(ui)
     keymap_service = KeymapService(state)
+    external_editor: Callable[[Path, DefinitionScope], Awaitable[None]] | None = None
+    from agenthicc.agents.external_editor import editor_is_configured, open_definition_in_editor
+
+    if editor_is_configured():
+
+        async def edit_definition(path: Path, scope: DefinitionScope) -> None:
+            async def run_editor() -> None:
+                await asyncio.to_thread(
+                    open_definition_in_editor,
+                    path,
+                    scope=scope,
+                    project_root=Path.cwd(),
+                )
+
+            await hub.run_terminal_handoff(run_editor)
+
+        external_editor = edit_definition
+
     hub = AgentsHub(
         console,
         store=store,
@@ -3675,6 +4444,8 @@ async def run_agents_hub(
         select=select,
         run_id=run_id,
         dispatch=dispatch,
+        generate_definition=generate_definition,
+        external_editor=external_editor,
     )
     watch = asyncio.create_task(keymap_service.watch(), name="agenthicc-hub-keybindings")
     try:

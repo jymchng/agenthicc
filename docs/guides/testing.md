@@ -89,7 +89,7 @@ Rich renderables.
 uv run ruff check src/ tests/ scripts/
 uv run ruff format --check src/ tests/ scripts/
 uv run mypy src/agenthicc
-uv run mypy tests/unit/test_kernel_event_typing.py tests/unit/test_type_audit.py scripts/type_audit.py
+uv run mypy tests/unit/test_kernel_event_typing.py tests/unit/test_type_audit.py scripts/type_audit.py scripts/check_performance_budget_policy.py
 uv run python scripts/type_audit.py --check docs/reference/type-safety-baseline.json
 uv run pytest tests/unit -q
 uv run pytest tests/integration -q
@@ -105,6 +105,20 @@ uv run nox -s llms_check
 
 The embedded checker and Nox install paths are being made reproducible as part
 of PRD-138 P0.5.
+
+## Performance budgets
+
+The `perf` Nox session measures CPU time and deterministic operation counts
+against [`performance-budgets.json`](../reference/performance-budgets.json); it
+is also a required CI check. Run `uv run nox -s perf` locally. The weekly
+`perf_weekly` session profiles the 10,000-session fixture and uploads its JSON
+report; run `uv run nox -s perf_weekly` when changing the agents-screen hot
+path. Wall-clock measurements on shared CI runners are diagnostic, not gates.
+
+A pull request that intentionally weakens an existing budget must carry the
+`perf-budget-increase` label. The policy rejects deleted metrics even with that
+label. Repository maintainers must provision the label in GitHub before it can
+be applied; labels are not stored in this repository.
 
 ## Coverage and flake control
 

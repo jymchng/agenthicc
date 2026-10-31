@@ -54,9 +54,18 @@ _KINDS = frozenset(
         "approval_requested",
         "approval_resolved",
         "finished",
+        "stop_requested",
+        "lifecycle",
+        "message_acknowledged",
+        "attempt_started",
         "truncated",
     }
 )
+
+
+def _string_field(value: Mapping[str, object], name: str) -> str:
+    field_value = value.get(name, "")
+    return field_value if isinstance(field_value, str) else ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,6 +81,16 @@ class TranscriptEvent:
     ok: bool | None = None
     #: How many older events a ``truncated`` marker stands for.
     dropped: int = 0
+    request_id: str = ""
+    mode: str = ""
+    source: str = ""
+    reason: str = ""
+    phase: str = ""
+    partial: bool = False
+    stop_reason: str = ""
+    undelivered_messages: int = 0
+    attempt: int = 1
+    cleanup_error: str = ""
 
     def to_dict(self) -> dict[str, object]:
         payload: dict[str, object] = {"kind": self.kind, "at": self.at}
@@ -83,6 +102,23 @@ class TranscriptEvent:
             payload["ok"] = self.ok
         if self.dropped:
             payload["dropped"] = self.dropped
+        for name, value in (
+            ("request_id", self.request_id),
+            ("mode", self.mode),
+            ("source", self.source),
+            ("reason", self.reason),
+            ("phase", self.phase),
+            ("stop_reason", self.stop_reason),
+            ("cleanup_error", self.cleanup_error),
+        ):
+            if value:
+                payload[name] = value
+        if self.partial:
+            payload["partial"] = True
+        if self.undelivered_messages:
+            payload["undelivered_messages"] = self.undelivered_messages
+        if self.attempt != 1:
+            payload["attempt"] = self.attempt
         return payload
 
     @classmethod
@@ -95,6 +131,8 @@ class TranscriptEvent:
         tool = value.get("tool", "")
         ok = value.get("ok")
         dropped = value.get("dropped", 0)
+        undelivered_messages = value.get("undelivered_messages", 0)
+        attempt = value.get("attempt", 1)
         return cls(
             kind=str(kind),
             at=float(at),
@@ -102,6 +140,26 @@ class TranscriptEvent:
             tool=tool if isinstance(tool, str) else "",
             ok=ok if isinstance(ok, bool) else None,
             dropped=dropped if isinstance(dropped, int) and not isinstance(dropped, bool) else 0,
+            request_id=_string_field(value, "request_id"),
+            mode=_string_field(value, "mode"),
+            source=_string_field(value, "source"),
+            reason=_string_field(value, "reason"),
+            phase=_string_field(value, "phase"),
+            partial=value.get("partial") is True,
+            stop_reason=_string_field(value, "stop_reason"),
+            undelivered_messages=(
+                undelivered_messages
+                if isinstance(undelivered_messages, int)
+                and not isinstance(undelivered_messages, bool)
+                and undelivered_messages >= 0
+                else 0
+            ),
+            attempt=(
+                attempt
+                if isinstance(attempt, int) and not isinstance(attempt, bool) and attempt >= 1
+                else 1
+            ),
+            cleanup_error=_string_field(value, "cleanup_error"),
         )
 
 
@@ -249,6 +307,16 @@ class TranscriptWriter:
             tool=event.tool[:80],
             ok=event.ok,
             dropped=event.dropped,
+            request_id=event.request_id[:80],
+            mode=event.mode[:16],
+            source=event.source[:80],
+            reason=self._redact(event.reason, _SHORT_LIMIT),
+            phase=event.phase[:32],
+            partial=event.partial,
+            stop_reason=event.stop_reason[:_SHORT_LIMIT],
+            undelivered_messages=max(0, event.undelivered_messages),
+            attempt=max(1, event.attempt),
+            cleanup_error=self._redact(event.cleanup_error, _SHORT_LIMIT),
         )
         line = json.dumps(safe.to_dict(), ensure_ascii=False, sort_keys=True) + "\n"
         name = _safe_name(worker_id)

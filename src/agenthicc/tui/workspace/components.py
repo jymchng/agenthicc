@@ -19,7 +19,7 @@ from rich.cells import cell_len
 from rich.segment import Segment
 from rich.style import Style
 
-from agenthicc.tui.conversation_store import ui_settings as _ui
+from agenthicc.tui.preferences import ui_settings as _ui
 
 if TYPE_CHECKING:
     from rich.console import Console, ConsoleOptions, RenderableType
@@ -503,7 +503,27 @@ class FooterComponent:
         _wf_ovr_raw = conv.workflow_override()
         _wf_ovr = _wf_ovr_raw if isinstance(_wf_ovr_raw, str) else None
         _wf_suffix = f"  [cyan dim]⬡ {_e(_wf_ovr)}[/cyan dim]" if _wf_ovr else ""
-        rows = [_fit(f"  {build_mode_str(mode)}{_wf_suffix}", cols)]
+        needs_you = conv.background_needs_you()
+        running_agents = conv.background_running()
+        attention_badges: list[str] = []
+        if needs_you:
+            attention_badges.append(f"[bold yellow]◆ {needs_you} need you[/bold yellow]")
+        if running_agents:
+            attention_badges.append(f"[cyan]● {running_agents} running[/cyan]")
+        if conv.background_dnd():
+            attention_badges.append("[dim]◉ DND[/dim]")
+        attention_suffix = "  [dim]·[/dim]  ".join(attention_badges)
+        # AGX-09: the primary agent, once another than the default is chosen.
+        agent = self._state.agent()
+        agent_prefix = (
+            f"[bold]{_e(agent)}[/bold] [dim]·[/dim] "
+            if isinstance(agent, str) and agent and agent != "default"
+            else ""
+        )
+        mode_row = f"  {agent_prefix}{build_mode_str(mode)}{_wf_suffix}"
+        if attention_suffix:
+            mode_row += f"  [dim]│[/dim]  {attention_suffix}"
+        rows = [_fit(mode_row, cols)]
 
         # Row 2+: notification (may be multi-line) > paste hint > normal hints.
         # Multi-line notifications (from stacked notify_transient() calls or
@@ -513,6 +533,9 @@ class FooterComponent:
         if not notif:
             raw_loop_status = conv.loop_status()
             notif = raw_loop_status if isinstance(raw_loop_status, str) else None
+        if not notif:
+            raw_attention = conv.background_toast()
+            notif = raw_attention if isinstance(raw_attention, str) else None
         if notif:
             rows.extend(_notification_rows(notif, cols))
         else:
@@ -522,27 +545,18 @@ class FooterComponent:
                 conditions.add("running")
             if self._state.input.paste_condensed():
                 conditions.update(("paste", "paste_at_cursor"))
-            if conv.subagent_pool_state() is not None:
+            pool_state = conv.subagent_pool_state()
+            if pool_state is not None:
                 conditions.add("subagents")
+                if pool_state.active:
+                    conditions.add("subagents_running")
             keymap = self._state.keymap()
             ui = _ui(self._state)
-            hints: tuple[tuple[str, str], ...]
-            if keymap is None:
-                # The first visible frame is intentionally rendered before
-                # keymap modules and user bindings are loaded.  These are the
-                # default composer's four always-visible hints; KeymapService
-                # replaces them before input is read.
-                hints = (
-                    ("Enter", "submit"),
-                    ("Ctrl+J", "newline"),
-                    ("/", "commands"),
-                    ("@", "mention"),
-                )
-            else:
-                hints = tuple(
-                    (hint.keys, hint.label)
-                    for hint in keymap.hints("composer", frozenset(conditions))
-                )
+            hints = tuple(
+                (hint.keys, hint.label) for hint in keymap.hints("composer", frozenset(conditions))
+            )
+            if conv.agents_hint():
+                hints = (*hints, ("←", "agents"))
             rows.append(_hint_row(hints, cols, ui is not None and ui.screen_reader))
 
         # PRD-81: optional workflow progress row

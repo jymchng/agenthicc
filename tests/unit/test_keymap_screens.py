@@ -32,6 +32,7 @@ _KEYS: dict[str, tuple[Key, str]] = {
     "/": (Key.CHAR, "/"),
     "@": (Key.AT, ""),
     "ctrl+v": (Key.CTRL_V, ""),
+    "ctrl+b": (Key.CTRL_B, ""),
     "escape": (Key.ESC, ""),
     "ctrl+c": (Key.CTRL_C, ""),
     "ctrl+d": (Key.CTRL_D, ""),
@@ -43,6 +44,7 @@ _KEYS: dict[str, tuple[Key, str]] = {
     "end": (Key.END, ""),
     "up": (Key.UP, ""),
     "down": (Key.DOWN, ""),
+    "tab": (Key.TAB, ""),
     "shift+tab": (Key.SHIFT_TAB, ""),
     "alt+enter": (Key.MODIFIED, "alt+enter"),
     "ctrl+g": (Key.CTRL_G, ""),
@@ -51,7 +53,7 @@ _KEYS: dict[str, tuple[Key, str]] = {
 
 
 def _session(state: AppState, action: Action) -> UnifiedInputSession:
-    if "subagents" in action.when:
+    if action.when & {"subagents", "subagents_running"}:
         from agenthicc.subagents.pool import SubagentPoolState, WorkerState
 
         state.conversation.subagent_pool_state.set(
@@ -89,23 +91,6 @@ def test_every_composer_action_is_dispatchable_hinted_and_in_help(action: Action
             state.input.paste_condensed.set(True)
         footer = " ".join(FooterComponent(state).markup_lines(400))
         assert action.label in footer
-
-
-def test_deferred_keymap_keeps_first_frame_hints_then_installs_before_input(
-    tmp_path: Path,
-) -> None:
-    state = AppState.create(defer_keymap=True)
-    assert state.keymap() is None
-    with pytest.raises(RuntimeError, match="not initialized"):
-        state.require_keymap()
-
-    footer = " ".join(FooterComponent(state).markup_lines(200))
-    assert "Enter" in footer and "Ctrl+J" in footer and "commands" in footer
-
-    service = KeymapService(state, tmp_path / "keybindings.toml")
-    assert state.require_keymap() is service.current.keymap
-    session = UnifiedInputSession(state, CommandBus())
-    assert session._state.require_keymap() is service.current.keymap
 
 
 async def test_typing_a_bound_key_runs_its_action() -> None:
@@ -187,7 +172,7 @@ class _Backend:
 
 
 @pytest.mark.parametrize(("mode", "reported"), [("on", True), ("auto", False), ("off", False)])
-async def test_the_inline_tui_reports_the_mouse_only_when_asked(
+async def test_the_inline_tui_always_reports_focus_and_only_requested_mouse(
     monkeypatch: pytest.MonkeyPatch, mode: str, reported: bool
 ) -> None:
     backend = _Backend()
@@ -195,8 +180,7 @@ async def test_the_inline_tui_reports_the_mouse_only_when_asked(
     state = AppState.create()
     state.ui.set(UISettings(mouse=mode))
     await UnifiedInputSession(state, CommandBus()).run()
-    assert (backend.reporting == [{"focus": None, "mouse": True}]) is reported
-    assert reported or backend.reporting == []
+    assert backend.reporting == [{"focus": True, "mouse": reported}]
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX raw mode")

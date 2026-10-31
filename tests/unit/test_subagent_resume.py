@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from agenthicc.subagents.tool import _tasks_fingerprint, _find_cached_result
+from agenthicc.subagents.types import SubagentTypeRegistry, SubagentTypeSpec
 from agenthicc.subagents.pool import SubagentTask
+from agenthicc.subagents.tool import _find_cached_result, _find_cached_values, _tasks_fingerprint
 from agenthicc.memory.journal import ConversationJournal
 from agenthicc.tui.conversation_store import ConversationStore
 
@@ -126,6 +127,75 @@ class TestFindCachedResult:
         journal.close()
 
 
+# ── structured-result cache validation ────────────────────────────────────────
+
+
+class TestFindCachedValues:
+    def _registry(self) -> SubagentTypeRegistry:
+        registry = SubagentTypeRegistry()
+        registry.register(
+            SubagentTypeSpec(
+                name="reporter",
+                allowed_tools=frozenset(),
+                max_turns=1,
+                system_prompt="Return a structured report.",
+                output_schema={
+                    "type": "object",
+                    "properties": {"summary": {"type": "string"}},
+                    "required": ["summary"],
+                    "additionalProperties": False,
+                },
+            )
+        )
+        return registry
+
+    def test_conversation_cache_values_are_revalidated(self) -> None:
+        registry = self._registry()
+        conv = ConversationStore()
+        conv.begin_turn("agent", "t1")
+        conv.append_event(
+            "subagent_pool_result",
+            {
+                "fingerprint": "contract-fp",
+                "text": "cached",
+                "total": 1,
+                "succeeded": 1,
+                "failed": 0,
+                "values": [
+                    {
+                        "task_id": "task-0",
+                        "agent_type": "reporter",
+                        "label": "reporter #1",
+                        "value": {"summary": "api_key=sk-ant-cache-secret"},
+                    }
+                ],
+            },
+        )
+        conv.close_turn()
+
+        assert _find_cached_values(conv, "contract-fp", registry) == [
+            {
+                "task_id": "task-0",
+                "agent_type": "reporter",
+                "label": "reporter #1",
+                "value": {"summary": "api_key=<redacted>"},
+            }
+        ]
+
+        spec = registry.get("reporter")
+        assert spec is not None
+        spec.output_schema = {
+            "type": "object",
+            "properties": {
+                "summary": {"type": "string"},
+                "count": {"type": "integer"},
+            },
+            "required": ["summary", "count"],
+            "additionalProperties": False,
+        }
+        assert _find_cached_values(conv, "contract-fp", registry) == []
+
+
 # ── end-to-end cache round-trip ───────────────────────────────────────────────
 
 
@@ -133,6 +203,7 @@ class TestResumeCacheRoundTrip:
     async def test_tool_caches_and_retrieves_result(self) -> None:
         """Full round-trip: run pool, cache, retrieve on second call."""
         from unittest.mock import AsyncMock, MagicMock, patch
+
         from agenthicc.subagents.tool import make_spawn_subagents_tool
 
         conv = ConversationStore()
@@ -152,6 +223,7 @@ class TestResumeCacheRoundTrip:
         fake_result.succeeded = 1
         fake_result.failed = 0
         fake_result.text = "=== explorer #1 (✓ 1.0s) ===\nFound auth.py"
+        fake_result.budget_exceeded_reason = ""
 
         with patch(
             "agenthicc.subagents.pool.SubagentPool.run", new=AsyncMock(return_value=fake_result)
@@ -176,6 +248,7 @@ class TestResumeCacheRoundTrip:
     async def test_changed_context_does_not_reuse_cached_result(self) -> None:
         """Context changes alter the work request and must execute again."""
         from unittest.mock import AsyncMock, MagicMock, patch
+
         from agenthicc.subagents.tool import make_spawn_subagents_tool
 
         conv = ConversationStore()
@@ -186,10 +259,20 @@ class TestResumeCacheRoundTrip:
 
         tool_fn = make_spawn_subagents_tool(FakeRunner(), "test-model", [], conv_store=conv)
         first = MagicMock(
-            pool_id="pool-1", total=1, succeeded=1, failed=0, text="first context result"
+            pool_id="pool-1",
+            total=1,
+            succeeded=1,
+            failed=0,
+            text="first context result",
+            budget_exceeded_reason="",
         )
         second = MagicMock(
-            pool_id="pool-2", total=1, succeeded=1, failed=0, text="second context result"
+            pool_id="pool-2",
+            total=1,
+            succeeded=1,
+            failed=0,
+            text="second context result",
+            budget_exceeded_reason="",
         )
         pool_run = AsyncMock(side_effect=[first, second])
 
@@ -211,31 +294,58 @@ class TestResumeCacheRoundTrip:
         """A completed pool remains resumable when the TUI projection is absent."""
         from types import SimpleNamespace
         from unittest.mock import AsyncMock, patch
+
         from agenthicc.subagents.tool import make_spawn_subagents_tool
 
         class FakeRunner:
             _transport = None
 
+        registry = SubagentTypeRegistry()
+        registry.register(
+            SubagentTypeSpec(
+                name="reporter",
+                allowed_tools=frozenset(),
+                max_turns=1,
+                system_prompt="Return a structured report.",
+                output_schema={
+                    "type": "object",
+                    "properties": {"summary": {"type": "string"}},
+                    "required": ["summary"],
+                    "additionalProperties": False,
+                },
+            )
+        )
         journal = ConversationJournal(tmp_path / "conversation-journal.jsonl")
         first = SimpleNamespace(
             pool_id="pool-durable",
             total=1,
             succeeded=1,
             failed=0,
-            text="=== explorer #1 ===\nfull result from disk",
+            text="=== reporter #1 ===\nfull result from disk",
+            values=(
+                {
+                    "task_id": "task-0",
+                    "agent_type": "reporter",
+                    "label": "reporter #1",
+                    "value": {"summary": "structured report from disk"},
+                },
+            ),
+            budget_exceeded_reason="",
         )
         fn = make_spawn_subagents_tool(
             FakeRunner(),
             "test-model",
             [],
+            registry=registry,
             conversation_journal=journal,
         )
         with patch(
             "agenthicc.subagents.pool.SubagentPool.run",
             new=AsyncMock(return_value=first),
         ) as pool_run:
-            result1 = await fn(tasks=[{"type": "explorer", "task": "Find the file."}])
+            result1 = await fn(tasks=[{"type": "reporter", "task": "Create a report."}])
         assert result1["results"] == first.text
+        assert result1["values"] == list(first.values)
         assert pool_run.await_count == 1
         journal.close()
 
@@ -244,13 +354,15 @@ class TestResumeCacheRoundTrip:
             FakeRunner(),
             "test-model",
             [],
+            registry=registry,
             conversation_journal=reopened,
         )
         with patch(
             "agenthicc.subagents.pool.SubagentPool.run",
             new=AsyncMock(side_effect=AssertionError("durable cache should be used")),
         ):
-            result2 = await fn_resumed(tasks=[{"type": "explorer", "task": "Find the file."}])
+            result2 = await fn_resumed(tasks=[{"type": "reporter", "task": "Create a report."}])
         assert result2["pool_id"] == "cached"
         assert result2["results"] == first.text
+        assert result2["values"] == list(first.values)
         reopened.close()

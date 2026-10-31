@@ -15,6 +15,22 @@ runtime.
 | `/inbox` | Open the hub's Needs you tab: pending approvals, questions and input requests |
 | `/workers` | Open the hub's Running tab; `/workers --json` prints the worker manifests |
 
+### Cross-session attention
+
+While background agents run, the TUI status bar shows the counts that need you
+and are running. New approvals, questions, input requests, completions and
+failures appear as brief, coalesced toasts; a toast waits until a modal closes.
+Ctrl+G opens the oldest pending item in **Needs you**; otherwise it opens
+**Running** and selects the toast's agent when a toast is visible. The ← agents
+hint appears briefly when the session starts.
+
+`/dnd` suppresses attention toasts and local notifications for this TUI session
+without hiding its counts. Configured local notifications are sent only while
+the terminal is unfocused; `auto` uses the platform notifier and falls back to
+an OSC notification on supported terminals. Quiet hours suppress local
+attention notices too. While a TUI owns the background store, its notification
+dispatcher never writes visible text directly to the terminal.
+
 ## From the CLI
 
 `agenthicc agents` opens the agents hub full screen (`--tab`, `SESSION_ID`,

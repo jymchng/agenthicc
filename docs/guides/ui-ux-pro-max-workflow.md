@@ -3,7 +3,7 @@
 `ui_ux_pro_max` is a native Agenthicc workflow for product discovery, evidence-
 informed design decisions, implementation, and acceptance. It extends the
 existing workflow runner and checkpoint contracts; it does not create a second
-workflow engine. Every phase has a typed transition tool, and only a successful
+workflow engine. Every phase has a small transition tool, and only a successful
 transition call advances the outer workflow state.
 
 ## Capability audit and provenance
@@ -18,7 +18,7 @@ UI/UX Pro Max output.
 
 | Verified capability | Upstream implementation or data | Purpose | Agenthicc phase | Artifact and validation |
 |---|---|---|---|---|
-| Dataset-backed search | `scripts/core.py` defines CSV datasets and schemas; datasets include product, style, color, chart, landing, UX, typography, icons, motion/GSAP, React, web, and Google Fonts guidance | Search focused design domains and return dataset-backed recommendations | `DESIGN_INTELLIGENCE` or `TARGETED_DESIGN_RESEARCH` | `design-research-report.md`; retain query, dataset/domain, finding, provenance, confidence, and limitation; validate submitted summary and bounded fields |
+| Dataset-backed search | `scripts/core.py` defines CSV datasets and schemas; datasets include product, style, color, chart, landing, UX, typography, icons, motion/GSAP, React, web, and Google Fonts guidance | Search focused design domains and return dataset-backed recommendations | `DESIGN_INTELLIGENCE` or `TARGETED_DESIGN_RESEARCH` | `design-research-report.md`; retain query, dataset/domain, finding, provenance, confidence, and limitation; transition tools record supplied details without checking them |
 | Search CLI and stack selection | `scripts/search.py` implements domain search, stack selection, and design-system operations | Run supported searches and tailor advice to an actual supported stack | `DESIGN_INTELLIGENCE`, `STACK_ADAPTATION` | Research report and `implementation-guide.md`; inspect the installed parser/help and execution result before claiming a capability |
 | Master design-system generation | `search.py` combines product/style/color/landing/typography results with `ui-reasoning.csv` | Generate a coherent master system instead of isolated recommendations | `DESIGN_SYSTEM_SYNTHESIS` | `design-system.md`; submit direction, rationale, tokens, layout, components, states, responsiveness, accessibility, motion, anti-patterns, and artifact reference |
 | Design reasoning and validation signals | `data/ui-reasoning.csv` includes recommendation/rule, anti-pattern, severity, reasoning, and confidence fields | Explain why a recommendation fits and identify risk/confidence | `DESIGN_INTELLIGENCE`, `DESIGN_SYSTEM_SYNTHESIS`, `DESIGN_SYSTEM_REVIEW` | Preserve provenance and confidence; review for contradictions and applicability to the actual platform |
@@ -68,29 +68,33 @@ not regenerate a design system or force implementation.
 ## Phase outputs
 
 The agents write full Markdown reports or implementation files with the
-ordinary workspace tools. Transition tools capture compact typed summaries and
-references, not report bodies. They do not manufacture artifacts or check that
-an agent-written artifact exists. This keeps checkpoint state small and leaves
-artifact creation with the agent that performed the work.
+ordinary workspace tools. Every phase transition tool has a small calling
+contract: a required `summary` and optional `details` JSON object. The tool only
+records what the agent supplies; it does not inspect files, validate evidence,
+check completeness, or decide whether the phase output is correct. The runner
+still enforces workflow controls such as approval, retry budgets, and final
+acceptance status. This keeps tool calls simple while retaining structured
+phase data in checkpoints when supplied.
 
-| Phase | Required output |
+| Phase | Suggested `details` |
 |---|---|
 | `PRODUCT_DISCOVERY` | Product brief and chosen route (`broad`, `targeted`, or `accessibility_audit`) |
 | `DESIGN_INTELLIGENCE` / `TARGETED_DESIGN_RESEARCH` | Queries, datasets checked, findings, provenance, applicable/rejected recommendations, conflicts, confidence, limitations, report reference |
 | `DESIGN_SYSTEM_SYNTHESIS` | Coherent master design system with rationale, tokens, layout, component/interaction rules, responsive/accessibility/motion rules, anti-patterns, and reference |
-| `DESIGN_SYSTEM_REVIEW` | Explicit `APPROVED`, `REVISE`, or `BLOCKED` decision with actionable findings |
+| `DESIGN_SYSTEM_REVIEW` | `APPROVED`, `REVISE`, or `BLOCKED` decision with optional findings |
 | `STACK_ADAPTATION` | Detected stack, evidence, token mappings, component and responsive strategy, accessibility/performance constraints, validation commands, limitations |
-| `EXPERIENCE_ARCHITECTURE` | Surface inventory, state matrix, component dependencies, local overrides, acceptance mapping, implementation plan; plan approval where requested by the active policy |
+| `EXPERIENCE_ARCHITECTURE` | Surface inventory, state matrix, component dependencies, local overrides, acceptance mapping, implementation plan |
 | `DESIGN_IMPLEMENTATION` | Files and states changed, implementation summary, deviations with reasons, remaining work |
-| `VISUAL_UX_AUDIT` | Structured severity/evidence/expected-vs-actual findings, commands/results, inspection status and limitations |
+| `VISUAL_UX_AUDIT` | Structured findings, commands/results, inspection status and limitations |
 | `DESIGN_REMEDIATION` | Finding IDs addressed, changes, verification, unresolved items |
-| `DESIGN_ACCEPTANCE` | Every criterion classified `PASS`, `FAIL`, `UNVERIFIED`, or `NOT_APPLICABLE`, with evidence for claims of success |
+| `DESIGN_ACCEPTANCE` | Criterion statuses and evidence or limitations; these are recorded as supplied and are not checked by the transition tool |
 | `DELIVERY` | Summary, changed files, audit/test outcomes, unverified requirements, and limitations |
 
-`PASS` requires evidence. Unavailable screenshot/browser/terminal inspection
-must be reported as unverified or limited, never inferred from a successful
-build. The final workflow is blocked rather than declaring success when a
-critical criterion fails or remains unverified.
+`PASS` should be backed by evidence. Unavailable screenshot/browser/terminal
+inspection should be reported as unverified or limited, never inferred from a
+successful build. The delivery phase may remain blocked when required criteria
+failed or remain unverified; this workflow decision is separate from transition
+tool input handling.
 
 ## Configuration and invocation
 
@@ -122,18 +126,19 @@ Model override keys are `<phase>_model` for `product_discovery`,
 `design_system_synthesis`, `design_system_review`, `stack_adaptation`,
 `experience_architecture`, `design_implementation`, `visual_ux_audit`,
 `design_remediation`, `design_acceptance`, and `delivery`. Empty values use the
-session model. Phase transitions are tool-call gated. The typed checkpoint
+session model. Phase transitions are tool-call gated. If an agent turn ends
+without its phase transition tool, the runner continues the same phase with the
+shared conversation and session memory for up to three bounded attempts,
+reminding the agent to finish without repeating completed work. If all attempts
+end without a transition, the phase remains the resume cursor and the workflow
+reports the expected transition tool so it can be resumed. The typed checkpoint
 stores bounded phase state and artifact references, not full research reports
 or source files; the existing workflow checkpoint/resume mechanism remains the
 source of durable execution state.
 
 ## Validation
 
-The workflow has unit tests for phase contracts, profile selection, tool
-validation, bounded loops, and checkpoint encoding; integration tests for
-approval behavior; and mocked-provider end-to-end tests for a broad design run
-and a focused accessibility audit. The E2E suite also verifies honest handling
-when the skill or visual-inspection capability is unavailable.
+The workflow has unit tests for transition recording, profile selection, bounded loops, and checkpoint encoding; integration tests for approval behavior; and mocked-provider end-to-end tests for a broad design run and a focused accessibility audit. The E2E suite also verifies honest handling when the skill or visual-inspection capability is unavailable.
 
 ```bash
 uv run pytest tests/unit/test_ui_ux_pro_max.py tests/unit/test_workflow_registry.py -q

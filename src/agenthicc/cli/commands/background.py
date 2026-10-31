@@ -5,17 +5,21 @@ from __future__ import annotations
 import json as json_module
 from collections.abc import Coroutine
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from agenthicc.background import (
     BackgroundSession,
+    BackgroundSettings,
     BackgroundStore,
     BackgroundSupervisor,
-    BackgroundSettings,
     background_enabled,
     load_background_settings,
 )
 from agenthicc.cli.context import CLIContext
 from agenthicc.cli.registry import optional_positionals
+
+if TYPE_CHECKING:
+    from agenthicc.tui.workspace.agents_hub.model import LibraryEntry
 
 
 def _config(ctx: CLIContext) -> object:
@@ -107,6 +111,33 @@ def _public_session(
             result["attempt_history"] = sanitized_history
         return result
     return {}
+
+
+def _definition_entries() -> list[LibraryEntry]:
+    from agenthicc.tui.workspace.agents_hub.sources import load_library
+
+    return load_library(Path.cwd() / ".agenthicc", Path.home() / ".agenthicc")
+
+
+def _definition_payload(entry: LibraryEntry) -> dict[str, object]:
+    spec = entry.spec
+    return {
+        "name": entry.name,
+        "source": entry.source,
+        "state": entry.state,
+        "description": entry.description,
+        "mode": entry.mode,
+        "model": entry.model,
+        "tools": list(spec.tools) if spec is not None and spec.tools is not None else None,
+        "capabilities": (
+            list(spec.capabilities) if spec is not None and spec.capabilities is not None else None
+        ),
+        "max_steps": spec.max_steps if spec is not None else None,
+        "ceiling": spec.ceiling if spec is not None else "",
+        "path": entry.path,
+        "default": entry.default,
+        "note": entry.note,
+    }
 
 
 def _queue_positions(supervisor: BackgroundSupervisor) -> dict[str, int]:
@@ -353,6 +384,72 @@ async def run(
             f"Background session {session.session_id} accepted; "
             f"worker state is {session.status.value}."
         )
+
+
+def agents_definitions_list(ctx: CLIContext, json: bool = False) -> None:
+    """List every agent definition and its validation and precedence state."""
+    entries = _definition_entries()
+    if json:
+        print(
+            json_module.dumps(
+                [_definition_payload(item) for item in entries], indent=2, sort_keys=True
+            )
+        )
+        return
+    if not entries:
+        print("No agent definitions.")
+        return
+    for entry in entries:
+        marker = "★" if entry.default else " "
+        print(
+            f"{marker} {entry.name:20} {entry.source:16} {entry.state:10} "
+            f"{entry.mode or '—':10} {entry.model or '(session)':20} {entry.tools or 'all tools'}"
+        )
+        if entry.note:
+            print(f"  {entry.note}")
+        if entry.path:
+            print(f"  {entry.path}")
+
+
+def agents_definitions_show(ctx: CLIContext, name: str) -> None:
+    """Show every definition named NAME, including shadowed candidates."""
+    matches = [entry for entry in _definition_entries() if entry.name == name]
+    if not matches:
+        print(f"Agent definition not found: {name}")
+        raise SystemExit(1)
+    for index, entry in enumerate(matches):
+        if index:
+            print()
+        print(f"{entry.name} · {entry.source} · {entry.state}")
+        if entry.description:
+            print(f"Description: {entry.description}")
+        if entry.mode:
+            print(f"Mode: {entry.mode}")
+        if entry.model:
+            print(f"Model: {entry.model}")
+        if entry.tools:
+            print(f"Tools: {entry.tools}")
+        if entry.path:
+            print(f"Path: {entry.path}")
+        if entry.note:
+            print(f"Status: {entry.note}")
+        if entry.spec is not None:
+            print("\nPrompt:\n" + (entry.spec.prompt or "(empty)"))
+
+
+def agents_definitions_validate(ctx: CLIContext) -> None:
+    """Report invalid or untrusted agent definitions with their source paths."""
+    entries = _definition_entries()
+    problems = [entry for entry in entries if entry.state in ("invalid", "untrusted")]
+    print(f"{len(entries)} agent definition(s) checked.")
+    if not problems:
+        print("All definitions are valid and trusted.")
+        return
+    for entry in problems:
+        print(f"{entry.name} · {entry.state}: {entry.note or 'requires attention'}")
+        if entry.path:
+            print(f"  {entry.path}")
+    raise SystemExit(1)
 
 
 def agents_list(

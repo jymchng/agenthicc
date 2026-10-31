@@ -22,10 +22,10 @@ from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, TypeVar, cast
 
+from agenthicc.memory.tool_history import repair_non_adjacent_tool_history
 from agenthicc.runners.agent_turn_context import AgentTurnContext
 from agenthicc.runners.prompt_contract import PromptBlock
 from agenthicc.runners.recovery_projection import ToolRecoveryProjector
-from agenthicc.memory.tool_history import repair_non_adjacent_tool_history
 from agenthicc.tools.base import tool_name
 from agenthicc.tools.hooks import (
     AfterToolHookDecision,
@@ -539,30 +539,120 @@ def _is_context_overflow_error(exc: BaseException) -> bool:
 
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
     from contextvars import Token
-    from lauren_ai import AgentContext
+
+    from lauren_ai import AgentContext, IdempotencyLedger
     from lauren_ai._agents import AgentMeta
-    from lauren_ai._tools import ToolResult
-    from collections.abc import Awaitable, Callable
     from lauren_ai._agents._runner import AgentRunnerBase
     from lauren_ai._memory import ShortTermMemory
+    from lauren_ai._signals import ToolCallComplete, ToolCallStarted
+    from lauren_ai._tools import ToolResult
     from lauren_ai._transport import ToolCall
-    from lauren_ai import IdempotencyLedger
-    from lauren_ai._signals import ToolCallStarted, ToolCallComplete
-    from agenthicc.config import ExecutionSettings
+
+    from agenthicc.agents.definitions import AgentSpec
+    from agenthicc.agents.registry import AgentsRegistry
+    from agenthicc.config import AgenthiccConfig, ExecutionSettings
     from agenthicc.kernel.processor import EventProcessor
     from agenthicc.memory.router import MemoryRouter
     from agenthicc.memory.vector import SemanticIndex
     from agenthicc.mentions.cache import MentionCache
+    from agenthicc.mentions.parser import Mention
+    from agenthicc.plugins.registry import ToolRegistry
+    from agenthicc.runners.prompt_contract import PromptContract
+    from agenthicc.runners.usage_ledger import UsageLedger, UsageRunTracker
     from agenthicc.skills.loader import SkillDef, SkillPermissionSet
+    from agenthicc.subagents.types import SubagentTypeRegistry
     from agenthicc.tools.approval import ApprovalBroker
     from agenthicc.tools.base import ToolLike
     from agenthicc.tools.mcp import McpToolRegistry
     from agenthicc.tools.mcp_manager import McpSessionManager
-    from agenthicc.tui.conversation_store import AppState, ConversationStore
-    from agenthicc.runners.usage_ledger import UsageLedger, UsageRunTracker
-    from agenthicc.runners.prompt_contract import PromptContract
     from agenthicc.tools.workspace_access import WorkspaceAccessPolicy
+    from agenthicc.tui.conversation_store import AppState, ConversationStore
+
+
+# ── the primary agent's restrictions (AGX-09) ────────────────────────────────
+
+
+def _agent_restrictions(
+    spec: AgentSpec,
+    registry: ToolRegistry,
+    allowed: frozenset[str] | None,
+    excluded: frozenset[str],
+    app_state: AppState | None,
+) -> tuple[frozenset[str] | None, frozenset[str], AppState | None, str]:
+    """A turn's tool names, excluded capabilities, gate state and agent prompt.
+
+    The definition intersects the session's tools with its ``tools``, hides
+    capability classes outside its ``capabilities``, and restricts the mode
+    with its ``ceiling``; nothing it declares can widen the session. The gate
+    state carries the restricted mode when the ceiling adds to it.
+    """
+    from agenthicc.agents.definitions import CAPABILITY_NAMES
+
+    if spec.tools is not None:
+        names: set[str] = set()
+        for pattern in spec.tools:
+            expanded = registry.glob_expand(pattern)
+            names |= expanded if expanded else {pattern}
+        allowed = frozenset(names) if allowed is None else allowed & frozenset(names)
+    if spec.capabilities is not None:
+        every = frozenset({*CAPABILITY_NAMES, "undeclared"})
+        excluded = excluded | (every - frozenset(spec.capabilities))
+    sections = [f"## AGENT: {spec.name}\n{spec.prompt}"] if spec.prompt else []
+    gate_state = app_state
+    if spec.ceiling and app_state is not None:
+        from agenthicc.tui.conversation_store import AppState as _AppState
+        from agenthicc.tui.runtime.mode_manager import builtin_mode, restrict_mode
+
+        current = app_state.active_mode()
+        ceiling = builtin_mode(spec.ceiling)
+        restricted = restrict_mode(current, ceiling)
+        if restricted is not current:
+            gate_state = _AppState.create()
+            gate_state.active_mode.set(restricted)
+            gate_state.cli_flags = app_state.cli_flags
+            excluded = excluded | frozenset(str(item) for item in restricted.blocked_capabilities)
+            if ceiling.system_prompt_suffix:
+                sections.append(ceiling.system_prompt_suffix)
+    return allowed, excluded, gate_state, "\n\n".join(sections)
+
+
+def _visible_tools_for_agent(
+    registry: ToolRegistry,
+    allowed: frozenset[str] | None,
+    excluded: frozenset[str],
+) -> list[ToolLike]:
+    """Return the model-visible tools after name and capability restrictions."""
+    from agenthicc.tools.capabilities import get_tool_capabilities
+
+    return [
+        tool
+        for tool in registry.tools
+        if (allowed is None or tool_name(tool) in allowed)
+        and not (get_tool_capabilities(tool) & excluded)
+    ]
+
+
+def _effective_agent_tool_names(
+    spec: AgentSpec,
+    registry: ToolRegistry,
+    app_state: AppState | None,
+    *,
+    allowed_tool_names: frozenset[str] | None = None,
+    excluded_capabilities: frozenset[str] = frozenset(),
+) -> tuple[str, ...]:
+    """List a definition's model-visible tools against a session registry."""
+    allowed, excluded, _, _ = _agent_restrictions(
+        spec,
+        registry,
+        allowed_tool_names,
+        excluded_capabilities,
+        app_state,
+    )
+    return tuple(
+        sorted(tool_name(tool) for tool in _visible_tools_for_agent(registry, allowed, excluded))
+    )
 
 
 # ── formatting helper (module-level, unchanged) ───────────────────────────────
@@ -999,6 +1089,11 @@ class AgentTurnRunner:
         self._reset_attempt_output: Callable[[], None] | None = None
         self._last_committed_step = ""
         self._active_step_id = ""
+        self._agent_mentions: list[Mention] = []
+        self._spawn_tool: Callable[..., Awaitable[dict[str, object]]] | None = None
+        self._definition_agent_errors: dict[str, str] = {}
+        self._visible_tools: list[ToolLike] = []
+        self._tool_registry: object | None = None
 
     # ── public entry point ────────────────────────────────────────────────────
 
@@ -1064,6 +1159,7 @@ class AgentTurnRunner:
         self._inject_skills()
 
         agent_instance, active_runner = self._build_agent()
+        agent_text = await self._run_agent_mentions(agent_text)
 
         # Keep cancellation active through the entire provider/tool loop. The
         # foreground command tool performs child-process cleanup before raising
@@ -1108,7 +1204,7 @@ class AgentTurnRunner:
             return
         try:
             await closer()
-        except Exception:  # noqa: BLE001 — preserve the original provider failure
+        except Exception:  # noqa: BLE001  # preserve the original provider failure
             pass
 
     # ── step 1: model resolution ──────────────────────────────────────────────
@@ -1176,8 +1272,12 @@ class AgentTurnRunner:
             return
 
         from lauren_ai._signals import (
-            ToolCallStarted as _TCS,
             ToolCallComplete as _TCC,
+        )
+        from lauren_ai._signals import (
+            ToolCallStarted as _TCS,
+        )
+        from lauren_ai._signals import (
             ToolExchangeRepaired as _TER,
         )
 
@@ -1289,13 +1389,15 @@ class AgentTurnRunner:
     # ── step 5: @mention injection ────────────────────────────────────────────
 
     async def _inject_mentions(self) -> str:
-        """Resolve @mentions and emit mention chips. Returns agent_text."""
+        """Resolve file mentions and collect ``@agent:NAME`` invocations."""
         from agenthicc.mentions.injector import (
-            build_context_prefix,
             InjectionConfig,
+            build_context_prefix,
         )
+        from agenthicc.mentions.parser import agent_mentions
 
         ctx = self._ctx
+        self._agent_mentions = agent_mentions(ctx.text)
         workspace_access = ctx.workspace_access
         if workspace_access is None:
             from agenthicc.tools.workspace_access import current_workspace_access
@@ -1334,11 +1436,11 @@ class AgentTurnRunner:
 
     def _inject_skills(self) -> None:
         """Find matching skills and build self._skill_suffix."""
+        from agenthicc.skills.loader import filter_skills_for_agent
         from agenthicc.skills.runner import (
             find_matching_skills,
             process_skill_body,
         )
-        from agenthicc.skills.loader import filter_skills_for_agent
 
         ctx = self._ctx
         available_skills = filter_skills_for_agent(
@@ -1359,12 +1461,14 @@ class AgentTurnRunner:
 
         Returns (agent_instance, active_runner).
         """
-        from lauren_ai._agents import agent as agent_decorator, use_tools
+        from lauren_ai._agents import agent as agent_decorator
+        from lauren_ai._agents import use_tools
         from lauren_ai._agents._runner import AgentRunnerBase as _RunnerBase
-        from agenthicc.plugins.registry import build_registry
+
         from agenthicc.agents.plugin import BASE_SYSTEM_PROMPT as _BASE
-        from agenthicc.runners.tool_populator import populate_agent_tools
+        from agenthicc.plugins.registry import build_registry
         from agenthicc.runners.prompt_contract import PromptBlock
+        from agenthicc.runners.tool_populator import populate_agent_tools
         from agenthicc.tools.capabilities import (
             get_tool_capabilities,
             is_exploratory_tool,
@@ -1381,12 +1485,24 @@ class AgentTurnRunner:
         )
         excluded_capabilities = ctx.excluded_capabilities
         allowed_tool_names = ctx.allowed_tool_names
-        visible_tools = [
-            tool
-            for tool in registry.tools
-            if (allowed_tool_names is None or tool_name(tool) in allowed_tool_names)
-            and not (get_tool_capabilities(tool) & excluded_capabilities)
-        ]
+        gate_state = ctx.app_state
+        agent_section = ""
+        if ctx.agent_spec is not None:
+            # AGX-09: the primary agent may only narrow what this turn can do.
+            allowed_tool_names, excluded_capabilities, gate_state, agent_section = (
+                _agent_restrictions(
+                    ctx.agent_spec,
+                    registry,
+                    allowed_tool_names,
+                    excluded_capabilities,
+                    ctx.app_state,
+                )
+            )
+        visible_tools = _visible_tools_for_agent(
+            registry,
+            allowed_tool_names,
+            excluded_capabilities,
+        )
         visible_names = {tool_name(tool) for tool in visible_tools}
         excluded_names = [name for name in registry.names if name not in visible_names]
 
@@ -1406,6 +1522,7 @@ class AgentTurnRunner:
         if prompt_contract is None:
             system = (
                 effective_base
+                + (f"\n\n{agent_section}" if agent_section else "")
                 + (f"\n\n{ctx.system_prompt_suffix}" if ctx.system_prompt_suffix else "")
                 + (self._skill_suffix or "")
                 + (
@@ -1434,6 +1551,8 @@ class AgentTurnRunner:
             if prompt_contract.stable_system_prefix:
                 system += f"\n\n{prompt_contract.stable_system_prefix}"
             self._runtime_dynamic_blocks = []
+            if agent_section:
+                self._runtime_dynamic_blocks.append(PromptBlock("AGENT", agent_section))
             description = registry.describe(excluded_names=excluded_names)
             if description:
                 self._runtime_dynamic_blocks.append(PromptBlock("AVAILABLE TOOLS", description))
@@ -1473,14 +1592,14 @@ class AgentTurnRunner:
         self._exploratory_tools = {
             tool_name(tool) for tool in visible_tools if is_exploratory_tool(tool)
         }
-        if ctx.app_state is not None:
+        if gate_state is not None:
             from agenthicc.tools.capability_gate import ToolCapabilityGate
 
-            hooks.append(ToolCapabilityGate(ctx.app_state))
+            hooks.append(ToolCapabilityGate(gate_state))
             if ctx.approval_svc is not None:
                 from agenthicc.tools.approval import ApprovalGate
 
-                hooks.append(ApprovalGate(ctx.app_state, ctx.approval_svc, ctx.workspace_access))
+                hooks.append(ApprovalGate(gate_state, ctx.approval_svc, ctx.workspace_access))
 
         runner_class: type[AgentRunnerBase] = _RunnerBase
         next_queued_message = ctx.next_queued_message
@@ -1501,7 +1620,7 @@ class AgentTurnRunner:
                     self,
                     tool_calls: list[ToolCall],
                     *,
-                    ctx: "AgentContext",
+                    ctx: AgentContext,
                     agent: object,
                     model: str,
                     run_sinks: tuple[object, ...] = (),
@@ -1549,9 +1668,9 @@ class AgentTurnRunner:
         # PRD-124: inject spawn_subagents into every turn so any agent can
         # optionally spawn a concurrent subagent pool.
         if ctx.runner is not None:
-            from agenthicc.subagents.tool import make_spawn_subagents_tool
-            from agenthicc.subagents.policy import SubagentExecutionPolicy
             from agenthicc.runners.retry import RetryConfig
+            from agenthicc.subagents.policy import SubagentExecutionPolicy
+            from agenthicc.subagents.tool import make_spawn_subagents_tool
 
             _ec = _execution(ctx.exec_cfg)
             _subagent_retry = RetryConfig(
@@ -1561,7 +1680,7 @@ class AgentTurnRunner:
                 max_total_duration_s=_ec.transport_retry_max_total_s,
             )
             _subagent_policy = SubagentExecutionPolicy.from_app_state(
-                ctx.app_state,
+                gate_state,
                 visible_tool_names=frozenset(tool_name(item) for item in visible_tools),
                 system_prompt_suffix=ctx.system_prompt_suffix,
                 workspace_scope_identity=(
@@ -1570,6 +1689,43 @@ class AgentTurnRunner:
                     else ""
                 ),
             )
+            definition_registry = self._build_definition_subagent_registry(
+                registry,
+                visible_tools,
+                gate_state,
+            )
+            _agent_config = ctx.agent_config
+            _subagent_settings = _agent_config.subagents if _agent_config is not None else None
+            _provider = _ec.provider
+            _default_model = ""
+            _allowed_models: frozenset[str] | None = None
+            if _agent_config is not None:
+                if _ec.profile:
+                    _session_profile = _agent_config.providers.get(_ec.profile)
+                    if _session_profile is not None:
+                        _provider = _session_profile.provider
+                if _subagent_settings is not None:
+                    from agenthicc.agents.selection import _resolve_model_reference
+
+                    if _subagent_settings.default_model:
+                        _default_model = _resolve_model_reference(
+                            _subagent_settings.default_model,
+                            agent_name="subagents.default_model",
+                            cfg=_agent_config,
+                        )
+                    if _subagent_settings.allowed_models is not None:
+                        resolved_models: set[str] = set()
+                        for _model_reference in _subagent_settings.allowed_models:
+                            try:
+                                _resolved = _resolve_model_reference(
+                                    _model_reference,
+                                    agent_name="subagents.allowed_models",
+                                    cfg=_agent_config,
+                                )
+                            except ValueError:
+                                _resolved = ""
+                            resolved_models.add(_resolved or _model_reference)
+                        _allowed_models = frozenset(resolved_models)
             spawn_tool = make_spawn_subagents_tool(
                 parent_runner=ctx.runner,
                 parent_model=self._model_id,
@@ -1582,6 +1738,7 @@ class AgentTurnRunner:
                 parent_run_id=self._intent_id,
                 conversation_journal=getattr(ctx.session_memory, "journal", None),
                 tool_registry=registry,
+                registry=definition_registry,
                 retry_config=_subagent_retry,
                 provider_options={
                     "temperature": _ec.temperature,
@@ -1592,12 +1749,18 @@ class AgentTurnRunner:
                 approval_svc=ctx.approval_svc,
                 workspace_access=ctx.workspace_access,
                 policy=_subagent_policy,
+                provider=_provider,
+                execution_settings=_ec,
+                subagent_settings=_subagent_settings,
+                default_model=_default_model,
+                allowed_models=_allowed_models,
             )
             registry.register(spawn_tool, source="builtin")
             spawn_name = tool_name(spawn_tool)
             if (allowed_tool_names is None or spawn_name in allowed_tool_names) and not (
                 get_tool_capabilities(spawn_tool) & excluded_capabilities
             ):
+                self._spawn_tool = cast("Callable[..., Awaitable[dict[str, object]]]", spawn_tool)
                 visible_tools.append(spawn_tool)
                 populate_agent_tools(agent_instance, visible_tools)
 
@@ -1653,7 +1816,269 @@ class AgentTurnRunner:
             if description:
                 self._runtime_dynamic_blocks.insert(0, PromptBlock("AVAILABLE TOOLS", description))
 
+        self._visible_tools = list(visible_tools)
+        self._tool_registry = registry
         return agent_instance, active_runner
+
+    def _build_definition_subagent_registry(
+        self,
+        tool_registry: ToolRegistry,
+        visible_tools: Sequence[object],
+        parent_state: AppState | None,
+    ) -> SubagentTypeRegistry:
+        """Merge Markdown agent definitions into the built-in spawn registry."""
+        from agenthicc.security import AgentCapabilityScope
+        from agenthicc.subagents.policy import (
+            SubagentExecutionPolicy,
+            restrict_workspace_scope,
+        )
+        from agenthicc.subagents.types import (
+            SubagentTypeSpec,
+            _BUILTIN_REGISTRY,
+        )
+        from agenthicc.tools.capabilities import ToolCapability, get_tool_capabilities
+
+        ctx = self._ctx
+        result = ctx.subagent_registry.copy()
+        self._definition_agent_errors.clear()
+
+        if ctx.agents_registry is None:
+            return result
+
+        builtin_subagent_names = frozenset(_BUILTIN_REGISTRY.names())
+        source_priority = {
+            "builtin": 0,
+            "python-user": 1,
+            "python-project": 2,
+            "user": 3,
+            "project": 4,
+        }
+        refused_names: set[str] = set()
+        for entry in ctx.agents_registry.catalog:
+            if entry.source not in {"user", "project"}:
+                continue
+            if entry.state not in {"invalid", "untrusted"} or entry.kept_previous:
+                continue
+            winner = ctx.agents_registry.get(entry.name)
+            if (
+                winner is not None
+                and source_priority.get(winner.source, -1) > source_priority[entry.source]
+            ):
+                continue
+            result.unregister(entry.name)
+            refused_names.add(entry.name)
+            if entry.state == "untrusted":
+                detail = "definition is not trusted"
+            else:
+                detail = str(entry.error or "definition is invalid")
+            message = f"{entry.path}: {detail}"
+            self._definition_agent_errors[entry.name] = message
+            logger.warning("Subagent definition %r refused: %s", entry.name, message)
+
+        tools_by_name = {tool_name(tool): tool for tool in visible_tools}
+        visible_names = frozenset(tools_by_name)
+        for definition in ctx.agents_registry.subagents(include_hidden=True):
+            if definition.name in refused_names:
+                continue
+            if (
+                definition.source == "project"
+                and definition.name in builtin_subagent_names
+                and not definition.override
+            ):
+                message = (
+                    f"{definition.path}: project definition shadows built-in subagent type "
+                    f"{definition.name!r}; set override: true to replace it"
+                )
+                self._definition_agent_errors[definition.name] = message
+                logger.warning("Subagent definition %r refused: %s", definition.name, message)
+                continue
+
+            permissions = definition.permissions
+            workspace_scope = None
+            if permissions is not None:
+                try:
+                    workspace_scope = restrict_workspace_scope(
+                        ctx.workspace_access.scope if ctx.workspace_access is not None else None,
+                        permissions.workspace_paths,
+                    )
+                except ValueError as exc:
+                    source = f"{definition.path}: " if definition.path is not None else ""
+                    self._definition_agent_errors[definition.name] = f"{source}{exc}"
+                    continue
+
+            declared_tools: frozenset[str] | None = None
+            if definition.tools is not None:
+                expanded: set[str] = set()
+                for pattern in definition.tools:
+                    matches = tool_registry.glob_expand(pattern)
+                    expanded.update(matches if matches else {pattern})
+                declared_tools = frozenset(expanded)
+            inherited_scope = AgentCapabilityScope(allowed_tools=visible_names)
+            declared_scope = AgentCapabilityScope(allowed_tools=declared_tools)
+            permission_scope = AgentCapabilityScope(
+                denied_tools=permissions.deny_tools if permissions is not None else frozenset()
+            )
+            effective_scope = inherited_scope.restrict(declared_scope).restrict(permission_scope)
+            allowed_names = frozenset(
+                name for name in visible_names if effective_scope.is_tool_allowed(name)
+            )
+            if definition.capabilities is not None:
+                allowed_capabilities = frozenset(
+                    ToolCapability(name) for name in definition.capabilities
+                )
+                allowed_names = frozenset(
+                    name
+                    for name in allowed_names
+                    if (
+                        get_tool_capabilities(tools_by_name[name])
+                        or frozenset({ToolCapability.UNDECLARED})
+                    )
+                    <= allowed_capabilities
+                )
+                effective_scope = effective_scope.restrict(
+                    AgentCapabilityScope(allowed_tools=allowed_names)
+                )
+
+            gate_state = parent_state
+            prompt = (
+                f"## AGENT: {definition.name}\n{definition.prompt}" if definition.prompt else ""
+            )
+            if definition.ceiling and gate_state is not None:
+                from agenthicc.tui.conversation_store import AppState
+                from agenthicc.tui.runtime.mode_manager import builtin_mode, restrict_mode
+
+                ceiling = builtin_mode(definition.ceiling)
+                restricted = restrict_mode(gate_state.active_mode(), ceiling)
+                if restricted is not gate_state.active_mode():
+                    isolated = AppState.create()
+                    isolated.active_mode.set(restricted)
+                    isolated.cli_flags = gate_state.cli_flags
+                    gate_state = isolated
+                    if ceiling.system_prompt_suffix:
+                        prompt = "\n\n".join(
+                            part for part in (prompt, ceiling.system_prompt_suffix) if part
+                        )
+
+            subagent_policy = SubagentExecutionPolicy.from_app_state(
+                gate_state,
+                visible_tool_names=allowed_names,
+                capability_scope=effective_scope,
+                type_permissions=permissions,
+                type_name=definition.name if permissions is not None else "",
+                workspace_scope_identity=(
+                    str(workspace_scope.scope_id)
+                    if permissions is not None
+                    and permissions.workspace_paths is not None
+                    and workspace_scope is not None
+                    else (
+                        str(ctx.workspace_access.scope.primary_root)
+                        if ctx.workspace_access is not None
+                        else ""
+                    )
+                ),
+            )
+            model = ""
+            if definition.model:
+                if ctx.agent_config is None:
+                    self._definition_agent_errors[definition.name] = (
+                        "the session model configuration is unavailable"
+                    )
+                    continue
+                try:
+                    from agenthicc.agents.selection import _resolve_model_reference
+
+                    resolved_model = _resolve_model_reference(
+                        definition.model,
+                        agent_name=definition.name,
+                        cfg=ctx.agent_config,
+                    )
+                    model = (
+                        "inherit" if definition.model.casefold() == "inherit" else resolved_model
+                    )
+                except ValueError as exc:
+                    self._definition_agent_errors[definition.name] = str(exc)
+                    continue
+            result.register(
+                SubagentTypeSpec(
+                    name=definition.name,
+                    allowed_tools=allowed_names,
+                    max_turns=min(
+                        ctx.max_agent_turns,
+                        definition.max_steps
+                        if definition.max_steps is not None
+                        else ctx.max_agent_turns,
+                    ),
+                    system_prompt=prompt or definition.description,
+                    model=model,
+                    policy=subagent_policy,
+                    effort=definition.effort,
+                    context=definition.context,
+                    output_schema=definition.output_schema,
+                    permissions=permissions,
+                )
+            )
+        return result
+
+    async def _run_agent_mentions(self, agent_text: str) -> str:
+        """Run each explicit subagent mention and prepend its result to the turn."""
+        if not self._agent_mentions:
+            return agent_text
+        ctx = self._ctx
+        if ctx.agents_registry is None or self._spawn_tool is None:
+            return (
+                agent_text
+                + "\n\n[⚠ @agent mentions require an interactive session agent registry.]"
+            )
+
+        tasks: list[dict[str, str]] = []
+        warnings: list[str] = []
+        task_text = ctx.text
+        for mention in sorted(self._agent_mentions, key=lambda item: item.start, reverse=True):
+            task_text = task_text[: mention.start] + task_text[mention.end :]
+        task_text = task_text.strip()
+        for mention in self._agent_mentions:
+            spec = ctx.agents_registry.get(mention.path)
+            failure = self._definition_agent_errors.get(mention.path)
+            if failure:
+                warnings.append(f"[⚠ {mention.raw} cannot run: {failure}]")
+                continue
+            if spec is None or not spec.subagent:
+                warnings.append(f"[⚠ {mention.raw} is not an available subagent definition.]")
+                continue
+            tasks.append(
+                {
+                    "type": spec.name,
+                    "task": task_text or spec.description,
+                    "context": "Explicitly invoked by the user with @agent:NAME.",
+                }
+            )
+        for warning in warnings:
+            if ctx.conv_store is not None:
+                ctx.conv_store.append_event("error", {"message": warning})
+        if not tasks:
+            return "\n\n".join([*warnings, agent_text]) if warnings else agent_text
+
+        result = await self._spawn_tool(tasks=tasks)
+        if not isinstance(result, dict):
+            return agent_text + "\n\n[⚠ Agent mention returned an invalid subagent result.]"
+        output = result.get("results", "")
+        if not isinstance(output, str):
+            output = str(output)
+        if result.get("ok") is not True:
+            error = result.get("error", "subagent failed")
+            output = f"[⚠ {error}]\n{output}" if output else f"[⚠ {error}]"
+        if not output:
+            return agent_text
+        warning_text = "\n".join(warnings)
+        return "\n\n".join(
+            part
+            for part in (
+                warning_text,
+                f"## Results from explicitly mentioned agents\n{output}",
+                agent_text,
+            )
+            if part
+        )
 
     # ── step 8: streaming loop ────────────────────────────────────────────────
 
@@ -1773,8 +2198,8 @@ class AgentTurnRunner:
         from agenthicc.memory.compactor import (
             CompactionOutcome,
             CompactionRecoveryRequired,
-            _emit_outcome,
             _ConcurrentCompactionUpdate,
+            _emit_outcome,
             _InvalidCompactionCandidate,
             _memory_summary,
             _prepare_local_compaction_fallback,
@@ -2384,9 +2809,12 @@ class AgentTurnRunner:
             event_sinks: list[object] = []
             if usage_tracker is not None:
                 event_sinks.append(usage_tracker.sink)
-            if getattr(ctx.runner, "_signals", None) is None and ctx.conv_store is not None:
-                if self._recovery_projector is not None:
-                    event_sinks.append(_ToolRecoveryEventSink(self._recovery_projector))
+            if (
+                getattr(ctx.runner, "_signals", None) is None
+                and ctx.conv_store is not None
+                and self._recovery_projector is not None
+            ):
+                event_sinks.append(_ToolRecoveryEventSink(self._recovery_projector))
             if _step_sink is not None:
                 event_sinks.append(_step_sink)
             resume_existing_turn = _resume_existing_turn[0] or _safe_snapshot_includes_user[0]
@@ -2670,7 +3098,7 @@ class AgentTurnRunner:
                 error_event_id: str | None = f"agent-turn-error:{self._intent_id}"
                 try:
                     # Tag an arbitrary (possibly third-party) exception object.
-                    setattr(exc, "_agenthicc_error_event_id", error_event_id)  # noqa: B010
+                    exc.__dict__["_agenthicc_error_event_id"] = error_event_id
                 except Exception:  # noqa: BLE001 - third-party exceptions may be slotted
                     error_event_id = None
                 missing_session_diagnostic = _missing_opencode_session_diagnostic(exc)
@@ -2965,11 +3393,15 @@ async def _run_agent_turn(
     project_plugin_tools: list[ToolLike] | None = None,
     mcp_registry: McpToolRegistry | McpSessionManager | None = None,
     active_agent: str | None = None,
+    subagent_registry: "SubagentTypeRegistry | None" = None,
     completed_turns: int = 0,
     approval_svc: ApprovalBroker | None = None,
     output_collector: list[str] | None = None,
+    agent_spec: AgentSpec | None = None,
+    agents_registry: AgentsRegistry | None = None,
+    agent_config: AgenthiccConfig | None = None,
     system_prompt_suffix: str = "",
-    prompt_contract: "PromptContract | None" = None,
+    prompt_contract: PromptContract | None = None,
     excluded_capabilities: frozenset[str] = frozenset(),
     allowed_tool_names: frozenset[str] | None = None,
     memory_router: MemoryRouter | None = None,
@@ -2982,7 +3414,7 @@ async def _run_agent_turn(
     next_queued_message: Callable[[], str | None] | None = None,
     usage_ledger: UsageLedger | None = None,
     browser_manager: object | None = None,
-    workspace_access: "WorkspaceAccessPolicy | None" = None,
+    workspace_access: WorkspaceAccessPolicy | None = None,
     provider_diagnostic_context: dict[str, str | int] | None = None,
 ) -> None:
     """Thin shim — constructs AgentTurnContext and delegates to AgentTurnRunner.
@@ -3006,6 +3438,11 @@ async def _run_agent_turn(
                 resume_turn_id = plan_turn_id
                 resume_ledger = cast("IdempotencyLedger", workflow_resume_plan.ledger)
 
+    if subagent_registry is None:
+        from agenthicc.subagents.types import DEFAULT_REGISTRY
+
+        subagent_registry = DEFAULT_REGISTRY.copy()
+
     ctx = AgentTurnContext(
         text=text,
         runner=runner,
@@ -3022,6 +3459,10 @@ async def _run_agent_turn(
         project_plugin_tools=project_plugin_tools,
         mcp_registry=mcp_registry,
         active_agent=active_agent,
+        agent_spec=agent_spec,
+        agents_registry=agents_registry,
+        subagent_registry=subagent_registry,
+        agent_config=agent_config,
         completed_turns=completed_turns,
         approval_svc=approval_svc,
         workspace_access=workspace_access,

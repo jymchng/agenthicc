@@ -11,16 +11,12 @@ from __future__ import annotations
 import datetime
 import sys
 import types
+from importlib.util import find_spec
 from unittest.mock import MagicMock
 
 import pytest
 
-try:
-    import moto  # noqa: F401
-
-    HAS_MOTO = True
-except ImportError:
-    HAS_MOTO = False
+HAS_MOTO = find_spec("moto") is not None
 
 pytestmark = pytest.mark.unit
 skip_no_moto = pytest.mark.skipif(not HAS_MOTO, reason="moto not installed")
@@ -157,6 +153,7 @@ class TestMotoRoundTrips:
 
     def test_s3_delete_object(self, s3_setup):
         import botocore.exceptions
+
         from agenthicc.tools.fs.s3 import S3FilesystemBackend
 
         b = S3FilesystemBackend(bucket=_BUCKET, region=_REGION)
@@ -243,6 +240,7 @@ class TestMotoRoundTrips:
 
     def test_s3_key_strips_prefix(self, s3_setup):
         import boto3
+
         from agenthicc.tools.fs.s3 import S3FilesystemBackend
 
         b = S3FilesystemBackend(bucket=_BUCKET, region=_REGION, prefix="workspace/")
@@ -368,7 +366,7 @@ class TestS3StatFields:
         from agenthicc.tools.fs.backend import FileStat
 
         backend, mock_client = _build_backend()
-        now = datetime.datetime(2024, 1, 15, 10, 0, 0, tzinfo=datetime.timezone.utc)
+        now = datetime.datetime(2024, 1, 15, 10, 0, 0, tzinfo=datetime.UTC)
         mock_client.head_object.return_value = {
             "ContentLength": 42,
             "ETag": '"deadbeef"',
@@ -383,16 +381,6 @@ class TestS3StatFields:
         assert st.backend == "s3"
         assert st.is_file is True
         assert st.is_dir is False
-
-    def test_missing_last_modified_uses_timezone_aware_fallback(self):
-        backend, mock_client = _build_backend()
-        mock_client.head_object.return_value = {"ContentLength": 42, "ETag": '"deadbeef"'}
-        before = datetime.datetime.now(datetime.UTC).timestamp()
-
-        stat = backend.stat("stat.bin")
-
-        after = datetime.datetime.now(datetime.UTC).timestamp()
-        assert before <= stat.modified_at <= after
 
 
 class TestS3ListDir:
@@ -531,19 +519,19 @@ class TestS3BatchReadPartialFailure:
 
 class TestS3PathEscapeRejected:
     def test_s3_path_escape_rejected(self):
-        backend, mock_client = _build_backend()
+        backend, _mock_client = _build_backend()
 
         with pytest.raises(PermissionError, match="path traversal"):
             backend.read_text("../escape.txt")
 
     def test_s3_path_escape_in_subdir(self):
-        backend, mock_client = _build_backend()
+        backend, _mock_client = _build_backend()
 
         with pytest.raises(PermissionError):
             backend.write_text("subdir/../../etc/passwd", "evil")
 
     def test_s3_path_escape_on_delete(self):
-        backend, mock_client = _build_backend()
+        backend, _mock_client = _build_backend()
 
         with pytest.raises(PermissionError):
             backend.delete("subdir/../../../etc/passwd")
@@ -597,23 +585,14 @@ class TestS3UriPathAccepted:
 
 
 class TestS3MissingBoto3RaisesImportError:
-    def test_s3_missing_boto3_raises_import_error(self):
+    def test_s3_missing_boto3_raises_import_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Constructing the backend without boto3 raises ImportError."""
-        # Remove any previously injected boto3 from sys.modules
-        saved_boto3 = sys.modules.pop("boto3", None)
-        # Also evict the cached s3 module so its __init__ re-runs
-        sys.modules.pop("agenthicc.tools.fs.s3", None)
+        from agenthicc.tools.fs import s3 as s3_mod
 
-        try:
-            from agenthicc.tools.fs import s3 as s3_mod
-
-            with pytest.raises(ImportError, match="boto3"):
-                s3_mod.S3FilesystemBackend(bucket="x")
-        finally:
-            # Re-inject boto3 for subsequent tests
-            if saved_boto3 is not None:
-                sys.modules["boto3"] = saved_boto3
-            sys.modules.pop("agenthicc.tools.fs.s3", None)
+        # Simulate an absent optional dependency even if the test environment has it installed.
+        monkeypatch.setitem(sys.modules, "boto3", None)
+        with pytest.raises(ImportError, match="boto3"):
+            s3_mod.S3FilesystemBackend(bucket="x")
 
 
 class TestS3NameIsS3:

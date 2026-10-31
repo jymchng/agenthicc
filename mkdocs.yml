@@ -95,6 +95,7 @@ nav:
       - Parallel coding workers: guides/parallel-workers.md
       - Worktree environments and actions: guides/worktree-environments.md
       - Subagents: guides/subagents.md
+      - Agent Library: guides/agent-library.md
       - Custom workflows and TOML configuration: guides/custom-workflows-and-config.md
       - Command execution: guides/command-execution.md
       - Client-neutral sessions: guides/session-service.md

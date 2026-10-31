@@ -412,6 +412,32 @@ class BackgroundInteractionInbox:
             raise KeyError(item_id)
         return self._parse(row)
 
+    def pending_summary(
+        self,
+    ) -> tuple[int, frozenset[str], frozenset[str], BackgroundInboxItem | None]:
+        """Return the exact pending count, IDs, owning sessions and oldest request."""
+        with closing(self._connect()) as connection:
+            connection.execute("BEGIN")
+            count_row = connection.execute(
+                "SELECT COUNT(*) FROM inbox_items WHERE status='pending'"
+            ).fetchone()
+            session_rows = connection.execute(
+                "SELECT DISTINCT session_id FROM inbox_items WHERE status='pending'"
+            ).fetchall()
+            item_rows = connection.execute(
+                "SELECT item_id FROM inbox_items WHERE status='pending'"
+            ).fetchall()
+            oldest_row = connection.execute(
+                "SELECT * FROM inbox_items WHERE status='pending' "
+                "ORDER BY created_at ASC, item_id ASC LIMIT 1"
+            ).fetchone()
+            connection.commit()
+        count = int(count_row[0]) if count_row is not None else 0
+        session_ids = frozenset(str(row[0]) for row in session_rows)
+        item_ids = frozenset(str(row[0]) for row in item_rows)
+        oldest = self._parse(oldest_row) if oldest_row is not None else None
+        return count, session_ids, item_ids, oldest
+
     def list_items(
         self,
         *,

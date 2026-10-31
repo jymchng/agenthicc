@@ -359,34 +359,22 @@ class WorkflowRunHandle:
             provider_profile=provider_profile,
             provider_profile_fingerprint=provider_profile_fingerprint,
             provider_profile_origin=provider_profile or "<legacy execution settings>",
-            provider_profile_history=(provider_profile,) if provider_profile else (),
+            provider_profile_history=(provider_profile or "<legacy execution settings>",),
             workspace_root=workspace_root,
         )
 
-    def apply_provider_profile(
-        self,
-        profile_name: str,
-        binding_fingerprint: str,
-        *,
-        record_switch: bool,
-    ) -> None:
-        """Bind the resolved profile before persisting the resume transition."""
-
-        previous = self.provider_profile
+    def select_provider_profile(self, profile_name: str, fingerprint: str) -> None:
+        """Record a validated provider binding selected for workflow resume."""
+        previous_label = self.provider_profile or "<legacy execution settings>"
+        selected_label = profile_name or "<legacy execution settings>"
         if not self.provider_profile_origin:
-            self.provider_profile_origin = previous or "<legacy execution settings>"
-        if record_switch:
-            history = self.provider_profile_history or (
-                (previous or "<legacy execution settings>",)
-            )
-            self.provider_profile_history = (
-                *history,
-                profile_name or "<legacy execution settings>",
-            )[-8:]
-        elif not self.provider_profile_history and (previous or profile_name):
-            self.provider_profile_history = (previous or profile_name,)
+            self.provider_profile_origin = previous_label
+        history = self.provider_profile_history or (previous_label,)
+        if history[-1] != selected_label:
+            history = (*history, selected_label)[-32:]
         self.provider_profile = profile_name
-        self.provider_profile_fingerprint = binding_fingerprint
+        self.provider_profile_fingerprint = fingerprint
+        self.provider_profile_history = history
 
     def attach_context(self, context: object) -> None:
         """Attach the typed context created by a runner."""
@@ -678,7 +666,8 @@ class WorkflowRunHandle:
         members = _optional_attribute(state_type, "__members__", {})
         candidate = members.get(phase.upper()) if isinstance(members, Mapping) else None
         # Workflow contexts are plugin-defined types; mirror the phase only
-        # where the context declares and accepts these attributes.
+        # where the context declares and accepts these attributes. Use setattr
+        # to preserve descriptors and plugin-defined assignment behavior.
         if candidate is not None:
             try:
                 setattr(context, "state", candidate)  # noqa: B010
@@ -847,8 +836,15 @@ class WorkflowRunHandle:
             browser=browser_payload,
             provider_profile=self.provider_profile,
             provider_profile_fingerprint=self.provider_profile_fingerprint,
-            provider_profile_origin=self.provider_profile_origin,
-            provider_profile_history=self.provider_profile_history,
+            provider_profile_origin=(
+                self.provider_profile_origin
+                or self.provider_profile
+                or "<legacy execution settings>"
+            ),
+            provider_profile_history=(
+                self.provider_profile_history
+                or (self.provider_profile or "<legacy execution settings>",)
+            ),
             workspace_root=self.workspace_root,
             cache_contract_version=self.cache_contract_version,
             cache_epoch=self.cache_epoch,
@@ -986,13 +982,8 @@ class WorkflowRunHandle:
             browser_manager=browser_manager,
             provider_profile=checkpoint.provider_profile,
             provider_profile_fingerprint=checkpoint.provider_profile_fingerprint,
-            provider_profile_origin=(
-                checkpoint.provider_profile_origin or checkpoint.provider_profile
-            ),
-            provider_profile_history=(
-                checkpoint.provider_profile_history
-                or ((checkpoint.provider_profile,) if checkpoint.provider_profile else ())
-            ),
+            provider_profile_origin=checkpoint.provider_profile_origin,
+            provider_profile_history=checkpoint.provider_profile_history,
             workspace_root=checkpoint.workspace_root,
             cache_contract_version=checkpoint.cache_contract_version,
             cache_epoch=checkpoint.cache_epoch,

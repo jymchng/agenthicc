@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from rich.console import Console
@@ -158,9 +159,21 @@ async def test_latest_checkpoint_resume_rehydrates_selection_before_dispatch(
 
 
 @pytest.mark.asyncio
-async def test_continuation_resume_queues_message_before_resume_started() -> None:
+async def test_continuation_resume_queues_message_before_resume_started(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     session, ctx, _workspace, _input = _make_session()
     session._set_workflow_override("stale-workflow")
+    selection = SimpleNamespace(
+        config=ctx.cfg,
+        profile_name="",
+        binding_fingerprint="",
+    )
+    monkeypatch.setattr(
+        session,
+        "_resolve_workflow_resume_provider",
+        lambda _handle, **_kwargs: (selection, SimpleNamespace()),
+    )
 
     class RecoveredWorkflow(WorkflowPlugin):
         name = "continuation_workflow"
@@ -179,6 +192,14 @@ async def test_continuation_resume_queues_message_before_resume_started() -> Non
             workflow_name=RecoveredWorkflow.name,
             current_phase="work",
         )
+        provider_profile = ""
+        provider_profile_fingerprint = ""
+        provider_profile_origin = ""
+        provider_profile_history: tuple[object, ...] = ()
+
+        def select_provider_profile(self, profile_name: str, fingerprint: str) -> None:
+            self.provider_profile = profile_name
+            self.provider_profile_fingerprint = fingerprint
 
         def mark_resuming(self) -> None:
             self.lifecycle = "resuming"

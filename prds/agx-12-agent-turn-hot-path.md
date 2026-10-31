@@ -1,6 +1,6 @@
 ---
 title: "AGX-12: Agent-turn hot path — copy-on-write memory and incremental validation"
-status: Implemented (agenthicc side)
+status: Implemented
 version: 0.1.0
 date: 2026-10-23
 repository: jymchng/agenthicc
@@ -15,9 +15,9 @@ tags: [performance, memory, agent-turn, lauren-ai, replay-safety]
 ## Implementation status (2026-10-23)
 
 The agenthicc side — §4.1 and §4.3 — is implemented in
-`JournaledShortTermMemory`; §4.2 (incremental tool-history index) and §4.4
-(cached token estimates) live in lauren-ai's `ShortTermMemory` and runner and
-remain upstream follow-ups.
+`JournaledShortTermMemory`. §4.2 (incremental tool-history index) and §4.4
+(cached token estimates) are implemented in lauren-ai's `ShortTermMemory` and
+runner, released as 1.6.1, and consumed by agenthicc's dependency pin.
 
 - **Validate first (§4.1).** `ensure_valid_and_persist()` returns `False` before
   copying when `validate_tool_history()` is OK; the repair path is unchanged.
@@ -25,6 +25,22 @@ remain upstream follow-ups.
   references (plus the summary and a deep copy of the small active tool
   exchange). lauren-ai's `_stream_loop` and the agent turn's safe-step
   checkpoints both go through it.
+
+### Upstream remainder release evidence (2026-10-29)
+
+The §4.2 incremental tool-history index and §4.4 cached token estimates are
+upstream lauren-ai changes, not agenthicc-owned source. Upstream PR #5 merged
+as `af94fcad`; release `lauren-ai==1.6.1` was published to PyPI on 2026-10-29.
+The upstream release validation passed 1,421 unit tests (1 skipped) and 1,010
+integration tests; lint, format, typecheck, build, build-check, and the PR CI
+matrix passed. agenthicc now requires `lauren-ai>=1.6.1,<2`, with `uv.lock`
+resolving 1.6.1.
+
+With only agenthicc's `src/` on `PYTHONPATH` and no upstream source overlay, the
+510-step cassette replay passed (5 passed) against the published package. The
+combined copy-on-write and replay tests passed 11 tests. The performance
+measurements and replay oracle below remain local diagnostic evidence; do not
+attribute their source changes to agenthicc when they belong to lauren-ai.
 
 Replay oracle (§4.5), 510-step hermetic `goal_flow` replay, each side run three
 times on the development host (load average 35–55):

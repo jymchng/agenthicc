@@ -55,6 +55,30 @@ BUILTIN_COMMANDS: tuple[CommandRef, ...] = (
     ),
     _ref("background", "run", "run", help="Start an agent turn or workflow"),
     _ref("background", "agents_list", "agents", "list", help="List background agents"),
+    _ref(
+        "background",
+        "agents_definitions_list",
+        "agents",
+        "definitions",
+        "list",
+        help="List agent definitions",
+    ),
+    _ref(
+        "background",
+        "agents_definitions_show",
+        "agents",
+        "definitions",
+        "show",
+        help="Show an agent definition",
+    ),
+    _ref(
+        "background",
+        "agents_definitions_validate",
+        "agents",
+        "definitions",
+        "validate",
+        help="Validate agent definitions",
+    ),
     _ref("background", "agents_status", "agents", "status", help="Show one background agent"),
     _ref("background", "agents_cancel", "agents", "cancel", help="Stop a background agent"),
     _ref("background", "agents_resume", "agents", "resume", help="Resume a background agent"),
@@ -392,6 +416,13 @@ BUILTIN_COMMANDS: tuple[CommandRef, ...] = (
         "revoke",
         help="Revoke trust for a file or every file under a directory",
     ),
+    _ref(
+        "performance",
+        "perf_report",
+        "perf",
+        "report",
+        help="Run offline performance diagnostics",
+    ),
     # agenthicc.cli.commands.workflows
     _ref(
         "workflows", "workflows_list", "workflows", "list", help="List available workflow plugins"
@@ -485,6 +516,7 @@ BUILTIN_GROUPS: Mapping[tuple[str, ...], str] = MappingProxyType(
         ("agents", "inbox"): "List and resolve background approvals and questions",
         ("config",): "Manage configuration",
         ("mcp",): "Manage configured MCP servers",
+        ("perf",): "Show offline performance diagnostics",
         ("runs",): "Inspect and control durable goal runs",
         ("schedules",): "Manage repository-scoped scheduled workflows",
         ("session",): "Inspect, control, and attach to client-neutral sessions",

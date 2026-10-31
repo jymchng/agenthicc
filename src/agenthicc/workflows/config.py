@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from agenthicc.tools.mcp_manager import McpSessionManager
     from agenthicc.mentions.cache import MentionCache
     from agenthicc.agents.registry import AgentsRegistry
+    from agenthicc.subagents.types import SubagentTypeRegistry
     from agenthicc.config import AgenthiccConfig
     from agenthicc.workflows.plugin import WorkflowParams
     from lauren_ai._memory import ShortTermMemory
@@ -28,6 +29,12 @@ if TYPE_CHECKING:
     from agenthicc.tools.cloakbrowser import BrowserSessionManager
     from agenthicc.tools.workspace_access import WorkspaceScope, WorkspaceAccessPolicy
     from agenthicc.runners.startup import StartupCoordinator
+
+
+def _new_subagent_registry() -> "SubagentTypeRegistry":
+    from agenthicc.subagents.types import DEFAULT_REGISTRY
+
+    return DEFAULT_REGISTRY.copy()
 
 
 @dataclass(frozen=True)
@@ -50,6 +57,7 @@ class WorkflowConfig:
     mcp_registry: "McpToolRegistry | McpSessionManager | None"
     mention_cache: "MentionCache"
     agents_registry: "AgentsRegistry"
+    subagent_registry: "SubagentTypeRegistry" = field(default_factory=_new_subagent_registry)
     memory_router: "MemoryRouter | None" = field(default=None)
     semantic_index: "SemanticIndex | None" = field(default=None)
     completed_turns: int = field(default=0)

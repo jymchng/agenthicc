@@ -40,12 +40,6 @@ commands are loaded after the first frame for a fresh interactive session.
 Built-in workflow and agent descriptors remain available for safe metadata and
 are materialized only when selected.
 
-The initial composer footer uses the standard default key hints, so it can be
-drawn before the key-action registry is imported. Immediately after that frame,
-the keymap service loads the user's bindings and installs the active map before
-the input reader starts. Other callers still construct `AppState` with its
-default keymap eagerly; only interactive startup uses this deferred path.
-
 The agent runtime itself also loads after the first frame. Building the
 provider configuration and folding the conversation journal into provider
 memory both import lauren-ai, so the TUI starts an `agent_runtime` phase as soon
@@ -150,6 +144,22 @@ Use temporary homes and synthetic event logs for repeatable comparisons. A
 benchmark result is diagnostic; CI thresholds should be applied on stable
 hardware and should distinguish local startup from intentionally slow remote
 dependencies.
+
+For the fixture-free startup, render, import-count and idle-TUI baseline, run
+`agenthicc perf report`. It performs its CLI probes in isolated temporary homes
+and prints the values beside the versioned budgets without contacting a model
+provider. Maintainers can run the extended CI suite (agents-registry probes and
+hermetic goal-flow replay) with:
+
+```bash
+uv run python scripts/perf_budget.py --scope ci --check --report .nox/perf-report.json
+```
+
+The weekly scope adds the synthetic 10k-session / 1m-event profile. Run it with
+`uv run nox -s perf_weekly`, which uses the same Python 3.12 session as the CI
+performance gate. It gates CPU-time budgets for first-page access and search,
+plus idle CPU and zero appended events; change-to-visible wall time remains
+diagnostic.
 
 ## Extension contract for generated workflows
 

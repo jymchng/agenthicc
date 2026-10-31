@@ -192,13 +192,29 @@ def _scheduled_cells(entry: ScheduledEntry, context: RowContext) -> dict[str, tu
     }
 
 
+_DEFINITION_LOOKS = {
+    "active": ("●", "bold"),
+    "shadowed": ("◌", "dim"),
+    "invalid": ("⚠", "bold yellow"),
+    "untrusted": ("⊘", "dim red"),
+}
+
+
 def _definition_cells(entry: LibraryEntry) -> dict[str, tuple[str, str]]:
+    glyph, style = _DEFINITION_LOOKS.get(entry.state, ("●", "bold"))
+    star = " ★" if entry.default else ""
+    if entry.state == "active":
+        summary = f"{entry.model or '(session model)'} · {entry.tools}" if entry.tools else ""
+        title = entry.description or entry.name
+    else:
+        summary = ""
+        title = entry.note or entry.state
     return {
-        "status": (f"● {entry.name}", "bold"),
-        "title": (entry.description or entry.name, ""),
-        "activity": (entry.tools, "dim"),
+        "status": (f"{glyph} {entry.name}{star}", style),
+        "title": (title, "yellow" if entry.state == "invalid" else ""),
+        "activity": (summary, "dim"),
         "project": (entry.source, "cyan"),
-        "agent": ("", ""),
+        "agent": (entry.mode, ""),
         "age": ("", ""),
         "cost": ("", ""),
     }

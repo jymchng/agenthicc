@@ -1,4 +1,4 @@
-"""A one-line text editor for the hub's search, dispatch and prompt lines."""
+"""Text editing for the hub's search, dispatch and Library prompts."""
 
 from __future__ import annotations
 
@@ -22,8 +22,8 @@ class LineEditor:
 
     Typing keys are the editor's own, not key-map actions: while an editor has
     the focus every printable key is text. With ``multiline`` Ctrl+J inserts a
-    line break (the dispatch line, AGX-05 §5.3); otherwise a paste's line
-    breaks become spaces.
+    line break, and Up/Down and Home/End navigate lines; otherwise a paste's
+    line breaks become spaces.
     """
 
     def __init__(self, text: str = "", *, multiline: bool = False, limit: int = 4_000) -> None:
@@ -89,12 +89,42 @@ class LineEditor:
             self.cursor = min(len(self._chars), self.cursor + 1)
             return EditResult.MOVED
         if key is Key.HOME:
-            self.cursor = 0
+            if self.multiline:
+                self.cursor = self.text.rfind("\n", 0, self.cursor) + 1
+            else:
+                self.cursor = 0
             return EditResult.MOVED
         if key is Key.END:
-            self.cursor = len(self._chars)
+            if self.multiline:
+                line_end = self.text.find("\n", self.cursor)
+                self.cursor = len(self._chars) if line_end < 0 else line_end
+            else:
+                self.cursor = len(self._chars)
+            return EditResult.MOVED
+        if self.multiline and key in (Key.UP, Key.DOWN):
+            self._move_vertical(-1 if key is Key.UP else 1)
             return EditResult.MOVED
         return EditResult.IGNORED
+
+    def _move_vertical(self, direction: int) -> None:
+        text = self.text
+        line_start = text.rfind("\n", 0, self.cursor) + 1
+        column = self.cursor - line_start
+        if direction < 0:
+            if line_start == 0:
+                return
+            previous_end = line_start - 1
+            previous_start = text.rfind("\n", 0, previous_end) + 1
+            self.cursor = min(previous_start + column, previous_end)
+            return
+        line_end = text.find("\n", self.cursor)
+        if line_end < 0:
+            return
+        next_start = line_end + 1
+        next_end = text.find("\n", next_start)
+        if next_end < 0:
+            next_end = len(text)
+        self.cursor = min(next_start + column, next_end)
 
     def view(self, width: int) -> tuple[str, int]:
         """The visible slice of the text for *width* cells and the cursor column.

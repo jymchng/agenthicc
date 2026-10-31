@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import sqlite3
 import signal
 import subprocess
 import sys
@@ -139,7 +138,6 @@ def test_completed_session_detach_starts_same_session_without_replaying_intent(
 def test_killed_worker_continue_then_detach_uses_same_session_and_updated_config(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Reproduce kill → --continue lease → config change → /detach end to end."""
     from rich.console import Console
@@ -159,7 +157,7 @@ def test_killed_worker_continue_then_detach_uses_same_session_and_updated_config
         workflow_name="goal_flow",
         intent="continue the existing goal",
         artifact_dir=str(artifacts / session_id),
-    ).evolve(idempotency_key="legacy-detach-key")
+    )
     store.create(session)
 
     script = (
@@ -211,14 +209,6 @@ def test_killed_worker_continue_then_detach_uses_same_session_and_updated_config
     os.kill(old_worker_pid, signal.SIGKILL)
     old_process.wait(timeout=60)
     assert old_process.returncode is not None
-
-    # Simulate a pre-idempotency SQLite projection that has no reliable
-    # schema-version marker. The event log and serialized record remain intact.
-    store.close()
-    with sqlite3.connect(store_root / "index.sqlite3") as connection:
-        connection.execute("DROP INDEX sessions_idempotency")
-        connection.execute("ALTER TABLE sessions DROP COLUMN idempotency_key")
-        connection.execute("DELETE FROM meta WHERE key = 'schema_version'")
 
     sessions_root = tmp_path / "sessions"
     (sessions_root / session_id).mkdir(parents=True)
@@ -272,53 +262,6 @@ def test_killed_worker_continue_then_detach_uses_same_session_and_updated_config
         _last_submitted_text="",
     )
 
-    # A failed/busy migration must leave foreground ownership and the prior
-    # request intact. Retrying after the transient condition clears must then
-    # perform the normal single-worker handoff.
-    from agenthicc.background.index import SessionIndex
-
-    original_backfill = SessionIndex._backfill_idempotency_keys
-
-    def migration_busy(_connection: sqlite3.Connection) -> None:
-        raise sqlite3.OperationalError("database is locked")
-
-    monkeypatch.setattr(SessionIndex, "_backfill_idempotency_keys", staticmethod(migration_busy))
-    request_path = store_root / "requests" / f"{session_id}.json"
-    previous_request = request_path.read_bytes()
-    events_before_failed_handoff = (store_root / "events.jsonl").read_bytes()
-
-    original_stat = Path.stat
-
-    def deny_event_log_stat(path: Path, *args: object, **kwargs: object) -> object:
-        if path == store_root / "events.jsonl":
-            raise PermissionError("test event-log access denial")
-        return original_stat(path, *args, **kwargs)
-
-    with monkeypatch.context() as patch:
-        patch.setattr(Path, "stat", deny_event_log_stat)
-        assert _handoff(foreground) is True
-
-    assert foreground._background_handoff_state == "idle"
-    assert not foreground_lease.released
-    assert len(processes) == 1
-    assert request_path.read_bytes() == previous_request
-    assert (store_root / "events.jsonl").read_bytes() == events_before_failed_handoff
-    event_log_message = " ".join(ctx.console.export_text().split())
-    assert "event log could not be read" in event_log_message
-    assert "Restore access to the registry and retry /detach" in event_log_message
-    assert "test event-log access denial" in caplog.text
-
-    assert _handoff(foreground) is True
-    assert foreground._background_handoff_state == "idle"
-    assert not foreground_lease.released
-    assert len(processes) == 1
-    assert request_path.read_bytes() == previous_request
-    assert (store_root / "events.jsonl").read_bytes() == events_before_failed_handoff
-    assert "close it and retry /detach" in " ".join(ctx.console.export_text().split())
-    assert "database is locked" in caplog.text
-
-    monkeypatch.setattr(SessionIndex, "_backfill_idempotency_keys", staticmethod(original_backfill))
-
     assert _handoff(foreground) is True
     _wait_for_status(store, session_id, SessionStatus.RUNNING)
     resumed = store.get(session_id)
@@ -326,7 +269,6 @@ def test_killed_worker_continue_then_detach_uses_same_session_and_updated_config
         (store_root / "requests" / f"{session_id}.json").read_text(encoding="utf-8")
     )
     assert resumed.session_id == session_id
-    assert store.with_idempotency_key("legacy-detach-key")[0].session_id == session_id
     assert resumed.attempt == 2
     assert resumed.worker_pid not in {None, old_worker_pid}
     assert resumed.attempt_history[-1].status is SessionStatus.ORPHANED

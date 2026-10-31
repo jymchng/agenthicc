@@ -18,7 +18,7 @@ import uuid
 import weakref
 from collections import defaultdict, deque
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, cast
 
 from agenthicc.tools.capabilities import tool_control
@@ -121,6 +121,7 @@ class _MessageRecord:
     envelope: AgentMessageEnvelope
     state: str = "created"
     acknowledged: bool = False
+    acknowledged_by: set[str] = field(default_factory=set)
 
 
 @dataclass
@@ -249,6 +250,28 @@ class AgentMessageBroker:
             if record.envelope.recipient in {worker_id, "pool"} and record.state == "queued":
                 if message_id not in self._mailboxes[worker_id]:
                     self._mailboxes[worker_id].append(message_id)
+
+    def for_retry(self, worker_id: str) -> "AgentMessageBroker":
+        """Create a fresh, bounded broker for one retry after pool completion.
+
+        Previous-attempt messages are not replayed: their senders are no longer
+        running and cannot answer. The new attempt retains the pool identity and
+        communication limits, with only the retried worker registered.
+        """
+        broker = AgentMessageBroker(
+            conversation_id=self.conversation_id,
+            parent_run_id=self.parent_run_id,
+            pool_id=self.pool_id,
+            policy_revision=self.policy_revision,
+            journal=self._journal,
+            clock=self._clock,
+            message_timeout_s=self._message_timeout_s,
+            max_message_bytes=self._max_message_bytes,
+            max_mailbox_messages=self._max_mailbox_messages,
+            max_pending_questions=self._max_pending_questions,
+        )
+        broker.register_worker(worker_id)
+        return broker
 
     async def unregister_worker(self, worker_id: str, *, reason: str = "worker_lost") -> None:
         """Remove a worker and resolve its unanswered questions as orphaned."""
@@ -396,7 +419,7 @@ class AgentMessageBroker:
                 source = mailbox if mailbox else broadcast_mailbox
                 message_id = source.popleft()
                 record = self._messages.get(message_id)
-                if record is None:
+                if record is None or recipient in record.acknowledged_by:
                     continue
                 if (
                     record.envelope.expires_at is not None
@@ -422,14 +445,37 @@ class AgentMessageBroker:
                 raise CommunicationError("unknown message_id")
             if record.envelope.recipient not in {recipient, "pool"}:
                 raise CommunicationError("recipient does not own this message")
-            record.acknowledged = True
+            record.acknowledged_by.add(recipient)
+            recipients = (
+                self._members
+                if record.envelope.recipient == "pool"
+                else {record.envelope.recipient}
+            )
+            record.acknowledged = recipients.issubset(record.acknowledged_by)
             if record.state not in {"expired", "rejected"}:
-                record.state = "acknowledged"
+                record.state = "acknowledged" if record.acknowledged else "delivered"
             self._record(
                 "agent_message_acknowledged",
                 {"message_id": message_id, "recipient": recipient},
             )
             return {"ok": True, "message_id": message_id, "state": record.state}
+
+    async def undelivered_count(self, recipient: str) -> int:
+        """Count live messages this member has not acknowledged."""
+        async with self._lock:
+            self._validate_recipient(recipient)
+            now = self._clock()
+            return sum(
+                1
+                for record in self._messages.values()
+                if record.state not in {"expired", "rejected"}
+                and (record.envelope.expires_at is None or record.envelope.expires_at > now)
+                and (
+                    record.envelope.recipient == recipient
+                    or (record.envelope.recipient == "pool" and recipient in self._members)
+                )
+                and recipient not in record.acknowledged_by
+            )
 
     async def wait_for_pending(self) -> list[dict[str, object]]:
         """Wait until at least one parent-facing question is pending."""
@@ -669,8 +715,22 @@ class AgentMessageBroker:
             elif kind == "agent_message_acknowledged":
                 message_record = self._messages.get(str(payload.get("message_id", "")))
                 if message_record is not None:
-                    message_record.state = "acknowledged"
-                    message_record.acknowledged = True
+                    recipient = str(payload.get("recipient", ""))
+                    if recipient:
+                        message_record.acknowledged_by.add(recipient)
+                    else:
+                        message_record.acknowledged_by.update(self._members)
+                    recipients = (
+                        self._members
+                        if message_record.envelope.recipient == "pool"
+                        else {message_record.envelope.recipient}
+                    )
+                    message_record.acknowledged = recipients.issubset(
+                        message_record.acknowledged_by
+                    )
+                    message_record.state = (
+                        "acknowledged" if message_record.acknowledged else "delivered"
+                    )
         for message_record in self._messages.values():
             if message_record.state in {"delivered", "acknowledged", "expired", "rejected"}:
                 for mailbox in self._mailboxes.values():

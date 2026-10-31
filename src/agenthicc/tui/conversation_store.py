@@ -19,10 +19,8 @@ from agenthicc.reactive import Signal, Computed
 
 if TYPE_CHECKING:
     import asyncio as _asyncio
-    from agenthicc.config import UISettings
     from agenthicc.tools.approval import ApprovalRequest
     from agenthicc.tui.runtime.mode_manager import RuntimeMode
-    from agenthicc.tui.keymap import Keymap
     from agenthicc.workflows.plugin import WorkflowRun
     from agenthicc.subagents.pool import SubagentPoolState
 
@@ -171,6 +169,19 @@ class ConversationStore:
         self.terminal_wait_label: Signal[str] = Signal("", name="terminal_wait_label")
         self.terminal_wait_elapsed_s: Signal[float] = Signal(0.0, name="terminal_wait_elapsed_s")
         self.terminal_running_count: Signal[int] = Signal(0, name="terminal_running_count")
+        # AGX-10: cross-session attention is presentation state, not kernel state.
+        self.background_needs_you: Signal[int] = Signal(0, name="background_needs_you")
+        self.background_running: Signal[int] = Signal(0, name="background_running")
+        self.background_dnd: Signal[bool] = Signal(False, name="background_dnd")
+        self.background_toast: Signal[str | None] = Signal(None, name="background_toast")
+        self.background_toast_kind: Signal[Literal["needs", "finished", "failed"] | None] = Signal(
+            None, name="background_toast_kind"
+        )
+        self.terminal_focused: Signal[bool] = Signal(True, name="terminal_focused")
+        self.agents_hint: Signal[bool] = Signal(False, name="agents_hint")
+        self.agents_target: Signal[str | None] = Signal(None, name="agents_target")
+        self.agents_item_target: Signal[str | None] = Signal(None, name="agents_item_target")
+        self.agents_toast_target: Signal[str | None] = Signal(None, name="agents_toast_target")
         # Internal: per-line notification stack.
         # notify_transient() appends; each dismiss closure removes only its own
         # entry by identity, leaving other lines untouched.
@@ -671,22 +682,10 @@ class InputState:
 # ── Root application state ────────────────────────────────────────────────────
 
 
-def ui_settings(state: object) -> "UISettings | None":
-    """Read the state's accessibility preferences, tolerating test doubles."""
-    from agenthicc.config import UISettings
-
-    try:
-        value = object.__getattribute__(state, "ui")
-    except AttributeError:
-        return None
-    current = value() if callable(value) else value
-    return current if isinstance(current, UISettings) else None
-
-
 class AppState:
     """Root state container — single instance for the application lifetime."""
 
-    def __init__(self, *, defer_keymap: bool = False) -> None:
+    def __init__(self) -> None:
         from agenthicc.tui.runtime.mode_manager import build_safe_mode
         from agenthicc.cli.context import CLIFlags
 
@@ -705,19 +704,17 @@ class AppState:
         self.pending_approval.subscribe(self._sync_display_wait_state)
         # PRD-81: holds WorkflowRun | None; set by WorkflowRunner during execution.
         self.workflow_run: Signal[WorkflowRun | None] = Signal(None, name="workflow_run")
+        # AGX-09: the primary agent the next turn talks to (Tab cycles it).
+        self.agent: Signal[str] = Signal("default", name="agent")
         # PRD-79: ephemeral CLI flags — frozen after startup, read by ApprovalGate etc.
         self.cli_flags: CLIFlags = CLIFlags()
         # AGX-13: the effective key bindings (replaced when the user's bindings
         # file changes) and the [ui] accessibility preferences.
         from agenthicc.config import UISettings
+        from agenthicc.tui.actions import DEFAULT_ACTIONS
+        from agenthicc.tui.keymap import Keymap
 
-        keymap = None
-        if not defer_keymap:
-            from agenthicc.tui.actions import DEFAULT_ACTIONS
-            from agenthicc.tui.keymap import Keymap
-
-            keymap = Keymap.build(DEFAULT_ACTIONS)
-        self.keymap: Signal[Keymap | None] = Signal(keymap, name="keymap")
+        self.keymap: Signal[Keymap] = Signal(Keymap.build(DEFAULT_ACTIONS), name="keymap")
         self.ui: Signal[UISettings] = Signal(UISettings(), name="ui")
 
     def _sync_display_wait_state(self) -> None:
@@ -725,22 +722,8 @@ class AppState:
         self.conversation.set_display_paused(self.pending_approval() is not None)
 
     @classmethod
-    def create(cls, *, defer_keymap: bool = False) -> "AppState":
-        """Create state, optionally loading keymap code after the first frame.
-
-        Interactive startup uses ``defer_keymap=True`` and renders the initial
-        footer with static default hints.  ``KeymapService`` installs the
-        configured map before input starts.  Other callers retain the eager,
-        fully initialized default.
-        """
-        return cls(defer_keymap=defer_keymap)
-
-    def require_keymap(self) -> "Keymap":
-        """Return the installed keymap, rejecting access during deferred startup."""
-        keymap = self.keymap()
-        if keymap is None:
-            raise RuntimeError("keymap is not initialized until interactive startup completes")
-        return keymap
+    def create(cls) -> "AppState":
+        return cls()
 
     def update_workflow_phase(
         self,

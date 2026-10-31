@@ -12,34 +12,37 @@ Adding a new trigger char or a new mode requires no changes here.
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Awaitable, Callable
 from enum import Enum, auto
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING
 
 from agenthicc.tui.cbreak_reader import Key, key_name
 from agenthicc.tui.input.buffer import InputBuffer
-from agenthicc.tui.input.history import HistoryNavigator
-from agenthicc.tui.input.paste import PasteState
-from agenthicc.tui.conversation_store import ui_settings
-from agenthicc.tui.runtime.mode_manager import ModeManager
-from agenthicc.tui.runtime.commands import CommandBus, SendMessageCommand
 from agenthicc.tui.input.capabilities import (
-    Capability,
-    _ExitSentinel,
+    _EXIT,
     IDLE_CAPABILITIES,
     STREAMING_CAPABILITIES,
-    _EXIT,
+    Capability,
+    _ExitSentinel,
 )
+from agenthicc.tui.input.history import HistoryNavigator
+from agenthicc.tui.input.paste import PasteState
+from agenthicc.tui.preferences import ui_settings
+from agenthicc.tui.runtime.commands import CommandBus, SendMessageCommand
+from agenthicc.tui.runtime.mode_manager import ModeManager
 
 if TYPE_CHECKING:
     from agenthicc.config import AgenthiccConfig
     from agenthicc.tui.conversation_store import AppState
+    from agenthicc.tui.terminal.backend import TerminalBackend
     from agenthicc.tui.trigger import TriggerManager, TriggerResult
     from agenthicc.tui.workspace.appender import ScrollBufferAppender
     from agenthicc.tui.workspace.overlay import OverlayHost
 
 # Re-export for tests/external callers that import from here.
-__all__ = ["UnifiedInputSession", "InputMode", "_EXIT"]
+__all__ = ["_EXIT", "InputMode", "UnifiedInputSession"]
 
 
 class InputMode(Enum):
@@ -72,6 +75,10 @@ class UnifiedInputSession:
         self._state: AppState = app_state
         # Set by the /background handoff to end the input loop after detaching.
         self._exit_requested: bool = False
+        self._terminal_handoff: (
+            tuple[Callable[[], Awaitable[None]], asyncio.Future[None]] | None
+        ) = None
+        self._backend: TerminalBackend | None = None
         self._bus: CommandBus = command_bus
         self._registry: TriggerManager | None = trigger_registry
         self._modes: ModeManager = mode_manager or ModeManager()
@@ -130,8 +137,9 @@ class UnifiedInputSession:
     # ── main loop ─────────────────────────────────────────────────────────────
 
     async def run(self) -> None:
-        """Block until the user exits (Ctrl+C twice or Ctrl+D on empty)."""
+        """Block until exit, yielding the terminal for requested external work."""
         import asyncio as _asyncio
+
         from agenthicc.tui.terminal.backend import get_backend
 
         backend = get_backend()
@@ -142,29 +150,86 @@ class UnifiedInputSession:
                 self._on_ready(False)
             return
 
+        self._backend = backend
         loop = _asyncio.get_event_loop()
-        with backend.enter_raw_mode():
-            # The inline TUI keeps native selection unless [ui] mouse = "on".
-            ui = ui_settings(self._state)
-            if ui is not None and ui.mouse_enabled(fullscreen=False):
-                backend.set_reporting(mouse=True)
+        try:
             if self._on_ready is not None:
                 self._on_ready(True)
             while True:
-                try:
-                    # run_in_executor lets the event loop service other tasks
-                    # (agent streaming, workspace redraws, tick loop, etc.)
-                    key, ch = await loop.run_in_executor(None, backend.read_key)
-                except KeyboardInterrupt:
-                    self._state.conversation.notification.set(None)
-                    return
-                except OSError:
-                    if self._exit_requested:
-                        return
-                    continue
+                handoff: tuple[Callable[[], Awaitable[None]], asyncio.Future[None]] | None = None
+                with backend.enter_raw_mode():
+                    # The inline TUI keeps native selection unless [ui] mouse = "on".
+                    ui = ui_settings(self._state)
+                    backend.set_reporting(
+                        focus=True,
+                        mouse=ui is not None and ui.mouse_enabled(fullscreen=False),
+                    )
+                    while True:
+                        try:
+                            # run_in_executor lets the event loop service other tasks
+                            # (agent streaming, workspace redraws, tick loop, etc.)
+                            key, ch = await loop.run_in_executor(None, backend.read_key)
+                        except KeyboardInterrupt:
+                            self._state.conversation.notification.set(None)
+                            return
+                        except OSError:
+                            if self._terminal_handoff is not None:
+                                handoff, self._terminal_handoff = self._terminal_handoff, None
+                                break
+                            if self._exit_requested:
+                                return
+                            continue
 
-                if await self._dispatch(key, ch) is _EXIT:
+                        if await self._dispatch(key, ch) is _EXIT:
+                            return
+                        if self._terminal_handoff is not None:
+                            handoff, self._terminal_handoff = self._terminal_handoff, None
+                            break
+
+                if handoff is None:
                     return
+                backend.close()
+                operation, completed = handoff
+                try:
+                    await operation()
+                except asyncio.CancelledError:
+                    if not completed.done():
+                        completed.cancel()
+                    raise
+                except Exception as exc:  # noqa: BLE001 - report failures to the handoff caller
+                    if not completed.done():
+                        completed.set_exception(exc)
+                else:
+                    if not completed.done():
+                        completed.set_result(None)
+                if self._exit_requested:
+                    return
+        finally:
+            self._backend = None
+            pending, self._terminal_handoff = self._terminal_handoff, None
+            if pending is not None and not pending[1].done():
+                pending[1].set_exception(
+                    RuntimeError("the input session stopped before terminal handoff")
+                )
+
+    async def run_terminal_handoff(self, operation: Callable[[], Awaitable[None]]) -> None:
+        """Run *operation* with cooked terminal input, then resume this session."""
+        backend = self._backend
+        if backend is None or self._exit_requested:
+            raise RuntimeError("the interactive input session is not running")
+        if self._terminal_handoff is not None:
+            raise RuntimeError("another terminal handoff is already pending")
+        completed = asyncio.get_running_loop().create_future()
+        handoff = (operation, completed)
+        self._terminal_handoff = handoff
+        backend.restore()
+        try:
+            await completed
+        except asyncio.CancelledError:
+            if self._terminal_handoff is handoff:
+                self._terminal_handoff = None
+                backend.restore()
+            raise
 
     def request_exit(self) -> None:
         """End :meth:`run` now, even while it waits for a key.
@@ -185,8 +250,11 @@ class UnifiedInputSession:
         flags: set[str] = set()
         if self._mode == InputMode.STREAMING:
             flags.add("running")
-        if self._state.conversation.subagent_pool_state() is not None:
+        pool_state = self._state.conversation.subagent_pool_state()
+        if pool_state is not None:
             flags.add("subagents")
+            if pool_state.active:
+                flags.add("subagents_running")
         if self._paste.condensed:
             flags.add("paste")
             if self._buf.cursor == self._paste.end:
@@ -196,10 +264,16 @@ class UnifiedInputSession:
     async def _dispatch(self, key: Key, ch: str) -> _ExitSentinel | None:
         """Run the active capability list until one consumes the key.
 
-        The key is first resolved against the composer's key bindings; each
-        capability then acts on the named action rather than a fixed key.
+        Focus reports are terminal state, not composer input: they must never
+        enter history, modify the prompt, or reach a keybinding.
         """
-        keymap = self._state.require_keymap()
+        if key is Key.FOCUS_IN:
+            self._state.conversation.terminal_focused.set(True)
+            return None
+        if key is Key.FOCUS_OUT:
+            self._state.conversation.terminal_focused.set(False)
+            return None
+        keymap = self._state.keymap()
         name = key_name(key, ch)
         conditions = self.conditions()
         action = None

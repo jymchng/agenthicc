@@ -21,7 +21,8 @@ The agents hub (AGX-05–07) reports, for its selected row and tab:
 - ``transcript``, ``changes`` — the detail view has those sections.
 
 The composer also reports ``subagents`` while the subagent panel is shown
-(AGX-08). The panel and a worker's transcript report ``worker`` (the selected
+(AGX-08), and ``subagents_running`` while a pool still has live workers. Ctrl+B
+backgrounds that active pool. The panel and a worker's transcript report ``worker`` (the selected
 worker has a transcript), ``running_worker`` (it has not finished) and
 ``failed_worker`` (it failed and its row has not been dismissed).
 """
@@ -180,6 +181,22 @@ COMPOSER_ACTIONS: tuple[Action, ...] = (
         description="Open the agents hub (← only on an empty prompt)",
     ),
     Action(
+        "agents.cycle",
+        "composer",
+        ("tab",),
+        "agent",
+        description="Talk to the next primary agent (from the next turn)",
+    ),
+    Action(
+        "subagents.background",
+        "composer",
+        ("ctrl+b",),
+        "background pool",
+        hint_priority=46,
+        description="Let the active subagent pool continue in the background",
+        when=frozenset({"running", "subagents_running"}),
+    ),
+    Action(
         "subagents.focus",
         "composer",
         ("ctrl+o",),
@@ -200,6 +217,7 @@ def _action(
     *,
     priority: int = 0,
     when: frozenset[str] = frozenset(),
+    unless: frozenset[str] = frozenset(),
     paired: str = "",
 ) -> Action:
     return Action(
@@ -210,6 +228,7 @@ def _action(
         hint_priority=priority,
         description=description,
         when=when,
+        unless=unless,
         paired=paired,
     )
 
@@ -421,6 +440,67 @@ AGENTS_LIST_ACTIONS: tuple[Action, ...] = (
         priority=44,
         when=_flag("running_tab"),
     ),
+    _action(
+        "agents.list",
+        "library_create",
+        ("n",),
+        "new",
+        "Create a Markdown agent definition",
+        when=_flag("library_tab"),
+        unless=_flag("needs_approval"),
+    ),
+    _action(
+        "agents.list",
+        "library_generate",
+        ("g",),
+        "generate",
+        "Generate a definition draft with the current model",
+        when=_flag("library_tab"),
+        unless=_flag("running_tab"),
+    ),
+    _action(
+        "agents.list",
+        "library_edit",
+        ("e",),
+        "edit",
+        "Edit the selected Markdown definition",
+        when=_flag("editable_definition"),
+        unless=_flag("session"),
+    ),
+    _action(
+        "agents.list",
+        "library_duplicate",
+        ("d",),
+        "duplicate",
+        "Duplicate the selected definition",
+        when=_flag("definition"),
+    ),
+    _action(
+        "agents.list",
+        "library_delete",
+        ("ctrl+x",),
+        "delete",
+        "Delete the selected user or project definition",
+        when=_flag("editable_definition"),
+        unless=_flag("session"),
+    ),
+    _action(
+        "agents.list",
+        "library_default",
+        ("*",),
+        "set default",
+        "Set the selected primary agent as the project default",
+        when=_flag("primary_definition"),
+    ),
+    _action(
+        "agents.list",
+        "library_validate",
+        ("v",),
+        "validate",
+        "Validate all agent definitions",
+        when=_flag("library_tab"),
+        unless=_flag("session"),
+    ),
     _action("agents.list", "next_tab", ("tab",), "next tab", "Show the next tab"),
     _action("agents.list", "previous_tab", ("shift+tab",), "previous tab", "Show the previous tab"),
     _action("agents.list", "tab_running", ("1",), "running", "Show the Running tab"),
@@ -555,6 +635,15 @@ SUBAGENTS_ACTIONS: tuple[Action, ...] = (
         description="Stop the worker; the others go on",
         when=_RUNNING_WORKER,
         unless=_FAILED_WORKER,
+    ),
+    Action(
+        "subagents.retry",
+        "subagents",
+        ("r",),
+        "retry",
+        hint_priority=58,
+        description="Retry this failed worker without rerunning its siblings",
+        when=frozenset({"retryable_worker"}),
     ),
     Action(
         "subagents.dismiss",

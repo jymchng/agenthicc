@@ -20,55 +20,59 @@ Scalars are overwritten, lists are replaced, tables are merged recursively.
 
 from __future__ import annotations
 
-import tomllib
-import re
 import math
+import re
+import tomllib
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from collections.abc import Callable, Mapping
 from types import MappingProxyType
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Literal, cast
 from urllib.parse import urlsplit
 
 from agenthicc.kernel import SecurityPolicy, SystemSettings
+from agenthicc.tools.mcp_server_config import McpServerConfig
 
 if TYPE_CHECKING:
     from lauren_ai._config import LLMConfig
     from agenthicc.skills.loader import SkillPermissionSet
-    from agenthicc.tools.mcp_server_config import McpServerConfig
 
 __all__ = [
-    "AgenthiccConfig",
-    "AgentSettings",
-    "AgentsSettings",
-    "BehaviourSettings",
-    "CloakBrowserSettings",
-    "PlaywrightSettings",
-    "ExecutionSettings",
-    "LoopSettings",
-    "PluginSettings",
-    "ProviderProfile",
-    "ResolvedProviderProfile",
-    "RequestOptionSettings",
-    "SecretReference",
+    "DEFAULT_QUESTION_TIMEOUT_S",
+    "PROJECT_CONFIG_CANDIDATES",
     "PROVIDER_API_KEY_ENVVAR",
     "PROVIDER_DEFAULT_MODELS",
     "PROVIDER_ENV_SHORTCUTS",
+    "SUPPORTED_PROVIDERS",
+    "USER_CONFIG_CANDIDATES",
+    "AgentSettings",
+    "AgenthiccConfig",
+    "AgentsSettings",
+    "BehaviourSettings",
+    "CloakBrowserSettings",
+    "ConfigExtendsCycleError",
+    "ExecutionSettings",
+    "LoopSettings",
+    "PlaywrightSettings",
+    "PluginSettings",
+    "ProviderProfile",
+    "RequestOptionSettings",
+    "ResolvedProviderProfile",
+    "SecretReference",
     "SecuritySettings",
     "SkillsSettings",
+    "SubagentSettings",
+    "SubagentDepthLimit",
+    "SubagentDepthTier",
     "SUPPORTED_PROVIDERS",
     "ToolSettings",
-    "DEFAULT_QUESTION_TIMEOUT_S",
-    "build_llm_config",
-    "deep_merge",
-    "load_config",
-    "PROJECT_CONFIG_CANDIDATES",
-    "USER_CONFIG_CANDIDATES",
     "_coerce_env",
     "_find_config_file",
     "_parse_mcp_servers",
     "_resolve_extends",
-    "ConfigExtendsCycleError",
+    "build_llm_config",
+    "deep_merge",
+    "load_config",
 ]
 
 PROJECT_FILE = "agenthicc.toml"
@@ -1193,6 +1197,172 @@ class ExecutionSettings:
         return max(1, window - completion - reserve)
 
 
+@dataclass(frozen=True)
+class SubagentDepthLimit:
+    """Optional fan-out ceilings that override the prior depth's values."""
+
+    max_tasks: int | None = None
+    max_concurrent: int | None = None
+
+    def __post_init__(self) -> None:
+        for name, value in (("max_tasks", self.max_tasks), ("max_concurrent", self.max_concurrent)):
+            if value is not None and (
+                isinstance(value, bool) or not isinstance(value, int) or value < 1
+            ):
+                raise ValueError(f"subagents.depth_limits.{name} must be a positive integer")
+
+
+@dataclass(frozen=True)
+class SubagentDepthTier:
+    """A type-specific depth profile that can only restrict its declared ceiling."""
+
+    allowed_tools: tuple[str, ...] | None = None
+    allowed_models: tuple[str, ...] | None = None
+
+    def __post_init__(self) -> None:
+        for name, values in (
+            ("allowed_tools", self.allowed_tools),
+            ("allowed_models", self.allowed_models),
+        ):
+            if values is not None and (
+                not values
+                or any(not isinstance(value, str) or not value.strip() for value in values)
+                or len(set(values)) != len(values)
+            ):
+                raise ValueError(f"subagents.depth_tiers.{name} must be a non-empty unique list")
+
+
+@dataclass(frozen=True)
+class SubagentSettings:
+    """Operator defaults, model-selection policy, and pool governance."""
+
+    default_model: str = ""
+    default_effort: str = ""
+    default_context: int | None = None
+    allowed_models: tuple[str, ...] | None = None
+    allow_call_overrides: bool = False
+    max_depth: int = 1
+    max_tasks: int = 64
+    max_concurrent: int = 16
+    max_active_pools: int = 16
+    max_workers: int = 32
+    max_tool_calls: int = 256
+    max_iterations: int = 128
+    max_tokens: int = 200_000
+    max_total_time_s: float = 600.0
+    on_budget_exceeded: Literal["abort", "drain"] = "drain"
+    stop_grace_s: float = 5.0
+    depth_limits: Mapping[int, SubagentDepthLimit] = field(default_factory=dict)
+    depth_tiers: Mapping[int, Mapping[str, SubagentDepthTier]] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        model = self.default_model.strip()
+        effort = self.default_effort.strip().casefold()
+        object.__setattr__(self, "default_model", model)
+        object.__setattr__(self, "default_effort", effort)
+        if model and not _SUBAGENT_MODEL.fullmatch(model):
+            raise ValueError("subagents.default_model must be a model or profile identifier")
+        if effort and effort not in _SUBAGENT_EFFORTS:
+            raise ValueError(
+                "subagents.default_effort must be one of " + ", ".join(_SUBAGENT_EFFORTS)
+            )
+        if self.default_context is not None and (
+            isinstance(self.default_context, bool)
+            or not isinstance(self.default_context, int)
+            or not 1 <= self.default_context <= 10_000_000
+        ):
+            raise ValueError("subagents.default_context must be from 1 to 10000000")
+        if self.allowed_models is not None:
+            if not self.allowed_models or any(
+                not _SUBAGENT_MODEL.fullmatch(model) for model in self.allowed_models
+            ):
+                raise ValueError("subagents.allowed_models must contain model identifiers")
+            if len(set(self.allowed_models)) != len(self.allowed_models):
+                raise ValueError("subagents.allowed_models must not contain duplicates")
+        for name, value, maximum in (
+            ("max_depth", self.max_depth, 32),
+            ("max_tasks", self.max_tasks, 100_000),
+            ("max_concurrent", self.max_concurrent, 1_000),
+            ("max_active_pools", self.max_active_pools, 256),
+        ):
+            if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= maximum:
+                raise ValueError(f"subagents.{name} must be from 1 to {maximum}")
+
+        for name, value in (
+            ("max_workers", self.max_workers),
+            ("max_tool_calls", self.max_tool_calls),
+            ("max_iterations", self.max_iterations),
+            ("max_tokens", self.max_tokens),
+        ):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise ValueError(f"subagents.{name} must be a positive integer")
+        if self.max_concurrent > self.max_workers:
+            raise ValueError("subagents.max_concurrent cannot exceed subagents.max_workers")
+        if (
+            isinstance(self.max_total_time_s, bool)
+            or not isinstance(self.max_total_time_s, (int, float))
+            or not math.isfinite(self.max_total_time_s)
+            or self.max_total_time_s <= 0
+        ):
+            raise ValueError("subagents.max_total_time_s must be a finite number greater than zero")
+        object.__setattr__(self, "max_total_time_s", float(self.max_total_time_s))
+        if self.on_budget_exceeded not in {"abort", "drain"}:
+            raise ValueError("subagents.on_budget_exceeded must be 'abort' or 'drain'")
+        if (
+            isinstance(self.stop_grace_s, bool)
+            or not isinstance(self.stop_grace_s, (int, float))
+            or not math.isfinite(self.stop_grace_s)
+            or self.stop_grace_s < 0
+        ):
+            raise ValueError("subagents.stop_grace_s must be a finite non-negative number")
+        object.__setattr__(self, "stop_grace_s", float(self.stop_grace_s))
+
+        limits: dict[int, SubagentDepthLimit] = {}
+        for depth, limit in self.depth_limits.items():
+            if isinstance(depth, bool) or not isinstance(depth, int) or not 2 <= depth <= 32:
+                raise ValueError("subagents.depth_limits keys must be integers from 2 to 32")
+            if not isinstance(limit, SubagentDepthLimit):
+                raise ValueError(f"subagents.depth_limits.{depth} must be a depth limit")
+            limits[depth] = limit
+        object.__setattr__(self, "depth_limits", MappingProxyType(limits))
+
+        tiers: dict[int, Mapping[str, SubagentDepthTier]] = {}
+        for depth, configured in self.depth_tiers.items():
+            if isinstance(depth, bool) or not isinstance(depth, int) or not 2 <= depth <= 32:
+                raise ValueError("subagents.depth_tiers keys must be integers from 2 to 32")
+            if not isinstance(configured, Mapping):
+                raise ValueError(f"subagents.depth_tiers.{depth} must be a table")
+            type_tiers: dict[str, SubagentDepthTier] = {}
+            for name, tier in configured.items():
+                if not isinstance(name, str) or not name.strip():
+                    raise ValueError(f"subagents.depth_tiers.{depth} type names must be non-empty")
+                if not isinstance(tier, SubagentDepthTier):
+                    raise ValueError(f"subagents.depth_tiers.{depth}.{name} must be a depth tier")
+                type_tiers[name] = tier
+            tiers[depth] = MappingProxyType(type_tiers)
+        object.__setattr__(self, "depth_tiers", MappingProxyType(tiers))
+
+    def limits_for_depth(self, depth: int) -> tuple[int, int, str, str]:
+        """Resolve each ceiling from its nearest configured ancestor depth."""
+        max_tasks = self.max_tasks
+        max_concurrent = self.max_concurrent
+        task_source = "subagents.max_tasks"
+        concurrent_source = "subagents.max_concurrent"
+        for configured_depth in sorted(key for key in self.depth_limits if key <= depth):
+            limit = self.depth_limits[configured_depth]
+            if limit.max_tasks is not None:
+                max_tasks = limit.max_tasks
+                task_source = f"subagents.depth_limits.{configured_depth}.max_tasks"
+            if limit.max_concurrent is not None:
+                max_concurrent = limit.max_concurrent
+                concurrent_source = f"subagents.depth_limits.{configured_depth}.max_concurrent"
+        return max_tasks, max_concurrent, task_source, concurrent_source
+
+
+_SUBAGENT_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh")
+_SUBAGENT_MODEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}$")
+
+
 @dataclass
 class CloakBrowserSettings:
     """Optional browser automation settings.
@@ -1615,6 +1785,7 @@ class AgenthiccConfig:
     # compatibility for downstream callers of this public dataclass.
     loops: LoopSettings = field(default_factory=LoopSettings)
     ui: UISettings = field(default_factory=UISettings)
+    subagents: SubagentSettings = field(default_factory=SubagentSettings)
 
     def to_system_settings(self) -> SystemSettings:
         """Reflect execution settings into the kernel ``SystemSettings``."""
@@ -1801,15 +1972,47 @@ class AgenthiccConfig:
             "security": vars(self.security).copy(),
             "tools": tool_values,
             "plugins": vars(self.plugins).copy(),
+            "subagents": {
+                "default_model": self.subagents.default_model,
+                "default_effort": self.subagents.default_effort,
+                "default_context": self.subagents.default_context,
+                "allowed_models": list(self.subagents.allowed_models or ()),
+                "allow_call_overrides": self.subagents.allow_call_overrides,
+                "max_depth": self.subagents.max_depth,
+                "max_tasks": self.subagents.max_tasks,
+                "max_concurrent": self.subagents.max_concurrent,
+                "max_active_pools": self.subagents.max_active_pools,
+                "depth_limits": {
+                    str(depth): {
+                        key: value
+                        for key, value in (
+                            ("max_tasks", limit.max_tasks),
+                            ("max_concurrent", limit.max_concurrent),
+                        )
+                        if value is not None
+                    }
+                    for depth, limit in self.subagents.depth_limits.items()
+                },
+                "depth_tiers": {
+                    str(depth): {
+                        name: {
+                            key: list(value)
+                            for key, value in (
+                                ("allowed_tools", tier.allowed_tools),
+                                ("allowed_models", tier.allowed_models),
+                            )
+                            if value is not None
+                        }
+                        for name, tier in tiers.items()
+                    }
+                    for depth, tiers in self.subagents.depth_tiers.items()
+                },
+            },
         }
 
 
 def _parse_mcp_servers(raw_list: list[dict[str, object]]) -> list[McpServerConfig]:
     """Convert raw TOML dicts to McpServerConfig objects; duplicate names are an error."""
-    if not raw_list:
-        return []
-    from agenthicc.tools.mcp_server_config import McpServerConfig
-
     servers = [McpServerConfig.from_dict(d) for d in raw_list]
     names = [server.name for server in servers]
     duplicates = sorted({name for name in names if names.count(name) > 1})
@@ -2445,6 +2648,131 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
         reduced_motion=_as_bool(ui_data.get("reduced_motion"), False),
     )
 
+    subagent_data = _section(data.get("subagents"))
+    allowed_models: tuple[str, ...] | None = None
+    if "allowed_models" in subagent_data:
+        raw_allowed_models = subagent_data["allowed_models"]
+        if not isinstance(raw_allowed_models, (list, tuple)) or not raw_allowed_models:
+            raise ValueError("subagents.allowed_models must be a non-empty array")
+        if not all(isinstance(model, str) and model.strip() for model in raw_allowed_models):
+            raise ValueError("subagents.allowed_models must contain non-empty model identifiers")
+        allowed_models = tuple(model.strip() for model in raw_allowed_models)
+    default_context_raw = subagent_data.get("default_context")
+    if default_context_raw is None:
+        default_context = None
+    elif (
+        isinstance(default_context_raw, bool)
+        or not isinstance(default_context_raw, int)
+        or not 1 <= default_context_raw <= 10_000_000
+    ):
+        raise ValueError("subagents.default_context must be an integer from 1 to 10000000")
+    else:
+        default_context = default_context_raw
+    allow_call_overrides = subagent_data.get("allow_call_overrides", False)
+    if not isinstance(allow_call_overrides, bool):
+        raise ValueError("subagents.allow_call_overrides must be boolean")
+
+    def governance_int(name: str, default: int) -> int:
+        value = subagent_data.get(name, default)
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(f"subagents.{name} must be an integer")
+        return value
+
+    depth_limits: dict[int, SubagentDepthLimit] = {}
+    raw_depth_limits = subagent_data.get("depth_limits", {})
+    if not isinstance(raw_depth_limits, Mapping):
+        raise ValueError("subagents.depth_limits must be a table")
+    for raw_depth, raw_limit in raw_depth_limits.items():
+        try:
+            depth = int(str(raw_depth))
+        except ValueError as exc:
+            raise ValueError("subagents.depth_limits keys must be integer depths") from exc
+        if str(depth) != str(raw_depth) or not isinstance(raw_limit, Mapping):
+            raise ValueError(f"subagents.depth_limits.{raw_depth} must be a depth table")
+        if set(raw_limit) - {"max_tasks", "max_concurrent"}:
+            raise ValueError(f"subagents.depth_limits.{depth} has an unknown setting")
+        values: dict[str, int | None] = {"max_tasks": None, "max_concurrent": None}
+        for key in values:
+            raw_value = raw_limit.get(key)
+            if raw_value is not None:
+                if isinstance(raw_value, bool) or not isinstance(raw_value, int):
+                    raise ValueError(f"subagents.depth_limits.{depth}.{key} must be an integer")
+                values[key] = raw_value
+        depth_limits[depth] = SubagentDepthLimit(**values)
+
+    depth_tiers: dict[int, dict[str, SubagentDepthTier]] = {}
+    raw_depth_tiers = subagent_data.get("depth_tiers", {})
+    if not isinstance(raw_depth_tiers, Mapping):
+        raise ValueError("subagents.depth_tiers must be a table")
+    for raw_depth, raw_tiers in raw_depth_tiers.items():
+        try:
+            depth = int(str(raw_depth))
+        except ValueError as exc:
+            raise ValueError("subagents.depth_tiers keys must be integer depths") from exc
+        if str(depth) != str(raw_depth) or not isinstance(raw_tiers, Mapping):
+            raise ValueError(f"subagents.depth_tiers.{raw_depth} must be a type table")
+        tiers: dict[str, SubagentDepthTier] = {}
+        for type_name, raw_tier in raw_tiers.items():
+            if not isinstance(type_name, str) or not isinstance(raw_tier, Mapping):
+                raise ValueError(f"subagents.depth_tiers.{depth} entries must be type tables")
+            if set(raw_tier) - {"allowed_tools", "allowed_models"}:
+                raise ValueError(
+                    f"subagents.depth_tiers.{depth}.{type_name} has an unknown setting"
+                )
+            fields: dict[str, tuple[str, ...] | None] = {
+                "allowed_tools": None,
+                "allowed_models": None,
+            }
+            for key in fields:
+                raw_values = raw_tier.get(key)
+                if raw_values is not None:
+                    if not isinstance(raw_values, (list, tuple)) or not all(
+                        isinstance(value, str) for value in raw_values
+                    ):
+                        raise ValueError(
+                            f"subagents.depth_tiers.{depth}.{type_name}.{key} must be an array"
+                        )
+                    fields[key] = tuple(raw_values)
+            tiers[type_name] = SubagentDepthTier(**fields)
+        depth_tiers[depth] = tiers
+
+    def _subagent_int(name: str, default: int) -> int:
+        raw = subagent_data.get(name, default)
+        if isinstance(raw, bool) or not isinstance(raw, int) or raw < 1:
+            raise ValueError(f"subagents.{name} must be a positive integer")
+        return raw
+
+    on_budget_exceeded = subagent_data.get("on_budget_exceeded", "drain")
+    if not isinstance(on_budget_exceeded, str) or on_budget_exceeded not in {"abort", "drain"}:
+        raise ValueError("subagents.on_budget_exceeded must be 'abort' or 'drain'")
+    stop_grace_s = subagent_data.get("stop_grace_s", 5.0)
+    if isinstance(stop_grace_s, bool) or not isinstance(stop_grace_s, (int, float)):
+        raise ValueError("subagents.stop_grace_s must be a finite non-negative number")
+    max_total_time_s = subagent_data.get("max_total_time_s", 600.0)
+    if isinstance(max_total_time_s, bool) or not isinstance(max_total_time_s, (int, float)):
+        raise ValueError("subagents.max_total_time_s must be a finite number greater than zero")
+
+    subagents = SubagentSettings(
+        default_model=_as_str(subagent_data.get("default_model"), "").strip(),
+        default_effort=_as_str(subagent_data.get("default_effort"), "").strip().casefold(),
+        default_context=default_context,
+        allowed_models=allowed_models,
+        allow_call_overrides=allow_call_overrides,
+        max_depth=governance_int("max_depth", 1),
+        max_tasks=governance_int("max_tasks", 64),
+        max_concurrent=governance_int("max_concurrent", 16),
+        max_active_pools=governance_int("max_active_pools", 16),
+        depth_limits=depth_limits,
+        depth_tiers=depth_tiers,
+        max_workers=_subagent_int("max_workers", 32),
+        max_tool_calls=_subagent_int("max_tool_calls", 256),
+        max_iterations=_subagent_int("max_iterations", 128),
+        max_tokens=_subagent_int("max_tokens", 200_000),
+        max_total_time_s=float(max_total_time_s),
+        on_budget_exceeded=cast(Literal["abort", "drain"], on_budget_exceeded),
+        stop_grace_s=float(stop_grace_s),
+    )
+
     # [workflows] section — dict[workflow_name, dict[str, Any]] (PRD-111)
     workflows: dict[str, dict[str, object]] = {
         str(name): _section(params)
@@ -2477,6 +2805,7 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
         agents=agents,
         workflows=workflows,
         ui=ui,
+        subagents=subagents,
     )
 
 

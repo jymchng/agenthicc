@@ -254,6 +254,7 @@ class TestProjectInit:
             "browser_backend",
             "strict_cli_shadow",
             "context_windows",
+            "subagents",
             "request_options",
             "mcp_servers",
             "workflows",

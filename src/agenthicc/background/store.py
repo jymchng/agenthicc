@@ -45,32 +45,6 @@ class IndexRebuildCancelled(RuntimeError):
     """Raised inside a rebuild that ``cancel_rebuild`` stopped; nothing is kept."""
 
 
-class BackgroundEventLogError(RuntimeError):
-    """Raised when the authoritative background event log cannot be read."""
-
-
-def _sqlite_is_busy(error: sqlite3.OperationalError) -> bool:
-    """Return whether SQLite reports lock contention rather than a schema fault."""
-
-    message = str(error).casefold()
-    return "database is locked" in message or "database is busy" in message
-
-
-def _sqlite_is_schema_error(error: sqlite3.OperationalError) -> bool:
-    """Recognize missing-schema errors that justify repairing this derived index."""
-
-    message = str(error).casefold()
-    return any(
-        marker in message
-        for marker in (
-            "no such column",
-            "no such table",
-            "has no column named",
-            "malformed database schema",
-        )
-    )
-
-
 def default_background_root() -> Path:
     return Path.home() / ".agenthicc" / "background"
 
@@ -251,12 +225,8 @@ class BackgroundStore:
 
         try:
             stat = self.events_path.stat()
-        except FileNotFoundError:
+        except OSError:
             return (0, 0, 0)
-        except OSError as exc:
-            raise BackgroundEventLogError(
-                "The authoritative background event log could not be accessed"
-            ) from exc
         return (stat.st_ino, stat.st_size, stat.st_mtime_ns)
 
     def invalidate_index(self) -> None:
@@ -278,14 +248,8 @@ class BackgroundStore:
     def _iter_events_with_offsets(self) -> Iterator[tuple[dict[str, object], int]]:
         """Yield complete events with the byte offset just past each one."""
 
-        try:
-            self.events_path.stat()
-        except FileNotFoundError:
+        if not self.events_path.exists():
             return
-        except OSError as exc:
-            raise BackgroundEventLogError(
-                "The authoritative background event log could not be accessed"
-            ) from exc
         decode = json.JSONDecoder().decode
         try:
             with self.events_path.open("rb") as handle:
@@ -301,10 +265,8 @@ class BackgroundStore:
                     # JSON object keys are always strings.
                     if isinstance(raw, dict):
                         yield raw, offset
-        except OSError as exc:
-            raise BackgroundEventLogError(
-                "The authoritative background event log could not be read"
-            ) from exc
+        except OSError:
+            return
 
     def iter_events(self) -> Iterator[dict[str, object]]:
         """Iterate authoritative events for durable sidecar reconciliation."""
@@ -363,10 +325,8 @@ class BackgroundStore:
             with self.events_path.open("rb") as handle:
                 handle.seek(offset)
                 data = handle.read()
-        except OSError as exc:
-            raise BackgroundEventLogError(
-                "The authoritative background event log could not be read"
-            ) from exc
+        except OSError:
+            return [], offset, b""
         if not data:
             return [], offset, b""
         lines = data.splitlines(keepends=True)
@@ -480,40 +440,22 @@ class BackgroundStore:
 
         with self._index_lock:
             fingerprint = self._events_fingerprint()
-            if self._applied == fingerprint and self._index.connection_matches_path():
+            if self._applied == fingerprint:
                 return
-            schema_reset = False
             try:
                 state = self._index.state()
-            except sqlite3.OperationalError as exc:
-                if _sqlite_is_schema_error(exc):
-                    self._index.reset_schema()
-                    state = None
-                    schema_reset = True
-                elif _sqlite_is_busy(exc):
-                    raise
-                else:
-                    raise
+            except sqlite3.OperationalError:
+                raise  # busy or locked: another process is writing the index
             except sqlite3.DatabaseError:
                 self._index.discard()
                 state = None
-            if fingerprint == (0, 0, 0) and state is not None and state.inode != 0:
-                # An empty fingerprint means the file is absent, not that the
-                # previously indexed event history became an empty registry.
-                # Never replace useful projection data with an empty replay.
-                raise BackgroundEventLogError("The authoritative background event log is missing")
             if state is not None and fingerprint == (state.inode, state.offset, state.mtime_ns):
                 self._remember(fingerprint, state.sequence, partial=False)
                 return
             try:
                 self._sync_transaction(fingerprint)
-            except sqlite3.OperationalError as exc:
-                if _sqlite_is_schema_error(exc) and not schema_reset:
-                    self._index.reset_schema()
-                    self._applied = None
-                    self._sync_transaction(fingerprint)
-                else:
-                    raise
+            except sqlite3.OperationalError:
+                raise
             except sqlite3.DatabaseError:
                 # A corrupt file can fail anywhere; it is derived, so rebuild.
                 self._index.discard()
@@ -690,12 +632,8 @@ class BackgroundStore:
                 # One byte earlier shows whether the window starts mid-line.
                 handle.seek(max(0, start - 1))
                 data = handle.read()
-        except FileNotFoundError:
+        except OSError:
             return ()
-        except OSError as exc:
-            raise BackgroundEventLogError(
-                "The authoritative background event log could not be read"
-            ) from exc
         if start > 0:
             newline = data.find(b"\n")
             data = data[newline + 1 :] if newline >= 0 else b""

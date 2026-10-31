@@ -50,6 +50,24 @@ class TestJournalsEveryTransition:
         assert folded[-1]["role"] == "user"
         j.close()
 
+    def test_synthetic_user_message_is_appended_once_across_resume_and_compaction(
+        self,
+        tmp_path,
+    ) -> None:
+        j, memory = _make(tmp_path)
+        receipt_id = "subagent-completion:pool-1"
+        assert memory.add_user_once("worker result", message_id=receipt_id)
+        assert not memory.add_user_once("worker result", message_id=receipt_id)
+        assert len(memory._messages) == 1
+        memory.replace_state([{"role": "user", "content": "compacted"}], None)
+        j.close()
+
+        resumed_journal = ConversationJournal(tmp_path / "j.jsonl")
+        resumed = JournaledShortTermMemory(resumed_journal, max_tokens=32_000)
+        assert not resumed.add_user_once("worker result", message_id=receipt_id)
+        assert resumed._messages == [{"role": "user", "content": "compacted"}]
+        resumed_journal.close()
+
 
 class TestResume:
     def test_construction_folds_existing_journal(self, tmp_path) -> None:

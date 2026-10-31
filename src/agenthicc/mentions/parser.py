@@ -9,7 +9,14 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from agenthicc.tools.workspace_access import ResolvedWorkspacePath, WorkspaceScope
 
-__all__ = ["MentionKind", "Mention", "parse_mentions", "strip_mentions"]
+__all__ = [
+    "AGENT_PREFIX",
+    "MentionKind",
+    "Mention",
+    "agent_mentions",
+    "parse_mentions",
+    "strip_mentions",
+]
 
 
 class MentionKind(str, Enum):
@@ -19,6 +26,15 @@ class MentionKind(str, Enum):
     URL = "url"
     UNRESOLVED = "unresolved"
     OUT_OF_SCOPE = "out_of_scope"
+    AGENT = "agent"
+
+
+#: ``@agent:NAME`` invokes a subagent definition instead of reading a file
+#: (AGX-09 §5.3); the mention's ``path`` is the definition name.
+AGENT_PREFIX = "agent:"
+# The definition-name rule of ``agents.definitions`` (a unit test keeps the
+# two equal); the parser stays free of the agents package on every message.
+_AGENT_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
 
 @dataclass
@@ -199,6 +215,53 @@ def _scan_token_end(text: str, start: int) -> int:
     return index
 
 
+def _agent_name(token: str) -> str | None:
+    """The definition name of an ``agent:NAME`` token, without prose punctuation."""
+
+    if not token.startswith(AGENT_PREFIX):
+        return None
+    name = token[len(AGENT_PREFIX) :].rstrip("".join(_TRAILING_SENTENCE_PUNCTUATION))
+    return name if _AGENT_NAME_RE.match(name) else None
+
+
+def agent_mentions(text: str) -> list[Mention]:
+    """The ``@agent:NAME`` mentions in *text*, in order, without filesystem access.
+
+    The boundary and Markdown-code rules are those of :func:`parse_mentions`,
+    so the two never disagree about which tokens invoke an agent.
+    """
+
+    found: list[Mention] = []
+    protected_ranges = _markdown_code_ranges(text)
+    protected_index = 0
+    index = text.find("@")
+    while 0 <= index < len(text):
+        protected, next_index, protected_index = _protected_range_at(
+            index, protected_ranges, protected_index
+        )
+        if protected:
+            index = text.find("@", next_index)
+            continue
+        token_end = _scan_token_end(text, index)
+        name = _agent_name(text[index + 1 : token_end])
+        if name is not None and _is_valid_mention_boundary(text, index):
+            end = index + 1 + len(AGENT_PREFIX) + len(name)
+            found.append(
+                Mention(
+                    raw=text[index:end],
+                    path=name,
+                    kind=MentionKind.AGENT,
+                    resolved=None,
+                    start=index,
+                    end=end,
+                )
+            )
+            index = text.find("@", token_end)
+        else:
+            index = text.find("@", index + 1)
+    return found
+
+
 def _resolve_unscoped(path_str: str, base: Path) -> Path | None:
     """Resolve a path without allowing malformed input to escape the parser."""
 
@@ -348,7 +411,8 @@ def parse_mentions(
 
     Returns:
         Ordered list of Mention objects.  Markdown code spans and fenced code
-        blocks are treated as literal text.
+        blocks are treated as literal text.  ``@agent:NAME`` tokens are
+        :attr:`MentionKind.AGENT` mentions and never touch the filesystem.
     """
 
     base = (cwd or Path.cwd()).resolve()
@@ -374,6 +438,22 @@ def parse_mentions(
         path_str = text[index + 1 : token_end]
         if not path_str:
             index += 1
+            continue
+
+        agent = _agent_name(path_str)
+        if agent is not None:
+            end = index + 1 + len(AGENT_PREFIX) + len(agent)
+            mentions.append(
+                Mention(
+                    raw=text[index:end],
+                    path=agent,
+                    kind=MentionKind.AGENT,
+                    resolved=None,
+                    start=index,
+                    end=end,
+                )
+            )
+            index = token_end
             continue
 
         # A terminal question mark is usually prose punctuation, but is also

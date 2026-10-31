@@ -515,6 +515,25 @@ class AgentsHubCapability:
         return _CONSUMED
 
 
+class AgentCycleCapability:
+    """Tab talks to the next primary agent (AGX-09 §5.3); Shift+Tab is the mode."""
+
+    async def handle(
+        self,
+        key: Key,
+        ch: str,
+        session: UnifiedInputSession,
+    ) -> CapabilityResult:
+        if session._action != "agents.cycle":
+            return _PASS
+        from agenthicc.tui.runtime.commands import CycleAgentCommand
+
+        if not session._bus.handles(CycleAgentCommand):
+            return _PASS
+        await session._bus.dispatch_async(CycleAgentCommand())
+        return _CONSUMED
+
+
 class SubagentsCapability:
     """Ctrl+O moves focus to the subagent panel while it is shown (AGX-08 §5.2)."""
 
@@ -531,6 +550,25 @@ class SubagentsCapability:
         if not session._bus.handles(OpenSubagentsCommand):
             return _PASS
         await session._bus.dispatch_async(OpenSubagentsCommand())
+        return _CONSUMED
+
+
+class BackgroundSubagentsCapability:
+    """Ctrl+B detaches a live subagent pool from its foreground tool call."""
+
+    async def handle(
+        self,
+        key: Key,
+        ch: str,
+        session: UnifiedInputSession,
+    ) -> CapabilityResult:
+        if session._action != "subagents.background":
+            return _PASS
+        from agenthicc.tui.runtime.commands import BackgroundSubagentsCommand
+
+        if not session._bus.handles(BackgroundSubagentsCommand):
+            return _PASS
+        await session._bus.dispatch_async(BackgroundSubagentsCommand())
         return _CONSUMED
 
 
@@ -620,6 +658,7 @@ IDLE_CAPABILITIES: list[Capability] = [
     ModeCycleCapability(),
     AgentsHubCapability(),
     SubagentsCapability(),
+    AgentCycleCapability(),
     MouseCapability(),
     InsertCapability(),  # fallback — must be last
 ]
@@ -639,6 +678,8 @@ STREAMING_CAPABILITIES: list[Capability] = [
     ModeCycleCapability(),  # Shift+Tab — mode switch takes effect on next tool call
     AgentsHubCapability(),  # the hub opens over a running turn too
     SubagentsCapability(),  # workers run while their turn does
+    BackgroundSubagentsCapability(),
+    AgentCycleCapability(),  # the choice applies from the next turn
     MouseCapability(),
     InsertCapability(),  # fallback — must be last
 ]

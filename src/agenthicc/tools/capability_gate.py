@@ -13,8 +13,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from agenthicc.tui.conversation_store import AppState
     from agenthicc.tools.context import ToolCallContext
+    from agenthicc.tui.conversation_store import AppState
 
 from agenthicc.tools.capabilities import CAPABILITIES_KEY, classify_tool_capabilities
 
@@ -34,8 +34,16 @@ class ToolCapabilityGate:
     - The tool function never executes.
     """
 
-    def __init__(self, app_state: AppState) -> None:
+    def __init__(
+        self,
+        app_state: AppState,
+        *,
+        type_name: str = "",
+        type_denied_capabilities: frozenset[str] = frozenset(),
+    ) -> None:
         self._app_state = app_state
+        self._type_name = type_name
+        self._type_denied_capabilities = type_denied_capabilities
 
     async def before_tool_call(self, ctx: ToolCallContext) -> object:
         from lauren_ai._tools._hooks import BeforeToolHookDecision
@@ -50,21 +58,26 @@ class ToolCapabilityGate:
         denied = tool_caps & blocked
         if denied:
             caps_str = ", ".join(sorted(denied))
-            reason = (
-                "has no declared capability metadata"
-                if "undeclared" in denied
-                else f"requires {caps_str} capability"
-            )
-            return BeforeToolHookDecision.abort(
-                {
-                    "ok": False,
-                    "error": (
-                        f"Tool '{ctx.tool_name}' {reason}, "
-                        f"which is blocked in {mode.name} mode. "
-                        f"Switch to Yolo mode or annotate it as read-only."
-                    ),
-                }
-            )
+            type_denied = denied & self._type_denied_capabilities
+            if type_denied and self._type_name:
+                type_caps = ", ".join(sorted(type_denied))
+                error = (
+                    f"Tool '{ctx.tool_name}' requires {type_caps} capability, blocked by the "
+                    f"{self._type_name} type's permissions.deny_capabilities constraint. "
+                    "This type-level restriction cannot be widened by the worker."
+                )
+            else:
+                reason = (
+                    "has no declared capability metadata"
+                    if "undeclared" in denied
+                    else f"requires {caps_str} capability"
+                )
+                error = (
+                    f"Tool '{ctx.tool_name}' {reason}, "
+                    f"which is blocked in {mode.name} mode. "
+                    f"Switch to Yolo mode or annotate it as read-only."
+                )
+            return BeforeToolHookDecision.abort({"ok": False, "error": error})
         return BeforeToolHookDecision.proceed()
 
     async def after_tool_call(self, result: object, ctx: ToolCallContext) -> object:

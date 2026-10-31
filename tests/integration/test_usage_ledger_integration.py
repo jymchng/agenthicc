@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from types import SimpleNamespace
 from pathlib import Path
 
@@ -208,9 +209,11 @@ async def test_standard_compaction_and_subagent_paths_use_the_same_ledger() -> N
         )
     )
     parent = AgentRunnerBase(transport=mock)
+    explorer = DEFAULT_REGISTRY.get("explorer")
+    assert explorer is not None
     worker = SubagentWorker(
         task=SubagentTask("task-1", "explorer", "inspect the project"),
-        spec=DEFAULT_REGISTRY.get("explorer"),
+        spec=replace(explorer, model="routed-model"),
         index=1,
         parent_runner=parent,
         parent_model="mock-model",
@@ -218,10 +221,14 @@ async def test_standard_compaction_and_subagent_paths_use_the_same_ledger() -> N
         usage_ledger=ledger,
         conversation_id="session-runtime",
         parent_run_id="parent-run",
+        provider="openai",
     )
     result = await worker.run()
 
     assert result.ok
     assert {record.category for record in ledger.records()} == {"compaction", "subagent"}
+    subagent_record = next(record for record in ledger.records() if record.category == "subagent")
+    assert subagent_record.model == "routed-model"
+    assert subagent_record.provider == "openai"
     assert ledger.snapshot().input_tokens == 15
     assert ledger.snapshot().output_tokens == 5

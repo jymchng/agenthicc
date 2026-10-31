@@ -206,6 +206,34 @@ def load_session_mode(session_id: str) -> str | None:
     return mode if isinstance(mode, str) and mode.strip() else None
 
 
+def update_session_agent(session_id: str, agent: str) -> None:
+    """Persist the session's primary agent so a resume restores it (AGX-09)."""
+    updated: dict[str, object] | None = None
+
+    def _update(index: dict[str, dict[str, object]]) -> None:
+        nonlocal updated
+        metadata = index.get(session_id)
+        if metadata is None:
+            return
+        metadata["agent"] = agent
+        updated = dict(metadata)
+
+    _mutate_index(_update)
+    if updated is not None:
+        _write_metadata(session_id, updated)
+
+
+def load_session_agent(session_id: str) -> str | None:
+    """The session's persisted primary agent, or ``None`` for old/corrupt metadata."""
+    path = _SESSIONS_DIR / session_id / "metadata.json"
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    agent = value.get("agent") if isinstance(value, dict) else None
+    return agent if isinstance(agent, str) and agent.strip() else None
+
+
 def touch_session(session_id: str) -> None:
     def _touch(index: dict[str, dict[str, object]]) -> None:
         if session_id in index:

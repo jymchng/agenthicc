@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from agenthicc.tui.workspace.agents_hub.model import (
     LibraryEntry,
@@ -19,8 +20,13 @@ from agenthicc.tui.workspace.agents_hub.model import (
     project_name,
 )
 
+if TYPE_CHECKING:
+    from agenthicc.agents.definitions import AgentSpec
+    from agenthicc.agents.registry import AgentsRegistry
+
 __all__ = [
     "HubSources",
+    "library_entries",
     "load_library",
     "load_saved_sessions",
     "load_scheduled",
@@ -114,34 +120,56 @@ def load_saved_sessions() -> list[SavedSession]:
     return list(records)
 
 
-def load_library(project_dir: Path, user_dir: Path) -> list[LibraryEntry]:
-    """Agent definitions; untrusted project files are skipped by the registry."""
-    from lauren_ai._agents import AGENT_META
+def _tools_summary(spec: AgentSpec) -> str:
+    if spec.tools is not None:
+        return " ".join(spec.tools) if spec.tools else "no tools"
+    if spec.capabilities is not None:
+        return " ".join(spec.capabilities) if spec.capabilities else "no tools"
+    return "all tools"
 
-    from agenthicc.agents.registry import build_agents_registry
 
-    registry = build_agents_registry(project_dir, user_dir, load_external=True)
+def library_entries(registry: AgentsRegistry, *, project_root: Path) -> list[LibraryEntry]:
+    """The registry's catalog as Library rows (AGX-09 §5.2)."""
+    from agenthicc.agents.selection import project_default
+
+    default = project_default(project_root) or "default"
     entries: list[LibraryEntry] = []
-    for definition in registry.all():
-        meta = vars(definition.agent_class).get(AGENT_META)
-        system = vars(meta).get("system", "") if meta is not None else ""
-        first = next((line.strip() for line in str(system or "").splitlines() if line.strip()), "")
-        capabilities = definition.allowed_capabilities
-        if capabilities is None:
-            tools = "all tools"
-        elif not capabilities:
-            tools = "no tools"
+    for item in registry.catalog:
+        spec = item.spec
+        if item.state == "shadowed":
+            note = f"shadowed by the {item.shadowed_by} definition"
+        elif item.state == "invalid" and item.error is not None:
+            note = f"invalid: {item.error.message} (line {item.error.line})"
+            if item.kept_previous:
+                note += "; the last valid version is in use"
+        elif item.state == "untrusted":
+            note = "untrusted: review it with agenthicc trust add"
         else:
-            tools = " ".join(sorted(str(capability.value) for capability in capabilities))
+            note = ""
         entries.append(
             LibraryEntry(
-                name=definition.name,
-                source=definition.source,
-                description=first[:200],
-                tools=tools,
+                name=item.name,
+                source=item.source,
+                description=spec.description[:200] if spec is not None else "",
+                tools=_tools_summary(spec) if spec is not None else "",
+                mode=spec.mode if spec is not None else "",
+                model=spec.model if spec is not None else "",
+                state=item.state,
+                note=note,
+                path=str(item.path) if item.path is not None else "",
+                default=item.state == "active" and item.name == default,
+                spec=spec,
             )
         )
     return entries
+
+
+def load_library(project_dir: Path, user_dir: Path) -> list[LibraryEntry]:
+    """Every agent definition with its state; untrusted project files are not loaded."""
+    from agenthicc.agents.registry import build_agents_registry
+
+    registry = build_agents_registry(project_dir, user_dir, load_external=True)
+    return library_entries(registry, project_root=project_dir.parent)
 
 
 def load_scheduled(limit: int = SCHEDULED_LIMIT) -> list[ScheduledEntry]:

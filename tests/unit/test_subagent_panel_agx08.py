@@ -210,11 +210,40 @@ def test_the_panel_lists_each_workers_status_activity_time_and_tokens() -> None:
     ]
     assert rows[0].startswith("  Subagents 2 running · 1 done · limit 4")
     assert rows[0].rstrip().endswith("Ctrl+O focus")
+    assert summary_line(state, 100) == (
+        "  [bold magenta]Subagents[/bold magenta] 2 running · 1 done · limit 4"
+    )
     assert "● explorer #1" in rows[1] and "read src/store.py" in rows[1]
     assert "0:42" in rows[1] and "3.1k" in rows[1]
     assert "◆ explorer #2" in rows[2] and "needs approval" in rows[2]
     assert "✓ explorer #3" in rows[3] and "0:31" in rows[3]
     assert all(len(row) <= 100 for row in rows)
+
+
+def test_nested_pool_summary_shows_depth_and_keeps_parent_identity() -> None:
+    state = SubagentPoolState(
+        "nested-pool",
+        1,
+        (
+            WorkerState(
+                "explorer #1",
+                "explorer",
+                worker_id="task-1",
+                depth=2,
+                parent_pool_id="nested-pool",
+            ),
+        ),
+        depth=2,
+        parent_pool_id="parent-pool",
+        limit=4,
+    )
+
+    summary = _plain(summary_line(state, 100))
+
+    assert "depth 2" in summary
+    assert state.parent_pool_id == "parent-pool"
+    assert state.workers[0].depth == 2
+    assert state.workers[0].parent_pool_id == "nested-pool"
 
 
 def test_more_than_six_workers_collapse_and_a_short_terminal_shows_the_summary() -> None:

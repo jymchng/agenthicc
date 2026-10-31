@@ -28,7 +28,7 @@ import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import timezone
+from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, NoReturn
@@ -58,18 +58,16 @@ __all__ = [
 logger = logging.getLogger(__name__)
 _SECRET_ENV = re.compile(r"^AGENTHICC_WEBHOOK_[A-Za-z0-9_]{1,240}$")
 _EVENT_FOR_STATUS: dict[SessionStatus, str] = {
-    SessionStatus.COMPLETED: "completed",
-    SessionStatus.FAILED: "failed",
-    SessionStatus.WAITING_APPROVAL: "waiting_approval",
-    SessionStatus.WAITING_INPUT: "waiting_input",
-    SessionStatus.ORPHANED: "recovery_required",
+    SessionStatus.COMPLETED: "agent_finished",
+    SessionStatus.FAILED: "agent_failed",
+    SessionStatus.WAITING_APPROVAL: "agent_needs_input",
+    SessionStatus.WAITING_INPUT: "agent_needs_input",
+    SessionStatus.ORPHANED: "agent_failed",
 }
 _EVENT_SUMMARIES = {
-    "completed": "Background run completed.",
-    "failed": "Background run failed and needs review.",
-    "waiting_approval": "Background run is waiting for approval.",
-    "waiting_input": "Background run is waiting for an answer.",
-    "recovery_required": "Background run needs recovery.",
+    "agent_finished": "Background agent finished.",
+    "agent_failed": "Background agent failed or needs recovery.",
+    "agent_needs_input": "Background agent is waiting for your input.",
 }
 
 
@@ -108,6 +106,8 @@ def build_notification_descriptor(
     previous: BackgroundSession,
     current: BackgroundSession,
     settings: BackgroundNotificationSettings,
+    *,
+    now: datetime | None = None,
 ) -> dict[str, object] | None:
     """Build a minimal, stable descriptor only for meaningful state edges.
 
@@ -121,7 +121,10 @@ def build_notification_descriptor(
     if event_type is None:
         return None
     destinations: list[dict[str, object]] = []
-    if settings.local_enabled:
+    quiet_hours_active = settings.quiet_hours is not None and settings.quiet_hours.active_at(
+        now or datetime.now().astimezone()
+    )
+    if settings.local_enabled and not quiet_hours_active:
         destinations.append({"name": "local", "kind": "local", "backend": settings.local_backend})
     for webhook in settings.webhooks:
         if event_type in webhook.events:
@@ -692,7 +695,19 @@ def _escape_applescript(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ").replace("\r", " ")
 
 
-def _send_local_notification(payload: Mapping[str, object], backend: str) -> str:
+def _send_local_notification(
+    payload: Mapping[str, object],
+    backend: str,
+    *,
+    background_root: Path | None = None,
+) -> str:
+    if background_root is not None:
+        from .attention import tui_is_active
+
+        if tui_is_active(background_root):
+            # The active TUI observes the same durable registry transition and
+            # routes it through its renderer; never write into its terminal.
+            return "delivered"
     workspace = str(payload.get("workspace", "workspace"))[:128]
     summary = str(payload.get("summary", "Background run needs attention."))[:240]
     title = f"Agenthicc · {workspace}"
@@ -750,13 +765,18 @@ async def deliver_one(
     delivery: NotificationDelivery,
     *,
     now: float | None = None,
+    background_root: Path | None = None,
 ) -> tuple[str, int | None, float | None, bool]:
     """Deliver one claim and return category/status/retry time/terminal."""
 
     current_time = time.time() if now is None else now
     if delivery.destination_kind == "local":
         try:
-            category = _send_local_notification(delivery.payload, delivery.local_backend)
+            category = _send_local_notification(
+                delivery.payload,
+                delivery.local_backend,
+                background_root=background_root,
+            )
         except (OSError, subprocess.SubprocessError):
             category = "local_notifier_failed"
         return category, None, None, True
@@ -804,7 +824,10 @@ async def dispatch_outbox(
             delay = 0.5 if next_due is None else min(0.5, max(0.05, next_due - time.time()))
             await asyncio.sleep(delay)
             continue
-        category, status, retry_at, terminal = await deliver_one(delivery)
+        category, status, retry_at, terminal = await deliver_one(
+            delivery,
+            background_root=outbox.root.parent,
+        )
         outbox.finish(
             delivery.delivery_id,
             delivery.lease_token,

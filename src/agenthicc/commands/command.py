@@ -128,8 +128,13 @@ class CommandContext:
     schedule_config_path: str = ""
     # Shows the agents hub over the conversation (AGX-05): a tab name or "".
     open_agents_hub: "Callable[[str], None] | None" = None
+    toggle_dnd: "Callable[[], bool] | None" = None
     #: Moves focus to the subagent panel (AGX-08); ``None`` outside the TUI.
     open_subagents: "Callable[[], None] | None" = None
+    #: Chooses the primary agent and says what happened (AGX-09); TUI only.
+    select_agent: "Callable[[str], str] | None" = None
+    #: Shows the primary-agent picker (AGX-09); TUI only.
+    open_agent_picker: "Callable[[], None] | None" = None
 
 
 # A handler takes a CommandContext and returns True if it handled the command.

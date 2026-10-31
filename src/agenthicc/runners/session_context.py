@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from agenthicc.tui.runtime.session_log import SessionEventLog
     from agenthicc.workflows.registry import WorkflowRegistry
     from agenthicc.agents.registry import AgentsRegistry
+    from agenthicc.subagents.types import SubagentTypeRegistry
     from agenthicc.tools.approval import ApprovalBroker
     from agenthicc.mentions.cache import MentionCache
     from agenthicc.config import AgenthiccConfig
@@ -64,6 +65,7 @@ class SessionContext:
     # ── registries ────────────────────────────────────────────────────────────
     workflow_registry: "WorkflowRegistry"
     agents_registry: "AgentsRegistry"
+    subagent_registry: "SubagentTypeRegistry"
     cmd_registry: "UnifiedCommandRegistry"
     trigger_registry: "TriggerManager"
 
