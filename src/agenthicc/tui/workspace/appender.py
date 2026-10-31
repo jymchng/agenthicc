@@ -20,6 +20,12 @@ from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, Callable
 
 from agenthicc.tui.conversation_store import ConversationEvent
+from agenthicc.tui.workspace.formatters import (
+    compact_token_count,
+    cost_label,
+    identity_rows,
+    usage_quality_label,
+)
 
 # ── event renderer registry ───────────────────────────────────────────────────
 # Maps ConversationEvent.kind → bound-method-compatible handler.
@@ -155,6 +161,13 @@ def _number(payload: Mapping[str, object], key: str, default: float = 0.0) -> fl
     value = payload.get(key, default)
     return (
         float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else default
+    )
+
+
+def _nonnegative_int(payload: Mapping[str, object], key: str, default: int = 0) -> int:
+    value = payload.get(key, default)
+    return (
+        value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else default
     )
 
 
@@ -527,24 +540,107 @@ class ScrollBufferAppender:
     # ── idle status header (printed once before each new prompt) ──────────────
 
     def print_idle_header(self) -> None:
-        """Print session info + separator before the input prompt."""
+        """Print a compact, width-bounded session summary before the prompt."""
         import shutil
 
+        from rich.markup import escape
+
+        from agenthicc.tui.preferences import ui_settings
+        from agenthicc.tui.rendering import fit, visible_len
+
         conv = self._state.conversation
-        cols = shutil.get_terminal_size((80, 24)).columns
-        sid = conv.session_id() or "session"
-        turns = conv.turn_count()
-        cost_status = getattr(conv, "cost_status", lambda: "estimated")()
-        cost = f"${conv.cost_usd():.3f}" if cost_status != "unavailable" else "cost unknown"
-        usage_status = getattr(conv, "usage_status", lambda: "complete")()
-        marker = " ?" if usage_status != "complete" else ""
-        self._console.print(
-            f" [dim]{sid}  |  {turns} turn{'s' if turns != 1 else ''}  |  {cost}[/dim]"
-            f"  [cyan]↑ {conv.tokens_in():,}[/cyan]"
-            f"  [green]↓ {conv.tokens_out():,}[/green]{marker}",
-            markup=True,
-            highlight=False,
+        cols = max(1, shutil.get_terminal_size((80, 24)).columns)
+        ui = ui_settings(self._state)
+        reader = ui is not None and ui.screen_reader
+
+        def signal(name: str, default: object) -> object:
+            value = getattr(conv, name, default)
+            return value() if callable(value) else value
+
+        raw_sid = signal("session_id", "")
+        sid = raw_sid if isinstance(raw_sid, str) else ""
+        raw_directory = signal("current_directory", "")
+        current_directory = raw_directory if isinstance(raw_directory, str) else ""
+        raw_turns = signal("turn_count", 0)
+        turns = raw_turns if isinstance(raw_turns, int) and not isinstance(raw_turns, bool) else 0
+        raw_cost = signal("cost_usd", 0.0)
+        cost_value = (
+            float(raw_cost)
+            if isinstance(raw_cost, (int, float)) and not isinstance(raw_cost, bool)
+            else 0.0
         )
+        raw_in = signal("tokens_in", 0)
+        tokens_in = raw_in if isinstance(raw_in, int) and not isinstance(raw_in, bool) else 0
+        raw_out = signal("tokens_out", 0)
+        tokens_out = raw_out if isinstance(raw_out, int) and not isinstance(raw_out, bool) else 0
+        raw_usage_status = signal("usage_status", "unavailable")
+        usage_status = raw_usage_status if isinstance(raw_usage_status, str) else "unavailable"
+        raw_cost_status = signal("cost_status", "unavailable")
+        cost_status = raw_cost_status if isinstance(raw_cost_status, str) else "unavailable"
+
+        if usage_status in {"complete", "partial"}:
+            if reader:
+                usage = f"{tokens_in:,} input tokens, {tokens_out:,} output tokens"
+            else:
+                usage = f"↑ {compact_token_count(tokens_in)} ↓ {compact_token_count(tokens_out)}"
+            quality = usage_quality_label(usage_status, screen_reader=reader)
+            if quality:
+                usage += f", {quality}" if reader else f" · {quality}"
+        else:
+            usage = usage_quality_label(usage_status, screen_reader=reader)
+
+        cost = cost_label(cost_value, cost_status, screen_reader=reader)
+        separator = ", " if reader else "  │  "
+        fields: list[tuple[str, str]] = []
+        fields.append(
+            (
+                "turns",
+                f"{turns} turn{'s' if turns != 1 else ''}"
+                if reader
+                else f"[dim]{turns} turn{'s' if turns != 1 else ''}[/dim]",
+            )
+        )
+        fields.append(("cost", escape(cost) if reader else f"[dim]{escape(cost)}[/dim]"))
+        fields.append(
+            (
+                "usage",
+                escape(usage)
+                if reader
+                else f"[cyan]{escape(usage)}[/cyan]"
+                if usage_status == "complete"
+                else f"[yellow]{escape(usage)}[/yellow]",
+            )
+        )
+
+        def render_fields() -> str:
+            return separator.join(value for _, value in fields)
+
+        for removable in ("turns", "cost"):
+            if visible_len(render_fields()) <= cols:
+                break
+            fields = [field for field in fields if field[0] != removable]
+
+        summary_line = render_fields()
+        summary_lines = [summary_line]
+        if reader and visible_len(summary_line) > cols and usage_status in {"complete", "partial"}:
+            quality_suffix = (
+                f", {usage_quality_label(usage_status, screen_reader=True)}"
+                if usage_status == "partial"
+                else ""
+            )
+            summary_lines = [
+                f"Input: {tokens_in:,} tokens",
+                f"Output: {tokens_out:,} tokens{quality_suffix}",
+            ]
+        elif visible_len(summary_line) > cols:
+            summary_lines = [fit(summary_line, cols)]
+
+        identity = identity_rows(sid, current_directory, cols)
+        if not reader:
+            identity = [f"[dim]{escape(line)}[/dim]" for line in identity]
+        header_lines = [*identity, *summary_lines]
+        for line in header_lines:
+            self._console.print(line, markup=not reader, highlight=False)
         self._console.print(f"[dim]{'─' * cols}[/dim]", markup=True, highlight=False)
 
 
@@ -961,21 +1057,30 @@ def _render_phase_control_rejected(self: ScrollBufferAppender, ev: ConversationE
 def _render_subagent_pool_started(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
     from rich.markup import escape as _e
 
-    total = ev.payload.get("total", 0)
+    from agenthicc.tui.rendering import fit, visible_len
+
+    cols = max(1, self._console.width)
     workers = _mapping_list(ev.payload.get("workers", []))
-    self._console.print(
-        f"  [bold]▶ Spawning {total} subagent{'s' if total != 1 else ''}[/bold]",
-        markup=True,
-        highlight=False,
-    )
-    for w in workers:
-        label = _e(str(w.get("label", "")))
-        task = _e(str(w.get("task", w.get("type", "")))[:80])
-        self._console.print(
-            f"  [dim]⎿[/dim] [cyan]{label}[/cyan]  [dim]{task}[/dim]",
-            markup=True,
-            highlight=False,
-        )
+    total = max(_nonnegative_int(ev.payload, "total"), len(workers))
+    title = f"◈ Subagents · {total} worker{'s' if total != 1 else ''} started"
+    title = fit(_e(title), max(1, cols - 2))
+    self._console.print(f"  [bold]{title}[/bold]", markup=True, highlight=False)
+
+    for worker in workers[:3]:
+        raw_label = worker.get("label", "Worker")
+        label = " ".join(str(raw_label).split()) or "Worker"
+        task_value = worker.get("task", worker.get("type", ""))
+        task = " ".join(str(task_value).split())
+        prefix = f"  [dim]└[/dim] [cyan]{_e(label)}[/cyan]  "
+        remaining = max(0, cols - visible_len(prefix))
+        preview = fit(_e(task), remaining) if task and remaining else ""
+        line = prefix + (f"[dim]{preview}[/dim]" if preview else "")
+        self._console.print(fit(line, cols), markup=True, highlight=False)
+
+    remaining_workers = total - min(3, len(workers))
+    if remaining_workers > 0:
+        more = fit(_e(f"  +{remaining_workers} more · Ctrl+O details"), cols)
+        self._console.print(f"[dim]{more}[/dim]", markup=True, highlight=False)
 
 
 @register_renderer("subagent_worker_done")
@@ -1013,15 +1118,21 @@ def _render_subagent_worker_done(self: ScrollBufferAppender, ev: ConversationEve
 
 @register_renderer("subagent_pool_done")
 def _render_subagent_pool_done(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
-    succeeded = ev.payload.get("succeeded", 0)
-    total = ev.payload.get("total", 0)
-    failed = ev.payload.get("failed", 0)
+    from rich.markup import escape as _e
+
+    succeeded = _nonnegative_int(ev.payload, "succeeded")
+    total = _nonnegative_int(ev.payload, "total")
+    failed = _nonnegative_int(ev.payload, "failed")
     reason = ev.payload.get("budget_exceeded_reason", "")
-    suffix = f"  [red]{failed} failed[/red]" if failed else ""
+    status = "complete" if failed == 0 and not reason else "finished"
+    parts = [f"{succeeded}/{total} done"]
+    if failed:
+        parts.append(f"{failed} unsuccessful (failed or stopped)")
+    suffix = " · ".join(parts)
     if isinstance(reason, str) and reason:
-        suffix += f"  [yellow]budget exceeded: {reason.replace('_', ' ')}[/yellow]"
+        suffix += f" · budget exceeded: {_e(reason.replace('_', ' '))}"
     self._console.print(
-        f"  [bold]◈ {succeeded}/{total} subagent{'s' if total != 1 else ''} complete[/bold]{suffix}",
+        f"  [bold]◈ Subagents {status} · {suffix}[/bold]",
         markup=True,
         highlight=False,
     )

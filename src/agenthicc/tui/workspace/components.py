@@ -20,6 +20,13 @@ from rich.segment import Segment
 from rich.style import Style
 
 from agenthicc.tui.preferences import ui_settings as _ui
+from agenthicc.tui.workspace.formatters import (
+    compact_token_count,
+    cost_label,
+    identity_rows,
+    pool_status_counts,
+    usage_quality_label,
+)
 
 if TYPE_CHECKING:
     from rich.console import Console, ConsoleOptions, RenderableType
@@ -81,6 +88,120 @@ def _fit(markup: str, cols: int) -> str:
     return markup
 
 
+def _signal_text(conv: object, name: str, default: str) -> str:
+    signal = getattr(conv, name, None)
+    value = signal() if callable(signal) else signal
+    return value if isinstance(value, str) else default
+
+
+def _signal_int(conv: object, name: str, default: int) -> int:
+    signal = getattr(conv, name, None)
+    value = signal() if callable(signal) else signal
+    return value if isinstance(value, int) and not isinstance(value, bool) else default
+
+
+def _signal_float(conv: object, name: str, default: float) -> float:
+    signal = getattr(conv, name, None)
+    value = signal() if callable(signal) else signal
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    return default
+
+
+def _usage_text(inp: int, out: int, status: str, *, screen_reader: bool) -> str:
+    if status not in {"complete", "partial"}:
+        return "usage unavailable"
+    if screen_reader:
+        text = f"{inp:,} input tokens, {out:,} output tokens"
+        return f"{text}, usage partial" if status == "partial" else text
+    text = f"↑ {compact_token_count(inp)} ↓ {compact_token_count(out)}"
+    return f"{text} ?" if status == "partial" else text
+
+
+def _reader_usage_lines(inp: int, out: int) -> list[str]:
+    """Keep exact directional counts available when the combined row will not fit."""
+    return [f"Input tokens: {inp:,}", f"Output tokens: {out:,}"]
+
+
+def _fit_model(model: str, cols: int) -> str:
+    """Keep provider identity and a recognizable model suffix when shortened."""
+    from rich.markup import escape
+    from rich.cells import cell_len
+
+    from agenthicc.tui.rendering import visible_len
+
+    provider, separator, name = model.partition("/")
+    if not separator:
+        return _fit(escape(model), cols)
+    prefix = f"{provider} · "
+    if cell_len(prefix) >= cols:
+        return _fit(escape(model), cols)
+    candidate = prefix + name
+    if cell_len(candidate) <= cols:
+        return escape(candidate)
+    suffix_width = cols - cell_len(prefix) - 1
+    suffix: list[str] = []
+    used = 0
+    for character in reversed(name):
+        width = cell_len(character)
+        if used + width > suffix_width:
+            break
+        suffix.append(character)
+        used += width
+    shortened = prefix + "…" + "".join(reversed(suffix))
+    if visible_len(escape(shortened)) <= cols:
+        return escape(shortened)
+    return _fit(escape(model), cols)
+
+
+def _metadata_line(
+    turns: int,
+    cost: str,
+    usage_quality: str,
+    cols: int,
+    *,
+    screen_reader: bool,
+) -> str:
+    """Fit turn and accounting metadata while retaining an explicit quality label."""
+    from rich.markup import escape
+
+    from agenthicc.tui.rendering import visible_len
+
+    separator = ", " if screen_reader else " │ "
+    fields: list[tuple[str, str]] = [
+        ("turns", f"[dim]{turns} turn{'s' if turns != 1 else ''}[/dim]"),
+        ("cost", f"[dim]{escape(cost)}[/dim]"),
+    ]
+    if usage_quality:
+        fields.append(("quality", f"[yellow]{escape(usage_quality)}[/yellow]"))
+
+    def render() -> str:
+        return separator.join(field for _, field in fields)
+
+    while len(fields) > 1 and visible_len(render()) > cols:
+        removable = next(
+            (index for index, (name, _) in enumerate(fields) if name == "turns"),
+            next((index for index, (name, _) in enumerate(fields) if name == "cost"), -1),
+        )
+        if removable < 0:
+            break
+        fields.pop(removable)
+    if visible_len(render()) > cols:
+        fields = [item for item in fields if item[0] == "quality"]
+    return _fit(render(), cols)
+
+
+def _identity_markup_rows(conv: object, cols: int, *, screen_reader: bool) -> list[str]:
+    from rich.markup import escape
+
+    rows = identity_rows(
+        _signal_text(conv, "session_id", ""),
+        _signal_text(conv, "current_directory", ""),
+        cols,
+    )
+    return [escape(row) if screen_reader else f"[dim]{escape(row)}[/dim]" for row in rows]
+
+
 def _thinking_markup(frame: int) -> str:
     word = _THINKING
     n = len(word)
@@ -112,11 +233,7 @@ def _waiting_label(state: "AppState") -> str | None:
 
 
 class StatusComponent:
-    """Renders the two-line status bar from ConversationStore signals.
-
-    Line 1: {flower} {state_animation} │ Runtime: mm:ss │ {active_tool}
-    Line 2: {model_name} │ Tokens: Nk │ $N.NNNN
-    """
+    """Render responsive status, model, identity, and usage rows."""
 
     def __init__(self, app_state: AppState, startup: StartupCoordinator | None = None) -> None:
         self._state = app_state
@@ -149,50 +266,79 @@ class StatusComponent:
             _terminal_wait_signal() is True if callable(_terminal_wait_signal) else False
         )
         if terminal_waiting:
+            from rich.markup import escape
+
+            ui = _ui(self._state)
+            reader = ui is not None and ui.screen_reader
             elapsed_signal = getattr(conv, "terminal_wait_elapsed_s", None)
             elapsed_value = elapsed_signal() if callable(elapsed_signal) else 0.0
+            if not isinstance(elapsed_value, (int, float)) or isinstance(elapsed_value, bool):
+                elapsed_value = 0.0
             count_signal = getattr(conv, "terminal_running_count", None)
             running_count = count_signal() if callable(count_signal) else 0
-            label_signal = getattr(conv, "terminal_wait_label", None)
-            label = label_signal() if callable(label_signal) else "terminal"
-            wait_message = (
-                "[cyan]Waiting for background terminal[/cyan] "
-                f"({_fmt_elapsed(float(elapsed_value))} • Esc to interrupt) · "
-                f"{int(running_count)} background terminals running · /ps to view · /stop to stop all"
-            )
-            from agenthicc.tui.rendering import visible_len
+            if not isinstance(running_count, int) or isinstance(running_count, bool):
+                running_count = 0
+            label = _signal_text(conv, "terminal_wait_label", "terminal") or "terminal"
 
-            if visible_len(wait_message) > cols:
-                wait_message = (
-                    f"[cyan]Waiting terminal[/cyan] ({_fmt_elapsed(float(elapsed_value))} • Esc) · "
-                    f"{int(running_count)} running · /ps · /stop all"
+            separator = ", " if reader else "[dim] │[/dim] "
+            state_label = "Waiting for background terminal"
+            if not reader and cols < 48:
+                state_label = "Waiting terminal"
+            wait_line = f"[cyan]{state_label}[/cyan]"
+
+            def append_wait(value: str) -> None:
+                nonlocal wait_line
+                candidate = f"{wait_line}{separator}{value}"
+                if _vlen(candidate) <= cols:
+                    wait_line = candidate
+
+            append_wait(_fmt_elapsed(float(elapsed_value)))
+            if running_count > 0:
+                terminals = "terminal" if running_count == 1 else "terminals"
+                count_label = (
+                    f"{running_count} background {terminals} running"
+                    if reader
+                    else f"{running_count} running"
                 )
-            wait_line = _fit(wait_message, cols)
-            model = conv.model_name()
-            command_line = f"[dim]└ {_e(str(label))}[/dim]"
+                append_wait(count_label)
+            append_wait("Esc to interrupt" if reader else "Esc")
+            append_wait("/ps to view; /stop to stop all" if reader else "/ps · /stop")
+            wait_line = _fit(wait_line, cols)
+
+            model = _signal_text(conv, "model_name", "")
+            if not model:
+                model = ""
+            terminal_prefix = f"Terminal: {label}" if reader else f"└ {label}"
+            terminal_line = f"[dim]{escape(terminal_prefix)}[/dim]"
             if model:
-                command_line += f" [dim]│ {_e(model)}[/dim]"
-            command_line = _fit(command_line, cols)
-            sid = conv.session_id()
-            turns = conv.turn_count()
-            cost = conv.cost_usd()
-            inp = conv.tokens_in()
-            out = conv.tokens_out()
-            usage_status = getattr(conv, "usage_status", lambda: "complete")()
-            cost_status = getattr(conv, "cost_status", lambda: "estimated")()
-            meta = ""
-            if sid:
-                meta += f"[dim]{_e(sid)}[/dim]"
-            meta += f"[dim] │  {turns} turn{'s' if turns != 1 else ''}[/dim]"
-            meta += (
-                f"[dim] │  ${cost:.3f}[/dim]"
-                if cost_status != "unavailable"
-                else "[dim] │  cost unknown[/dim]"
+                model_label = _fit_model(model, cols)
+                model_part = f"[dim] │ {model_label}[/dim]"
+                if _vlen(terminal_line + model_part) <= cols:
+                    terminal_line += model_part
+            terminal_line = _fit(terminal_line, cols)
+
+            identity = _identity_markup_rows(conv, cols, screen_reader=reader)
+            turns = _signal_int(conv, "turn_count", 0)
+            cost_value = _signal_float(conv, "cost_usd", 0.0)
+            inp = _signal_int(conv, "tokens_in", 0)
+            out = _signal_int(conv, "tokens_out", 0)
+            usage_status = _signal_text(conv, "usage_status", "unavailable")
+            cost_status = _signal_text(conv, "cost_status", "unavailable")
+            quality = usage_quality_label(usage_status, screen_reader=reader)
+            meta = _metadata_line(
+                turns,
+                cost_label(cost_value, cost_status, screen_reader=reader),
+                quality,
+                cols,
+                screen_reader=reader,
             )
-            meta += f"[dim] │  ↑ {inp:,} ↓ {out:,}[/dim]"
-            if usage_status != "complete":
-                meta += "[yellow] ?[/yellow]"
-            return [wait_line, command_line, _fit(meta, cols)]
+            usage = _usage_text(inp, out, usage_status, screen_reader=reader)
+            if reader:
+                return [wait_line, terminal_line, *identity, meta, _fit(usage, cols)]
+            usage_part = f"[dim] │[/dim] {usage}"
+            if _vlen(wait_line + usage_part) <= cols:
+                wait_line += usage_part
+            return [wait_line, terminal_line, *identity, meta]
         waiting_label = _waiting_label(self._state)
         waiting = waiting_label is not None
         loading_signal = getattr(conv, "transcript_loading", None)
@@ -230,66 +376,102 @@ class StatusComponent:
         }
         color = "yellow" if transcript_loading else colors.get(state_name, "dim")
 
-        # ── line 1: state animation + elapsed + tokens + active tool ────────────
+        # ── line 1: state + elapsed + activity + pool progress + usage ──────────
         reader = ui is not None and ui.screen_reader
-        sep = "[dim],[/dim]" if reader else "[dim] │[/dim]"
-        lead = f"{flower} " if flower else ""
-        l1_parts = [f"{lead}[{color}]{state_text}[/{color}]"]
+        sep = ", " if reader else " [dim]·[/dim] "
+        lead = "" if reader or not flower else f"{flower} "
+        line1 = f"{lead}[{color}]{state_text}[/{color}]"
         elapsed = _cached_elapsed(conv, total_activity=not waiting)
+
+        def append_status(segment: str) -> bool:
+            nonlocal line1
+            candidate = f"{line1}{sep}{segment}"
+            if _vlen(candidate) > cols:
+                return False
+            line1 = candidate
+            return True
+
         if elapsed > 0:
-            l1_parts.append(f"{sep} {_fmt_elapsed(elapsed)}")
-        inp = conv.tokens_in()
-        out = conv.tokens_out()
-        usage_status = getattr(conv, "usage_status", lambda: "complete")()
-        if inp or out or usage_status != "unavailable":
-            marker = " [yellow]?[/yellow]" if usage_status != "complete" else ""
-            if reader:
-                tokens = f"{inp:,} tokens in, {out:,} out"
-                l1_parts.append(f"{sep} {tokens}{' (estimated)' if marker else ''}")
-            else:
-                l1_parts.append(f"{sep} [cyan]↑ {inp:,}[/cyan] [green]↓ {out:,}[/green]{marker}")
+            elapsed_label = (
+                f"{_fmt_elapsed(elapsed)}" if reader else f"[dim]{_fmt_elapsed(elapsed)}[/dim]"
+            )
+            append_status(elapsed_label)
+
+        activity = _signal_text(conv, "active_tool", "").strip()
+        if activity:
+            activity_label = f"Tool: {activity}" if reader else f"⚒ {activity}"
+            escaped_activity = _e(activity_label)
+            activity_segment = escaped_activity if reader else f"[dim]{escaped_activity}[/dim]"
+            if not append_status(activity_segment):
+                room = cols - _vlen(line1) - _vlen(sep)
+                if room >= 5:
+                    shortened = _fit(escaped_activity, room)
+                    segment = shortened if reader else f"[dim]{shortened}[/dim]"
+                    append_status(segment)
+
         _pool = conv.subagent_pool_state()
         if _pool is not None:
-            l1_parts.append(f"{sep} [magenta]{_pool.done}/{_pool.total} subagents[/magenta]")
-        while len(l1_parts) > 1 and _vlen("".join(l1_parts)) > cols:
-            l1_parts.pop()
-        line1 = "".join(l1_parts)
+            pool_counts = pool_status_counts(_pool)
+            if pool_counts.running + pool_counts.queued + pool_counts.needs_input > 0:
+                pool_label = (
+                    f"{pool_counts.done} of {_pool.total} workers"
+                    if reader
+                    else f"[magenta]{pool_counts.done}/{_pool.total} workers[/magenta]"
+                )
+                append_status(pool_label)
 
-        model = conv.model_name()
+        inp = _signal_int(conv, "tokens_in", 0)
+        out = _signal_int(conv, "tokens_out", 0)
+        usage_status = _signal_text(conv, "usage_status", "unavailable")
+        usage = _usage_text(inp, out, usage_status, screen_reader=reader)
+        usage_segment = (
+            _e(usage)
+            if reader
+            else f"[yellow]{_e(usage)}[/yellow]"
+            if usage_status != "complete"
+            else f"[cyan]↑ {compact_token_count(inp)}[/cyan] [green]↓ {compact_token_count(out)}[/green]"
+        )
+        usage_visible = append_status(usage_segment)
+        line1 = _fit(line1, cols)
+
+        model = _signal_text(conv, "model_name", "")
         if not model:
-            return [line1]
+            model = ""
 
-        # ── line 2: model name (PRD-118: phase override; PRD-119: compaction spinner)
+        # ── line 2: model identity or compaction state ─────────────────────────
         _wf = self._state.workflow_run()
         if _wf is not None and _wf.status == "running" and _wf.current_phase_model:
             model = _wf.current_phase_model
         if conv.compaction_active():
             _sp = _COMPACT_SPINNER[_frame % len(_COMPACT_SPINNER)] if animated else _STILL
             line2 = _fit(f"[yellow]{_sp} Compacting…[/yellow]", cols)
+        elif model:
+            line2 = _fit(f"[dim]{_fit_model(model, cols)}[/dim]", cols)
         else:
-            line2 = _fit(f"[dim]{_e(model)}[/dim]", cols)
+            line2 = ""
 
-        # ── line 3: session ID + turns + cost ────────────────────────────────────
-        sid = conv.session_id()
-        turns = conv.turn_count()
-        cost = conv.cost_usd()
-
-        l3_parts: list[str] = []
-        bar = "," if reader else " │ "
-        if sid:
-            l3_parts.append(f"[dim]{_e(sid)}[/dim]")
-        l3_parts.append(f"[dim]{bar} {turns} turn{'s' if turns != 1 else ''}[/dim]")
-        cost_status = getattr(conv, "cost_status", lambda: "estimated")()
-        l3_parts.append(
-            f"[dim]{bar} ${cost:.3f}[/dim]"
-            if cost_status != "unavailable"
-            else f"[dim]{bar} cost unknown[/dim]"
+        # ── line 3+: full session/directory identity, then accounting metadata ─
+        turns = _signal_int(conv, "turn_count", 0)
+        cost = _signal_float(conv, "cost_usd", 0.0)
+        cost_status = _signal_text(conv, "cost_status", "unavailable")
+        cost_text = cost_label(cost, cost_status, screen_reader=reader)
+        quality = usage_quality_label(usage_status, screen_reader=reader)
+        line3 = _metadata_line(
+            turns,
+            cost_text,
+            quality,
+            cols,
+            screen_reader=reader,
         )
-        while len(l3_parts) > 1 and _vlen("".join(l3_parts)) > cols:
-            l3_parts.pop()
-        line3 = "".join(l3_parts)
 
-        lines = [line1, line2, line3]
+        lines = [line1]
+        if line2:
+            lines.append(line2)
+        lines.extend(_identity_markup_rows(conv, cols, screen_reader=reader))
+        if reader and not usage_visible and usage_status in {"complete", "partial"}:
+            lines.extend(_reader_usage_lines(inp, out))
+        if line2 or (quality and not usage_visible):
+            lines.append(line3)
         startup_line = self._startup_line(cols)
         if startup_line is not None:
             lines.append(startup_line)
@@ -476,7 +658,7 @@ class ComposerComponent:
 
 
 class FooterComponent:
-    """Renders mode string + context hints (two rows, plus optional rows)."""
+    """Render mode, attention, and input-hint rows with optional notices."""
 
     def __init__(self, app_state: AppState) -> None:
         self._state = app_state
@@ -521,9 +703,9 @@ class FooterComponent:
             else ""
         )
         mode_row = f"  {agent_prefix}{build_mode_str(mode)}{_wf_suffix}"
-        if attention_suffix:
-            mode_row += f"  [dim]│[/dim]  {attention_suffix}"
         rows = [_fit(mode_row, cols)]
+        if attention_suffix:
+            rows.append(_fit(f"  {attention_suffix}", cols))
 
         # Row 2+: notification (may be multi-line) > paste hint > normal hints.
         # Multi-line notifications (from stacked notify_transient() calls or

@@ -9,6 +9,7 @@ Architecture: PRD-58 §6, PRD-59 §3.
 
 from __future__ import annotations
 
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -141,6 +142,7 @@ class ConversationStore:
         self.cost_status: Signal[str] = Signal("unavailable", name="cost_status")
         self.usage_calls: Signal[int] = Signal(0, name="usage_calls")
         self.session_id: Signal[str] = Signal("", name="session_id")
+        self.current_directory: Signal[str] = Signal(os.getcwd(), name="current_directory")
         self.model_name: Signal[str] = Signal("", name="model_name")
         self.notification: Signal[str | None] = Signal(None, name="notification")
         self.loop_status: Signal[str | None] = Signal(None, name="loop_status")

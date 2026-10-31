@@ -1,9 +1,9 @@
 # PRD-138 — Repository Improvement Roadmap
 
 **Status:** Active — current-state audit refreshed 2026-07-29
-**Date:** 2026-07-22  
+**Date:** 2026-07-22
 **Scope:** Repository quality, runtime architecture, user experience, security,
-packaging, testing, and documentation  
+packaging, testing, and documentation
 **Audience:** Maintainers, contributors, plugin authors, and release managers
 
 ## 1. Executive summary
@@ -414,6 +414,9 @@ forward compatibility rather than silently ignored.
 Test terminal widths, Unicode fallback, color-disabled mode, non-TTY startup,
 Windows key decoding, resize handling, pasted input, and screen-reader-friendly
 text. Keep Rich workspace rendering and input backends independently testable.
+Detailed proposals for responsive subagent activity and compact status/usage
+presentation are in [PRD-255](prd-255-subagent-activity-visual-hierarchy.md)
+and [PRD-256](prd-256-compact-status-and-usage-strip.md).
 
 #### P2.4 Extension SDK
 

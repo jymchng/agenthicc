@@ -77,7 +77,7 @@ class TestEventKindAdditions:
 
 
 class TestScrollBufferRenderers:
-    def _render_event(self, kind: str, payload: dict) -> str:
+    def _render_event(self, kind: str, payload: dict, *, width: int = 80) -> str:
         from io import StringIO
         from rich.console import Console
         from agenthicc.tui.workspace.appender import _RENDERERS
@@ -88,7 +88,7 @@ class TestScrollBufferRenderers:
         if renderer is None:
             return ""
         buf = StringIO()
-        console = Console(file=buf, highlight=False, markup=False, no_color=True)
+        console = Console(file=buf, highlight=False, markup=False, no_color=True, width=width)
         stub = MagicMock()
         stub._console = console
         renderer(stub, ev)
@@ -129,6 +129,28 @@ class TestScrollBufferRenderers:
         )
         assert "explorer #1" in out
         assert "tester #1" in out
+
+    def test_pool_started_bounds_previews_and_fits_each_row(self) -> None:
+        from agenthicc.tui.rendering import visible_len
+
+        workers = [
+            {
+                "label": f"reviewer #{index}",
+                "task": f"Review a long task target under section {index}",
+            }
+            for index in range(1, 6)
+        ]
+        out = self._render_event(
+            "subagent_pool_started",
+            {"total": 5, "workers": workers},
+            width=40,
+        )
+        rows = out.splitlines()
+
+        assert all(visible_len(row) <= 40 for row in rows)
+        assert sum("reviewer #" in row for row in rows) == 3
+        assert "+2 more" in out and "Ctrl+O details" in out
+        assert "section 4" not in out and "section 5" not in out
 
     def test_worker_done_success(self) -> None:
         out = self._render_event(
@@ -260,8 +282,8 @@ class TestStatusComponentSubagentCounter:
         with console.capture() as cap:
             console.print(comp.render())
         rendered = cap.get()
-        assert "subagents" in rendered.lower()
-        assert "1/3" in rendered  # 1 done out of 3
+        assert "workers" in rendered.lower()
+        assert "1/3" in rendered  # successful completions out of all workers
 
 
 # ── FooterComponent and the subagent panel ────────────────────────────────────

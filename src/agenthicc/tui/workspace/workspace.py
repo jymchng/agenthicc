@@ -362,7 +362,11 @@ class Workspace:
                 lines += self._render(overlay_renderable, cols)
         else:
             lines += self.composer.lines(cols)
-            lines += self._subagent_rows(cols, reader)
+            subagent_rows = self._subagent_rows(cols, reader)
+            if subagent_rows and border is not None:
+                # Close the bordered input panel before showing pool activity.
+                lines += self._markup(border, cols)
+            lines += subagent_rows
 
         if border is not None:
             lines += self._markup(border, cols)
@@ -372,7 +376,7 @@ class Workspace:
         return lines
 
     def _subagent_rows(self, cols: int, plain: bool) -> list[Line]:
-        """The subagent panel, under the prompt while a pool has rows (AGX-08)."""
+        """The subagent panel below the bordered input area while a pool has rows."""
         pool = self._state.conversation.subagent_pool_state()
         if pool is None:
             return []

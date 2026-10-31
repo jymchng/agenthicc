@@ -268,10 +268,22 @@ immediately; ordinary requests, skills, mutations, and workflow actions show
 their queue position and wait in FIFO order. The slash picker labels the same
 outcomes, so picker selection and manual typing cannot disagree. `/usage`
 shows the current local token/cost snapshot without sending a message to the
-agent. `/config` opens the configuration overlay immediately, including during
-a response, while its edits remain local to the overlay until saved.
-`/cancel`/`/interrupt` share the Ctrl+C cancellation owner, and
-`/bg`/`/background` use the background-session control plane.
+agent. The live status and one-time idle header compact large token totals for
+scanning (for example, `↑ 230M ↓ 1.5M`); `/usage` remains the exact-value view
+and is not affected by display rounding. A partial usage snapshot adds a compact
+`?` to the token display and an explicit `usage partial` label on the metadata
+row. Unavailable usage is written as `usage unavailable`, never as a known zero.
+Estimated cost uses `~$0.123` visually and is spoken as `estimated cost $0.123`;
+`cost unknown` stays separate from token quality. With `screen_reader`, input
+and output are announced as exact integer counts with direction and units,
+followed by the quality wording. The status row prioritizes state, elapsed time,
+active tool, pool progress, then usage; the model may shorten to fit, while the
+full session ID and current directory occupy separate rows with cell-aware
+wrapping and no added labels. Cross-session attention counts appear on their own
+footer row immediately before the composer shortcuts. `/config` opens the
+configuration overlay immediately, including during a response, while its edits remain local
+to the overlay until saved. `/cancel`/`/interrupt` share the Ctrl+C cancellation
+owner, and `/bg`/`/background` use the background-session control plane.
 
 ### Resumed transcript
 
