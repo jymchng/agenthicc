@@ -76,15 +76,27 @@ async def test_real_process_group_stop_is_scoped_and_idempotent(manager: Termina
         {"workspace_root": manager.cwd, "terminal_manager": manager},
     )
     terminal_id = str(started["terminal_id"])
-    await asyncio.sleep(0.15)
-    record = manager.get(terminal_id)
-    assert record is not None and record.pid is not None and record.pgid is not None
-    assert record.pgid == record.pid
-    assert manager.request_stop(terminal_id) is True
-    assert manager.request_stop(terminal_id) is True
-    await asyncio.sleep(0.5)
-    record = manager.get(terminal_id)
-    assert record is not None
-    assert record.state == TerminalState.STOPPED
-    assert manager.running_count() == 0
-    await manager.close()
+
+    async def wait_for_child_start() -> None:
+        while True:
+            record = manager.get(terminal_id)
+            if record is not None and record.stdout:
+                return
+            await asyncio.sleep(0.01)
+
+    try:
+        await asyncio.wait_for(wait_for_child_start(), timeout=5.0)
+        record = manager.get(terminal_id)
+        assert record is not None and record.pid is not None and record.pgid is not None
+        assert record.pgid == record.pid
+        assert record.stdout.strip().isdigit()
+        assert manager.request_stop(terminal_id) is True
+        assert manager.request_stop(terminal_id) is True
+        result = await asyncio.wait_for(manager.wait(terminal_id), timeout=5.0)
+        assert result["state"] == TerminalState.STOPPED.value
+        record = manager.get(terminal_id)
+        assert record is not None
+        assert record.state == TerminalState.STOPPED
+        assert manager.running_count() == 0
+    finally:
+        await manager.close()
