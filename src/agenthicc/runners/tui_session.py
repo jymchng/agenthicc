@@ -1069,6 +1069,7 @@ async def _build_session_context_impl(
     app_state = AppState.create()
     app_state.conversation.model_name.set(model_label)
     app_state.conversation.session_id.set(session_id)
+    app_state.conversation.current_directory.set(str(Path.cwd()))
     app_state.ui.set(cfg.ui)
 
     session_log = SessionEventLog(session_id)

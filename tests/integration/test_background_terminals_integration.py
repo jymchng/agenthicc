@@ -137,10 +137,14 @@ def test_wait_status_is_width_safe_and_contains_control_hints(
         StatusComponent(state).render()
     )
     text = output.getvalue()
-    assert "Waiting for background terminal (6m 11s" in text
-    assert "Esc to interrupt" in text
-    assert "2 background terminals running" in text
-    assert "/ps to view" in text
-    assert "/stop to stop all" in text
+    assert "Waiting for background terminal" in text
+    assert "6m 11s" in text
+    assert "Esc" in text
+    assert "2 running" in text
+    assert "/ps · /stop" in text
+    assert "usage unavailable" in text
+    assert "cost unknown" in text
     assert "└ uv run pytest tests/unit -q" in text
-    assert StatusComponent(state).height(200) == 4
+    assert "session" in text
+    assert str(Path.cwd()) in text
+    assert StatusComponent(state).height(200) == 6

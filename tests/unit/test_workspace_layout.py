@@ -20,12 +20,17 @@ def _make_conv(model_name: str = "anthropic/claude-opus-4-8") -> MagicMock:
     conv.elapsed_s = 0.0
     conv.active_tool.return_value = ""
     conv.session_id.return_value = "abc-123"
+    conv.current_directory.return_value = "/workspace/project"
     conv.turn_count.return_value = 0
     conv.cost_usd.return_value = 0.0
     conv.tokens_in.return_value = 0
     conv.tokens_out.return_value = 0
     conv.frame.return_value = 0
     conv.compaction_active.return_value = False
+    conv.background_needs_you.return_value = 0
+    conv.background_running.return_value = 0
+    conv.background_dnd.return_value = False
+    conv.background_toast.return_value = None
     return conv
 
 
@@ -56,18 +61,18 @@ def _rendered_line_count(renderable) -> int:
 # ── height() with model set ───────────────────────────────────────────────────
 
 
-def test_status_height_with_model_is_four():
+def test_status_height_with_model_is_six():
     from agenthicc.tui.workspace.components import StatusComponent
 
     comp = StatusComponent(_make_app_state("anthropic/claude-opus-4-8"))
-    assert comp.height(80) == 4
+    assert comp.height(80) == 6
 
 
-def test_status_height_without_model_is_two():
+def test_status_height_without_model_includes_usage_metadata():
     from agenthicc.tui.workspace.components import StatusComponent
 
     comp = StatusComponent(_make_app_state(""))
-    assert comp.height(80) == 2
+    assert comp.height(80) == 5
 
 
 # ── height() matches render() line count (invariant I-10) ────────────────────
@@ -89,6 +94,26 @@ def test_status_height_matches_render_without_model():
     comp = StatusComponent(_make_app_state(""))
     render_lines = _rendered_line_count(comp.render())
     assert comp.height(80) == render_lines + 1
+
+
+def test_subagent_panel_is_below_and_outside_the_bordered_input_area():
+    from agenthicc.subagents.pool import SubagentPoolState, WorkerState
+    from agenthicc.tui.workspace.live_region import lines_text
+
+    workspace = _workspace()
+    workspace._state.conversation.subagent_pool_state.return_value = SubagentPoolState(
+        "pool",
+        1,
+        (WorkerState("explorer #1", "explorer", "running"),),
+    )
+    rows = lines_text(workspace._build_lines())
+    prompt_index = next(index for index, row in enumerate(rows) if row.startswith("❯"))
+    summary_index = next(index for index, row in enumerate(rows) if "Subagents" in row)
+
+    assert set(rows[prompt_index + 1]) == {"─"}
+    assert summary_index == prompt_index + 2
+    assert "● Explorer 1" in rows[summary_index + 1]
+    assert set(rows[summary_index + 2]) == {"─"}
 
 
 # ── the live block starts with a blank separator ─────────────────────────────
@@ -126,12 +151,13 @@ def test_build_first_line_is_blank():
 
 
 def test_build_total_live_block_height_with_model():
-    """With a model: blank + 3 status rows + border + composer + border + 2
-    footer rows + bottom margin."""
+    """With a model: blank + 5 status rows + borders, composer, footer, margin."""
     from agenthicc.tui.workspace.live_region import lines_text
 
     rows = lines_text(_workspace()._build_lines())
     assert rows[0] == ""
-    assert "abc-123" in rows[3]  # the third status row: session and cost
-    assert set(rows[4]) == {"─"}
-    assert len(rows) == 1 + 3 + 1 + 1 + 1 + 2 + 1
+    assert rows[3] == "abc-123"
+    assert rows[4] == "/workspace/project"
+    assert "cost unknown" in rows[5]
+    assert set(rows[6]) == {"─"}
+    assert len(rows) == 1 + 5 + 1 + 1 + 1 + 2 + 1

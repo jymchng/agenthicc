@@ -68,13 +68,18 @@ conversation boundary or on interrupt.
 
 Two surfaces report time and usage, and they use different formats.
 
-**Scroll buffer** — after a turn returns to IDLE the buffer prints a per-turn and
-a cumulative line (`src/agenthicc/tui/workspace/appender.py:633,646`):
+**Scroll buffer** — at activity completion, a compact recap reports each
+per-turn duration and the enclosing user-activity duration:
 
 ```text
-✾ Worked for 1m 5s
-✾ Total wall clock time since last IDLE: 2m 5s
+✾ Turn · 1m 5s
+  Total · 2m 5s
 ```
+
+`Turn` is elapsed time for one turn. `Total` spans the outer user activity from
+its start until IDLE, including internal turns and workflow phases; it is not
+model-only time or a sum of the visible turn rows. Durations use whole seconds
+with compact `s`, `m`, and `h` units. Recap rows under one second are omitted.
 
 **Status bar** — a permanently visible two-line block
 (`StatusComponent`, `src/agenthicc/tui/workspace/components.py:111`):

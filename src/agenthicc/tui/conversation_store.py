@@ -9,6 +9,7 @@ Architecture: PRD-58 §6, PRD-59 §3.
 
 from __future__ import annotations
 
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -141,6 +142,7 @@ class ConversationStore:
         self.cost_status: Signal[str] = Signal("unavailable", name="cost_status")
         self.usage_calls: Signal[int] = Signal(0, name="usage_calls")
         self.session_id: Signal[str] = Signal("", name="session_id")
+        self.current_directory: Signal[str] = Signal(os.getcwd(), name="current_directory")
         self.model_name: Signal[str] = Signal("", name="model_name")
         self.notification: Signal[str | None] = Signal(None, name="notification")
         self.loop_status: Signal[str | None] = Signal(None, name="loop_status")
@@ -333,8 +335,8 @@ class ConversationStore:
         self._advance_activity_clock(time.monotonic())
         elapsed = self.activity_elapsed_s()
         # Publish the final wall-clock value before resetting the reactive
-        # clock.  The scroll renderer uses this event to report the complete
-        # user-intent duration after the last per-turn "Worked for" line.
+        # clock.  The scroll renderer reports the complete activity duration
+        # after the final per-turn duration row.
         self.agent_state.set(AgentState.IDLE)
         self.append_event("activity_complete", {"elapsed_s": elapsed})
         self._activity_active = False
@@ -531,7 +533,7 @@ class ConversationStore:
             else:
                 self._current_turn.state = AgentState.COMPLETE
             # Always emit turn_complete (with elapsed) so the scroll buffer can
-            # print "✾ Worked for …" regardless of success or error path.
+            # print the turn duration regardless of success or error path.
             self.append_event("turn_complete", {"elapsed_s": elapsed})
         activity_active = self._activity_active
         external_activity = self._activity_external_scope

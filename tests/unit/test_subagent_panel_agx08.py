@@ -206,18 +206,65 @@ def test_the_panel_lists_each_workers_status_activity_time_and_tokens() -> None:
     )
     rows = [
         _plain(row)
-        for row in panel_lines(state, 100, now=NOW, terminal_rows=40, hint="Ctrl+O focus")
+        for row in panel_lines(state, 120, now=NOW, terminal_rows=40, hint="Ctrl+O focus")
     ]
-    assert rows[0].startswith("  Subagents 2 running · 1 done · limit 4")
+    assert rows[0].startswith("  Subagents · 1 needs input · 1 running · 1/3 done")
     assert rows[0].rstrip().endswith("Ctrl+O focus")
     assert summary_line(state, 100) == (
-        "  [bold magenta]Subagents[/bold magenta] 2 running · 1 done · limit 4"
+        "  [bold magenta]Subagents[/bold magenta] · 1 needs input · 1 running · 1/3 done"
     )
-    assert "● explorer #1" in rows[1] and "read src/store.py" in rows[1]
+    assert "● Explorer 1" in rows[1] and "read src/store.py" in rows[1]
     assert "0:42" in rows[1] and "3.1k" in rows[1]
-    assert "◆ explorer #2" in rows[2] and "needs approval" in rows[2]
-    assert "✓ explorer #3" in rows[3] and "0:31" in rows[3]
-    assert all(len(row) <= 100 for row in rows)
+    assert "◆ Explorer 2" in rows[2] and "Needs approval: bash pytest" in rows[2]
+    assert "✓ Explorer 3" in rows[3] and "0:31" in rows[3]
+    assert all(len(row) <= 120 for row in rows)
+
+
+def test_pool_summary_distinguishes_queued_approval_and_attention_counts() -> None:
+    state = SubagentPoolState(
+        "pool",
+        6,
+        (
+            _worker("task-1", "pending"),
+            _worker("task-2", "running"),
+            _worker("task-3", "waiting"),
+            _worker("task-4", "done"),
+            _worker("task-5", "failed"),
+            _worker("task-6", "stopped"),
+        ),
+        limit=2,
+    )
+
+    summary = _plain(summary_line(state, 120))
+
+    assert "1 failed" in summary
+    assert "1 needs input" in summary
+    assert "1 stopped" in summary
+    assert "1 running" in summary and "1 queued" in summary
+    assert "1/6 done" in summary and "limit 2" in summary
+
+
+def test_panel_rows_fit_the_width_matrix_and_keep_attention_visible() -> None:
+    from agenthicc.tui.rendering import visible_len
+
+    state = SubagentPoolState(
+        "pool",
+        5,
+        (
+            _worker("task-1", "running", activity="read_file src/a/very/long/module.py"),
+            _worker("task-2", "waiting", activity="needs approval: run_tests tests/unit"),
+            _worker("task-3", "failed"),
+            _worker("task-4", "pending"),
+            _worker("task-5", "done"),
+        ),
+        limit=2,
+    )
+    for width in (40, 63, 64, 80, 119, 120, 200):
+        rows = panel_lines(state, width, now=NOW, terminal_rows=40, hint="Ctrl+O details")
+        assert all(visible_len(row) <= width for row in rows)
+        assert any(word in _plain(rows[0]) for word in ("failed", "fail"))
+    narrow = panel_lines(state, 39, now=NOW, terminal_rows=40)
+    assert len(narrow) == 2 and "Explorer 3" in _plain(narrow[1])
 
 
 def test_nested_pool_summary_shows_depth_and_keeps_parent_identity() -> None:
@@ -258,7 +305,7 @@ def test_screen_reader_rows_are_plain_sentences() -> None:
     state = SubagentPoolState("pool", 1, (_worker("task-1", "running", activity="grep todo"),))
     rows = panel_lines(state, 100, now=NOW, terminal_rows=40, plain=True)
     assert "·" not in rows[0] and "●" not in rows[1]
-    assert "explorer #1, running, grep todo, 0:42" in _plain(rows[1])
+    assert "running, Explorer 1, grep todo, elapsed 0:42" in _plain(rows[1])
     assert tokens(999) == "999" and tokens(2_500_000) == "2.5M"
     assert "failed" in _plain(
         summary_line(SubagentPoolState("p", 1, (_worker("a1", "failed"),)), 80)
@@ -301,7 +348,7 @@ async def test_the_focused_panel_selects_opens_stops_and_dismisses(tmp_path: Pat
         clock=lambda: NOW,
     )
     text = _render(overlay)
-    assert "explorer #1" in text and "x stop" in text
+    assert "Explorer 1" in text and "x stop" in text
     overlay.handle_key(Key.CHAR, "x")
     assert stopped == [("pool", "task-1")]
     overlay.handle_key(Key.DOWN, "")

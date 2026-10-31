@@ -43,6 +43,8 @@ dev = [
     "types-jsonschema>=4.23",
     "ruff==0.15.22",
     "nox==2026.7.11",
+    # Nox's watchdog 7 release lacks Linux x86_64 wheels.
+    "watchdog>=6,<7",
     "twine>=6.1",
     # Docs site (mkdocs build in CI)
     "mkdocs>=1.6",

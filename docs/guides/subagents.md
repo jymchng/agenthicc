@@ -659,26 +659,41 @@ idempotent across resume and compaction, so a completion is not delivered twice.
 
 ### The subagent panel
 
-While a pool runs, the live block shows a panel between the prompt and the
-footer (AGX-08):
+While a pool runs, the live block shows a distinct subagent panel below the
+composer's bordered input area and above the footer (AGX-08). The summary is
+derived from the current immutable pool snapshot; zero categories are omitted,
+approvals are distinct from queued work, and the concurrency limit appears only
+when it explains queued workers:
 
 ```text
- Subagents 3 running · 1 done · limit 4                                   Ctrl+O focus
- ● explorer #1   read src/agenthicc/background/store.py                 0:42   3.1k
- ● explorer #2   grep refresh_interval_s src/                           0:40   2.4k
- ◆ executor #1   needs approval: bash pytest -k store                   1:05   5.8k
- ✓ reviewer #1   3 findings in the scheduler                            0:31   1.9k
+  Subagents · 1 needs input · 1 running · 1 queued · 1/4 done · limit 2  Ctrl+O details
+  ● Explorer 1  Read src/agenthicc/background/store.py                 0:42  3.1k
+  ◆ Executor 1  Needs approval: run tests/unit/test_store.py            1:05
+  ✓ Reviewer 1  3 findings in the scheduler                            0:31
 ```
 
-Each row is a worker: its status (`◌` waiting to start, `●` running, `◆` needs
-approval, `✓` done, `✗` failed, `⊘` stopped), label, what it is doing now —
-the current tool and its target, the approval it waits for, or the first line
-of its latest message — how long it has run and its tokens. A row changes when
-the worker's tool call starts, before the tool runs. Finished rows stay 30
-seconds and then fold into the summary; failed rows stay until you dismiss
-them. Past six rows the rest collapse into `… +N more`, and a terminal shorter
-than 24 rows shows the summary line alone. Everything shown is redacted with
-the session-export redactor.
+Each row has one normalized worker identity and a readable activity. At 64
+columns and wider, elapsed time and compact token counts are shown when they fit;
+otherwise metrics yield before identity and activity. At 40–63 columns, rows keep
+status, identity and an activity prefix but omit metrics. Below 40 columns, the
+summary and one selected/attention row remain; a terminal shorter than 24 rows
+shows the summary alone. `Ctrl+O` or `/subagents` still exposes every worker,
+full task, exact elapsed time and exact token count. Past six rows the live list
+collapses the rest into `… +N more`.
+
+Status is not conveyed by color alone. Screen-reader rows use plain sentences
+such as `waiting for approval, Executor 1, Needs approval: run tests`; queued,
+failed and stopped states are also spoken explicitly. Finished rows stay 30
+seconds and then fold into the summary; failed rows stay until dismissed.
+Everything shown is redacted with the session-export redactor.
+
+The scrollback start announcement prints one header and at most three task
+previews; larger pools end with `+N more · Ctrl+O details`. The overlay remains
+the source for full tasks. Completion reports successful progress and any
+non-success count. The current completion event combines failed and stopped
+workers in its `failed` aggregate, so scrollback honestly labels that aggregate
+`unsuccessful (failed or stopped)` rather than inventing separate counts. The
+active panel still distinguishes failed from stopped using each worker snapshot.
 
 `ConversationStore.subagent_pool_state` holds an immutable `SubagentPoolState`
 snapshot that the pool replaces on every change, so subscribers hear about each
