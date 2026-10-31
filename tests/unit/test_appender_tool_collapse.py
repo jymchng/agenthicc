@@ -91,6 +91,118 @@ class TestGroupCount:
         _flush(appender, [_ev("turn_start", agent_name="assistant")])
         assert appender._group_count == 0
 
+    def test_turn_start_includes_local_timezone(self) -> None:
+        import time
+        from io import StringIO
+
+        from rich.console import Console
+
+        timestamp = 0.0
+        console = Console(file=StringIO(), record=True, markup=False, no_color=True)
+        appender = ScrollBufferAppender(MagicMock(), console)
+        event = ConversationEvent(
+            event_id="turn",
+            kind="turn_start",
+            payload={"agent_name": "assistant"},
+            timestamp=timestamp,
+        )
+        appender._render_one(event)
+
+        expected = time.strftime("%H:%M:%S %Z %z", time.localtime(timestamp))
+        assert console.export_text() == f"● Assistant Turn  {expected}\n"
+        assert appender._turn_start_separator_pending
+
+    def test_turn_start_keeps_mentions_attached_and_separates_following_content(self) -> None:
+        import time
+        from io import StringIO
+
+        from rich.console import Console
+
+        expected = time.strftime("%H:%M:%S %Z %z", time.localtime(0.0))
+        console = Console(file=StringIO(), record=True, markup=False, no_color=True)
+        appender = ScrollBufferAppender(MagicMock(), console)
+        _flush(
+            appender,
+            [
+                ConversationEvent(
+                    event_id="turn",
+                    kind="turn_start",
+                    payload={"agent_name": "assistant"},
+                    timestamp=0.0,
+                )
+            ],
+        )
+        _flush(
+            appender,
+            [
+                _ev(
+                    "mention_chips",
+                    chips=[
+                        {"raw": "@src/one.py", "kind": "file"},
+                        {"raw": "@src/two.py", "kind": "file"},
+                    ],
+                )
+            ],
+        )
+        _flush(appender, [_ev("system", text="Next block")])
+
+        output = console.export_text()
+        assert output.splitlines() == [
+            f"● Assistant Turn  {expected}",
+            "  ⎿ Read(src/one.py)",
+            "  ⎿ Read(src/two.py)",
+            "",
+            "Next block",
+            "",
+        ]
+
+    def test_turn_start_keeps_blank_before_non_mention_content(self) -> None:
+        import time
+        from io import StringIO
+
+        from rich.console import Console
+
+        expected = time.strftime("%H:%M:%S %Z %z", time.localtime(0.0))
+        console = Console(file=StringIO(), record=True, markup=False, no_color=True)
+        appender = ScrollBufferAppender(MagicMock(), console)
+        appender._render_one(
+            ConversationEvent(
+                event_id="turn",
+                kind="turn_start",
+                payload={"agent_name": "assistant"},
+                timestamp=0.0,
+            )
+        )
+        appender._render_one(_ev("system", text="Next block"))
+
+        assert console.export_text().splitlines() == [
+            f"● Assistant Turn  {expected}",
+            "",
+            "Next block",
+            "",
+        ]
+
+    def test_turn_start_preserves_custom_agent_name(self) -> None:
+        from io import StringIO
+
+        from rich.console import Console
+
+        console = Console(file=StringIO(), record=True, markup=False, no_color=True)
+        appender = ScrollBufferAppender(MagicMock(), console)
+        appender._render_one(
+            ConversationEvent(
+                event_id="turn",
+                kind="turn_start",
+                payload={"agent_name": "reviewer"},
+                timestamp=0.0,
+            )
+        )
+
+        output = console.export_text()
+        assert output.startswith("● reviewer  ")
+        assert output.endswith("\n")
+        assert appender._turn_start_separator_pending
+
 
 # ── summary line ──────────────────────────────────────────────────────────────
 
@@ -367,7 +479,7 @@ class TestSummaryLine:
             i for i, line in enumerate(lines) if "...and 32 more tool calls" in line
         )
         assistant_index = next(
-            i for i, line in enumerate(lines) if "[bold]assistant[/bold]" in line
+            i for i, line in enumerate(lines) if "[bold]Assistant Turn[/bold]" in line
         )
         assert run_index < summary_index < assistant_index
 

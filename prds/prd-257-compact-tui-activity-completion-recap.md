@@ -152,8 +152,9 @@ second. An outer activity shorter than one second must not produce a noisy
 ### 6.2 Grouping and output behavior
 
 - Do not put a blank line between a turn-duration row and its activity-total row.
-- Emit one blank line after the final total row to separate the complete recap
-  from subsequent scrollback content.
+- Ensure one blank row separates the complete recap from the next scrollback
+  event or the persistent live status block. Use the workspace's existing
+  separator at the live boundary rather than stacking a second trailing blank.
 - If a turn fails or is cancelled, the existing error/cancellation output remains
   authoritative. The timing recap uses neutral `Turn`/`Total` labels and must not
   imply success.

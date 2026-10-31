@@ -192,31 +192,43 @@ available in the transcript overlay.
 
 ### 5.4 Pool start and completion in scrollback
 
-A pool start is one visual group. Show a concise header and at most three worker
-previews. When the pool contains more than three workers, replace the remaining
+A pool start is one visual group. Its heading is a level-1 scrollback row,
+aligned with tool headings. Show at most three worker previews as indented child
+rows. When the pool contains more than three workers, replace the remaining
 previews with `+N more · Ctrl+O details`. Do not emit an unbounded series of task
 lines merely because the pool is large. Every worker's full task remains
 available through the existing subagent list/transcript navigation.
 
 ```text
 ◈ Subagents · 4 workers started
-  Reviewer 1  Review subagent PRDs for overlap
-  Reviewer 2  Check current UI rendering paths
-  Reviewer 3  Compare usage/status designs
+  └ Reviewer 1  Review subagent PRDs for overlap
+  └ Reviewer 2  Check current UI rendering paths
+  └ Reviewer 3  Compare usage/status designs
   +1 more · Ctrl+O details
+✓ [3/4] Reviewer 3  1.2s  Compared usage/status designs
+◈ Subagents Failed · 3/4 done · 1 unsuccessful (failed or stopped)
+
+● Spawn Subagents(max_concurrent=1)
+└─ Completed · 25.5s · 20 lines
 ```
 
-Pool completion uses the same status vocabulary and one concise line:
+Keep one blank row after the pool completion line before following scrollback
+content. Worker completion rows and the pool completion summary are also level-1
+scrollback rows, never indented beneath a tool or another worker. Use `complete`
+only when all workers succeeded and no budget-exceeded reason is present; otherwise
+label the summary `Failed`, including pools with unfinished workers. Pool completion
+uses the aggregate fields supplied by `subagent_pool_done` and one concise line.
+The current event does not carry a pool duration, so the renderer must not invent
+or imply one.
 
-```text
-✓ Subagents complete · 4/4 done · 1m 31s
-```
-
-When any worker fails or needs approval, that fact must remain visible in the
-completion/active summary and may not be replaced by a success-only total. A
-retried or separate `spawn_subagents` call remains a separate pool unless the
-runtime provides an explicit relationship; the renderer must not infer that two
-pools are retries of one another.
+When any worker fails, the completion line must retain the event's combined
+unsuccessful count instead of showing a success-only total. The active pool
+summary/panel remains responsible for distinguishing failed, stopped and
+approval-waiting workers while a pool snapshot is available; the aggregate
+completion event cannot reconstruct those individual states. A retried or
+separate `spawn_subagents` call remains a separate pool unless the runtime
+provides an explicit relationship; the renderer must not infer that two pools
+are retries of one another.
 
 ### 5.5 Detail and accessibility
 

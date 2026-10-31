@@ -10,7 +10,13 @@ renders the entries from `https://agenthicc.dev/changelog.json`.
 
 Completed LLM responses end with a blank line in the scroll buffer, keeping
 the response visually separated from the next tool, user message, or system
-event.
+event. The default assistant heading reads `Assistant Turn`; other agent labels
+remain intact. Turn headings include the local timezone abbreviation and numeric
+UTC offset and are followed by one blank row before the next block, except when
+`mention_chips` follows: resolved read rows stay directly beneath the heading,
+with one blank row after the mention group. The completed `⎋ Compacted` notice
+is indented beneath its related activity; the in-progress
+`⎋ Compacting` notice remains level 1.
 
 ## Runtime components
 
@@ -101,6 +107,11 @@ single `...` omission row so large edits do not flood the scroll buffer.
 When a tool group is collapsed, its `...and N more tool calls` line is flushed
 to the scroll buffer at the next conversation boundary and immediately when
 the agent is interrupted; it is never left only in the live status footer.
+Subagent pool headings, worker-completion rows, and pool summaries are level-1
+scrollback rows alongside tool headings; only the worker previews below a pool
+heading are indented as child rows. A pool that does not fully succeed is
+labeled `Subagents Failed` and ends with one blank row before the next scrollback
+block.
 
 Transient provider failures use a structured retry notice rather than dumping
 the SDK exception representation into the transcript. The scroll buffer shows
@@ -276,15 +287,16 @@ row. Unavailable usage is written as `usage unavailable` on the secondary
 metadata row, never as a known zero. Estimated cost uses `~$0.123` visually and
 is spoken as `estimated cost $0.123`; `cost unknown` stays separate from token
 quality. With `screen_reader`, input and output are announced as exact integer
-counts with direction and units, followed by the quality wording. The status row
-prioritizes state, elapsed time, active tool, pool progress, then usage; the model
-may shorten to fit, while the full session ID and current directory occupy
-separate rows with cell-aware wrapping and no added labels. Cross-session
-attention counts appear on their own footer row immediately before the composer
-shortcuts. `/config` opens the configuration overlay immediately, including during
-a response, while its edits remain local to the overlay until saved. `/cancel`/
-`/interrupt` share the Ctrl+C cancellation owner, and `/bg`/`/background` use the
-background-session control plane.
+counts with direction and units, followed by the quality wording. Visual status
+and footer segments use `|` delimiters; screen-reader rows use commas and spoken
+labels instead. The status row prioritizes state, elapsed time, active tool, pool
+progress, then usage; the model may shorten to fit, while the full session ID and
+current directory occupy separate rows with cell-aware wrapping and no added
+labels. Cross-session attention counts appear on their own footer row immediately
+before the composer shortcuts. `/config` immediately opens the configuration
+overlay, including during a response, while its edits remain local to the overlay
+until saved. `/cancel`/`/interrupt` share the Ctrl+C cancellation owner, and
+`/bg`/`/background` use the background-session control plane.
 
 ### Resumed transcript
 
@@ -335,8 +347,8 @@ completion recap after the final turn. It shows each eligible per-turn duration
 (for example, `✾ Turn · 1m 5s`) and an indented `Total · 2m 5s` row for the
 enclosing activity. The total spans the outer user activity across internal turns
 and workflow phases; it is not model-only time or the sum of the visible turn rows.
-Durations use whole-second `s`, `m`, and `h` units, and the recap ends with one
-blank separator before subsequent output.
+Durations use whole-second `s`, `m`, and `h` units. One blank row separates the
+recap from subsequent scrollback or the persistent live status block.
 
 The Windows backend uses `ReadConsoleInputW` so Shift+Tab preserves its
 modifier. POSIX raw mode is a no-op for non-TTY file descriptors and restores

@@ -133,7 +133,7 @@ def _fit_model(model: str, cols: int) -> str:
     provider, separator, name = model.partition("/")
     if not separator:
         return _fit(escape(model), cols)
-    prefix = f"{provider} · "
+    prefix = f"{provider} | "
     if cell_len(prefix) >= cols:
         return _fit(escape(model), cols)
     candidate = prefix + name
@@ -302,7 +302,7 @@ class StatusComponent:
                 )
                 append_wait(count_label)
             append_wait("Esc to interrupt" if reader else "Esc")
-            append_wait("/ps to view; /stop to stop all" if reader else "/ps · /stop")
+            append_wait("/ps to view; /stop to stop all" if reader else "/ps | /stop")
             wait_line = _fit(wait_line, cols)
 
             model = _signal_text(conv, "model_name", "")
@@ -378,7 +378,7 @@ class StatusComponent:
 
         # ── line 1: state + elapsed + activity + pool progress + usage ──────────
         reader = ui is not None and ui.screen_reader
-        sep = ", " if reader else " [dim]·[/dim] "
+        sep = ", " if reader else " [dim]|[/dim] "
         lead = "" if reader or not flower else f"{flower} "
         line1 = f"{lead}[{color}]{state_text}[/{color}]"
         elapsed = _cached_elapsed(conv, total_activity=not waiting)
@@ -699,11 +699,11 @@ class FooterComponent:
             attention_badges.append(f"[cyan]● {running_agents} running[/cyan]")
         if conv.background_dnd():
             attention_badges.append("[dim]◉ DND[/dim]")
-        attention_suffix = "  [dim]·[/dim]  ".join(attention_badges)
+        attention_suffix = "  [dim]|[/dim]  ".join(attention_badges)
         # AGX-09: the primary agent, once another than the default is chosen.
         agent = self._state.agent()
         agent_prefix = (
-            f"[bold]{_e(agent)}[/bold] [dim]·[/dim] "
+            f"[bold]{_e(agent)}[/bold] [dim]|[/dim] "
             if isinstance(agent, str) and agent and agent != "default"
             else ""
         )
