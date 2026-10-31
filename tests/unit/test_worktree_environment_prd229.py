@@ -394,7 +394,8 @@ def test_untrusted_manifest_requires_explicit_approval_and_digest_trust(tmp_path
         environment.run_action("test")
 
     trust.trust(manifest)
-    assert environment.run_action("test").result == "succeeded"
+    receipt = environment.run_action("test")
+    assert receipt.result == "succeeded", receipt.commands
     manifest_path.write_text(
         'version = 1\n[actions.test]\ncommand = "echo changed"\n', encoding="utf-8"
     )
