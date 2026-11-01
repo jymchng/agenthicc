@@ -624,8 +624,12 @@ async def test_show_example_workflow_defaults_to_the_custom_runner_shape(
         "run_phase(",
         "checkpoint_context_to_payload",
         "checkpoint_context_from_payload",
-        "successful submit_release_plan(plan) call changes phase",
-        "transition tools changes phase",
+        "submit_release_plan(summary)",
+        'record_phase_transition(event, data, outcome="planned", summary=summary)',
+        "release_passed(summary)",
+        "release_blocked(summary)",
+        "verification happens in the phase, not in the tools",
+        "from agenthicc.workflows.phase_transition import record_phase_transition",
         "from agenthicc.tools.capabilities import tool_control",
         "@tool_control",
     ):
@@ -720,6 +724,76 @@ async def test_strict_validation_catches_factory_local_tool_control_mistakes(
     assert not report.ok
     assert any("agenthicc.tools.capabilities" in error for error in report.errors)
     assert any("bare decorator" in error for error in report.errors)
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "expected"),
+    [
+        (
+            "async def submit_release_plan(summary: str)",
+            "async def submit_release_plan(plan: str)",
+            "exactly one required provider-facing parameter",
+        ),
+        (
+            "async def release_passed(summary: str)",
+            "async def release_passed(summary: str, details: str)",
+            "exactly one required provider-facing parameter",
+        ),
+        (
+            "async def release_passed(summary: str)",
+            "async def release_passed(summary: str, path: str)",
+            "exactly one required provider-facing parameter",
+        ),
+        (
+            "async def release_passed(summary: str)",
+            "async def release_passed(summary: str, decision: bool)",
+            "exactly one required provider-facing parameter",
+        ),
+        (
+            "async def release_passed(summary: str)",
+            "async def release_passed(summary: object)",
+            "annotated str",
+        ),
+        (
+            "from agenthicc.workflows.phase_transition import record_phase_transition",
+            "from agenthicc.workflows.phase_transition import "
+            "record_phase_transition as transition_recorder",
+            "must delegate to the supported",
+        ),
+        (
+            'return record_phase_transition(event, data, outcome="passed", summary=summary)',
+            'if summary.startswith("PASS"):\n'
+            '            return record_phase_transition(event, data, outcome="passed", summary=summary)\n'
+            '            return {"ok": False}',
+            "must only return one direct record_phase_transition",
+        ),
+    ],
+)
+async def test_strict_validation_enforces_summary_only_recording_transitions(
+    tmp_path: Path,
+    old: str,
+    new: str,
+    expected: str,
+) -> None:
+    example = await _call(make_inspection_tools(), "show_example_workflow")
+    assert isinstance(example, dict)
+    source = example["source"]
+    assert isinstance(source, str)
+    assert old in source
+    broken = source.replace(old, new, 1)
+    path = tmp_path / "workflows" / "release_check"
+    path.mkdir(parents=True)
+    (path / "runner.py").write_text(broken, encoding="utf-8")
+
+    report = validate_workflow_file(
+        str(path),
+        expected_name="release_check",
+        root=tmp_path,
+        strict_cache_contract=True,
+    )
+
+    assert not report.ok
+    assert any(expected in error for error in report.errors), report.render()
 
 
 async def test_prompt_cache_inspection_describes_contract_and_template() -> None:
@@ -898,8 +972,20 @@ async def test_describe_transition_tool_pattern_returns_canonical_import_and_dec
     assert isinstance(result, dict)
     assert "from agenthicc.tools.capabilities import tool_control" in result["canonical_import"]
     assert (
+        "from agenthicc.workflows.phase_transition import record_phase_transition"
+        in result["canonical_import"]
+    )
+    assert (
         result["canonical_decorators"] == "@tool_control\n@tool()\nasync def transition(...): ..."
     )
+    assert result["provider_schema"] == {
+        "type": "object",
+        "properties": {"summary": {"type": "string"}},
+        "required": ["summary"],
+        "additionalProperties": False,
+    }
+    assert result["summary_contract"]["maximum_characters"] == 4_000  # type: ignore[index]
+    assert "not verified" in str(result["record_only_rule"])
     assert any("never write @tool_control()" in rule for rule in result["decorator_rules"])
     assert any("lauren_ai._tools" in rule for rule in result["decorator_rules"])
 

@@ -237,23 +237,22 @@ def _fake_config() -> SimpleNamespace:
 
 
 def _tool_arguments(tool: object) -> dict[str, object]:
-    """Create bounded fixture arguments from a transition tool signature."""
+    """Build the canonical summary-only arguments for one transition tool."""
     try:
         signature = inspect.signature(cast(Callable[..., object], tool))
-    except (TypeError, ValueError):
-        return {}
-    values: dict[str, object] = {}
-    for parameter in signature.parameters.values():
-        if parameter.name in {"self", "cls"} or parameter.kind in {
-            inspect.Parameter.VAR_POSITIONAL,
-            inspect.Parameter.VAR_KEYWORD,
-        }:
-            continue
-        if parameter.default is not inspect.Parameter.empty:
-            continue
-        annotation = str(parameter.annotation).lower()
-        values[parameter.name] = [] if "list" in annotation else "smoke fixture"
-    return values
+    except (TypeError, ValueError) as exc:
+        raise ValueError("transition tool has no inspectable provider signature") from exc
+    parameters = tuple(signature.parameters.values())
+    if (
+        len(parameters) != 1
+        or parameters[0].name != "summary"
+        or (parameters[0].annotation is not str and parameters[0].annotation != "str")
+        or parameters[0].default is not inspect.Parameter.empty
+        or parameters[0].kind
+        not in {inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY}
+    ):
+        raise ValueError("transition tool must expose exactly one required summary: str argument")
+    return {"summary": "smoke fixture summary"}
 
 
 async def _exercise_custom_runner(plugin: _SmokePlugin) -> tuple[object, object, bool, str]:
@@ -265,6 +264,9 @@ async def _exercise_custom_runner(plugin: _SmokePlugin) -> tuple[object, object,
     build_runner = plugin.build_runner
     runner = build_runner(config, None)
     calls: dict[str, int] = {}
+    prompted_phases: list[str] = []
+    prompted_phase_indices: list[int] = []
+    transition_results: list[dict[str, object]] = []
 
     async def fake_run_phase(**kwargs: object) -> None:
         prompt = str(kwargs.get("system_prompt", "")).lower()
@@ -272,10 +274,19 @@ async def _exercise_custom_runner(plugin: _SmokePlugin) -> tuple[object, object,
             (
                 name
                 for name in ("plan", "design", "verify", "generate", "review", "report")
-                if name in prompt
+                if f"you are in the {name} phase" in prompt
             ),
-            "phase",
+            next(
+                (
+                    name
+                    for name in ("plan", "design", "verify", "generate", "review", "report")
+                    if name in prompt
+                ),
+                "phase",
+            ),
         )
+        prompted_phases.append(phase)
+        prompted_phase_indices.append(config.workflow_handle.phase_index)
         calls[phase] = calls.get(phase, 0) + 1
         # The first fake response is prose-only. The phase must remain in its
         # inner loop; only the second response calls a control tool.
@@ -297,10 +308,34 @@ async def _exercise_custom_runner(plugin: _SmokePlugin) -> tuple[object, object,
             return
         result = control(**_tool_arguments(control))
         if inspect.isawaitable(result):
-            await result
+            result = await result
+        if not isinstance(result, dict) or result.get("ok") is not True:
+            raise ValueError("transition did not return a successful structured acknowledgment")
+        outcome = result.get("outcome")
+        summary_chars = result.get("summary_chars")
+        if (
+            not isinstance(outcome, str)
+            or not outcome
+            or not isinstance(summary_chars, int)
+            or isinstance(summary_chars, bool)
+            or not 0 < summary_chars <= 4_000
+        ):
+            raise ValueError(
+                "transition acknowledgment omitted its fixed outcome or bounded summary"
+            )
+        transition_results.append(dict(result))
+        config.workflow_handle.calls.append(("transition", dict(result)))
 
     runner.run_phase = fake_run_phase
     context = await runner.run("bounded smoke intent")
+    if (
+        len(prompted_phase_indices) < 2
+        or prompted_phase_indices[0] != prompted_phase_indices[1]
+        or prompted_phases[0] != prompted_phases[1]
+    ):
+        raise ValueError("prose-only turn advanced state without a successful transition call")
+    if not transition_results:
+        raise ValueError("fake phase driver observed no summary-only transition acknowledgment")
     handle = config.workflow_handle
     boundary_reasons = [
         str(value)
@@ -312,6 +347,16 @@ async def _exercise_custom_runner(plugin: _SmokePlugin) -> tuple[object, object,
             "fake handle observed no completed-phase boundary checkpoint; "
             "phase-entry persistence alone is insufficient"
         )
+    transition_index = next(
+        index for index, (name, _value) in enumerate(handle.calls) if name == "transition"
+    )
+    checkpoint_index = next(
+        index
+        for index, (name, value) in enumerate(handle.calls)
+        if name == "checkpoint" and str(value).startswith("phase_boundary:")
+    )
+    if transition_index >= checkpoint_index:
+        raise ValueError("phase boundary was checkpointed before the transition was recorded")
     codec = plugin.checkpoint_context_to_payload
     payload = codec(context)
     json.dumps(payload, ensure_ascii=False, sort_keys=True)
@@ -329,7 +374,7 @@ async def _exercise_custom_runner(plugin: _SmokePlugin) -> tuple[object, object,
         context,
         restored,
         bool(calls),
-        "fake provider, transition tools, and completed-phase boundary checkpoints exercised",
+        "fake provider exercised prose-only turns and summary-only record transitions",
     )
 
 
@@ -537,6 +582,14 @@ def run_generated_workflow_smoke(
                         "phase_boundary_checkpoint",
                         "pass",
                         "fake handle observed at least one post-transition boundary checkpoint",
+                    )
+                )
+                checks.append(
+                    SmokeCheck(
+                        "record_only_transition",
+                        "pass",
+                        "summary-only transition returned a fixed outcome and bounded summary "
+                        "acknowledgment before the next-phase checkpoint",
                     )
                 )
                 propagated = bool(

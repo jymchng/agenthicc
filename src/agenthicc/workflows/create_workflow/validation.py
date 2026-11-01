@@ -1065,42 +1065,131 @@ def _check_transition_tool_contract(
     *,
     strict: bool,
 ) -> bool:
-    """Catch phase-tool decorator/import mistakes hidden inside factories.
+    """Validate generated phase-transition imports, schemas, and record-only bodies.
 
-    Importing a generated module does not execute local factory bodies. Static
-    inspection therefore has to reject the two common failures directly:
-    importing ``tool_control`` from ``lauren_ai._tools`` and calling the bare
-    metadata decorator as ``@tool_control()``.
+    Factory-local code is inspected as AST and is never executed by this check.
+    The one-call body contract leaves all phase work and verification to the
+    ordinary phase tools or a separate runner-owned gate.
     """
     validation_errors = errors if strict else []
+    error_start = len(validation_errors)
+    error_limit = 16
+
+    def add_error(message: str) -> None:
+        if len(validation_errors) - error_start < error_limit:
+            validation_errors.append(message)
+
     try:
         tree = ast.parse(source)
     except SyntaxError:
         return False
 
     control_names: set[str] = {"tool_control"}
-    correct_import = False
+    helper_names: set[str] = set()
+    correct_control_import = False
+    correct_helper_import = False
     saw_control_reference = False
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and any(
-            alias.name == "tool_control" for alias in node.names
-        ):
-            alias = next(alias for alias in node.names if alias.name == "tool_control")
+        if not isinstance(node, ast.ImportFrom):
+            continue
+        for alias in node.names:
             local_name = alias.asname or alias.name
-            control_names.add(local_name)
-            saw_control_reference = True
-            if node.module == "agenthicc.tools.capabilities":
-                correct_import = True
-            elif node.module == "lauren_ai._tools":
-                validation_errors.append(
-                    "tool_control must be imported from agenthicc.tools.capabilities, "
-                    "not lauren_ai._tools. lauren_ai._tools exports tool only."
-                )
-            else:
-                validation_errors.append(
-                    f"tool_control is imported from {node.module or '(relative module)'}, "
-                    "but generated workflows must use agenthicc.tools.capabilities."
-                )
+            if alias.name == "tool_control":
+                control_names.add(local_name)
+                saw_control_reference = True
+                if node.module == "agenthicc.tools.capabilities":
+                    correct_control_import = True
+                elif node.module == "lauren_ai._tools":
+                    add_error(
+                        "tool_control must be imported from agenthicc.tools.capabilities, "
+                        "not lauren_ai._tools. lauren_ai._tools exports tool only."
+                    )
+                else:
+                    add_error(
+                        f"tool_control is imported from {node.module or '(relative module)'}, "
+                        "but generated workflows must use agenthicc.tools.capabilities."
+                    )
+            if alias.name == "record_phase_transition":
+                if node.module == "agenthicc.workflows.phase_transition":
+                    helper_names.add(local_name)
+                    correct_helper_import = True
+                else:
+                    add_error(
+                        f"record_phase_transition is imported from "
+                        f"{node.module or '(relative module)'}, but generated transitions "
+                        "must use agenthicc.workflows.phase_transition.record_phase_transition."
+                    )
+
+    def check_transition_body(node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        params = [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
+        has_extra_parameters = node.args.vararg is not None or node.args.kwarg is not None
+        valid_shape = (
+            len(params) == 1
+            and params[0].arg == "summary"
+            and isinstance(params[0].annotation, ast.Name)
+            and params[0].annotation.id == "str"
+            and not has_extra_parameters
+            and not node.args.defaults
+            and all(default is None for default in node.args.kw_defaults)
+        )
+        if not valid_shape:
+            add_error(
+                f"transition tool {node.name} must have exactly one required provider-facing "
+                "parameter named summary annotated str (summary: str); remove all other "
+                "parameters and defaults."
+            )
+
+        body = list(node.body)
+        if (
+            body
+            and isinstance(body[0], ast.Expr)
+            and isinstance(body[0].value, ast.Constant)
+            and isinstance(body[0].value.value, str)
+        ):
+            body.pop(0)
+        if (
+            len(body) != 1
+            or not isinstance(body[0], ast.Return)
+            or not isinstance(body[0].value, ast.Call)
+        ):
+            add_error(
+                f"transition tool {node.name} must only return one direct "
+                "record_phase_transition(...) call; move work and verification out of it."
+            )
+            return
+
+        call = body[0].value
+        helper_name = call.func.id if isinstance(call.func, ast.Name) else ""
+        if not correct_helper_import or helper_name not in helper_names:
+            add_error(
+                f"transition tool {node.name} must delegate to the supported "
+                "agenthicc.workflows.phase_transition.record_phase_transition helper."
+            )
+        positional_names = [
+            argument.id if isinstance(argument, ast.Name) else "" for argument in call.args
+        ]
+        keywords = {keyword.arg: keyword.value for keyword in call.keywords if keyword.arg}
+        has_unpacking = any(keyword.arg is None for keyword in call.keywords)
+        outcome = keywords.get("outcome")
+        summary = keywords.get("summary")
+        if (
+            len(call.args) != 2
+            or len(set(positional_names)) != 2
+            or not all(positional_names)
+            or set(keywords) != {"outcome", "summary"}
+            or has_unpacking
+            or not isinstance(outcome, ast.Constant)
+            or not isinstance(outcome.value, str)
+            or not outcome.value.strip()
+            or len(outcome.value) > 128
+            or not isinstance(summary, ast.Name)
+            or summary.id != "summary"
+        ):
+            add_error(
+                f"transition tool {node.name} must pass its captured event and handoff data, "
+                "a fixed non-empty string outcome, and summary=summary to the helper; "
+                "do not pass verification callbacks or other values."
+            )
 
     decorated_transition = False
     for node in ast.walk(tree):
@@ -1113,9 +1202,8 @@ def _check_transition_tool_contract(
         decorated_transition = True
         saw_control_reference = True
         for index in control_indexes:
-            decorator = node.decorator_list[index]
-            if isinstance(decorator, ast.Call):
-                validation_errors.append(
+            if isinstance(node.decorator_list[index], ast.Call):
+                add_error(
                     f"{node.name} uses @tool_control() but tool_control is a bare decorator; "
                     "write @tool_control without parentheses."
                 )
@@ -1125,18 +1213,20 @@ def _check_transition_tool_contract(
             if name == "tool" or name in {"_tool", "lauren_tool"}
         ]
         if tool_indexes and min(control_indexes) > min(tool_indexes):
-            validation_errors.append(
+            add_error(
                 f"{node.name} must place @tool_control above @tool() so CONTROL metadata "
                 "survives decoration."
             )
+        if strict:
+            check_transition_body(node)
 
-    if saw_control_reference and not correct_import:
-        # The import-specific branch above supplies the actionable detail for
-        # known wrong imports; this covers an unqualified/aliased reference.
-        if not any("tool_control must be imported" in error for error in validation_errors):
-            validation_errors.append(
-                "transition tools must import tool_control from agenthicc.tools.capabilities."
-            )
+    if saw_control_reference and not correct_control_import:
+        add_error("transition tools must import tool_control from agenthicc.tools.capabilities.")
+    if strict and decorated_transition and not correct_helper_import:
+        add_error(
+            "generated phase-transition tools must import record_phase_transition from "
+            "agenthicc.workflows.phase_transition."
+        )
     return decorated_transition
 
 

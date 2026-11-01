@@ -607,6 +607,18 @@ The design phase must state, and the generate phase must write:
    successful call changes phase. Never write `@tool_control()`;
 7. `build_runner()` on the plugin returning that runner.
 
+Each generated phase-transition tool must expose exactly one required
+provider-facing argument, `summary: str`. Select its outcome in the tool's
+closure and have the tool directly return
+`record_phase_transition(event, data, outcome="fixed_outcome", summary=summary)`.
+The shared helper trims the summary, rejects empty text, stores at most 4,000
+characters, and only then signals the event. Transition tools are record-only:
+they must not inspect files, validate artifacts, or decide whether the phase work
+is correct. Perform verification as ordinary phase work, in a separate verifier
+phase, or in an explicit runner-owned gate. This contract is for generated
+workflow packages; it does not replace `create_workflow`'s built-in approval,
+deterministic package validation, smoke test, or publication safeguards.
+
 The framework owns error disposition. Generated runners should attach their
 typed context to `config.workflow_handle` before the first provider/tool call,
 let ordinary exceptions escape to the common failure finalizer, and never mark

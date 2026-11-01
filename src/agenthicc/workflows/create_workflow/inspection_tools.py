@@ -63,7 +63,10 @@ _RUNNER_EXAMPLE = '''\
 The runner below is the shape to copy: a typed state enum, a typed context, one
 bounded async method per non-terminal state, an explicit
 ``while not state.is_terminal`` / ``match`` driver, and transitions that happen
-only because a phase tool was called.
+only because a phase tool was called. Each transition tool accepts only
+``summary: str``, records its fixed outcome and bounded summary through
+``record_phase_transition()``, and performs no work verification. The VERIFY
+phase below owns the release checks before submitting its selected outcome.
 """
 
 from __future__ import annotations
@@ -85,6 +88,7 @@ from agenthicc.workflows.phase_lifecycle import (
     reconcile_phase_cursor,
 )
 from agenthicc.workflows.checkpoint import topology_from_phase_specs
+from agenthicc.workflows.phase_transition import record_phase_transition
 from agenthicc.workflows.plugin import PhaseSpec, WorkflowParams, WorkflowPlugin
 
 if TYPE_CHECKING:
@@ -162,7 +166,7 @@ class ReleaseContext:
 
 def _make_plan_tools(
     event: asyncio.Event,
-    data: dict[str, str],
+    data: dict[str, object],
 ) -> list[Callable[..., object]]:
     """Return the only tool that can end the plan phase."""
     from lauren_ai._tools import tool
@@ -170,28 +174,20 @@ def _make_plan_tools(
 
     @tool_control
     @tool()
-    async def submit_release_plan(plan: str) -> dict[str, object]:
-        """Record the ordered release checks and advance to the verify phase.
+    async def submit_release_plan(summary: str) -> dict[str, object]:
+        """Record a concise plan summary and advance to the verify phase.
 
         Args:
-            plan: The checks to run before release, in order.
+            summary: A short summary of the plan prepared during this phase.
         """
-        if not plan.strip():
-            return {
-                "ok": False,
-                "error": "The plan was rejected: it must not be empty.",
-                "fix": "Call submit_release_plan(plan) with the ordered checks.",
-            }
-        data["plan"] = plan.strip()
-        event.set()
-        return {"ok": True, "message": "Plan recorded. The verify phase starts next."}
+        return record_phase_transition(event, data, outcome="planned", summary=summary)
 
     return [submit_release_plan]
 
 
 def _make_verify_tools(
     event: asyncio.Event,
-    data: dict[str, str],
+    data: dict[str, object],
 ) -> list[Callable[..., object]]:
     """Return the pass/block decision tools for the verify phase."""
     from lauren_ai._tools import tool
@@ -200,28 +196,22 @@ def _make_verify_tools(
     @tool_control
     @tool()
     async def release_passed(summary: str) -> dict[str, object]:
-        """Signal that every check passed.
+        """Record the agent's selected passed outcome after phase work.
 
         Args:
-            summary: What was verified.
+            summary: A concise summary of work completed in the verify phase.
         """
-        data["action"] = "pass"
-        data["summary"] = summary.strip()
-        event.set()
-        return {"ok": True}
+        return record_phase_transition(event, data, outcome="passed", summary=summary)
 
     @tool_control
     @tool()
-    async def release_blocked(blocker: str) -> dict[str, object]:
-        """Signal that a check failed and the release is blocked.
+    async def release_blocked(summary: str) -> dict[str, object]:
+        """Record the agent's selected blocked outcome after phase work.
 
         Args:
-            blocker: The concrete failure that must be fixed.
+            summary: A concise summary of the blocker found in the verify phase.
         """
-        data["action"] = "block"
-        data["blocker"] = blocker.strip()
-        event.set()
-        return {"ok": True}
+        return record_phase_transition(event, data, outcome="blocked", summary=summary)
 
     return [release_passed, release_blocked]
 
@@ -432,23 +422,28 @@ class ReleaseCheckRunner(CodePlanRunner):
         """Loop until submit_release_plan fires; return VERIFY or FAILED."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
-            data: dict[str, str] = {}
+            data: dict[str, object] = {}
             await self.run_phase(
                 intent=ctx.intent,
-                text=ctx.intent if attempt == 1 else "Call submit_release_plan(plan) now.",
+                text=ctx.intent if attempt == 1 else "Call submit_release_plan(summary) now.",
                 stable_system_prompt=CACHE_CONTRACT,
                 system_prompt=(
-                    "You are in the PLAN phase of release_check. List the checks that must "
-                    "pass before this release, then call submit_release_plan(plan). Only a "
-                    "successful submit_release_plan(plan) call changes phase; prose such "
-                    "as 'done' never advances the workflow. Do not run the checks yet."
+                    "You are in the PLAN phase of release_check. Prepare the checks the "
+                    "verification phase must run, then call submit_release_plan(summary). "
+                    "The tool records only your bounded summary; it does not check the work. "
+                    "Only a successful transition-tool call changes phase; prose such as "
+                    "'done' never advances the workflow. Do not run the checks yet."
                 ),
                 max_turns=10,
                 shared_memory=memory,
                 tools=_make_plan_tools(event, data),
             )
             if event.is_set():
-                ctx.plan = data["plan"]
+                plan_summary = data.get("summary")
+                if not isinstance(plan_summary, str):
+                    ctx.fail_reason = "plan transition omitted its recorded summary"
+                    return ReleaseState.FAILED
+                ctx.plan = plan_summary
                 ctx.artifacts["plan"] = ctx.plan
                 return ReleaseState.VERIFY
 
@@ -459,21 +454,23 @@ class ReleaseCheckRunner(CodePlanRunner):
         """Loop until a verdict tool fires; return REPORT or FAILED."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
-            data: dict[str, str] = {}
+            data: dict[str, object] = {}
             await self.run_phase(
                 intent=ctx.intent,
                 text=(
                     f"Run these checks:\\n{ctx.plan}"
                     if attempt == 1
-                    else "Call release_passed(summary) or release_blocked(blocker) now."
+                    else "Call release_passed(summary) or release_blocked(summary) now."
                 ),
                 stable_system_prompt=CACHE_CONTRACT,
                 system_prompt=(
                     "You are in the VERIFY phase of release_check. Run the planned checks "
                     "with the shell tools, then call release_passed(summary) or "
-                    "release_blocked(blocker). Only a successful call to one of these "
-                    "transition tools changes phase; prose never advances the workflow. "
-                    "You MUST call one of them."
+                    "release_blocked(summary). These transition tools only record the "
+                    "selected outcome and bounded summary; verification is the work of this "
+                    "phase, not the tools. Only a successful call to one of these transition "
+                    "tools changes phase; prose never advances the workflow. You MUST call "
+                    "one of them."
                 ),
                 mode="Yolo",  # unlock write / execute tools for this phase
                 max_turns=20,
@@ -481,11 +478,19 @@ class ReleaseCheckRunner(CodePlanRunner):
                 tools=_make_verify_tools(event, data),
             )
             if event.is_set():
-                if data.get("action") == "pass":
-                    ctx.verdict = data.get("summary", "")
+                outcome = data.get("outcome")
+                summary = data.get("summary")
+                if not isinstance(summary, str):
+                    ctx.fail_reason = "verify transition omitted its recorded summary"
+                    return ReleaseState.FAILED
+                if outcome == "passed":
+                    ctx.verdict = summary
+                elif outcome == "blocked":
+                    ctx.blocker = summary
                 else:
-                    ctx.blocker = data.get("blocker", "")
-                ctx.artifacts["verify"] = ctx.verdict or ctx.blocker
+                    ctx.fail_reason = "verify transition recorded an undeclared outcome"
+                    return ReleaseState.FAILED
+                ctx.artifacts["verify"] = summary
                 return ReleaseState.REPORT
 
         ctx.fail_reason = "verify phase never reported a verdict"
@@ -545,7 +550,8 @@ class ReleaseCheckWorkflow(WorkflowPlugin):
             next="verify",
             system_prompt_override=(
                 "You are in the PLAN phase of release_check. Call "
-                "submit_release_plan(plan); only a successful transition-tool call "
+                "submit_release_plan(summary); its sole argument is a concise summary, "
+                "and the tool only records it. Only a successful transition-tool call "
                 "changes phase, never prose."
             ),
         ),
@@ -555,8 +561,10 @@ class ReleaseCheckWorkflow(WorkflowPlugin):
             next="report",
             mode_override="Yolo",
             system_prompt_override=(
-                "You are in the VERIFY phase of release_check. Call "
-                "release_passed(summary) or release_blocked(blocker); only a successful "
+                "You are in the VERIFY phase of release_check. Run the planned checks, "
+                "then call release_passed(summary) or release_blocked(summary). Both "
+                "tools have the same summary-only schema and record the fixed outcome; "
+                "verification happens in the phase, not in the tools. Only a successful "
                 "transition-tool call changes phase, never prose."
             ),
         ),
@@ -1017,9 +1025,10 @@ def make_inspection_tools(
             "source": _RUNNER_EXAMPLE,
             "note": (
                 "Recommended. The runner owns the control flow and every transition is a "
-                "tool call. Subclassing CodePlanRunner provides the session wiring and the "
-                "public run_phase() helper; super().run() is never called, so none of "
-                "code_plan's phases execute."
+                "summary-only, record-only tool call with a fixed outcome; verification "
+                "belongs to phase work or a separate runner-owned gate. Subclassing "
+                "CodePlanRunner provides the session wiring and the public run_phase() "
+                "helper; super().run() is never called, so none of code_plan's phases execute."
             ),
         }
 
@@ -1065,6 +1074,9 @@ def make_inspection_tools(
                 "profile-filtered graph",
                 "phase tool factories that set an asyncio.Event; the state method checks "
                 "the event after the turn returns and never parses the agent's prose",
+                "each @tool_control transition has exactly one required `summary: str` "
+                "argument and delegates only to record_phase_transition() with a fixed "
+                "outcome; transition tools record and signal but never verify phase work",
                 "each phase prompt names its @tool_control transition tool(s) and says "
                 "that only a successful transition-tool call changes phase; prose never "
                 "advances the workflow",
@@ -1229,7 +1241,7 @@ def make_inspection_tools(
     @tool_read
     @_tool()
     async def describe_transition_tool_pattern() -> dict[str, object]:
-        """Return the canonical import/decorator pattern for phase handoffs.
+        """Return the canonical schema and record-only phase-handoff contract.
 
         This is intentionally separate from the broad runner checklist because
         a local import error inside a tool factory is invisible to module-load
@@ -1238,9 +1250,48 @@ def make_inspection_tools(
         return {
             "canonical_import": (
                 "from lauren_ai._tools import tool\n"
-                "from agenthicc.tools.capabilities import tool_control"
+                "from agenthicc.tools.capabilities import tool_control\n"
+                "from agenthicc.workflows.phase_transition import record_phase_transition"
             ),
             "canonical_decorators": "@tool_control\n@tool()\nasync def transition(...): ...",
+            "provider_schema": {
+                "type": "object",
+                "properties": {"summary": {"type": "string"}},
+                "required": ["summary"],
+                "additionalProperties": False,
+            },
+            "signature": "async def transition(summary: str) -> dict[str, object]: ...",
+            "summary_contract": {
+                "normalization": "trim leading/trailing whitespace",
+                "empty": "reject without recording or signaling",
+                "maximum_characters": 4_000,
+                "oversized": "truncate before storing or checkpointing",
+            },
+            "canonical_delegation": (
+                'return record_phase_transition(event, data, outcome="approved", summary=summary)'
+            ),
+            "fixed_outcome_examples": [
+                'approve_review(summary) records outcome="approved"',
+                'request_changes(summary) records outcome="changes_requested"',
+                'release_blocked(summary) records outcome="blocked"',
+            ],
+            "record_only_rule": (
+                "The selected tool name/closure fixes the route. The wrapper only delegates "
+                "its captured event, handoff mapping, fixed string outcome, and summary to "
+                "record_phase_transition(); the helper stores outcome plus bounded summary, "
+                "then sets the event. Success means submitted, not verified."
+            ),
+            "prohibited_operations": [
+                "filesystem reads or writes, artifact parsing, or evidence inspection",
+                "shell/process commands, test execution, or criteria comparison",
+                "network, browser, MCP, approval-service, or other external calls",
+                "extra provider arguments such as details, paths, indexes, counts, booleans, "
+                "decision, next_phase, or arbitrary state names",
+            ],
+            "verification_ownership": (
+                "Perform required verification in ordinary phase work, a separate verifier "
+                "phase, or an explicit runner-owned gate; never in a transition callable."
+            ),
             "decorator_rules": [
                 "tool_control is a bare decorator; never write @tool_control().",
                 "tool_control must come from agenthicc.tools.capabilities, not lauren_ai._tools.",
@@ -1248,15 +1299,16 @@ def make_inspection_tools(
                 "Apply it to every callable that can advance, reject, retry, or branch a phase.",
             ],
             "validation_boundary": (
-                "Factory-local imports are checked statically because validation must not "
-                "execute arbitrary generated tool factories. Import success alone does not "
-                "prove local factory imports work; use this contract and the generated "
-                "template before calling a phase."
+                "Factory-local imports, the exact summary-only signature, and the one-call "
+                "record-only body are checked statically. Validation does not execute tool "
+                "bodies merely to inspect them; the bounded smoke harness exercises the "
+                "generated runner through the supported fake turn boundary."
             ),
             "failure_prevented": [
                 "ImportError: cannot import name 'tool_control' from lauren_ai._tools",
                 "AttributeError caused by invoking the bare decorator as @tool_control()",
                 "phase transitions not being classified with ToolCapability.CONTROL",
+                "large or arbitrary transition schemas and embedded work verification",
             ],
         }
 

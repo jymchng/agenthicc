@@ -2456,6 +2456,21 @@ contiguous receipts and durable state outrank transcript summaries, so a stale
 INIT cursor cannot replay completed phases. The create_workflow inspection
 tools `describe_phase_lifecycle()` and `show_phase_lifecycle_template()` expose
 this contract to authoring agents.
+
+### record_phase_transition — `agenthicc.workflows.phase_transition`
+
+`record_phase_transition(event, data, *, outcome, summary)` is the shared,
+record-only handoff for generated workflow transition tools. A generated tool
+must expose exactly one required provider-facing parameter, `summary: str`,
+select its fixed outcome in the tool definition, and directly return the helper
+call. The helper trims the summary, rejects blank text, bounds stored text to
+4,000 characters, records outcome and summary, and then signals the event. Its
+acknowledgment contains the fixed outcome and summary character count. It does
+not inspect or verify phase work; verification belongs in ordinary phase work,
+a separate verifier phase, or an explicit runner-owned gate. This generated
+workflow contract does not replace `create_workflow`'s own approval, package
+validation, smoke, or publication safeguards.
+
 The shared session journal exposes `workflow_phase_boundary()` and
 `fold_workflow_phase_boundaries()` as redacted, run-scoped auxiliary evidence;
 the checkpoint is written first and remains authoritative.
@@ -2806,8 +2821,14 @@ the workflow. Built-in handoff tools retain a compatibility name list, while
 custom workflow handoff tools are discovered from `ToolCapability.CONTROL`
 (`@tool_control`). `describe_transition_tool_pattern()` gives generated runners
 the canonical import and bare-decorator form; strict validation also checks
-factory-local transition-tool code. Declarative phases without a control tool are told that the
-generic runner applies their declared graph after the turn.
+factory-local transition-tool code. Generated transition tools have exactly one
+required `summary: str` parameter, bind a fixed outcome in the tool closure, and
+return only the shared record helper. The helper rejects blank summaries,
+trims and bounds stored summaries to 4,000 characters, and signals the phase
+only after recording the handoff. It performs no verification; validation stays
+in ordinary phase work or explicit runner-owned gates. Declarative phases
+without a control tool are told that the generic runner applies their declared
+graph after the turn.
 
 Design is read-only and human-gated: `request_design_approval(design,
 workflow_name)` raises the plan-review overlay and `finalize_design(design,
