@@ -202,12 +202,28 @@ copy-ready configuration template in the module documentation.
 ```
 
 The design phase presents the workflow's name and phase graph for your approval
-and writes nothing. The generate phase writes a complete package to a run-owned
-draft at `.agenthicc/workflows/.drafts/<run-id>/<name>/`, with
-`runner.py` and optional workflow-local helpers. It records a deterministic
-manifest (relative paths, sizes, line counts, and hashes), and repair cycles
-reuse that same draft. The normal registry ignores drafts, so partial source
-cannot become runnable accidentally.
+and writes nothing. Before generation, the runner derives the canonical target
+`.agenthicc/workflows/<name>/` from the authorized project workspace. It creates
+a run-owned pending marker there before exposing package-scoped writer tools;
+`runner.py` and optional workflow-local helpers are authored directly at that
+target, and a deterministic manifest records their relative paths, sizes, line
+counts, and hashes. The agent cannot choose a different destination. Normal
+workflow discovery skips a pending package before trust checks or imports, so
+partial source cannot become runnable accidentally.
+
+If the name already exists, the framework requires separate explicit approval
+to replace it. The original package and its trust records are preserved in a
+run-bound backup before generation changes the target. The validate phase
+checks and smoke-tests the exact pending package without making it visible to
+normal discovery. Only after deterministic checks, smoke success, and
+`approve_workflow(summary)` does the framework recheck the package fingerprint,
+record trust for its exact Python bytes, and remove the marker. If the run is
+interrupted, resume its existing checkpoint with `/workflow resume <run-id>`;
+do not remove the marker or backup manually. A failed run remains undiscoverable
+until it is resumed or reset. `/workflow reset <run-id>` restores the approved
+original bytes and trust records, or discards a first-generation candidate,
+before recording the run as discarded. Reset fails closed if the run-owned
+authoring transaction cannot be verified.
 
 The authoring runner also gives the agent a live, bounded, redacted snapshot of
 the effective tool catalog, phase capabilities, mode filtering, workspace and
@@ -217,15 +233,13 @@ arguments are not included. The inspection tools
 `describe_authoring_session()` and `explain_authoring_tool_access(name)` expose
 the same snapshot and its availability decisions.
 
-The validate phase first imports and checks the draft the way the loader will,
-then runs a bounded fake-provider smoke contract. For a custom runner this
-checks event-backed transitions, prose-only non-transition, checkpoint JSON
-round-tripping with memory reattachment, resume at the saved state, and error
-propagation without network/browser/MCP calls. Only after deterministic
-validation, smoke success, and `approve_workflow(summary)` does the framework
-atomically publish the package to `.agenthicc/workflows/<name>/`. Existing
-published packages are backed up and restored if publication fails; the draft
-and checkpoint remain recoverable.
+The validate phase first imports and checks the exact pending package through
+its explicit candidate-validation boundary, then runs a bounded fake-provider
+smoke contract. For a custom runner this checks event-backed transitions,
+prose-only non-transition, checkpoint JSON round-tripping with memory
+reattachment, resume at the saved state, and error propagation without
+network/browser/MCP calls. Normal registry checks remain unchanged and continue
+to exclude the package until finalization.
 
 Every generated custom runner must use the cache-stable `CACHE_CONTRACT`, pass
 it as `stable_system_prompt` to `CodePlanRunner.run_phase()`, keep phase state

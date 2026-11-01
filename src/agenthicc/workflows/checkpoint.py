@@ -229,6 +229,10 @@ def _checkpoint_timestamp(value: object, *, field_name: str, default: float) -> 
 
 def _encode(value: object) -> object:
     """Convert supported context values into JSON-compatible data."""
+    from agenthicc.workflows.create_workflow.authoring import AuthoringLease, PackageManifest
+
+    if isinstance(value, AuthoringLease | PackageManifest):
+        return value.to_dict()
     if isinstance(value, Enum):
         return {"__enum__": value.name}
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
@@ -336,6 +340,11 @@ def context_from_payload(
 ) -> object:
     """Restore one built-in workflow context and attach shared memory."""
     from agenthicc.workflows.code_plan.state import CodePlanContext, CodePlanState
+    from agenthicc.workflows.create_workflow.authoring import (
+        AuthoringError,
+        AuthoringLease,
+        PackageManifest,
+    )
     from agenthicc.workflows.create_workflow.state import (
         CreateWorkflowContext,
         CreateWorkflowState,
@@ -391,6 +400,109 @@ def context_from_payload(
             phase_iteration=payload_int(fields.get("phase_iteration"), 0),
         )
     if kind == "CreateWorkflowContext":
+        if (
+            "state" not in fields
+            or "authoring_lease" not in fields
+            or "package_manifest" not in fields
+        ):
+            raise CheckpointValidationError(
+                "create_workflow checkpoint is missing canonical authoring state; start a new run"
+            )
+        raw_state = fields.get("state")
+        try:
+            state = _decode_enum(raw_state, CreateWorkflowState)
+            if not isinstance(state, CreateWorkflowState):
+                raise CheckpointValidationError("create_workflow checkpoint has an invalid state")
+            raw_lease = fields.get("authoring_lease")
+            lease = AuthoringLease.from_payload(raw_lease) if raw_lease is not None else None
+            raw_manifest = fields.get("package_manifest")
+            manifest = (
+                PackageManifest.from_payload(raw_manifest) if raw_manifest is not None else None
+            )
+        except AuthoringError as exc:
+            raise CheckpointValidationError(str(exc)) from exc
+
+        intent = fields.get("intent")
+        run_id = fields.get("run_id")
+        workflow_name = fields.get("workflow_name")
+        generated_path = fields.get("generated_path")
+        if not isinstance(intent, str) or not isinstance(run_id, str):
+            raise CheckpointValidationError("create_workflow checkpoint has invalid run identity")
+        if not isinstance(workflow_name, str) or not isinstance(generated_path, str):
+            raise CheckpointValidationError(
+                "create_workflow checkpoint has invalid package identity"
+            )
+        if lease is not None:
+            if lease.run_id != run_id or lease.workflow_name != workflow_name:
+                raise CheckpointValidationError(
+                    "authoring lease does not match the workflow context"
+                )
+            if generated_path != lease.target_path:
+                raise CheckpointValidationError(
+                    "generated path does not match the canonical lease target"
+                )
+        elif generated_path:
+            raise CheckpointValidationError("generated path has no canonical authoring lease")
+        if state in {
+            CreateWorkflowState.VALIDATE,
+            CreateWorkflowState.SUMMARIZE,
+            CreateWorkflowState.COMPLETE,
+        }:
+            if lease is None or manifest is None:
+                raise CheckpointValidationError(
+                    f"{state.name} checkpoint requires a canonical authoring lease and package manifest"
+                )
+        if manifest is not None:
+            if lease is None:
+                raise CheckpointValidationError("package manifest has no canonical authoring lease")
+            if (
+                manifest.workflow_name != workflow_name
+                or manifest.run_id != run_id
+                or manifest.target_path != lease.target_path
+            ):
+                raise CheckpointValidationError(
+                    "package manifest does not match the authoring lease"
+                )
+        validation_evidence = payload_mapping(fields.get("validation_evidence"))
+        publication = payload_mapping(fields.get("publication"))
+        if state in {CreateWorkflowState.SUMMARIZE, CreateWorkflowState.COMPLETE}:
+            if manifest is None or lease is None:
+                raise CheckpointValidationError(f"{state.name} checkpoint has no package manifest")
+            if validation_evidence.get("package_fingerprint") != manifest.fingerprint:
+                raise CheckpointValidationError(
+                    "validation evidence does not match the package manifest"
+                )
+            evidence_id = validation_evidence.get("evidence_id")
+            unsigned_evidence = {
+                key: value for key, value in validation_evidence.items() if key != "evidence_id"
+            }
+            expected_evidence_id = hashlib.sha256(
+                json.dumps(
+                    unsigned_evidence,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
+            if evidence_id != expected_evidence_id:
+                raise CheckpointValidationError("validation evidence fingerprint is invalid")
+            if publication.get("status") != "committed":
+                raise CheckpointValidationError(f"{state.name} checkpoint has no committed package")
+            if (
+                publication.get("package_fingerprint") != manifest.fingerprint
+                or publication.get("published_path") != lease.target_path
+                or publication.get("validation_evidence_id") != evidence_id
+            ):
+                raise CheckpointValidationError(
+                    "publication record does not match validated package evidence"
+                )
+            if not isinstance(fields.get("validation_summary"), str) or not fields.get(
+                "validation_summary"
+            ):
+                raise CheckpointValidationError(
+                    f"{state.name} checkpoint has no validation approval"
+                )
+
         raw_artifacts = fields.get("artifacts", {})
         artifacts: dict[str, PhaseArtifact] = {}
         if isinstance(raw_artifacts, dict):
@@ -403,16 +515,12 @@ def context_from_payload(
                         metadata=payload_mapping(raw.get("metadata")),
                         created_at=payload_float(raw.get("created_at"), time.time()),
                     )
-        raw_state = fields.get("state", {"__enum__": "DESIGN"})
-        state = _decode_enum(raw_state, CreateWorkflowState)
-        if not isinstance(state, CreateWorkflowState):
-            state = CreateWorkflowState.DESIGN
         return CreateWorkflowContext(
-            intent=str(fields.get("intent", "")),
-            run_id=str(fields.get("run_id", "")),
+            intent=intent,
+            run_id=run_id,
             design=str(fields.get("design", "")),
-            workflow_name=str(fields.get("workflow_name", "")),
-            generated_path=str(fields.get("generated_path", "")),
+            workflow_name=workflow_name,
+            generated_path=generated_path,
             generation_summary=str(fields.get("generation_summary", "")),
             validation_report=str(fields.get("validation_report", "")),
             validation_summary=str(fields.get("validation_summary", "")),
@@ -440,10 +548,10 @@ def context_from_payload(
             authoring_snapshot=payload_mapping(fields.get("authoring_snapshot")),
             selected_tools=payload_strings(fields.get("selected_tools")),
             dependency_summary=payload_mapping(fields.get("dependency_summary")),
-            draft_manifest=payload_mapping(fields.get("draft_manifest")),
-            draft_fingerprint=str(fields.get("draft_fingerprint", "")),
-            validation_evidence=payload_mapping(fields.get("validation_evidence")),
-            publication=payload_mapping(fields.get("publication")),
+            authoring_lease=lease,
+            package_manifest=manifest,
+            validation_evidence=validation_evidence,
+            publication=publication,
             question_metadata=payload_mapping(fields.get("question_metadata")),
         )
     if kind == "CustomContext" and workflow is not None:

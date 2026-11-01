@@ -9,9 +9,10 @@ will and checks the resulting plugin class against the real
 runner overrides an ``approve_workflow`` call whenever the report is not ``ok``.
 
 Importing the file executes it — the same trust model as the workflow loader
-itself, which must import a plugin module to discover its classes.  The file was
-just written inside this session by the tool-approved agent, and the import is
-refused outright for any path resolving outside the workspace root.
+itself, which must import a plugin module to discover its classes. This is not
+an isolation boundary: generated imports and import-time code run with the
+current process's ordinary permissions. The file is checked to resolve inside
+the workspace root, but module imports are unrestricted.
 """
 
 from __future__ import annotations
@@ -36,36 +37,6 @@ _RESERVED_NAMES: frozenset[str] = frozenset({"code_plan", "create_workflow"})
 #: Valid ``PhaseSpec.output_schema`` values understood by ``_parse_output_schema``.
 _KNOWN_OUTPUT_SCHEMAS: frozenset[str] = frozenset({"plan", "review_result", "free_text"})
 
-_FORBIDDEN_BROWSER_IMPORTS: tuple[str, ...] = (
-    "cloakbrowser",
-    "playwright",
-    "agenthicc.tools.cloakbrowser",
-    "agenthicc.tools.playwright",
-)
-# Generated workflow code must use the framework's capability-gated tools for
-# side effects. Besides making the no-network smoke deterministic, rejecting
-# these imports before import-time execution prevents a helper module from
-# bypassing the parent session's workspace/network policy.
-_FORBIDDEN_EXTERNAL_IMPORT_ROOTS: frozenset[str] = frozenset(
-    {
-        "socket",
-        "subprocess",
-        "requests",
-        "httpx",
-        "urllib",
-        "urllib3",
-        "aiohttp",
-        "websockets",
-        "ssl",
-        "dns",
-        "ftplib",
-        "telnetlib",
-        "webbrowser",
-        "playwright",
-        "cloakbrowser",
-        "lauren_mcp",
-    }
-)
 _KNOWN_BROWSER_TOOLS: frozenset[str] = frozenset(
     {
         "cloakbrowser_status",
@@ -110,31 +81,25 @@ _INTEGRATION_UNAVAILABLE_STATES: frozenset[str] = frozenset(
 _INTEGRATION_NOT_PROBED_STATES: frozenset[str] = frozenset({"not_probed", "unknown", "unprobed"})
 
 
-def _check_browser_imports(source: str, errors: list[str]) -> None:
-    """Reject generated code that bypasses the session-owned browser adapter."""
+def _check_browser_tool_names(source: str, errors: list[str]) -> None:
+    """Reject unknown browser-tool references without restricting imported names."""
     try:
         tree = ast.parse(source)
     except SyntaxError:
         return
+    imported_names: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
-            modules = [alias.name for alias in node.names]
+            imported_names.update(
+                alias.asname or alias.name.split(".", 1)[0] for alias in node.names
+            )
         elif isinstance(node, ast.ImportFrom):
-            modules = [node.module or ""]
-        else:
-            modules = []
-        for module in modules:
-            if any(
-                module == item or module.startswith(f"{item}.")
-                for item in _FORBIDDEN_BROWSER_IMPORTS
-            ):
-                errors.append(
-                    f"Generated workflows must not import {module!r}; use the session-provided "
-                    "browser_* tools so policy and checkpoint boundaries "
-                    "remain enforced."
-                )
-        if isinstance(node, ast.Name) and (
-            node.id.startswith("cloakbrowser_") or node.id.startswith("playwright_")
+            imported_names.update(alias.asname or alias.name for alias in node.names)
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Name)
+            and node.id not in imported_names
+            and (node.id.startswith("cloakbrowser_") or node.id.startswith("playwright_"))
         ):
             if node.id not in _KNOWN_BROWSER_TOOLS:
                 errors.append(
@@ -149,35 +114,6 @@ def _check_browser_imports(source: str, errors: list[str]) -> None:
                 errors.append(
                     f"Unknown browser tool {value!r}; use the session-provided canonical "
                     "browser_* tool names documented by the browser inspection tools."
-                )
-
-
-def _check_external_imports(source: str, errors: list[str]) -> None:
-    """Reject direct network/process clients in generated workflow sources.
-
-    Workflow-local helpers are still imported by the loader, so checking every
-    package source—not only ``runner.py``—is important. Runtime side effects
-    belong in capability-gated tools supplied by the parent session; direct
-    imports would make validation and smoke execution non-deterministic.
-    """
-    try:
-        tree = ast.parse(source)
-    except SyntaxError:
-        return
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            modules = [alias.name for alias in node.names]
-        elif isinstance(node, ast.ImportFrom):
-            modules = [node.module or ""]
-        else:
-            modules = []
-        for module in modules:
-            root = module.split(".", 1)[0]
-            if root in _FORBIDDEN_EXTERNAL_IMPORT_ROOTS:
-                errors.append(
-                    f"Generated workflows must not import {module!r}; use the parent session's "
-                    "capability-gated tools so network, browser, MCP, process, and workspace "
-                    "policy remain enforced."
                 )
 
 
@@ -311,7 +247,6 @@ def _fail(path: str, *errors: str) -> ValidationReport:
         ("browser", "browser"),
         ("mcp", "mcp"),
         ("workspace", "workspace"),
-        ("draft", "manifest"),
         ("manifest", "manifest"),
         ("symlink", "manifest"),
         ("runner.py", "manifest"),
@@ -1086,8 +1021,8 @@ def _check_transition_tool_contract(
 
     control_names: set[str] = {"tool_control"}
     helper_names: set[str] = set()
-    correct_control_import = False
-    correct_helper_import = False
+    found_control_import = False
+    found_helper_import = False
     saw_control_reference = False
     for node in ast.walk(tree):
         if not isinstance(node, ast.ImportFrom):
@@ -1097,28 +1032,10 @@ def _check_transition_tool_contract(
             if alias.name == "tool_control":
                 control_names.add(local_name)
                 saw_control_reference = True
-                if node.module == "agenthicc.tools.capabilities":
-                    correct_control_import = True
-                elif node.module == "lauren_ai._tools":
-                    add_error(
-                        "tool_control must be imported from agenthicc.tools.capabilities, "
-                        "not lauren_ai._tools. lauren_ai._tools exports tool only."
-                    )
-                else:
-                    add_error(
-                        f"tool_control is imported from {node.module or '(relative module)'}, "
-                        "but generated workflows must use agenthicc.tools.capabilities."
-                    )
+                found_control_import = True
             if alias.name == "record_phase_transition":
-                if node.module == "agenthicc.workflows.phase_transition":
-                    helper_names.add(local_name)
-                    correct_helper_import = True
-                else:
-                    add_error(
-                        f"record_phase_transition is imported from "
-                        f"{node.module or '(relative module)'}, but generated transitions "
-                        "must use agenthicc.workflows.phase_transition.record_phase_transition."
-                    )
+                helper_names.add(local_name)
+                found_helper_import = True
 
     def check_transition_body(node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
         params = [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
@@ -1160,7 +1077,7 @@ def _check_transition_tool_contract(
 
         call = body[0].value
         helper_name = call.func.id if isinstance(call.func, ast.Name) else ""
-        if not correct_helper_import or helper_name not in helper_names:
+        if not found_helper_import or helper_name not in helper_names:
             add_error(
                 f"transition tool {node.name} must delegate to the supported "
                 "agenthicc.workflows.phase_transition.record_phase_transition helper."
@@ -1220,12 +1137,12 @@ def _check_transition_tool_contract(
         if strict:
             check_transition_body(node)
 
-    if saw_control_reference and not correct_control_import:
-        add_error("transition tools must import tool_control from agenthicc.tools.capabilities.")
-    if strict and decorated_transition and not correct_helper_import:
+    if saw_control_reference and not found_control_import:
+        add_error("transition tools must import tool_control so handoffs are discoverable.")
+    if strict and decorated_transition and not found_helper_import:
         add_error(
-            "generated phase-transition tools must import record_phase_transition from "
-            "agenthicc.workflows.phase_transition."
+            "generated phase-transition tools must import record_phase_transition for the "
+            "supported summary-only handoff contract."
         )
     return decorated_transition
 
@@ -1462,8 +1379,7 @@ def validate_workflow_file(
 
     source_errors: list[str] = []
     for source in sources.values():
-        _check_browser_imports(source, source_errors)
-        _check_external_imports(source, source_errors)
+        _check_browser_tool_names(source, source_errors)
     if source_errors:
         return _fail(shown, *source_errors)
 

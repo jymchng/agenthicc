@@ -223,14 +223,38 @@ def test_create_workflow_authored_slug_is_not_mistaken_for_checkpoint_owner(
             intent="author a resume workflow",
             checkpoint_store=store,
         )
-        authored_path = str(tmp_path / ".drafts" / "create-run" / "tailor_resume" / "runner.py")
+        from agenthicc.workflows.create_workflow.authoring import (
+            begin_authoring,
+            inspect_existing_target,
+            prepare_authoring,
+            scan_package,
+        )
+
+        snapshot = inspect_existing_target(
+            tmp_path,
+            run_id="create-run",
+            workflow_name="tailor_resume",
+        )
+        lease = prepare_authoring(
+            tmp_path,
+            run_id="create-run",
+            workflow_name="tailor_resume",
+            expected_original_fingerprint=snapshot.fingerprint,
+        )
+        begin_authoring(lease)
+        authored_path = lease.target_path
+        package = Path(authored_path)
+        (package / "runner.py").write_text("class TailorResumeWorkflow: ...\\n", encoding="utf-8")
+        package_manifest = scan_package(lease)
         context = CreateWorkflowContext(
             intent="author a resume workflow",
             run_id="create-run",
-            design="A workflow that safely resumes tailored drafts.",
+            design="A workflow that safely resumes canonical packages.",
             workflow_name="tailor_resume",
             generated_path=authored_path,
             generation_summary="Wrote the initial workflow package.",
+            authoring_lease=lease,
+            package_manifest=package_manifest,
             artifacts={
                 "design": PhaseArtifact(
                     phase="design",

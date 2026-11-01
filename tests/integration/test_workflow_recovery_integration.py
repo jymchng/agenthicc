@@ -99,12 +99,31 @@ def test_reopen_create_workflow_with_distinct_authored_slug_is_non_destructive(
     run_id = "create-workflow-run"
     checkpoint_root = tmp_path / "sessions"
     journal_path = checkpoint_root / session_id / "conversation-journal.jsonl"
-    draft = tmp_path / ".agenthicc" / "workflows" / ".drafts" / run_id / "tailor_resume"
-    runner_file = draft / "runner.py"
-    runner_file.parent.mkdir(parents=True)
-    runner_file.write_text("# draft created before restart\n", encoding="utf-8")
-    original_draft = runner_file.read_bytes()
-    authored_path = str(runner_file)
+    from agenthicc.workflows.create_workflow.authoring import (
+        begin_authoring,
+        inspect_existing_target,
+        prepare_authoring,
+        scan_package,
+    )
+
+    snapshot = inspect_existing_target(
+        tmp_path,
+        run_id=run_id,
+        workflow_name="tailor_resume",
+    )
+    lease = prepare_authoring(
+        tmp_path,
+        run_id=run_id,
+        workflow_name="tailor_resume",
+        expected_original_fingerprint=snapshot.fingerprint,
+    )
+    begin_authoring(lease)
+    package = Path(lease.target_path)
+    runner_file = package / "runner.py"
+    runner_file.write_text("# package created before restart\n", encoding="utf-8")
+    original_package_source = runner_file.read_bytes()
+    package_manifest = scan_package(lease)
+    authored_path = lease.target_path
 
     first = SessionConversation.open(
         session_id,
@@ -124,10 +143,12 @@ def test_reopen_create_workflow_with_distinct_authored_slug_is_non_destructive(
         CreateWorkflowContext(
             intent="author a resume workflow",
             run_id=run_id,
-            design="A workflow that resumes from its generated draft.",
+            design="A workflow that resumes from its generated package.",
             workflow_name="tailor_resume",
             generated_path=authored_path,
             generation_summary="Initial package is written.",
+            authoring_lease=lease,
+            package_manifest=package_manifest,
             artifacts={
                 "generate": PhaseArtifact(
                     phase="generate",
@@ -178,7 +199,7 @@ def test_reopen_create_workflow_with_distinct_authored_slug_is_non_destructive(
         assert restored.workflow_name == "tailor_resume"
         assert restored.generated_path == authored_path
         assert restored.artifacts["generate"].metadata["path"] == authored_path
-        assert runner_file.read_bytes() == original_draft
+        assert runner_file.read_bytes() == original_package_source
         checkpoint_after_recovery = store.load(run_id)
         assert checkpoint_after_recovery is not None
         assert checkpoint_after_recovery.revision == checkpoint_before_restart.revision

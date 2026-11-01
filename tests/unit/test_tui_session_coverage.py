@@ -113,6 +113,26 @@ def _make_session(
     return TUISession(ctx, workspace, input_session), ctx, workspace, input_session
 
 
+def _paused_workflow_handle(context: object, *, workflow_name: str) -> SimpleNamespace:
+    handle = SimpleNamespace(
+        run_id="reset-run",
+        workflow_name=workflow_name,
+        lifecycle="paused",
+        last_error="previous pause",
+        pause_requested=True,
+        context=context,
+        checkpoint_supported=False,
+    )
+
+    def mark_terminal(status: str, *, error: str) -> None:
+        handle.lifecycle = status
+        handle.last_error = error
+
+    handle.mark_terminal = mark_terminal
+    handle.release_claim = lambda: None
+    return handle
+
+
 def test_completed_background_subagent_is_delivered_once(tmp_path: Path) -> None:
     """A terminal background result enters provider memory at a turn boundary."""
     from agenthicc.memory.journal import ConversationJournal
@@ -231,7 +251,297 @@ async def test_tui_does_not_fall_through_to_new_workflow_when_recovery_exists() 
     assert "can be resumed" in (ctx.app_state.conversation.notification() or "")
 
 
-def test_tui_routing_workflow_commands_and_skill_reload(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_workflow_reset_discards_pending_first_generation_package(tmp_path: Path) -> None:
+    from agenthicc.workflows.create_workflow.authoring import (
+        PENDING_MARKER_NAME,
+        begin_authoring,
+        canonical_workflow_path,
+        inspect_existing_target,
+        prepare_authoring,
+    )
+
+    workflow_name = "reset_flow"
+    snapshot = inspect_existing_target(
+        tmp_path,
+        run_id="reset-run",
+        workflow_name=workflow_name,
+    )
+    lease = prepare_authoring(
+        tmp_path,
+        run_id="reset-run",
+        workflow_name=workflow_name,
+        expected_original_fingerprint=snapshot.fingerprint,
+    )
+    begin_authoring(lease)
+    target = canonical_workflow_path(tmp_path, workflow_name)
+    (target / "runner.py").write_text("candidate = True\\n", encoding="utf-8")
+
+    session, _ctx, _workspace, _input = _make_session()
+    handle = _paused_workflow_handle(
+        SimpleNamespace(authoring_lease=lease),
+        workflow_name="create_workflow",
+    )
+    session._workflow_handle = handle  # type: ignore[assignment]
+
+    assert session._handle_workflow_command("reset") is True
+
+    assert handle.lifecycle == "discarded"
+    assert not target.exists()
+    assert not (target / PENDING_MARKER_NAME).exists()
+    assert session._workflow_handle is None
+
+
+def test_workflow_reset_restores_replacement_package_and_trust(tmp_path: Path) -> None:
+    from agenthicc.plugins.trust import ExtensionTrust, override_extension_trust
+    from agenthicc.workflows.create_workflow.authoring import (
+        begin_authoring,
+        canonical_workflow_path,
+        inspect_existing_target,
+        prepare_authoring,
+    )
+
+    workflow_name = "reset_flow"
+    trust = ExtensionTrust(store_path=tmp_path / "home" / ".agenthicc" / "trust.json")
+    with override_extension_trust(trust):
+        target = canonical_workflow_path(tmp_path, workflow_name)
+        target.mkdir(parents=True)
+        original_source = "original = True\\n"
+        original = target / "runner.py"
+        original.write_text(original_source, encoding="utf-8")
+        original_record = trust.trust(original, kind="workflow")
+        snapshot = inspect_existing_target(
+            tmp_path,
+            run_id="reset-run",
+            workflow_name=workflow_name,
+        )
+        lease = prepare_authoring(
+            tmp_path,
+            run_id="reset-run",
+            workflow_name=workflow_name,
+            expected_original_fingerprint=snapshot.fingerprint,
+            replace_existing=True,
+        )
+        begin_authoring(lease)
+        (target / "runner.py").write_text("candidate = True\\n", encoding="utf-8")
+
+        session, _ctx, _workspace, _input = _make_session()
+        handle = _paused_workflow_handle(
+            SimpleNamespace(authoring_lease=lease),
+            workflow_name="create_workflow",
+        )
+        session._workflow_handle = handle  # type: ignore[assignment]
+
+        assert session._handle_workflow_command("reset") is True
+
+        assert handle.lifecycle == "discarded"
+        assert original.read_text(encoding="utf-8") == original_source
+        assert trust.records() == (original_record,)
+        assert session._workflow_handle is None
+
+
+def test_workflow_reset_preserves_already_committed_package(tmp_path: Path) -> None:
+    from agenthicc.plugins.trust import ExtensionTrust, override_extension_trust
+    from agenthicc.workflows.create_workflow.authoring import (
+        PENDING_MARKER_NAME,
+        begin_authoring,
+        canonical_workflow_path,
+        finalize_authoring,
+        inspect_existing_target,
+        prepare_authoring,
+        scan_package,
+    )
+
+    workflow_name = "reset_flow"
+    trust = ExtensionTrust(store_path=tmp_path / "home" / ".agenthicc" / "trust.json")
+    with override_extension_trust(trust):
+        snapshot = inspect_existing_target(
+            tmp_path,
+            run_id="reset-run",
+            workflow_name=workflow_name,
+        )
+        lease = prepare_authoring(
+            tmp_path,
+            run_id="reset-run",
+            workflow_name=workflow_name,
+            expected_original_fingerprint=snapshot.fingerprint,
+        )
+        begin_authoring(lease)
+        target = canonical_workflow_path(tmp_path, workflow_name)
+        runner = target / "runner.py"
+        runner.write_text("candidate = True", encoding="utf-8")
+        manifest = scan_package(lease)
+        finalize_authoring(lease, expected_fingerprint=manifest.fingerprint)
+
+        session, _ctx, _workspace, _input = _make_session()
+        handle = _paused_workflow_handle(
+            SimpleNamespace(authoring_lease=lease),
+            workflow_name="create_workflow",
+        )
+        session._workflow_handle = handle  # type: ignore[assignment]
+
+        assert session._handle_workflow_command("reset") is True
+
+        assert handle.lifecycle == "discarded"
+        assert runner.is_file()
+        assert not (target / PENDING_MARKER_NAME).exists()
+        assert trust.check(runner, kind="workflow") is None
+
+
+def test_workflow_reset_fails_closed_when_pending_lease_is_tampered(tmp_path: Path) -> None:
+    from agenthicc.workflows.create_workflow.authoring import (
+        PENDING_MARKER_NAME,
+        begin_authoring,
+        canonical_workflow_path,
+        inspect_existing_target,
+        prepare_authoring,
+    )
+
+    workflow_name = "reset_flow"
+    snapshot = inspect_existing_target(
+        tmp_path,
+        run_id="reset-run",
+        workflow_name=workflow_name,
+    )
+    lease = prepare_authoring(
+        tmp_path,
+        run_id="reset-run",
+        workflow_name=workflow_name,
+        expected_original_fingerprint=snapshot.fingerprint,
+    )
+    begin_authoring(lease)
+    target = canonical_workflow_path(tmp_path, workflow_name)
+    (target / PENDING_MARKER_NAME).write_text("tampered", encoding="utf-8")
+    session, ctx, _workspace, _input = _make_session()
+    handle = _paused_workflow_handle(
+        SimpleNamespace(authoring_lease=lease),
+        workflow_name="create_workflow",
+    )
+    session._workflow_handle = handle  # type: ignore[assignment]
+
+    assert session._handle_workflow_command("reset") is True
+
+    assert handle.lifecycle == "paused"
+    assert session._workflow_handle is handle
+    assert (target / PENDING_MARKER_NAME).read_text(encoding="utf-8") == "tampered"
+    assert "remains paused" in (ctx.app_state.conversation.notification() or "")
+
+
+def test_workflow_reset_keeps_run_paused_if_checkpoint_persist_fails(tmp_path: Path) -> None:
+    from agenthicc.workflows.create_workflow.authoring import (
+        begin_authoring,
+        canonical_workflow_path,
+        inspect_existing_target,
+        prepare_authoring,
+    )
+
+    workflow_name = "reset_flow"
+    snapshot = inspect_existing_target(
+        tmp_path,
+        run_id="reset-run",
+        workflow_name=workflow_name,
+    )
+    lease = prepare_authoring(
+        tmp_path,
+        run_id="reset-run",
+        workflow_name=workflow_name,
+        expected_original_fingerprint=snapshot.fingerprint,
+    )
+    begin_authoring(lease)
+    target = canonical_workflow_path(tmp_path, workflow_name)
+    (target / "runner.py").write_text("candidate = True", encoding="utf-8")
+    session, ctx, _workspace, _input = _make_session()
+    handle = _paused_workflow_handle(
+        SimpleNamespace(authoring_lease=lease),
+        workflow_name="create_workflow",
+    )
+    handle.checkpoint_supported = True
+
+    def fail_save(**_kwargs: object) -> None:
+        raise OSError("checkpoint storage unavailable")
+
+    handle.save_checkpoint = fail_save
+    session._workflow_handle = handle  # type: ignore[assignment]
+
+    assert session._handle_workflow_command("reset") is True
+
+    assert handle.lifecycle == "paused"
+    assert handle.last_error == "previous pause"
+    assert handle.pause_requested is True
+    assert session._workflow_handle is handle
+    assert not target.exists()
+    assert "run remains paused" in (ctx.app_state.conversation.notification() or "")
+
+
+def test_reset_of_nonrecoverable_create_workflow_restores_package(tmp_path: Path) -> None:
+    from agenthicc.workflows.checkpoint import WorkflowCheckpoint, context_to_payload
+    from agenthicc.workflows.create_workflow.authoring import (
+        begin_authoring,
+        canonical_workflow_path,
+        inspect_existing_target,
+        prepare_authoring,
+    )
+    from agenthicc.workflows.create_workflow.state import CreateWorkflowContext
+    from agenthicc.runners.workflow_recovery import WorkflowRecoveryRecord
+
+    run_id = "saved-reset-run"
+    workflow_name = "reset_flow"
+    snapshot = inspect_existing_target(
+        tmp_path,
+        run_id=run_id,
+        workflow_name=workflow_name,
+    )
+    lease = prepare_authoring(
+        tmp_path,
+        run_id=run_id,
+        workflow_name=workflow_name,
+        expected_original_fingerprint=snapshot.fingerprint,
+    )
+    begin_authoring(lease)
+    target = canonical_workflow_path(tmp_path, workflow_name)
+    (target / "runner.py").write_text("candidate = True", encoding="utf-8")
+    context = CreateWorkflowContext(
+        intent="create a workflow",
+        run_id=run_id,
+        workflow_name=workflow_name,
+        generated_path=lease.target_path,
+        authoring_lease=lease,
+    )
+    checkpoint = WorkflowCheckpoint(
+        run_id=run_id,
+        workflow_name="create_workflow",
+        conversation_id="coverage-session",
+        intent=context.intent,
+        status="paused",
+        current_phase="generate",
+        phase_index=1,
+        phase_iteration=0,
+        conversation_cursor=0,
+        context=context_to_payload(context),
+        plugin_fingerprint="stale-plugin-fingerprint",
+    )
+    record = WorkflowRecoveryRecord(
+        run_id=run_id,
+        checkpoint=checkpoint,
+        error_code="plugin_fingerprint_mismatch",
+    )
+    session, _ctx, _workspace, _input = _make_session()
+    session._workflow_recovery_records[run_id] = record
+    session._workflow_recovery = SimpleNamespace(
+        discard=lambda saved, **_kwargs: SimpleNamespace(
+            workflow_name=saved.workflow_name,
+            status="discarded",
+        )
+    )
+
+    assert session._handle_workflow_command(f"reset {run_id}") is True
+
+    assert not target.exists()
+    assert run_id not in session._workflow_recovery_records
+
+
+def test_tui_routing_workflow_commands_and_skill_reload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from agenthicc.runners import tui_session
     from agenthicc.skills.loader import SkillDef, SkillDiscoveryResult
 

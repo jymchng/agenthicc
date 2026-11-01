@@ -20,6 +20,11 @@ from agenthicc.workflows.checkpoint import (
     workflow_fingerprint,
 )
 from agenthicc.workflows.code_plan.state import CodePlanContext, CodePlanState
+from agenthicc.workflows.create_workflow.authoring import (
+    begin_authoring,
+    prepare_authoring,
+    scan_package,
+)
 from agenthicc.workflows.create_workflow.state import (
     CreateWorkflowContext,
     CreateWorkflowState,
@@ -92,11 +97,24 @@ def test_code_plan_context_checkpoint_excludes_memory_and_restores_state() -> No
     assert restored.shared_memory is memory
 
 
-def test_create_workflow_context_checkpoint_preserves_artifacts() -> None:
+def test_create_workflow_context_checkpoint_preserves_artifacts(tmp_path: Path) -> None:
+    lease = prepare_authoring(
+        tmp_path,
+        run_id="run-2",
+        workflow_name="doc_review",
+        expected_original_fingerprint="",
+    )
+    begin_authoring(lease)
+    package = Path(lease.target_path)
+    (package / "runner.py").write_text("class Example: pass\\n", encoding="utf-8")
+    manifest = scan_package(lease)
     context = CreateWorkflowContext(
         intent="author a workflow",
         run_id="run-2",
         workflow_name="doc_review",
+        generated_path=lease.target_path,
+        authoring_lease=lease,
+        package_manifest=manifest,
         state=CreateWorkflowState.VALIDATE,
         artifacts={
             "design": PhaseArtifact(

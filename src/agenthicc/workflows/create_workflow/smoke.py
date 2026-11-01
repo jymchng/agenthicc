@@ -1,11 +1,9 @@
-"""Bounded, no-network smoke checks for generated workflow packages.
+"""Bounded fake-provider smoke checks for generated workflow packages.
 
-The smoke boundary is intentionally conservative. It validates the generated
-package's executable shape and checkpoint contract without invoking a real
-provider, browser, MCP server, shell, or network. Static source checks run
-before the normal loader boundary; the only generated code executed afterward
-is the bounded custom-runner entry point under a fake harness, with external
-service imports rejected first.
+The smoke harness does not call a real provider or deliberately exercise
+integrations. It parses source, then imports the candidate and exercises its
+custom runner in-process under a fake harness. This is not a sandbox: candidate
+imports can execute arbitrary code with the current process's permissions.
 """
 
 from __future__ import annotations
@@ -48,27 +46,6 @@ class _SmokePlugin(Protocol):
 
 
 __all__ = ["SmokeCheck", "SmokeReport", "run_generated_workflow_smoke"]
-
-_FORBIDDEN_IMPORT_ROOTS = frozenset(
-    {
-        "socket",
-        "subprocess",
-        "requests",
-        "httpx",
-        "urllib",
-        "urllib3",
-        "aiohttp",
-        "websockets",
-        "ssl",
-        "dns",
-        "ftplib",
-        "telnetlib",
-        "webbrowser",
-        "playwright",
-        "cloakbrowser",
-        "lauren_mcp",
-    }
-)
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -126,26 +103,6 @@ def _source_paths(path: Path) -> tuple[Path, ...]:
             )
         )
     return ()
-
-
-def _forbidden_imports(source: str) -> tuple[str, ...]:
-    try:
-        tree = ast.parse(source)
-    except SyntaxError:
-        return ()
-    found: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            modules = [alias.name for alias in node.names]
-        elif isinstance(node, ast.ImportFrom):
-            modules = [node.module or ""]
-        else:
-            modules = []
-        for module in modules:
-            root = module.split(".", 1)[0]
-            if root in _FORBIDDEN_IMPORT_ROOTS:
-                found.add(module)
-    return tuple(sorted(found))
 
 
 def _has_call(source: str, attribute: str) -> bool:
@@ -400,8 +357,11 @@ def run_generated_workflow_smoke(
     expected_name: str = "",
     root: Path | None = None,
 ) -> SmokeReport:
-    """Run a bounded executable-shape smoke check without external effects."""
-    from agenthicc.workflows.create_workflow.validation import validate_workflow_file
+    """Run a bounded executable-shape smoke check with a fake-provider harness."""
+    from agenthicc.workflows.create_workflow.validation import (
+        _import_plugins,
+        validate_workflow_file,
+    )
 
     candidate = Path(path).expanduser()
     if not candidate.is_absolute():
@@ -442,29 +402,8 @@ def run_generated_workflow_smoke(
         except (OSError, UnicodeDecodeError) as exc:
             return SmokeReport(str(resolved), False, errors=(f"{source_path}: {exc}",))
         sources.append(source)
-        forbidden = _forbidden_imports(source)
-        if forbidden:
-            return SmokeReport(
-                str(resolved),
-                False,
-                checks=(
-                    SmokeCheck(
-                        "no_external_calls",
-                        "fail",
-                        f"forbidden external import(s): {', '.join(forbidden)}",
-                    ),
-                ),
-                errors=("smoke execution cannot permit external service imports",),
-            )
 
     combined = "\n".join(sources)
-    checks.append(
-        SmokeCheck(
-            "no_external_calls",
-            "pass",
-            "no network, browser, MCP, shell, or subprocess imports are present",
-        )
-    )
     validation: ValidationReport = validate_workflow_file(
         str(resolved),
         expected_name=expected_name,
@@ -547,13 +486,25 @@ def run_generated_workflow_smoke(
         from agenthicc.workflows.plugin import WorkflowPlugin
 
         try:
-            plugins = load_python_workflows(resolved, source="smoke")
+            visible_plugins = load_python_workflows(resolved, source="smoke")
+            if visible_plugins:
+                raise ValueError("pending package was visible to normal workflow discovery")
+            checks.append(
+                SmokeCheck(
+                    "pending_discovery",
+                    "pass",
+                    "normal workflow discovery excluded the run-owned pending package",
+                )
+            )
+            plugins, _namespace, import_error = _import_plugins(resolved)
+            if import_error:
+                raise ValueError(f"pending package import failed: {import_error}")
             plugin = next(
                 (item for item in plugins if not expected_name or item.name == expected_name),
                 plugins[0] if plugins else None,
             )
             if plugin is None:
-                raise ValueError("normal loader returned no plugin for smoke execution")
+                raise ValueError("package import returned no plugin for smoke execution")
             custom = getattr(plugin.build_runner, "__func__", None) is not getattr(
                 WorkflowPlugin.build_runner, "__func__", None
             )

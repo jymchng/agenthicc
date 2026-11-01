@@ -152,7 +152,7 @@ def test_process_restart_resume_calls_typed_runner_resume_once(tmp_path: Path) -
         reopened.close()
 
 
-def test_create_workflow_restart_resumes_generate_with_existing_authored_draft(
+def test_create_workflow_restart_resumes_generate_with_existing_canonical_package(
     tmp_path: Path,
 ) -> None:
     """A target workflow slug remains domain data across process-style recovery."""
@@ -160,11 +160,30 @@ def test_create_workflow_restart_resumes_generate_with_existing_authored_draft(
     run_id = "e2e-create-run"
     journal_path = tmp_path / "sessions" / session_id / "conversation-journal.jsonl"
     checkpoint_root = tmp_path / "sessions"
-    draft = tmp_path / ".agenthicc" / "workflows" / ".drafts" / run_id / "tailor_resume"
-    runner_path = draft / "runner.py"
-    runner_path.parent.mkdir(parents=True)
-    runner_path.write_text("# preserved draft\n", encoding="utf-8")
-    original_draft = runner_path.read_bytes()
+    from agenthicc.workflows.create_workflow.authoring import (
+        begin_authoring,
+        inspect_existing_target,
+        prepare_authoring,
+        scan_package,
+    )
+
+    snapshot = inspect_existing_target(
+        tmp_path,
+        run_id=run_id,
+        workflow_name="tailor_resume",
+    )
+    lease = prepare_authoring(
+        tmp_path,
+        run_id=run_id,
+        workflow_name="tailor_resume",
+        expected_original_fingerprint=snapshot.fingerprint,
+    )
+    begin_authoring(lease)
+    package = Path(lease.target_path)
+    runner_path = package / "runner.py"
+    runner_path.write_text("# preserved package\n", encoding="utf-8")
+    original_package = runner_path.read_bytes()
+    package_manifest = scan_package(lease)
 
     first = SessionConversation.open(
         session_id,
@@ -186,8 +205,10 @@ def test_create_workflow_restart_resumes_generate_with_existing_authored_draft(
             run_id=run_id,
             design="A resumable tailored workflow.",
             workflow_name="tailor_resume",
-            generated_path=str(runner_path),
-            generation_summary="Initial workflow draft written.",
+            generated_path=str(package),
+            generation_summary="Initial workflow package written.",
+            authoring_lease=lease,
+            package_manifest=package_manifest,
             artifacts={
                 "design": PhaseArtifact(
                     phase="design",
@@ -268,9 +289,9 @@ def test_create_workflow_restart_resumes_generate_with_existing_authored_draft(
         assert dispatch_states == [CreateWorkflowState.GENERATE]
         assert resumed_context.run_id == run_id
         assert resumed_context.workflow_name == "tailor_resume"
-        assert resumed_context.generated_path == str(runner_path)
+        assert resumed_context.generated_path == str(package)
         assert resumed_context.state is CreateWorkflowState.COMPLETE
-        assert runner_path.read_bytes() == original_draft
+        assert runner_path.read_bytes() == original_package
         assert store.load(run_id).status == "complete"  # type: ignore[union-attr]
         restored.release_claim()
     finally:

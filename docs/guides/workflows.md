@@ -57,7 +57,13 @@ fresh phase-one run. Use
 `/workflow reset` to always clear the session-local workflow override so
 subsequent turns use the active mode's default workflow. Use
 `/workflow reset <run-id>` to write a terminal discarded checkpoint for a
-saved run that is not currently attached. A live claim prevents two
+saved run that is not currently attached. For a paused `create_workflow` run
+with a pending authoring transaction, reset first restores the approved original
+package and trust records or removes the first-generation candidate. An already
+committed package is retained. Reset refuses to discard the run if a pending
+run-owned authoring transaction cannot be verified and restored. The same
+package cleanup happens before an incompatible but structurally valid checkpoint
+is recorded as discarded. A live claim prevents two
 TUI/headless owners from executing one run at once, while a claim from a
 provably dead local process can be reclaimed. Claim publication is atomic and
 records a process-start identity where the host supports it, so a half-written
@@ -702,27 +708,41 @@ checkpoint, and question-asking policy. The latter also retains a redacted
 regions, fingerprints, and provider capability only). The diagnostic contains
 no prompt text, conversation content, secrets, or tool arguments.
 
-### Generation uses a draft and an atomic publication boundary
+### Generation writes directly to the canonical package under a pending marker
 
-`generate` runs with `mode_override="Yolo"` so the workspace-guarded write tools
-are available, but it writes only to a run-owned draft under
-`.agenthicc/workflows/.drafts/<run-id>/<name>/`. The agent writes `runner.py`
-and any workflow-local helper modules there, then calls
-`mark_generation_complete(summary, path)` with the exact draft directory. The
-framework records an exact manifest containing relative paths, byte/line
-counts, and SHA-256 hashes. Repair cycles reuse that same draft and reject
-symlinks, traversal, undeclared files, stale siblings, and manifest changes.
+`generate` runs with `mode_override="Yolo"` so the package-scoped writer tools
+are available, but their root is the runner-derived canonical directory
+`.agenthicc/workflows/<name>/`. The agent writes `runner.py` and workflow-local
+helpers there from the first write, then calls
+`mark_generation_complete(summary)`; the runner does not accept an agent-selected
+path. It records an exact package manifest containing relative paths, byte/line
+counts, and SHA-256 hashes. Repair cycles retain the same run-owned package so
+the generator can inspect and edit the rejected candidate in place; they still
+reject symlinks, traversal, undeclared files, stale siblings, and manifest
+changes.
 
-The normal workflow registry ignores `.drafts`, so a partial package can never
-be selected while it is being generated or validated. After design approval,
-manifest validation, deterministic import/contract validation, a bounded fake
-runtime smoke check, and validation-agent approval, the framework copies the
-verified draft to a temporary sibling and atomically renames it into
-`.agenthicc/workflows/<name>/`. Existing packages and legacy `<name>.py` files
-are moved to a run-specific `.backups/` directory and restored if publication
-fails. Publication evidence records the draft and published fingerprints,
-catalog snapshot, validation evidence, run ID, and timestamp. A failed
-publication leaves the draft and checkpoint recoverable.
+Before exposing any writer, the runner claims the canonical package with a
+run-owned pending marker. The normal workflow registry checks for that marker
+before trust checks or imports, so even an existing trusted workflow being
+replaced remains undiscoverable while generation or validation is in progress.
+Validation and the bounded fake-runtime smoke harness receive an explicit path
+to that exact pending package; this does not make it visible to `/workflows
+reload` or weaken normal loader checks.
+
+If a completed workflow already occupies the target, the runner asks for
+explicit replacement approval before changing any files. It preserves the
+original package and trust records in a run-bound backup. After deterministic
+validation, smoke success, and validation-agent approval, the runner rechecks
+the complete package fingerprint, records trust for the exact validated Python
+bytes, and removes the pending marker. Only then can normal discovery load the
+package. A failed or interrupted run leaves the candidate pending and
+undiscoverable; resume the same checkpointed run to continue. If the run cannot
+be resumed, use `/workflow reset <run-id>` instead of deleting the marker or
+backup manually. Reset restores the approved original package and trust records,
+or discards a first-generation candidate, before it records the run as discarded;
+an already committed package is retained. If ownership validation or restoration
+fails, the run remains paused and the pending package stays excluded from normal
+discovery.
 
 A workflow with its own runner is a few hundred lines, which does not fit in one
 tool call under a small completion ceiling — the truncated call is discarded and
@@ -752,11 +772,17 @@ the real `WorkflowPlugin` contract. `validate_workflow_file` reports:
 - phase-graph faults: duplicate or empty phase names, non-`PhaseSpec` entries,
   `max_turns` below 1, and `next` / `on_reject` / `on_error` edges that do not
   resolve.
-- direct network, process, browser, or MCP imports in package sources; generated
-  code must use the parent session's capability-gated tools instead;
+- generated workflow imports are not restricted by a static allow-list.
+  Validation imports the candidate package as the workflow loader does, so
+  missing dependencies and runtime import errors are still reported. Imports
+  and import-time code execute in-process with ordinary Python permissions;
+  this is not a sandbox, and direct API, network, process, or filesystem use
+  bypasses session tool capability checks. Only execute generated workflows
+  from sources you trust, or validate them inside a separate OS-level isolation
+  boundary;
 - missing custom-runner checkpoint codecs, unsafe resume/error handling, direct
   instruction-file reads, cache-contract violations, and invalid transition
-  decorator/import order.
+  decorator order or handoff-helper contracts;
 
 Unreachable phases, unknown `agent_type` or `output_schema` values, and a
 filename that differs from the workflow name are reported as warnings.
@@ -1422,11 +1448,13 @@ choice.
 When the optional CloakBrowser or Playwright integration is selected, the same
 session-scoped browser tools are also supplied to direct turns and custom
 workflow phases. A browser-capable phase should declare `NETWORK` plus `READ`
-for observation or `NETWORK` plus `WRITE` for interaction. The generated
-workflow itself should not import either optional package; use the injected
-`cloakbrowser_*` or `playwright_*` tools documented by the inspection tools.
-`create_workflow` keeps design and validation phases browser-free unless a
-downstream author intentionally changes that policy.
+for observation or `NETWORK` plus `WRITE` for interaction. Generated workflows
+may import Playwright directly; that code runs as ordinary Python and bypasses
+the session browser tools' capability, domain, and checkpoint policies. Prefer
+injected `playwright_*` tools when those policies are required. Direct
+CloakBrowser package imports remain rejected. `create_workflow` keeps design and
+validation phases browser-free unless a downstream author intentionally changes
+that policy.
 
 ### `site_imitate` is mobile-first
 

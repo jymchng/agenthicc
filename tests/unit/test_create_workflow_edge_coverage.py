@@ -1,8 +1,7 @@
-"""Boundary coverage for the create_workflow catalog, draft, and validator."""
+"""Boundary coverage for the create_workflow catalog and validator."""
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -18,13 +17,6 @@ from agenthicc.workflows.create_workflow.catalog import (
     build_authoring_snapshot,
     build_tool_catalog,
     explain_tool_access,
-)
-from agenthicc.workflows.create_workflow.draft import (
-    DraftError,
-    build_draft_path,
-    publish_draft,
-    scan_draft,
-    stage_legacy_package,
 )
 from agenthicc.workflows.create_workflow.inspection_tools import make_inspection_tools
 from agenthicc.workflows.create_workflow.validation import validate_workflow_file
@@ -157,45 +149,6 @@ def test_catalog_browser_mcp_and_cache_failure_paths() -> None:
     assert first is not second
     cache.clear()
     assert cache._entries == {}
-
-
-def test_draft_manifest_and_publication_boundaries(tmp_path: Path) -> None:
-    draft = build_draft_path(tmp_path, "run-1", "demo")
-    draft.mkdir(parents=True)
-    (draft / "runner.py").write_text("print('one')\n", encoding="utf-8")
-    (draft / "__pycache__").mkdir()
-    (draft / "__pycache__" / "ignored.pyc").write_bytes(b"x")
-    manifest = scan_draft(draft, root=tmp_path, run_id="run-1", workflow_name="demo")
-    assert manifest.render().startswith("[DRAFT MANIFEST]")
-    assert json.loads(json.dumps(manifest.to_dict()))["files"]
-    record = publish_draft(manifest, root=tmp_path)
-    assert record.to_dict()["status"] == "published"
-    assert Path(record.published_path, "runner.py").exists()
-
-    with pytest.raises(DraftError, match="exactly"):
-        scan_draft(tmp_path / "missing", root=tmp_path, run_id="run-1", workflow_name="demo")
-    with pytest.raises(DraftError, match="unsafe"):
-        build_draft_path(tmp_path, "../bad", "demo")
-
-
-def test_legacy_staging_accepts_file_and_package_and_rejects_invalid_inputs(tmp_path: Path) -> None:
-    source_file = tmp_path / "legacy.py"
-    source_file.write_text("VALUE = 1\n", encoding="utf-8")
-    destination = tmp_path / ".agenthicc" / "workflows" / "staged"
-    assert stage_legacy_package(source_file, destination=destination, root=tmp_path) == destination
-    assert (destination / "runner.py").exists()
-
-    source_package = tmp_path / "package"
-    source_package.mkdir()
-    (source_package / "runner.py").write_text("VALUE = 2\n", encoding="utf-8")
-    assert (
-        stage_legacy_package(source_package, destination=destination, root=tmp_path) == destination
-    )
-    assert (destination / "runner.py").read_text(encoding="utf-8") == "VALUE = 2\n"
-
-    outside = Path("/tmp") / "not-in-workspace-agenthicc"
-    with pytest.raises(DraftError, match="outside the workspace"):
-        stage_legacy_package(outside, destination=destination, root=tmp_path)
 
 
 @pytest.mark.asyncio

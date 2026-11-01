@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from agenthicc.plugins.trust import ExtensionTrust, override_extension_trust
 from agenthicc.workflows.loader import load_python_workflows
 from agenthicc.workflows.plugin import PhaseSpec, WorkflowPlugin
 from agenthicc.workflows.registry import WorkflowRegistry, build_workflow_registry
@@ -369,3 +370,54 @@ class TestPythonLoader:
         assert entry.source == "project"
         assert entry.path == str(package)
         assert entry.plugin_cls.description == "project"
+
+
+def test_pending_package_is_skipped_before_import_even_when_trusted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path / ".agenthicc"
+    package = project / "workflows" / "pending_flow"
+    package.mkdir(parents=True)
+    imported = tmp_path / "imported.txt"
+    monkeypatch.setenv("AGENTHICC_PENDING_IMPORT_MARKER", str(imported))
+    runner = package / "runner.py"
+    runner.write_text(
+        "import os\n"
+        "from pathlib import Path\n"
+        "Path(os.environ['AGENTHICC_PENDING_IMPORT_MARKER']).write_text('loaded')\n"
+        "from agenthicc.workflows.plugin import PhaseSpec, WorkflowPlugin\n"
+        "class Pending(WorkflowPlugin):\n"
+        "    name = 'pending_flow'\n"
+        "    phases = [PhaseSpec(name='run')]\n",
+        encoding="utf-8",
+    )
+    trust = ExtensionTrust(store_path=tmp_path / "home" / ".agenthicc" / "trust.json")
+    trust.trust(runner, kind="workflow")
+    marker = package / ".agenthicc-pending.json"
+
+    with override_extension_trust(trust):
+        marker.write_text("not valid transaction JSON", encoding="utf-8")
+        assert load_python_workflows(package, "project") == []
+        registry = build_workflow_registry(project_dir=project, user_dir=tmp_path / "home")
+        assert registry.get_entry("pending_flow") is None
+        assert not imported.exists()
+
+        marker.unlink()
+        target = tmp_path / "outside-marker.json"
+        target.write_text("{}", encoding="utf-8")
+        try:
+            marker.symlink_to(target)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks are unavailable on this platform")
+        assert load_python_workflows(package, "project") == []
+        registry = build_workflow_registry(project_dir=project, user_dir=tmp_path / "home")
+        assert registry.get_entry("pending_flow") is None
+        assert not imported.exists()
+
+        marker.unlink()
+        registry = build_workflow_registry(project_dir=project, user_dir=tmp_path / "home")
+        entry = registry.get_entry("pending_flow")
+        assert entry is not None
+        assert entry.path == str(package)
+        assert imported.read_text(encoding="utf-8") == "loaded"

@@ -2657,14 +2657,19 @@ workflows.
 
 The specialized `create_workflow` runner uses typed authoring state and phase
 artifacts for `design → generate → validate → summarize`. It writes generated
-workflow source to a run-owned draft under
-`.agenthicc/workflows/.drafts/<run-id>/<name>/` (with optional workflow-local
-modules beside it), records a hash/size/line manifest, validates the exact
-package that the loader will import, runs a bounded fake-provider smoke
-contract, and exposes read-only live-catalog inspection tools to the authoring
-agent. After all approval gates pass, publication atomically renames a verified
-copy into `.agenthicc/workflows/<name>/`; prior packages are backed up and
-restored if publication fails.
+workflow source directly to the canonical project package
+`.agenthicc/workflows/<name>/` (with optional workflow-local modules beside it)
+under a run-owned pending marker, using package-scoped tools. It records a
+hash/size/line manifest, validates that exact pending package through an
+explicit candidate boundary, runs a bounded fake-provider smoke contract, and
+exposes read-only live-catalog inspection tools to the authoring agent. A
+pending package is skipped by normal discovery before trust checks or imports.
+If the name already exists, the runner requires separate replacement approval
+and preserves the original package and trust records in a run-bound backup.
+After all validation and approval gates pass, it rechecks the package
+fingerprint, records exact-byte trust, and removes the marker. Interrupted runs
+resume from their checkpoint; replacement recovery restores the original bytes
+and trust records rather than publishing an unvalidated candidate.
 
 `load_python_workflows()` accepts both legacy `.py` plugins and directory
 plugins containing `runner.py`. Directory plugins are loaded as temporary
@@ -2833,20 +2838,33 @@ graph after the turn.
 Design is read-only and human-gated: `request_design_approval(design,
 workflow_name)` raises the plan-review overlay and `finalize_design(design,
 workflow_name)` refuses until it returned `approved=True`. Generate runs with
-`mode_override="Yolo"` so the write tools are available and the agent writes the
-plugin package to the run-owned draft
-`.agenthicc/workflows/.drafts/<run-id>/<name>/`, with optional workflow-local
-tools/helpers beside it. Validate imports that draft deterministically before
-the agent votes, runs a bounded fake-provider/no-network smoke contract, and
-routes `on_reject` back to `generate`. Only all gates followed by
-`approve_workflow(summary)` atomically publish to `.agenthicc/workflows/<name>/`.
+`mode_override="Yolo"` and writes directly to the runner-derived canonical
+package `.agenthicc/workflows/<name>/` with optional workflow-local tools and
+helpers beside `runner.py`. The runner creates a run-owned pending marker before
+exposing package-scoped writers; `mark_generation_complete(summary)` has no path
+argument. Validate checks the exact pending package through an explicit
+candidate boundary, then runs a bounded fake-provider contract smoke. Neither
+validation nor smoke restricts Python imports: the candidate package is imported
+in-process, and import-time code executes with ordinary process permissions.
+This is not a sandbox, and direct API, network, process, or filesystem access
+bypasses the parent session's tool capability checks. Missing dependencies can
+still cause ordinary import failures. Only execute generated code from trusted
+sources, or use a separate OS-level isolation boundary. Rejection routes back to
+`generate`. Only after all checks and `approve_workflow(summary)` does the runner
+recheck the whole-package fingerprint, record trust for the exact Python bytes,
+and remove the marker.
 `mode_bindings` is empty, so the workflow is manual-only.
 
 Run `/workflows reload` (or restart the session) for the registry to discover the
-generated plugin. The typed context retains the exact draft manifest, catalog
+committed plugin. A pending marker excludes the package before normal trust
+checks or imports, including during replacement of an existing trusted plugin.
+Existing names require separate replacement approval; the run-bound backup
+preserves the prior package and trust records for exact restoration. The typed
+context retains the canonical package manifest, authoring lease, catalog
 snapshot, validation evidence, and publication record. Its checkpoint codec
 omits runtime-only memory and reattaches the supplied session memory on resume;
-a failed publication leaves the draft and checkpoint recoverable.
+resume the same run with `/workflow resume <run-id>`. Never manually delete a
+pending marker or backup to recover a failed run.
 
 ### CreateWorkflowParams
 
@@ -3037,7 +3055,9 @@ non-empty name, a non-reserved name matching `expected_name`, a description,
 list `mode_bindings`, a working `build_params({})`, and a consistent phase graph
 (unique names, positive `max_turns`, `next`/`on_reject`/`on_error` edges that
 resolve). Unreachable phases, unknown `agent_type` or `output_schema` values, and
-a filename that differs from the workflow name are warnings.
+Optional phases may be imported lazily; module import failures are reported.
+Import statements are unrestricted by the static validator. Candidate imports
+execute in-process with ordinary process permissions, not in a sandbox.
 
 ### ValidationReport
 
@@ -3084,7 +3104,7 @@ no session state and cause no side effects. When an effective
 bounded live catalog and explain the availability decision for a named tool:
 `describe_authoring_session()` and `explain_authoring_tool_access(name)`.
 
-### AuthoringSnapshot and draft publication
+### AuthoringSnapshot and canonical package finalization
 
 `build_authoring_snapshot()` reads the current tool registry, phase role and
 capability filtering, browser/MCP status, workspace/cache/checkpoint policy,
@@ -3093,12 +3113,134 @@ secrets, headers, URLs, prompt contents, and tool arguments are redacted or
 omitted. `AuthoringSnapshotCache` reuses snapshots until relevant live inputs
 change and limits retained entries.
 
-`scan_draft()` creates an exact `DraftManifest` with safe relative paths,
-content hashes, and byte/line counts. `publish_draft()` rechecks that manifest,
-stages a verified copy, backs up an existing package or legacy file, and uses
-an atomic rename. It restores the previous publication on failure and returns
-a `PublicationRecord`; `.drafts` and `.backups` are ignored by normal workflow
-discovery.
+Canonical package authoring uses one runner-derived package path, a durable
+`AuthoringLease`, and a runner-owned pending marker. The exact bounded
+`PackageManifest` binds the validation report and finalization to every package
+file. `finalize_authoring()` rechecks the approved fingerprint, records trust for
+exact Python-file bytes, and removes the marker only after the package is
+committed. `restore_authoring()` verifies the run-bound backup before restoring
+an approved original and its trust records; when there was no original, it
+removes the candidate without publishing it. Paused runs use `/workflow reset
+<run-id>` for this restore-or-discard action before persisting a terminal
+checkpoint; if lease ownership or recovery validation fails, reset leaves the
+run paused. Normal discovery always excludes a package while its pending marker
+exists.
+
+### AuthoringError
+
+Raised when a canonical workflow target, lease, marker, package inventory, or
+recovery transaction is unsafe or inconsistent.
+
+### AuthoringLease
+
+Durable transaction identity binding the authorized workspace, workflow name,
+run ID, lease ID, canonical target, pending marker, per-name lock, replacement
+backup, original fingerprint, and original trust records. It has strict JSON-safe
+`to_dict()` and `from_payload()` codecs for workflow checkpoints.
+
+### ExistingWorkflowTarget
+
+Preflight snapshot binding explicit replacement approval to the exact existing
+package/legacy-file fingerprint and paths.
+
+### PackageFile
+
+One regular package file, represented by canonical relative path, byte length,
+line count, and SHA-256 digest.
+
+### PackageManifest
+
+Exact sorted package inventory with workflow name, run ID, canonical target,
+total bytes, and whole-package fingerprint. Checkpoints and validation evidence
+must retain this identity; any added, removed, or changed file invalidates it.
+
+### PENDING_MARKER_NAME
+
+The runner-owned `.agenthicc-pending.json` file inside a canonical package. Its
+presence excludes the package from normal discovery before trust checks or
+imports. Generated writers cannot modify it.
+
+### canonical_workflow_path
+
+Returns the normalized `.agenthicc/workflows/<workflow-name>/` path under the
+authorized workspace and rejects unsafe names or symlinked path components.
+
+### inspect_existing_target
+
+Snapshots a canonical package and legacy sibling before collision approval;
+reports their exact fingerprint and whether either exists without modifying them.
+
+### prepare_authoring
+
+Builds a lease after checking the preflight fingerprint and explicit
+replacement decision. It creates no pending marker and does not change target
+files.
+
+### begin_authoring
+
+Claims the per-workflow lock, preserves any approved original package and trust
+records in the run-bound backup, then installs the run-owned pending marker
+before generated files are written.
+
+### read_authoring_lease
+
+Reads the existing per-workflow transaction identity and status without
+adopting or changing ownership.
+
+### verify_authoring
+
+Checks the lease, lock, target, and pending marker identities and lifecycle
+status before an operation may continue.
+
+### scan_package
+
+Builds the bounded exact manifest for the leased pending package, requiring
+`runner.py` and rejecting symlinks, non-regular entries, unsafe paths, and
+inventory/size-limit violations.
+
+### scan_committed_package
+
+Verifies that a committed package has no pending marker and still matches the
+fingerprint approved by the validation phase.
+
+### finalize_authoring
+
+Rechecks the exact validated fingerprint, records digest-bound trust for the
+package's Python files, marks the transaction committed, and removes the pending
+marker last. A failure leaves the package undiscoverable.
+
+### restore_authoring
+
+Restores an approved original package and exact prior trust records, or discards
+a first-generation pending candidate. It refuses mismatched leases, markers, or
+backups.
+
+### make_generation_writer_tools
+
+Builds the package-scoped `make_directory`, `read_file`, `write_file`, and
+`append_file` tools for one lease. Paths are package-relative; traversal,
+absolute paths, symlinks, marker edits, and writes outside the leased package
+are rejected at the tool boundary.
+
+### make_package_read_tools
+
+Builds read-only package tools whose only addressable root is one leased
+canonical package.
+
+### build_authoring_snapshot
+
+Builds the bounded, redacted snapshot of effective tools, dependencies, and
+session policy used by authoring turns and checkpoint provenance.
+
+### build_tool_catalog
+
+Builds the typed catalog of available and unavailable authoring tools and their
+availability decisions.
+
+### explain_tool_access
+
+Explains the effective access decision for one named tool in the authoring
+snapshot.
 
 A generated workflow is expected to ship its own runner; `validate_workflow_file`
 warns when a multi-phase workflow inherits `build_runner()`, and errors when the

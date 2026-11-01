@@ -30,6 +30,40 @@ def _optional_field(value: object, name: str, default: object = None) -> object:
         return default
 
 
+def _restore_create_workflow_authoring(context: object) -> str | None:
+    """Restore or discard a create_workflow package before its run is reset."""
+    lease = _optional_field(context, "authoring_lease")
+    if lease is None:
+        return None
+    from agenthicc.workflows.create_workflow.authoring import (
+        AuthoringLease,
+        read_authoring_lease,
+        restore_authoring,
+    )
+
+    if not isinstance(lease, AuthoringLease):
+        raise TypeError("create_workflow checkpoint has an invalid authoring lease")
+    lease_status = read_authoring_lease(Path(lease.workspace_root), lease.workflow_name)
+    if (
+        lease_status is not None
+        and lease_status.lease == lease
+        and lease_status.status == "committed"
+        and not os.path.lexists(lease.marker_path)
+    ):
+        return "committed"
+    return restore_authoring(lease)
+
+
+def _restore_create_workflow_authoring_from_checkpoint(checkpoint: object) -> str | None:
+    """Restore a create_workflow package from a typed but non-resumable record."""
+    payload = _optional_field(checkpoint, "context")
+    if not isinstance(payload, dict):
+        raise TypeError("create_workflow checkpoint has no valid typed context")
+    from agenthicc.workflows.checkpoint import context_from_payload
+
+    return _restore_create_workflow_authoring(context_from_payload(payload))
+
+
 if TYPE_CHECKING:
     from lauren_ai._agents._runner import AgentRunnerBase
     from lauren_ai._config import LLMConfig
@@ -3580,6 +3614,25 @@ class TUISession:
                     )
                     return True
                 if not record.recoverable:
+                    record_authoring_disposition: str | None = None
+                    if (
+                        record.workflow_name == "create_workflow"
+                        and record.checkpoint is not None
+                        and record.checkpoint.status in {"running", "pausing", "paused", "resuming"}
+                    ):
+                        try:
+                            record_authoring_disposition = (
+                                _restore_create_workflow_authoring_from_checkpoint(
+                                    record.checkpoint
+                                )
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            conv.notify_transient(
+                                f"⚠ Cannot reset create_workflow run {requested_reset_id!r}; "
+                                "its checkpoint is retained because canonical authoring "
+                                f"recovery failed: {type(exc).__name__}: {exc}"
+                            )
+                            return True
                     owner_id = f"{self._workflow_owner_prefix}:{record.run_id}"
                     try:
                         discarded = self._workflow_recovery.discard(
@@ -3592,6 +3645,7 @@ class TUISession:
                             f"{record.error_code or 'checkpoint_corrupt'}: {exc}"
                         )
                         return True
+                    self._workflow_recovery_records.pop(record.run_id, None)
                     self._workflow_recovery_errors.pop(record.run_id, None)
                     self._publish_session_event(
                         "workflow_discarded",
@@ -3601,8 +3655,14 @@ class TUISession:
                             "status": discarded.status,
                         },
                     )
+                    authoring_notice = {
+                        "restored": "; original package and trust restored",
+                        "discarded": "; unfinished package discarded",
+                        "committed": "; published package retained",
+                    }.get(record_authoring_disposition or "", "")
                     conv.notify_transient(
-                        f"↩ Workflow '{discarded.workflow_name}' reset; incompatible checkpoint discarded"
+                        f"↩ Workflow '{discarded.workflow_name}' reset; incompatible "
+                        f"checkpoint discarded{authoring_notice}"
                     )
                     return True
                 try:
@@ -3622,13 +3682,38 @@ class TUISession:
                 )
                 return True
             if handle is not None and handle.lifecycle in {"paused", "pausing"}:
+                authoring_disposition: str | None = None
+                if handle.workflow_name == "create_workflow":
+                    try:
+                        authoring_disposition = _restore_create_workflow_authoring(handle.context)
+                    except Exception as exc:  # noqa: BLE001
+                        conv.notify_transient(
+                            f"⚠ Cannot reset create_workflow run {handle.run_id!r}; "
+                            "the run remains paused because its canonical authoring "
+                            f"transaction could not be restored: {type(exc).__name__}: {exc}"
+                        )
+                        return True
+                authoring_notice = {
+                    "restored": "; original package and trust restored",
+                    "discarded": "; unfinished package discarded",
+                    "committed": "; published package retained",
+                }.get(authoring_disposition or "", "")
+                previous_lifecycle = handle.lifecycle
+                previous_error = handle.last_error
+                previous_pause_requested = handle.pause_requested
                 handle.mark_terminal("discarded", error="reset by user")
                 if handle.checkpoint_supported:
                     try:
                         handle.save_checkpoint(reason="reset")
                     except Exception as exc:  # noqa: BLE001
+                        handle.lifecycle = previous_lifecycle
+                        handle.last_error = previous_error
+                        handle.pause_requested = previous_pause_requested
                         self._release_workflow_claim(handle)
-                        conv.notify_transient(f"⚠ Could not persist workflow reset: {exc}")
+                        conv.notify_transient(
+                            f"⚠ Could not persist workflow reset; run remains paused"
+                            f"{authoring_notice}: {exc}"
+                        )
                         return True
                     from agenthicc.kernel import Event
 
@@ -3642,12 +3727,16 @@ class TUISession:
                         )
                     )
                 self._release_workflow_claim(handle)
+                self._workflow_recovery_records.pop(handle.run_id, None)
+                self._workflow_recovery_errors.pop(handle.run_id, None)
                 self._publish_session_event(
                     "workflow_discarded",
                     {"run_id": handle.run_id, "workflow": handle.workflow_name},
                 )
                 self._workflow_handle = None
-                conv.notify_transient("↩ Paused workflow discarded; workflow reset to mode default")
+                conv.notify_transient(
+                    f"↩ Paused workflow discarded{authoring_notice}; workflow reset to mode default"
+                )
                 self._reset_workflow_to_mode_default()
                 return True
             self._reset_workflow_to_mode_default()

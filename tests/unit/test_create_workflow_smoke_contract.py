@@ -9,6 +9,7 @@ import pytest
 
 from agenthicc.tools.capabilities import ToolCapability, get_tool_capabilities
 from agenthicc.tools.base import tool_name
+from agenthicc.workflows.create_workflow.authoring import PENDING_MARKER_NAME
 from agenthicc.workflows.create_workflow.inspection_tools import _RUNNER_EXAMPLE
 from agenthicc.workflows.create_workflow.smoke import _fake_config, run_generated_workflow_smoke
 from agenthicc.workflows.loader import load_python_workflows
@@ -16,10 +17,37 @@ from agenthicc.workflows.loader import load_python_workflows
 pytestmark = pytest.mark.unit
 
 
-def test_custom_runner_smoke_exercises_fake_runtime_and_checkpoint(tmp_path: Path) -> None:
+def test_custom_runner_smoke_allows_any_import_and_exercises_fake_runtime(
+    tmp_path: Path,
+) -> None:
     workflow = tmp_path / "release_check"
     workflow.mkdir()
-    (workflow / "runner.py").write_text(_RUNNER_EXAMPLE, encoding="utf-8")
+    source = (
+        _RUNNER_EXAMPLE
+        + """
+
+if False:
+    import subprocess
+    import urllib.request
+    import urllib3
+    import socket
+    import requests
+    import httpx
+    import aiohttp
+    import websockets
+    import ssl
+    import dns.resolver
+    import ftplib
+    import telnetlib
+    import webbrowser
+    import cloakbrowser
+    import lauren_mcp
+    import playwright.async_api
+    import agenthicc.tools.cloakbrowser
+"""
+    )
+    (workflow / "runner.py").write_text(source, encoding="utf-8")
+    (workflow / PENDING_MARKER_NAME).write_text("{}", encoding="utf-8")
 
     report = run_generated_workflow_smoke(
         workflow,
@@ -30,7 +58,6 @@ def test_custom_runner_smoke_exercises_fake_runtime_and_checkpoint(tmp_path: Pat
     statuses = {check.category: check.status for check in report.checks}
     assert statuses["fake_runtime"] == "pass"
     assert statuses["failure_finalization"] == "pass"
-    assert statuses["no_external_calls"] == "pass"
     assert statuses["record_only_transition"] == "pass"
 
 
@@ -82,17 +109,3 @@ async def test_multiroute_smoke_uses_selected_tool_outcome(tmp_path: Path) -> No
     assert getattr(getattr(context, "state", None), "name", "") == "COMPLETE"
     assert getattr(context, "blocker", "") == "Selected blocked route"
     assert getattr(context, "verdict", "") == ""
-
-
-def test_smoke_rejects_external_service_imports(tmp_path: Path) -> None:
-    workflow = tmp_path / "unsafe"
-    workflow.mkdir()
-    (workflow / "runner.py").write_text(
-        "import socket\n\nfrom agenthicc.workflows.plugin import WorkflowPlugin\n",
-        encoding="utf-8",
-    )
-    report = run_generated_workflow_smoke(workflow, root=tmp_path)
-    assert report.ok is False
-    assert any(
-        check.category == "no_external_calls" and check.status == "fail" for check in report.checks
-    )

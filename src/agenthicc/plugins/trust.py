@@ -152,6 +152,23 @@ class ExtensionTrust:
             self._write(records)
         return removed is not None
 
+    def restore_records(self, paths: Sequence[Path], records: Sequence[TrustRecord]) -> None:
+        """Replace records for *paths* with an exact previously captured snapshot."""
+        scoped_paths = {str(path.expanduser().resolve()) for path in paths}
+        if not scoped_paths and not records:
+            return
+        replacements: dict[str, TrustRecord] = {}
+        for record in records:
+            resolved = str(Path(record.path).expanduser().resolve())
+            if resolved not in scoped_paths or record.path != resolved:
+                raise ValueError("trust snapshot record is outside the requested path scope")
+            replacements[resolved] = record
+        current = self._records()
+        for path in scoped_paths:
+            current.pop(path, None)
+        current.update(replacements)
+        self._write(current)
+
     def records(self) -> tuple[TrustRecord, ...]:
         """Every trust record, sorted by path."""
         return tuple(record for _path, record in sorted(self._records().items()))
