@@ -34,6 +34,7 @@ import dataclasses
 import hashlib
 import json
 import logging
+import os
 import uuid
 from collections.abc import Iterable
 from pathlib import Path
@@ -57,7 +58,6 @@ from agenthicc.workflows.create_workflow.state import (
 if TYPE_CHECKING:
     from agenthicc.tui.runtime.mode_manager import ModeManager, RuntimeMode
     from agenthicc.workflows.config import WorkflowConfig
-    from agenthicc.workflows.create_workflow.draft import DraftManifest
     from agenthicc.workflows.create_workflow.catalog import AuthoringSnapshot
     from agenthicc.workflows.create_workflow.validation import ValidationReport
     from agenthicc.workflows.plugin import WorkflowRun
@@ -151,7 +151,14 @@ _RUNNER_GUIDE: str = (
     "checkpoint resume as `return await self.run(context.intent)` or any fresh-run restart\n"
     "  6. phase tool factories whose @tool() closures set an asyncio.Event, and whose "
     "transition callables are also marked @tool_control — the state method checks the "
-    "event after the turn and NEVER parses the agent's prose. Import `tool` from "
+    "event after the turn and NEVER parses the agent's prose. Every transition tool has "
+    "exactly one required provider-facing parameter, `summary: str`; its name/closure "
+    "encodes a fixed outcome. Its body only returns "
+    "record_phase_transition(event, data, outcome=<fixed literal>, summary=summary) from "
+    "agenthicc.workflows.phase_transition. The helper trims, rejects empty text, bounds it "
+    "to 4,000 characters, records outcome and summary, then sets the event. It performs no "
+    "work inspection or verification; put required verification in a separate phase or "
+    "runner-owned gate. Import `tool` from "
     "lauren_ai._tools`, import the bare `tool_control` decorator from "
     "agenthicc.tools.capabilities`, and write `@tool_control` (never "
     "`@tool_control()`) above `@tool()`\n"
@@ -256,7 +263,10 @@ _AUTHORING_GUIDE: str = (
     "workflow can pause and resume after Esc or a process restart\n"
     "  - phase prompts: each prompt must list its available transition tool(s), mark "
     "those callables with @tool_control, and state that only a successful call to one "
-    "of them changes phase\n"
+    "of them changes phase; every transition callable accepts exactly one required "
+    "`summary: str`, with a fixed outcome encoded by the selected tool. It delegates only "
+    "to `record_phase_transition()`; never inspect or verify work in the transition body. "
+    "Required verification is a separate phase or explicit runner-owned gate\n"
     "  - workspace policy: inherit WorkflowConfig.workspace_scope and "
     "WorkflowConfig.workspace_access unchanged; custom path-aware tools must use the "
     "same policy and must never create a second scope or raw unrestricted sandbox\n"
@@ -294,8 +304,11 @@ _DESIGN_PROMPT: str = (
     "context dataclass fields, the checkpoint payload fields and memory reattachment rule, "
     "one method per state, and the transition tool that ends each phase. For every phase "
     "name the exact transition tool(s) available to its agent and state that only a "
-    "successful call changes phase; prose such as 'done' never advances the workflow. Call "
-    "describe_runner_pattern() and follow it. Inspect describe_prompt_cache_contract() "
+    "successful call changes phase; prose such as 'done' never advances the workflow. "
+    "For each transition, specify its fixed outcome and one required `summary: str` "
+    "argument. The selected tool defines the branch; its body only records that summary "
+    "and signals the event, never verifying work. Place independent verification in a "
+    "separate phase or explicit runner-owned gate. Call describe_runner_pattern() and follow it. Inspect describe_prompt_cache_contract() "
     "and show_workflow_template() before writing the runner; use "
     "validate_workflow_cache_contract(path) after generation. Only if every phase is a single "
     "unconditional turn may you propose a declarative graph with no runner — and then say "
@@ -317,9 +330,10 @@ _DESIGN_REMINDER: str = (
 
 _GENERATE_PROMPT: str = (
     "You are in the GENERATION phase of create_workflow. The approved design is in your "
-    "system prompt. Write the complete workflow directory to the run-owned draft path in "
-    "your system prompt with the write tools — "
-    "do NOT re-design and do NOT ask for approval again.\n\n"
+    "system prompt. Write the complete workflow package directly inside the canonical "
+    "target directory in your system prompt using only the package-scoped write tools — "
+    "do NOT re-design and do NOT ask for approval again. The runner has created the target "
+    "under a run-owned pending marker; never write to another directory or copy the package.\n\n"
     "The package must import cleanly through its runner.py entry point: include the module docstring, "
     "'from __future__ import annotations', the imports it uses, and the full "
     "WorkflowPlugin subclass with every PhaseSpec from the approved design. Every "
@@ -328,7 +342,16 @@ _GENERATE_PROMPT: str = (
     "say that only a successful transition-tool call changes phase; prose never advances "
     "the workflow. Mark custom transition callables with the bare @tool_control imported "
     "from agenthicc.tools.capabilities (never @tool_control()) so the runtime can "
-    "advertise them automatically. For a custom state-machine runner, this field is "
+    "advertise them automatically. Each transition callable has exactly one required "
+    "provider-facing argument, `summary: str`; make one transition tool per fixed "
+    "outcome/branch, and encode the outcome in the selected tool, never in model-supplied "
+    "state or decision arguments. Import `record_phase_transition` from "
+    "agenthicc.workflows.phase_transition and make each wrapper's only operation a direct "
+    "delegation with its captured event/data, a fixed string outcome, and `summary`. The "
+    "helper trims the summary, rejects blank text, bounds it to 4,000 characters, records "
+    "the outcome/summary, then signals the event; it does not inspect or verify phase work. "
+    "Perform required verification in ordinary phase work, a distinct verifier phase, or "
+    "an explicit runner-owned gate—not in a transition callable. For a custom state-machine runner, this field is "
     "metadata only unless the phase method explicitly reads it; pass the authoritative "
     "phase prompt through run_phase(system_prompt=...). The generic inherited runner "
     "consumes system_prompt_override automatically.\n\n"
@@ -386,18 +409,19 @@ _GENERATE_PROMPT: str = (
     "WRITE THE PACKAGE IN CHUNKS. A workflow with its own runner is a few hundred lines, and "
     "one tool call carrying the whole file can exceed the response limit — if that happens "
     "the call is discarded and nothing reaches disk. So:\n"
-    "  1. make_directory(path) for the exact run-owned draft directory; never write directly "
-    "to the published .agenthicc/workflows directory;\n"
-    "  2. write_file(path/runner.py, content) with the first chunk — the module docstring, the "
-    "imports, and the state enum;\n"
-    "  3. append_file(path/runner.py, content) for each following chunk — the context dataclass, the "
+    "  1. the canonical package directory already exists; use package-relative paths and "
+    "create only needed sibling subdirectories with make_directory(path); never select a "
+    "different root or write outside this package;\n"
+    "  2. write_file(path, content) with the first runner.py chunk — the module docstring, "
+    "imports, and state enum;\n"
+    "  3. append_file(runner.py, content) for each following chunk — the context dataclass, the "
     "tool factories, the runner, then the plugin class;\n"
-    "  4. write_file(path/tools.py, content) (and other sibling modules) for workflow-specific "
+    "  4. write_file(tools.py, content) (and other sibling modules) for workflow-specific "
     "tools; keep imports relative to the package;\n"
     "  5. keep each chunk to roughly 60-80 lines, and split only between top-level "
     "definitions so no chunk cuts a statement in half;\n"
-    "  6. read_file(path/runner.py) and the sibling files at the end to confirm the package "
-    "is on disk and complete.\n"
+    "  6. read_file(runner.py) and sibling files at the end to confirm the canonical package "
+    "is complete.\n"
     "Never re-write runner.py from the start after appending — that discards earlier chunks.\n\n"
     "The generated runner must use the WorkflowConfig.session_memory supplied by the "
     "session, including on resume; use WorkflowConfig.conversation_id unchanged for "
@@ -407,26 +431,30 @@ _GENERATE_PROMPT: str = (
     "reach the framework failure finalizer; do not convert provider/tool/timeout, "
     "ValueError, OSError, cancellation, or unknown exceptions into rejected output, "
     "successful completion, or a fresh run. Do not pass recoverable=False.\n\n"
-    "When the complete directory is on disk, call mark_generation_complete(summary, path) "
-    "with the exact path you wrote to. Do not call it before the file is written."
+    "When the complete package is on disk, call mark_generation_complete(summary) — no path "
+    "argument is accepted because the runner owns the canonical target. Do not edit after calling it."
 )
 _GENERATE_REMINDER: str = (
-    "You have not yet called mark_generation_complete(summary, path). The approved design "
-    "and target path are in your system prompt.\n\n"
+    "You have not yet called mark_generation_complete(summary). The approved design and "
+    "canonical target are in your system prompt.\n\n"
     "If a previous write produced no result, the response was too long and was discarded — "
-    "write less per call. Use read_file(path/runner.py) to see how much of the runner exists, "
-    "then continue with append_file(path/runner.py, content) in chunks of roughly 60-80 lines from "
+    "write less per call. Use read_file(runner.py) to see how much of the runner exists, "
+    "then continue with append_file(runner.py, content) in chunks of roughly 60-80 lines from "
     "where it stops. Do not start the file over. Confirm every sibling tool module is also "
-    "present. Call mark_generation_complete(summary, path) once the whole directory is on disk."
+    "present. Call mark_generation_complete(summary) once the whole package is on disk."
 )
 
 _VALIDATE_PROMPT: str = (
-    "You are in the VALIDATION phase of create_workflow. The generated package has already "
-    "been imported and checked automatically; the report is in your system prompt.\n\n"
+    "You are in the VALIDATION phase of create_workflow. The generated canonical package has "
+    "already been imported and checked automatically; the deterministic report and exact "
+    "package fingerprint are in your system prompt. The package is still pending and cannot "
+    "be discovered by normal workflow loading. You have read-only access to the package through "
+    "read_file(path); do not try to edit or publish it.\n\n"
     "Read the report first. If it lists ANY error, call reject_workflow(reason) naming the "
     "concrete fix — the generation phase will run again. If the report passes, read the "
     "generated package and confirm its phases and prompts match the approved design, then "
-    "call approve_workflow(summary).\n\n"
+    "call approve_workflow(summary). Only the runner can finalize the exact validated "
+    "fingerprint and record trust after your approval.\n\n"
     "You MUST call exactly one of these two tools."
 )
 _VALIDATE_REMINDER: str = (
@@ -442,48 +470,6 @@ _SUMMARIZE_PROMPT: str = (
     "to run it — '/workflows reload' to pick it up in this session, then "
     "'/workflow <name>' to select it. Do not write any more files."
 )
-
-
-def _trust_published_workflow(published: Path) -> None:
-    """Record trust for every Python file of a just-published workflow package."""
-    from agenthicc.plugins.trust import current_extension_trust
-
-    trust = current_extension_trust()
-    sources = sorted(published.rglob("*.py")) if published.is_dir() else [published]
-    for source in sources:
-        trust.trust(source, kind="workflow")
-
-
-def _stage_draft(
-    reported_path: str,
-    draft_path: Path,
-    *,
-    root: Path,
-    run_id: str,
-    workflow_name: str,
-) -> DraftManifest | None:
-    """Move a package reported outside the draft into it, then scan the draft.
-
-    The model may report the directory it wrote instead of the draft path;
-    staging it keeps the draft the only path later phases consume. Returns
-    ``None`` when no draft exists. Raises ``DraftError``, ``OSError`` or
-    ``ValueError`` when staging or scanning fails. This touches the
-    filesystem, so async callers run it in a worker thread.
-    """
-    from agenthicc.workflows.create_workflow.draft import (
-        scan_draft,
-        stage_legacy_package,
-    )
-
-    if reported_path.strip():
-        reported = Path(reported_path).expanduser()
-        if not reported.is_absolute():
-            reported = root / reported
-        if reported.exists() and reported.resolve() != draft_path.resolve():
-            stage_legacy_package(reported, destination=draft_path, root=root)
-    if not draft_path.is_dir():
-        return None
-    return scan_draft(draft_path, root=root, run_id=run_id, workflow_name=workflow_name)
 
 
 class CreateWorkflowRunner(BaseWorkflowRunner):
@@ -1042,75 +1028,206 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
         return CreateWorkflowState.FAILED
 
     async def _generate(self, ctx: CreateWorkflowContext) -> CreateWorkflowState:
-        """Loop until mark_generation_complete() fires; return VALIDATE or FAILED."""
+        """Write and verify the package directly at its canonical target."""
+        from agenthicc.workflows.create_workflow.authoring import (
+            AuthoringError,
+            begin_authoring,
+            inspect_existing_target,
+            prepare_authoring,
+            read_authoring_lease,
+            restore_authoring,
+            scan_package,
+            verify_authoring,
+        )
+        from agenthicc.workflows.create_workflow.generation_tools import (
+            make_generation_writer_tools,
+        )
+        from agenthicc.workflows.create_workflow.inspection_tools import (
+            make_inspection_tools,
+        )
         from agenthicc.workflows.create_workflow.phase_tools import (
             make_generation_tools,
         )
         from agenthicc.workflows.code_plan.phase_tools import make_questions_tool
-        from agenthicc.workflows.create_workflow.draft import (
-            DraftError,
-            reset_draft,
-        )
 
         self._set_phase("generate", _PHASE_INDEX["generate"], ctx)
         ctx.command_outcomes.clear()
+        root = self._workspace_root()
+        run_id = ctx.run_id or self._run_id
+        if not run_id:
+            ctx.fail_reason = "Canonical workflow authoring requires a durable run ID."
+            return CreateWorkflowState.FAILED
 
-        target_path: str = self._draft_path(ctx.workflow_name, ctx.run_id)
-        if ctx.rejection_reason:
-            # A validation rejection starts a new generation attempt, but the
-            # attempt remains part of this run.  Clear only the exact run-owned
-            # draft so stale helper modules cannot leak into the next manifest.
+        if ctx.authoring_lease is None:
             try:
-                reset_draft(
-                    Path(target_path),
-                    root=self._workspace_root(),
-                    run_id=ctx.run_id or self._run_id or "pending",
+                snapshot = await asyncio.to_thread(
+                    inspect_existing_target,
+                    root,
+                    run_id=run_id,
                     workflow_name=ctx.workflow_name,
                 )
-            except (DraftError, OSError, ValueError) as exc:
+                replace_existing = False
+                if snapshot.exists:
+                    approval_svc = self._cfg.approval_svc
+                    if approval_svc is None:
+                        raise AuthoringError(
+                            "an existing workflow occupies the canonical target; interactive "
+                            "replacement approval is required before any files are changed"
+                        )
+                    from agenthicc.tools.approval import ApprovalRequest
+
+                    response = await approval_svc.request_approval(
+                        ApprovalRequest(
+                            tool_name="Replace Existing Workflow",
+                            tool_use_id=uuid.uuid4().hex,
+                            tool_input={
+                                "workflow_name": ctx.workflow_name,
+                                "target_path": self._target_path(ctx.workflow_name),
+                                "existing_fingerprint": snapshot.fingerprint,
+                                "decision": "replace the existing workflow package",
+                            },
+                            capabilities=frozenset(),
+                            event=asyncio.Event(),
+                            kind="plan_review",
+                        )
+                    )
+                    if not response.allowed:
+                        raise AuthoringError(
+                            "replacement was not approved; the existing workflow was left unchanged"
+                        )
+                    replace_existing = True
+                lease = await asyncio.to_thread(
+                    prepare_authoring,
+                    root,
+                    run_id=run_id,
+                    workflow_name=ctx.workflow_name,
+                    expected_original_fingerprint=snapshot.fingerprint,
+                    replace_existing=replace_existing,
+                )
+                ctx.authoring_lease = lease
+                ctx.generated_path = lease.target_path
+                handle = self._cfg.workflow_handle
+                if handle is not None:
+                    handle.attach_context(ctx)
+                    handle.save_checkpoint(reason="canonical_authoring_prepared")
+                await asyncio.to_thread(begin_authoring, lease)
+                if handle is not None:
+                    handle.attach_context(ctx)
+                    handle.save_checkpoint(reason="canonical_authoring_active")
+            except (AuthoringError, OSError, ValueError) as exc:
                 ctx.fail_reason = (
-                    f"Cannot reset rejected workflow draft: {type(exc).__name__}: {exc}"
+                    f"Cannot claim canonical workflow target: {type(exc).__name__}: {exc}"
                 )
                 return CreateWorkflowState.FAILED
-        system_prompt: str = (
+        else:
+            lease = ctx.authoring_lease
+            if lease.run_id != run_id or lease.workflow_name != ctx.workflow_name:
+                ctx.fail_reason = "Checkpoint authoring lease does not match this workflow run."
+                return CreateWorkflowState.FAILED
+            try:
+                await asyncio.to_thread(verify_authoring, lease)
+            except AuthoringError as exc:
+                lock = await asyncio.to_thread(read_authoring_lease, root, ctx.workflow_name)
+                marker_exists = await asyncio.to_thread(os.path.lexists, lease.marker_path)
+                if lock is None and not marker_exists:
+                    try:
+                        await asyncio.to_thread(begin_authoring, lease)
+                    except (AuthoringError, OSError, ValueError) as begin_exc:
+                        ctx.fail_reason = (
+                            "Cannot resume canonical workflow authoring: "
+                            f"{type(begin_exc).__name__}: {begin_exc}"
+                        )
+                        return CreateWorkflowState.FAILED
+                elif lock is not None and lock.status == "preparing" and not marker_exists:
+                    try:
+                        await asyncio.to_thread(restore_authoring, lease)
+                        snapshot = await asyncio.to_thread(
+                            inspect_existing_target,
+                            root,
+                            run_id=run_id,
+                            workflow_name=ctx.workflow_name,
+                        )
+                        if snapshot.fingerprint != lease.original_fingerprint:
+                            raise AuthoringError(
+                                "interrupted setup did not recover the approved original bytes"
+                            )
+                        lease = await asyncio.to_thread(
+                            prepare_authoring,
+                            root,
+                            run_id=run_id,
+                            workflow_name=ctx.workflow_name,
+                            expected_original_fingerprint=snapshot.fingerprint,
+                            replace_existing=lease.replacing,
+                        )
+                        ctx.authoring_lease = lease
+                        ctx.generated_path = lease.target_path
+                        handle = self._cfg.workflow_handle
+                        if handle is not None:
+                            handle.attach_context(ctx)
+                            handle.save_checkpoint(reason="canonical_authoring_recovered")
+                        await asyncio.to_thread(begin_authoring, lease)
+                        if handle is not None:
+                            handle.attach_context(ctx)
+                            handle.save_checkpoint(reason="canonical_authoring_active")
+                    except (AuthoringError, OSError, ValueError) as recovery_exc:
+                        ctx.fail_reason = (
+                            "Cannot recover interrupted canonical authoring setup: "
+                            f"{type(recovery_exc).__name__}: {recovery_exc}"
+                        )
+                        return CreateWorkflowState.FAILED
+                else:
+                    ctx.fail_reason = (
+                        "Canonical workflow ownership could not be verified; "
+                        f"resume or restore run {lease.run_id} explicitly: {exc}"
+                    )
+                    return CreateWorkflowState.FAILED
+
+        lease = ctx.authoring_lease
+        if lease is None:
+            ctx.fail_reason = "Canonical workflow authoring lease was not recorded."
+            return CreateWorkflowState.FAILED
+        target_path = lease.target_path
+
+        canonical_relative = self._target_path(ctx.workflow_name)
+        system_prompt = (
             _GENERATE_PROMPT
             + f"\n\n[USER REQUEST]\n{ctx.intent}"
             + f"\n\n[APPROVED DESIGN]\n{ctx.design}"
             + f"\n\n[WORKFLOW NAME]\n{ctx.workflow_name}"
-            + f"\n\n[TARGET PATH]\n{target_path}"
-            + f"\n\n[PUBLISHED PATH — DO NOT WRITE HERE]\n{self._target_path(ctx.workflow_name)}"
+            + f"\n\n[TARGET PATH]\n{canonical_relative}"
+            + f"\n\n[RUN-OWNED CANONICAL TARGET]\n{target_path}"
+            + "\n\n[GENERATION BOUNDARY]\nOnly package-relative paths are accepted by the scoped file tools. "
+            "The package is pending and undiscoverable until validation approval and finalization."
         )
         if ctx.rejection_reason:
             system_prompt += (
                 f"\n\n[VALIDATION REJECTED THE PREVIOUS ATTEMPT]\n{ctx.rejection_reason}"
             )
-        if ctx.validation_report:
-            system_prompt += f"\n\n{ctx.validation_report}"
+            if ctx.validation_report:
+                system_prompt += (
+                    f"\n\n[PREVIOUS DETERMINISTIC VALIDATION REPORT]\n{ctx.validation_report}"
+                )
+        if ctx.package_manifest is not None:
+            system_prompt += f"\n\n[PREVIOUS PACKAGE MANIFEST]\n{ctx.package_manifest.render()}"
 
-        first_text: str = (
-            f"Write the approved {ctx.workflow_name} workflow to {target_path}. "
-            f"The published destination is {self._target_path(ctx.workflow_name)}; "
-            "do not write there directly."
+        first_text = (
+            f"Write the approved {ctx.workflow_name} workflow directly inside "
+            f"{canonical_relative}. Use only package-relative paths and call "
+            "mark_generation_complete(summary) when complete."
             if not ctx.rejection_reason
             else (
-                f"Fix and rewrite {ctx.generated_path or target_path}. "
-                f"What must change: {ctx.rejection_reason}"
+                f"Fix the package at {canonical_relative}. What must change: {ctx.rejection_reason}"
             )
         )
 
         mode = self._declared_mode("generate")
         for attempt in range(1, self._max_attempts + 1):
             ctx.command_outcomes.clear()
-            generate_event: asyncio.Event = asyncio.Event()
+            generate_event = asyncio.Event()
             generate_data: dict[str, object] = {}
-
-            from agenthicc.workflows.create_workflow.inspection_tools import (
-                make_inspection_tools,
-            )
-
-            tools: _ToolList = list(self._base_tools(mode))
-            tools.extend(make_inspection_tools())
-            tools.extend(make_generation_tools(generate_event, generate_data))
+            tools: _ToolList = list(make_inspection_tools())
+            tools.extend(make_generation_writer_tools(lease))
+            tools.extend(make_generation_tools(generate_event, generate_data, lease))
             tools.extend(make_questions_tool(self._cfg.approval_svc, ctx.question_metadata))
             authoring_snapshot = self._authoring_snapshot(
                 phase_name="generate",
@@ -1119,7 +1236,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 active_mode=self._phase_mode(mode),
             )
             tools.extend(make_inspection_tools(snapshot=authoring_snapshot)[-2:])
-            text: str = first_text if attempt == 1 else _GENERATE_REMINDER
+            text = first_text if attempt == 1 else _GENERATE_REMINDER
 
             try:
                 await self._run_turn(
@@ -1140,42 +1257,28 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 return CreateWorkflowState.FAILED
 
             if generate_event.is_set():
-                path = generate_data.get("path", "")
                 summary = generate_data.get("summary", "")
-                reported_path = path if isinstance(path, str) else ""
                 ctx.generation_summary = summary if isinstance(summary, str) else ""
-                manifest = None
-                draft_path = self._draft_path(ctx.workflow_name, ctx.run_id)
                 try:
-                    manifest = await asyncio.to_thread(
-                        _stage_draft,
-                        reported_path,
-                        Path(draft_path),
-                        root=self._workspace_root(),
-                        run_id=ctx.run_id or self._run_id or "pending",
-                        workflow_name=ctx.workflow_name,
+                    manifest = await asyncio.to_thread(scan_package, lease)
+                except (AuthoringError, OSError, ValueError) as exc:
+                    ctx.fail_reason = (
+                        f"Canonical package changed or became unsafe after completion: "
+                        f"{type(exc).__name__}: {exc}"
                     )
-                except (DraftError, OSError, ValueError) as exc:
-                    # Leave the reported path intact so VALIDATE can show the
-                    # normal workspace/missing-file diagnostic and let the
-                    # bounded repair loop decide what happens next.
-                    log.warning("_generate draft staging deferred to validation: %s", exc)
-
-                ctx.generated_path = str(draft_path) if manifest is not None else reported_path
-                if manifest is not None:
-                    ctx.draft_manifest = manifest.to_dict()
-                    ctx.draft_fingerprint = manifest.fingerprint
+                    return CreateWorkflowState.FAILED
+                ctx.package_manifest = manifest
+                ctx.generated_path = lease.target_path
                 ctx.add_artifact(
                     PhaseArtifact(
                         phase="generate",
                         kind="workflow_file",
                         content=ctx.generation_summary,
                         metadata={
-                            "path": reported_path or ctx.generated_path,
-                            "draft_path": ctx.generated_path,
-                            "reported_path": reported_path,
-                            "draft_fingerprint": ctx.draft_fingerprint,
-                            "file_count": len(manifest.files) if manifest is not None else 0,
+                            "path": canonical_relative,
+                            "target_path": lease.target_path,
+                            "package_fingerprint": manifest.fingerprint,
+                            "file_count": len(manifest.files),
                             "workflow_name": ctx.workflow_name,
                             "attempts": attempt,
                             "repair_cycle": ctx.repair_cycles,
@@ -1186,7 +1289,8 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
 
         ctx.fail_reason = (
             f"Generation phase exhausted {self._max_attempts} attempts without calling "
-            "mark_generation_complete()."
+            "mark_generation_complete(summary). The canonical package remains pending and "
+            "undiscoverable; resume this run or restore its original workflow."
         )
         return CreateWorkflowState.FAILED
 
@@ -1196,20 +1300,24 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
         Returns SUMMARIZE (approved and the deterministic check passed), GENERATE
         (rejected, or approved against a failing check), or FAILED.
         """
+        from agenthicc.workflows.create_workflow.authoring import (
+            AuthoringError,
+            read_authoring_lease,
+            scan_committed_package,
+            scan_package,
+        )
         from agenthicc.workflows.create_workflow.phase_tools import (
             make_validation_tools,
         )
         from agenthicc.workflows.code_plan.phase_tools import make_questions_tool
-        from agenthicc.workflows.create_workflow.validation import (
-            validate_workflow_file,
-        )
-        from agenthicc.workflows.create_workflow.draft import (
-            DraftError,
-            build_draft_path,
-            publish_draft,
+        from agenthicc.workflows.create_workflow.generation_tools import (
+            make_package_read_tools,
         )
         from agenthicc.workflows.create_workflow.smoke import (
             run_generated_workflow_smoke,
+        )
+        from agenthicc.workflows.create_workflow.validation import (
+            validate_workflow_file,
         )
 
         self._set_phase("validate", _PHASE_INDEX["validate"], ctx)
@@ -1235,50 +1343,87 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 "unavailable_optional": [dict(item) for item in snapshot.unavailable],
             }
 
-        manifest: DraftManifest | None = None
-        try:
-            root = self._workspace_root()
-            run_id = ctx.run_id or self._run_id or "pending"
-            expected_draft = build_draft_path(root, run_id, ctx.workflow_name)
-            manifest = await asyncio.to_thread(
-                _stage_draft,
-                ctx.generated_path,
-                expected_draft,
-                root=root,
-                run_id=run_id,
-                workflow_name=ctx.workflow_name,
+        lease = ctx.authoring_lease
+        expected_manifest = ctx.package_manifest
+        if lease is None or expected_manifest is None:
+            ctx.fail_reason = (
+                "Canonical workflow validation requires its checkpointed lease and manifest."
             )
-            if manifest is not None:
-                ctx.generated_path = str(expected_draft)
-                ctx.draft_manifest = manifest.to_dict()
-                ctx.draft_fingerprint = manifest.fingerprint
-            report: ValidationReport = validate_workflow_file(
-                ctx.generated_path,
-                expected_name=ctx.workflow_name,
-                root=root,
-                strict_cache_contract=True,
-                available_integrations=ctx.dependency_summary,
+            return CreateWorkflowState.FAILED
+        if (
+            lease.run_id != (ctx.run_id or self._run_id)
+            or lease.workflow_name != ctx.workflow_name
+            or expected_manifest.run_id != lease.run_id
+            or expected_manifest.workflow_name != lease.workflow_name
+            or expected_manifest.target_path != lease.target_path
+        ):
+            ctx.fail_reason = (
+                "Canonical workflow checkpoint identity does not match its package manifest."
             )
-        except (DraftError, OSError, ValueError) as exc:
-            report = validate_workflow_file(
-                ctx.generated_path,
-                expected_name=ctx.workflow_name,
-                root=self._workspace_root(),
-                strict_cache_contract=True,
-                available_integrations=ctx.dependency_summary,
-            )
-            report = dataclasses.replace(
-                report,
-                ok=False,
-                errors=(*report.errors, f"Draft manifest rejected: {type(exc).__name__}: {exc}"),
-                categories={**report.categories, "manifest": "fail", "result": "fail"},
-            )
+            return CreateWorkflowState.FAILED
 
-        smoke = run_generated_workflow_smoke(
-            ctx.generated_path,
-            expected_name=ctx.workflow_name,
-            root=self._workspace_root(),
+        lease_status = await asyncio.to_thread(
+            read_authoring_lease,
+            Path(lease.workspace_root),
+            lease.workflow_name,
         )
+        committed = lease_status is not None and lease_status.status == "committed"
+        if committed and not ctx.validation_summary:
+            ctx.fail_reason = "Committed workflow checkpoint has no recorded validation approval."
+            return CreateWorkflowState.FAILED
+        try:
+            manifest = (
+                await asyncio.to_thread(
+                    scan_committed_package,
+                    lease,
+                    expected_fingerprint=expected_manifest.fingerprint,
+                )
+                if committed
+                else await asyncio.to_thread(scan_package, lease)
+            )
+        except (AuthoringError, OSError, ValueError) as exc:
+            ctx.fail_reason = (
+                f"Canonical package ownership check failed: {type(exc).__name__}: {exc}"
+            )
+            return CreateWorkflowState.FAILED
+        if manifest.fingerprint != expected_manifest.fingerprint:
+            ctx.fail_reason = "Canonical package changed after generation was marked complete."
+            return CreateWorkflowState.FAILED
+
+        root = Path(lease.workspace_root)
+        report: ValidationReport = validate_workflow_file(
+            lease.target_path,
+            expected_name=ctx.workflow_name,
+            root=root,
+            strict_cache_contract=True,
+            available_integrations=ctx.dependency_summary,
+        )
+        smoke = run_generated_workflow_smoke(
+            lease.target_path,
+            expected_name=ctx.workflow_name,
+            root=root,
+        )
+        try:
+            after_checks = (
+                await asyncio.to_thread(
+                    scan_committed_package,
+                    lease,
+                    expected_fingerprint=expected_manifest.fingerprint,
+                )
+                if committed
+                else await asyncio.to_thread(scan_package, lease)
+            )
+        except (AuthoringError, OSError, ValueError) as exc:
+            ctx.fail_reason = (
+                "Canonical package changed or became unsafe during deterministic validation: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            return CreateWorkflowState.FAILED
+        if after_checks.fingerprint != manifest.fingerprint:
+            ctx.fail_reason = (
+                "Canonical package changed while deterministic validation was running."
+            )
+            return CreateWorkflowState.FAILED
         if not smoke.ok:
             report = dataclasses.replace(
                 report,
@@ -1291,13 +1436,14 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 report,
                 categories={**report.categories, "smoke": "pass"},
             )
+        ctx.package_manifest = manifest
         ctx.validation_evidence = {
             "categories": dict(report.categories),
             "evidence": dict(report.evidence),
             "errors": list(report.errors),
             "warnings": list(report.warnings),
             "smoke": smoke.to_dict(),
-            "draft_fingerprint": ctx.draft_fingerprint,
+            "package_fingerprint": manifest.fingerprint,
         }
         ctx.validation_evidence["evidence_id"] = _evidence_fingerprint(ctx.validation_evidence)
         ctx.validation_report = report.render()
@@ -1309,6 +1455,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 metadata={
                     "ok": report.ok,
                     "path": report.path,
+                    "package_fingerprint": manifest.fingerprint,
                     "errors": list(report.errors),
                     "warnings": list(report.warnings),
                     "plugin_names": list(report.plugin_names),
@@ -1319,6 +1466,45 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 },
             )
         )
+
+        if committed:
+            if not report.ok:
+                ctx.fail_reason = (
+                    "Committed workflow no longer passes deterministic validation: "
+                    + " ".join(report.errors)
+                )
+                return CreateWorkflowState.FAILED
+            ctx.generated_path = lease.target_path
+            ctx.publication = {
+                "status": "committed",
+                "path": self._target_path(ctx.workflow_name),
+                "published_path": lease.target_path,
+                "package_fingerprint": manifest.fingerprint,
+                "package_manifest": manifest.to_dict(),
+                "validation_evidence_id": str(ctx.validation_evidence.get("evidence_id", "")),
+                "catalog_snapshot": dict(ctx.authoring_snapshot),
+                "catalog_snapshot_id": str(ctx.authoring_snapshot.get("snapshot_id", "")),
+                "catalog_version": str(ctx.authoring_snapshot.get("catalog_version", "")),
+                "validation_categories": dict(report.categories),
+            }
+            return CreateWorkflowState.SUMMARIZE
+
+        if ctx.validation_summary:
+            if not report.ok:
+                ctx.fail_reason = (
+                    "Checkpointed validation approval no longer passes deterministic checks: "
+                    + " ".join(report.errors)
+                )
+                return CreateWorkflowState.FAILED
+            raw_categories = ctx.validation_evidence.get("categories", {})
+            validation_categories = (
+                {str(key): str(value) for key, value in raw_categories.items()}
+                if isinstance(raw_categories, dict)
+                else {}
+            )
+            if await self._finalize_approved_package(ctx, validation_categories):
+                return CreateWorkflowState.SUMMARIZE
+            return CreateWorkflowState.FAILED
 
         system_prompt: str = (
             _VALIDATE_PROMPT
@@ -1331,9 +1517,9 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             validate_event: asyncio.Event = asyncio.Event()
             validate_data: dict[str, object] = {}
 
-            tools: _ToolList = list(self._base_tools(mode)) + list(
-                make_validation_tools(validate_event, validate_data)
-            )
+            tools: _ToolList = []
+            tools.extend(make_package_read_tools(lease))
+            tools.extend(make_validation_tools(validate_event, validate_data))
             tools.extend(make_questions_tool(self._cfg.approval_svc, ctx.question_metadata))
             text: str = (
                 (
@@ -1373,66 +1559,15 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 summary = validate_data.get("summary", "")
                 ctx.validation_summary = summary if isinstance(summary, str) else ""
                 ctx.rejection_reason = ""
-                if manifest is None:
-                    ctx.fail_reason = "Validated workflow has no publishable draft manifest."
-                    ctx.publication = {
-                        "status": "failed",
-                        "error": ctx.fail_reason,
-                        "draft_path": ctx.generated_path,
-                        "catalog_snapshot": dict(ctx.authoring_snapshot),
-                        "validation_evidence_id": str(
-                            ctx.validation_evidence.get("evidence_id", "")
-                        ),
-                    }
-                    return CreateWorkflowState.FAILED
-                try:
-                    publication = publish_draft(
-                        manifest,
-                        root=self._workspace_root(),
-                        published_name=ctx.workflow_name,
-                    )
-                except (DraftError, OSError, ValueError) as exc:
-                    ctx.fail_reason = (
-                        f"Validated workflow could not be published: {type(exc).__name__}: {exc}"
-                    )
-                    ctx.publication = {
-                        "status": "failed",
-                        "error": ctx.fail_reason,
-                        "draft_path": ctx.generated_path,
-                        "catalog_snapshot": dict(ctx.authoring_snapshot),
-                        "validation_evidence_id": str(
-                            ctx.validation_evidence.get("evidence_id", "")
-                        ),
-                    }
-                    return CreateWorkflowState.FAILED
-                # The user approved this workflow's design and its validated
-                # publication, so its files are trusted for loading as published.
-                _trust_published_workflow(Path(publication.published_path))
-                publication_data = publication.to_dict()
                 raw_categories = ctx.validation_evidence.get("categories", {})
                 validation_categories = (
-                    dict(raw_categories) if isinstance(raw_categories, dict) else {}
+                    {str(key): str(value) for key, value in raw_categories.items()}
+                    if isinstance(raw_categories, dict)
+                    else {}
                 )
-                publication_data.update(
-                    {
-                        "catalog_snapshot": dict(ctx.authoring_snapshot),
-                        "catalog_snapshot_id": str(ctx.authoring_snapshot.get("snapshot_id", "")),
-                        "catalog_version": str(ctx.authoring_snapshot.get("catalog_version", "")),
-                        "validation_evidence_id": str(
-                            ctx.validation_evidence.get("evidence_id", "")
-                        ),
-                        "validation_categories": validation_categories,
-                    }
-                )
-                ctx.publication = publication_data
-                validation_artifact = ctx.artifacts.get("validate")
-                if validation_artifact is not None:
-                    validation_artifact.metadata["publication"] = dict(publication_data)
-                # The context points at the canonical package that the normal
-                # loader discovers. Legacy reported paths remain in the
-                # generation artifact and publication evidence.
-                ctx.generated_path = publication.published_path
-                return CreateWorkflowState.SUMMARIZE
+                if await self._finalize_approved_package(ctx, validation_categories):
+                    return CreateWorkflowState.SUMMARIZE
+                return CreateWorkflowState.FAILED
 
             if action == "approve":
                 # Ground truth wins: the agent approved a file that does not load.
@@ -1455,10 +1590,92 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
         )
         return CreateWorkflowState.FAILED
 
-    async def _summarize(self, ctx: CreateWorkflowContext) -> CreateWorkflowState:
-        """Run the summary turn, returning FAILED if that turn errors."""
-        from agenthicc.workflows.code_plan.phase_tools import make_questions_tool
+    async def _finalize_approved_package(
+        self,
+        ctx: CreateWorkflowContext,
+        validation_categories: dict[str, str],
+    ) -> bool:
+        """Commit the exact checkpointed and approved package fingerprint."""
+        from agenthicc.workflows.create_workflow.authoring import (
+            AuthoringError,
+            finalize_authoring,
+            scan_committed_package,
+            scan_package,
+        )
 
+        lease = ctx.authoring_lease
+        manifest = ctx.package_manifest
+        raw_fingerprint = ctx.validation_evidence.get("package_fingerprint")
+        evidence_id = ctx.validation_evidence.get("evidence_id")
+        if (
+            lease is None
+            or manifest is None
+            or not isinstance(raw_fingerprint, str)
+            or raw_fingerprint != manifest.fingerprint
+            or not isinstance(evidence_id, str)
+            or not evidence_id
+            or not ctx.validation_summary
+        ):
+            ctx.fail_reason = (
+                "Validation approval is not bound to a complete canonical package manifest."
+            )
+            return False
+        try:
+            current = await asyncio.to_thread(scan_package, lease)
+            if current.fingerprint != raw_fingerprint:
+                raise AuthoringError("workflow package changed after validation approval")
+        except (AuthoringError, OSError, ValueError) as exc:
+            ctx.fail_reason = f"Cannot finalize canonical workflow: {type(exc).__name__}: {exc}"
+            return False
+
+        handle = self._cfg.workflow_handle
+        if handle is not None:
+            handle.attach_context(ctx)
+            handle.save_checkpoint(reason="canonical_validation_approved")
+        try:
+            await asyncio.to_thread(
+                finalize_authoring,
+                lease,
+                expected_fingerprint=raw_fingerprint,
+            )
+            committed = await asyncio.to_thread(
+                scan_committed_package,
+                lease,
+                expected_fingerprint=raw_fingerprint,
+            )
+        except (AuthoringError, OSError, ValueError) as exc:
+            ctx.fail_reason = f"Validated workflow finalization failed: {type(exc).__name__}: {exc}"
+            ctx.publication = {
+                "status": "pending_recovery",
+                "error": ctx.fail_reason,
+                "path": self._target_path(ctx.workflow_name),
+                "target_path": lease.target_path,
+                "package_fingerprint": raw_fingerprint,
+                "validation_evidence_id": evidence_id,
+            }
+            return False
+
+        ctx.package_manifest = committed
+        ctx.generated_path = lease.target_path
+        ctx.publication = {
+            "status": "committed",
+            "path": self._target_path(ctx.workflow_name),
+            "published_path": lease.target_path,
+            "package_fingerprint": committed.fingerprint,
+            "package_manifest": committed.to_dict(),
+            "validation_evidence_id": evidence_id,
+            "catalog_snapshot": dict(ctx.authoring_snapshot),
+            "catalog_snapshot_id": str(ctx.authoring_snapshot.get("snapshot_id", "")),
+            "catalog_version": str(ctx.authoring_snapshot.get("catalog_version", "")),
+            "validation_categories": validation_categories,
+        }
+        validation_artifact = ctx.artifacts.get("validate")
+        if validation_artifact is not None:
+            validation_artifact.metadata["publication"] = dict(ctx.publication)
+        return True
+
+    async def _summarize(self, ctx: CreateWorkflowContext) -> CreateWorkflowState:
+        """Run a read-only summary turn, returning FAILED if that turn errors."""
         self._set_phase("summarize", _PHASE_INDEX["summarize"], ctx)
         ctx.command_outcomes.clear()
 
@@ -1471,11 +1688,9 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
         )
         try:
             mode = self._declared_mode("summarize")
-            tools = list(self._base_tools(mode))
-            tools.extend(make_questions_tool(self._cfg.approval_svc, ctx.question_metadata))
             await self._run_turn(
                 text,
-                tools=tools,
+                tools=[],
                 mode=mode,
                 system_prompt=_SUMMARIZE_PROMPT + f"\n\n[USER REQUEST]\n{ctx.intent}",
                 max_turns=min(4, self._max_phase_turns),
@@ -1511,6 +1726,8 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
         """Send the run back to GENERATE, or FAIL when the repair budget is spent."""
         ctx.repair_cycles += 1
         ctx.rejection_reason = reason.strip()
+        ctx.validation_summary = ""
+        ctx.publication.clear()
         if ctx.repair_cycles > self._max_repair_cycles:
             ctx.fail_reason = (
                 f"Validation rejected the generated workflow {ctx.repair_cycles} times "
@@ -1527,18 +1744,6 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
     def _target_path(self, workflow_name: str) -> str:
         """Return the conventional project-local path for *workflow_name*."""
         return f"{_WORKFLOW_DIR}/{workflow_name or 'my_workflow'}"
-
-    def _draft_path(self, workflow_name: str, run_id: str) -> str:
-        """Return the isolated run-owned generation path for a workflow."""
-        from agenthicc.workflows.create_workflow.draft import build_draft_path
-
-        return str(
-            build_draft_path(
-                self._workspace_root(),
-                run_id or self._run_id or "pending",
-                workflow_name or "my_workflow",
-            )
-        )
 
     def _phase_model(self, phase_name: str) -> str:
         """Return the model override for *phase_name*, or '' for the global default.

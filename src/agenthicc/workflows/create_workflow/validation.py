@@ -9,9 +9,10 @@ will and checks the resulting plugin class against the real
 runner overrides an ``approve_workflow`` call whenever the report is not ``ok``.
 
 Importing the file executes it — the same trust model as the workflow loader
-itself, which must import a plugin module to discover its classes.  The file was
-just written inside this session by the tool-approved agent, and the import is
-refused outright for any path resolving outside the workspace root.
+itself, which must import a plugin module to discover its classes. This is not
+an isolation boundary: generated imports and import-time code run with the
+current process's ordinary permissions. The file is checked to resolve inside
+the workspace root, but module imports are unrestricted.
 """
 
 from __future__ import annotations
@@ -36,36 +37,6 @@ _RESERVED_NAMES: frozenset[str] = frozenset({"code_plan", "create_workflow"})
 #: Valid ``PhaseSpec.output_schema`` values understood by ``_parse_output_schema``.
 _KNOWN_OUTPUT_SCHEMAS: frozenset[str] = frozenset({"plan", "review_result", "free_text"})
 
-_FORBIDDEN_BROWSER_IMPORTS: tuple[str, ...] = (
-    "cloakbrowser",
-    "playwright",
-    "agenthicc.tools.cloakbrowser",
-    "agenthicc.tools.playwright",
-)
-# Generated workflow code must use the framework's capability-gated tools for
-# side effects. Besides making the no-network smoke deterministic, rejecting
-# these imports before import-time execution prevents a helper module from
-# bypassing the parent session's workspace/network policy.
-_FORBIDDEN_EXTERNAL_IMPORT_ROOTS: frozenset[str] = frozenset(
-    {
-        "socket",
-        "subprocess",
-        "requests",
-        "httpx",
-        "urllib",
-        "urllib3",
-        "aiohttp",
-        "websockets",
-        "ssl",
-        "dns",
-        "ftplib",
-        "telnetlib",
-        "webbrowser",
-        "playwright",
-        "cloakbrowser",
-        "lauren_mcp",
-    }
-)
 _KNOWN_BROWSER_TOOLS: frozenset[str] = frozenset(
     {
         "cloakbrowser_status",
@@ -110,31 +81,25 @@ _INTEGRATION_UNAVAILABLE_STATES: frozenset[str] = frozenset(
 _INTEGRATION_NOT_PROBED_STATES: frozenset[str] = frozenset({"not_probed", "unknown", "unprobed"})
 
 
-def _check_browser_imports(source: str, errors: list[str]) -> None:
-    """Reject generated code that bypasses the session-owned browser adapter."""
+def _check_browser_tool_names(source: str, errors: list[str]) -> None:
+    """Reject unknown browser-tool references without restricting imported names."""
     try:
         tree = ast.parse(source)
     except SyntaxError:
         return
+    imported_names: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
-            modules = [alias.name for alias in node.names]
+            imported_names.update(
+                alias.asname or alias.name.split(".", 1)[0] for alias in node.names
+            )
         elif isinstance(node, ast.ImportFrom):
-            modules = [node.module or ""]
-        else:
-            modules = []
-        for module in modules:
-            if any(
-                module == item or module.startswith(f"{item}.")
-                for item in _FORBIDDEN_BROWSER_IMPORTS
-            ):
-                errors.append(
-                    f"Generated workflows must not import {module!r}; use the session-provided "
-                    "browser_* tools so policy and checkpoint boundaries "
-                    "remain enforced."
-                )
-        if isinstance(node, ast.Name) and (
-            node.id.startswith("cloakbrowser_") or node.id.startswith("playwright_")
+            imported_names.update(alias.asname or alias.name for alias in node.names)
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Name)
+            and node.id not in imported_names
+            and (node.id.startswith("cloakbrowser_") or node.id.startswith("playwright_"))
         ):
             if node.id not in _KNOWN_BROWSER_TOOLS:
                 errors.append(
@@ -149,35 +114,6 @@ def _check_browser_imports(source: str, errors: list[str]) -> None:
                 errors.append(
                     f"Unknown browser tool {value!r}; use the session-provided canonical "
                     "browser_* tool names documented by the browser inspection tools."
-                )
-
-
-def _check_external_imports(source: str, errors: list[str]) -> None:
-    """Reject direct network/process clients in generated workflow sources.
-
-    Workflow-local helpers are still imported by the loader, so checking every
-    package source—not only ``runner.py``—is important. Runtime side effects
-    belong in capability-gated tools supplied by the parent session; direct
-    imports would make validation and smoke execution non-deterministic.
-    """
-    try:
-        tree = ast.parse(source)
-    except SyntaxError:
-        return
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            modules = [alias.name for alias in node.names]
-        elif isinstance(node, ast.ImportFrom):
-            modules = [node.module or ""]
-        else:
-            modules = []
-        for module in modules:
-            root = module.split(".", 1)[0]
-            if root in _FORBIDDEN_EXTERNAL_IMPORT_ROOTS:
-                errors.append(
-                    f"Generated workflows must not import {module!r}; use the parent session's "
-                    "capability-gated tools so network, browser, MCP, process, and workspace "
-                    "policy remain enforced."
                 )
 
 
@@ -311,7 +247,6 @@ def _fail(path: str, *errors: str) -> ValidationReport:
         ("browser", "browser"),
         ("mcp", "mcp"),
         ("workspace", "workspace"),
-        ("draft", "manifest"),
         ("manifest", "manifest"),
         ("symlink", "manifest"),
         ("runner.py", "manifest"),
@@ -1065,42 +1000,113 @@ def _check_transition_tool_contract(
     *,
     strict: bool,
 ) -> bool:
-    """Catch phase-tool decorator/import mistakes hidden inside factories.
+    """Validate generated phase-transition imports, schemas, and record-only bodies.
 
-    Importing a generated module does not execute local factory bodies. Static
-    inspection therefore has to reject the two common failures directly:
-    importing ``tool_control`` from ``lauren_ai._tools`` and calling the bare
-    metadata decorator as ``@tool_control()``.
+    Factory-local code is inspected as AST and is never executed by this check.
+    The one-call body contract leaves all phase work and verification to the
+    ordinary phase tools or a separate runner-owned gate.
     """
     validation_errors = errors if strict else []
+    error_start = len(validation_errors)
+    error_limit = 16
+
+    def add_error(message: str) -> None:
+        if len(validation_errors) - error_start < error_limit:
+            validation_errors.append(message)
+
     try:
         tree = ast.parse(source)
     except SyntaxError:
         return False
 
     control_names: set[str] = {"tool_control"}
-    correct_import = False
+    helper_names: set[str] = set()
+    found_control_import = False
+    found_helper_import = False
     saw_control_reference = False
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and any(
-            alias.name == "tool_control" for alias in node.names
-        ):
-            alias = next(alias for alias in node.names if alias.name == "tool_control")
+        if not isinstance(node, ast.ImportFrom):
+            continue
+        for alias in node.names:
             local_name = alias.asname or alias.name
-            control_names.add(local_name)
-            saw_control_reference = True
-            if node.module == "agenthicc.tools.capabilities":
-                correct_import = True
-            elif node.module == "lauren_ai._tools":
-                validation_errors.append(
-                    "tool_control must be imported from agenthicc.tools.capabilities, "
-                    "not lauren_ai._tools. lauren_ai._tools exports tool only."
-                )
-            else:
-                validation_errors.append(
-                    f"tool_control is imported from {node.module or '(relative module)'}, "
-                    "but generated workflows must use agenthicc.tools.capabilities."
-                )
+            if alias.name == "tool_control":
+                control_names.add(local_name)
+                saw_control_reference = True
+                found_control_import = True
+            if alias.name == "record_phase_transition":
+                helper_names.add(local_name)
+                found_helper_import = True
+
+    def check_transition_body(node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        params = [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
+        has_extra_parameters = node.args.vararg is not None or node.args.kwarg is not None
+        valid_shape = (
+            len(params) == 1
+            and params[0].arg == "summary"
+            and isinstance(params[0].annotation, ast.Name)
+            and params[0].annotation.id == "str"
+            and not has_extra_parameters
+            and not node.args.defaults
+            and all(default is None for default in node.args.kw_defaults)
+        )
+        if not valid_shape:
+            add_error(
+                f"transition tool {node.name} must have exactly one required provider-facing "
+                "parameter named summary annotated str (summary: str); remove all other "
+                "parameters and defaults."
+            )
+
+        body = list(node.body)
+        if (
+            body
+            and isinstance(body[0], ast.Expr)
+            and isinstance(body[0].value, ast.Constant)
+            and isinstance(body[0].value.value, str)
+        ):
+            body.pop(0)
+        if (
+            len(body) != 1
+            or not isinstance(body[0], ast.Return)
+            or not isinstance(body[0].value, ast.Call)
+        ):
+            add_error(
+                f"transition tool {node.name} must only return one direct "
+                "record_phase_transition(...) call; move work and verification out of it."
+            )
+            return
+
+        call = body[0].value
+        helper_name = call.func.id if isinstance(call.func, ast.Name) else ""
+        if not found_helper_import or helper_name not in helper_names:
+            add_error(
+                f"transition tool {node.name} must delegate to the supported "
+                "agenthicc.workflows.phase_transition.record_phase_transition helper."
+            )
+        positional_names = [
+            argument.id if isinstance(argument, ast.Name) else "" for argument in call.args
+        ]
+        keywords = {keyword.arg: keyword.value for keyword in call.keywords if keyword.arg}
+        has_unpacking = any(keyword.arg is None for keyword in call.keywords)
+        outcome = keywords.get("outcome")
+        summary = keywords.get("summary")
+        if (
+            len(call.args) != 2
+            or len(set(positional_names)) != 2
+            or not all(positional_names)
+            or set(keywords) != {"outcome", "summary"}
+            or has_unpacking
+            or not isinstance(outcome, ast.Constant)
+            or not isinstance(outcome.value, str)
+            or not outcome.value.strip()
+            or len(outcome.value) > 128
+            or not isinstance(summary, ast.Name)
+            or summary.id != "summary"
+        ):
+            add_error(
+                f"transition tool {node.name} must pass its captured event and handoff data, "
+                "a fixed non-empty string outcome, and summary=summary to the helper; "
+                "do not pass verification callbacks or other values."
+            )
 
     decorated_transition = False
     for node in ast.walk(tree):
@@ -1113,9 +1119,8 @@ def _check_transition_tool_contract(
         decorated_transition = True
         saw_control_reference = True
         for index in control_indexes:
-            decorator = node.decorator_list[index]
-            if isinstance(decorator, ast.Call):
-                validation_errors.append(
+            if isinstance(node.decorator_list[index], ast.Call):
+                add_error(
                     f"{node.name} uses @tool_control() but tool_control is a bare decorator; "
                     "write @tool_control without parentheses."
                 )
@@ -1125,18 +1130,20 @@ def _check_transition_tool_contract(
             if name == "tool" or name in {"_tool", "lauren_tool"}
         ]
         if tool_indexes and min(control_indexes) > min(tool_indexes):
-            validation_errors.append(
+            add_error(
                 f"{node.name} must place @tool_control above @tool() so CONTROL metadata "
                 "survives decoration."
             )
+        if strict:
+            check_transition_body(node)
 
-    if saw_control_reference and not correct_import:
-        # The import-specific branch above supplies the actionable detail for
-        # known wrong imports; this covers an unqualified/aliased reference.
-        if not any("tool_control must be imported" in error for error in validation_errors):
-            validation_errors.append(
-                "transition tools must import tool_control from agenthicc.tools.capabilities."
-            )
+    if saw_control_reference and not found_control_import:
+        add_error("transition tools must import tool_control so handoffs are discoverable.")
+    if strict and decorated_transition and not found_helper_import:
+        add_error(
+            "generated phase-transition tools must import record_phase_transition for the "
+            "supported summary-only handoff contract."
+        )
     return decorated_transition
 
 
@@ -1372,8 +1379,7 @@ def validate_workflow_file(
 
     source_errors: list[str] = []
     for source in sources.values():
-        _check_browser_imports(source, source_errors)
-        _check_external_imports(source, source_errors)
+        _check_browser_tool_names(source, source_errors)
     if source_errors:
         return _fail(shown, *source_errors)
 

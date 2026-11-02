@@ -1,11 +1,9 @@
-"""Bounded, no-network smoke checks for generated workflow packages.
+"""Bounded fake-provider smoke checks for generated workflow packages.
 
-The smoke boundary is intentionally conservative. It validates the generated
-package's executable shape and checkpoint contract without invoking a real
-provider, browser, MCP server, shell, or network. Static source checks run
-before the normal loader boundary; the only generated code executed afterward
-is the bounded custom-runner entry point under a fake harness, with external
-service imports rejected first.
+The smoke harness does not call a real provider or deliberately exercise
+integrations. It parses source, then imports the candidate and exercises its
+custom runner in-process under a fake harness. This is not a sandbox: candidate
+imports can execute arbitrary code with the current process's permissions.
 """
 
 from __future__ import annotations
@@ -48,27 +46,6 @@ class _SmokePlugin(Protocol):
 
 
 __all__ = ["SmokeCheck", "SmokeReport", "run_generated_workflow_smoke"]
-
-_FORBIDDEN_IMPORT_ROOTS = frozenset(
-    {
-        "socket",
-        "subprocess",
-        "requests",
-        "httpx",
-        "urllib",
-        "urllib3",
-        "aiohttp",
-        "websockets",
-        "ssl",
-        "dns",
-        "ftplib",
-        "telnetlib",
-        "webbrowser",
-        "playwright",
-        "cloakbrowser",
-        "lauren_mcp",
-    }
-)
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -126,26 +103,6 @@ def _source_paths(path: Path) -> tuple[Path, ...]:
             )
         )
     return ()
-
-
-def _forbidden_imports(source: str) -> tuple[str, ...]:
-    try:
-        tree = ast.parse(source)
-    except SyntaxError:
-        return ()
-    found: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            modules = [alias.name for alias in node.names]
-        elif isinstance(node, ast.ImportFrom):
-            modules = [node.module or ""]
-        else:
-            modules = []
-        for module in modules:
-            root = module.split(".", 1)[0]
-            if root in _FORBIDDEN_IMPORT_ROOTS:
-                found.add(module)
-    return tuple(sorted(found))
 
 
 def _has_call(source: str, attribute: str) -> bool:
@@ -237,23 +194,22 @@ def _fake_config() -> SimpleNamespace:
 
 
 def _tool_arguments(tool: object) -> dict[str, object]:
-    """Create bounded fixture arguments from a transition tool signature."""
+    """Build the canonical summary-only arguments for one transition tool."""
     try:
         signature = inspect.signature(cast(Callable[..., object], tool))
-    except (TypeError, ValueError):
-        return {}
-    values: dict[str, object] = {}
-    for parameter in signature.parameters.values():
-        if parameter.name in {"self", "cls"} or parameter.kind in {
-            inspect.Parameter.VAR_POSITIONAL,
-            inspect.Parameter.VAR_KEYWORD,
-        }:
-            continue
-        if parameter.default is not inspect.Parameter.empty:
-            continue
-        annotation = str(parameter.annotation).lower()
-        values[parameter.name] = [] if "list" in annotation else "smoke fixture"
-    return values
+    except (TypeError, ValueError) as exc:
+        raise ValueError("transition tool has no inspectable provider signature") from exc
+    parameters = tuple(signature.parameters.values())
+    if (
+        len(parameters) != 1
+        or parameters[0].name != "summary"
+        or (parameters[0].annotation is not str and parameters[0].annotation != "str")
+        or parameters[0].default is not inspect.Parameter.empty
+        or parameters[0].kind
+        not in {inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY}
+    ):
+        raise ValueError("transition tool must expose exactly one required summary: str argument")
+    return {"summary": "smoke fixture summary"}
 
 
 async def _exercise_custom_runner(plugin: _SmokePlugin) -> tuple[object, object, bool, str]:
@@ -265,6 +221,9 @@ async def _exercise_custom_runner(plugin: _SmokePlugin) -> tuple[object, object,
     build_runner = plugin.build_runner
     runner = build_runner(config, None)
     calls: dict[str, int] = {}
+    prompted_phases: list[str] = []
+    prompted_phase_indices: list[int] = []
+    transition_results: list[dict[str, object]] = []
 
     async def fake_run_phase(**kwargs: object) -> None:
         prompt = str(kwargs.get("system_prompt", "")).lower()
@@ -272,10 +231,19 @@ async def _exercise_custom_runner(plugin: _SmokePlugin) -> tuple[object, object,
             (
                 name
                 for name in ("plan", "design", "verify", "generate", "review", "report")
-                if name in prompt
+                if f"you are in the {name} phase" in prompt
             ),
-            "phase",
+            next(
+                (
+                    name
+                    for name in ("plan", "design", "verify", "generate", "review", "report")
+                    if name in prompt
+                ),
+                "phase",
+            ),
         )
+        prompted_phases.append(phase)
+        prompted_phase_indices.append(config.workflow_handle.phase_index)
         calls[phase] = calls.get(phase, 0) + 1
         # The first fake response is prose-only. The phase must remain in its
         # inner loop; only the second response calls a control tool.
@@ -297,10 +265,34 @@ async def _exercise_custom_runner(plugin: _SmokePlugin) -> tuple[object, object,
             return
         result = control(**_tool_arguments(control))
         if inspect.isawaitable(result):
-            await result
+            result = await result
+        if not isinstance(result, dict) or result.get("ok") is not True:
+            raise ValueError("transition did not return a successful structured acknowledgment")
+        outcome = result.get("outcome")
+        summary_chars = result.get("summary_chars")
+        if (
+            not isinstance(outcome, str)
+            or not outcome
+            or not isinstance(summary_chars, int)
+            or isinstance(summary_chars, bool)
+            or not 0 < summary_chars <= 4_000
+        ):
+            raise ValueError(
+                "transition acknowledgment omitted its fixed outcome or bounded summary"
+            )
+        transition_results.append(dict(result))
+        config.workflow_handle.calls.append(("transition", dict(result)))
 
     runner.run_phase = fake_run_phase
     context = await runner.run("bounded smoke intent")
+    if (
+        len(prompted_phase_indices) < 2
+        or prompted_phase_indices[0] != prompted_phase_indices[1]
+        or prompted_phases[0] != prompted_phases[1]
+    ):
+        raise ValueError("prose-only turn advanced state without a successful transition call")
+    if not transition_results:
+        raise ValueError("fake phase driver observed no summary-only transition acknowledgment")
     handle = config.workflow_handle
     boundary_reasons = [
         str(value)
@@ -312,6 +304,16 @@ async def _exercise_custom_runner(plugin: _SmokePlugin) -> tuple[object, object,
             "fake handle observed no completed-phase boundary checkpoint; "
             "phase-entry persistence alone is insufficient"
         )
+    transition_index = next(
+        index for index, (name, _value) in enumerate(handle.calls) if name == "transition"
+    )
+    checkpoint_index = next(
+        index
+        for index, (name, value) in enumerate(handle.calls)
+        if name == "checkpoint" and str(value).startswith("phase_boundary:")
+    )
+    if transition_index >= checkpoint_index:
+        raise ValueError("phase boundary was checkpointed before the transition was recorded")
     codec = plugin.checkpoint_context_to_payload
     payload = codec(context)
     json.dumps(payload, ensure_ascii=False, sort_keys=True)
@@ -329,7 +331,7 @@ async def _exercise_custom_runner(plugin: _SmokePlugin) -> tuple[object, object,
         context,
         restored,
         bool(calls),
-        "fake provider, transition tools, and completed-phase boundary checkpoints exercised",
+        "fake provider exercised prose-only turns and summary-only record transitions",
     )
 
 
@@ -355,8 +357,11 @@ def run_generated_workflow_smoke(
     expected_name: str = "",
     root: Path | None = None,
 ) -> SmokeReport:
-    """Run a bounded executable-shape smoke check without external effects."""
-    from agenthicc.workflows.create_workflow.validation import validate_workflow_file
+    """Run a bounded executable-shape smoke check with a fake-provider harness."""
+    from agenthicc.workflows.create_workflow.validation import (
+        _import_plugins,
+        validate_workflow_file,
+    )
 
     candidate = Path(path).expanduser()
     if not candidate.is_absolute():
@@ -397,29 +402,8 @@ def run_generated_workflow_smoke(
         except (OSError, UnicodeDecodeError) as exc:
             return SmokeReport(str(resolved), False, errors=(f"{source_path}: {exc}",))
         sources.append(source)
-        forbidden = _forbidden_imports(source)
-        if forbidden:
-            return SmokeReport(
-                str(resolved),
-                False,
-                checks=(
-                    SmokeCheck(
-                        "no_external_calls",
-                        "fail",
-                        f"forbidden external import(s): {', '.join(forbidden)}",
-                    ),
-                ),
-                errors=("smoke execution cannot permit external service imports",),
-            )
 
     combined = "\n".join(sources)
-    checks.append(
-        SmokeCheck(
-            "no_external_calls",
-            "pass",
-            "no network, browser, MCP, shell, or subprocess imports are present",
-        )
-    )
     validation: ValidationReport = validate_workflow_file(
         str(resolved),
         expected_name=expected_name,
@@ -502,13 +486,25 @@ def run_generated_workflow_smoke(
         from agenthicc.workflows.plugin import WorkflowPlugin
 
         try:
-            plugins = load_python_workflows(resolved, source="smoke")
+            visible_plugins = load_python_workflows(resolved, source="smoke")
+            if visible_plugins:
+                raise ValueError("pending package was visible to normal workflow discovery")
+            checks.append(
+                SmokeCheck(
+                    "pending_discovery",
+                    "pass",
+                    "normal workflow discovery excluded the run-owned pending package",
+                )
+            )
+            plugins, _namespace, import_error = _import_plugins(resolved)
+            if import_error:
+                raise ValueError(f"pending package import failed: {import_error}")
             plugin = next(
                 (item for item in plugins if not expected_name or item.name == expected_name),
                 plugins[0] if plugins else None,
             )
             if plugin is None:
-                raise ValueError("normal loader returned no plugin for smoke execution")
+                raise ValueError("package import returned no plugin for smoke execution")
             custom = getattr(plugin.build_runner, "__func__", None) is not getattr(
                 WorkflowPlugin.build_runner, "__func__", None
             )
@@ -537,6 +533,14 @@ def run_generated_workflow_smoke(
                         "phase_boundary_checkpoint",
                         "pass",
                         "fake handle observed at least one post-transition boundary checkpoint",
+                    )
+                )
+                checks.append(
+                    SmokeCheck(
+                        "record_only_transition",
+                        "pass",
+                        "summary-only transition returned a fixed outcome and bounded summary "
+                        "acknowledgment before the next-phase checkpoint",
                     )
                 )
                 propagated = bool(

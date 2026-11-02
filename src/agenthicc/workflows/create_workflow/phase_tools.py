@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from agenthicc.tools.approval import ApprovalBroker
+    from agenthicc.workflows.create_workflow.authoring import AuthoringLease
 
 # A workflow name must be a python-module-safe slug so the generated package
 # can live at ``.agenthicc/workflows/<name>/`` and be importable by the loader.
@@ -236,55 +237,44 @@ def make_design_tools(
 def make_generation_tools(
     generate_event: asyncio.Event,
     generate_data: dict[str, object],
+    lease: AuthoringLease,
 ) -> list[Callable[..., object]]:
-    """Return ``[mark_generation_complete]``.
-
-    Set once the agent has written the workflow package to disk.  ``generate_data``
-    captures ``{"summary": str, "path": str}``; the runner validates the path
-    deterministically after the turn returns.  If the turn ends without this tool
-    firing, the generate phase retries.
-    """
+    """Return a runner-bound completion signal for the exact pending package."""
     from lauren_ai._tools import tool as _tool
     from agenthicc.tools.capabilities import tool_control
+    from agenthicc.workflows.create_workflow.authoring import AuthoringError, scan_package
 
     @tool_control
     @_tool()
-    async def mark_generation_complete(summary: str, path: str) -> dict[str, object]:
-        """Signal that the workflow package has been fully written to disk.
+    async def mark_generation_complete(summary: str) -> dict[str, object]:
+        """Signal completion after the canonical package contains runner.py.
 
-        Call this ONLY after you have written the complete WorkflowPlugin package
-        to the run-owned draft path provided by the generation prompt using the
-        write tools. The directory must contain runner.py; keep workflow-specific
-        tools in sibling files inside it. Publication happens later, after
-        deterministic validation and human approval.
-        The validation phase will import and check the package automatically. Do not call it more
-        than once, and do not call it before the file is written.
+        The runner derives and verifies the only package path. The model cannot
+        select or redirect the generation, validation, or checkpoint target.
 
         Args:
-            summary: One or two sentences describing the generated workflow.
-            path: The path to the workflow directory that was written.
+            summary: Bounded description of the workflow package that was written.
         """
-        if not isinstance(summary, str) or not summary.strip():
+        if not isinstance(summary, str) or not summary.strip() or len(summary.strip()) > 4000:
             return _transition_failure(
-                "The generation transition was rejected: completion summary must be non-empty.",
-                "Finish writing the workflow package and call "
-                "mark_generation_complete(summary, path) with a concise summary of the package.",
+                "The generation transition was rejected: completion summary must contain 1-4000 characters.",
+                "Finish writing the package and call mark_generation_complete(summary) with a concise summary.",
             )
-        if not isinstance(path, str) or not path.strip():
+        try:
+            manifest = await asyncio.to_thread(scan_package, lease)
+        except (AuthoringError, OSError, ValueError) as exc:
             return _transition_failure(
-                "The generation transition was rejected: the written file path must be provided.",
-                "Write the workflow directory, then call mark_generation_complete(summary, path) "
-                "with the exact path you wrote to.",
+                f"The canonical workflow package is incomplete or unsafe: {type(exc).__name__}: {exc}",
+                "Write the complete package under the provided canonical workflow target, then retry.",
             )
         generate_data["summary"] = summary.strip()
-        generate_data["path"] = path.strip()
+        generate_data["manifest"] = manifest
         generate_event.set()
         return {
             "ok": True,
             "message": (
-                "Generation marked complete and handed to the validation phase. Write a "
-                "single short confirmation (one sentence) and stop — do not keep editing. "
-                "The validation phase will start automatically."
+                "Canonical package verified and handed to validation. Write one short confirmation "
+                "and stop; do not edit the package after this transition."
             ),
         }
 

@@ -23,7 +23,6 @@ from lauren_ai._transport._mock import MockTransport
 from agenthicc.agents.registry import build_agents_registry
 from agenthicc.config import AgenthiccConfig
 from agenthicc.kernel import AppState, EventProcessor, SecurityPolicy, SystemSettings
-from agenthicc.tools.fs.agent_tools import read_file, write_file
 from agenthicc.tui.conversation_store import AppState as TUIAppState
 from agenthicc.workflows.config import WorkflowConfig
 from agenthicc.workflows.create_workflow import CreateWorkflow, CreateWorkflowRunner
@@ -79,7 +78,7 @@ class DocReview(WorkflowPlugin):
     phases = [PhaseSpec(name="draft", next="reviewww")]
 '''
 
-_TARGET = ".agenthicc/workflows/doc_review.py"
+_TARGET = "runner.py"
 
 
 # ── transport plumbing ────────────────────────────────────────────────────────
@@ -134,8 +133,8 @@ _DESIGN_STEPS: tuple[tuple[str, dict] | str, ...] = (
 def _generate_steps(source: str) -> tuple[tuple[str, dict] | str, ...]:
     return (
         ("write_file", {"path": _TARGET, "content": source}),
-        ("mark_generation_complete", {"summary": "wrote doc_review", "path": _TARGET}),
-        "The workflow file is written.",
+        ("mark_generation_complete", {"summary": "wrote doc_review"}),
+        "The workflow package is written.",
     )
 
 
@@ -150,7 +149,7 @@ _REJECT_STEPS: tuple[tuple[str, dict] | str, ...] = (
 )
 
 _SUMMARY_STEPS: tuple[tuple[str, dict] | str, ...] = (
-    "Created doc_review at .agenthicc/workflows/doc_review.py with phases draft → review.",
+    "Created the doc_review package at .agenthicc/workflows/doc_review with phases draft → review.",
 )
 
 
@@ -191,7 +190,7 @@ def _runner(app_state, processor, mock: MockTransport) -> CreateWorkflowRunner:
         approval_svc=None,  # headless: design approval auto-grants
         cfg=cfg,
         skills={},
-        plugin_tools=[write_file, read_file],
+        plugin_tools=[],
         mcp_registry=None,
         mention_cache=MagicMock(),
         agents_registry=build_agents_registry(),
@@ -278,7 +277,7 @@ async def test_e2e_authored_workflow_ships_and_runs_its_own_state_machine(
     monkeypatch.chdir(tmp_path)
     from agenthicc.workflows.create_workflow.inspection_tools import _RUNNER_EXAMPLE
 
-    target = ".agenthicc/workflows/release_check.py"
+    target = "runner.py"
     mock = _script(
         (
             "request_design_approval",
@@ -290,7 +289,7 @@ async def test_e2e_authored_workflow_ships_and_runs_its_own_state_machine(
         ),
         "Design finalized.",
         ("write_file", {"path": target, "content": _RUNNER_EXAMPLE}),
-        ("mark_generation_complete", {"summary": "wrote release_check", "path": target}),
+        ("mark_generation_complete", {"summary": "wrote release_check"}),
         "File written.",
         ("approve_workflow", {"summary": "imports, and the runner matches the design"}),
         "Approved.",
@@ -491,59 +490,53 @@ async def test_e2e_design_that_never_finalizes_fails_the_run(
     assert ctx.artifacts == {}
 
 
-async def test_e2e_generation_without_a_file_is_reported_to_the_agent(
+async def test_e2e_generation_without_a_file_is_not_marked_complete(
     app_state, processor, tmp_path, monkeypatch
 ):
-    """Marking generation complete without writing anything fails validation.
-
-    The repair budget is set to zero so the *first* validation report is also the
-    final one, letting the test assert on exactly what the agent was shown.
-    """
+    """Completion cannot advance until runner.py is present in the package."""
     monkeypatch.chdir(tmp_path)
     mock = _script(
         *_DESIGN_STEPS,
-        ("mark_generation_complete", {"summary": "all done", "path": _TARGET}),
+        ("mark_generation_complete", {"summary": "all done"}),
         "Marked complete.",
-        *_REJECT_STEPS,
     )
     runner = _runner(app_state, processor, mock)
-    runner._max_repair_cycles = 0
+    runner._max_attempts = 1
 
     ctx = await runner.run("create a doc_review workflow")
     await processor.drain()
 
-    report = ctx.artifacts["validate"].content
-    assert "result: FAIL" in report
-    assert "No file exists" in report
+    assert "exhausted 1 attempts" in ctx.fail_reason
     assert app_state.workflow_run().status == "failed"
-    assert not (tmp_path / _TARGET).exists()
+    assert "generate" not in ctx.artifacts
+    assert "validate" not in ctx.artifacts
+    assert not (tmp_path / ".agenthicc" / "workflows" / "doc_review" / "runner.py").exists()
 
 
 async def test_e2e_writing_outside_the_workspace_is_refused(
     app_state, processor, tmp_path, monkeypatch
 ):
-    """A path outside the workspace root is never imported, even if it is valid."""
+    """A package writer cannot traverse out of its run-owned package root."""
     monkeypatch.chdir(tmp_path)
-    outside = tmp_path.parent / "escaped_workflow.py"
-    outside.write_text(_GOOD_SOURCE, encoding="utf-8")
+    outside = tmp_path / "outside.py"
+    outside.write_text("sentinel", encoding="utf-8")
 
     mock = _script(
         *_DESIGN_STEPS,
-        ("mark_generation_complete", {"summary": "wrote it", "path": str(outside)}),
+        ("write_file", {"path": "../../../outside.py", "content": _GOOD_SOURCE}),
+        ("mark_generation_complete", {"summary": "wrote it"}),
         "Marked complete.",
-        *_REJECT_STEPS,
     )
     runner = _runner(app_state, processor, mock)
-    runner._max_repair_cycles = 0
+    runner._max_attempts = 1
 
     ctx = await runner.run("create a doc_review workflow")
     await processor.drain()
 
-    report = ctx.artifacts["validate"].content
-    assert "outside the workspace root" in report
-    assert ctx.artifacts["validate"].metadata["ok"] is False
-    assert ctx.artifacts["validate"].metadata["plugin_names"] == []
+    assert outside.read_text(encoding="utf-8") == "sentinel"
+    assert "exhausted 1 attempts" in ctx.fail_reason
     assert app_state.workflow_run().status == "failed"
+    assert not (tmp_path / ".agenthicc" / "workflows" / "doc_review" / "runner.py").exists()
 
 
 # ── shared context across phases ──────────────────────────────────────────────
@@ -593,6 +586,9 @@ async def test_e2e_artifacts_record_what_each_phase_produced(
         "summarize": "summary",
     }
     assert ctx.artifacts["design"].metadata["workflow_name"] == "doc_review"
-    assert Path(str(ctx.artifacts["generate"].metadata["path"])).name == "doc_review.py"
+    assert Path(str(ctx.artifacts["generate"].metadata["path"])).name == "doc_review"
+    assert Path(str(ctx.artifacts["generate"].metadata["target_path"])) == (
+        tmp_path / ".agenthicc" / "workflows" / "doc_review"
+    )
     assert ctx.artifacts["validate"].metadata["errors"] == []
     assert ctx.artifacts["summarize"].metadata["repair_cycles"] == 0

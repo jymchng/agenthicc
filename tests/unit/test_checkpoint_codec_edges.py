@@ -131,10 +131,17 @@ def test_workflow_context_codec_and_custom_codec_failures() -> None:
         {"kind": "CodePlanContext", "fields": {"state": "BAD"}}
     )
     assert code_plan_fallback.state.name == "PLAN"
-    create_fallback = context_from_payload(
-        {"kind": "CreateWorkflowContext", "fields": {"state": "BAD"}}
-    )
-    assert create_fallback.state.name == "DESIGN"
+    with pytest.raises(CheckpointValidationError, match="invalid state"):
+        context_from_payload(
+            {
+                "kind": "CreateWorkflowContext",
+                "fields": {
+                    "state": "BAD",
+                    "authoring_lease": None,
+                    "package_manifest": None,
+                },
+            }
+        )
 
 
 def test_checkpoint_from_dict_rejects_schema_identity_and_numeric_errors() -> None:

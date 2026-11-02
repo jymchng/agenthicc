@@ -26,6 +26,7 @@ from agenthicc.tools.capabilities import ToolCapability, get_tool_capabilities
 from agenthicc.tui.conversation_store import AppState
 from agenthicc.tui.runtime.mode_manager import ModeManager
 from agenthicc.workflows.config import WorkflowConfig
+from agenthicc.workflows.create_workflow.authoring import AuthoringLease, PackageManifest
 from agenthicc.workflows.create_workflow.definition import CreateWorkflow, CreateWorkflowParams
 from agenthicc.workflows.create_workflow.inspection_tools import make_inspection_tools
 from agenthicc.workflows.create_workflow.phase_tools import (
@@ -83,19 +84,56 @@ _RUNNER_SOURCE = '''\
 
 from __future__ import annotations
 
+import asyncio
+from dataclasses import dataclass
+
 from agenthicc.workflows.base_runner import BaseWorkflowRunner
 from agenthicc.workflows.plugin import PhaseSpec, WorkflowPlugin
+
+
+@dataclass
+class DemoContext:
+    intent: str
+    run_id: str
+    shared_memory: object | None = None
+
+    @property
+    def state(self) -> DemoContext:
+        return self
+
+    @property
+    def is_terminal(self) -> bool:
+        return True
 
 
 class DemoRunner(BaseWorkflowRunner):
     def __init__(self, config, mode_manager=None):
         self._cfg = config
 
-    async def run(self, intent: str) -> str:
-        return intent
+    async def run(self, intent: str) -> DemoContext:
+        handle = self._cfg.workflow_handle
+        context = DemoContext(intent, handle.run_id, self._cfg.session_memory)
+        handle.attach_context(context)
+        event = asyncio.Event()
+        handoff: dict[str, object] = {}
+        transition = _make_transition(event, handoff)
+        for attempt in range(2):
+            await self.run_phase(
+                intent=intent,
+                tools=[transition],
+                stable_system_prompt=CACHE_CONTRACT,
+                system_prompt="You are in the review phase.",
+            )
+            if event.is_set():
+                break
+        if not event.is_set():
+            raise RuntimeError("review phase did not commit its transition")
+        handle.update_phase("one", 0, 2)
+        handle.save_checkpoint(reason="phase_boundary:one")
+        return context
 
-    async def resume(self, context: object) -> str:
-        return ""
+    async def resume(self, context: object) -> object:
+        return context
 
 
 class Demo(WorkflowPlugin):
@@ -113,12 +151,55 @@ class Demo(WorkflowPlugin):
 
     @classmethod
     def checkpoint_context_to_payload(cls, context):
-        return {"context": str(context)}
+        assert isinstance(context, DemoContext)
+        return {"intent": context.intent, "run_id": context.run_id}
 
     @classmethod
     def checkpoint_context_from_payload(cls, payload, memory=None):
-        return payload.get("context", "")
+        return DemoContext(
+            intent=str(payload["intent"]),
+            run_id=str(payload["run_id"]),
+            shared_memory=memory,
+        )
 '''
+
+_STRICT_RUNNER_SOURCE = (
+    _RUNNER_SOURCE
+    + """
+
+import asyncio
+from lauren_ai._tools import tool as _tool
+from agenthicc.tools.capabilities import tool_control
+from agenthicc.workflows.phase_transition import record_phase_transition
+
+CACHE_CONTRACT = "Ask clarifying questions for ambiguous requirements; do not guess. " \
+    "Explain ask_user timed_out results, best-effort decisions, and assumptions. " \
+    "Inherit workspace_access and preserve conversation_id."
+
+async def _run_phase(self, intent: str) -> str:
+    return await self.run_phase(
+        intent=intent,
+        stable_system_prompt=CACHE_CONTRACT,
+        system_prompt=intent,
+    )
+
+def _make_transition(event: asyncio.Event, handoff: dict[str, object]):
+    @tool_control
+    @_tool()
+    async def finalize(summary: str) -> dict[str, object]:
+        return record_phase_transition(
+            event, handoff, outcome="complete", summary=summary
+        )
+    return finalize
+
+_LIFECYCLE_CONTRACT = (
+    "PhaseAnnotation publish_phase_annotation update_phase checkpoint_phase_boundary "
+    "save_checkpoint reconcile_phase_cursor plan_version phase_attempts completed_phases "
+    "phase_history last_boundary PhaseBoundaryError raise phase_index total_phases "
+    "attach_context"
+)
+"""
+)
 
 
 def _write(root: Path, name: str, source: str) -> Path:
@@ -165,6 +246,54 @@ def _runner(*, max_attempts: int = 3, max_turns: int = 5) -> CreateWorkflowRunne
 
 def _ctx(intent: str = "make me a workflow") -> CreateWorkflowContext:
     return CreateWorkflowContext(intent=intent, run_id="run", shared_memory=MagicMock())
+
+
+def _prepare_authoring_lease(root: Path, workflow_name: str = "demo") -> AuthoringLease:
+    from agenthicc.workflows.create_workflow.authoring import (
+        begin_authoring,
+        inspect_existing_target,
+        prepare_authoring,
+    )
+
+    snapshot = inspect_existing_target(root, run_id="run", workflow_name=workflow_name)
+    lease = prepare_authoring(
+        root,
+        run_id="run",
+        workflow_name=workflow_name,
+        expected_original_fingerprint=snapshot.fingerprint,
+    )
+    begin_authoring(lease)
+    return lease
+
+
+def _authoring_context(root: Path, source: str = _STRICT_RUNNER_SOURCE) -> CreateWorkflowContext:
+    from agenthicc.workflows.create_workflow.authoring import scan_package
+
+    ctx = _ctx()
+    ctx.design = "the design"
+    ctx.workflow_name = "demo"
+    lease = _prepare_authoring_lease(root)
+    ctx.authoring_lease = lease
+    ctx.generated_path = lease.target_path
+    package = Path(lease.target_path)
+    package.mkdir(parents=True, exist_ok=True)
+    (package / "runner.py").write_text(source, encoding="utf-8")
+    ctx.package_manifest = scan_package(lease)
+    return ctx
+
+
+async def _write_generated_package(tools: object, source: str = _STRICT_RUNNER_SOURCE) -> None:
+    result = await _call(tools, "write_file", "runner.py", source)
+    assert isinstance(result, dict) and result["ok"] is True
+
+
+async def _complete_generation(
+    tools: object,
+    summary: str = "wrote it",
+    source: str = _STRICT_RUNNER_SOURCE,
+) -> object:
+    await _write_generated_package(tools, source)
+    return await _call(tools, "mark_generation_complete", summary)
 
 
 def _by_name(tools: object) -> dict[str, object]:
@@ -435,22 +564,43 @@ def _denying_approval(*, allowed: bool, message: str) -> object:
 # ── phase_tools: generation ───────────────────────────────────────────────────
 
 
-async def test_mark_generation_complete_records_summary_and_path() -> None:
+async def test_mark_generation_complete_records_summary_and_package_manifest(
+    tmp_path: Path,
+) -> None:
     event, data = asyncio.Event(), {}
-    tools = make_generation_tools(event, data)
+    lease = _prepare_authoring_lease(tmp_path)
+    (Path(lease.target_path) / "runner.py").write_text(_RUNNER_SOURCE, encoding="utf-8")
+    tools = make_generation_tools(event, data, lease)
     assert set(_by_name(tools)) == {"mark_generation_complete"}
-    result = await _call(tools, "mark_generation_complete", " wrote it ", " a/b.py ")
+    result = await _call(tools, "mark_generation_complete", " wrote it ")
     assert isinstance(result, dict)
     assert result["ok"] is True
     assert event.is_set()
-    assert data == {"summary": "wrote it", "path": "a/b.py"}
+    assert data["summary"] == "wrote it"
+    manifest = data["manifest"]
+    assert isinstance(manifest, PackageManifest)
+    assert manifest.workflow_name == "demo"
+    assert manifest.target_path == lease.target_path
 
 
-@pytest.mark.parametrize(("summary", "path"), [("", "a.py"), ("wrote it", ""), ("  ", "  ")])
-async def test_mark_generation_complete_validates_payload(summary: str, path: str) -> None:
+@pytest.mark.parametrize("summary", ["", "  ", "x" * 4001])
+async def test_mark_generation_complete_validates_summary(summary: str, tmp_path: Path) -> None:
     event, data = asyncio.Event(), {}
-    tools = make_generation_tools(event, data)
-    result = await _call(tools, "mark_generation_complete", summary, path)
+    lease = _prepare_authoring_lease(tmp_path)
+    (Path(lease.target_path) / "runner.py").write_text(_RUNNER_SOURCE, encoding="utf-8")
+    tools = make_generation_tools(event, data, lease)
+    result = await _call(tools, "mark_generation_complete", summary)
+    assert isinstance(result, dict)
+    assert result["ok"] is False
+    assert not event.is_set()
+    assert data == {}
+
+
+async def test_mark_generation_complete_rejects_package_without_runner(tmp_path: Path) -> None:
+    event, data = asyncio.Event(), {}
+    lease = _prepare_authoring_lease(tmp_path)
+    tools = make_generation_tools(event, data, lease)
+    result = await _call(tools, "mark_generation_complete", "written")
     assert isinstance(result, dict)
     assert result["ok"] is False
     assert not event.is_set()
@@ -624,8 +774,12 @@ async def test_show_example_workflow_defaults_to_the_custom_runner_shape(
         "run_phase(",
         "checkpoint_context_to_payload",
         "checkpoint_context_from_payload",
-        "successful submit_release_plan(plan) call changes phase",
-        "transition tools changes phase",
+        "submit_release_plan(summary)",
+        'record_phase_transition(event, data, outcome="planned", summary=summary)',
+        "release_passed(summary)",
+        "release_blocked(summary)",
+        "verification happens in the phase, not in the tools",
+        "from agenthicc.workflows.phase_transition import record_phase_transition",
         "from agenthicc.tools.capabilities import tool_control",
         "@tool_control",
     ):
@@ -718,8 +872,77 @@ async def test_strict_validation_catches_factory_local_tool_control_mistakes(
         strict_cache_contract=True,
     )
     assert not report.ok
-    assert any("agenthicc.tools.capabilities" in error for error in report.errors)
     assert any("bare decorator" in error for error in report.errors)
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "expected"),
+    [
+        (
+            "async def submit_release_plan(summary: str)",
+            "async def submit_release_plan(plan: str)",
+            "exactly one required provider-facing parameter",
+        ),
+        (
+            "async def release_passed(summary: str)",
+            "async def release_passed(summary: str, details: str)",
+            "exactly one required provider-facing parameter",
+        ),
+        (
+            "async def release_passed(summary: str)",
+            "async def release_passed(summary: str, path: str)",
+            "exactly one required provider-facing parameter",
+        ),
+        (
+            "async def release_passed(summary: str)",
+            "async def release_passed(summary: str, decision: bool)",
+            "exactly one required provider-facing parameter",
+        ),
+        (
+            "async def release_passed(summary: str)",
+            "async def release_passed(summary: object)",
+            "annotated str",
+        ),
+        (
+            "from agenthicc.workflows.phase_transition import record_phase_transition",
+            "from agenthicc.workflows.phase_transition import "
+            "record_phase_transition as transition_recorder",
+            "must delegate to the supported",
+        ),
+        (
+            'return record_phase_transition(event, data, outcome="passed", summary=summary)',
+            'if summary.startswith("PASS"):\n'
+            '            return record_phase_transition(event, data, outcome="passed", summary=summary)\n'
+            '            return {"ok": False}',
+            "must only return one direct record_phase_transition",
+        ),
+    ],
+)
+async def test_strict_validation_enforces_summary_only_recording_transitions(
+    tmp_path: Path,
+    old: str,
+    new: str,
+    expected: str,
+) -> None:
+    example = await _call(make_inspection_tools(), "show_example_workflow")
+    assert isinstance(example, dict)
+    source = example["source"]
+    assert isinstance(source, str)
+    assert old in source
+    broken = source.replace(old, new, 1)
+    path = tmp_path / "workflows" / "release_check"
+    path.mkdir(parents=True)
+    (path / "runner.py").write_text(broken, encoding="utf-8")
+
+    report = validate_workflow_file(
+        str(path),
+        expected_name="release_check",
+        root=tmp_path,
+        strict_cache_contract=True,
+    )
+
+    assert not report.ok
+    assert any(expected in error for error in report.errors), report.render()
 
 
 async def test_prompt_cache_inspection_describes_contract_and_template() -> None:
@@ -898,8 +1121,20 @@ async def test_describe_transition_tool_pattern_returns_canonical_import_and_dec
     assert isinstance(result, dict)
     assert "from agenthicc.tools.capabilities import tool_control" in result["canonical_import"]
     assert (
+        "from agenthicc.workflows.phase_transition import record_phase_transition"
+        in result["canonical_import"]
+    )
+    assert (
         result["canonical_decorators"] == "@tool_control\n@tool()\nasync def transition(...): ..."
     )
+    assert result["provider_schema"] == {
+        "type": "object",
+        "properties": {"summary": {"type": "string"}},
+        "required": ["summary"],
+        "additionalProperties": False,
+    }
+    assert result["summary_contract"]["maximum_characters"] == 4_000  # type: ignore[index]
+    assert "not verified" in str(result["record_only_rule"])
     assert any("never write @tool_control()" in rule for rule in result["decorator_rules"])
     assert any("lauren_ai._tools" in rule for rule in result["decorator_rules"])
 
@@ -1029,7 +1264,11 @@ def test_validation_rejects_a_custom_runner_without_checkpoint_codecs(tmp_path: 
 def test_validation_rejects_a_custom_runner_with_only_one_codec(tmp_path: Path) -> None:
     source = _RUNNER_SOURCE.replace(
         "    @classmethod\n    def checkpoint_context_from_payload(cls, payload, memory=None):\n"
-        '        return payload.get("context", "")\n',
+        "        return DemoContext(\n"
+        '            intent=str(payload["intent"]),\n'
+        '            run_id=str(payload["run_id"]),\n'
+        "            shared_memory=memory,\n"
+        "        )\n",
         "",
     )
     path = _write(tmp_path, "demo.py", source)
@@ -1074,7 +1313,7 @@ def test_validation_warns_when_build_runner_returns_a_foreign_runner(tmp_path: P
 
 def test_validation_rejects_an_abstract_runner(tmp_path: Path) -> None:
     source = _RUNNER_SOURCE.replace(
-        '    async def resume(self, context: object) -> str:\n        return ""\n', ""
+        "    async def resume(self, context: object) -> object:\n        return context\n", ""
     )
     path = _write(tmp_path, "demo.py", source)
     report = validate_workflow_file(str(path), expected_name="demo", root=tmp_path)
@@ -1749,8 +1988,8 @@ async def test_design_prompt_requires_the_workflow_to_ship_its_own_runner() -> N
     assert "prose such as 'done' never advances" in prompt
 
 
-async def test_generate_prompt_requires_writing_the_runner_not_a_stub() -> None:
-    runner = _runner()
+async def test_generate_prompt_requires_writing_the_runner_not_a_stub(tmp_path: Path) -> None:
+    runner = _validating_runner(tmp_path)
     ctx = _ctx()
     ctx.design = "the design"
     ctx.workflow_name = "demo"
@@ -1760,13 +1999,13 @@ async def test_generate_prompt_requires_writing_the_runner_not_a_stub() -> None:
         prompt = kwargs["system_prompt"]
         assert isinstance(prompt, str)
         prompts.append(prompt)
-        await _call(kwargs["tools"], "mark_generation_complete", "wrote it", "x/demo")
+        await _complete_generation(kwargs["tools"])
 
     runner._run_turn = turn  # type: ignore[method-assign]
     await runner._generate(ctx)
     prompt = prompts[0]
     assert "runner.py" in prompt
-    assert "workflow directory" in prompt
+    assert "canonical package directory already exists" in prompt
     assert "state enum" in prompt
     assert "build_runner()" in prompt
     assert "checkpoint_context_to_payload" in prompt
@@ -1778,9 +2017,9 @@ async def test_generate_prompt_requires_writing_the_runner_not_a_stub() -> None:
     assert "only a successful transition-tool call changes phase" in prompt
 
 
-async def test_generate_prompt_tells_the_agent_to_write_in_chunks() -> None:
+async def test_generate_prompt_tells_the_agent_to_write_in_chunks(tmp_path: Path) -> None:
     """A whole runner in one tool call can exceed the response limit and vanish."""
-    runner = _runner()
+    runner = _validating_runner(tmp_path)
     ctx = _ctx()
     ctx.design = "the design"
     ctx.workflow_name = "demo"
@@ -1790,21 +2029,21 @@ async def test_generate_prompt_tells_the_agent_to_write_in_chunks() -> None:
         prompt = kwargs["system_prompt"]
         assert isinstance(prompt, str)
         prompts.append(prompt)
-        await _call(kwargs["tools"], "mark_generation_complete", "wrote it", "x/demo")
+        await _complete_generation(kwargs["tools"])
 
     runner._run_turn = turn  # type: ignore[method-assign]
     await runner._generate(ctx)
     prompt = prompts[0]
     assert "WRITE THE PACKAGE IN CHUNKS" in prompt
-    assert "write_file(path/runner.py, content)" in prompt
-    assert "append_file(path/runner.py, content)" in prompt
-    assert "read_file(path/runner.py)" in prompt
+    assert "write_file(path, content)" in prompt
+    assert "append_file(runner.py, content)" in prompt
+    assert "read_file(runner.py)" in prompt
     assert "response limit" in prompt
     assert "Never re-write runner.py from the start after appending" in prompt
 
 
-async def test_generate_reminder_tells_the_agent_to_resume_not_restart() -> None:
-    runner = _runner(max_attempts=2)
+async def test_generate_reminder_tells_the_agent_to_resume_not_restart(tmp_path: Path) -> None:
+    runner = _validating_runner(tmp_path, max_attempts=2)
     ctx = _ctx()
     ctx.design = "the design"
     ctx.workflow_name = "demo"
@@ -1817,7 +2056,7 @@ async def test_generate_reminder_tells_the_agent_to_resume_not_restart() -> None
     await runner._generate(ctx)
     reminder = texts[1]
     assert "response was too long and was discarded" in reminder
-    assert "append_file(path/runner.py, content)" in reminder
+    assert "append_file(runner.py, content)" in reminder
     assert "Do not start the file over" in reminder
 
 
@@ -1863,26 +2102,27 @@ def _generated_ctx(path: str = ".agenthicc/workflows/demo") -> CreateWorkflowCon
     return ctx
 
 
-async def test_generate_transitions_to_validate_and_records_the_artifact() -> None:
-    runner = _runner()
+async def test_generate_transitions_to_validate_and_records_the_artifact(tmp_path: Path) -> None:
+    runner = _validating_runner(tmp_path)
     ctx = _ctx()
     ctx.design = "the design"
     ctx.workflow_name = "demo"
 
     async def turn(_text: str, **kwargs: object) -> None:
-        await _call(kwargs["tools"], "mark_generation_complete", "wrote it", "x/demo")
+        await _complete_generation(kwargs["tools"])
 
     runner._run_turn = turn  # type: ignore[method-assign]
     assert await runner._generate(ctx) is CreateWorkflowState.VALIDATE
-    assert ctx.generated_path == "x/demo"
+    assert ctx.generated_path == str(tmp_path / ".agenthicc" / "workflows" / "demo")
     assert ctx.generation_summary == "wrote it"
+    assert ctx.package_manifest is not None
     artifact = ctx.artifacts["generate"]
     assert artifact.kind == "workflow_file"
-    assert artifact.metadata["path"] == "x/demo"
+    assert artifact.metadata["path"] == ".agenthicc/workflows/demo"
 
 
-async def test_generate_injects_the_current_inspection_surface() -> None:
-    runner = _runner()
+async def test_generate_injects_the_current_inspection_surface(tmp_path: Path) -> None:
+    runner = _validating_runner(tmp_path)
     ctx = _ctx()
     ctx.design = "the design"
     ctx.workflow_name = "demo"
@@ -1890,7 +2130,7 @@ async def test_generate_injects_the_current_inspection_surface() -> None:
 
     async def turn(_text: str, **kwargs: object) -> None:
         captured.update(_by_name(kwargs["tools"]))
-        await _call(kwargs["tools"], "mark_generation_complete", "wrote it", "x/demo")
+        await _complete_generation(kwargs["tools"])
 
     runner._run_turn = turn  # type: ignore[method-assign]
     assert await runner._generate(ctx) is CreateWorkflowState.VALIDATE
@@ -1903,8 +2143,8 @@ async def test_generate_injects_the_current_inspection_surface() -> None:
     } <= captured
 
 
-async def test_generate_runs_in_yolo_mode_with_the_design_in_the_prompt() -> None:
-    runner = _runner()
+async def test_generate_runs_in_yolo_mode_with_the_design_in_the_prompt(tmp_path: Path) -> None:
+    runner = _validating_runner(tmp_path)
     ctx = _ctx()
     ctx.design = "phases: draft then review"
     ctx.workflow_name = "demo"
@@ -1913,7 +2153,7 @@ async def test_generate_runs_in_yolo_mode_with_the_design_in_the_prompt() -> Non
     async def turn(text: str, **kwargs: object) -> None:
         seen.update(kwargs)
         seen["text"] = text
-        await _call(kwargs["tools"], "mark_generation_complete", "wrote it", "x/demo")
+        await _complete_generation(kwargs["tools"])
 
     runner._run_turn = turn  # type: ignore[method-assign]
     await runner._generate(ctx)
@@ -1925,12 +2165,13 @@ async def test_generate_runs_in_yolo_mode_with_the_design_in_the_prompt() -> Non
     assert ".agenthicc/workflows/demo" in str(seen["text"])
 
 
-async def test_generate_tools_and_catalog_follow_its_declared_mode_from_plan() -> None:
-    """Generate writes under its declared Yolo mode even when entered from Plan.
+async def test_generate_keeps_package_writes_scoped_under_its_declared_mode(
+    tmp_path: Path,
+) -> None:
+    """Generate uses its declared Yolo mode but only package-scoped write tools.
 
-    Its write-capable project tools must be offered, and the authoring
-    snapshot its inspection tools report must describe Yolo, not the caller's
-    Plan ceiling. Resolving the mode for filtering must not activate it.
+    The authoring snapshot reports Yolo without activating it. Generic project
+    writers are withheld so generation cannot escape the leased package.
     """
     import dataclasses
 
@@ -1944,7 +2185,7 @@ async def test_generate_tools_and_catalog_follow_its_declared_mode_from_plan() -
         """A write-capable tool."""
         return path
 
-    runner = _runner()
+    runner = _validating_runner(tmp_path)
     runner._cfg = dataclasses.replace(runner._cfg, plugin_tools=[writer])
     manager = ModeManager(app_state=runner._cfg.app_state, default_name="Plan")
     runner._mode_manager = manager
@@ -1961,14 +2202,17 @@ async def test_generate_tools_and_catalog_follow_its_declared_mode_from_plan() -
         seen["names"] = set(tools)
         describe = tools["describe_authoring_session"]
         seen["session"] = await describe()  # type: ignore[operator]
-        await _call(kwargs["tools"], "mark_generation_complete", "wrote it", "x/demo")
+        await _complete_generation(kwargs["tools"])
 
     runner._run_turn = turn  # type: ignore[method-assign]
     assert await runner._generate(ctx) is CreateWorkflowState.VALIDATE
 
     generate_spec = next(spec for spec in CreateWorkflow.phases if spec.name == "generate")
     assert seen["mode"] == generate_spec.mode_override == "Yolo"
-    assert "writer" in seen["names"]  # type: ignore[operator]
+    names = seen["names"]
+    assert isinstance(names, set)
+    assert "writer" not in names
+    assert {"make_directory", "read_file", "write_file", "append_file"} <= names
     session = seen["session"]
     assert isinstance(session, dict) and session["active_mode"] == "Yolo"
     assert published == []
@@ -1982,17 +2226,26 @@ def test_every_phase_runs_under_the_mode_its_phasespec_declares() -> None:
         CreateWorkflowRunner._declared_mode("no_such_phase")
 
 
-async def test_generate_repair_prompt_includes_the_rejection_and_report() -> None:
-    runner = _runner()
-    ctx = _generated_ctx()
+async def test_generate_repair_retains_the_rejected_package_and_feedback(tmp_path: Path) -> None:
+    runner = _validating_runner(tmp_path)
+    rejected_source = (
+        _STRICT_RUNNER_SOURCE + "\n# rejected candidate remains available for repair\n"
+    )
+    ctx = _authoring_context(tmp_path, rejected_source)
     ctx.rejection_reason = "dangling next edge"
     ctx.validation_report = "[DETERMINISTIC VALIDATION REPORT]\nresult: FAIL"
+    rejected_manifest = ctx.package_manifest
     seen: dict[str, object] = {}
 
     async def turn(text: str, **kwargs: object) -> None:
         seen.update(kwargs)
         seen["text"] = text
-        await _call(kwargs["tools"], "mark_generation_complete", "fixed it", ctx.generated_path)
+        package = Path(ctx.authoring_lease.target_path) if ctx.authoring_lease else None
+        assert package is not None
+        assert (package / "runner.py").read_text(encoding="utf-8") == rejected_source
+        result = await _call(kwargs["tools"], "read_file", "runner.py")
+        assert isinstance(result, dict) and result["content"] == rejected_source
+        await _complete_generation(kwargs["tools"], "fixed it")
 
     runner._run_turn = turn  # type: ignore[method-assign]
     await runner._generate(ctx)
@@ -2000,12 +2253,15 @@ async def test_generate_repair_prompt_includes_the_rejection_and_report() -> Non
     assert isinstance(prompt, str)
     assert "dangling next edge" in prompt
     assert "result: FAIL" in prompt
+    assert rejected_manifest is not None
+    assert rejected_manifest.render() in prompt
     assert "dangling next edge" in str(seen["text"])
 
 
-async def test_generate_retries_then_fails_without_completion() -> None:
-    runner = _runner(max_attempts=2)
+async def test_generate_retries_then_fails_without_completion(tmp_path: Path) -> None:
+    runner = _validating_runner(tmp_path, max_attempts=2)
     ctx = _ctx()
+    ctx.workflow_name = "demo"
     seen: list[str] = []
 
     async def turn(text: str, **_kwargs: object) -> None:
@@ -2018,9 +2274,10 @@ async def test_generate_retries_then_fails_without_completion() -> None:
     assert "generate" not in ctx.artifacts
 
 
-async def test_generate_fails_fast_on_a_permanent_turn_error() -> None:
-    runner = _runner()
+async def test_generate_fails_fast_on_a_permanent_turn_error(tmp_path: Path) -> None:
+    runner = _validating_runner(tmp_path)
     ctx = _ctx()
+    ctx.workflow_name = "demo"
 
     async def turn(_text: str, **_kwargs: object) -> None:
         raise OSError("disk full")
@@ -2040,15 +2297,14 @@ def _validating_runner(tmp_path: Path, *, max_attempts: int = 3) -> CreateWorkfl
 
 
 async def test_validate_approves_a_loadable_workflow(tmp_path: Path) -> None:
-    _write(tmp_path, "demo.py", _GOOD_SOURCE)
     runner = _validating_runner(tmp_path)
-    ctx = _generated_ctx("workflows/demo.py")
+    ctx = _authoring_context(tmp_path)
 
     async def turn(_text: str, **kwargs: object) -> None:
         await _call(kwargs["tools"], "approve_workflow", "imports and matches the design")
 
     runner._run_turn = turn  # type: ignore[method-assign]
-    assert await runner._validate(ctx) is CreateWorkflowState.SUMMARIZE
+    assert await runner._validate(ctx) is CreateWorkflowState.SUMMARIZE, ctx.validation_report
     assert ctx.validation_summary == "imports and matches the design"
     assert ctx.rejection_reason == ""
     artifact = ctx.artifacts["validate"]
@@ -2058,9 +2314,8 @@ async def test_validate_approves_a_loadable_workflow(tmp_path: Path) -> None:
 
 
 async def test_validate_rejection_routes_back_to_generate(tmp_path: Path) -> None:
-    _write(tmp_path, "demo.py", _GOOD_SOURCE)
     runner = _validating_runner(tmp_path)
-    ctx = _generated_ctx("workflows/demo.py")
+    ctx = _authoring_context(tmp_path)
 
     async def turn(_text: str, **kwargs: object) -> None:
         await _call(kwargs["tools"], "reject_workflow", "the review phase prompt is wrong")
@@ -2072,9 +2327,8 @@ async def test_validate_rejection_routes_back_to_generate(tmp_path: Path) -> Non
 
 
 async def test_validate_overrides_an_approval_that_contradicts_the_report(tmp_path: Path) -> None:
-    _write(tmp_path, "demo.py", "class Nope:\n    pass\n")
     runner = _validating_runner(tmp_path)
-    ctx = _generated_ctx("workflows/demo.py")
+    ctx = _authoring_context(tmp_path, "class Nope:\n    pass\n")
 
     async def turn(_text: str, **kwargs: object) -> None:
         await _call(kwargs["tools"], "approve_workflow", "looks great to me")
@@ -2088,9 +2342,8 @@ async def test_validate_overrides_an_approval_that_contradicts_the_report(tmp_pa
 
 
 async def test_validate_rejection_appends_deterministic_errors(tmp_path: Path) -> None:
-    _write(tmp_path, "demo.py", "class Nope:\n    pass\n")
     runner = _validating_runner(tmp_path)
-    ctx = _generated_ctx("workflows/demo.py")
+    ctx = _authoring_context(tmp_path, "class Nope:\n    pass\n")
 
     async def turn(_text: str, **kwargs: object) -> None:
         await _call(kwargs["tools"], "reject_workflow", "it does not import")
@@ -2102,9 +2355,8 @@ async def test_validate_rejection_appends_deterministic_errors(tmp_path: Path) -
 
 
 async def test_validate_fails_when_the_repair_budget_is_exhausted(tmp_path: Path) -> None:
-    _write(tmp_path, "demo.py", _GOOD_SOURCE)
     runner = _validating_runner(tmp_path, max_attempts=1)
-    ctx = _generated_ctx("workflows/demo.py")
+    ctx = _authoring_context(tmp_path)
     ctx.repair_cycles = 1
 
     async def turn(_text: str, **kwargs: object) -> None:
@@ -2116,9 +2368,8 @@ async def test_validate_fails_when_the_repair_budget_is_exhausted(tmp_path: Path
 
 
 async def test_validate_retries_then_fails_without_a_verdict(tmp_path: Path) -> None:
-    _write(tmp_path, "demo.py", _GOOD_SOURCE)
     runner = _validating_runner(tmp_path, max_attempts=2)
-    ctx = _generated_ctx("workflows/demo.py")
+    ctx = _authoring_context(tmp_path)
     seen: list[str] = []
 
     async def turn(text: str, **_kwargs: object) -> None:
@@ -2130,27 +2381,23 @@ async def test_validate_retries_then_fails_without_a_verdict(tmp_path: Path) -> 
     assert "exhausted 2 attempts" in ctx.fail_reason
 
 
-async def test_validate_reports_a_missing_file_to_the_agent(tmp_path: Path) -> None:
+async def test_validate_fails_when_package_changes_after_generation(tmp_path: Path) -> None:
     runner = _validating_runner(tmp_path)
-    ctx = _generated_ctx("workflows/never_written.py")
-    prompts: list[str] = []
+    ctx = _authoring_context(tmp_path)
+    assert ctx.authoring_lease is not None
+    (Path(ctx.authoring_lease.target_path) / "runner.py").unlink()
 
-    async def turn(_text: str, **kwargs: object) -> None:
-        prompt = kwargs["system_prompt"]
-        assert isinstance(prompt, str)
-        prompts.append(prompt)
-        await _call(kwargs["tools"], "reject_workflow", "no file")
+    async def turn(_text: str, **_kwargs: object) -> None:
+        raise AssertionError("validation must reject package changes before the agent turn")
 
     runner._run_turn = turn  # type: ignore[method-assign]
-    assert await runner._validate(ctx) is CreateWorkflowState.GENERATE
-    assert "No file exists" in prompts[0]
-    assert "result: FAIL" in prompts[0]
+    assert await runner._validate(ctx) is CreateWorkflowState.FAILED
+    assert "Canonical package ownership check failed" in ctx.fail_reason
 
 
 async def test_validate_fails_fast_on_a_permanent_turn_error(tmp_path: Path) -> None:
-    _write(tmp_path, "demo.py", _GOOD_SOURCE)
     runner = _validating_runner(tmp_path)
-    ctx = _generated_ctx("workflows/demo.py")
+    ctx = _authoring_context(tmp_path)
 
     async def turn(_text: str, **_kwargs: object) -> None:
         raise RuntimeError("model refused")
@@ -2217,13 +2464,12 @@ async def _happy_turn(_text: str, **kwargs: object) -> None:
         await _call(kwargs["tools"], "request_design_approval", "the design", "demo")
         await _call(kwargs["tools"], "finalize_design", "the design", "demo")
     elif "mark_generation_complete" in tools:
-        await _call(kwargs["tools"], "mark_generation_complete", "wrote it", "workflows/demo.py")
+        await _complete_generation(kwargs["tools"])
     elif "approve_workflow" in tools:
         await _call(kwargs["tools"], "approve_workflow", "it loads")
 
 
 async def test_run_walks_every_phase_and_completes(tmp_path: Path) -> None:
-    _write(tmp_path, "demo.py", _GOOD_SOURCE)
     runner = _validating_runner(tmp_path)
     runner._run_turn = _happy_turn  # type: ignore[method-assign]
 
@@ -2241,7 +2487,6 @@ async def test_run_walks_every_phase_and_completes(tmp_path: Path) -> None:
 
 
 async def test_run_emits_the_expected_event_sequence(tmp_path: Path) -> None:
-    _write(tmp_path, "demo.py", _GOOD_SOURCE)
     runner = _validating_runner(tmp_path)
     runner._run_turn = _happy_turn  # type: ignore[method-assign]
 
@@ -2345,11 +2590,8 @@ async def test_run_loops_generate_after_a_rejection_then_completes(tmp_path: Pat
             await _call(kwargs["tools"], "request_design_approval", "the design", "demo")
             await _call(kwargs["tools"], "finalize_design", "the design", "demo")
         elif "mark_generation_complete" in tools:
-            source = _GOOD_SOURCE if rejected["done"] else "class Nope:\n    pass\n"
-            _write(tmp_path, "demo.py", source)
-            await _call(
-                kwargs["tools"], "mark_generation_complete", "wrote it", "workflows/demo.py"
-            )
+            source = _STRICT_RUNNER_SOURCE if rejected["done"] else "class Nope:\n    pass\n"
+            await _complete_generation(kwargs["tools"], source=source)
         elif "approve_workflow" in tools:
             if rejected["done"]:
                 await _call(kwargs["tools"], "approve_workflow", "now it loads")

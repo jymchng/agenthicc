@@ -226,17 +226,20 @@ def _scan_workflow_dir(
     from agenthicc.workflows.loader import load_python_workflows
 
     paths = sorted(directory.iterdir(), key=lambda item: item.name)
-    # A newly published package may coexist with a legacy ``name.py`` path
-    # written by an older authoring turn. Scan files first and packages last so
-    # the atomic package publication remains the authoritative registry entry
-    # without breaking legacy files that have no package counterpart.
+    # A canonical package is the authoritative entry when it coexists with a
+    # legacy ``name.py`` plugin; scan files first and packages last within this
+    # source directory. User-global → project-local precedence is handled above.
     paths.sort(key=lambda item: item.is_dir())
     for path in paths:
-        # Drafts, publication backups, and temporary rename directories are
-        # intentionally invisible to normal discovery.  A loader refresh must
-        # never execute a partially written package or even treat it as a
-        # candidate plugin.
+        # Hidden transaction metadata and pending packages are intentionally
+        # invisible to normal discovery, even though a pending package already
+        # occupies its canonical path.
         if path.name.startswith(("_", ".")):
+            continue
+        from agenthicc.workflows.create_workflow.authoring import PENDING_MARKER_NAME
+
+        marker = path / PENDING_MARKER_NAME if path.is_dir() else None
+        if marker is not None and (marker.exists() or marker.is_symlink()):
             continue
         is_python_file = path.is_file() and path.suffix == ".py"
         is_workflow_package = path.is_dir() and (path / "runner.py").is_file()
@@ -244,8 +247,9 @@ def _scan_workflow_dir(
             continue
         if is_python_file:
             log.warning(
-                "Legacy direct-published workflow %s is supported but not draft-managed; "
-                "migrate it through create_workflow for manifest validation and atomic publication.",
+                "Legacy direct-published workflow %s is supported but is not managed by canonical "
+                "create_workflow transactions; migrate it through create_workflow for pending-marker, "
+                "manifest, and replacement safeguards.",
                 path,
             )
         try:

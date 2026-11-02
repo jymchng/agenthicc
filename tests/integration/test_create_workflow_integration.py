@@ -183,7 +183,6 @@ def _authoring_turn(
     *sources* is consumed one entry per generation phase; *verdicts* one entry
     per validation phase (``"approve"`` or ``"reject"``).
     """
-    target = tmp_path / ".agenthicc" / "workflows" / "doc_review.py"
 
     async def run_turn(_text: str, **kwargs: object) -> None:
         tools = _by_name(kwargs["tools"])
@@ -191,13 +190,11 @@ def _authoring_turn(
             await _call(kwargs["tools"], "request_design_approval", "draft → review", "doc_review")
             await _call(kwargs["tools"], "finalize_design", "draft → review", "doc_review")
         elif "mark_generation_complete" in tools:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(sources.pop(0), encoding="utf-8")
+            await _call(kwargs["tools"], "write_file", "runner.py", sources.pop(0))
             await _call(
                 kwargs["tools"],
                 "mark_generation_complete",
                 "wrote the doc_review workflow",
-                str(target),
             )
         elif "approve_workflow" in tools:
             if verdicts.pop(0) == "approve":
@@ -251,8 +248,10 @@ async def test_full_run_against_a_real_processor(tmp_path: Path, processor) -> N
     published = tmp_path / ".agenthicc" / "workflows" / "doc_review" / "runner.py"
     assert published.exists()
     assert Path(ctx.generated_path) == published.parent
-    assert ctx.draft_manifest["workflow_name"] == "doc_review"
-    assert ctx.publication["status"] == "published"
+    assert ctx.package_manifest is not None
+    assert ctx.package_manifest.workflow_name == "doc_review"
+    assert ctx.package_manifest.target_path == str(published.parent)
+    assert ctx.publication["status"] == "committed"
     assert ctx.publication["catalog_snapshot_id"]
     assert ctx.publication["validation_evidence_id"]
 

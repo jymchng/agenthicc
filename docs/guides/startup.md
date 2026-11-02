@@ -165,11 +165,15 @@ diagnostic.
 
 Generated workflows from create_workflow use the same session-owned
 registries, readiness gates, provider laziness, conversation id, journal,
-checkpoint, workspace policy, and MCP/browser boundaries as built-ins. A
-generated module must keep optional imports inside a phase/tool factory and
-declare the readiness dependency for any operation that needs it. Import-time
-side effects, eager provider/browser/MCP construction, and private parallel
-session stores are invalid workflow implementations.
+checkpoint, workspace policy, and MCP/browser boundaries as built-ins. All Python
+imports are permitted, but validation and smoke import candidate code in-process
+with ordinary Python permissions; imports and import-time code are not sandboxed
+or capability-gated. Direct API, network, process, or filesystem access can
+therefore bypass session tool policies. Missing dependencies can still cause
+ordinary import failures. Keep optional imports inside a phase or tool factory
+and declare readiness dependencies to preserve startup laziness. Import-time side
+effects, eager provider/browser/MCP construction, and private parallel session
+stores remain invalid workflow implementations.
 
 ## Try it
 

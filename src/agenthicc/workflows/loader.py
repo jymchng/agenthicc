@@ -122,6 +122,12 @@ def load_python_workflows(
     from agenthicc.plugins.trust import current_extension_trust
 
     trust = current_extension_trust()
+    if path.is_dir():
+        from agenthicc.workflows.create_workflow.authoring import PENDING_MARKER_NAME
+
+        marker = path / PENDING_MARKER_NAME
+        if marker.exists() or marker.is_symlink():
+            return []
     sources = sorted(path.rglob("*.py")) if path.is_dir() else [path]
     untrusted = [
         source_file for source_file in sources if not trust.permits(source_file, kind="workflow")

@@ -79,7 +79,50 @@ class Broken(WorkflowPlugin):
     assert any("phases must be a list" in error for error in report.errors)
 
 
-def test_nested_package_sources_are_validated(tmp_path: Path) -> None:
+def test_validator_allows_imports_from_any_module(tmp_path: Path) -> None:
+    source = (
+        _RUNNER_EXAMPLE
+        + """
+
+if False:
+    import subprocess
+    import urllib.request
+    import urllib3
+    import socket
+    import requests
+    import httpx
+    import aiohttp
+    import websockets
+    import ssl
+    import dns.resolver
+    import ftplib
+    import telnetlib
+    import webbrowser
+    import cloakbrowser
+    import lauren_mcp
+    import playwright.async_api
+    import agenthicc.tools.cloakbrowser
+    from arbitrary_vendor import playwright_custom
+
+    def use_imported_browser_module():
+        return playwright_custom()
+"""
+    )
+    package = tmp_path / "release_check"
+    package.mkdir()
+    (package / "runner.py").write_text(source, encoding="utf-8")
+
+    report = validate_workflow_file(
+        str(package),
+        expected_name="release_check",
+        root=tmp_path,
+        strict_cache_contract=True,
+    )
+
+    assert report.ok, report.render()
+
+
+def test_nested_package_sources_allow_imports_and_are_counted(tmp_path: Path) -> None:
     package = tmp_path / "nested_workflow"
     package.mkdir()
     (package / "runner.py").write_text(
@@ -104,8 +147,8 @@ class Nested(WorkflowPlugin):
         root=tmp_path,
     )
 
-    assert not report.ok
-    assert any("socket" in error for error in report.errors)
+    assert report.ok, report.render()
+    assert report.evidence["source_file_count"] == 2
 
 
 def test_package_validation_rejects_a_symlinked_source(tmp_path: Path) -> None:

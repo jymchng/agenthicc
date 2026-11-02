@@ -20,7 +20,7 @@ State graph::
     DESIGN    → GENERATE   (design approved + finalize_design)
            ↺  → DESIGN     (design not finalized — retry)
            → EXITED     (exit_create_workflow — request needs no new workflow)
-    GENERATE  → VALIDATE   (mark_generation_complete + a file path recorded)
+    GENERATE  → VALIDATE   (mark_generation_complete + runner-verified package)
            ↺  → GENERATE   (nothing marked complete — retry)
     VALIDATE  → SUMMARIZE  (approve_workflow AND deterministic validation passed)
            → GENERATE   (reject_workflow, or the agent approved a file that
@@ -37,6 +37,8 @@ import dataclasses
 import time
 from enum import Enum, auto
 from typing import TYPE_CHECKING
+
+from agenthicc.workflows.create_workflow.authoring import AuthoringLease, PackageManifest
 
 if TYPE_CHECKING:
     from lauren_ai._memory import ShortTermMemory
@@ -132,8 +134,8 @@ class CreateWorkflowContext:
     authoring_snapshot: dict[str, object] = dataclasses.field(default_factory=dict)
     selected_tools: list[str] = dataclasses.field(default_factory=list)
     dependency_summary: dict[str, object] = dataclasses.field(default_factory=dict)
-    draft_manifest: dict[str, object] = dataclasses.field(default_factory=dict)
-    draft_fingerprint: str = ""
+    authoring_lease: AuthoringLease | None = None
+    package_manifest: PackageManifest | None = None
     validation_evidence: dict[str, object] = dataclasses.field(default_factory=dict)
     publication: dict[str, object] = dataclasses.field(default_factory=dict)
     question_metadata: dict[str, object] = dataclasses.field(default_factory=dict)

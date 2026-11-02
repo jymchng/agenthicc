@@ -119,6 +119,12 @@ against the current source before implementing them.
 - [PRD-248 — Make Workflow Recovery Context-Identity Checks Schema-Aware (implemented)](prd-248-workflow-context-identity-semantics.md)
 - [PRD-249 — Resolve Workflow Checkpoint Phases Through Typed Context Semantics (proposed)](prd-249-workflow-phase-cursor-context-state-semantics.md)
 - [PRD-250 — Code Quality Evaluation and Improvement Programme (in progress: WS-1, WS-2 and WS-3.1–3.3 implemented)](prd-250-code-quality-evaluation-and-improvement-programme.md)
+- [PRD-258 — Lightweight, Record-Only Phase Transitions for Generated Workflows (implemented)](prd-258-create-workflow-lightweight-phase-transitions.md)
+- [PRD-259 — Deterministic Validation for `make_agenthicc_tool`](prd-259-make-agenthicc-tool-deterministic-validation.md)
+- [PRD-260 — Scoped Generation and Reviewed Publication for `make_agenthicc_tool`](prd-260-make-agenthicc-tool-scoped-generation-and-publication.md)
+- [PRD-261 — Bounded Repair and Provider-Turn Budgets for `make_agenthicc_tool`](prd-261-make-agenthicc-tool-bounded-repair-budget.md)
+- [PRD-262 — Author `create_workflow` Packages at Their Canonical Project Path](prd-262-create-workflow-canonical-package-authoring.md)
+- [PRD-263 — Patch-Oriented Repair and Lifetime-Correct Smoke Imports for `create_workflow`](prd-263-create-workflow-patch-repair-and-smoke-import-lifetime.md)
 
 ### AGX series — Agents experience (in progress)
 

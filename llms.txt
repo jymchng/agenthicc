@@ -276,11 +276,26 @@ only via tool calls, and a typed context capturing each phase's artefact. Every
 phase prompt receives a `[PHASE TRANSITION TOOLS]` block naming the available
 handoff tools; only a successful call advances state, never assistant prose.
 Custom handoff callables marked with `@tool_control` are discovered automatically.
-The workflow's four phases are design (human-approved, read-only), generate (`Yolo` mode, writes
-a run-owned draft under `.agenthicc/workflows/.drafts/<run-id>/<name>/`), validate
-(deterministic import/check plus a bounded fake-provider smoke contract, then the agent's vote),
-and summarize. Approved drafts are atomically published to
-`.agenthicc/workflows/<name>/` only after all gates pass:
+The workflow's four phases are design (human-approved, read-only), generate
+(`Yolo` mode, writes directly to `.agenthicc/workflows/<name>/` under a
+run-owned pending marker using package-scoped tools), validate (deterministic
+checks plus bounded fake-provider smoke against that exact pending package,
+then the agent's vote), and summarize. Existing workflows require separate
+replacement approval and are backed up with their trust records. Only after the
+validation approval and a fingerprint recheck does the runner record exact-byte
+trust and remove the marker; until then normal workflow discovery skips the
+package before trust checks or imports. Checkpointed runs resume with
+`/workflow resume <run-id>`; `/workflow reset <run-id>` restores an approved
+original package and its trust records, or discards an initial candidate, before
+recording the run as discarded. Reset fails closed if run ownership cannot be
+verified.
+
+Generated-workflow validation and smoke do not restrict Python imports. The
+candidate package is imported in-process with ordinary process permissions;
+import-time code is not sandboxed or capability-gated, and direct API, network,
+process, or filesystem access can bypass session tool policies. Missing modules
+can still cause ordinary import failures. Only execute trusted generated code or
+use separate OS-level isolation.
 
 `code_plan` plan approval presents explicit `Approve - Safe` and
 `Approve - YOLO` choices. The selected mode is carried into the execute phase
@@ -300,13 +315,14 @@ are skipped after insertion, and completion is rejected while work remains.
 | ViewportSpec / CoverageMatrix / FidelityBaseline / ResearchGate | agenthicc.workflows.reconstruct_site.research | Typed route/viewport/state evidence coverage, deterministic baseline hashing, and strict/degraded research-gate decisions |
 | ReconstructEvidenceStore / EvidenceManifest | agenthicc.workflows.reconstruct_site.evidence | Atomic, hash-addressed research, validation, and browser screenshot evidence for one reconstruct run |
 | CreateWorkflowState | agenthicc.workflows.create_workflow.state | Design/generate/validate/summarize state machine with COMPLETE, EXITED, FAILED terminals |
-| CreateWorkflowContext | agenthicc.workflows.create_workflow.state | Typed intent, approved design, draft/publication evidence, per-phase `PhaseArtifact`s, shared memory, and checkpoint provenance |
+| CreateWorkflowContext | agenthicc.workflows.create_workflow.state | Typed intent, approved design, canonical package/validation/publication evidence, per-phase `PhaseArtifact`s, shared memory, and checkpoint provenance |
 | make_*_tools | agenthicc.workflows.create_workflow.phase_tools | Phase transition handoffs; rejected transitions return actionable `error`, `fix`, and `message` fields |
-| validate_workflow_file | agenthicc.workflows.create_workflow.validation | Imports and statically checks the generated draft like the loader does; structured categories/evidence and a failing report override agent approval |
+| validate_workflow_file | agenthicc.workflows.create_workflow.validation | Imports the exact pending canonical package and checks workflow structure; import statements are unrestricted, and failures still override agent approval |
 | make_inspection_tools | agenthicc.workflows.create_workflow.inspection_tools | Read-only authoring-surface inspection read live from `PhaseSpec`, `ToolCapability`, `PhaseRole`; with a snapshot, also exposes effective catalog/decision tools |
 | build_authoring_snapshot | agenthicc.workflows.create_workflow.catalog | Bounded, redacted live tool/dependency/policy snapshot used by authoring turns and checkpoint provenance |
-| scan_draft / publish_draft | agenthicc.workflows.create_workflow.draft | Exact manifest scanning and failure-safe atomic publication of a run-owned workflow draft |
-| run_generated_workflow_smoke | agenthicc.workflows.create_workflow.smoke | Fake-provider, no-network contract smoke for generated custom runners |
+| AuthoringLease / PackageManifest / begin_authoring / prepare_authoring / scan_package / finalize_authoring / restore_authoring | agenthicc.workflows.create_workflow.authoring | Run-owned canonical package lease, exact manifest, pending lifecycle, fingerprint-bound finalization, and replacement recovery |
+| make_generation_writer_tools / make_package_read_tools | agenthicc.workflows.create_workflow.generation_tools | Package-scoped read/write tools for the exact leased canonical workflow directory |
+| run_generated_workflow_smoke | agenthicc.workflows.create_workflow.smoke | Bounded fake-provider contract smoke for generated custom runners; not a sandbox for generated imports |
 
 A generated workflow is expected to ship its own state-machine runner in
 `<name>/runner.py` (typed state enum, typed context, one bounded async method per state,

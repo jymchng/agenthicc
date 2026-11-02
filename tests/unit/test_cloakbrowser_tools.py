@@ -466,13 +466,17 @@ def test_persistent_profile_root_cannot_escape_workspace() -> None:
         )
 
 
-def test_generated_workflow_cannot_bypass_browser_adapter(tmp_path: Path) -> None:
+def test_generated_workflow_allows_imports_but_rejects_unknown_browser_tool(
+    tmp_path: Path,
+) -> None:
     from agenthicc.workflows.create_workflow.validation import validate_workflow_file
 
     source = textwrap.dedent(
         """
-        from playwright.async_api import async_playwright
         from agenthicc.workflows.plugin import PhaseSpec, WorkflowPlugin
+
+        if False:
+            from playwright.async_api import async_playwright
 
         class Demo(WorkflowPlugin):
             name = "demo"
@@ -483,8 +487,7 @@ def test_generated_workflow_cannot_bypass_browser_adapter(tmp_path: Path) -> Non
     path = tmp_path / "demo.py"
     path.write_text(source, encoding="utf-8")
     report = validate_workflow_file(str(path), expected_name="demo", root=tmp_path)
-    assert report.ok is False
-    assert "must not import" in report.errors[0]
+    assert report.ok is True, report.render()
 
     unknown = tmp_path / "unknown.py"
     unknown.write_text(

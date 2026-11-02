@@ -49,6 +49,10 @@ _LAZY_EXPORTS: Final[dict[str, tuple[str, str]]] = {
         "agenthicc.workflows.phase_lifecycle",
         "reconcile_phase_cursor",
     ),
+    "record_phase_transition": (
+        "agenthicc.workflows.phase_transition",
+        "record_phase_transition",
+    ),
     "CodePlan": ("agenthicc.workflows.code_plan", "CodePlan"),
     "CodePlanParams": ("agenthicc.workflows.code_plan", "CodePlanParams"),
     "CodePlanRunner": ("agenthicc.workflows.code_plan", "CodePlanRunner"),
@@ -166,6 +170,7 @@ __all__ = [
     "checkpoint_phase_boundary",
     "publish_phase_annotation",
     "reconcile_phase_cursor",
+    "record_phase_transition",
     "CodePlan",
     "CodePlanParams",
     "CodePlanRunner",

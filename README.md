@@ -294,10 +294,10 @@ Workflows are typed state machines with explicit transitions. The built-in `code
 
 Create a specialized workflow with `/workflow create_workflow`. It runs `design → generate → validate → summarize` on the same state-machine pattern as `code_plan`:
 
-1. The design is presented for your approval
-2. The generate phase writes a complete workflow package to a run-owned draft under `.agenthicc/workflows/.drafts/<run-id>/<name>/` (with workflow-specific tools/helpers in sibling files) and records a manifest
-3. The validate phase imports the draft, runs a bounded fake-provider smoke check, and loops back to generate until it passes — an approval of a file that does not import or smoke-test is overridden
-4. Only after validation and approval does the framework atomically publish the package to `.agenthicc/workflows/<name>/`; failed publication leaves the draft and checkpoint recoverable
+1. The design is presented for your approval.
+2. The generate phase writes the package directly to `.agenthicc/workflows/<name>/`, using package-scoped tools, and records a manifest. A runner-owned pending marker keeps the in-progress package out of normal workflow discovery. If that name already exists, replacement requires a separate explicit approval before any original files change; the original package and trust records are backed up for recovery.
+3. The validate phase checks that exact pending package, runs a bounded fake-provider smoke check, and loops back to generate until it passes — an approval of a file that does not import or smoke-test is overridden. The package remains undiscoverable during validation and repair.
+4. Only after deterministic validation and approval does the framework recheck the package fingerprint, record trust for the exact validated Python files, and remove the pending marker so normal discovery can load it. An interrupted run keeps its checkpoint and pending package for resume; `/workflow reset <run-id>` restores an approved replacement and its trust records, or discards an uncommitted first-generation candidate, before recording the run as discarded.
 
 For non-trivial behavior the agent is guided to create a `code_plan`-style custom runner with typed states, context, per-state functions, explicit `match` transitions, and resumable execution; simple workflows can use declarative `PhaseSpec` values. Run `/workflows reload` and then `/workflow <name>` after authoring.
 
