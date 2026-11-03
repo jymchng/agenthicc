@@ -532,9 +532,13 @@ The default fan-out settings are finite:
 `[subagents.depth_limits."N"]` can override `max_tasks` and
 `max_concurrent` independently for a depth. A depth with no value inherits that
 ceiling from its nearest configured ancestor, or from the top-level setting.
-The model may request lower concurrency; a request above the ceiling is clamped,
-and the parent-facing result reports the actual concurrency and its limit
-source. Task-count refusals report the configured source as well. Pool-count
+The model may request lower concurrency. A request above the ceiling, or below
+1, is refused before any worker starts — no value is clamped in either
+direction. The refusal names the ceiling and its configured source
+(`max_concurrent_limit`, `max_concurrent_limit_source`) and echoes the refused
+value as `max_concurrent_requested`; it carries no `max_concurrent_used`,
+because nothing was used. An accepted request reports `max_concurrent` and
+`max_concurrent_used`. Task-count refusals report the configured source as well. Pool-count
 refusals name the pools already running. A refused pool is not recorded as
 started in the durable journal.
 
@@ -764,6 +768,27 @@ Event payloads contain bounded text and diagnostics; they are not a replacement
 for the complete result or the durable journal. `subagent_pool_result` stores
 the complete aggregate in the reactive turn and durable journal, but has no
 verbose renderer because the parent tool result is the user-facing artefact.
+
+Every text field in those scroll and kernel payloads passes through the same
+secret redactor as session exports and subagent transcripts, before it is cut to
+its display bound: the worker's answer (`summary` in `subagent_worker_done`,
+`text` in `SubagentCompleted`/`SubagentFailed` and `SubagentPoolCompleted`), its
+`error`, and the parent's task text (`task` in `SubagentStarted`, `description`
+in `SubagentPoolStarted`). Redaction runs on the complete text, so a secret that
+straddles the bound is masked whole. A cut value says so: the main text carries
+`truncated: true` and its untruncated `text_length`, and any other field carries
+`<field>_truncated` and `<field>_length`. A value that fit carries neither.
+
+| Field | Bound (characters) |
+|---|---:|
+| worker answer (`summary`, `text`) | 2,000 |
+| `error` | 1,000 |
+| task text (`task`, `description`) | 2,000 |
+| pool aggregate (`SubagentPoolCompleted.text`) | 16,000 |
+
+The provider-facing tool result and the durable journal still carry the
+complete, unredacted worker answer; only the display and event projections are
+redacted and bounded.
 
 ## Custom roles and aggregators
 

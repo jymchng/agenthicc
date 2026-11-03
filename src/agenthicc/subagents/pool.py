@@ -111,6 +111,10 @@ log = logging.getLogger(__name__)
 # was asked to return a chapter, source file, or other long artefact is not
 # silently reduced to an unusable fragment.
 _MAX_DISPLAY_RESULT_CHARS = 2_000
+#: Bounds for the other text a scroll or kernel payload carries.
+_MAX_DISPLAY_ERROR_CHARS = 1_000
+_MAX_DISPLAY_TASK_CHARS = 2_000
+_MAX_EVENT_AGGREGATE_CHARS = 16_000
 
 
 class _SpawnSubagentsWithCommunicationTools(Protocol):
@@ -2680,9 +2684,9 @@ class SubagentPool:
                 payload: dict[str, object] = {
                     "label": result.label,
                     "ok": result.ok,
-                    "error": result.error,
+                    **self._display_fields("error", result.error, _MAX_DISPLAY_ERROR_CHARS),
                     "duration_ms": result.duration_ms,
-                    "summary": result.text[:_MAX_DISPLAY_RESULT_CHARS],
+                    **self._display_fields("summary", result.text, _MAX_DISPLAY_RESULT_CHARS),
                     "tool_calls": list(result.tool_calls),
                     "changed_paths": list(result.changed_paths),
                     "done": self._state.done,
@@ -2971,6 +2975,23 @@ class SubagentPool:
             self._redactor = _Redactor()
         return str(self._redactor.value(text, "text"))
 
+    def _display_fields(self, key: str, text: str, limit: int) -> dict[str, object]:
+        """*text* under *key* for a scroll or kernel payload: redacted, then bounded.
+
+        Redaction runs on the complete text before it is cut, so a secret that
+        straddles the bound is masked whole. A cut value carries its untruncated
+        length so a reader can tell a short answer from a truncated one: the
+        markers are ``truncated``/``text_length`` for the payload's main text
+        and ``<key>_truncated``/``<key>_length`` for any other field.
+        """
+        redacted = self._redact(text)
+        fields: dict[str, object] = {key: redacted[:limit]}
+        if len(redacted) > limit:
+            main = key in {"text", "summary"}
+            fields["truncated" if main else f"{key}_truncated"] = True
+            fields["text_length" if main else f"{key}_length"] = len(text)
+        return fields
+
     def _append_scroll_event(self, kind: str, payload: dict[str, object]) -> None:
         if self._conv_store is not None and hasattr(self._conv_store, "append_event"):
             self._conv_store.append_event(kind, payload)
@@ -3060,7 +3081,9 @@ class SubagentPool:
                         {
                             "task_id": t.task_id,
                             "type": t.agent_type,
-                            "description": t.task_description,
+                            **self._display_fields(
+                                "description", t.task_description, _MAX_DISPLAY_TASK_CHARS
+                            ),
                         }
                         for t in self._tasks
                     ],
@@ -3085,7 +3108,9 @@ class SubagentPool:
                     "task_id": worker._task.task_id,
                     "type": worker._task.agent_type,
                     "label": worker.label,
-                    "task": worker._task.task_description,
+                    **self._display_fields(
+                        "task", worker._task.task_description, _MAX_DISPLAY_TASK_CHARS
+                    ),
                 },
             )
         )
@@ -3101,8 +3126,8 @@ class SubagentPool:
             "task_id": result.task_id,
             "type": result.agent_type,
             "label": result.label,
-            "text": result.text[:_MAX_DISPLAY_RESULT_CHARS],
-            "error": result.error,
+            **self._display_fields("text", result.text, _MAX_DISPLAY_RESULT_CHARS),
+            **self._display_fields("error", result.error, _MAX_DISPLAY_ERROR_CHARS),
             "duration_ms": result.duration_ms,
             "tool_calls": list(result.tool_calls),
             "changed_paths": list(result.changed_paths),
@@ -3140,7 +3165,7 @@ class SubagentPool:
                     "total": agg.total,
                     "succeeded": agg.succeeded,
                     "failed": agg.failed,
-                    "text": agg.text,
+                    **self._display_fields("text", agg.text, _MAX_EVENT_AGGREGATE_CHARS),
                     "budget_exceeded_reason": agg.budget_exceeded_reason,
                 },
             )

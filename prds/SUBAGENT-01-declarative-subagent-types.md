@@ -1,7 +1,7 @@
 ---
 title: "SUBAGENT-01: Declarative subagent type definitions and discovery"
-status: Proposed
-version: 0.1.0
+status: Implemented (phase 1)
+version: 0.2.0
 date: 2026-10-29
 scope: "user- and project-scoped subagent type definitions, their discovery precedence, and the model-facing description used to select a type"
 area: A-1
@@ -17,6 +17,37 @@ tags:
 ---
 
 # SUBAGENT-01: Declarative subagent type definitions and discovery
+
+## Implementation status (2026-11-03)
+
+Evaluated at `0a63bfba1dca68e61a06fe3b9acb4f536637396b` — the merge of PR #6 that put the series on `main` — by
+SUBAGENT-10 §3 (0.2.0). Verdicts: **D** delivered, **P** partial, **M** missing.
+Criteria are judged by behaviour; a case that exists in a file the criterion
+does not name is marked *placement* and tracked by SUBAGENT-10 R6/WP-8. Line
+numbers below are at `0a63bfb`; this document's §2–§3 keep the citations of
+the commit they were written against.
+
+**Verdict: implemented except goal 2.** Goals 6 D / 1 P / 0 M; criteria
+9 D / 0 P / 1 M. Phase 2 is SUBAGENT-10 WP-2, a one-argument fix.
+**Delivered in SUBAGENT-10 wave 1** (pending merge): `description=definition.description`
+is passed at `agent_turn.py:2012`, pinned by
+`test_definition_description_reaches_spawn_tool_description_and_enum`
+(`tests/unit/test_subagent_plugin.py`).
+
+| Goal | Verdict | Evidence |
+|---|---|---|
+| 1 Markdown + YAML definitions at project and user scope | D | `src/agenthicc/agents/definitions.py` (parser, key set at `:83`) |
+| 2 description reaches the model | **P** | Names reach the enum; descriptions do not. `SubagentTypeSpec(...)` at `src/agenthicc/runners/agent_turn.py:2001-2018` passes no `description=`, so `src/agenthicc/subagents/tool.py:1093` renders "No description provided." for every declared type (SUBAGENT-10 R5) |
+| 3 built-ins lowest precedence; project > user > built-in | D | `src/agenthicc/agents/registry.py:85`; eight built-ins ship as `src/agenthicc/agents/builtin/*.md` |
+| 4 `SubagentTypeSpec.description` field | D | `src/agenthicc/subagents/types.py:113` (exists; never populated from a definition) |
+| 5 explicit per-session registry | D | `_build_definition_subagent_registry` copies the session registry and registers definitions into the copy (`src/agenthicc/runners/agent_turn.py:1823-2019`, copy at `:1842`) |
+| 6 shadowing reported, in-directory duplicates refused | D | `registry.py:243-260` (shadowed state), `:338` (duplicate refusal) |
+| 7 shadowing a built-in requires `override: true` | D | `definitions.py:136-137`, `:411-413`; `registry.py:346-352` |
+
+Criterion 2 is **M** for the reason in goal 2. Every other criterion has its
+behaviour. Two facts the body predates: the series says "nine built-ins" and the
+tree now ships eight Markdown built-ins; the `research` → `researcher` alias
+criterion 7 targets no longer appears in `tool.py`.
 
 ## 1. Executive summary
 

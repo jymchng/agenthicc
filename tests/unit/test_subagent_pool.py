@@ -1427,3 +1427,197 @@ class TestSpawnSubagentsTool:
         assert meta is not None
         schema = meta.parameters.get("input_schema", {})
         assert "tasks" in schema.get("required", [])
+
+
+# ── SUBAGENT-10 WP-1 (B-3): every sink redacts and marks truncation ───────────
+
+_WORKER_SECRET = "sk-ant-" + "a1B2c3D4e5F6g7H8i9J0"
+_TASK_SECRET = "abcd1234efgh5678"
+
+
+def _capture_pool(
+    tasks: list[SubagentTask],
+    *,
+    transcript_root: Path | None = None,
+    transport: object | None = None,
+) -> tuple[SubagentPool, list[object], list[object]]:
+    """Build a real pool whose kernel and scroll events are recorded."""
+    from lauren_ai._agents._runner import AgentRunnerBase
+
+    kernel_events: list[object] = []
+    scroll_events: list[object] = []
+
+    async def emit(event: object) -> None:
+        kernel_events.append(event)
+
+    async def drain() -> None:
+        return None
+
+    app = AppState.create()
+    app.conversation.on_event(scroll_events.append)
+    pool = SubagentPool(
+        tasks,
+        parent_runner=AgentRunnerBase(transport=transport)
+        if transport is not None
+        else SimpleNamespace(_transport=None),
+        parent_model="mock-model",
+        all_tools=[],
+        processor=SimpleNamespace(emit=emit, drain=drain),
+        conv_store=app.conversation,
+        registry=DEFAULT_REGISTRY,
+        transcript_root=transcript_root,
+    )
+    return pool, kernel_events, scroll_events
+
+
+def _kernel(events: list[object], event_type: str) -> list[dict[str, object]]:
+    return [
+        event.payload  # type: ignore[attr-defined]
+        for event in events
+        if event.event_type == event_type  # type: ignore[attr-defined]
+    ]
+
+
+def _scroll(events: list[object], kind: str) -> list[dict[str, object]]:
+    return [event.payload for event in events if event.kind == kind]  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_worker_secret_is_masked_identically_in_every_sink(tmp_path: Path) -> None:
+    """A secret a worker returns never reaches a kernel, scroll or transcript sink."""
+    from lauren_ai._transport import Completion, TokenUsage
+    from lauren_ai._transport._mock import MockTransport
+
+    from agenthicc.subagents.transcripts import list_pools, read_transcript
+
+    transport = MockTransport()
+    transport.queue_response(
+        Completion(
+            id="final",
+            model="mock-model",
+            content=f"The key in config/.env is {_WORKER_SECRET}.",
+            tool_calls=[],
+            stop_reason="end_turn",
+            usage=TokenUsage(input_tokens=5, output_tokens=5),
+        )
+    )
+    pool, kernel_events, scroll_events = _capture_pool(
+        [SubagentTask("task-0", "explorer", f"Check config/.env, token={_TASK_SECRET}")],
+        transcript_root=tmp_path / "subagents",
+        transport=transport,
+    )
+
+    result = await pool.run()
+
+    # The provider-facing aggregate keeps the complete answer.
+    assert _WORKER_SECRET in result.text
+    completed = _kernel(kernel_events, "SubagentCompleted")[0]
+    pool_completed = _kernel(kernel_events, "SubagentPoolCompleted")[0]
+    started = _kernel(kernel_events, "SubagentStarted")[0]
+    pool_started = _kernel(kernel_events, "SubagentPoolStarted")[0]
+    done = _scroll(scroll_events, "subagent_worker_done")[0]
+    record = list_pools(tmp_path / "subagents")[0]
+    transcript_text = " ".join(
+        event.text for event in read_transcript(record.transcript_path("task-0"))
+    )
+
+    for sink in (completed["text"], pool_completed["text"], done["summary"], transcript_text):
+        assert isinstance(sink, str)
+        assert _WORKER_SECRET not in sink
+        assert "<redacted>" in sink
+    # The same value is masked the same way in the kernel and scroll payloads.
+    assert completed["text"] == done["summary"]
+    assert _TASK_SECRET not in str(started["task"])
+    assert _TASK_SECRET not in str(pool_started["tasks"])
+
+
+@pytest.mark.asyncio
+async def test_long_worker_text_is_cut_visibly_and_short_text_is_not(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import agenthicc.subagents.pool as pool_module
+
+    long_text = "x" * (pool_module._MAX_DISPLAY_RESULT_CHARS + 500)
+
+    class FakeWorker:
+        def __init__(self, task: SubagentTask, spec: object, index: int, **kwargs: object) -> None:
+            self._task = task
+            self.label = f"{task.agent_type} #{index}"
+
+        async def run(self) -> SubagentResult:
+            text = long_text if self._task.task_id == "long" else "short"
+            return SubagentResult(self._task.task_id, self._task.agent_type, self.label, True, text)
+
+    monkeypatch.setattr(pool_module, "SubagentWorker", FakeWorker)
+    pool, kernel_events, scroll_events = _capture_pool(
+        [SubagentTask("long", "explorer", "a"), SubagentTask("short", "explorer", "b")]
+    )
+
+    await pool.run()
+
+    by_task = {
+        payload["task_id"]: payload for payload in _kernel(kernel_events, "SubagentCompleted")
+    }
+    assert by_task["long"]["text"] == long_text[: pool_module._MAX_DISPLAY_RESULT_CHARS]
+    assert by_task["long"]["truncated"] is True
+    assert by_task["long"]["text_length"] == len(long_text)
+    assert "truncated" not in by_task["short"] and "text_length" not in by_task["short"]
+
+    by_label = {
+        payload["label"]: payload for payload in _scroll(scroll_events, "subagent_worker_done")
+    }
+    long_done = next(p for p in by_label.values() if p["summary"] != "short")
+    short_done = next(p for p in by_label.values() if p["summary"] == "short")
+    assert long_done["truncated"] is True and long_done["text_length"] == len(long_text)
+    assert "truncated" not in short_done
+
+
+@pytest.mark.asyncio
+async def test_failed_worker_error_is_redacted_in_scroll_and_kernel_payloads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import agenthicc.subagents.pool as pool_module
+
+    class FakeWorker:
+        def __init__(self, task: SubagentTask, spec: object, index: int, **kwargs: object) -> None:
+            self._task = task
+            self.label = f"{task.agent_type} #{index}"
+
+        async def run(self) -> SubagentResult:
+            return SubagentResult(
+                self._task.task_id,
+                self._task.agent_type,
+                self.label,
+                False,
+                "",
+                f"provider rejected Authorization: Bearer {_WORKER_SECRET}",
+            )
+
+    monkeypatch.setattr(pool_module, "SubagentWorker", FakeWorker)
+    pool, kernel_events, scroll_events = _capture_pool([SubagentTask("t", "explorer", "a")])
+
+    await pool.run()
+
+    failed = _kernel(kernel_events, "SubagentFailed")[0]
+    done = _scroll(scroll_events, "subagent_worker_done")[0]
+    for error in (failed["error"], done["error"]):
+        assert isinstance(error, str)
+        assert _WORKER_SECRET not in error
+        assert error.startswith("provider rejected")
+
+
+def test_display_redaction_is_idempotent() -> None:
+    pool, _kernel_events, _scroll_events = _capture_pool([SubagentTask("t", "explorer", "a")])
+    text = f"token={_TASK_SECRET} and {_WORKER_SECRET} " + "y" * 3_000
+
+    once = pool._display_fields("text", text, 2_000)
+    twice = pool._display_fields("text", str(once["text"]), 2_000)
+
+    assert twice["text"] == once["text"]
+    assert _WORKER_SECRET not in str(once["text"]) and _TASK_SECRET not in str(once["text"])
+    assert once["truncated"] is True
+    assert pool._display_fields("error", "e" * 10, 5) == {
+        "error": "eeeee",
+        "error_truncated": True,
+        "error_length": 10,
+    }

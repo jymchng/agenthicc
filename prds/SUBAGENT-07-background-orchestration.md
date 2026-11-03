@@ -1,7 +1,7 @@
 ---
 title: "SUBAGENT-07: Background and non-blocking orchestration"
-status: Proposed
-version: 0.1.0
+status: Implemented (phase 1)
+version: 0.2.0
 date: 2026-10-29
 scope: "a fire-and-return spawn mode for a subagent pool, a durable pool identity and ledger, and collection and resumption of a pool's result across turns and process restarts — never worker steering or cancellation, session lifecycle, or detached process supervision"
 area: A-7
@@ -22,6 +22,45 @@ tags:
 ---
 
 # SUBAGENT-07: Background and non-blocking orchestration
+
+## Implementation status (2026-11-03)
+
+Evaluated at `0a63bfba1dca68e61a06fe3b9acb4f536637396b` — the merge of PR #6 that put the series on `main` — by
+SUBAGENT-10 §3 (0.2.0). Verdicts: **D** delivered, **P** partial, **M** missing.
+Criteria are judged by behaviour; a case that exists in a file the criterion
+does not name is marked *placement* and tracked by SUBAGENT-10 R6/WP-8. Line
+numbers below are at `0a63bfb`; this document's §2–§3 keep the citations of
+the commit they were written against.
+
+**Verdict: phase 1 — the user can background a pool; the model cannot.** Goals
+2 D / 5 P / 2 M; criteria 4 D / 4 P / 5 M. The durable lifecycle, restart
+recovery and exactly-once delivery shipped. Phase 2 — the model-facing half — is
+**SUBAGENT-11**; two shipped defects in the delivery path are SUBAGENT-10 WP-5
+(B-1) and WP-6 (B-2).
+
+| Goal | Verdict | Evidence |
+|---|---|---|
+| 1 pool can be left running | **P** | User-initiated only: Ctrl+B → `SubagentPool.request_background()` (`src/agenthicc/subagents/pool.py:2028-2037`, `src/agenthicc/tui/runtime/commands.py:51-52`), raced in `src/agenthicc/subagents/tool.py:611-674`; no `background` argument. Supervised only when a task owner exists (`tool.py:603-609`) |
+| 2 identity before work | **P** | `subagent_pool_started` is written before the first worker (`pool.py:2392-2400`, `src/agenthicc/memory/journal.py:1002-1021`); the record carries `pool_id`, `fingerprint`, `parent_run_id` and task rows, not the timestamps, state or run id the goal lists |
+| 3 collection is a read | M | `collect` always awaits the task (`src/agenthicc/subagents/communication.py:805-812`); no `wait`/`timeout_s` |
+| 4 delivered once | **P** | Exactly-once delivery via `subagent_pool_notification_delivered` (`journal.py:1088-1111`, `src/agenthicc/runners/tui_session.py:4311-4357`); a second collect raises because `collect` pops the handle |
+| 5 restart reports the truth | D | `recover_interrupted_subagent_pools` (`journal.py:1225-1250`) at session start (`tui_session.py:1535`); the state is named `interrupted`, not `orphaned`. TUI only — headless never runs it (SUBAGENT-11 goal 9) |
+| 6 clarification policy | M | No `on_clarification`; a backgrounded worker's question is surfaced nowhere and waits 300 s (SUBAGENT-10 R10) |
+| 7 visible where pools are | **P** | A backgrounded pool keeps publishing `SubagentPoolState`; restored sessions list pools from transcripts (`src/agenthicc/tui/workspace/overlays/subagents.py:80`), not the journal; the model has no list |
+| 8 nothing left running | **P** | Cancellation writes `subagent_pool_cancelled` (`pool.py:2552-2556`); no reaping of collected records |
+| 9 `background=False` unchanged | D | Backgrounding is opt-in by the user; the default path is untouched |
+
+Criteria: 2, 9, 11, 12 **D**; 4, 6, 7, 13 **P**; 1, 3, 5, 8, 10 **M**.
+
+**Defects found in the shipped path** (SUBAGENT-10 §3):
+
+- **B-1** — a background pool stopped by the governor is journaled as
+  `cancelled` with no counts or text (`pool.py:2350-2357`,
+  `journal.py:1065-1087`) and delivered as "was cancelled when the session
+  closed (0/0 succeeded, 0 failed)", dropping the drained workers' results.
+- **B-2** — background results are appended to the parent's memory as a *user*
+  message with the raw, unbounded aggregate (`tui_session.py:4344-4351`,
+  `journal.py:1059`), where the foreground path returns them as a tool result.
 
 ## 1. Executive summary
 

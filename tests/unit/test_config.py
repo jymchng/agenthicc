@@ -552,3 +552,45 @@ class TestConverters:
         assert checker.check("fs_read") == "allow"
         assert checker.check("fs_delete") == "deny"
         assert checker.check("unrelated_tool") == "deny"
+
+
+def test_subagent_operator_ceilings_are_armed_and_match_the_guide() -> None:
+    """SUBAGENT-10 D-2: the default pool ceilings are armed and documented as such."""
+    from pathlib import Path
+
+    from agenthicc.config import SubagentSettings
+
+    settings = SubagentSettings()
+    armed = {
+        "max_tool_calls": settings.max_tool_calls,
+        "max_iterations": settings.max_iterations,
+        "max_tokens": settings.max_tokens,
+        "max_total_time_s": settings.max_total_time_s,
+    }
+    assert armed == {
+        "max_tool_calls": 256,
+        "max_iterations": 128,
+        "max_tokens": 200_000,
+        "max_total_time_s": 600.0,
+    }
+    assert settings.on_budget_exceeded == "drain"
+
+    root = Path(__file__).resolve().parents[2]
+    guide = (root / "docs" / "guides" / "subagents.md").read_text(encoding="utf-8")
+    rows = {
+        line.split("|")[1].strip().strip("`"): line.split("|")[2].strip()
+        for line in guide.splitlines()
+        if line.startswith("| `subagents.max_")
+    }
+    assert rows["subagents.max_tool_calls"] == "256"
+    assert rows["subagents.max_iterations"] == "128"
+    assert rows["subagents.max_tokens"] == "200,000"
+    assert rows["subagents.max_total_time_s"] == "600 seconds"
+    prd = (root / "prds" / "SUBAGENT-06-pool-budgets-and-limits.md").read_text(encoding="utf-8")
+    for documented in (
+        "`subagents.max_tokens = 200000`",
+        "`subagents.max_total_time_s = 600.0`",
+        "`subagents.max_tool_calls = 256`",
+        "`subagents.max_iterations = 128`",
+    ):
+        assert documented in prd

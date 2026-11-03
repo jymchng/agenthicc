@@ -1,7 +1,7 @@
 ---
 title: "SUBAGENT-05: Per-type permission narrowing"
-status: Proposed
-version: 0.1.0
+status: Implemented (2026-11-02)
+version: 0.2.0
 date: 2026-10-29
 scope: "the optional per-type constraints that can restrict a worker's tools, capabilities, approval requirements and workspace beyond what it inherits, and the rule that they can never widen it"
 area: A-5
@@ -20,6 +20,36 @@ tags:
 ---
 
 # SUBAGENT-05: Per-type permission narrowing
+
+## Implementation status (2026-11-03)
+
+Evaluated at `0a63bfba1dca68e61a06fe3b9acb4f536637396b` — the merge of PR #6 that put the series on `main` — by
+SUBAGENT-10 §3 (0.2.0). Verdicts: **D** delivered, **P** partial, **M** missing.
+Criteria are judged by behaviour; a case that exists in a file the criterion
+does not name is marked *placement* and tracked by SUBAGENT-10 R6/WP-8. Line
+numbers below are at `0a63bfb`; this document's §2–§3 keep the citations of
+the commit they were written against.
+
+**Verdict: implemented in behaviour; two criteria unproven.** Goals
+11 D / 0 P / 0 M; criteria 7 D / 3 P / 1 M (SUBAGENT-10 0.1.0 counts).
+
+- **Mechanism.** `SubagentPermissionConstraints` (`src/agenthicc/subagents/types.py:68-73`)
+  carries `deny_tools`, `deny_capabilities` and `require_approval`, applied as
+  narrow-only restrictions in `src/agenthicc/subagents/policy.py:92-119` and
+  `:158-176`, and enforced in the worker's own hook chain
+  (`src/agenthicc/subagents/pool.py:1507-1519`).
+- **Criterion 8 — M.** The `inherited.restrict(declared)` merge table does not
+  exist in `tests/unit/test_agent_permissions.py` (SUBAGENT-10 WP-8).
+- **Criterion 4 — P (behavioural evidence).** The capability-denial case builds a
+  `ToolCapabilityGate` by hand instead of observing a worker refuse a tool through
+  its own hook chain (WP-8).
+- **Placement.** The fourteen permission cases live in
+  `tests/unit/test_subagent_permissions.py`, which no criterion names, while the
+  criteria name `test_subagent_plugin.py`, `test_subagent_pool.py` and
+  `test_agent_permissions.py` (none of which mention `deny_tools`,
+  `deny_capabilities` or `require_approval`). Criterion 10's "pass unchanged"
+  claim is false because the named suites changed. SUBAGENT-10 WP-8 either moves
+  the cases or amends the criteria in the same commit.
 
 ## 1. Executive summary
 

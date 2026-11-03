@@ -1,7 +1,7 @@
 ---
 title: "SUBAGENT-03: Structured result contracts and schema-validated findings"
 status: Implemented (2026-10-30)
-version: 0.1.0
+version: 0.2.0
 date: 2026-10-29
 scope: "the optional per-type contract a worker's result value must satisfy, how that value is delivered and validated, and what failure means when it does not conform"
 area: A-3
@@ -30,6 +30,17 @@ prose and tool-summary behavior.
 
 Focused evidence: the SUBAGENT-03 unit and integration suites passed (154 tests);
 Ruff check/format, mypy, strict MkDocs build, and `nox -s llms_check` passed.
+
+### Review on `main` (2026-11-03)
+
+Re-evaluated at `0a63bfba1dca68e61a06fe3b9acb4f536637396b` by SUBAGENT-10 0.2.0: no item is raised against this
+document, and no file it touched changed between `390cfc1` and `0a63bfb`.
+Two adjacent findings sit just outside its boundary and are owned elsewhere:
+worker text reaches the scroll and kernel payloads unredacted (SUBAGENT-10 B-3,
+SUBAGENT-09 goal 7), and a background aggregate is journaled unbounded and
+delivered in the user role (SUBAGENT-10 B-2, SUBAGENT-11 goal 5). The
+redaction-before-delivery rule this document established for structured values
+is the precedent both fixes follow.
 
 ## 1. Executive summary
 

@@ -479,3 +479,34 @@ def test_depth_tier_narrowing_is_accepted_and_widening_is_rejected() -> None:
         make_spawn_subagents_tool(
             object(), "model-a", [], registry=registry, subagent_settings=widened_models
         )
+
+
+def test_definition_description_reaches_spawn_tool_description_and_enum() -> None:
+    """SUBAGENT-01 criterion 2 / SUBAGENT-10 WP-2: declared types are described."""
+    from agenthicc.config import AgenthiccConfig
+    from agenthicc.subagents.tool import make_spawn_subagents_tool
+
+    agents = AgentsRegistry()
+    agents.register(
+        AgentSpec(
+            name="release_auditor",
+            description="Audit release notes against the merged changes.",
+            prompt="Compare the release notes with the commit log.",
+            mode="subagent",
+            source="project",
+        )
+    )
+
+    registry, errors = _build_definition_registry(agents, AgenthiccConfig())
+    spec = registry.get("release_auditor")
+    assert errors == {}
+    assert spec is not None
+    assert spec.description == "Audit release notes against the merged changes."
+
+    tool = make_spawn_subagents_tool(object(), "model-a", [], registry=registry)
+    metadata = object.__getattribute__(tool, "__lauren_ai_tool__")
+    description = metadata.description
+    assert "- release_auditor: Audit release notes against the merged changes." in description
+    assert "release_auditor: No description provided." not in description
+    item = metadata.parameters["input_schema"]["properties"]["tasks"]["items"]
+    assert "release_auditor" in item["properties"]["type"]["enum"]

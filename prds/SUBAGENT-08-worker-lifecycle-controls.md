@@ -1,7 +1,7 @@
 ---
 title: "SUBAGENT-08: Worker lifecycle controls"
-status: Proposed
-version: 0.1.0
+status: Implemented (phase 1)
+version: 0.2.0
 date: 2026-10-29
 scope: "one per-worker lifecycle for stop, steer, retry and partial-result salvage inside a subagent pool, including the abort-versus-drain decision that a budget crossing triggers — never budget accounting, limit keys or the budget report"
 area: A-8
@@ -22,6 +22,50 @@ tags:
 ---
 
 # SUBAGENT-08: Worker lifecycle controls
+
+## Implementation status (2026-11-03)
+
+Evaluated at `0a63bfba1dca68e61a06fe3b9acb4f536637396b` — the merge of PR #6 that put the series on `main` — by
+SUBAGENT-10 §3 (0.2.0). Verdicts: **D** delivered, **P** partial, **M** missing.
+Criteria are judged by behaviour; a case that exists in a file the criterion
+does not name is marked *placement* and tracked by SUBAGENT-10 R6/WP-8. Line
+numbers below are at `0a63bfb`; this document's §2–§3 keep the citations of
+the commit they were written against.
+
+**Verdict: implemented in behaviour; every control is reachable only from the
+panel.** Goals 11 D / 0 P / 0 M; criteria 12 D / 1 P / 0 M. Phase 2 is the
+criterion-5 proof and test re-homing (SUBAGENT-10 WP-8); model-facing entry
+points to these mechanisms are **SUBAGENT-11** goal 7.
+
+- **Lifecycle and stop requests (goals 1–4, 8).** `WorkerStopRequest` and
+  `WorkerLifecycle` (`src/agenthicc/subagents/pool.py:292-316`);
+  `request_stop` (`:2043`) is idempotent with mode, source, reason and a stable
+  `request_id`; `request_pool_stop` (`:2114`) fans out; parent-turn cancellation
+  reaches the same path with `source="parent"` (`:2327`, `:2824`).
+- **Salvage (goal 5).** `partial`, `stop_reason` and `undelivered_messages` are
+  set on every unsuccessful ending — missing mutation, empty response, timeout,
+  cancellation and failure (`pool.py:1242-1348`).
+- **Steering (goal 6).** A consumed message is acknowledged (`pool.py:1743`); the
+  undelivered count is reported at termination.
+- **Retry (goal 7).** `retry_worker` (`pool.py:2237-2273`) retries only a failed
+  or cancelled worker, as a new attempt. It refuses while the pool is active and
+  once the pool's `max_total_time_s` has elapsed since pool start, and returns
+  `None` without a reason for every refusal — SUBAGENT-11 requires a reason. A
+  finished pool is reachable for retry only while it is the pool the panel
+  displays, and starting any new pool in the conversation clears it
+  (`pool.py:1819-1840`, `:2408-2411`), so in practice only the most recent pool
+  is retryable — SUBAGENT-11 goal 7 replaces this with a conversation-scoped
+  registry.
+- **M-1 response (goal 9).** Under SUBAGENT-10 decision D-2,
+  `budget_exceeded()` (`pool.py:2126-2135`), `subagents.on_budget_exceeded` and
+  `subagents.stop_grace_s` are **this document's**: the shipped governor is the
+  response goal 9 describes, triggered by SUBAGENT-06's operator ceilings.
+- **Criterion 5 — P.** No test stops a worker while it waits on an approval;
+  the one approval case in `tests/integration/test_subagent_panel_agx08.py`
+  does not stop the worker (WP-8, SUBAGENT-10 criterion 25).
+- **Placement.** Every lifecycle case lives in `tests/unit/test_subagent_lifecycle.py`
+  or `tests/unit/test_subagent_budgets.py`, which no criterion names; WP-8
+  amends the criteria to name them.
 
 ## 1. Executive summary
 
