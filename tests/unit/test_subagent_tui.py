@@ -187,9 +187,16 @@ class TestScrollBufferRenderers:
         )
         assert "Modified chapters/01.md" in out
 
-    def test_worker_done_failure_shows_error(self) -> None:
+    def test_worker_done_success_shows_the_first_line_of_its_text(self) -> None:
         out = self._render_event(
             "subagent_worker_done",
+            {"label": "explorer #1", "ok": True, "done": 1, "total": 1, "text": "Found it\nmore"},
+        )
+        assert "Found it" in out and "more" not in out
+
+    def test_worker_done_failure_shows_error(self) -> None:
+        out = self._render_event(
+            "subagent_worker_failed",
             {
                 "label": "tester #1",
                 "ok": False,

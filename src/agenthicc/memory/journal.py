@@ -40,6 +40,7 @@ import json
 import hashlib
 import logging
 import os
+import time
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -926,6 +927,7 @@ class ConversationJournal:
         entry: dict[str, object] = {
             "seq": self._seq,
             "kind": "subagent_worker_result",
+            "at": time.time(),
             "schema_version": 1,
             "pool_id": pool_id,
             "fingerprint": fingerprint,
@@ -987,6 +989,7 @@ class ConversationJournal:
         entry: dict[str, object] = {
             "seq": self._seq,
             "kind": "subagent_pool_result",
+            "at": time.time(),
             "schema_version": 1,
             "pool_id": pool_id,
             "fingerprint": fingerprint,
@@ -1012,6 +1015,7 @@ class ConversationJournal:
             {
                 "seq": self._seq,
                 "kind": "subagent_pool_started",
+                "at": time.time(),
                 "schema_version": 1,
                 "pool_id": str(pool_id)[:128],
                 "fingerprint": str(fingerprint)[:128],
@@ -1031,6 +1035,7 @@ class ConversationJournal:
             {
                 "seq": self._seq,
                 "kind": "subagent_pool_backgrounded",
+                "at": time.time(),
                 "schema_version": 1,
                 "pool_id": str(pool_id)[:128],
                 "tool_result": dict(tool_result),
@@ -1051,6 +1056,7 @@ class ConversationJournal:
         entry: dict[str, object] = {
             "seq": self._seq,
             "kind": "subagent_pool_finished",
+            "at": time.time(),
             "schema_version": 1,
             "pool_id": str(pool_id)[:128],
             "total": max(0, int(total)),
@@ -1096,6 +1102,7 @@ class ConversationJournal:
         entry: dict[str, object] = {
             "seq": self._seq,
             "kind": "subagent_pool_stopped",
+            "at": time.time(),
             "schema_version": 1,
             "pool_id": str(pool_id)[:128],
             "total": max(0, int(total)),
@@ -1127,6 +1134,7 @@ class ConversationJournal:
             {
                 "seq": self._seq,
                 "kind": "subagent_pool_cancelled",
+                "at": time.time(),
                 "schema_version": 1,
                 "pool_id": str(pool_id)[:128],
                 "reason": str(reason)[:256],
@@ -1148,6 +1156,7 @@ class ConversationJournal:
             {
                 "seq": self._seq,
                 "kind": "subagent_pool_notification_delivered",
+                "at": time.time(),
                 "schema_version": 1,
                 "pool_id": str(pool_id)[:128],
                 "message_id": str(message_id)[:160],
@@ -1191,6 +1200,7 @@ class ConversationJournal:
             worker_record: dict[str, object] = {
                 "seq": self._seq,
                 "kind": "subagent_worker_result",
+                "at": time.time(),
                 "schema_version": 1,
                 "pool_id": pool_id,
                 "fingerprint": str(lifecycle.get("fingerprint", "")),
@@ -1292,6 +1302,7 @@ class ConversationJournal:
                 {
                     "seq": self._seq,
                     "kind": "subagent_pool_interrupted",
+                    "at": time.time(),
                     "schema_version": 1,
                     "pool_id": pool_id,
                     "total": total,
@@ -1377,6 +1388,28 @@ class ConversationJournal:
             ):
                 valid.append(record)
         return valid
+
+    def subagent_pool_records(self, pool_id: str) -> list[dict[str, object]]:
+        """Every durable subagent record of *pool_id*, in journal order (one pass)."""
+        if not self._path.exists():
+            return []
+        records: list[dict[str, object]] = []
+        with self._path.open("r", encoding="utf-8") as fh:
+            for raw in fh:
+                line = raw.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    break
+                if (
+                    isinstance(entry, dict)
+                    and str(entry.get("kind", "")).startswith("subagent_")
+                    and entry.get("pool_id") == pool_id
+                ):
+                    records.append(entry)
+        return records
 
     def _fold_subagent_kind(self, kind: str) -> list[dict[str, object]]:
         """Fold one auxiliary subagent record kind, tolerating a bad tail."""

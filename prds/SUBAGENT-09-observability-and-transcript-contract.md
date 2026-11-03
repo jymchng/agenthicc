@@ -24,6 +24,39 @@ tags:
 
 ## Implementation status (2026-11-03)
 
+**Wave 6 of SUBAGENT-10's plan delivers goals 1–11** (branch
+`subagent-wave-6-event-contract`, pending merge); goal 12 was already met.
+
+- Goals 1–2: `agenthicc.subagents.events` defines `SubagentEvent`,
+  `SubagentEventKind` (the ten transitions plus `stop_requested`,
+  `message_acknowledged`, the success/failure split and `transcript_degraded`)
+  and `LIFECYCLE_TABLE`. The pool builds every kernel and scroll emission from
+  one `SubagentEvent`; one kernel emit site is typed by the table, which
+  `tests/unit/test_kernel_event_contract.py` now resolves. The unused
+  `lifecycle` transcript kind is removed.
+- Goal 3: `Event.schema_version` (default 1), stamped by `Event.create` from
+  `EVENT_SCHEMA_VERSIONS`, which declares the five subagent types once.
+- Goals 4–6: every kernel and scroll payload carries `pool_id`, every
+  worker-scoped one `worker_id` and `attempt` (`task_id` and the scroll
+  `summary` key are replaced by `worker_id` and `text`); transcript lines carry
+  `pool_id`, `worker_id` and `schema_version`; failures emit
+  `subagent_worker_failed`. Truncation markers come from the one helper
+  `SubagentPool._display_fields`.
+- Goals 7–8: redaction before bounding at every sink, idempotence pinned, and
+  the result-representation table made normative in the guide's Events section.
+- Goal 9: `agenthicc.subagents.replay.replay_pool` with `REPLAY_FIDELITY`;
+  subagent journal records now carry `at` so the merge is ordered.
+- Goal 10: `SubagentPoolState.diagnostics` / `stuck_workers` with
+  `STUCK_TIMEOUT_FRACTION = 0.8`; `stuck_workers` is on the completion records.
+- Goal 11: `TranscriptWriter.write_failures`, its `on_failure` callback, and one
+  `subagent_transcript_degraded` event per pool.
+
+Criteria 1, 3, 4, 6, 7, 8, 11 are pinned in `tests/unit/test_subagent_pool.py`;
+2 and 14 in `tests/unit/test_subagent_pool_runtime_coverage.py`; 5, 9, 10 and
+12 in `tests/unit/test_subagent_panel_agx08.py`.
+
+### Status before wave 6
+
 Evaluated at `0a63bfba1dca68e61a06fe3b9acb4f536637396b` — the merge of PR #6 that put the series on `main` — by
 SUBAGENT-10 §3 (0.2.0). Verdicts: **D** delivered, **P** partial, **M** missing.
 Criteria are judged by behaviour; a case that exists in a file the criterion

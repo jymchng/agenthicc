@@ -669,3 +669,158 @@ def test_budget_usage_is_the_first_thing_dropped_at_narrow_widths() -> None:
 
     assert "1 fail" in narrow
     assert "$" not in narrow and " tok" not in narrow
+
+
+# ── SUBAGENT-09: correlation, idempotent redaction, replay, degradation ─────
+
+
+async def test_a_transcript_line_names_its_pool_and_worker(tmp_path: Path) -> None:
+    """Criterion 5: a copied .jsonl is still attributable."""
+    await _write(tmp_path, {"task-0": [TranscriptEvent("prompt", NOW, text="Find it")]})
+
+    copied = tmp_path / "elsewhere.jsonl"
+    copied.write_bytes((tmp_path / "pool-1" / "task-0.jsonl").read_bytes())
+    line = json.loads(copied.read_text().splitlines()[0])
+    assert (line["pool_id"], line["worker_id"], line["schema_version"]) == ("pool-1", "task-0", 1)
+    (event,) = read_transcript(copied)
+    assert (event.pool_id, event.worker_id) == ("pool-1", "task-0")
+
+
+async def test_redaction_is_idempotent_from_panel_to_transcript(tmp_path: Path) -> None:
+    """Criterion 9: text the pool already redacted is unchanged by the writer."""
+    from agenthicc.tui.runtime.session_export import _Redactor
+
+    secret = "sk-ant-" + "a1B2c3D4e5F6g7H8i9J0"
+    once = str(_Redactor().value(f"key {secret} and password = 'hunter2hunter2'", "text"))
+    assert secret not in once and "hunter2hunter2" not in once
+    assert str(_Redactor().value(once, "text")) == once
+
+    await _write(tmp_path, {"task-0": [TranscriptEvent("text", NOW, text=once)]})
+    (event,) = read_transcript(tmp_path / "pool-1" / "task-0.jsonl")
+    assert event.text == once
+
+
+async def test_replay_pool_merges_transcripts_and_journal_records_in_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Criterion 10: one ordered timeline per pool, with its fidelity stated."""
+    from agenthicc.memory.journal import ConversationJournal
+    from agenthicc.subagents.replay import REPLAY_FIDELITY, replay_pool
+
+    journal = ConversationJournal(tmp_path / "journal.jsonl")
+    try:
+        journal.subagent_pool_started(
+            pool_id="pool-1",
+            fingerprint="fp",
+            parent_run_id="turn-1",
+            tasks=[{"task_id": "task-0", "agent_type": "explorer"}],
+        )
+        start = json.loads((tmp_path / "journal.jsonl").read_text().splitlines()[-1])["at"]
+        await _write(
+            tmp_path / "subagents",
+            {
+                "task-0": [
+                    TranscriptEvent("prompt", start + 1, text="Find the store"),
+                    TranscriptEvent("tool_started", start + 2, text="src/store.py", tool="read"),
+                    TranscriptEvent("finished", start + 3, text="Found it.", ok=True),
+                ],
+                "task-1": [TranscriptEvent("prompt", start + 1.5, text="Check the tests")],
+            },
+        )
+        import agenthicc.memory.journal as journal_module
+
+        # The worker's result is persisted after its last transcript line.
+        monkeypatch.setattr(journal_module, "time", SimpleNamespace(time=lambda: start + 4))
+        journal.subagent_worker_result(
+            pool_id="pool-1",
+            fingerprint="fp",
+            task_id="task-0",
+            agent_type="explorer",
+            label="explorer #1",
+            ok=True,
+            text="Found it. password = 'hunter2hunter2'",
+            error="",
+            duration_ms=3_000.0,
+            tool_calls=["read"],
+            changed_paths=[],
+        )
+        journal.subagent_pool_started(
+            pool_id="other-pool", fingerprint="x", parent_run_id="turn-1", tasks=[]
+        )
+
+        timeline = replay_pool("pool-1", journal=journal, transcripts_root=tmp_path / "subagents")
+    finally:
+        journal.close()
+
+    assert timeline.fidelity == REPLAY_FIDELITY and "projection-only" in REPLAY_FIDELITY
+    assert [(entry.source, entry.kind, entry.worker_id) for entry in timeline.entries] == [
+        ("journal", "subagent_pool_started", ""),
+        ("transcript", "prompt", "task-0"),
+        ("transcript", "prompt", "task-1"),
+        ("transcript", "tool_started", "task-0"),
+        ("transcript", "finished", "task-0"),
+        ("journal", "subagent_worker_result", "task-0"),
+    ]
+    assert all("hunter2hunter2" not in entry.text for entry in timeline.entries)
+    assert timeline.partial is False
+
+
+async def test_replay_marks_a_compacted_transcript_partial(tmp_path: Path) -> None:
+    from agenthicc.subagents.replay import replay_pool
+
+    events = [TranscriptEvent("text", NOW + i, text=f"message {i} " + "x" * 300) for i in range(60)]
+    await _write(tmp_path, {"task-0": events}, limit=8_192)
+
+    timeline = replay_pool("pool-1", journal=None, transcripts_root=tmp_path)
+
+    assert timeline.partial is True
+    assert all(entry.kind == "text" for entry in timeline.entries)
+
+
+async def test_a_failed_transcript_write_is_counted_and_reported_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Criterion 12: fail open for the worker, fail visible for the operator."""
+    from agenthicc.subagents.pool import SubagentPool, SubagentResult, SubagentTask
+    from agenthicc.subagents.types import DEFAULT_REGISTRY
+    import agenthicc.subagents.pool as pool_module
+    import agenthicc.subagents.transcripts as transcripts_module
+
+    class FakeWorker:
+        def __init__(self, task: SubagentTask, spec: object, index: int, **kwargs: object) -> None:
+            self._task = task
+            self.label = f"explorer #{index}"
+
+        async def run(self) -> SubagentResult:
+            return SubagentResult(self._task.task_id, "explorer", self.label, True, "done")
+
+    def failing_write(self: TranscriptWriter, worker_id: str, event: TranscriptEvent) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(pool_module, "SubagentWorker", FakeWorker)
+    monkeypatch.setattr(transcripts_module.TranscriptWriter, "_write_event", failing_write)
+    scroll: list[object] = []
+    app = AppState.create()
+    app.conversation.on_event(scroll.append)
+    pool = SubagentPool(
+        [SubagentTask("a", "explorer", "x"), SubagentTask("b", "explorer", "y")],
+        parent_runner=SimpleNamespace(_transport=None),
+        parent_model="mock-model",
+        all_tools=[],
+        conv_store=app.conversation,
+        registry=DEFAULT_REGISTRY,
+        transcript_root=tmp_path / "subagents",
+    )
+    result = await pool.run()
+    # The writer thread reports through call_soon_threadsafe.
+    await asyncio.sleep(0)
+
+    assert result.succeeded == 2
+    degraded = [
+        event.payload  # type: ignore[attr-defined]
+        for event in scroll
+        if event.kind == "subagent_transcript_degraded"  # type: ignore[attr-defined]
+    ]
+    assert len(degraded) == 1
+    assert degraded[0]["pool_id"] == pool.pool_id
+    assert pool.state.transcript_write_failures >= 2

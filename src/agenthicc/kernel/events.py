@@ -9,6 +9,7 @@ from enum import Enum
 from uuid import uuid4
 
 __all__ = [
+    "EVENT_SCHEMA_VERSIONS",
     "PROJECTION_EVENT_TYPES",
     "Effect",
     "EffectType",
@@ -39,6 +40,19 @@ PROJECTION_EVENT_TYPES: frozenset[str] = frozenset(
         "WorkflowPhaseStarted",
     }
 )
+
+
+#: Event types whose payload contract has a version other than the default 1,
+#: or that declare theirs explicitly. ``Event.create`` stamps the declared
+#: version, so no emit site hard-codes one. The subagent types carry the
+#: SUBAGENT-09 record shape (``agenthicc.subagents.events``).
+EVENT_SCHEMA_VERSIONS: Mapping[str, int] = {
+    "SubagentCompleted": 1,
+    "SubagentFailed": 1,
+    "SubagentPoolCompleted": 1,
+    "SubagentPoolStarted": 1,
+    "SubagentStarted": 1,
+}
 
 
 class UnknownEventError(ValueError):
@@ -131,6 +145,8 @@ class Event:
     payload: dict[str, object]
     source_agent_id: str | None = None
     tool_call_id: str | None = None
+    #: The payload contract's version (``EVENT_SCHEMA_VERSIONS``, default 1).
+    schema_version: int = 1
 
     @classmethod
     def create(
@@ -139,6 +155,7 @@ class Event:
         payload: dict[str, object],
         source_agent_id: str | None = None,
         tool_call_id: str | None = None,
+        schema_version: int | None = None,
     ) -> Event:
         return cls(
             event_id=uuid4().hex,
@@ -147,6 +164,11 @@ class Event:
             payload=payload,
             source_agent_id=source_agent_id,
             tool_call_id=tool_call_id,
+            schema_version=(
+                schema_version
+                if schema_version is not None
+                else EVENT_SCHEMA_VERSIONS.get(event_type, 1)
+            ),
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -157,10 +179,14 @@ class Event:
             "payload": self.payload,
             "source_agent_id": self.source_agent_id,
             "tool_call_id": self.tool_call_id,
+            "schema_version": self.schema_version,
         }
 
     @classmethod
     def from_dict(cls, data: Mapping[str, object]) -> Event:
+        version = data.get("schema_version", 1)
+        if isinstance(version, bool) or not isinstance(version, int) or version < 1:
+            raise ValueError("event field 'schema_version' must be a positive integer")
         return cls(
             event_id=_payload_str(data, "event_id"),
             event_type=_payload_str(data, "event_type"),
@@ -168,6 +194,7 @@ class Event:
             payload=_payload_mapping(data, "payload"),
             source_agent_id=_payload_optional_str(data, "source_agent_id"),
             tool_call_id=_payload_optional_str(data, "tool_call_id"),
+            schema_version=version,
         )
 
 

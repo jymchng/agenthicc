@@ -23,12 +23,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from agenthicc.subagents.events import SUBAGENT_EVENT_SCHEMA_VERSION
+
 if TYPE_CHECKING:
     from agenthicc.tui.runtime.session_export import _Redactor
 
 __all__ = [
     "MAX_TRANSCRIPT_BYTES",
     "PoolRecord",
+    "TRANSCRIPT_TEXT_LIMIT",
     "TranscriptEvent",
     "TranscriptTail",
     "TranscriptWriter",
@@ -41,7 +44,7 @@ __all__ = [
 #: A worker's transcript is kept at or under this size.
 MAX_TRANSCRIPT_BYTES = 2 * 1024 * 1024
 #: Text fields (an agent message, a result) are cut to this many characters.
-_TEXT_LIMIT = 4_000
+TRANSCRIPT_TEXT_LIMIT = 4_000
 #: Short fields (a tool target, a failure) are cut to this many characters.
 _SHORT_LIMIT = 240
 
@@ -55,7 +58,6 @@ _KINDS = frozenset(
         "approval_resolved",
         "finished",
         "stop_requested",
-        "lifecycle",
         "message_acknowledged",
         "attempt_started",
         "truncated",
@@ -91,9 +93,22 @@ class TranscriptEvent:
     undelivered_messages: int = 0
     attempt: int = 1
     cleanup_error: str = ""
+    #: Correlation, so a copied ``.jsonl`` stays attributable (SUBAGENT-09).
+    #: The writer stamps both; a pool's own events may leave them empty.
+    pool_id: str = ""
+    worker_id: str = ""
+    schema_version: int = SUBAGENT_EVENT_SCHEMA_VERSION
 
     def to_dict(self) -> dict[str, object]:
-        payload: dict[str, object] = {"kind": self.kind, "at": self.at}
+        payload: dict[str, object] = {
+            "kind": self.kind,
+            "at": self.at,
+            "schema_version": self.schema_version,
+        }
+        if self.pool_id:
+            payload["pool_id"] = self.pool_id
+        if self.worker_id:
+            payload["worker_id"] = self.worker_id
         if self.text:
             payload["text"] = self.text
         if self.tool:
@@ -133,6 +148,7 @@ class TranscriptEvent:
         dropped = value.get("dropped", 0)
         undelivered_messages = value.get("undelivered_messages", 0)
         attempt = value.get("attempt", 1)
+        version = value.get("schema_version", SUBAGENT_EVENT_SCHEMA_VERSION)
         return cls(
             kind=str(kind),
             at=float(at),
@@ -160,6 +176,13 @@ class TranscriptEvent:
                 else 1
             ),
             cleanup_error=_string_field(value, "cleanup_error"),
+            pool_id=_string_field(value, "pool_id"),
+            worker_id=_string_field(value, "worker_id"),
+            schema_version=(
+                version
+                if isinstance(version, int) and not isinstance(version, bool) and version >= 1
+                else SUBAGENT_EVENT_SCHEMA_VERSION
+            ),
         )
 
 
@@ -215,9 +238,13 @@ class TranscriptWriter:
         pool_id: str,
         *,
         limit: int = MAX_TRANSCRIPT_BYTES,
+        on_failure: Callable[[int], None] | None = None,
     ) -> None:
         self.directory = root / _safe_name(pool_id)
         self.pool_id = pool_id
+        #: Called on the writer thread after each failed write, with the count.
+        self._on_failure = on_failure
+        self._failures = 0
         self._limit = max(1_024, limit)
         self._sizes: dict[str, int] = {}
         self._manifest: dict[str, object] = {}
@@ -256,13 +283,23 @@ class TranscriptWriter:
                 return
             self._executor.submit(self._guarded, function, *args)
 
-    @staticmethod
-    def _guarded(function: Callable[..., None], *args: object) -> None:
-        # A transcript is a convenience: a full disk must not fail the worker.
+    @property
+    def write_failures(self) -> int:
+        """How many writes failed; a non-zero value means a partial transcript."""
+        with self._lock:
+            return self._failures
+
+    def _guarded(self, function: Callable[..., None], *args: object) -> None:
+        # A transcript is a convenience: a full disk must not fail the worker,
+        # but it must not look complete either. Fail open, fail visible.
         try:
             function(*args)
         except (OSError, ValueError):
-            return
+            with self._lock:
+                self._failures += 1
+                failures = self._failures
+            if self._on_failure is not None:
+                self._on_failure(failures)
 
     def _redact(self, text: str, limit: int) -> str:
         if not text:
@@ -299,7 +336,9 @@ class TranscriptWriter:
         self._replace(self.directory / "pool.json", json.dumps(self._manifest, sort_keys=True))
 
     def _write_event(self, worker_id: str, event: TranscriptEvent) -> None:
-        limit = _TEXT_LIMIT if event.kind in ("prompt", "text", "finished") else _SHORT_LIMIT
+        limit = (
+            TRANSCRIPT_TEXT_LIMIT if event.kind in ("prompt", "text", "finished") else _SHORT_LIMIT
+        )
         safe = TranscriptEvent(
             kind=event.kind,
             at=event.at,
@@ -317,6 +356,8 @@ class TranscriptWriter:
             undelivered_messages=max(0, event.undelivered_messages),
             attempt=max(1, event.attempt),
             cleanup_error=self._redact(event.cleanup_error, _SHORT_LIMIT),
+            pool_id=self.pool_id,
+            worker_id=worker_id,
         )
         line = json.dumps(safe.to_dict(), ensure_ascii=False, sort_keys=True) + "\n"
         name = _safe_name(worker_id)

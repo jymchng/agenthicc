@@ -53,6 +53,9 @@ EventKind = Literal[
     # Subagent pool events (PRD-124 Phase 3)
     "subagent_pool_started",
     "subagent_worker_done",
+    "subagent_worker_failed",
+    "subagent_worker_stop_requested",
+    "subagent_transcript_degraded",
     "subagent_pool_done",
     # Cached pool result for resume detection (PRD-124 Phase 4)
     "subagent_pool_result",

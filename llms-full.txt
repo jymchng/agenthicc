@@ -4623,6 +4623,84 @@ ids.
 
 The notice for one folded journal lifecycle record; never reads its `text`.
 
+### SubagentEvent
+
+```python
+@dataclass(frozen=True, slots=True)
+class SubagentEvent:
+    kind: SubagentEventKind
+    pool_id: str
+    worker_id: str = ""
+    attempt: int = 1
+    session_id: str = ""
+    run_id: str = ""
+    ok: bool | None = None
+    fields: Mapping[str, object] = {}
+    event_id: str  # uuid4 hex
+    at: float      # time.time()
+    schema_version: int = SUBAGENT_EVENT_SCHEMA_VERSION  # 1
+
+    def payload(self) -> dict[str, object]: ...
+```
+
+From `agenthicc.subagents.events` (SUBAGENT-09). The one subagent record shape;
+the kernel event, scroll event and panel are projections of it, and
+`payload()` is the shared serialisation: `schema_version`, `event_id`, `at`,
+`event` (the kind value), `pool_id`, `worker_id` and `attempt` on
+worker-scoped kinds, `session_id`/`run_id` when known, `ok`, then `fields`.
+Construction refuses a missing `pool_id`, a worker-scoped kind without
+`worker_id`, and `fields` that redefine an envelope key.
+
+### SubagentEventKind
+
+`StrEnum`: `pool_opened`, `worker_scheduled`, `worker_started`, `worker_text`,
+`tool_started`, `tool_finished`, `approval_requested`, `approval_resolved`,
+`stop_requested`, `message_acknowledged`, `worker_finished`, `worker_failed`,
+`pool_finished`, `transcript_degraded`.
+
+### LIFECYCLE_TABLE
+
+`tuple[LifecycleRow, ...]`, one row per `SubagentEventKind` in enum order;
+each `LifecycleRow(kind, kernel_type, scroll_kind, transcript_kinds,
+panel_statuses, worker_scoped)` names what every sink records (`None`/`()` for
+nothing). `lifecycle_row(kind)` looks one up; `TRANSCRIPT_MARKER_KINDS`
+(`{"truncated"}`) are file markers, not transitions. Failures use the scroll
+kind `subagent_worker_failed`; successes `subagent_worker_done`.
+
+### EVENT_SCHEMA_VERSIONS
+
+`Mapping[str, int]` in `agenthicc.kernel.events`: the five `Subagent*` types
+declare version 1. `Event` has `schema_version: int = 1`; `Event.create(...,
+schema_version=None)` stamps the declared version, and `to_dict()` /
+`from_dict()` round-trip it (a stored event without the field reads as 1).
+
+### replay_pool
+
+```python
+def replay_pool(
+    pool_id: str, *, journal: ConversationJournal | None, transcripts_root: Path | None
+) -> PoolTimeline: ...
+```
+
+From `agenthicc.subagents.replay`. Merges a pool's transcript files and its
+journal records (`ConversationJournal.subagent_pool_records(pool_id)`; subagent
+journal records now carry `at`) into `PoolTimeline(pool_id, entries, partial,
+fidelity)`, ordered by time with journal records after transcript events at
+equal times. Each `TimelineEntry(at, source, kind, worker_id, attempt, text,
+ok)` is redacted and bounded. `REPLAY_FIDELITY`: kernel subagent events are
+projection-only and cannot contribute; the timeline re-derives no state.
+
+### SubagentPoolState.diagnostics
+
+`SubagentPoolState.diagnostics(now) -> dict[str, object]`: `wall_clock_s`,
+`stuck_workers` (workers `running` at or past `STUCK_TIMEOUT_FRACTION` = 0.8 of
+`WorkerState.timeout_s`), `success_rate_by_type`, `budget_ratio`,
+`transcript_write_failures`, and per-worker `elapsed_s` / `timeout_ratio`.
+`SubagentPoolState` also carries `started_at` and `transcript_write_failures`.
+A failed transcript write increments `TranscriptWriter.write_failures`, calls
+the writer's `on_failure` callback, and the pool emits one
+`subagent_transcript_degraded` scroll event per pool.
+
 ### deliver_background_pool_notices
 
 Deliver each undelivered terminal background pool exactly once.

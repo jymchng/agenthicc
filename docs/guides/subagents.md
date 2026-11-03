@@ -120,9 +120,10 @@ There are therefore three different representations of a subagent result:
 | `SubagentResult.text` / `AggregatedResult.text` | Complete final worker prose or the rendered JSON result | Parent tool result and provider memory | Not truncated by the pool |
 | `SubagentResult.value` / `spawn_subagents.values` | Validated JSON object envelopes (`task_id`, `agent_type`, `label`, `value`) | Structured parent handoff and resume | Each submitted value is limited to 64 KiB |
 | `ConversationJournal` records | Complete worker prose, structured values and complete-pool results | Crash recovery and durable resume | Fsync'd; subject to normal session-storage sensitivity |
-| `subagent_worker_done` and kernel completion payloads | Status plus a short preview | TUI/event observability | Preview limited to 2,000 characters |
+| Kernel and scroll payloads, transcript lines, panel activity | Status plus a redacted, bounded preview | TUI/event observability | Bounded with `truncated` markers ([Events](#events)) |
 
-The last row is intentionally not the source of truth. Seeing a short preview
+The size policies are normative and stated once, in the
+[event contract](#redaction-and-bounds). The last row is intentionally not the source of truth. Seeing a short preview
 in the TUI does not mean the full worker output was discarded.
 
 ## How the tool is exposed
@@ -911,44 +912,92 @@ so the agents hub's request card shows it too.
 
 ### Events
 
-The pool also appends scroll events:
+Every subagent emission is one `SubagentEvent`
+(`agenthicc.subagents.events`), and each sink records a projection of it: the
+kernel event, the conversation-store scroll event, the worker transcript line
+and the panel row. `LIFECYCLE_TABLE` is the normative map; no sink records a
+state the table does not name:
 
-- `subagent_pool_started`;
-- `subagent_worker_done` for each worker, including a bounded display summary, duration,
-  tool calls, and changed-path hints;
-- `subagent_pool_done`;
-- `system` for a cached “Resumed” result.
+| Transition (`event`) | Kernel event | Scroll kind | Transcript kind | Panel status |
+|---|---|---|---|---|
+| `pool_opened` | `SubagentPoolStarted` | `subagent_pool_started` | — (`pool.json`) | — |
+| `worker_scheduled` (a retry) | — | — | `attempt_started` | pending |
+| `worker_started` | `SubagentStarted` | — | `prompt` | running |
+| `worker_text` | — | — | `text` | running |
+| `tool_started` / `tool_finished` | — | — | `tool_started` / `tool_finished` | running |
+| `approval_requested` | — | — | `approval_requested` | waiting |
+| `approval_resolved` | — | — | `approval_resolved` | running |
+| `stop_requested` | — | `subagent_worker_stop_requested` | `stop_requested` | — |
+| `message_acknowledged` | — | — | `message_acknowledged` | — |
+| `worker_finished` | `SubagentCompleted` | `subagent_worker_done` | `finished` | done |
+| `worker_failed` | `SubagentFailed` | `subagent_worker_failed` | `finished` | failed, stopped |
+| `pool_finished` | `SubagentPoolCompleted` | `subagent_pool_done` | — (`pool.json`) | — |
+| `transcript_degraded` | — | `subagent_transcript_degraded` | — | — |
 
-When an `EventProcessor` is supplied, corresponding kernel events are emitted:
-`SubagentPoolStarted`, `SubagentStarted`, `SubagentCompleted` or
-`SubagentFailed`, and `SubagentPoolCompleted`. The pool drains the processor
-before returning the aggregate, so every emitted pool and worker event has been
-processed and handed to the event log before the parent receives the tool result.
-Event payloads contain bounded text and diagnostics; they are not a replacement
-for the complete result or the durable journal. `subagent_pool_result` stores
-the complete aggregate in the reactive turn and durable journal, but has no
-verbose renderer because the parent tool result is the user-facing artefact.
+A transcript's `truncated` line marks the file itself, not a transition.
 
-Every text field in those scroll and kernel payloads passes through the same
-secret redactor as session exports and subagent transcripts, before it is cut to
-its display bound: the worker's answer (`summary` in `subagent_worker_done`,
-`text` in `SubagentCompleted`/`SubagentFailed` and `SubagentPoolCompleted`), its
-`error`, and the parent's task text (`task` in `SubagentStarted`, `description`
-in `SubagentPoolStarted`). Redaction runs on the complete text, so a secret that
-straddles the bound is masked whole. A cut value says so: the main text carries
-`truncated: true` and its untruncated `text_length`, and any other field carries
-`<field>_truncated` and `<field>_length`. A value that fit carries neither.
+Every kernel and scroll payload carries the same envelope: `schema_version`
+(1), `event_id`, `at`, `event`, `pool_id`, and — on every worker-scoped event —
+`worker_id` and `attempt`, plus `session_id` and `run_id` (the worker's ledger
+run id) when the pool has them. Kernel events also carry `schema_version` on
+the event itself, declared once in `agenthicc.kernel.events.EVENT_SCHEMA_VERSIONS`.
+Transcript lines carry `schema_version`, `pool_id` and `worker_id`, so a copied
+`.jsonl` file is still attributable. A success and a failure are distinct kinds
+(`subagent_worker_done`, `subagent_worker_failed`) whose payloads differ only in
+`event` and `ok`.
+
+The pool drains the processor before returning the aggregate, so every emitted
+pool and worker event has been processed and handed to the event log before the
+parent receives the tool result. `subagent_pool_result` stores the complete
+aggregate in the reactive turn and durable journal, but has no verbose renderer
+because the parent tool result is the user-facing artefact.
+
+#### Redaction and bounds
+
+Every text field passes through the session-export redactor before it is cut
+to its display bound: the worker's answer (`text`), its `error`, and the
+parent's task text (`task` in `SubagentStarted` and in each
+`subagent_pool_started` worker row). Redaction runs on the complete text, so a
+secret that straddles the bound is masked whole, and it is idempotent, so text
+the pool redacted is unchanged when the transcript writer redacts it again. A
+cut value says so: the main text carries `truncated: true` and its untruncated
+`text_length`, and any other field carries `<field>_truncated` and
+`<field>_length`. A value that fit carries neither.
 
 | Field | Bound (characters) |
 |---|---:|
-| worker answer (`summary`, `text`) | 2,000 |
+| worker answer (`text`) | 2,000 |
 | `error` | 1,000 |
-| task text (`task`, `description`) | 2,000 |
+| task text (`task`) | 2,000 |
 | pool aggregate (`SubagentPoolCompleted.text`) | 16,000 |
+| transcript text (`prompt`, `text`, `finished`) | 4,000 |
 
-The provider-facing tool result and the durable journal still carry the
-complete, unredacted worker answer; only the display and event projections are
-redacted and bounded.
+| Representation | Where | Size policy |
+|---|---|---|
+| Complete result | `spawn_subagents` / `collect_subagent_results` tool result | unbounded, redacted structured values |
+| Complete journal record | `subagent_worker_result` and pool lifecycle records | unbounded, durable |
+| Bounded preview | kernel and scroll payloads, transcript lines, panel activity | redacted, then cut, with markers |
+
+#### Diagnosing a pool
+
+`SubagentPoolState.diagnostics(now)` derives, from fields that already exist and
+with no new meter: each worker's `elapsed_s` and `timeout_ratio`, the pool's
+`wall_clock_s`, `success_rate_by_type`, `budget_ratio` (usage over a declared
+token or cost budget), `stuck_workers` — workers `running` past 80 %
+(`STUCK_TIMEOUT_FRACTION`) of their time limit; a `waiting` worker is not stuck —
+and `transcript_write_failures`. `stuck_workers` and `transcript_write_failures`
+also appear on `SubagentPoolCompleted` and `subagent_pool_done`.
+
+A transcript write that fails (a full disk, for example) does not fail the
+worker, but it is counted, and the pool emits one `subagent_transcript_degraded`
+scroll event so a partial transcript is labelled partial.
+
+`agenthicc.subagents.replay.replay_pool(pool_id, journal=..., transcripts_root=...)`
+merges a pool's transcripts with its journal records into one ordered
+timeline. Its fidelity, stated as `REPLAY_FIDELITY`: kernel subagent events are
+projection-only and never stored, so they cannot contribute, and the timeline
+replays what happened without re-deriving pool state. `partial` is true when a
+transcript was compacted.
 
 ## Custom roles and aggregators
 
