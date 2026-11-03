@@ -1055,7 +1055,7 @@ class TestSpawnSubagentsTool:
             captured_tasks.append(raw_tasks if isinstance(raw_tasks, list) else [])
             original_init(pool, *args, **kwargs)
 
-        fake_result = SimpleNamespace(
+        fake_result = AggregatedResult(
             pool_id="pool-research",
             total=1,
             succeeded=1,
@@ -1122,7 +1122,6 @@ class TestSpawnSubagentsTool:
         assert base != changed
 
     async def test_output_schema_changes_the_effective_task_fingerprint(self) -> None:
-        from types import SimpleNamespace
         from unittest.mock import AsyncMock, patch
 
         from agenthicc.subagents.pool import SubagentPool
@@ -1154,7 +1153,7 @@ class TestSpawnSubagentsTool:
                 )
             )
             tool_fn = make_spawn_subagents_tool(object(), "test-model", [], registry=registry)
-            fake_result = SimpleNamespace(
+            fake_result = AggregatedResult(
                 pool_id="pool-schema",
                 total=1,
                 succeeded=1,
@@ -1220,7 +1219,7 @@ class TestSpawnSubagentsTool:
             captured.update(kwargs)
             original_init(pool, *args, **kwargs)
 
-        fake_result = SimpleNamespace(
+        fake_result = AggregatedResult(
             pool_id="pool-routing",
             total=1,
             succeeded=1,
@@ -1262,7 +1261,7 @@ class TestSpawnSubagentsTool:
             captured.update(kwargs)
             original_init(pool, *args, **kwargs)
 
-        fake_result = SimpleNamespace(
+        fake_result = AggregatedResult(
             pool_id="pool-timeout",
             total=1,
             succeeded=1,
@@ -1326,7 +1325,7 @@ class TestSpawnSubagentsTool:
             _transport = None
 
         fn = make_spawn_subagents_tool(FakeRunner(), "test-model", [])
-        fake_result = SimpleNamespace(
+        fake_result = AggregatedResult(
             pool_id="pool-executor",
             total=1,
             succeeded=1,
@@ -1355,7 +1354,7 @@ class TestSpawnSubagentsTool:
         conv = ConversationStore()
         conv.begin_turn("agent", "t1")
         fn = make_spawn_subagents_tool(FakeRunner(), "test-model", [], conv_store=conv)
-        fake_result = SimpleNamespace(
+        fake_result = AggregatedResult(
             pool_id="pool-timeout",
             total=1,
             succeeded=0,
@@ -1709,3 +1708,148 @@ async def test_worker_refuses_a_denied_capability_tool_through_its_own_gate() ->
     refusal = str(tool_results[0]["content"])
     assert "blocked by the writer type's permissions.deny_capabilities constraint" in refusal
     assert "cannot be widened" in refusal
+
+
+# ── SUBAGENT-06 / SUBAGENT-10 WP-7: usage attribution through a real pool ─────
+
+
+class _UsageByTaskTransport:
+    """Answers each worker once, with token usage chosen by its task text."""
+
+    def __init__(self, usage_by_task: dict[str, tuple[int, int]], model: str = "mock-model"):
+        self._usage_by_task = usage_by_task
+        self._model = model
+
+    async def complete(self, messages: list[object], **kwargs: object) -> object:
+        from lauren_ai._transport import Completion, TokenUsage
+
+        task = next(
+            str(message.get("content"))
+            for message in messages
+            if isinstance(message, dict) and message.get("role") == "user"
+        )
+        input_tokens, output_tokens = self._usage_by_task[task]
+        return Completion(
+            id=f"final-{task}",
+            model=self._model,
+            content=f"answer for {task}",
+            tool_calls=[],
+            stop_reason="end_turn",
+            usage=TokenUsage(input_tokens=input_tokens, output_tokens=output_tokens),
+        )
+
+
+def _ledger_pool(
+    usage_by_task: dict[str, tuple[int, int]],
+    ledger: object,
+    *,
+    model: str = "mock-model",
+    **kwargs: object,
+) -> SubagentPool:
+    from lauren_ai._agents._runner import AgentRunnerBase
+
+    return SubagentPool(
+        [SubagentTask(task, "researcher", task) for task in usage_by_task],
+        parent_runner=AgentRunnerBase(transport=_UsageByTaskTransport(usage_by_task, model)),
+        parent_model=model,
+        all_tools=[],
+        registry=DEFAULT_REGISTRY,
+        usage_ledger=ledger,  # type: ignore[arg-type]
+        parent_run_id="turn-1",
+        **kwargs,  # type: ignore[arg-type]
+    )
+
+
+@pytest.mark.asyncio
+async def test_each_worker_reports_its_own_spend_and_the_pool_reports_the_total() -> None:
+    from agenthicc.runners.usage_ledger import UsageLedger
+
+    ledger = UsageLedger("session")
+    pool = _ledger_pool({"cheap": (100, 10), "expensive": (5_000, 900)}, ledger)
+
+    result = await pool.run()
+
+    by_task = {task_id: worker.usage for task_id, worker in pool._results.items()}
+    assert by_task["cheap"].total_tokens == 110
+    assert by_task["expensive"].total_tokens == 5_900
+    assert result.usage.total_tokens == 6_010
+    assert result.usage.calls == 2
+    # Criterion 24: the governor's real-time count is exactly the ledger's total.
+    assert pool._token_count == result.usage.total_tokens
+
+
+@pytest.mark.asyncio
+async def test_two_pools_in_one_parent_run_are_accounted_separately() -> None:
+    from agenthicc.runners.usage_ledger import UsageLedger
+
+    ledger = UsageLedger("session")
+    first = await _ledger_pool({"a": (10, 1)}, ledger).run()
+    second = await _ledger_pool({"a": (20, 2)}, ledger).run()
+
+    assert first.usage.total_tokens == 11
+    assert second.usage.total_tokens == 22
+    assert ledger.snapshot().input_tokens == 30
+    run_ids = {record.run_id for record in ledger.records()}
+    assert len(run_ids) == 2
+    assert all(":subagent:a" in run_id for run_id in run_ids)
+
+
+@pytest.mark.asyncio
+async def test_a_declared_cost_limit_is_metered_and_crossing_it_stops_the_pool() -> None:
+    from agenthicc.runners.usage_ledger import UsageLedger
+    from agenthicc.subagents.budget import PoolBudget, resolve_budget
+
+    ledger = UsageLedger("session")
+    budget = resolve_budget(
+        PoolBudget(cost_usd=0.001),
+        ceiling=PoolBudget(),
+        operator_tokens=200_000,
+        operator_wall_clock_s=600.0,
+    )
+    published: list[float] = []
+    app = AppState.create()
+    pool = _ledger_pool(
+        {"priced": (100_000, 10_000)},
+        ledger,
+        model="claude-sonnet-4-5",
+        budget=budget,
+        conv_store=app.conversation,
+    )
+
+    def record_cost() -> None:
+        state = app.conversation.subagent_pool_state()
+        if state is not None:
+            published.append(state.cost_usd)
+
+    app.conversation.subagent_pool_state.subscribe(record_cost)
+
+    result = await pool.run()
+
+    assert result.budget_exceeded_reason == "max_cost_usd_exceeded"
+    assert result.usage.cost_usd == pytest.approx(pool._cost_spent)
+    assert result.usage.cost_usd > 0.001
+    state = app.conversation.subagent_pool_state()
+    assert state is not None and state.budget_cost_usd == 0.001
+    assert max(published) == pytest.approx(pool._cost_spent)
+
+
+@pytest.mark.asyncio
+async def test_a_pool_without_a_cost_limit_publishes_no_cost() -> None:
+    from agenthicc.runners.usage_ledger import UsageLedger
+
+    app = AppState.create()
+    pool = _ledger_pool(
+        {"priced": (100, 10)},
+        UsageLedger("session"),
+        model="claude-sonnet-4-5",
+        conv_store=app.conversation,
+    )
+
+    result = await pool.run()
+
+    state = app.conversation.subagent_pool_state()
+    assert state is not None
+    assert state.budget_cost_usd is None and state.budget_tokens is None
+    assert state.cost_usd == 0.0
+    assert result.budget is None
+    assert result.usage.cost_status == "estimated"

@@ -594,3 +594,37 @@ def test_subagent_operator_ceilings_are_armed_and_match_the_guide() -> None:
         "`subagents.max_iterations = 128`",
     ):
         assert documented in prd
+
+
+def test_subagent_max_budget_loads_validates_and_serializes(tmp_path: Path) -> None:
+    """SUBAGENT-06: the settings ceiling a per-call budget may not exceed."""
+    from agenthicc.config import SubagentBudgetCeiling
+
+    project = tmp_path / "agenthicc.toml"
+    project.write_text(
+        "[subagents.max_budget]\ntokens = 50000\ncost_usd = 2\nwall_clock_s = 120\n",
+        encoding="utf-8",
+    )
+    config = load_config(project_path=project, user_path=tmp_path / "missing.toml")
+    assert config.subagents.max_budget == SubagentBudgetCeiling(
+        tokens=50_000, cost_usd=2.0, wall_clock_s=120.0
+    )
+    assert config.redacted_dict()["subagents"]["max_budget"] == {
+        "tokens": 50_000,
+        "cost_usd": 2.0,
+        "wall_clock_s": 120.0,
+    }
+
+    unset = load_config(project_path=tmp_path / "none.toml", user_path=tmp_path / "missing.toml")
+    assert unset.subagents.max_budget == SubagentBudgetCeiling()
+    assert unset.redacted_dict()["subagents"]["max_budget"] == {}
+
+    for body, message in (
+        ("[subagents.max_budget]\ndollars = 5\n", "max_budget.dollars is not a budget setting"),
+        ("[subagents.max_budget]\ntokens = 0\n", "max_budget.tokens must be a positive integer"),
+        ("[subagents.max_budget]\ncost_usd = -1\n", "max_budget.cost_usd must be a finite number"),
+        ("[subagents]\nmax_budget = 5\n", "subagents.max_budget must be a table"),
+    ):
+        project.write_text(body, encoding="utf-8")
+        with pytest.raises(ValueError, match=message):
+            load_config(project_path=project, user_path=tmp_path / "missing.toml")

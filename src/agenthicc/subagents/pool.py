@@ -35,7 +35,7 @@ import time
 import uuid
 from copy import deepcopy
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol, cast
 
@@ -55,6 +55,14 @@ from agenthicc.subagents.policy import (
     child_app_state,
     child_workspace_access,
     restrict_workspace_scope,
+)
+from agenthicc.subagents.budget import (
+    EffectiveBudget,
+    budget_report,
+    PoolUsage,
+    pool_usage,
+    worker_run_id,
+    worker_usage,
 )
 from agenthicc.subagents.transcripts import TranscriptEvent, TranscriptWriter, WorkerRecord
 from agenthicc.subagents.types import (
@@ -368,6 +376,18 @@ class SubagentPoolState:
     depth: int = 1
     parent_pool_id: str = ""
     lifecycles: tuple[WorkerLifecycle, ...] = ()
+    #: A declared ``budget:`` token limit, or ``None`` when only the operator
+    #: ceiling applies (SUBAGENT-06). The panel shows usage against it.
+    budget_tokens: int | None = None
+    #: A declared ``budget:`` cost limit in USD, or ``None``.
+    budget_cost_usd: float | None = None
+    #: Cost metered so far; maintained only while a cost limit is declared.
+    cost_usd: float = 0.0
+
+    @property
+    def tokens(self) -> int:
+        """Input plus output tokens reported by every worker so far."""
+        return sum(worker.tokens for worker in self.workers)
 
     @property
     def done(self) -> int:
@@ -459,6 +479,8 @@ class SubagentResult:
     stop_reason: str = ""
     undelivered_messages: int = 0
     not_started: bool = False
+    #: This worker's completed ledger spend, across all of its attempts.
+    usage: PoolUsage = field(default_factory=PoolUsage)
 
 
 def _worker_context_window(
@@ -613,6 +635,10 @@ class AggregatedResult:
     values: tuple[Mapping[str, JSONValue], ...] = ()
     not_started_workers: tuple[str, ...] = ()
     budget_exceeded_reason: str = ""
+    #: The pool's completed ledger spend (SUBAGENT-06).
+    usage: PoolUsage = field(default_factory=PoolUsage)
+    #: The limits the pool ran under, when a budget was resolved for it.
+    budget: EffectiveBudget | None = None
 
 
 _MUTATING_TOOL_NAMES = frozenset(
@@ -803,6 +829,9 @@ class _WorkerProgress:
         self._tokens += tokens_used
         self._pool._record_tokens(tokens_used)
         self._pool._update(self.worker_id, tokens=self._tokens)
+
+    def cost(self, cost_usd: float) -> None:
+        self._pool._record_cost(cost_usd)
 
     def approval_requested(self, tool: str, tool_input: Mapping[str, object]) -> None:
         target = self._pool._redact(_tool_target(tool_input))
@@ -1581,11 +1610,16 @@ class SubagentWorker:
 
             @signals.on(ModelCallComplete)
             async def _record_usage(event: ModelCallComplete) -> None:
+                from agenthicc.runners.usage_ledger import reported_call_cost
+
                 usage = event.usage
                 progress.usage(
                     _token_count(_usage_field(usage, "input_tokens"))
                     + _token_count(_usage_field(usage, "output_tokens"))
                 )
+                cost = reported_call_cost(event.cost_usd)
+                if cost is not None:
+                    progress.cost(cost)
 
         runner = _RunnerBase(
             # OpenAI-compatible endpoints may return nullable usage fields.
@@ -1602,7 +1636,7 @@ class SubagentWorker:
 
             usage_tracker = UsageRunTracker(
                 self._usage_ledger,
-                run_id=f"{self._parent_run_id}:subagent:{self._task.task_id}",
+                run_id=worker_run_id(self._parent_run_id, self._pool_id, self._task.task_id),
                 provider=self._provider,
                 model=self._model_id,
                 category="subagent",
@@ -1674,7 +1708,7 @@ class SubagentWorker:
                     agent_instance,
                     message,
                     conversation_id=self._conversation_id or None,
-                    run_id=f"{self._parent_run_id}:subagent:{self._task.task_id}",
+                    run_id=worker_run_id(self._parent_run_id, self._pool_id, self._task.task_id),
                     memory=memory,
                     config_override=config_override,
                     event_sinks=[usage_tracker.sink],
@@ -1899,6 +1933,7 @@ class SubagentPool:
         max_total_time_s: float = 600.0,
         on_budget_exceeded: WorkerStopMode = "drain",
         stop_grace_s: float = 5.0,
+        budget: EffectiveBudget | None = None,
     ) -> None:
         if isinstance(depth, bool) or isinstance(max_depth, bool) or not 1 <= depth <= max_depth:
             raise SubagentAdmissionError(
@@ -1955,6 +1990,9 @@ class SubagentPool:
         self._tool_call_count = 0
         self._iteration_count = 0
         self._token_count = 0
+        self._cost_spent = 0.0
+        self._budget = budget
+        self._max_cost_usd = budget.limits.cost_usd if budget is not None else None
         self._started_monotonic: float | None = None
         self._budget_exceeded_reason = ""
         self._budget_time_task: asyncio.Task[None] | None = None
@@ -2011,6 +2049,8 @@ class SubagentPool:
             limit=self._max_concurrent,
             depth=depth,
             parent_pool_id=parent_pool_id,
+            budget_tokens=self._declared_token_limit(),
+            budget_cost_usd=self._max_cost_usd,
         )
         self._worker_tasks: dict[str, asyncio.Task[SubagentResult]] = {}
         self._stop_events: dict[str, asyncio.Event] = {}
@@ -2156,6 +2196,47 @@ class SubagentPool:
         self._token_count += max(0, tokens)
         if self._token_count > self._max_tokens:
             self.budget_exceeded("max_tokens_exceeded")
+
+    def _with_usage(self, aggregate: AggregatedResult) -> AggregatedResult:
+        """Attach completed ledger spend to every worker result and to the pool.
+
+        Read from the session usage ledger, never from a second meter: a
+        worker's spend is the set of its completed records, across attempts.
+        """
+        for task_id, result in tuple(self._results.items()):
+            self._results[task_id] = replace(
+                result, usage=worker_usage(self._usage_ledger, self.pool_id, task_id)
+            )
+        return replace(
+            aggregate,
+            usage=pool_usage(self._usage_ledger, self.pool_id),
+            budget=self._budget,
+        )
+
+    def _budget_report(self, aggregate: AggregatedResult) -> dict[str, object]:
+        """Usage against limits for completion events; counts only, no text."""
+        return budget_report(
+            aggregate.usage,
+            aggregate.budget,
+            crossed_reason=aggregate.budget_exceeded_reason,
+            stop_mode=self._on_budget_exceeded,
+        )
+
+    def _declared_token_limit(self) -> int | None:
+        """A token limit that came from a declaration, for the pool snapshot."""
+        budget = self._budget
+        if budget is None or budget.sources.get("tokens") == "operator":
+            return None
+        return budget.limits.tokens
+
+    def _record_cost(self, cost_usd: float) -> None:
+        self._cost_spent += max(0.0, cost_usd)
+        if self._max_cost_usd is None:
+            return
+        self._state = replace(self._state, cost_usd=self._cost_spent)
+        self._publish()
+        if self._cost_spent > self._max_cost_usd:
+            self.budget_exceeded("max_cost_usd_exceeded")
 
     async def _watch_total_time(self) -> None:
         started = self._started_monotonic
@@ -2336,9 +2417,11 @@ class SubagentPool:
             ordered_results = [
                 self._results[item.task_id] for item in self._tasks if item.task_id in self._results
             ]
-            aggregate = replace(
-                _aggregate(self.pool_id, ordered_results, self._registry),
-                budget_exceeded_reason=self._budget_exceeded_reason,
+            aggregate = self._with_usage(
+                replace(
+                    _aggregate(self.pool_id, ordered_results, self._registry),
+                    budget_exceeded_reason=self._budget_exceeded_reason,
+                )
             )
             self._state = replace(self._state, finished_at=time.time())
             self._publish()
@@ -2350,6 +2433,7 @@ class SubagentPool:
                     "total": aggregate.total,
                     "failed": aggregate.failed,
                     "budget_exceeded_reason": aggregate.budget_exceeded_reason,
+                    "budget": self._budget_report(aggregate),
                 },
             )
             if self._journal is not None:
@@ -2531,6 +2615,8 @@ class SubagentPool:
             parent_pool_id=self._parent_pool_id,
             transcripts=self._transcripts.directory if self._transcripts is not None else None,
             lifecycles=tuple(self._lifecycles.values()),
+            budget_tokens=self._declared_token_limit(),
+            budget_cost_usd=self._max_cost_usd,
         )
         self._publish()
         try:
@@ -2863,9 +2949,11 @@ class SubagentPool:
                     )
                 )
 
-        aggregated = replace(
-            _aggregate(self.pool_id, results, self._registry),
-            budget_exceeded_reason=self._budget_exceeded_reason,
+        aggregated = self._with_usage(
+            replace(
+                _aggregate(self.pool_id, results, self._registry),
+                budget_exceeded_reason=self._budget_exceeded_reason,
+            )
         )
         await self._emit_pool_completed(aggregated)
         self._append_scroll_event(
@@ -2875,6 +2963,7 @@ class SubagentPool:
                 "total": aggregated.total,
                 "failed": aggregated.failed,
                 "budget_exceeded_reason": aggregated.budget_exceeded_reason,
+                "budget": self._budget_report(aggregated),
             },
         )
         # The finished pool stays on the panel while it has rows to show.
@@ -3178,6 +3267,7 @@ class SubagentPool:
                     "failed": agg.failed,
                     **self._display_fields("text", agg.text, _MAX_EVENT_AGGREGATE_CHARS),
                     "budget_exceeded_reason": agg.budget_exceeded_reason,
+                    "budget": self._budget_report(agg),
                 },
             )
         )

@@ -58,6 +58,27 @@ removing it. The work is SUBAGENT-10 WP-4 and WP-7.
   D-2 requires the two to agree until WP-7 replaces the counter with the
   ledger-derived pool total.
 
+**Delivered in SUBAGENT-10 wave 3** (pending merge, branch
+`subagent-wave-3-pool-budgets`): goals 1–8 and 10 are implemented by
+`agenthicc.subagents.budget` and its wiring. Goal 9 is resolved by D-2: a
+crossing is detected and reported here and answered by SUBAGENT-08's stop
+policy. Two findings changed the design during implementation:
+
+- **The ledger mislabelled every worker's cost.** A non-streaming call — every
+  subagent worker — received its cost only at completion and kept
+  `begin_call`'s `unavailable` placeholder beside the real value
+  (`usage_ledger.py` `complete()`), so any pool, and any session that ran
+  subagents, reported cost as unavailable. Fixed in the same wave; pinned by
+  `tests/unit/test_usage_ledger.py::test_cost_reported_at_completion_is_an_estimate_not_unavailable`.
+- **lauren-ai prices unknown models at a flat fallback rate** instead of
+  failing, so an "estimated" cost can be a guess. A `cost_usd` budget is
+  therefore refused for a worker model without a real price
+  (`model_has_known_price`), as §7's "unknown is not zero" requires.
+
+The governor's real-time counter is kept as the trigger and is pinned to equal
+the ledger-derived pool total (criterion 24 of SUBAGENT-10), rather than
+reading the ledger on every signal.
+
 ## 1. Executive summary
 
 The pool already meters every worker, and reports none of it.
@@ -463,6 +484,26 @@ The A-6 boundaries from the research report §5.3, restated as commitments.
     `pytest tests/unit/test_subagent_pool.py -q` pass unchanged for declarations
     that are absent, proving the default path is inert:
     `tests/unit/test_subagent_pool_runtime_coverage.py`.
+
+### Test locations (amended 2026-11-03)
+
+| Criterion | Proving case |
+|---|---|
+| Pool total = sum of worker records; session unchanged | `tests/unit/test_usage_ledger.py::test_pool_total_is_the_sum_of_its_workers_records_and_a_subset_of_the_session` |
+| Run id carries the pool id; two pools are disjoint | `tests/unit/test_usage_ledger.py::test_two_pools_of_one_parent_run_have_disjoint_totals`, `tests/unit/test_subagent_pool.py::test_two_pools_in_one_parent_run_are_accounted_separately` |
+| Unknown cost is not zero; cost budget refused when unmeterable | `tests/unit/test_usage_ledger.py::test_unknown_cost_is_unavailable_not_zero`, `tests/integration/test_subagent_tool_execution.py::test_a_cost_budget_is_refused_for_an_unpriced_model_or_without_a_ledger` |
+| Provisional excluded; monotone; no double count | `tests/unit/test_usage_ledger.py::test_provisional_calls_are_excluded_so_the_total_is_monotone` |
+| Declaration lowers, never raises; clamp reported | `tests/unit/test_subagent_budgets.py::test_declaration_lowers_operator_limits_and_never_raises_them`, `::test_declaration_above_the_settings_ceiling_is_clamped_and_reported`, `tests/integration/test_subagent_tool_execution.py::test_a_declaration_above_the_settings_ceiling_is_clamped_and_reported` |
+| Malformed budget refused naming the field; absent budget unchanged | `tests/unit/test_subagent_budgets.py::test_malformed_budget_is_refused_naming_the_field`, `tests/integration/test_subagent_tool_execution.py::test_malformed_budget_is_refused_before_any_provider_call`, `::test_no_budget_keeps_the_digest_unchanged_and_still_reports_usage` |
+| Per-worker attestation | `tests/unit/test_subagent_pool.py::test_each_worker_reports_its_own_spend_and_the_pool_reports_the_total` |
+| Event and digest carry usage versus limit; crossing named | `tests/integration/test_subagent_tool_execution.py::test_crossing_a_declared_token_limit_is_reported_with_its_source`, `::test_pool_completed_event_carries_usage_against_limits`, `tests/unit/test_subagent_budgets.py::test_report_names_the_crossed_limit_and_its_source` |
+| Panel shows spend against the declared limit | `tests/unit/test_subagent_panel_agx08.py::test_a_declared_budget_is_shown_as_usage_against_it`, `::test_a_pool_without_a_declared_budget_renders_as_before`, `::test_budget_usage_is_the_first_thing_dropped_at_narrow_widths` |
+| Cost limit metered and enforced | `tests/unit/test_subagent_pool.py::test_a_declared_cost_limit_is_metered_and_crossing_it_stops_the_pool` |
+| Settings ceiling | `tests/unit/test_config.py::test_subagent_max_budget_loads_validates_and_serializes` |
+
+Criterion 10 (a crossing "cancels nothing") is superseded by SUBAGENT-10 D-2:
+a crossed limit is answered by SUBAGENT-08's stop policy, the same as an
+operator ceiling, and the report says so.
 
 ## 7. Rollout, migration and security
 
