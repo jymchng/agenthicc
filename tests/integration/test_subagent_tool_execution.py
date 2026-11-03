@@ -473,7 +473,7 @@ async def test_ctrl_b_backgrounds_a_pool_and_keeps_it_session_owned(
     )
 
     try:
-        with bind_background_task_owner(supervisor):
+        with bind_background_task_owner(supervisor, interactive=True):
             spawn_task = asyncio.create_task(
                 spawn(
                     tasks=[{"type": "researcher", "task": "Wait for the test release."}],
@@ -546,7 +546,7 @@ async def test_session_shutdown_cancels_a_backgrounded_pool(tmp_path) -> None:
     )
 
     try:
-        with bind_background_task_owner(supervisor):
+        with bind_background_task_owner(supervisor, interactive=True):
             spawn_task = asyncio.create_task(
                 spawn(
                     tasks=[{"type": "researcher", "task": "Wait for shutdown."}],
@@ -1295,7 +1295,7 @@ async def test_a_model_requested_background_pool_returns_running_at_once(tmp_pat
         conv_store=conv_store,
     )
     try:
-        with bind_background_task_owner(supervisor):
+        with bind_background_task_owner(supervisor, interactive=True):
             receipt = await asyncio.wait_for(
                 spawn(  # type: ignore[operator]
                     tasks=[{"type": "researcher", "task": "Wait."}],
@@ -1353,7 +1353,7 @@ async def test_a_model_requested_background_is_refused_when_it_cannot_be_owned(t
         conversation_journal=journal,
         subagent_settings=SubagentSettings(background_enabled=False),
     )
-    with bind_background_task_owner(SupervisedTasks("disabled")):
+    with bind_background_task_owner(SupervisedTasks("disabled"), interactive=True):
         refused = await disabled(  # type: ignore[operator]
             tasks=[{"type": "researcher", "task": "x"}], timeout_s=30, background=True
         )
@@ -1364,7 +1364,15 @@ async def test_a_model_requested_background_is_refused_when_it_cannot_be_owned(t
     journal.close()
 
 
-async def test_on_clarification_fail_ends_a_backgrounded_workers_wait_at_once(tmp_path) -> None:
+@pytest.mark.parametrize(
+    ("setting", "interactive"),
+    [("fail", True), (None, False)],
+    ids=["explicit-fail", "non-interactive-default"],
+)
+async def test_on_clarification_fail_ends_a_backgrounded_workers_wait_at_once(
+    tmp_path, setting: str | None, interactive: bool
+) -> None:
+    """Explicit ``fail``, and the default of a session nobody can answer from."""
     from agenthicc.config import SubagentSettings
 
     transport = MockTransport()
@@ -1381,10 +1389,10 @@ async def test_on_clarification_fail_ends_a_backgrounded_workers_wait_at_once(tm
         parent_run_id="turn-1",
         conversation_journal=journal,
         conv_store=ConversationStore(),
-        subagent_settings=SubagentSettings(on_clarification="fail"),
+        subagent_settings=SubagentSettings(on_clarification=setting),  # type: ignore[arg-type]
     )
     try:
-        with bind_background_task_owner(supervisor):
+        with bind_background_task_owner(supervisor, interactive=interactive):
             receipt = await spawn(  # type: ignore[operator]
                 tasks=[{"type": "researcher", "task": "Ask first."}],
                 timeout_s=30,
@@ -1513,3 +1521,141 @@ async def test_a_call_written_as_text_twice_fails_the_worker(tmp_path: Path) -> 
     assert "DSML" not in str(result["results"])
     assert not (tmp_path / "docs").exists()
     assert len(transport.calls) == 2
+
+
+# ── SUBAGENT-11 criterion 17: a nested worker controls only what it spawned ──
+
+
+async def test_a_nested_worker_retries_its_own_pool_and_is_refused_elsewhere(
+    tmp_path: Path,
+) -> None:
+    import json as _json
+
+    from lauren_ai._transport import ToolCall
+
+    from agenthicc.config import SubagentSettings
+
+    registry = SubagentTypeRegistry()
+    registry.register(
+        SubagentTypeSpec(
+            name="delegator",
+            allowed_tools=frozenset({"spawn_subagents"}),
+            max_turns=8,
+            system_prompt="Delegate work.",
+            max_turn_time_s=20.0,
+        )
+    )
+    registry.register(
+        SubagentTypeSpec(
+            name="researcher",
+            allowed_tools=frozenset(),
+            max_turns=2,
+            system_prompt="Research.",
+            max_turn_time_s=20.0,
+        )
+    )
+    child_pools: dict[str, str] = {}
+    child_b_known = asyncio.Event()
+    root_pool: list[str] = []
+    child_a_failures = [1]
+    observed: dict[str, list[dict[str, object]]] = {"A": [], "B": []}
+
+    def _results(messages: list[object]) -> list[dict[str, object]]:
+        found: list[dict[str, object]] = []
+        for message in messages:
+            content = message.get("content") if isinstance(message, dict) else None
+            for block in content if isinstance(content, list) else []:
+                if isinstance(block, dict) and block.get("type") == "tool_result":
+                    raw = block.get("content")
+                    text = raw if isinstance(raw, str) else _json.dumps(raw)
+                    try:
+                        value = _json.loads(text)
+                    except ValueError:
+                        value = {"text": text}
+                    found.append(value if isinstance(value, dict) else {"value": value})
+        return found
+
+    def _call(name: str, arguments: dict[str, object], step: int) -> Completion:
+        return Completion(
+            id=f"{name}-{step}",
+            model="mock-model",
+            content="",
+            tool_calls=[ToolCall(tool_use_id=f"{name}-{step}", name=name, input=arguments)],
+            stop_reason="tool_use",
+            usage=TokenUsage(input_tokens=1, output_tokens=1),
+        )
+
+    class _Transport:
+        async def complete(self, messages: list[object], **kwargs: object) -> object:
+            first = messages[0] if messages else {}
+            task = str(first.get("content", "")) if isinstance(first, dict) else ""
+            if task.startswith("child-"):
+                if task == "child-A" and child_a_failures[0] > 0:
+                    child_a_failures[0] -= 1
+                    raise RuntimeError("child provider failure")
+                return _final(f"{task} answered", f"final-{task}")
+            who = "A" if task == "worker A" else "B"
+            results = _results(messages)
+            observed[who] = results
+            step = len(results)
+            if not root_pool:
+                root_pool.extend(pool_module_active())
+            if step == 0:
+                return _call(
+                    "spawn_subagents",
+                    {"tasks": [{"type": "researcher", "task": f"child-{who}"}]},
+                    step,
+                )
+            if who == "B":
+                child_pools["B"] = str(results[0].get("pool_id", ""))
+                child_b_known.set()
+                return _final("B done", "final-B")
+            if step == 1:
+                child_pools["A"] = str(results[0].get("pool_id", ""))
+                return _call(
+                    "retry_subagent", {"pool_id": child_pools["A"], "worker_id": "task-0"}, step
+                )
+            if step == 2:
+                await asyncio.wait_for(child_b_known.wait(), timeout=10)
+                return _call(
+                    "retry_subagent", {"pool_id": child_pools["B"], "worker_id": "task-0"}, step
+                )
+            if step == 3:
+                return _call("stop_subagents", {"pool_id": root_pool[0]}, step)
+            return _final("A done", "final-A")
+
+    def pool_module_active() -> list[str]:
+        import agenthicc.subagents.pool as pool_module
+
+        return list(pool_module._ACTIVE_POOLS)
+
+    journal = ConversationJournal(tmp_path / "journal.jsonl")
+    spawn = make_spawn_subagents_tool(
+        AgentRunnerBase(transport=_Transport()),
+        "mock-model",
+        [],
+        registry=registry,
+        subagent_settings=SubagentSettings(max_depth=2),
+        conversation_id="conv",
+        parent_run_id="turn-1",
+        conversation_journal=journal,
+        conv_store=ConversationStore(),
+    )
+    try:
+        result = await spawn(  # type: ignore[operator]
+            tasks=[
+                {"type": "delegator", "task": "worker A"},
+                {"type": "delegator", "task": "worker B"},
+            ],
+            max_concurrent=2,
+            timeout_s=60,
+        )
+    finally:
+        journal.close()
+
+    assert result["ok"] is True, result
+    spawned, retried, foreign, parent = observed["A"][:4]
+    assert spawned["failed"] == 1
+    assert retried["ok"] is True and retried["attempt"] == 2
+    for refused in (foreign, parent):
+        assert "unknown subagent pool" in _json.dumps(refused)

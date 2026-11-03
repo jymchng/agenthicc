@@ -419,7 +419,7 @@ def test_background_session_delivers_finished_pool_notices_like_the_tui(tmp_path
     """SUBAGENT-11 goal 9: a background session notifies its turn exactly once."""
     from types import SimpleNamespace
 
-    from agenthicc.background.worker import _deliver_background_pool_notices
+    from agenthicc.subagents.delivery import deliver_session_background_notices
     from agenthicc.memory.journal import ConversationJournal
     from agenthicc.memory.journaled import JournaledShortTermMemory
     from agenthicc.tui.conversation_store import ConversationStore
@@ -447,12 +447,12 @@ def test_background_session_delivers_finished_pool_notices_like_the_tui(tmp_path
     )
     try:
         # History that is not provider-ready is left alone, as in the TUI.
-        _deliver_background_pool_notices(session)  # type: ignore[arg-type]
+        deliver_session_background_notices(session)  # type: ignore[arg-type]
         assert memory._messages == []
 
         readiness.provider_ready = True
-        _deliver_background_pool_notices(session)  # type: ignore[arg-type]
-        _deliver_background_pool_notices(session)  # type: ignore[arg-type]
+        deliver_session_background_notices(session)  # type: ignore[arg-type]
+        deliver_session_background_notices(session)  # type: ignore[arg-type]
 
         assert len(memory._messages) == 1
         content = str(memory._messages[0]["content"])
@@ -466,6 +466,6 @@ def test_background_session_without_a_conversation_delivers_nothing() -> None:
     """A session that has no durable conversation has no pools to announce."""
     from types import SimpleNamespace
 
-    from agenthicc.background.worker import _deliver_background_pool_notices
+    from agenthicc.subagents.delivery import deliver_session_background_notices
 
-    _deliver_background_pool_notices(SimpleNamespace(session_conversation=None))  # type: ignore[arg-type]
+    deliver_session_background_notices(SimpleNamespace(session_conversation=None))  # type: ignore[arg-type]

@@ -1094,29 +1094,6 @@ def _load_request(path: Path) -> WorkerRequest:
     return WorkerRequest.from_mapping(raw)
 
 
-def _deliver_background_pool_notices(session: SessionContext) -> None:
-    """Notify the turn of finished background subagent pools, as the TUI does.
-
-    A background session resumed on a journal with a finished background pool
-    (for example one a crashed TUI session left behind) delivers its notice at
-    this turn boundary instead of dropping it. Skipped while the conversation's
-    tool history is not provider-ready, matching ``TUISession``.
-    """
-    from agenthicc.memory.journaled import JournaledShortTermMemory
-    from agenthicc.subagents.delivery import deliver_background_pool_notices
-
-    # Typed non-optional on SessionContext, but a session built without a
-    # durable conversation (as the worker's other paths allow) has none.
-    conversation: SessionConversation | None = session.session_conversation
-    if conversation is None or not conversation.tool_history_recovery.provider_ready:
-        return
-    memory = conversation.memory
-    if isinstance(memory, JournaledShortTermMemory):
-        deliver_background_pool_notices(
-            conversation.journal, memory, session.app_state.conversation
-        )
-
-
 async def _run_direct_turn(
     session: SessionContext,
     request: WorkerRequest,
@@ -1139,7 +1116,9 @@ async def _run_direct_turn(
 
     # The session's primary agent (AGX-09); an unavailable one fails the turn.
     agent = turn_agent(session.agents_registry, app_state.agent(), cfg)
-    _deliver_background_pool_notices(session)
+    from agenthicc.subagents.delivery import deliver_session_background_notices
+
+    deliver_session_background_notices(session)
     await _run_agent_turn(
         request.intent,
         agent_runner,

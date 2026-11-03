@@ -651,7 +651,7 @@ def test_subagent_background_controls_load_validate_and_serialize(tmp_path: Path
     from agenthicc.config import SubagentSettings
 
     defaults = SubagentSettings()
-    assert defaults.background_enabled is True and defaults.on_clarification == "queue"
+    assert defaults.background_enabled is True and defaults.on_clarification is None
     project = tmp_path / "agenthicc.toml"
     project.write_text(
         '[subagents]\nbackground_enabled = false\non_clarification = "fail"\n', encoding="utf-8"
@@ -672,3 +672,16 @@ def test_subagent_background_controls_load_validate_and_serialize(tmp_path: Path
             load_config(project_path=project, user_path=tmp_path / "missing.toml")
     with pytest.raises(ValueError, match="on_clarification"):
         SubagentSettings(on_clarification="ask")  # type: ignore[arg-type]
+
+
+def test_on_clarification_defaults_follow_the_session_kind() -> None:
+    """SUBAGENT-11 criterion 11: headless sessions fail, interactive ones queue."""
+    from agenthicc.config import SubagentSettings
+
+    unset = SubagentSettings()
+    assert unset.on_clarification_for(interactive=False) == "fail"
+    assert unset.on_clarification_for(interactive=True) == "queue"
+    for explicit in ("queue", "fail"):
+        settings = SubagentSettings(on_clarification=explicit)  # type: ignore[arg-type]
+        assert settings.on_clarification_for(interactive=False) == explicit
+        assert settings.on_clarification_for(interactive=True) == explicit

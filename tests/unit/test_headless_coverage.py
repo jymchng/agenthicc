@@ -477,3 +477,47 @@ async def test_plain_headless_stdin_runner_handles_eof_in_isolated_home(
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
     monkeypatch.setattr("sys.stdin", io.StringIO(""))
     await _run_headless(CLIContext())
+
+
+@pytest.mark.asyncio
+async def test_a_headless_session_announces_a_pool_interrupted_by_a_crash(
+    tmp_path: Path,
+) -> None:
+    """SUBAGENT-11 criterion 18: recovered before the first turn, delivered at its boundary."""
+    import asyncio
+
+    from tests.unit.test_workflow_cli import _make_plugin
+
+    plugin = _make_plugin("headless_delivery")
+    session, conversation, _store = _workflow_session(plugin, tmp_path)
+    journal = conversation.journal
+    journal.subagent_pool_started(
+        pool_id="crashed-pool",
+        fingerprint="fp",
+        parent_run_id="turn-0",
+        tasks=[{"task_id": "task-0", "agent_type": "explorer"}],
+    )
+    journal.subagent_pool_backgrounded(
+        pool_id="crashed-pool", tool_result={"status": "backgrounded", "pool_id": "crashed-pool"}
+    )
+    # What the shared session builder does on resume, before the first turn.
+    assert journal.recover_interrupted_subagent_pools() == ["crashed-pool"]
+    processor_task = asyncio.create_task(session.processor.run())
+    try:
+        await asyncio.sleep(0)
+        result = await execute_workflow(session, plugin.name, "continue")
+        again = await execute_workflow(session, plugin.name, "continue again")
+        assert result.status == "complete" and again.status == "complete"
+        notices = [
+            str(message["content"])
+            for message in conversation.memory._messages
+            if "crashed-pool" in str(message.get("content", ""))
+        ]
+        assert len(notices) == 1
+        assert "was interrupted when the session stopped" in notices[0]
+        assert 'collect_subagent_results(pool_id="crashed-pool")' in notices[0]
+        assert journal.delivered_subagent_pool_notifications() == frozenset({"crashed-pool"})
+    finally:
+        await session.processor.stop()
+        await processor_task
+        conversation.close()

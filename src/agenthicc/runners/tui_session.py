@@ -4669,7 +4669,7 @@ class TUISession:
                 self._deliver_completed_background_subagents()
             from agenthicc.runners.agent_turn_context import bind_background_task_owner
 
-            with bind_background_task_owner(self._tasks):
+            with bind_background_task_owner(self._tasks, interactive=True):
                 await self.run_turn(text, resume=resume)
         except asyncio.CancelledError:
             turn_cancelled = True

@@ -1291,8 +1291,10 @@ class SubagentSettings:
     #: Whether the model may request ``spawn_subagents(background=True)``.
     background_enabled: bool = True
     #: What a backgrounded worker's question to the parent does: wait for an
-    #: answer (``queue``) or end the worker's wait at once (``fail``).
-    on_clarification: Literal["queue", "fail"] = "queue"
+    #: answer (``queue``) or end the worker's wait at once (``fail``). Unset,
+    #: it follows the session: ``queue`` when a person can answer (the TUI),
+    #: ``fail`` otherwise (headless, background and detached sessions).
+    on_clarification: Literal["queue", "fail"] | None = None
     depth_limits: Mapping[int, SubagentDepthLimit] = field(default_factory=dict)
     depth_tiers: Mapping[int, Mapping[str, SubagentDepthTier]] = field(default_factory=dict)
 
@@ -1357,7 +1359,7 @@ class SubagentSettings:
         object.__setattr__(self, "collect_wait_max_s", float(self.collect_wait_max_s))
         if not isinstance(self.background_enabled, bool):
             raise ValueError("subagents.background_enabled must be true or false")
-        if self.on_clarification not in {"queue", "fail"}:
+        if self.on_clarification not in {None, "queue", "fail"}:
             raise ValueError("subagents.on_clarification must be 'queue' or 'fail'")
         if self.on_budget_exceeded not in {"abort", "drain"}:
             raise ValueError("subagents.on_budget_exceeded must be 'abort' or 'drain'")
@@ -1394,6 +1396,12 @@ class SubagentSettings:
                 type_tiers[name] = tier
             tiers[depth] = MappingProxyType(type_tiers)
         object.__setattr__(self, "depth_tiers", MappingProxyType(tiers))
+
+    def on_clarification_for(self, *, interactive: bool) -> Literal["queue", "fail"]:
+        """The clarification policy for a session: the setting, or the session's default."""
+        if self.on_clarification is not None:
+            return self.on_clarification
+        return "queue" if interactive else "fail"
 
     def limits_for_depth(self, depth: int) -> tuple[int, int, str, str]:
         """Resolve each ceiling from its nearest configured ancestor depth."""
@@ -2827,8 +2835,8 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
     background_enabled = subagent_data.get("background_enabled", True)
     if not isinstance(background_enabled, bool):
         raise ValueError("subagents.background_enabled must be true or false")
-    on_clarification = subagent_data.get("on_clarification", "queue")
-    if not isinstance(on_clarification, str) or on_clarification not in {"queue", "fail"}:
+    on_clarification = subagent_data.get("on_clarification")
+    if on_clarification is not None and on_clarification not in {"queue", "fail"}:
         raise ValueError("subagents.on_clarification must be 'queue' or 'fail'")
     collect_wait_max_s = subagent_data.get("collect_wait_max_s", 60.0)
     if isinstance(collect_wait_max_s, bool) or not isinstance(collect_wait_max_s, (int, float)):
@@ -2861,7 +2869,7 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
         max_budget=max_budget,
         collect_wait_max_s=float(collect_wait_max_s),
         background_enabled=background_enabled,
-        on_clarification=cast(Literal["queue", "fail"], on_clarification),
+        on_clarification=cast(Literal["queue", "fail"] | None, on_clarification),
     )
 
     # [workflows] section — dict[workflow_name, dict[str, Any]] (PRD-111)

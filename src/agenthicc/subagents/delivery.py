@@ -14,8 +14,10 @@ in the parent's context. The results themselves reach the parent only as the
 output of ``collect_subagent_results``, a tool the parent calls, so worker text
 stays in the tool role exactly as it does for a foreground pool.
 
-Every session runner calls :func:`deliver_background_pool_notices` at its turn
-boundary, so the TUI and background sessions deliver identically.
+Every session runner delivers at its turn boundary through one function — the
+TUI through :func:`deliver_background_pool_notices` and the background worker
+and headless workflow runner through :func:`deliver_session_background_notices`
+— so every runner delivers identically.
 """
 
 from __future__ import annotations
@@ -25,6 +27,8 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from agenthicc.memory.journal import ConversationJournal
+    from agenthicc.runners.session_context import SessionContext
+    from agenthicc.runners.session_conversation import SessionConversation
     from agenthicc.memory.journaled import JournaledShortTermMemory
     from agenthicc.subagents.communication import PoolContinuationRegistry
     from agenthicc.tui.conversation_store import ConversationStore
@@ -34,6 +38,7 @@ __all__ = [
     "background_question_notice",
     "deliver_background_pool_notices",
     "deliver_background_question_notices",
+    "deliver_session_background_notices",
 ]
 
 #: Stop reasons a notice may quote; anything else is reported generically.
@@ -163,3 +168,25 @@ def deliver_background_question_notices(
                 )
             announced.append(question_id)
     return tuple(announced)
+
+
+def deliver_session_background_notices(session: SessionContext) -> tuple[str, ...]:
+    """Deliver a session's finished background pools at its turn boundary.
+
+    For runners without a ``TUISession`` (background workers, headless
+    workflows). Skipped while the conversation's tool history is not
+    provider-ready, as ``TUISession`` does. Returns the delivered pool ids.
+    """
+    from agenthicc.memory.journaled import JournaledShortTermMemory
+
+    # Typed non-optional on SessionContext, but a session built without a
+    # durable conversation (as some runner paths allow) has none.
+    conversation: SessionConversation | None = session.session_conversation
+    if conversation is None or not conversation.tool_history_recovery.provider_ready:
+        return ()
+    memory = conversation.memory
+    if not isinstance(memory, JournaledShortTermMemory):
+        return ()
+    return deliver_background_pool_notices(
+        conversation.journal, memory, session.app_state.conversation
+    )

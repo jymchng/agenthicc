@@ -3452,7 +3452,9 @@ class SubagentSettings:
     max_budget: SubagentBudgetCeiling = SubagentBudgetCeiling()
     collect_wait_max_s: float = 60.0
     background_enabled: bool = True
-    on_clarification: Literal["queue", "fail"] = "queue"
+    on_clarification: Literal["queue", "fail"] | None = None
+
+    def on_clarification_for(self, *, interactive: bool) -> Literal["queue", "fail"]: ...
     depth_limits: Mapping[int, SubagentDepthLimit]
     depth_tiers: Mapping[int, Mapping[str, SubagentDepthTier]]
 
@@ -4614,10 +4616,17 @@ Notice, then pull (SUBAGENT-11 goal 5). A finished background pool is announced
 at the next logical-turn boundary by a runtime-authored notice — pool id,
 status, real counts, a known stop reason — that contains **no worker text** and
 ends by asking the model to call `collect_subagent_results(pool_id=…)`. The
-results therefore reach the parent only as a tool result. Both `TUISession` and
-background sessions call `deliver_background_pool_notices` (exactly once per
-pool, stable message ids, journaled delivery). It returns the delivered pool
-ids.
+results therefore reach the parent only as a tool result. `TUISession` calls
+`deliver_background_pool_notices` (exactly once per pool, stable message ids,
+journaled delivery); background workers and headless workflow runs call
+`deliver_session_background_notices(session) -> tuple[str, ...]`, which applies
+the same provider-ready gate. Both return the delivered pool ids.
+
+`bind_background_task_owner(owner, *, interactive: bool)` (in
+`agenthicc.runners.agent_turn_context`) binds the supervisor for background
+pools and whether the session is interactive; `current_session_interactive()`
+reads it, and `SubagentSettings.on_clarification_for(interactive=...)` resolves
+an unset `on_clarification` to `queue` (interactive) or `fail`.
 
 ### background_pool_notice
 

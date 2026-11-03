@@ -1174,10 +1174,15 @@ def make_parent_communication_tools(
                     }
                 ],
             }
+        # A drain starts no pending worker; say which ones will never start.
+        never_started = [
+            item.worker_id for item in pool.state.lifecycles if item.phase == "pending"
+        ]
         outcomes = pool.request_pool_stop(mode=stop_mode, source="parent_model", reason=stop_reason)
         return {
             "ok": True,
             "pool_id": pool_id,
+            "not_started": never_started if stop_mode == "drain" else [],
             "workers": [
                 {
                     "worker_id": item.worker_id,

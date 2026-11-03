@@ -298,3 +298,126 @@ async def test_every_kind_a_real_pool_emits_is_in_the_lifecycle_table(tmp_path) 
         emitted_scroll
     )
     assert {"prompt", "tool_started", "tool_finished", "finished"} <= emitted_transcript
+
+
+# ── SUBAGENT-11 criterion 3: backgrounding changes delivery, not the pool ───
+
+
+async def _run_pool_both_ways(tmp_path, *, background: bool) -> tuple[str, list[str], list[str]]:
+    import asyncio
+    import json
+
+    from lauren_ai._agents._runner import AgentRunnerBase
+
+    from agenthicc.memory.journal import ConversationJournal
+    from agenthicc.runners.agent_turn_context import bind_background_task_owner
+    from agenthicc.subagents.pool import active_pool
+    from agenthicc.subagents.tool import make_spawn_subagents_tool
+    from agenthicc.supervised_tasks import SupervisedTasks
+
+    release = asyncio.Event()
+
+    class _Transport:
+        async def complete(self, messages: list[object], **kwargs: object) -> object:
+            await release.wait()
+            first = messages[0] if messages else {}
+            task = first.get("content", "") if isinstance(first, dict) else ""
+            return Completion(
+                id="f",
+                model="m",
+                content=f"answer for {task}",
+                tool_calls=[],
+                stop_reason="end_turn",
+                usage=TokenUsage(input_tokens=1, output_tokens=1),
+            )
+
+    journal = ConversationJournal(tmp_path / f"journal-{background}.jsonl")
+    app = AppState.create()
+    scroll: list[str] = []
+    app.conversation.on_event(lambda event: scroll.append(event.kind))
+    supervisor = SupervisedTasks("parity")
+    spawn = make_spawn_subagents_tool(
+        AgentRunnerBase(transport=_Transport()),
+        "mock-model",
+        [],
+        registry=DEFAULT_REGISTRY,
+        conversation_id="conv",
+        parent_run_id="turn-1",
+        conversation_journal=journal,
+        conv_store=app.conversation,
+    )
+    tasks = [{"type": "explorer", "task": "alpha"}, {"type": "explorer", "task": "beta"}]
+    try:
+        with bind_background_task_owner(supervisor, interactive=True):
+            call = asyncio.create_task(spawn(tasks=tasks, max_concurrent=2, timeout_s=30))  # type: ignore[operator]
+            while not any(kind == "subagent_pool_started" for kind in scroll):
+                await asyncio.sleep(0.01)
+            if background:
+                pool = next(
+                    pool for pool_id in list(pool_module_active()) if (pool := active_pool(pool_id))
+                )
+                assert pool.request_background()
+            else:
+                release.set()
+            receipt = await call
+        release.set()
+        if background:
+            assert receipt["status"] == "backgrounded"
+            assert await supervisor.wait(timeout=5)
+            tools = {
+                getattr(t, "__name__", ""): t
+                for t in spawn.__agenthicc_subagent_communication_tools__  # type: ignore[attr-defined]
+            }
+            text = str((await tools["collect_subagent_results"](receipt["pool_id"]))["results"])
+        else:
+            text = str(receipt["results"])
+    finally:
+        release.set()
+        await supervisor.aclose(timeout=0.1)
+        journal.close()
+    kinds = [
+        str(json.loads(line).get("kind"))
+        for line in (tmp_path / f"journal-{background}.jsonl").read_text().splitlines()
+        if str(json.loads(line).get("kind", "")).startswith("subagent_")
+    ]
+    return text, kinds, [kind for kind in scroll if kind.startswith("subagent_")]
+
+
+def pool_module_active() -> list[str]:
+    import agenthicc.subagents.pool as pool_module
+
+    return list(pool_module._ACTIVE_POOLS)
+
+
+@pytest.mark.asyncio
+async def test_a_backgrounded_pool_produces_the_same_aggregate_events_and_records(
+    tmp_path,
+) -> None:
+    fg_text, fg_journal, fg_scroll = await _run_pool_both_ways(tmp_path, background=False)
+    bg_text, bg_journal, bg_scroll = await _run_pool_both_ways(tmp_path, background=True)
+    assert bg_text == fg_text and "answer for alpha" in fg_text
+    # Both paths keep the records and kinds they had before SUBAGENT-11. The
+    # background path adds its receipt and, having already returned to the
+    # parent, writes no resume cache (subagent_pool_result) for the turn.
+    assert fg_journal == [
+        "subagent_pool_started",
+        "subagent_worker_result",
+        "subagent_worker_result",
+        "subagent_pool_finished",
+        "subagent_pool_result",
+    ]
+    assert bg_journal == [
+        "subagent_pool_started",
+        "subagent_pool_backgrounded",
+        "subagent_worker_result",
+        "subagent_worker_result",
+        "subagent_pool_finished",
+    ]
+    pool_kinds = [
+        "subagent_pool_started",
+        "subagent_worker_done",
+        "subagent_worker_done",
+        "subagent_pool_done",
+    ]
+    assert fg_scroll == [*pool_kinds, "subagent_pool_result"]
+    assert bg_scroll == pool_kinds
