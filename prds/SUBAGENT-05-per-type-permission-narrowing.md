@@ -434,6 +434,26 @@ The A-5 boundaries from the research report §5.3, restated as commitments:
     `deny_tools` never appears in the worker's tool list and is never offered for
     approval: `tests/unit/test_subagent_pool.py`.
 
+### Test locations (amended 2026-11-03)
+
+SUBAGENT-10 WP-8. The permission cases were written in
+`tests/unit/test_subagent_permissions.py`, which no criterion named. This table
+maps each criterion to its proving case.
+
+| Criterion | Proving case |
+|---|---|
+| 1 | `tests/unit/test_subagent_permissions.py::test_permission_changes_change_revision_but_absence_is_stable` |
+| 2 | `tests/unit/test_subagent_permissions.py::test_tool_scope_denials_apply_wildcards_after_allow_list` |
+| 3 | `tests/unit/test_subagent_permissions.py::test_worker_excludes_later_tools_matching_type_deny` |
+| 4 | `tests/unit/test_subagent_pool.py::test_worker_refuses_a_denied_capability_tool_through_its_own_gate` — a real worker, whose offered tool list still contains the denied tool, refuses it through its own hook chain (added by SUBAGENT-10 wave 2; the earlier case built the gate by hand) |
+| 5 | `tests/unit/test_subagent_permissions.py::test_approval_constraint_is_local_to_its_type` |
+| 6 | `tests/unit/test_subagent_permissions.py::test_workspace_scope_restriction_is_a_subset_and_empty_scope_denies_all`, `::test_definition_registry_rejects_out_of_scope_workspace_paths` |
+| 7 | Structural: the `permissions:` schema has no widening key, so `grant_tools` and similar are refused as unknown keys (`::test_definition_permissions_reject_unknown_keys_and_capabilities`); workspace widening is refused at load (criterion 6's cases) |
+| 8 | `tests/unit/test_agent_permissions.py::TestSubagentPermissionMergeTable` — nine declarations, each asserted against `AgentCapabilityScope.restrict()` (added by SUBAGENT-10 wave 2) |
+| 9 | `tests/unit/test_subagent_permissions.py::test_permission_changes_change_revision_but_absence_is_stable` |
+| 10 | Amended: the named suites pass, but not *unchanged* — this series added cases to them. Every pre-existing case passes unedited |
+| 11 | `tests/unit/test_subagent_permissions.py::test_type_capability_denial_reaches_runtime_gate_without_widening_advice`, `::test_worker_excludes_later_tools_matching_type_deny` |
+
 ## 7. Rollout, migration and security
 
 **Defaults.** No built-in type declares `permissions:`, so nothing changes on day

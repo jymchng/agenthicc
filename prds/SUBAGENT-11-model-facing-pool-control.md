@@ -365,9 +365,12 @@ durable record kind would need a migration and buys nothing.
 ## 7. Rollout, migration and security
 
 **Prerequisites.** SUBAGENT-10 WP-1 (redaction before every sink), WP-5 (the
-`stopped` terminal record with counts, text and reason) and WP-6 (bounded,
-redacted journaled text). Goal 5's notice depends on WP-5's reason; goal 4's
-journal read depends on WP-6's bound.
+`stopped` terminal record with counts, text and reason) and WP-6 (the
+delivery-boundary formatter in `agenthicc.subagents.delivery`), all delivered in
+SUBAGENT-10 waves 1–2. Goal 5's notice depends on WP-5's reason. WP-6 keeps the
+journal's aggregate complete, so goal 4's journal read returns the full text in
+the collect tool result — the tool role, as the foreground path does — and only
+the turn-boundary notice is runtime-authored.
 
 **Defaults.**
 

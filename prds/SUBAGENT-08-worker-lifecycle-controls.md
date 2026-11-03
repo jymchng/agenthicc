@@ -404,6 +404,24 @@ The A-8 boundaries from the research report §5.3, restated as commitments.
     with `partial=True` and a `stop_reason` naming the failure, and the aggregate
     shows the text alongside the error: `tests/unit/test_subagent_pool.py`.
 
+### Test locations (amended 2026-11-03)
+
+SUBAGENT-10 WP-8. The lifecycle cases were written in
+`tests/unit/test_subagent_lifecycle.py` and `tests/unit/test_subagent_budgets.py`,
+which are coherent homes; the criteria are amended to name them.
+
+| Criterion | Proving case |
+|---|---|
+| 1 | `tests/unit/test_subagent_lifecycle.py::test_abort_salvages_partial_output_and_is_idempotent` |
+| 2 | `tests/integration/test_subagent_panel_agx08.py::test_stopping_one_worker_leaves_the_others_running` |
+| 3 | `tests/unit/test_subagent_lifecycle.py::test_abort_salvages_partial_output_and_is_idempotent` |
+| 4 | `tests/unit/test_subagent_lifecycle.py::test_drain_finishes_running_worker_and_does_not_start_queued_worker` |
+| 5 | `tests/unit/test_subagent_lifecycle.py::test_stopping_a_worker_waiting_on_approval_withdraws_only_its_prompt` — two real workers in Safe mode with the real `ApprovalService`; added by SUBAGENT-10 wave 2 |
+| 7 | `tests/unit/test_subagent_lifecycle.py::test_retry_reruns_only_failed_worker_and_records_attempt_history` |
+| 8 | `tests/unit/test_subagent_lifecycle.py::test_retry_refuses_live_and_succeeded_workers_without_changing_lifecycle` (added by SUBAGENT-10 wave 2) |
+| 9 | `tests/unit/test_subagent_lifecycle.py::test_parent_cancellation_requests_abort_and_waits_for_worker_cleanup`, `::test_parent_cancellation_during_retry_stops_and_salvages_attempt` |
+| 10 | `tests/unit/test_subagent_budgets.py::test_count_budget_crossings_apply_drain_policy`, `::test_time_budget_abort_cancels_worker_and_preserves_partial_output`, `::test_time_budget_drain_allows_running_worker_to_finish` |
+
 ## 7. Rollout, migration and security
 
 **Compatibility.** `stop_worker` remains as a thin alias for

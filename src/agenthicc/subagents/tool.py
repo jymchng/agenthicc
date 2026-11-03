@@ -483,7 +483,7 @@ def make_spawn_subagents_tool(
             previous = conversation_journal.find_subagent_pool(parent_run_id, fp)
             if previous is not None:
                 status = previous.get("status")
-                if status in {"completed", "interrupted", "cancelled"}:
+                if status in {"completed", "stopped", "interrupted", "cancelled"}:
                     total_value = previous.get("total", len(subagent_tasks))
                     succeeded_value = previous.get("succeeded", 0)
                     failed_value = previous.get("failed", len(subagent_tasks))

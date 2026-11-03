@@ -468,6 +468,21 @@ The A-7 boundaries from the research report §5.3, restated as commitments.
     order, with no cross-talk in results or worker ids:
     `tests/integration/test_subagent_tool_execution.py`.
 
+### Test locations (amended 2026-11-03)
+
+SUBAGENT-10 WP-8. Phase 1's journal lifecycle cases live where the journal is
+tested, not where the criteria expected them.
+
+| Criterion | Proving case |
+|---|---|
+| 2 | `tests/unit/test_conversation_journal.py` — `subagent_pool_started` is written before any worker result |
+| 6 | `tests/unit/test_tui_session_coverage.py::test_completed_background_subagent_is_delivered_once` |
+| 7 | `tests/unit/test_conversation_journal.py` — a `running`/`backgrounded` pool is recovered as `interrupted` with its worker records |
+| B-1 (new) | `tests/unit/test_conversation_journal.py::TestSubagentPoolTerminalRecords`, `tests/unit/test_subagent_budgets.py::test_budget_drained_pool_journals_a_stopped_record_with_its_results`, `tests/integration/test_subagent_tool_execution.py::test_redriven_turn_replays_a_budget_stopped_pool_with_its_results` |
+| B-2 (new) | `tests/unit/test_subagent_resume.py::TestBackgroundCompletionMessage`, `tests/unit/test_tui_session_coverage.py::test_budget_stopped_background_subagent_is_delivered_with_its_cause` |
+
+Criteria 1, 3, 5, 8 and 10 remain unmet in phase 1 and are SUBAGENT-11's.
+
 ## 7. Rollout, migration and security
 
 **Compatibility.** `background` and `wait` are defaulted parameters on existing

@@ -1637,9 +1637,14 @@ Append-only, ``fsync``-ed JSONL journal of conversation transitions. Subagent
 lifecycle records are auxiliary and do not enter the provider-message fold:
 `subagent_pool_started()` is written before worker side effects;
 `subagent_pool_backgrounded()` stores the exact tool receipt;
-`subagent_pool_finished()`, `subagent_pool_cancelled()`, and
-`recover_interrupted_subagent_pools()` record terminal outcomes. Recovery marks
-unfinished workers interrupted and does not rerun them. Stable message IDs on
+`subagent_pool_finished()`, `subagent_pool_stopped()`,
+`subagent_pool_cancelled()`, and `recover_interrupted_subagent_pools()` record
+terminal outcomes, folded to `completed`, `stopped`, `cancelled` and
+`interrupted`. `stopped` is a pool ended by an operator budget ceiling: it keeps
+the counts, the complete aggregate of the workers that ran, their structured
+values and the crossed ceiling as `reason`. `cancelled` is reserved for a session
+close and also keeps its counts and text. Recovery marks unfinished workers
+interrupted and does not rerun them. Stable message IDs on
 `append_message()` and `has_message_id()` support exactly-once synthetic
 completion delivery across resume and compaction.
 
@@ -4469,6 +4474,33 @@ stays under `MAX_TRANSCRIPT_BYTES` (2 MiB) by dropping its oldest events behind
 a `truncated` marker that counts them. Stop requests, lifecycle changes, message
 acknowledgements, and attempt boundaries are recorded with per-attempt metadata.
 The parent agent never reads them.
+
+### Background completion delivery — `agenthicc.subagents.delivery`
+
+```python
+BACKGROUND_RESULT_TEXT_LIMIT: int = 16_000
+
+def background_pool_completion_message(record: Mapping[str, object]) -> str: ...
+```
+
+Composes the message that delivers one terminal background pool, from a folded
+journal lifecycle record (`pool_id`, `status`, `total`, `succeeded`, `failed`,
+`reason`, `text`). The first line is runtime-authored — outcome and real counts,
+for example `Background subagent pool <id> was stopped by the pool budget:
+max_tokens_exceeded (1/2 succeeded, 1 failed).` Worker text follows only inside
+a `<subagent-output pool="<id>">` frame introduced as untrusted subagent output;
+it is redacted with the session-export redactor, limited to
+`BACKGROUND_RESULT_TEXT_LIMIT` characters with a visible truncation note, and an
+embedded closing tag is neutralised. Malformed counts read as zero.
+
+### BACKGROUND_RESULT_TEXT_LIMIT
+
+Characters of worker text a background completion message may carry (16,000).
+
+### background_pool_completion_message
+
+See above. `TUISession` uses it at the next logical-turn boundary; the journal
+keeps the complete aggregate.
 
 ### SubagentExecutionPolicy
 

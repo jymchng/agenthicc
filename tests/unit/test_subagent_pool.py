@@ -1621,3 +1621,91 @@ def test_display_redaction_is_idempotent() -> None:
         "error_truncated": True,
         "error_length": 10,
     }
+
+
+# ── SUBAGENT-05 criterion 4 / SUBAGENT-10 criterion 14 ────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_worker_refuses_a_denied_capability_tool_through_its_own_gate() -> None:
+    """The type denies ``write``; the tool is still offered; the worker's gate refuses it.
+
+    Exercised through a real pool and worker rather than a hand-built gate, so
+    the test fails if the pool ever stops installing the type-aware
+    ``ToolCapabilityGate`` in the worker's hook chain.
+    """
+    from lauren_ai._agents._runner import AgentRunnerBase
+    from lauren_ai._tools import tool
+    from lauren_ai._transport import Completion, TokenUsage
+    from lauren_ai._transport._mock import MockTransport
+
+    from agenthicc.subagents.types import SubagentPermissionConstraints
+    from agenthicc.tools.capabilities import tool_write
+
+    executed: list[str] = []
+
+    @tool_write
+    @tool()
+    async def write_note(path: str, content: str) -> dict[str, object]:
+        """Write a note."""
+        executed.append(path)
+        return {"ok": True, "path": path}
+
+    transport = MockTransport()
+    transport.queue_tool_use(
+        "write_note", {"path": "notes.md", "content": "x"}, tool_use_id="write-1"
+    )
+    transport.queue_response(
+        Completion(
+            id="final",
+            model="mock-model",
+            content="The write was refused.",
+            tool_calls=[],
+            stop_reason="end_turn",
+            usage=TokenUsage(input_tokens=1, output_tokens=1),
+        )
+    )
+    app_state = AppState.create()
+    app_state.active_mode.set(build_default_registry().get("Yolo"))  # writes need no approval
+    registry = SubagentTypeRegistry()
+    registry.register(
+        SubagentTypeSpec(
+            name="writer",
+            allowed_tools=frozenset({"write_note"}),
+            max_turns=4,
+            system_prompt="Write the note.",
+            permissions=SubagentPermissionConstraints(deny_capabilities=frozenset({"write"})),
+        )
+    )
+    pool = SubagentPool(
+        [SubagentTask("task-0", "writer", "Write the note")],
+        parent_runner=AgentRunnerBase(transport=transport),
+        parent_model="mock-model",
+        all_tools=[write_note],
+        app_state=app_state,
+        registry=registry,
+    )
+
+    await pool.run()
+
+    def offered(call: object) -> list[str]:
+        return [
+            str(item["name"]) if isinstance(item, dict) else str(getattr(item, "name", item))
+            for item in getattr(call, "tools", None) or []
+        ]
+
+    # The denied tool is still in the worker's filtered tool list ...
+    assert "write_note" in offered(transport.calls[0])
+    # ... yet it never runs: the worker's own gate refuses the call.
+    assert executed == []
+    tool_results = [
+        block
+        for message in getattr(transport.calls[-1], "messages", [])
+        if isinstance(message, dict) and isinstance(message.get("content"), list)
+        for block in message["content"]
+        if isinstance(block, dict) and block.get("type") == "tool_result"
+    ]
+    assert len(tool_results) == 1
+    refusal = str(tool_results[0]["content"])
+    assert "blocked by the writer type's permissions.deny_capabilities constraint" in refusal
+    assert "cannot be widened" in refusal

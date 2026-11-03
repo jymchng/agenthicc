@@ -68,6 +68,7 @@ PRD's `status:` is promoted only when the PR is merged (research report §6.6).
 | Wave | Branch | Work packages | Criteria pinned |
 |---|---|---|---|
 | 1 | `subagent-wave-1-redaction-and-fixes` | WP-1 (B-3 redaction and visible truncation in every scroll and kernel payload, including task text and errors), WP-2 (definition descriptions reach the spawn tool), WP-3 (D-1, documentation), WP-4 (armed operator ceilings pinned against the guide and SUBAGENT-06), WP-9 (refusals no longer report `max_concurrent_used`; guide corrected from "clamped" to "refused") | 11, 12, 17, 18, 23, 27 |
+| 2 | `subagent-wave-2-background-delivery` | WP-5 (B-1: budget-ended pools journaled as `stopped` with counts, text, values and reason; delivery and turn-resume report the real cause; session-close `cancelled` records now keep their counts too), WP-6 (B-2: delivery composed by `agenthicc.subagents.delivery`, worker text framed as untrusted, redacted, bounded at 16,000 characters, frame-closing tag neutralised), WP-8 (SUBAGENT-05 criteria 4 and 8, SUBAGENT-08 criteria 5 and 8, test-location amendments in SUBAGENT-04/05/07/08) | 13, 14, 15, 19, 20, 21, 22, 25 |
 
 Wave 1 found a third leak site beyond §3 R15: `SubagentPoolCompleted.text`
 carried the complete aggregate, unbounded and unredacted
@@ -76,6 +77,14 @@ carried the complete aggregate, unbounded and unredacted
 routed through one helper, `SubagentPool._display_fields`. WP-4's second
 criterion (24, governor equals ledger) depends on the pool-scoped run id and
 moves to WP-7.
+
+Wave 2 found that the session-close `cancelled` record had the same defect as
+B-1: `_record_unfinished_subagent_workers` computed the counts and text and the
+record discarded them, so a pool cancelled at shutdown was delivered as
+"0/0 succeeded". It now keeps them, as `interrupted` already did. It also found
+that turn-resume (`tool.py:483-517`) read the same `cancelled` record, so a
+re-driven turn after a budget stop reported every worker as failed with no
+text; the `stopped` record fixes both paths.
 
 ## 1. Executive summary
 
@@ -619,10 +628,15 @@ today's") says the opposite. D-2 decides which is true.
    kind as it does for the others, so a drained pool's never-started workers are
    recorded as such.
 7. **B-2: bound and frame background delivery.** Until SUBAGENT-11 replaces the
-   channel, journaled aggregate text is bounded like every other subagent record
-   and redacted at write, and the delivered message wraps worker text in an
-   explicit untrusted-content frame that names the pool and states that the
-   content was produced by subagents, not by the user.
+   channel, the delivered message wraps worker text in an explicit
+   untrusted-content frame that names the pool and states that the content was
+   produced by subagents, not by the user, and the framed text is redacted and
+   bounded with a visible truncation note. *(Amended in wave 2.)* The bound and
+   redaction are applied at the **delivery boundary**, not at journal write:
+   the pool-level journal text is also what turn-resume replays as the tool
+   result (`tool.py:483-517`), and `pool.py:109-112` states the journal keeps
+   complete worker answers. Redacting it at write would make a re-driven turn
+   return different text from the original one.
 
 ### Divergence and conformance
 
@@ -740,9 +754,10 @@ states D-1. Criteria 17–27 are new.
     pool budget, names the reason, reports the real counts and includes the
     drained workers' text; a session-close cancellation still reads "cancelled
     when the session closed": `tests/unit/test_subagent_resume.py`.
-21. **B-2:** journaled background aggregate text is bounded and redacted at
-    write, and an oversized aggregate is marked truncated rather than cut
-    silently: `tests/unit/test_conversation_journal.py`.
+21. **B-2:** *(amended in wave 2, see goal 7)* the delivered background message
+    carries worker text redacted and bounded, and an oversized aggregate is
+    marked truncated rather than cut silently, while the journal keeps the
+    complete text: `tests/unit/test_subagent_resume.py`.
 22. **B-2:** the delivered background message frames worker text as untrusted
     subagent output with the pool id, and an instruction-shaped string inside
     worker text ("ignore previous instructions") appears only inside that frame:

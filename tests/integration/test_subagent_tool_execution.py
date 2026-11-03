@@ -1012,3 +1012,38 @@ async def test_synthetic_delegating_type_cannot_spawn_past_max_depth() -> None:
     assert result["parent_pool_id"] == "root-pool"
     assert "current depth 2, limit 1" in result["error"]
     assert "subagents.max_depth" in result["error"]
+
+
+async def test_redriven_turn_replays_a_budget_stopped_pool_with_its_results(
+    tmp_path: Path,
+) -> None:
+    """SUBAGENT-10 B-1: turn-resume reads the stopped record's real counts and text."""
+    from agenthicc.config import SubagentSettings
+
+    transport = MockTransport()
+    transport.queue_response(_final("Compatible with the old API.", "final"))
+    journal = ConversationJournal(tmp_path / "conversation-journal.jsonl")
+    spawn = make_spawn_subagents_tool(
+        AgentRunnerBase(transport=transport),
+        "mock-model",
+        [],
+        registry=_registry("not-a-parent-tool"),
+        subagent_settings=SubagentSettings(max_tokens=1),
+        parent_run_id="parent-run-budget",
+        conversation_journal=journal,
+    )
+    tasks = [{"type": "researcher", "task": "Check API compatibility."}]
+
+    first = await spawn(tasks=tasks, timeout_s=30)
+    replayed = await spawn(tasks=tasks, timeout_s=30)
+
+    assert first["status"] == "budget_exceeded"
+    assert first["budget_exceeded_reason"] == "max_tokens_exceeded"
+    assert replayed["status"] == "stopped"
+    assert replayed["ok"] is False
+    assert replayed["budget_exceeded_reason"] == "max_tokens_exceeded"
+    assert (replayed["total"], replayed["succeeded"], replayed["failed"]) == (1, 1, 0)
+    assert "Compatible with the old API." in replayed["results"]
+    # The replay came from the journal: no second provider call was made.
+    assert len(transport.calls) == 1
+    journal.close()

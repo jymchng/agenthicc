@@ -2354,9 +2354,14 @@ class SubagentPool:
             )
             if self._journal is not None:
                 if aggregate.budget_exceeded_reason:
-                    self._journal.subagent_pool_cancelled(
+                    self._journal.subagent_pool_stopped(
                         pool_id=aggregate.pool_id,
+                        total=aggregate.total,
+                        succeeded=aggregate.succeeded,
+                        failed=aggregate.failed,
+                        text=aggregate.text,
                         reason=aggregate.budget_exceeded_reason,
+                        values=[dict(value) for value in aggregate.values],
                     )
                 else:
                     self._journal.subagent_pool_finished(
@@ -2365,6 +2370,7 @@ class SubagentPool:
                         succeeded=aggregate.succeeded,
                         failed=aggregate.failed,
                         text=aggregate.text,
+                        values=[dict(value) for value in aggregate.values],
                     )
             if was_cancelled:
                 raise asyncio.CancelledError
@@ -2539,9 +2545,14 @@ class SubagentPool:
             result = await self._run(workers, worker_states, progress)
             if self._journal is not None:
                 if result.budget_exceeded_reason:
-                    self._journal.subagent_pool_cancelled(
-                        pool_id=self.pool_id,
+                    self._journal.subagent_pool_stopped(
+                        pool_id=result.pool_id,
+                        total=result.total,
+                        succeeded=result.succeeded,
+                        failed=result.failed,
+                        text=result.text,
                         reason=result.budget_exceeded_reason,
+                        values=[dict(value) for value in result.values],
                     )
                 else:
                     self._journal.subagent_pool_finished(
