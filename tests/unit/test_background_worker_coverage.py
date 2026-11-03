@@ -460,3 +460,12 @@ def test_background_session_delivers_finished_pool_notices_like_the_tui(tmp_path
         assert "worker text" not in content
     finally:
         journal.close()
+
+
+def test_background_session_without_a_conversation_delivers_nothing() -> None:
+    """A session that has no durable conversation has no pools to announce."""
+    from types import SimpleNamespace
+
+    from agenthicc.background.worker import _deliver_background_pool_notices
+
+    _deliver_background_pool_notices(SimpleNamespace(session_conversation=None))  # type: ignore[arg-type]

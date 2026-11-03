@@ -1105,8 +1105,10 @@ def _deliver_background_pool_notices(session: SessionContext) -> None:
     from agenthicc.memory.journaled import JournaledShortTermMemory
     from agenthicc.subagents.delivery import deliver_background_pool_notices
 
-    conversation = session.session_conversation
-    if not conversation.tool_history_recovery.provider_ready:
+    # Typed non-optional on SessionContext, but a session built without a
+    # durable conversation (as the worker's other paths allow) has none.
+    conversation: SessionConversation | None = session.session_conversation
+    if conversation is None or not conversation.tool_history_recovery.provider_ready:
         return
     memory = conversation.memory
     if isinstance(memory, JournaledShortTermMemory):
