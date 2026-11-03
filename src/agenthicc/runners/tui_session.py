@@ -4311,7 +4311,11 @@ class TUISession:
     def _deliver_completed_background_subagents(self) -> None:
         """Notify the parent of finished background pools at a turn boundary."""
         from agenthicc.memory.journaled import JournaledShortTermMemory
-        from agenthicc.subagents.delivery import deliver_background_pool_notices
+        from agenthicc.subagents.communication import registry_for_session
+        from agenthicc.subagents.delivery import (
+            deliver_background_pool_notices,
+            deliver_background_question_notices,
+        )
 
         session_conversation = self._ctx.session_conversation
         if session_conversation is None or self._tool_history_blocked():
@@ -4319,8 +4323,14 @@ class TUISession:
         memory = session_conversation.memory
         if not isinstance(memory, JournaledShortTermMemory):
             return
-        deliver_background_pool_notices(
-            session_conversation.journal, memory, self._ctx.app_state.conversation
+        conversation = self._ctx.app_state.conversation
+        deliver_background_pool_notices(session_conversation.journal, memory, conversation)
+        # Questions from still-running background pools (on_clarification =
+        # "queue"); the same registry the spawn tool registers pools in.
+        deliver_background_question_notices(
+            registry_for_session(str(self._ctx.session_id), conversation),
+            memory,
+            conversation,
         )
 
     async def run_turn(self, text: str, resume: object | None = None) -> None:

@@ -26,6 +26,7 @@ from agenthicc.tools.capabilities import tool_control
 
 if TYPE_CHECKING:
     from agenthicc.memory.journal import ConversationJournal
+    from agenthicc.subagents.pool import SubagentPool
 
 MessageKind = Literal[
     "status",
@@ -140,12 +141,19 @@ class _QuestionRecord:
 
 @dataclass
 class PoolHandle:
-    """A resumable pool owned by one session."""
+    """A pool owned by one session, reachable by the parent's control tools."""
 
     pool_id: str
     conversation_id: str
     broker: "AgentMessageBroker"
     task: asyncio.Task[object]
+    #: The pool itself, for stop and retry; ``None`` for a handle without one.
+    pool: "SubagentPool | None" = None
+    #: Pool ids from the root pool down to this pool's parent. A nested
+    #: worker may only control pools whose lineage contains its own pool.
+    lineage: tuple[str, ...] = ()
+    #: Whether the pool was moved to the background (user or model request).
+    backgrounded: bool = False
 
 
 class AgentMessageBroker:
@@ -196,6 +204,8 @@ class AgentMessageBroker:
         self._message_event = asyncio.Event()
         self._pending_event = asyncio.Event()
         self._closed = False
+        #: When set, questions to the parent are refused with this status.
+        self._parent_refusal = ""
 
     @classmethod
     def rehydrate(
@@ -327,6 +337,12 @@ class AgentMessageBroker:
         if timeout_s <= 0:
             raise CommunicationError("question timeout must be positive")
         async with self._lock:
+            if recipient == "main" and self._parent_refusal:
+                raise CommunicationError(
+                    f"question is {self._parent_refusal}: the parent cannot answer while this "
+                    "pool runs in the background; continue with your best judgement and say "
+                    "what you assumed"
+                )
             pending = sum(item.status == "pending" for item in self._questions.values())
             if pending >= self._max_pending_questions:
                 raise CommunicationError("communication question quota exceeded")
@@ -374,6 +390,23 @@ class AgentMessageBroker:
                 {**self._question_projection(record), "answer": answer[: self._max_message_bytes]},
             )
             return self._question_projection(record)
+
+    async def refuse_parent_questions(self, status: str) -> int:
+        """End every pending question to the parent with *status*; refuse new ones.
+
+        Used when a pool moves to the background under
+        ``subagents.on_clarification = "fail"``: nobody will answer, so a worker
+        must not wait out the message timeout. Returns how many were ended.
+        """
+        async with self._lock:
+            self._parent_refusal = status[:64]
+            ended = 0
+            for record in list(self._questions.values()):
+                if record.status == "pending" and record.envelope.recipient == "main":
+                    self._finish_question_locked(record, "", self._parent_refusal)
+                    self._record("question_refused", self._question_projection(record))
+                    ended += 1
+            return ended
 
     async def wait_for_answer(
         self,
@@ -787,20 +820,36 @@ class AgentMessageBroker:
             raise CommunicationError(f"{field_name} must be a non-empty bounded string")
 
 
+#: Finished pools a conversation keeps reachable for collect and retry.
+MAX_FINISHED_POOL_HANDLES = 32
+
+
 class PoolContinuationRegistry:
-    """Session-keyed registry for pools that temporarily await answers."""
+    """Conversation-scoped registry of the pools a parent can reach.
+
+    Every pool is registered when it starts. A finished pool stays reachable —
+    for ``collect_subagent_results`` and ``retry_subagent`` — until it is one
+    of more than :data:`MAX_FINISHED_POOL_HANDLES` finished pools, when the
+    oldest finished ones are dropped. Running pools are never dropped. A pool
+    that is no longer held is still collectable from the journal.
+    """
 
     def __init__(self) -> None:
         self._handles: dict[str, PoolHandle] = {}
 
     def register(self, handle: PoolHandle) -> None:
+        self._handles.pop(handle.pool_id, None)
         self._handles[handle.pool_id] = handle
+        finished = [pool_id for pool_id, item in self._handles.items() if item.task.done()]
+        for pool_id in finished[: max(0, len(finished) - MAX_FINISHED_POOL_HANDLES)]:
+            self._handles.pop(pool_id, None)
+
+    def handles(self) -> tuple[PoolHandle, ...]:
+        """Every registered handle, oldest first."""
+        return tuple(self._handles.values())
 
     def get(self, pool_id: str) -> PoolHandle | None:
-        handle = self._handles.get(pool_id)
-        if handle is not None and handle.task.done():
-            return handle
-        return handle
+        return self._handles.get(pool_id)
 
     def remove(self, pool_id: str) -> None:
         self._handles.pop(pool_id, None)
@@ -935,13 +984,23 @@ def make_parent_communication_tools(
     journal: "ConversationJournal | None" = None,
     *,
     collect_wait_max_s: float = DEFAULT_COLLECT_WAIT_MAX_S,
+    owner: str = "",
 ) -> list[object]:
-    """Build tools through which the main agent controls a live pool."""
+    """Build the tools through which an agent controls the pools it spawned.
+
+    *owner* is the spawning worker (``pool_id:task_id``) these tools belong to,
+    or ``""`` for the session's main agent. A worker's tools reach only pools
+    whose lineage contains it — its own descendants — never a sibling's or
+    its parent's pools (SUBAGENT-11 goal 8).
+    """
     from lauren_ai._tools import tool
+
+    def _in_scope(handle: PoolHandle) -> bool:
+        return handle.conversation_id == conversation_id and (not owner or owner in handle.lineage)
 
     def _handle(pool_id: str) -> PoolHandle:
         handle = registry.get(pool_id)
-        if handle is None or handle.conversation_id != conversation_id:
+        if handle is None or not _in_scope(handle):
             raise CommunicationError("unknown subagent pool for this session")
         return handle
 
@@ -1009,9 +1068,13 @@ def make_parent_communication_tools(
                 raise CommunicationError("timeout_s must be a finite non-negative number")
             bound = min(float(timeout_s), collect_wait_max_s)
         handle = registry.get(pool_id)
-        if handle is not None and handle.conversation_id != conversation_id:
+        if handle is not None and not _in_scope(handle):
             raise CommunicationError("unknown subagent pool for this session")
         if handle is None:
+            # Journal records carry no lineage, so only the main agent may
+            # read a pool it no longer holds.
+            if owner:
+                raise CommunicationError("unknown subagent pool for this session")
             return _journaled_pool_payload(journal, pool_id)
         if wait and not handle.task.done() and bound > 0:
             await asyncio.wait({handle.task}, timeout=bound)
@@ -1019,7 +1082,154 @@ def make_parent_communication_tools(
             return _running_pool_payload(handle, timed_out=wait)
         return _finished_pool_payload(handle)
 
-    return [answer_subagent, send_subagent_message, collect_subagent_results]
+    @tool_control
+    @tool()
+    async def list_subagent_pools() -> dict[str, object]:
+        """List the subagent pools you can reach: running, finished and interrupted.
+
+        Each row has the pool id, status, whether it runs in the background,
+        worker counts, depth, and whether its completion notice is still to be
+        delivered. Use the pool id with collect_subagent_results,
+        stop_subagents or retry_subagent.
+        """
+        rows: dict[str, dict[str, object]] = {}
+        if not owner and journal is not None:
+            undelivered = {
+                str(record.get("pool_id", ""))
+                for record in journal.completed_background_subagent_pools()
+            }
+            for record in journal.fold_subagent_pool_lifecycle():
+                pool_id = record.get("pool_id")
+                if not isinstance(pool_id, str) or not pool_id:
+                    continue
+                rows[pool_id] = {
+                    "pool_id": pool_id,
+                    "status": str(record.get("status", "")),
+                    "background": record.get("backgrounded") is True,
+                    "total": record.get("total", 0),
+                    "succeeded": record.get("succeeded", 0),
+                    "failed": record.get("failed", 0),
+                    "notice_pending": pool_id in undelivered,
+                }
+        for handle in registry.handles():
+            if not _in_scope(handle):
+                continue
+            row = rows.setdefault(handle.pool_id, {"pool_id": handle.pool_id})
+            row["background"] = bool(row.get("background")) or handle.backgrounded
+            if not handle.task.done():
+                row["status"] = "running"
+            pool = handle.pool
+            if pool is not None:
+                state = pool.state
+                row["total"] = state.total
+                row["done"] = state.done
+                row["depth"] = state.depth
+        return {"ok": True, "pools": list(rows.values())}
+
+    @tool_control
+    @tool()
+    async def stop_subagents(
+        pool_id: str,
+        worker_id: str | None = None,
+        mode: str | None = None,
+        reason: str = "",
+    ) -> dict[str, object]:
+        """Stop one worker, or every worker of a pool you spawned.
+
+        mode "abort" cancels now and keeps any partial output; "drain" lets
+        running workers finish and starts no pending ones. Omitted, it is
+        "abort" for one worker and "drain" for a whole pool. Stopping is final
+        for that attempt; retry_subagent starts a new one.
+        """
+        handle = _handle(pool_id)
+        pool = handle.pool
+        if pool is None or handle.task.done():
+            return {"ok": False, "pool_id": pool_id, "error": "the pool is not running"}
+        chosen = mode if mode is not None else ("abort" if worker_id else "drain")
+        if chosen not in {"abort", "drain"}:
+            raise CommunicationError("mode must be 'abort' or 'drain'")
+        stop_mode = cast(Literal["abort", "drain"], chosen)
+        stop_reason = (reason.strip() or "parent_model_requested")[:256]
+        if worker_id is not None:
+            request = pool.request_stop(
+                worker_id, mode=stop_mode, source="parent_model", reason=stop_reason
+            )
+            if request is None:
+                return {
+                    "ok": False,
+                    "pool_id": pool_id,
+                    "worker_id": worker_id,
+                    "error": "the worker is not running or does not exist",
+                }
+            lifecycle = pool.lifecycle(worker_id)
+            return {
+                "ok": True,
+                "pool_id": pool_id,
+                "workers": [
+                    {
+                        "worker_id": worker_id,
+                        "request_id": request.request_id,
+                        "mode": request.mode,
+                        "phase": lifecycle.phase if lifecycle is not None else "",
+                    }
+                ],
+            }
+        outcomes = pool.request_pool_stop(mode=stop_mode, source="parent_model", reason=stop_reason)
+        return {
+            "ok": True,
+            "pool_id": pool_id,
+            "workers": [
+                {
+                    "worker_id": item.worker_id,
+                    "request_id": item.stop_request.request_id if item.stop_request else "",
+                    "mode": stop_mode,
+                    "phase": item.phase,
+                }
+                for item in outcomes
+            ],
+        }
+
+    @tool_control
+    @tool()
+    async def retry_subagent(pool_id: str, worker_id: str) -> dict[str, object]:
+        """Run a new attempt of one failed or cancelled worker of a finished pool.
+
+        Succeeded workers are never rerun. The retry is refused, with the
+        reason, while the pool is still running or after its wall-clock limit.
+        """
+        handle = _handle(pool_id)
+        pool = handle.pool
+        if pool is None:
+            return {"ok": False, "pool_id": pool_id, "error": "the pool cannot be retried"}
+        refusal = pool.retry_refusal(worker_id)
+        if refusal:
+            return {"ok": False, "pool_id": pool_id, "worker_id": worker_id, "error": refusal}
+        result = await pool.retry_worker(worker_id)
+        if result is None:
+            return {
+                "ok": False,
+                "pool_id": pool_id,
+                "worker_id": worker_id,
+                "error": pool.retry_refusal(worker_id) or "the retry did not start",
+            }
+        lifecycle = pool.lifecycle(worker_id)
+        return {
+            "ok": result.ok,
+            "pool_id": pool_id,
+            "worker_id": worker_id,
+            "attempt": lifecycle.attempt if lifecycle is not None else 1,
+            "results": result.text,
+            "error": result.error,
+        }
+
+    return [
+        answer_subagent,
+        send_subagent_message,
+        collect_subagent_results,
+        list_subagent_pools,
+        stop_subagents,
+        retry_subagent,
+    ]
 
 
 def _running_pool_payload(handle: PoolHandle, *, timed_out: bool) -> dict[str, object]:

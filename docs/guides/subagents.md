@@ -155,6 +155,8 @@ spawn_subagents(
     timeout_s: float = 3600.0,
     model: str | None = None,  # operator-gated
     effort: str | None = None,  # operator-gated
+    budget: Budget | None = None,  # tokens / cost_usd / wall_clock_s
+    background: bool = False,  # return "running" at once; see Background pools
 ) -> dict[str, object]
 ```
 
@@ -401,7 +403,10 @@ available control-plane operations are:
 | `poll_agent_messages` | child | Read ordered parent/peer mail |
 | `send_peer_message` | child → child | Coordinate within the same pool |
 | `ask_peer` / `answer_peer` | child ↔ child | Correlated peer clarification |
-| `collect_subagent_results` | main → pool | Collect a pool paused for clarification |
+| `collect_subagent_results` | main → pool | Read a running pool's snapshot or a finished pool's results |
+| `list_subagent_pools` | main | List this conversation's pools with status and worker counts |
+| `stop_subagents` | main → pool | Stop one worker (abort) or a whole pool (drain) |
+| `retry_subagent` | main → pool | Re-run one failed or cancelled worker of a finished pool |
 
 The clarification flow is deliberately non-reentrant:
 
@@ -737,6 +742,50 @@ stop reasons are ever quoted. A pool ended by an operator ceiling is journaled
 as `stopped`, with its counts, the aggregate of the workers that ran, and the
 crossed ceiling; `cancelled` is reserved for a session close. A turn that is
 re-driven after such a pool replays the same counts and text from the journal.
+
+### The model backgrounds a pool
+
+`spawn_subagents(..., background=True)` asks for the background from the
+start. The call waits only until the pool has journaled its start, then returns
+`status: "running"` with the `pool_id` and one `{worker_id, label}` row per
+worker, and tells the model not to sleep, poll or duplicate the work. The
+pool then behaves exactly like one backgrounded with Ctrl+B (whose receipt says
+`backgrounded`): the same supervised owner, journal records and completion
+notice. The request is refused, before any worker starts, when
+`subagents.background_enabled = false` or the session has no durable journal
+or supervised task owner.
+
+A backgrounded worker that calls `ask_parent` follows
+`subagents.on_clarification`:
+
+- `queue` (default): the question stays open. At the next turn boundary the
+  parent receives a runtime-authored notice naming only the pool, worker and
+  question ids — once per question — and reads the question itself through
+  `collect_subagent_results` before answering with `answer_subagent`.
+- `fail`: every open and later parent question of that pool ends at once with
+  `unanswerable_in_background`, and the worker is told to continue with its
+  best judgement and state its assumptions.
+
+### Controlling pools from the model
+
+- `list_subagent_pools()` lists the pools of this conversation: live handles
+  and, for the root conversation, every pool folded from the journal (including
+  pools from earlier turns), each with `status`, `background`, `total`,
+  `succeeded` and `failed`.
+- `stop_subagents(pool_id, worker_id=None, mode=None, reason="")` stops one
+  worker (default mode `abort`) or the whole pool (default `drain`). The stop
+  is recorded with source `parent_model`; repeating it returns the same
+  request id. A finished pool answers `the pool is not running`.
+- `retry_subagent(pool_id, worker_id)` re-runs a failed or cancelled worker of
+  a finished pool as a new attempt with the original type, model, policy,
+  pool scope and depth. It refuses a pool still running, a pool stopped by its
+  budget or wall-clock limit, a worker that succeeded or never started, and an
+  unknown worker, each with its reason.
+
+Retryability does not depend on which pool the TUI panel shows: the
+conversation registry keeps every live pool and the 32 most recent finished
+ones. A nested worker's control tools see only the pools it spawned itself
+(its ownership lineage), never its parent's or siblings' pools.
 
 ### Collecting a pool
 

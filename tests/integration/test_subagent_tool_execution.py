@@ -1259,3 +1259,154 @@ async def test_backgrounding_without_a_supervisor_is_refused_and_stops_the_pool(
     finally:
         release.set()
         journal.close()
+
+
+# ── SUBAGENT-11 goals 1, 6, 7: model-facing background and control ────────────
+
+
+def _control_tools(spawn: object) -> dict[str, object]:
+    tools = spawn.__agenthicc_subagent_communication_tools__
+    return {getattr(item, "__name__", ""): item for item in tools}
+
+
+async def test_a_model_requested_background_pool_returns_running_at_once(tmp_path) -> None:
+    release = asyncio.Event()
+
+    @tool()
+    async def wait_for_release(topic: str) -> str:
+        """Wait until the test releases the worker."""
+        await release.wait()
+        return f"released:{topic}"
+
+    transport = MockTransport()
+    transport.queue_tool_use("wait_for_release", {"topic": "x"}, tool_use_id="wait-1")
+    transport.queue_response(_final("worker complete", "final"))
+    journal = ConversationJournal(tmp_path / "conversation-journal.jsonl")
+    conv_store = ConversationStore()
+    supervisor = SupervisedTasks("model background test")
+    spawn = make_spawn_subagents_tool(
+        AgentRunnerBase(transport=transport),
+        "mock-model",
+        [wait_for_release],
+        registry=_registry("wait_for_release"),
+        conversation_id="conversation-1",
+        parent_run_id="turn-1",
+        conversation_journal=journal,
+        conv_store=conv_store,
+    )
+    try:
+        with bind_background_task_owner(supervisor):
+            receipt = await asyncio.wait_for(
+                spawn(  # type: ignore[operator]
+                    tasks=[{"type": "researcher", "task": "Wait."}],
+                    timeout_s=30,
+                    background=True,
+                ),
+                timeout=1,
+            )
+
+        assert receipt["status"] == "running"
+        assert "Do not sleep, poll" in receipt["results"]
+        assert [row["worker_id"] for row in receipt["workers"]] == ["task-0"]
+        kinds = [record["kind"] for record in journal.fold_subagent_pool_lifecycle()]
+        lifecycle = journal.fold_subagent_pool_lifecycle()[0]
+        assert lifecycle["status"] == "backgrounded" and kinds
+        collect = _control_tools(spawn)["collect_subagent_results"]
+        snapshot = await collect(receipt["pool_id"])  # type: ignore[operator]
+        assert snapshot["status"] == "running"
+
+        release.set()
+        assert await supervisor.wait(timeout=5)
+        finished = await collect(receipt["pool_id"])  # type: ignore[operator]
+        assert finished["status"] == "completed"
+        assert "worker complete" in finished["results"]
+    finally:
+        release.set()
+        await supervisor.aclose(timeout=0.1)
+        journal.close()
+
+
+async def test_a_model_requested_background_is_refused_when_it_cannot_be_owned(tmp_path) -> None:
+    from agenthicc.config import SubagentSettings
+
+    transport = MockTransport()
+    journal = ConversationJournal(tmp_path / "conversation-journal.jsonl")
+    spawn = make_spawn_subagents_tool(
+        AgentRunnerBase(transport=transport),
+        "mock-model",
+        [],
+        registry=_registry("not-a-parent-tool"),
+        conversation_id="conversation-1",
+        conversation_journal=journal,
+    )
+    unowned = await spawn(  # type: ignore[operator]
+        tasks=[{"type": "researcher", "task": "x"}], timeout_s=30, background=True
+    )
+    assert unowned["status"] == "background_unavailable"
+
+    disabled = make_spawn_subagents_tool(
+        AgentRunnerBase(transport=transport),
+        "mock-model",
+        [],
+        registry=_registry("not-a-parent-tool"),
+        conversation_id="conversation-1",
+        conversation_journal=journal,
+        subagent_settings=SubagentSettings(background_enabled=False),
+    )
+    with bind_background_task_owner(SupervisedTasks("disabled")):
+        refused = await disabled(  # type: ignore[operator]
+            tasks=[{"type": "researcher", "task": "x"}], timeout_s=30, background=True
+        )
+    assert refused["status"] == "refused"
+    assert "subagents.background_enabled" in refused["error"]
+    assert transport.calls == []
+    assert journal.fold_subagent_pool_lifecycle() == []
+    journal.close()
+
+
+async def test_on_clarification_fail_ends_a_backgrounded_workers_wait_at_once(tmp_path) -> None:
+    from agenthicc.config import SubagentSettings
+
+    transport = MockTransport()
+    transport.queue_tool_use("ask_parent", {"question": "Which API version?"}, tool_use_id="ask-1")
+    transport.queue_response(_final("Waiting for the parent.", "after-ask"))
+    journal = ConversationJournal(tmp_path / "conversation-journal.jsonl")
+    supervisor = SupervisedTasks("clarification fail")
+    spawn = make_spawn_subagents_tool(
+        AgentRunnerBase(transport=transport),
+        "mock-model",
+        [],
+        registry=_registry("not-a-parent-tool"),
+        conversation_id="conversation-1",
+        parent_run_id="turn-1",
+        conversation_journal=journal,
+        conv_store=ConversationStore(),
+        subagent_settings=SubagentSettings(on_clarification="fail"),
+    )
+    try:
+        with bind_background_task_owner(supervisor):
+            receipt = await spawn(  # type: ignore[operator]
+                tasks=[{"type": "researcher", "task": "Ask first."}],
+                timeout_s=30,
+                background=True,
+            )
+        assert receipt["status"] == "running"
+        # The worker is not left waiting out the 300 s message timeout.
+        assert await supervisor.wait(timeout=2)
+        tool_results = [
+            str(block.get("content"))
+            for message in transport.calls[-1].messages
+            if isinstance(message, dict) and isinstance(message.get("content"), list)
+            for block in message["content"]
+            if isinstance(block, dict) and block.get("type") == "tool_result"
+        ]
+        assert len(tool_results) == 1
+        assert "unanswerable_in_background" in tool_results[0]
+        assert "continue with your best judgement" in tool_results[0]
+        finished = await _control_tools(spawn)["collect_subagent_results"](  # type: ignore[operator]
+            receipt["pool_id"]
+        )
+        assert finished["status"] == "completed"
+    finally:
+        await supervisor.aclose(timeout=0.1)
+        journal.close()
