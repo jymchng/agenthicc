@@ -182,6 +182,20 @@ before every sink (WP-1, a security fix), thread definition descriptions
 accounting (WP-7, completing SUBAGENT-06), then SUBAGENT-11, and SUBAGENT-09's
 event contract last.
 
+### TUIR series — TUI responsiveness while subagents run
+
+A measured study of the frozen TUI reported while six subagents searched a
+33,000-file project, and the PRDs that fix it. The dominant cause is
+per-candidate path authorization on the event loop (a 93.7 s stall); see
+[`tui-responsiveness/`](tui-responsiveness/README.md).
+
+- [TUIR-00 — Study: why the TUI stops responding while subagents run](tui-responsiveness/TUIR-00-study-tui-unresponsive-with-subagents.md)
+- [TUIR-01 — Discovered-path authorization off the event loop (proposed)](tui-responsiveness/TUIR-01-discovered-path-authorization-off-the-loop.md)
+- [TUIR-02 — Bounded filesystem discovery (proposed)](tui-responsiveness/TUIR-02-bounded-filesystem-discovery.md)
+- [TUIR-03 — Journal work off the event loop (proposed)](tui-responsiveness/TUIR-03-journal-work-off-the-loop.md)
+- [TUIR-04 — An event-loop lag budget (proposed)](tui-responsiveness/TUIR-04-event-loop-lag-budget.md)
+- [TUIR-05 — The attention badge says what it counts (proposed)](tui-responsiveness/TUIR-05-attention-badge-says-what-it-counts.md)
+
 ### PRD-220–239 — OpenCode, Claude Code, and Codex feature study
 
 These 20 PRDs originated as proposals from an evidence-based comparison of the
