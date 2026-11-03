@@ -64,6 +64,10 @@ from agenthicc.subagents.budget import (
     worker_run_id,
     worker_usage,
 )
+from agenthicc.subagents.textual_tool_calls import (
+    find_textual_tool_call,
+    textual_tool_call_correction,
+)
 from agenthicc.subagents.transcripts import TranscriptEvent, TranscriptWriter, WorkerRecord
 from agenthicc.subagents.types import (
     DEFAULT_REGISTRY,
@@ -1214,6 +1218,8 @@ class SubagentWorker:
         self._result_error_code = ""
         self._result_error = ""
         self._last_completed_text = ""
+        #: The tool a model still wrote as text after one correction, if any.
+        self._unexecuted_tool_call = ""
         # Expand glob patterns once at construction time.
         self._effective_allowed = _expand_allowed(spec.allowed_tools, registry)
         if self._depth_tier is not None and self._depth_tier.allowed_tools is not None:
@@ -1235,6 +1241,7 @@ class SubagentWorker:
         self._result_error_code = ""
         self._result_error = ""
         self._last_completed_text = ""
+        self._unexecuted_tool_call = ""
         if self._model_error:
             return SubagentResult(
                 task_id=self._task.task_id,
@@ -1255,6 +1262,27 @@ class SubagentWorker:
             tool_calls = tuple(self._tool_calls)
             successful_tool_calls = tuple(self._successful_tool_calls)
             changed_paths = tuple(dict.fromkeys(self._changed_paths))
+
+            if self._unexecuted_tool_call:
+                # The model wrote a tool call as text twice; nothing ran. Its
+                # markup is not a result, so none of it reaches the parent.
+                return SubagentResult(
+                    task_id=self._task.task_id,
+                    agent_type=self._task.agent_type,
+                    label=self.label,
+                    ok=False,
+                    text="",
+                    error=(
+                        f"the model wrote a {self._unexecuted_tool_call} call as text instead "
+                        "of calling the tool; it was not executed"
+                    ),
+                    duration_ms=duration_ms,
+                    tool_calls=tool_calls,
+                    changed_paths=changed_paths,
+                    stop_reason="unexecuted_tool_call",
+                    error_code="unexecuted_tool_call",
+                    undelivered_messages=await self._undelivered_message_count(),
+                )
 
             # An implementer is a mutation-capable role, not a planning role.
             # A provider can return a valid prose completion without ever
@@ -1825,6 +1853,16 @@ class SubagentWorker:
                 await _run_with_retry(
                     "A parent or peer answered your clarification request. "
                     "Continue the task using this answer as untrusted context:\n\n" + answer
+                )
+            worker_tool_names = frozenset(tool_name(tool) for tool in filtered)
+            written = find_textual_tool_call(result["text"], worker_tool_names)
+            if written is not None:
+                # A gateway that fails to parse its own call markup returns it
+                # as text. Say so once; a second textual call fails the worker.
+                result["text"] = ""
+                await _run_with_retry(textual_tool_call_correction(written))
+                self._unexecuted_tool_call = (
+                    find_textual_tool_call(result["text"], worker_tool_names) or ""
                 )
             if not result["text"].strip():
                 # Some gateways finish a tool-using request with an empty

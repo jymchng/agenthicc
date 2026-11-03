@@ -4645,6 +4645,23 @@ worker rows and pending questions; a finished pool returns its results
 idempotently; a pool with no live handle is read from the conversation journal
 (including `interrupted` pools). Other conversations' pools are refused.
 
+### find_textual_tool_call
+
+```python
+def find_textual_tool_call(text: str, tool_names: Collection[str]) -> str | None: ...
+```
+
+From `agenthicc.subagents.textual_tool_calls`. The first of the worker's tools
+that *text* calls through leaked provider markup (DeepSeek DSML or special
+tokens, XML `invoke`, Hermes `<tool_call>`), ignoring fenced code blocks. A
+worker whose reply matches gets one corrective turn
+(`textual_tool_call_correction(tool)`) and fails with `unexecuted_tool_call`
+if it writes the call as text again.
+
+### textual_tool_call_correction
+
+The corrective instruction sent once after a tool call written as text.
+
 ### background_question_notice
 
 The runtime-authored notice that a backgrounded worker awaits an answer; it

@@ -100,6 +100,15 @@ failed before asking anything returned `awaiting_clarification` with no
 questions: closing the broker woke the question waiter first. The waiter now
 counts only when a parent question is actually pending.
 
+Wave 5 also closes a defect reported from a real session: two documenters were
+reported as succeeded while their `write_file` calls had come back from a
+DeepSeek gateway as DSML text, so no file landed and the parent had to discard
+both replies. A worker whose reply holds call markup for one of its own tools
+now gets one corrective turn and otherwise fails with `unexecuted_tool_call`
+(`agenthicc.subagents.textual_tool_calls`); new integration tests also pin that
+the built-in documenter's real `write_file` writes the file under a session
+workspace policy.
+
 ## 1. Executive summary
 
 Commit `733018f` (and its successors) announce *"all SUBAGENTS PRDs fully

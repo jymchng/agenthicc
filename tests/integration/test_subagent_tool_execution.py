@@ -1410,3 +1410,106 @@ async def test_on_clarification_fail_ends_a_backgrounded_workers_wait_at_once(tm
     finally:
         await supervisor.aclose(timeout=0.1)
         journal.close()
+
+
+# ── write_file in a subagent, and calls written as text ────────────────────
+
+#: The markup a DeepSeek gateway returned as text for two documenters, which
+#: were then reported as successful although no file was written.
+_DSML_WRITE = (
+    '\n<｜DSML｜ invoke name="write_file">\n'
+    '<｜DSML｜ parameter name="path" string="true">docs/02-stock.md</｜DSML｜ parameter>\n'
+    '<｜DSML｜ parameter name="content" string="true">## Stock footage\n'
+)
+
+
+def _yolo_workspace(tmp_path: Path) -> tuple[AppState, object]:
+    from agenthicc.tools.workspace_access import WorkspaceAccessPolicy, WorkspaceScope
+
+    parent_state = AppState.create()
+    parent_state.active_mode.set(build_default_registry().get("Yolo"))
+    policy = WorkspaceAccessPolicy(
+        WorkspaceScope.create(tmp_path), mode_provider=parent_state.active_mode
+    )
+    return parent_state, policy
+
+
+async def _spawn_documenter(
+    transport: MockTransport, tmp_path: Path, task: str
+) -> dict[str, object]:
+    from agenthicc.tools.workspace_access import (
+        WorkspaceAccessPolicy,
+        reset_current_workspace_access,
+        set_current_workspace_access,
+    )
+
+    parent_state, policy = _yolo_workspace(tmp_path)
+    assert isinstance(policy, WorkspaceAccessPolicy)
+    spawn = make_spawn_subagents_tool(
+        AgentRunnerBase(transport=transport),
+        "mock-model",
+        [write_file],
+        app_state=parent_state,
+        workspace_access=policy,
+    )
+    # The parent turn binds its workspace policy exactly like this.
+    token = set_current_workspace_access(policy)
+    try:
+        return await spawn(tasks=[{"type": "documenter", "task": task}], timeout_s=30)  # type: ignore[no-any-return]
+    finally:
+        reset_current_workspace_access(token)
+
+
+async def test_a_documenter_writes_a_real_file_through_write_file(tmp_path: Path) -> None:
+    """The built-in documenter's write_file call executes and the file lands."""
+    transport = MockTransport()
+    transport.queue_tool_use(
+        "write_file",
+        {"path": "docs/guide.md", "content": "# Guide\n\nAccurate docs.\n"},
+        tool_use_id="write-1",
+    )
+    transport.queue_response(_final("Wrote docs/guide.md (3 lines).", "final-doc"))
+
+    result = await _spawn_documenter(transport, tmp_path, "Write docs/guide.md.")
+
+    assert result["ok"] is True and result["succeeded"] == 1
+    assert (tmp_path / "docs" / "guide.md").read_text(encoding="utf-8") == (
+        "# Guide\n\nAccurate docs.\n"
+    )
+    assert "write_file" in _tool_names(transport.calls[0])
+
+
+async def test_a_call_written_as_text_gets_one_correction_and_then_runs(tmp_path: Path) -> None:
+    """Leaked call markup is not a result: the worker is told, and retries the call."""
+    transport = MockTransport()
+    transport.queue_response(_final(_DSML_WRITE, "leaked"))
+    transport.queue_tool_use(
+        "write_file",
+        {"path": "docs/02-stock.md", "content": "## Stock footage\n"},
+        tool_use_id="write-2",
+    )
+    transport.queue_response(_final("Wrote docs/02-stock.md.", "final-stock"))
+
+    result = await _spawn_documenter(transport, tmp_path, "Write docs/02-stock.md.")
+
+    assert result["ok"] is True
+    assert (tmp_path / "docs" / "02-stock.md").read_text(encoding="utf-8") == "## Stock footage\n"
+    assert len(transport.calls) == 3
+    correction = str(_message_content(transport.calls[1].messages[-1]))
+    assert "wrote a call to write_file as text" in correction
+    assert "DSML" not in str(result["results"])
+
+
+async def test_a_call_written_as_text_twice_fails_the_worker(tmp_path: Path) -> None:
+    """A worker never reports success on an unexecuted call."""
+    transport = MockTransport()
+    transport.queue_response(_final(_DSML_WRITE, "leaked-1"))
+    transport.queue_response(_final(_DSML_WRITE, "leaked-2"))
+
+    result = await _spawn_documenter(transport, tmp_path, "Write docs/02-stock.md.")
+
+    assert result["ok"] is False and result["failed"] == 1
+    assert "wrote a write_file call as text" in str(result["results"])
+    assert "DSML" not in str(result["results"])
+    assert not (tmp_path / "docs").exists()
+    assert len(transport.calls) == 2

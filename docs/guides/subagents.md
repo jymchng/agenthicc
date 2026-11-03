@@ -248,6 +248,17 @@ strict mutation-evidence rule currently applies to the built-in
 `implementer`: it must successfully invoke at least one mutating tool. A prose
 claim such as “I would update the file” is reported as a failed implementer.
 
+A tool call the model writes as *text* is never executed. Some gateways return
+their own call markup in the assistant text when they fail to parse it — for
+example DeepSeek's `<｜DSML｜ invoke name="write_file">` after a long `content`
+argument — so the file is not written. When a worker's reply holds call markup
+for one of its own tools (outside fenced code blocks), it gets one corrective
+turn saying the call did not run. If the model writes the call as text again,
+the worker fails with `stop_reason` / `error_code` `unexecuted_tool_call` and
+the error `the model wrote a write_file call as text instead of calling the
+tool; it was not executed`. The markup is never passed to the parent as a
+result. Detection lives in `agenthicc.subagents.textual_tool_calls`.
+
 If a provider returns no final prose after tool calls, the worker synthesizes a
 bounded summary such as `Executed tool call(s): read_file.`. If it returns no
 prose and calls no tools, the worker fails with
@@ -1011,6 +1022,15 @@ The child must be created from the normal session turn path so the parent
 approval service is passed into `make_spawn_subagents_tool`. Test-only callers
 that provide `AppState` but no approval service have no service to display a
 prompt. Headless callers should supply their explicit approval adapter.
+
+### A worker "succeeded" but the file it wrote is missing
+
+Check the worker's `tool_calls`: a write that ran is listed there and in
+`changed_paths`. A reply that shows `write_file` markup as text means the
+provider leaked its call format; the worker now gets one correction and fails
+with `unexecuted_tool_call` if it repeats it (see
+[Role-specific success rules](#role-specific-success-rules)). Also check that
+the parent mode exposes the write tool: in Plan mode no worker receives one.
 
 ### A repeated call returns old results
 
