@@ -1,7 +1,7 @@
 ---
 title: "SUBAGENT-11: Model-facing background spawn, collection and worker control"
 status: Proposed
-version: 0.1.0
+version: 0.2.0
 date: 2026-11-03
 scope: "the parent model's half of background orchestration and worker lifecycle: requesting a background pool, collecting it without blocking, receiving its completion without worker text changing role, answering a backgrounded worker's question, and stopping, retrying and listing workers through the same paths the panel uses — never a new cancellation mechanism, meter, event schema or process supervisor"
 area: A-11
@@ -26,6 +26,30 @@ tags:
 ---
 
 # SUBAGENT-11: Model-facing background spawn, collection and worker control
+
+## Implementation status (2026-11-03)
+
+**Wave 4 of SUBAGENT-10's plan delivers goals 2, 3, 4, 5 and 9** (branch
+`subagent-wave-4-collection-and-notices`, pending merge):
+
+- Goal 2: a background request is refused with `background_unavailable`, and
+  the pool stopped, when there is no journal or no supervised task owner.
+  Pinned by `tests/integration/test_subagent_tool_execution.py::test_backgrounding_without_a_supervisor_is_refused_and_stops_the_pool`.
+- Goals 3–4: `collect_subagent_results(pool_id, wait=False, timeout_s=None)` —
+  non-blocking snapshot, bounded wait (`subagents.collect_wait_max_s`),
+  idempotent results, journal read after a restart, other conversations
+  refused. `PoolContinuationRegistry.collect` (single-shot, blocking) is
+  removed. Pinned by `tests/unit/test_subagent_resume.py::TestCollectSubagentResults`.
+- Goal 5: `agenthicc.subagents.delivery.background_pool_notice` and
+  `deliver_background_pool_notices` replace wave 2's framed delivery; no worker
+  text enters the user role. Pinned by `TestBackgroundPoolNotice`,
+  `TestBackgroundPoolDelivery` and the TUI delivery tests in
+  `tests/unit/test_tui_session_coverage.py`.
+- Goal 9: background sessions deliver notices at their turn boundary
+  (`background/worker.py` `_deliver_background_pool_notices`), pinned by
+  `tests/unit/test_background_worker_coverage.py::test_background_session_delivers_finished_pool_notices_like_the_tui`.
+
+Goals 1, 6, 7, 8 and 10 are wave 5.
 
 ## 1. Executive summary
 
@@ -88,10 +112,14 @@ remediation form; this section states it as product gaps.
    `collect_subagent_results` (`communication.py:1004`). SUBAGENT-08 §3 already
    recorded "No model-facing tool stops a worker"; its goals did not require
    one, so this is new scope rather than a defect.
-6. **Recovery is TUI-only.** `recover_interrupted_subagent_pools` and background
-   delivery run only in `TUISession` (`tui_session.py:1535`, `:4311-4357`);
-   `src/agenthicc/runners/headless.py` calls neither, so a headless or detached
-   run that crashed mid-pool leaves its pool `running` until a later TUI resume.
+6. **Delivery is TUI-only.** *(Corrected in SUBAGENT-10 wave 4.)* Restart
+   recovery runs in the shared session builder (`tui_session.py:1535`, inside
+   `_build_session_context_impl`, which headless workflows and background
+   workers also use), so it is not TUI-only. Delivery of finished background
+   pools is: only `TUISession` called it (`tui_session.py:4311-4357`), and
+   background workers run turns through `_run_agent_turn` directly
+   (`background/worker.py:1097-1119`), so a background session resumed on a
+   journal with a finished background pool never told the model.
 7. **Background tasks are supervised only when an owner exists.**
    `spawn_subagents` uses `task_owner.start(...)` when
    `current_background_task_owner()` returns one and falls back to
@@ -254,10 +282,10 @@ durable record kind would need a migration and buys nothing.
    (SUBAGENT-04), these tools resolve only pools whose ancestry includes the
    calling worker's pool; a worker cannot list, stop or retry a sibling's or its
    parent's workers.
-9. **Headless parity.** The headless runner recovers interrupted pools at
-   session start and delivers background notices at turn boundaries through the
-   same journal methods `TUISession` uses, so a crash-then-headless-resume
-   reports `interrupted` instead of leaving the pool `running`.
+9. **Delivery parity.** Every runner that resumes a durable session already
+   recovers interrupted pools through the shared session builder; every runner
+   that runs agent turns on one also delivers background notices at its turn
+   boundary through the same function `TUISession` uses.
 10. **Defaults change nothing a user does today.** `background=False`, Ctrl+B,
     foreground clarification and the panel's keys behave as now. The one
     deliberate behaviour change is goal 5: a background completion no longer

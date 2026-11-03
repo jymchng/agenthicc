@@ -628,3 +628,19 @@ def test_subagent_max_budget_loads_validates_and_serializes(tmp_path: Path) -> N
         project.write_text(body, encoding="utf-8")
         with pytest.raises(ValueError, match=message):
             load_config(project_path=project, user_path=tmp_path / "missing.toml")
+
+
+def test_subagent_collect_wait_bound_loads_and_validates(tmp_path: Path) -> None:
+    """SUBAGENT-11: the cap on collect_subagent_results(wait=True)."""
+    from agenthicc.config import SubagentSettings
+
+    assert SubagentSettings().collect_wait_max_s == 60.0
+    project = tmp_path / "agenthicc.toml"
+    project.write_text("[subagents]\ncollect_wait_max_s = 15\n", encoding="utf-8")
+    config = load_config(project_path=project, user_path=tmp_path / "missing.toml")
+    assert config.subagents.collect_wait_max_s == 15.0
+    assert config.redacted_dict()["subagents"]["collect_wait_max_s"] == 15.0
+    for value in ("0", "-1", "3601", "true"):
+        project.write_text(f"[subagents]\ncollect_wait_max_s = {value}\n", encoding="utf-8")
+        with pytest.raises(ValueError, match="collect_wait_max_s"):
+            load_config(project_path=project, user_path=tmp_path / "missing.toml")

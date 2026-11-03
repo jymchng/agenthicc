@@ -283,6 +283,7 @@ max_tokens = 200000         # aggregate token budget per pool
 max_total_time_s = 600.0    # pool wall-clock budget
 on_budget_exceeded = "drain" # abort | drain
 stop_grace_s = 5.0          # cleanup grace for cancelled workers
+collect_wait_max_s = 60.0   # cap for collect_subagent_results(wait=true), at most 3600
 
 # The most a spawn_subagents(budget=...) declaration may ask for. Unset means
 # no per-call ceiling; the operator ceilings above still apply to every pool.

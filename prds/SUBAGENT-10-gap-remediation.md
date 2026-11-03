@@ -70,6 +70,7 @@ PRD's `status:` is promoted only when the PR is merged (research report §6.6).
 | 1 | `subagent-wave-1-redaction-and-fixes` | WP-1 (B-3 redaction and visible truncation in every scroll and kernel payload, including task text and errors), WP-2 (definition descriptions reach the spawn tool), WP-3 (D-1, documentation), WP-4 (armed operator ceilings pinned against the guide and SUBAGENT-06), WP-9 (refusals no longer report `max_concurrent_used`; guide corrected from "clamped" to "refused") | 11, 12, 17, 18, 23, 27 |
 | 2 | `subagent-wave-2-background-delivery` | WP-5 (B-1: budget-ended pools journaled as `stopped` with counts, text, values and reason; delivery and turn-resume report the real cause; session-close `cancelled` records now keep their counts too), WP-6 (B-2: delivery composed by `agenthicc.subagents.delivery`, worker text framed as untrusted, redacted, bounded at 16,000 characters, frame-closing tag neutralised), WP-8 (SUBAGENT-05 criteria 4 and 8, SUBAGENT-08 criteria 5 and 8, test-location amendments in SUBAGENT-04/05/07/08) | 13, 14, 15, 19, 20, 21, 22, 25 |
 | 3 | `subagent-wave-3-pool-budgets` | WP-7 (SUBAGENT-06 goals 1–8, 10: pool-scoped worker run ids, ledger-derived worker and pool usage, `budget:` argument with validation, `subagents.max_budget` downward clamp, cost metering and `max_cost_usd_exceeded`, usage-versus-limit report on the tool result, the completion events, the `results` digest and the panel); ledger fix for cost labelled `unavailable` on every non-streaming call; WP-4 criterion 24 | 1–10, 24 |
+| 4 | `subagent-wave-4-collection-and-notices` | SUBAGENT-11 goals 2, 3, 4, 5, 9: supervised-only background pools, non-blocking idempotent `collect_subagent_results` with a bounded wait and journal fallback, notice-then-pull delivery (supersedes WP-6's framing), shared delivery for TUI and background sessions; R13 corrected | SUBAGENT-11 criteria 2–9, 17 (as delivery parity), 18 |
 
 Wave 1 found a third leak site beyond §3 R15: `SubagentPoolCompleted.text`
 carried the complete aggregate, unbounded and unredacted
@@ -454,10 +455,16 @@ $ grep -c "recover_interrupted_subagent_pools" src/agenthicc/runners/headless.py
 0
 ```
 
-A headless or detached session that crashed mid-pool never marks the pool
-`interrupted`, so a later TUI resume of the same conversation is the first
-process to recover it. Headless cannot background (no Ctrl+B), so delivery is
-not reachable there today; recovery is. Recorded here, owned by SUBAGENT-11.
+*(Corrected in wave 4.)* The grep above is right but the inference drawn from
+it was not. `tui_session.py:1535` sits inside `_build_session_context_impl`, the
+shared session builder that the headless workflow runner
+(`runners/headless.py:727-731`) and background workers
+(`background/worker.py:1889-1925`) also call, so restart recovery already runs
+for every runner that resumes a session. Only *delivery* of finished background
+pools was TUI-specific: background workers run turns through `_run_agent_turn`
+directly and never delivered them. Wave 4 moves delivery into one shared
+function that both call. The stdin JSON-lines runner keeps no conversation
+journal, so it has neither.
 
 **R14 — SUBAGENT-08: delivered in behaviour, with one unproven criterion and a
 user-only surface.**

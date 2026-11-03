@@ -4309,9 +4309,9 @@ class TUISession:
     # ── agent turn plumbing ───────────────────────────────────────────────────
 
     def _deliver_completed_background_subagents(self) -> None:
-        """Append durable background results at the next logical-turn boundary."""
+        """Notify the parent of finished background pools at a turn boundary."""
         from agenthicc.memory.journaled import JournaledShortTermMemory
-        from agenthicc.subagents.delivery import background_pool_completion_message
+        from agenthicc.subagents.delivery import deliver_background_pool_notices
 
         session_conversation = self._ctx.session_conversation
         if session_conversation is None or self._tool_history_blocked():
@@ -4319,25 +4319,9 @@ class TUISession:
         memory = session_conversation.memory
         if not isinstance(memory, JournaledShortTermMemory):
             return
-        journal = session_conversation.journal
-        conversation = self._ctx.app_state.conversation
-        for record in journal.completed_background_subagent_pools():
-            pool_id_value = record.get("pool_id")
-            if not isinstance(pool_id_value, str) or not pool_id_value:
-                continue
-            pool_id = pool_id_value
-            message = background_pool_completion_message(record)
-            message_id = f"subagent-completion:{pool_id}"
-            memory.add_user_once(message, message_id=message_id)
-            conversation.append_event(
-                "user_message",
-                {"text": message, "source": "subagent_completion"},
-                event_id=message_id,
-            )
-            journal.subagent_pool_notification_delivered(
-                pool_id=pool_id,
-                message_id=message_id,
-            )
+        deliver_background_pool_notices(
+            session_conversation.journal, memory, self._ctx.app_state.conversation
+        )
 
     async def run_turn(self, text: str, resume: object | None = None) -> None:
         """Dispatch one user message: workflow or direct agent turn.

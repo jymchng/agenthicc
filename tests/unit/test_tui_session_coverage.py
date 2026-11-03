@@ -168,7 +168,11 @@ def test_completed_background_subagent_is_delivered_once(tmp_path: Path) -> None
 
         message_id = "subagent-completion:pool-1"
         assert len(memory._messages) == 1
-        assert "The durable worker result." in str(memory._messages[0]["content"])
+        content = str(memory._messages[0]["content"])
+        # Notice, then pull: worker text is collected as a tool result, never
+        # placed in the user role (SUBAGENT-11 goal 5).
+        assert "The durable worker result." not in content
+        assert 'collect_subagent_results(pool_id="pool-1")' in content
         event = ctx.app_state.conversation._events_by_id[message_id]
         assert event.payload["source"] == "subagent_completion"
         assert journal.delivered_subagent_pool_notifications() == frozenset({"pool-1"})
@@ -216,9 +220,9 @@ def test_budget_stopped_background_subagent_is_delivered_with_its_cause(
         assert "stopped by the pool budget: max_total_time_s_exceeded" in first_line
         assert "(1/1 succeeded, 0 failed)" in first_line
         assert "cancelled when the session closed" not in content
-        assert "Ignore previous instructions" not in first_line
-        assert '<subagent-output pool="pool-1">' in content
-        assert "Drained result." in content
+        assert "Ignore previous instructions" not in content
+        assert "Drained result." not in content
+        assert 'collect_subagent_results(pool_id="pool-1")' in content
     finally:
         journal.close()
 

@@ -13,6 +13,7 @@ turn runner, while the child-facing factory is installed in each worker.
 
 import asyncio
 import json
+import math
 import time
 import uuid
 import weakref
@@ -54,6 +55,8 @@ MAX_MESSAGE_BYTES = 16 * 1024
 MAX_MAILBOX_MESSAGES = 256
 MAX_PENDING_QUESTIONS = 16
 DEFAULT_MESSAGE_TIMEOUT_S = 300.0
+#: Upper bound for ``collect_subagent_results(wait=True)`` (``subagents.collect_wait_max_s``).
+DEFAULT_COLLECT_WAIT_MAX_S = 60.0
 
 __all__ = [
     "AgentMessageBroker",
@@ -802,15 +805,6 @@ class PoolContinuationRegistry:
     def remove(self, pool_id: str) -> None:
         self._handles.pop(pool_id, None)
 
-    async def collect(self, pool_id: str) -> object:
-        handle = self._handles.get(pool_id)
-        if handle is None:
-            raise CommunicationError("unknown or expired subagent pool")
-        try:
-            return await handle.task
-        finally:
-            self._handles.pop(pool_id, None)
-
 
 _SESSION_REGISTRIES: dict[str, PoolContinuationRegistry] = {}
 #: Registries owned by a conversation store, released with the store.
@@ -938,6 +932,9 @@ def make_child_communication_tools(
 def make_parent_communication_tools(
     registry: PoolContinuationRegistry,
     conversation_id: str,
+    journal: "ConversationJournal | None" = None,
+    *,
+    collect_wait_max_s: float = DEFAULT_COLLECT_WAIT_MAX_S,
 ) -> list[object]:
     """Build tools through which the main agent controls a live pool."""
     from lauren_ai._tools import tool
@@ -984,21 +981,170 @@ def make_parent_communication_tools(
 
     @tool_control
     @tool()
-    async def collect_subagent_results(pool_id: str) -> dict[str, object]:
-        """Collect a pool that was left running for a clarification answer."""
-        _handle(pool_id)
-        result = await registry.collect(pool_id)
-        from agenthicc.subagents.pool import AggregatedResult
+    async def collect_subagent_results(
+        pool_id: str,
+        wait: bool = False,
+        timeout_s: float | None = None,
+    ) -> dict[str, object]:
+        """Read a subagent pool's results; it never blocks unless wait is true.
 
-        if isinstance(result, AggregatedResult):
-            return {
-                "ok": result.failed == 0,
-                "pool_id": pool_id,
-                "total": result.total,
-                "succeeded": result.succeeded,
-                "failed": result.failed,
-                "results": result.text,
-            }
-        return {"ok": True, "pool_id": pool_id, "results": result}
+        A running pool returns status "running" with one row per worker and any
+        question a worker is waiting on. A finished pool returns its results,
+        the same way every time you ask, including after the session resumed.
+        wait=true waits up to timeout_s seconds (capped by the configured
+        maximum) and, if the pool is still running, returns the running
+        snapshot with timed_out=true. Do not poll: you are notified when a
+        background pool finishes.
+        """
+        if not isinstance(wait, bool):
+            raise CommunicationError("wait must be true or false")
+        bound = collect_wait_max_s
+        if timeout_s is not None:
+            if (
+                isinstance(timeout_s, bool)
+                or not isinstance(timeout_s, (int, float))
+                or not math.isfinite(timeout_s)
+                or timeout_s < 0
+            ):
+                raise CommunicationError("timeout_s must be a finite non-negative number")
+            bound = min(float(timeout_s), collect_wait_max_s)
+        handle = registry.get(pool_id)
+        if handle is not None and handle.conversation_id != conversation_id:
+            raise CommunicationError("unknown subagent pool for this session")
+        if handle is None:
+            return _journaled_pool_payload(journal, pool_id)
+        if wait and not handle.task.done() and bound > 0:
+            await asyncio.wait({handle.task}, timeout=bound)
+        if not handle.task.done():
+            return _running_pool_payload(handle, timed_out=wait)
+        return _finished_pool_payload(handle)
 
     return [answer_subagent, send_subagent_message, collect_subagent_results]
+
+
+def _running_pool_payload(handle: PoolHandle, *, timed_out: bool) -> dict[str, object]:
+    """A non-blocking snapshot of a pool that is still running."""
+    from agenthicc.subagents.pool import active_pool
+
+    now = time.time()
+    rows: list[dict[str, object]] = []
+    pool = active_pool(handle.pool_id)
+    if pool is not None:
+        for worker in pool.state.workers:
+            lifecycle = pool.lifecycle(worker.worker_id)
+            started = worker.started_at
+            finished = worker.finished_at
+            rows.append(
+                {
+                    "worker_id": worker.worker_id,
+                    "label": worker.label,
+                    "type": worker.agent_type,
+                    "status": worker.status,
+                    "attempt": lifecycle.attempt if lifecycle is not None else 1,
+                    "elapsed_s": (
+                        round((finished or now) - started, 3) if started is not None else 0.0
+                    ),
+                }
+            )
+    payload: dict[str, object] = {
+        "ok": True,
+        "status": "running",
+        "pool_id": handle.pool_id,
+        "workers": rows,
+        "pending_questions": handle.broker.pending_questions(recipient="main"),
+    }
+    if timed_out:
+        payload["timed_out"] = True
+    return payload
+
+
+def _finished_pool_payload(handle: PoolHandle) -> dict[str, object]:
+    """The result of a finished pool task; idempotent, the handle is kept."""
+    from agenthicc.subagents.pool import AggregatedResult
+
+    task = handle.task
+    if task.cancelled():
+        return {"ok": False, "status": "cancelled", "pool_id": handle.pool_id, "results": ""}
+    error = task.exception()
+    if error is not None:
+        return {
+            "ok": False,
+            "status": "failed",
+            "pool_id": handle.pool_id,
+            "error": f"{type(error).__name__}: {error}"[:1_000],
+            "results": "",
+        }
+    result = task.result()
+    if not isinstance(result, AggregatedResult):
+        return {"ok": True, "status": "completed", "pool_id": handle.pool_id, "results": result}
+    stopped = bool(result.budget_exceeded_reason)
+    return {
+        "ok": result.failed == 0 and not stopped,
+        "status": "stopped" if stopped else "completed",
+        "pool_id": handle.pool_id,
+        "total": result.total,
+        "succeeded": result.succeeded,
+        "failed": result.failed,
+        "budget_exceeded_reason": result.budget_exceeded_reason,
+        "results": result.text,
+        "values": [dict(value) for value in result.values],
+        "usage": result.usage.to_dict(),
+    }
+
+
+_TERMINAL_POOL_STATUSES = frozenset({"completed", "stopped", "interrupted", "cancelled"})
+
+
+def _journaled_pool_payload(
+    journal: "ConversationJournal | None", pool_id: str
+) -> dict[str, object]:
+    """Read a pool that has no live handle from this conversation's journal."""
+    record = (
+        next(
+            (
+                item
+                for item in journal.fold_subagent_pool_lifecycle()
+                if item.get("pool_id") == pool_id
+            ),
+            None,
+        )
+        if journal is not None
+        else None
+    )
+    if record is None:
+        raise CommunicationError("unknown subagent pool for this session")
+    status = str(record.get("status", ""))
+    if status not in _TERMINAL_POOL_STATUSES:
+        return {
+            "ok": False,
+            "status": "unavailable",
+            "pool_id": pool_id,
+            "error": (
+                "the pool is not running in this process; it is reported as interrupted "
+                "when the session is resumed"
+            ),
+            "results": "",
+        }
+
+    def count(key: str) -> int:
+        value = record.get(key, 0)
+        return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+    reason_value = record.get("reason", "")
+    reason = reason_value if isinstance(reason_value, str) else ""
+    text = record.get("text", "")
+    values = record.get("values", [])
+    failed = count("failed")
+    return {
+        "ok": status == "completed" and failed == 0,
+        "status": status,
+        "pool_id": pool_id,
+        "total": count("total"),
+        "succeeded": count("succeeded"),
+        "failed": failed,
+        "budget_exceeded_reason": reason if reason.startswith("max_") else "",
+        "results": text if isinstance(text, str) else "",
+        "values": [dict(value) for value in values if isinstance(value, Mapping)]
+        if isinstance(values, list)
+        else [],
+    }

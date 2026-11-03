@@ -413,3 +413,50 @@ async def test_detached_worker_retains_pid_and_writes_one_exit_event(
         worker_pid=completed.worker_pid,
     )
     assert sum(event.get("event_type") == "worker_exited" for event in store._read_events()) == 1
+
+
+def test_background_session_delivers_finished_pool_notices_like_the_tui(tmp_path) -> None:
+    """SUBAGENT-11 goal 9: a background session notifies its turn exactly once."""
+    from types import SimpleNamespace
+
+    from agenthicc.background.worker import _deliver_background_pool_notices
+    from agenthicc.memory.journal import ConversationJournal
+    from agenthicc.memory.journaled import JournaledShortTermMemory
+    from agenthicc.tui.conversation_store import ConversationStore
+
+    journal = ConversationJournal(tmp_path / "journal.jsonl")
+    memory = JournaledShortTermMemory(journal, max_tokens=32_000)
+    journal.subagent_pool_started(
+        pool_id="pool-1",
+        fingerprint="fp",
+        parent_run_id="turn-1",
+        tasks=[{"task_id": "task-0", "agent_type": "explorer"}],
+    )
+    journal.subagent_pool_backgrounded(
+        pool_id="pool-1", tool_result={"status": "backgrounded", "pool_id": "pool-1"}
+    )
+    journal.subagent_pool_finished(
+        pool_id="pool-1", total=1, succeeded=1, failed=0, text="worker text"
+    )
+    readiness = SimpleNamespace(provider_ready=False)
+    session = SimpleNamespace(
+        session_conversation=SimpleNamespace(
+            journal=journal, memory=memory, tool_history_recovery=readiness
+        ),
+        app_state=SimpleNamespace(conversation=ConversationStore()),
+    )
+    try:
+        # History that is not provider-ready is left alone, as in the TUI.
+        _deliver_background_pool_notices(session)  # type: ignore[arg-type]
+        assert memory._messages == []
+
+        readiness.provider_ready = True
+        _deliver_background_pool_notices(session)  # type: ignore[arg-type]
+        _deliver_background_pool_notices(session)  # type: ignore[arg-type]
+
+        assert len(memory._messages) == 1
+        content = str(memory._messages[0]["content"])
+        assert "completed (1/1 succeeded, 0 failed)" in content
+        assert "worker text" not in content
+    finally:
+        journal.close()

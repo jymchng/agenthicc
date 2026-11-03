@@ -740,9 +740,18 @@ def make_spawn_subagents_tool(
                     ),
                     **pool_metadata,
                 }
-                if conversation_journal is None:
+                if conversation_journal is None or task_owner is None:
+                    # A background pool outlives this call, so it must be
+                    # recoverable (a journal) and owned (a supervisor that holds
+                    # the task and awaits it at shutdown). Never fall back to an
+                    # unowned task that can be collected or leak.
                     pool_task.cancel()
                     await asyncio.gather(pool_task, return_exceptions=True)
+                    missing = (
+                        "a durable conversation journal"
+                        if conversation_journal is None
+                        else "a supervised background task owner"
+                    )
                     return {
                         "ok": False,
                         "status": "background_unavailable",
@@ -750,7 +759,7 @@ def make_spawn_subagents_tool(
                         "total": len(subagent_tasks),
                         "succeeded": 0,
                         "failed": 0,
-                        "error": "Background subagents require a durable conversation journal.",
+                        "error": f"Background subagents require {missing}.",
                         "results": "",
                         **pool_metadata,
                     }
@@ -901,7 +910,12 @@ def make_spawn_subagents_tool(
     # The turn runner registers these alongside spawn_subagents.  Attaching
     # them keeps this factory backwards compatible for lightweight callers that
     # only need the original callable.
-    communication_tools = make_parent_communication_tools(continuation_registry, conversation_id)
+    communication_tools = make_parent_communication_tools(
+        continuation_registry,
+        conversation_id,
+        conversation_journal,
+        collect_wait_max_s=_settings.collect_wait_max_s,
+    )
     # The shared agent-turn runner already injects this factory into every
     # workflow. Attach the durable worktree worker alongside the existing
     # parent/subagent communication tools so custom workflows receive it too,

@@ -3450,6 +3450,7 @@ class SubagentSettings:
     on_budget_exceeded: Literal["abort", "drain"] = "drain"
     stop_grace_s: float = 5.0
     max_budget: SubagentBudgetCeiling = SubagentBudgetCeiling()
+    collect_wait_max_s: float = 60.0
     depth_limits: Mapping[int, SubagentDepthLimit]
     depth_tiers: Mapping[int, Mapping[str, SubagentDepthTier]]
 
@@ -4596,32 +4597,49 @@ Usage against limits for tool results and completion events; counts only.
 
 The one-line `results` suffix stating usage, limits and any crossing.
 
-### Background completion delivery — `agenthicc.subagents.delivery`
+### Background completion notices — `agenthicc.subagents.delivery`
 
 ```python
-BACKGROUND_RESULT_TEXT_LIMIT: int = 16_000
-
-def background_pool_completion_message(record: Mapping[str, object]) -> str: ...
+def background_pool_notice(record: Mapping[str, object]) -> str: ...
+def deliver_background_pool_notices(
+    journal: ConversationJournal,
+    memory: JournaledShortTermMemory,
+    conversation: ConversationStore | None = None,
+) -> tuple[str, ...]: ...
 ```
 
-Composes the message that delivers one terminal background pool, from a folded
-journal lifecycle record (`pool_id`, `status`, `total`, `succeeded`, `failed`,
-`reason`, `text`). The first line is runtime-authored — outcome and real counts,
-for example `Background subagent pool <id> was stopped by the pool budget:
-max_tokens_exceeded (1/2 succeeded, 1 failed).` Worker text follows only inside
-a `<subagent-output pool="<id>">` frame introduced as untrusted subagent output;
-it is redacted with the session-export redactor, limited to
-`BACKGROUND_RESULT_TEXT_LIMIT` characters with a visible truncation note, and an
-embedded closing tag is neutralised. Malformed counts read as zero.
+Notice, then pull (SUBAGENT-11 goal 5). A finished background pool is announced
+at the next logical-turn boundary by a runtime-authored notice — pool id,
+status, real counts, a known stop reason — that contains **no worker text** and
+ends by asking the model to call `collect_subagent_results(pool_id=…)`. The
+results therefore reach the parent only as a tool result. Both `TUISession` and
+background sessions call `deliver_background_pool_notices` (exactly once per
+pool, stable message ids, journaled delivery). It returns the delivered pool
+ids.
 
-### BACKGROUND_RESULT_TEXT_LIMIT
+### background_pool_notice
 
-Characters of worker text a background completion message may carry (16,000).
+The notice for one folded journal lifecycle record; never reads its `text`.
 
-### background_pool_completion_message
+### deliver_background_pool_notices
 
-See above. `TUISession` uses it at the next logical-turn boundary; the journal
-keeps the complete aggregate.
+Deliver each undelivered terminal background pool exactly once.
+
+### collect_subagent_results
+
+```python
+async def collect_subagent_results(
+    pool_id: str, wait: bool = False, timeout_s: float | None = None
+) -> dict[str, object]: ...
+```
+
+Parent tool from `make_parent_communication_tools(registry, conversation_id,
+journal=None, *, collect_wait_max_s=60.0)`. Never blocks unless `wait=True`;
+a wait is capped by `subagents.collect_wait_max_s` and returns the running
+snapshot with `timed_out: True` instead of raising. A running pool returns
+worker rows and pending questions; a finished pool returns its results
+idempotently; a pool with no live handle is read from the conversation journal
+(including `interrupted` pools). Other conversations' pools are refused.
 
 ### SubagentExecutionPolicy
 
