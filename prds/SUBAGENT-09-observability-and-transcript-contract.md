@@ -1,6 +1,6 @@
 ---
 title: "SUBAGENT-09: Observability and the transcript/event contract"
-status: Proposed
+status: Implemented (2026-11-04; pending merge of PRs #7–#13)
 version: 0.2.0
 date: 2026-10-29
 scope: "one documented, versioned event and transcript schema shared by kernel events, durable transcripts and the TUI rails, with uniform redaction, visible truncation, per-pool replay and the derived counters that diagnose stuck or over-budget pools — never the panel's information architecture, a usage meter, or a change to what a result is"
@@ -23,6 +23,11 @@ tags:
 # SUBAGENT-09: Observability and the transcript/event contract
 
 ## Implementation status (2026-11-03)
+
+**Closed (2026-11-04).** Every §6 criterion now maps to a passing test, listed
+row by row in the [closure audit](SUBAGENT-series-closure-audit.md#subagent-09).
+The verdicts below are the 0.2.0 audit's and the wave notes record what closed
+each gap.
 
 **Wave 6 of SUBAGENT-10's plan delivers goals 1–11** (branch
 `subagent-wave-6-event-contract`, pending merge); goal 12 was already met.

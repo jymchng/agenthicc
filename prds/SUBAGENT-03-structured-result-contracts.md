@@ -19,6 +19,8 @@ tags:
 
 # SUBAGENT-03: Structured result contracts and schema-validated findings
 
+**Re-verified (2026-11-04)** criterion by criterion in the [closure audit](SUBAGENT-series-closure-audit.md#subagent-03).
+
 ## Implementation status (2026-10-30)
 
 Implemented: bounded JSON Schema definition parsing, contract-specific

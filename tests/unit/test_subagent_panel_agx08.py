@@ -824,3 +824,77 @@ async def test_a_failed_transcript_write_is_counted_and_reported_once(
     assert len(degraded) == 1
     assert degraded[0]["pool_id"] == pool.pool_id
     assert pool.state.transcript_write_failures >= 2
+
+
+async def test_a_restored_session_lists_its_pools_from_the_journal(tmp_path: Path) -> None:
+    """SUBAGENT-07 criterion 10: the journal, not only transcripts, lists pools."""
+    from agenthicc.memory.journal import ConversationJournal
+
+    journal = ConversationJournal(tmp_path / "journal.jsonl")
+    try:
+        # pool-1 has transcripts (written by _write) and a completed journal record.
+        journal.subagent_pool_started(
+            pool_id="pool-1",
+            fingerprint="a",
+            parent_run_id="turn-1",
+            tasks=[{"task_id": "task-0", "agent_type": "explorer"}],
+        )
+        journal.subagent_pool_finished(
+            pool_id="pool-1", total=1, succeeded=1, failed=0, text="done"
+        )
+        await _write(
+            tmp_path / "subagents",
+            {"task-0": [TranscriptEvent("finished", NOW, text="All good.", ok=True)]},
+        )
+        # crashed-pool left no transcripts: one worker finished, one never did.
+        journal.subagent_pool_started(
+            pool_id="crashed-pool",
+            fingerprint="b",
+            parent_run_id="turn-2",
+            tasks=[
+                {"task_id": "task-0", "agent_type": "explorer"},
+                {"task_id": "task-1", "agent_type": "tester"},
+            ],
+        )
+        journal.subagent_worker_result(
+            pool_id="crashed-pool",
+            fingerprint="b",
+            task_id="task-0",
+            agent_type="explorer",
+            label="explorer #1",
+            ok=True,
+            text="Found the store.",
+            error="",
+            duration_ms=1.0,
+            tool_calls=[],
+            changed_paths=[],
+        )
+        assert journal.recover_interrupted_subagent_pools() == ["crashed-pool"]
+
+        earlier = load_earlier(tmp_path / "subagents", journal=journal)
+    finally:
+        journal.close()
+
+    by_id = {pool.record.pool_id: pool for pool in earlier}
+    assert set(by_id) == {"pool-1", "crashed-pool"}
+    assert by_id["pool-1"].status == "completed"
+    assert [w.status for w in by_id["pool-1"].workers] == ["done"]
+    crashed = by_id["crashed-pool"]
+    assert crashed.status == "interrupted"
+    assert [(w.worker_id, w.status) for w in crashed.workers] == [
+        ("task-0", "done"),
+        ("task-1", "stopped"),
+    ]
+    assert crashed.workers[0].activity == "Found the store."
+    overlay = SubagentsOverlay(
+        AppState.create(),
+        earlier=earlier,
+        open_transcript=lambda target: None,
+        stop=lambda pool, worker: False,
+        dismiss=lambda pool, worker: False,
+        close=lambda: None,
+        clock=lambda: NOW,
+    )
+    text = _render(overlay)
+    assert "· interrupted" in text and "Found the store." in text and "Tester 1" in text
+    assert crashed.workers[1].label == "tester #1"

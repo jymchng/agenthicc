@@ -1,6 +1,6 @@
 ---
 title: "SUBAGENT-11: Model-facing background spawn, collection and worker control"
-status: Proposed
+status: Implemented (2026-11-04; pending merge of PRs #7–#13)
 version: 0.2.0
 date: 2026-11-03
 scope: "the parent model's half of background orchestration and worker lifecycle: requesting a background pool, collecting it without blocking, receiving its completion without worker text changing role, answering a backgrounded worker's question, and stopping, retrying and listing workers through the same paths the panel uses — never a new cancellation mechanism, meter, event schema or process supervisor"
@@ -28,6 +28,9 @@ tags:
 # SUBAGENT-11: Model-facing background spawn, collection and worker control
 
 ## Implementation status (2026-11-03)
+
+**Closed (2026-11-04).** Every §6 criterion now maps to a passing test, listed
+row by row in the [closure audit](SUBAGENT-series-closure-audit.md#subagent-11).
 
 **Wave 4 of SUBAGENT-10's plan delivers goals 2, 3, 4, 5 and 9** (branch
 `subagent-wave-4-collection-and-notices`, pending merge):
@@ -60,10 +63,11 @@ tags:
 - Goal 6: `subagents.on_clarification` (`queue` | `fail`). Under `queue` the
   parent gets one id-only notice per question
   (`deliver_background_question_notices`); under `fail` the broker refuses
-  parent questions with `unanswerable_in_background`. The default is `queue`
-  everywhere: only `TUISession` binds a background task owner, so headless,
-  background and detached sessions refuse background pools under goal 2 and
-  never reach this policy, and the PRD-227 inbox route is not needed yet.
+  parent questions with `unanswerable_in_background`. Unset, it follows the
+  session (wave 7): `queue` for an interactive session, `fail` otherwise,
+  carried by `bind_background_task_owner(owner, interactive=...)`. Only
+  `TUISession` binds an owner today, so the PRD-227 inbox route is not needed
+  yet.
 - Goal 7: `list_subagent_pools` (journal fold plus live handles, with
   `notice_pending`), `stop_subagents` (`source="parent_model"`, abort for one
   worker, drain for a pool) and `retry_subagent`, which relays
@@ -75,6 +79,30 @@ tags:
   level); a nested worker's tools resolve only handles whose lineage contains
   its own, and never fall back to the journal.
 - Goal 10: defaults keep foreground behaviour unchanged.
+
+**Wave 7 closes the remaining criteria** (branch
+`subagent-wave-7-control-remainder`, pending merge):
+
+- Criterion 3: both paths' journal records, scroll kinds and aggregate text are
+  pinned (`tests/unit/test_subagent_pool_runtime_coverage.py::test_a_backgrounded_pool_produces_the_same_aggregate_events_and_records`).
+- Criterion 11: `SubagentSettings.on_clarification` is unset by default and
+  `on_clarification_for(interactive=...)` resolves it (`tests/unit/test_config.py`,
+  plus the non-interactive case in `tests/integration/test_subagent_tool_execution.py`).
+- Criterion 13: a pool drain through `stop_subagents` uses `request_pool_stop`
+  and reports `not_started` (`tests/unit/test_subagent_lifecycle.py`).
+- Criterion 14: a retry is refused when the pool's budget is used up or when it
+  would exceed `subagents.max_active_pools` — a retry reactivated its pool
+  without the admission check before, a defect this wave fixes
+  (`SubagentPool._admission_refusal`, `_exhausted_budget`).
+- Criterion 17: a real nested worker retries its own pool and is refused for
+  its sibling's and its parent's (`tests/integration/test_subagent_tool_execution.py::test_a_nested_worker_retries_its_own_pool_and_is_refused_elsewhere`).
+- Criterion 18: headless workflow runs deliver notices at their turn boundary
+  through `deliver_session_background_notices`, shared with background workers
+  (`tests/unit/test_headless_coverage.py::test_a_headless_session_announces_a_pool_interrupted_by_a_crash`).
+  Wave 4 had delivered only the background-worker half.
+- Criterion 19 is pinned by
+  `tests/integration/test_subagent_tool_execution.py::test_session_shutdown_cancels_a_backgrounded_pool`
+  (placement differs from the named file).
 
 ## 1. Executive summary
 

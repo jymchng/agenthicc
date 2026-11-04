@@ -2999,7 +2999,12 @@ class TUISession:
     async def _show_subagents(self) -> None:
         from agenthicc.tui.workspace.overlays.subagents import SubagentsOverlay, load_earlier
 
-        earlier = await asyncio.to_thread(load_earlier, self._subagents_root())
+        conversation = self._ctx.session_conversation
+        earlier = await asyncio.to_thread(
+            load_earlier,
+            self._subagents_root(),
+            journal=conversation.journal if conversation is not None else None,
+        )
         overlays = self._workspace.overlays
         if overlays.active and not isinstance(overlays.widget, SubagentsOverlay):
             return  # an approval or another screen took the terminal meanwhile
@@ -4669,7 +4674,7 @@ class TUISession:
                 self._deliver_completed_background_subagents()
             from agenthicc.runners.agent_turn_context import bind_background_task_owner
 
-            with bind_background_task_owner(self._tasks):
+            with bind_background_task_owner(self._tasks, interactive=True):
                 await self.run_turn(text, resume=resume)
         except asyncio.CancelledError:
             turn_cancelled = True

@@ -161,18 +161,19 @@ Statuses below are as of the evaluation at `0a63bfb` (2026-11-03); each document
 carries an implementation-status section with per-goal evidence.
 
 - [SUBAGENT research — how coding-agent harnesses manage subagents (historical)](SUBAGENT-research-harness-comparison.md)
-- [SUBAGENT-01 — Declarative subagent type definitions and discovery (implemented: phase 1)](SUBAGENT-01-declarative-subagent-types.md)
+- [SUBAGENT-01 — Declarative subagent type definitions and discovery (implemented, pending merge of #7–#13)](SUBAGENT-01-declarative-subagent-types.md)
 - [SUBAGENT-02 — Per-type model, reasoning-effort and context routing (implemented)](SUBAGENT-02-per-type-model-and-context-routing.md)
 - [SUBAGENT-03 — Structured result contracts and schema-validated findings (implemented)](SUBAGENT-03-structured-result-contracts.md)
-- [SUBAGENT-04 — Nesting depth and fan-out governance (implemented: phase 1)](SUBAGENT-04-nesting-depth-and-fan-out.md)
+- [SUBAGENT-04 — Nesting depth and fan-out governance (implemented, pending merge of #7–#13)](SUBAGENT-04-nesting-depth-and-fan-out.md)
 - [SUBAGENT-05 — Per-type permission narrowing (implemented)](SUBAGENT-05-per-type-permission-narrowing.md)
-- [SUBAGENT-06 — Pool budgets and limits (proposed)](SUBAGENT-06-pool-budgets-and-limits.md)
-- [SUBAGENT-07 — Background and non-blocking orchestration (implemented: phase 1)](SUBAGENT-07-background-orchestration.md)
-- [SUBAGENT-08 — Worker lifecycle controls (implemented: phase 1)](SUBAGENT-08-worker-lifecycle-controls.md)
-- [SUBAGENT-09 — Observability and the transcript/event contract (proposed)](SUBAGENT-09-observability-and-transcript-contract.md)
-- [SUBAGENT-10 — Gap remediation for the SUBAGENT series (proposed)](SUBAGENT-10-gap-remediation.md)
-- [SUBAGENT-11 — Model-facing background spawn, collection and worker control (proposed)](SUBAGENT-11-model-facing-pool-control.md)
+- [SUBAGENT-06 — Pool budgets and limits (implemented, pending merge of #7–#13)](SUBAGENT-06-pool-budgets-and-limits.md)
+- [SUBAGENT-07 — Background and non-blocking orchestration (implemented, pending merge of #7–#13)](SUBAGENT-07-background-orchestration.md)
+- [SUBAGENT-08 — Worker lifecycle controls (implemented, pending merge of #7–#13)](SUBAGENT-08-worker-lifecycle-controls.md)
+- [SUBAGENT-09 — Observability and the transcript/event contract (implemented, pending merge of #7–#13)](SUBAGENT-09-observability-and-transcript-contract.md)
+- [SUBAGENT-10 — Gap remediation for the SUBAGENT series (implemented, pending merge of #7–#13)](SUBAGENT-10-gap-remediation.md)
+- [SUBAGENT-11 — Model-facing background spawn, collection and worker control (implemented, pending merge of #7–#13)](SUBAGENT-11-model-facing-pool-control.md)
 - [SUBAGENT series — coverage and scope audit (historical)](SUBAGENT-series-audit.md)
+- [SUBAGENT series — closure audit, criterion by criterion (2026-11-04)](SUBAGENT-series-closure-audit.md)
 
 Recommended implementation order, from SUBAGENT-10 §7: redact worker text
 before every sink (WP-1, a security fix), thread definition descriptions

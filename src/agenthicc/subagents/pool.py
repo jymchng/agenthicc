@@ -2525,6 +2525,12 @@ class SubagentPool:
             or not any(item.task_id == worker_id for item in self._tasks)
         ):
             return "the worker never started, so there is no attempt to repeat"
+        exhausted = self._exhausted_budget()
+        if exhausted:
+            return f"the pool's budget is used up: {exhausted}; a new attempt would exceed it"
+        admission = self._admission_refusal()
+        if admission:
+            return f"a retry would exceed the active-pool limit: {admission}"
         return ""
 
     async def retry_worker(self, worker_id: str) -> SubagentResult | None:
@@ -2658,16 +2664,38 @@ class SubagentPool:
             _ACTIVE_POOLS.pop(self.pool_id, None)
             self._sync_retry_registry()
 
+    def _admission_refusal(self) -> str:
+        """Why the process-wide active-pool limit refuses this pool, or ``""``."""
+        active = {pool_id: pool for pool_id, pool in _ACTIVE_POOLS.items() if pool is not self}
+        active_limit = min(
+            [self._max_active_pools, *(pool._max_active_pools for pool in active.values())]
+        )
+        if len(active) < active_limit:
+            return ""
+        active_ids = ", ".join(sorted(active)) or "none"
+        return (
+            f"Active subagent pool limit {active_limit} reached; running pools: {active_ids}. "
+            "Raise subagents.max_active_pools to admit another pool."
+        )
+
+    def _exhausted_budget(self) -> str:
+        """The aggregate pool budget a new attempt would start past, or ``""``."""
+        for name, used, limit in (
+            ("max_tokens", self._token_count, self._max_tokens),
+            ("max_tool_calls", self._tool_call_count, self._max_tool_calls),
+            ("max_iterations", self._iteration_count, self._max_iterations),
+        ):
+            if used >= limit:
+                return f"{name} ({used}/{limit})"
+        if self._max_cost_usd is not None and self._cost_spent >= self._max_cost_usd:
+            return f"max_cost_usd ({self._cost_spent:g}/{self._max_cost_usd:g})"
+        return ""
+
     async def run(self) -> AggregatedResult:
         """Admit the pool process-wide, then execute its workers."""
-        active_limits = [pool._max_active_pools for pool in _ACTIVE_POOLS.values()]
-        active_limit = min([self._max_active_pools, *active_limits])
-        if len(_ACTIVE_POOLS) >= active_limit:
-            active_ids = ", ".join(sorted(_ACTIVE_POOLS)) or "none"
-            raise SubagentAdmissionError(
-                f"Active subagent pool limit {active_limit} reached; running pools: {active_ids}. "
-                "Raise subagents.max_active_pools to admit another pool."
-            )
+        refusal = self._admission_refusal()
+        if refusal:
+            raise SubagentAdmissionError(refusal)
         _ACTIVE_POOLS[self.pool_id] = self
         try:
             if self._journal is not None:

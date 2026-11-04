@@ -35,21 +35,33 @@ _provider_diagnostic_context: ContextVar[dict[str, str | int] | None] = ContextV
 _background_task_owner: ContextVar[SupervisedTasks | None] = ContextVar(
     "agenthicc_background_task_owner", default=None
 )
+_interactive_session: ContextVar[bool] = ContextVar("agenthicc_interactive_session", default=False)
 
 
 @contextmanager
-def bind_background_task_owner(owner: SupervisedTasks) -> Iterator[None]:
-    """Bind the owning session supervisor to background work started by a turn."""
+def bind_background_task_owner(owner: SupervisedTasks, *, interactive: bool) -> Iterator[None]:
+    """Bind the owning session supervisor to background work started by a turn.
+
+    *interactive* says whether a person can answer at the next turn (the TUI);
+    session defaults such as ``subagents.on_clarification`` follow it.
+    """
     token = _background_task_owner.set(owner)
+    interactive_token = _interactive_session.set(interactive)
     try:
         yield
     finally:
+        _interactive_session.reset(interactive_token)
         _background_task_owner.reset(token)
 
 
 def current_background_task_owner() -> SupervisedTasks | None:
     """Return the session supervisor bound to the current turn, if any."""
     return _background_task_owner.get()
+
+
+def current_session_interactive() -> bool:
+    """Whether the current turn belongs to an interactive (TUI) session."""
+    return _interactive_session.get()
 
 
 @contextmanager

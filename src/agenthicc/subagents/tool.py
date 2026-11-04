@@ -833,7 +833,10 @@ def make_spawn_subagents_tool(
                 handle = continuation_registry.get(pool.pool_id)
                 if handle is not None:
                     handle.backgrounded = True
-                if _settings.on_clarification == "fail" and communication is not None:
+                from agenthicc.runners.agent_turn_context import current_session_interactive
+
+                policy = _settings.on_clarification_for(interactive=current_session_interactive())
+                if policy == "fail" and communication is not None:
                     # Nobody will answer a backgrounded worker's question:
                     # end the waits now instead of after the message timeout.
                     await communication.refuse_parent_questions("unanswerable_in_background")

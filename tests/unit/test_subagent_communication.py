@@ -529,3 +529,55 @@ async def test_listing_pools_marks_a_background_notice_still_to_deliver(tmp_path
         assert rows["pool-bg"]["notice_pending"] is False
     finally:
         journal.close()
+
+
+async def test_a_consumed_message_is_acknowledged_and_an_unconsumed_one_is_counted() -> None:
+    """SUBAGENT-08 criterion 6, through a real worker turn boundary."""
+    from lauren_ai._agents._runner import AgentRunnerBase
+    from lauren_ai._transport import Completion, TokenUsage
+
+    from agenthicc.subagents.pool import SubagentPool, SubagentTask
+    from agenthicc.subagents.types import DEFAULT_REGISTRY
+
+    holder: dict[str, SubagentPool] = {}
+    calls: list[str] = []
+
+    class _Transport:
+        async def complete(self, messages: list[object], **kwargs: object) -> object:
+            broker = holder["pool"].communication
+            assert broker is not None
+            calls.append(str(messages[-1]))
+            # Each message arrives after this turn's mailbox poll.
+            await broker.send(
+                sender="main",
+                recipient="task-0",
+                kind="instruction",
+                payload=f"note {len(calls)}",
+            )
+            # An empty first answer earns one finalisation turn, which polls again.
+            content = "" if len(calls) == 1 else "done"
+            return Completion(
+                id=f"c{len(calls)}",
+                model="m",
+                content=content,
+                tool_calls=[],
+                stop_reason="end_turn",
+                usage=TokenUsage(input_tokens=1, output_tokens=1),
+            )
+
+    pool = SubagentPool(
+        [SubagentTask("task-0", "researcher", "look")],
+        parent_runner=AgentRunnerBase(transport=_Transport()),
+        parent_model="mock-model",
+        all_tools=[],
+        registry=DEFAULT_REGISTRY,
+        conversation_id="conv",
+        parent_run_id="turn-1",
+    )
+    holder["pool"] = pool
+    result = await pool.run()
+
+    assert result.succeeded == 1
+    assert len(calls) == 2 and "note 1" in calls[1]  # delivered at the second turn
+    worker_result = pool._results["task-0"]
+    assert worker_result.undelivered_messages == 1  # "note 2" was never consumed

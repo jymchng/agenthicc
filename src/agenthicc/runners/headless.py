@@ -251,6 +251,11 @@ async def execute_workflow(
                 ),
                 failure_category="tool_history_recovery_required",
             )
+        # The turn boundary: announce background pools that finished since the
+        # session last ran (recovery already marked unfinished ones interrupted).
+        from agenthicc.subagents.delivery import deliver_session_background_notices
+
+        deliver_session_background_notices(session)
         checkpoint_store = WorkflowCheckpointStore(session.session_id)
         if resuming:
             from agenthicc.runners.workflow_recovery import WorkflowRecoveryCoordinator

@@ -733,8 +733,12 @@ A completed, budget-stopped, cancelled, or crash-interrupted background pool is
 announced at the next logical-turn boundary with a short notice. It is not
 inserted into an already-running provider loop. Stable message IDs make the
 notice idempotent across resume and compaction, so it is not delivered twice.
-The TUI and background sessions deliver it through the same function
-(`agenthicc.subagents.delivery.deliver_background_pool_notices`).
+The TUI, background sessions and headless workflow runs deliver it through the
+same function (`agenthicc.subagents.delivery.deliver_background_pool_notices`;
+runners without a `TUISession` call it through
+`deliver_session_background_notices(session)`). A pool left `running` by a
+crash is marked `interrupted` by the shared session builder before the first
+turn, then announced at that turn's boundary.
 
 The notice is written entirely by the runtime and contains **no worker
 output**: worker text is untrusted, and the notice is added in the user role.
@@ -768,9 +772,11 @@ notice. The request is refused, before any worker starts, when
 or supervised task owner.
 
 A backgrounded worker that calls `ask_parent` follows
-`subagents.on_clarification`:
+`subagents.on_clarification`. Unset, it follows the session: `queue` in an
+interactive (TUI) session, where a person can answer at the next turn, and
+`fail` in a headless, background or detached one.
 
-- `queue` (default): the question stays open. At the next turn boundary the
+- `queue`: the question stays open. At the next turn boundary the
   parent receives a runtime-authored notice naming only the pool, worker and
   question ids — once per question — and reads the question itself through
   `collect_subagent_results` before answering with `answer_subagent`.
@@ -787,12 +793,16 @@ A backgrounded worker that calls `ask_parent` follows
 - `stop_subagents(pool_id, worker_id=None, mode=None, reason="")` stops one
   worker (default mode `abort`) or the whole pool (default `drain`). The stop
   is recorded with source `parent_model`; repeating it returns the same
-  request id. A finished pool answers `the pool is not running`.
+  request id. A pool drain also returns `not_started`, the workers that were
+  still pending and will never start. A finished pool answers `the pool is not
+  running`.
 - `retry_subagent(pool_id, worker_id)` re-runs a failed or cancelled worker of
   a finished pool as a new attempt with the original type, model, policy,
   pool scope and depth. It refuses a pool still running, a pool stopped by its
-  budget or wall-clock limit, a worker that succeeded or never started, and an
-  unknown worker, each with its reason.
+  budget or wall-clock limit, a pool whose token, tool-call, iteration or cost
+  budget is already used up, a retry that would exceed
+  `subagents.max_active_pools` (a retry reactivates its pool), a worker that
+  succeeded or never started, and an unknown worker, each with its reason.
 
 Retryability does not depend on which pool the TUI panel shows: the
 conversation registry keeps every live pool and the 32 most recent finished
@@ -869,7 +879,11 @@ lists rows; the store's tick clears it afterwards.
 
 Ctrl+O (or `/subagents`) moves focus from the prompt to the panel: ↑/↓ select
 a worker — the session's earlier pools are listed below the current one —,
-Enter opens its transcript and Esc returns to the prompt. In a transcript, ←
+Enter opens its transcript and Esc returns to the prompt. Earlier pools come
+from the conversation journal, with each pool's status (`completed`,
+`stopped`, `cancelled`, `interrupted`) in its header, so a restored session
+lists a pool a crash interrupted even when it left no transcripts; the
+transcripts add each worker's activity. In a transcript, ←
 and → move to its siblings, `f` follows new events, and Esc (or ↑ at the top)
 returns to the conversation. The keys are the key map's `subagents` and
 `transcript` contexts, so `~/.agenthicc/keybindings.toml` can rebind them. In
