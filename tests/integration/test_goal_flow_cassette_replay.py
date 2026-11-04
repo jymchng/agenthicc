@@ -50,6 +50,22 @@ TRANSITION_TOOLS = frozenset(
 #: Recorded calls that were already invalid when recorded (see fixture README).
 KNOWN_RECORDED_MODEL_ERRORS = ("entry 405: patch_file:",)
 
+#: Tools TOOLR-08 deleted after this session was recorded. Calls to them now
+#: get lauren-ai's unknown-tool result; the recording continues regardless.
+REMOVED_SINCE_RECORDING = ("file_exists", "grep_file", "read_lines", "shell")
+
+
+def _current_violations(violations: list[str]) -> list[str]:
+    """*violations* other than a recorded offer of a since-removed tool."""
+    return [
+        violation
+        for violation in violations
+        if not any(
+            f": {name} was offered when recorded but is not offered now" in violation
+            for name in REMOVED_SINCE_RECORDING
+        )
+    ]
+
 
 def _campaign() -> SessionCassette:
     return SessionCassette.from_path(CASSETTE, APPROVALS).slice(
@@ -149,11 +165,10 @@ async def test_goal_flow_campaign_replays_hermetically(
 
     # Every recorded call still routes to an offered tool with the same
     # arguments; the only violation is the model error present at recording.
-    assert len(result.contract_violations) == len(KNOWN_RECORDED_MODEL_ERRORS), (
-        result.contract_violations
-    )
+    violations = _current_violations(result.contract_violations)
+    assert len(violations) == len(KNOWN_RECORDED_MODEL_ERRORS), violations
     for violation, known in zip(
-        sorted(result.contract_violations), sorted(KNOWN_RECORDED_MODEL_ERRORS), strict=True
+        sorted(violations), sorted(KNOWN_RECORDED_MODEL_ERRORS), strict=True
     ):
         assert violation.startswith(known), violation
 

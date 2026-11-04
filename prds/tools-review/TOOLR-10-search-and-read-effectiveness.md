@@ -1,6 +1,6 @@
 ---
 title: "TOOLR-10: Search and read tools the model can use precisely"
-status: Proposed
+status: Implemented with amendments (2026-11-04; tools wave 7, pending merge)
 version: 1.0.0
 date: 2026-11-04
 scope: "the options and output of read_file, read_lines, grep_files and search_files: line numbers, binary detection, case and glob filters, context, ordering and a fast backend"
@@ -9,6 +9,59 @@ tags: [tools, effectiveness, filesystem, search]
 ---
 
 # TOOLR-10: Search and read tools the model can use precisely
+
+## Implementation status (2026-11-04)
+
+Delivered in tools wave 7 (branch `tools-wave-7-surface-and-search`).
+
+- **Numbered reads (goal 1).**
+  - `read_file` returns `<n>\t<line>`, with the numbers right-aligned to one
+    width, by default; `line_numbers=false` returns the raw text.
+  - `offset` and `limit` select a range. `read_lines` is deleted.
+  - Results carry `total_lines`, `lines_returned`, `offset` and `version`.
+  - A long read stops at a whole line, with `truncated` and `next_offset`.
+- **Binary detection (goal 2).** Without `encoding`, a file with a NUL byte
+  in its first 8 KB, or one that is not UTF-8, returns `binary: true`,
+  `size_bytes` and `mime_type` and no content. An explicit `encoding` decodes
+  with replacement and bypasses the cache, so a lossy decode is never later
+  served as text.
+- **A capable `grep_files` (goal 3).**
+  - Options: `glob`, `exclude`, smart-case `case_sensitive`, `fixed_string`,
+    `context_lines` (0–5), `max_results` and `output`
+    (`matches` / `files` / `count`).
+  - Every result carries `total_matches`, `files_matched`, `files_searched`
+    and `backend`.
+  - `truncated` names both causes: `max_results`, and the discovery cap.
+  - An invalid regex is `invalid_argument`.
+- **A fast backend, identical semantics (goal 4).** In
+  `agenthicc.tools.fs.search`:
+  - `search_with_ripgrep` runs `rg --json --crlf` over the files
+    `discover()` returned, in batches of 2,000; `search_with_python` runs
+    `re` in a thread.
+  - Both split lines on `\n`, drop a trailing `\r`, replace undecodable
+    bytes and skip files containing a NUL.
+  - `rg`'s byte offsets are converted to the same character offsets.
+  - A pattern `rg` cannot compile falls back to Python.
+- **Recency (goal 5).** `search_files(sort="mtime")` lists the most recently
+  modified files first.
+
+Amendments:
+
+- **`rg` searches the discovered file set.** `rg` is not used to walk the
+  tree. The file set, with its ignore rules, caps and TUIR-01 authorization,
+  is identical by construction, and only the regex work moves to `rg`.
+  Symlinks are decided once, by `discover()`.
+- **The 20,000-file cap stays.** On TUIR-00's 33,000-file project the search
+  covers the first 20,000 non-ignored files in 0.53 s, and says so in its
+  `note`.
+- **Where the tests live.** The conformance suite is in
+  `tests/unit/test_read_and_grep.py`: eight queries over files with CRLF,
+  multi-byte, Latin-1 and binary content, and overlapping context, all
+  required equal across the backends. The `rg` timing gate is
+  `tests/performance/test_grep_backend.py`, with a 1 s budget.
+- **Bugs the suite found.** It found two differences, both fixed: `rg`
+  needs `--crlf` for `$` to match before `\r\n`, and its offsets for
+  non-UTF-8 lines index the raw bytes.
 
 ## 1. Problem
 

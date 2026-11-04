@@ -764,7 +764,6 @@ def _exploration_with_arguments(
 def _exploration_target(name: str, args: Mapping[str, object]) -> str:
     """Build a safe, bounded target label for an exploratory tool call."""
     search_names = {
-        "grep_file",
         "grep_files",
         "search_agenthicc_docs",
         "search_agenthicc_source",
@@ -905,7 +904,6 @@ class _ToolOutputCaptureHook(LifecycleHook):
         if self._command_outcomes is not None and ctx.tool_name in {
             "run_bash",
             "run_command",
-            "shell",
             "run_python",
             "run_python_expr",
             "run_tests",
@@ -1548,7 +1546,7 @@ class AgentTurnRunner:
             if allowed_tool_names is not None:
                 system += (
                     "\n\n### Phase-local tool policy\n"
-                    "Only the tools listed above are available in this phase. Do not call shell, "
+                    "Only the tools listed above are available in this phase. Do not call "
                     "run_bash, run_command, or any other omitted tool. When calling write_file, "
                     "provide both required arguments: path and complete content."
                 )
@@ -1579,7 +1577,7 @@ class AgentTurnRunner:
                     PromptBlock(
                         "PHASE TOOL POLICY",
                         "Only the tools listed above are available in this phase. Do not call "
-                        "shell, run_bash, run_command, or any other omitted tool. When calling "
+                        "run_bash, run_command, or any other omitted tool. When calling "
                         "write_file, provide both required arguments: path and complete content.",
                     )
                 )
@@ -1814,7 +1812,7 @@ class AgentTurnRunner:
                     if allowed_tool_names is not None:
                         meta.system += (
                             "\n\n### Phase-local tool policy\n"
-                            "Only the tools listed above are available in this phase. Do not call shell, "
+                            "Only the tools listed above are available in this phase. Do not call "
                             "run_bash, run_command, or any other omitted tool. When calling write_file, "
                             "provide both required arguments: path and complete content."
                         )

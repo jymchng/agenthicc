@@ -38,11 +38,9 @@ _LOOKS: dict[str, tuple[str, str, str]] = {
 
 _TOOL_LABELS: dict[str, str] = {
     "read_file": "Read",
-    "read_lines": "Read",
     "batch_read": "Read",
     "list_directory": "List",
     "search_files": "Search",
-    "grep_file": "Search",
     "grep_files": "Search",
     "run_command": "Run",
     "run_bash": "Run",

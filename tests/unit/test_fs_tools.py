@@ -12,11 +12,9 @@ from agenthicc.tools.fs import (
     CopyFileTool,
     ListDirectoryTool,
     MakeDirectoryTool,
-    FileExistsTool,
     SearchFilesTool,
     GrepFilesTool,
     GetFileInfoTool,
-    ReadLinesTool,
     PatchFileTool,
 )
 
@@ -30,15 +28,17 @@ def ctx(tmp_path):
 class TestReadFileTool:
     async def test_reads_content(self, tmp_path):
         (tmp_path / "a.txt").write_text("hello")
-        r = await ReadFileTool().execute({"path": "a.txt"}, ctx(tmp_path))
+        r = await ReadFileTool().execute({"path": "a.txt", "line_numbers": False}, ctx(tmp_path))
         assert r["content"] == "hello"
 
     async def test_not_found(self, tmp_path):
-        r = await ReadFileTool().execute({"path": "nope.txt"}, ctx(tmp_path))
-        assert r["ok"] is False and "not_found" in r["error"]
+        r = await ReadFileTool().execute({"path": "nope.txt", "line_numbers": False}, ctx(tmp_path))
+        assert r["ok"] is False and r["error_code"] == "not_found"
 
     async def test_traversal_denied(self, tmp_path):
-        r = await ReadFileTool().execute({"path": "../../etc/passwd"}, ctx(tmp_path))
+        r = await ReadFileTool().execute(
+            {"path": "../../etc/passwd", "line_numbers": False}, ctx(tmp_path)
+        )
         assert r["ok"] is False
 
 
@@ -123,17 +123,6 @@ class TestMakeDirectoryTool:
         assert (tmp_path / "newdir/sub").is_dir()
 
 
-class TestFileExistsTool:
-    async def test_exists(self, tmp_path):
-        (tmp_path / "yes.txt").write_text("")
-        r = await FileExistsTool().execute({"path": "yes.txt"}, ctx(tmp_path))
-        assert r["exists"] is True and r["type"] == "file"
-
-    async def test_not_exists(self, tmp_path):
-        r = await FileExistsTool().execute({"path": "no.txt"}, ctx(tmp_path))
-        assert r["exists"] is False
-
-
 class TestSearchFilesTool:
     async def test_finds_matching(self, tmp_path):
         (tmp_path / "main.py").write_text("")
@@ -147,41 +136,27 @@ class TestGrepFilesTool:
     async def test_finds_pattern(self, tmp_path):
         (tmp_path / "code.py").write_text("def hello():\n    pass\n")
         r = await GrepFilesTool().execute({"pattern": "def hello"}, ctx(tmp_path))
-        assert r["count"] >= 1
+        assert r["total_matches"] >= 1
         assert any("hello" in m["line"] for m in r["matches"])
 
     async def test_no_match(self, tmp_path):
         (tmp_path / "f.py").write_text("nothing here\n")
         r = await GrepFilesTool().execute({"pattern": "ZZZNOMATCH"}, ctx(tmp_path))
-        assert r["count"] == 0
+        assert r["total_matches"] == 0 and r["matches"] == []
 
 
 class TestGetFileInfoTool:
     async def test_returns_info(self, tmp_path):
         (tmp_path / "info.txt").write_text("x" * 100)
         r = await GetFileInfoTool().execute({"path": "info.txt"}, ctx(tmp_path))
+        assert r["ok"] is True and r["exists"] is True
         assert r["size_bytes"] == 100
         assert r["type"] == "file"
         assert "modified_at" in r
 
-    async def test_not_found(self, tmp_path):
+    async def test_a_missing_path_is_ok_and_does_not_exist(self, tmp_path):
         r = await GetFileInfoTool().execute({"path": "nope.txt"}, ctx(tmp_path))
-        assert r["ok"] is False
-
-
-class TestReadLinesTool:
-    async def test_reads_all_lines(self, tmp_path):
-        (tmp_path / "lines.txt").write_text("a\nb\nc\n")
-        r = await ReadLinesTool().execute({"path": "lines.txt"}, ctx(tmp_path))
-        assert r["total_lines"] == 3
-        assert r["lines"] == ["a", "b", "c"]
-
-    async def test_reads_range(self, tmp_path):
-        (tmp_path / "lines.txt").write_text("1\n2\n3\n4\n5\n")
-        r = await ReadLinesTool().execute(
-            {"path": "lines.txt", "start": 2, "end": 4}, ctx(tmp_path)
-        )
-        assert r["lines"] == ["2", "3", "4"]
+        assert r == {"ok": True, "exists": False, "path": "nope.txt", "type": None}
 
 
 class TestPatchFileTool:
@@ -202,8 +177,8 @@ class TestPatchFileTool:
 
 
 class TestFsToolKit:
-    def test_returns_14_tools(self, tmp_path):
+    def test_returns_12_tools(self, tmp_path):
         tools = FsToolKit().tools(str(tmp_path))
-        assert len(tools) == 14
+        assert len(tools) == 12
         names = {t.name for t in tools}
         assert "read_file" in names and "patch_file" in names

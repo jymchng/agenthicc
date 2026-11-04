@@ -1,4 +1,4 @@
-"""Unit tests for the new filesystem agent tools (grep_file, apply_diff,
+"""Unit tests for the new filesystem agent tools (grep_files on a file, apply_diff,
 checksum_file, truncate_file, touch_file, batch_*).
 
 NOTE: no ``from __future__ import annotations`` — @tool() inspects real annotations.
@@ -33,16 +33,16 @@ def _reset_router():
 
 
 # ---------------------------------------------------------------------------
-# grep_file
+# grep_files on one file (TOOLR-08: grep_file folded into grep_files)
 # ---------------------------------------------------------------------------
 
 
-async def test_grep_file_finds_matches(tmp_path):
+async def test_grep_files_on_a_file_finds_matches(tmp_path):
     _configure(tmp_path)
     try:
         f = tmp_path / "code.py"
         f.write_text("def foo():\n    pass\n")
-        result = await _at.grep_file(str(f), "def foo")
+        result = await _at.grep_files("def foo", path=str(f))
         assert result["ok"] is True
         assert result["total_matches"] == 1
         assert result["matches"][0]["line_number"] == 1
@@ -50,40 +50,38 @@ async def test_grep_file_finds_matches(tmp_path):
         _reset_router()
 
 
-async def test_grep_file_case_insensitive(tmp_path):
+async def test_grep_files_on_a_file_case_insensitive(tmp_path):
     _configure(tmp_path)
     try:
         f = tmp_path / "upper.py"
         f.write_text("DEF FOO():\n    pass\n")
-        result = await _at.grep_file(str(f), "def foo", case_sensitive=False)
+        result = await _at.grep_files("def foo", path=str(f), case_sensitive=False)
         assert result["ok"] is True
         assert result["total_matches"] == 1
     finally:
         _reset_router()
 
 
-async def test_grep_file_context_lines(tmp_path):
+async def test_grep_files_on_a_file_context_lines(tmp_path):
     _configure(tmp_path)
     try:
         f = tmp_path / "ctx.txt"
         f.write_text("line1\nline2\nTARGET\nline4\nline5\n")
-        result = await _at.grep_file(str(f), "TARGET", context_lines=1)
+        result = await _at.grep_files("TARGET", path=str(f), context_lines=1)
         assert result["ok"] is True
         assert result["total_matches"] == 1
         match = result["matches"][0]
-        assert len(match["context_before"]) == 1
-        assert match["context_before"][0] == "line2"
+        assert match["context_before"] == ["line2"] and match["context_after"] == ["line4"]
     finally:
         _reset_router()
 
 
-async def test_grep_file_not_found(tmp_path):
+async def test_grep_files_on_a_missing_file(tmp_path):
     _configure(tmp_path)
     try:
         missing = str(tmp_path / "no_such_file.py")
-        result = await _at.grep_file(missing, "pattern")
-        assert result["ok"] is False
-        assert "not found" in result["error"].lower()
+        result = await _at.grep_files("pattern", path=missing)
+        assert result["ok"] is False and result["error_code"] == "not_found"
     finally:
         _reset_router()
 

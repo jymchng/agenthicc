@@ -5430,29 +5430,34 @@ def delete_file(path: str) -> dict[str, object]
 
 Delete a file from the workspace.
 
-### file_exists
-
-```python
-def file_exists(path: str) -> dict[str, object]
-```
-
-Check whether a file or directory exists.
-
 ### get_file_info
 
 ```python
 def get_file_info(path: str) -> dict[str, object]
 ```
 
-Return metadata for a file or directory (size, dates, permissions).
+Return whether a path exists and, if it does, its type, size, dates and
+permissions. A missing path is `ok: true, exists: false`; a path outside the
+workspace is `permission_denied`.
 
 ### grep_files
 
 ```python
-def grep_files(pattern: str, path: str = '.', max_results: int = 50) -> dict[str, object]
+def grep_files(pattern: str, path: str = '.', glob: list[str] | None = None, exclude: list[str] | None = None, case_sensitive: bool | None = None, fixed_string: bool = False, context_lines: int = 0, max_results: int = 50, output: str = 'matches') -> dict[str, object]
 ```
 
-Search file contents for a regex pattern and return matching lines.
+Search a directory, or one file, for a regex (TOOLR-10). `glob`/`exclude`
+filter by path; `case_sensitive=None` is smart case; `fixed_string` matches
+literally; `context_lines` (0–5) adds `context_before`/`context_after`;
+`output` is `matches` (`file`, `line_number`, `line`, `match_start`,
+`match_end`), `files` or `count`. Every result carries `total_matches`,
+`files_matched`, `files_searched` and `backend`; `truncated` is set when
+`max_results` cut the matches. The file set comes from `discover()` (ignore
+rules, caps, authorization). `agenthicc.tools.fs.search` runs it with `rg
+--json` when `rg` is on `PATH` (`search_with_ripgrep`) and with `re` otherwise
+(`search_with_python`); both split lines on `\n`, replace undecodable bytes,
+skip files with a NUL byte, and return the same result. A pattern `rg` cannot
+compile falls back to Python; an invalid one is `invalid_argument`.
 
 ### list_directory
 
@@ -5496,27 +5501,27 @@ Edits are written atomically (`agenthicc.tools.fs.edits.atomic_write`).
 ### read_file
 
 ```python
-def read_file(path: str, encoding: str = 'utf-8') -> dict[str, object]
+def read_file(path: str, offset: int = 1, limit: int = 0, line_numbers: bool = True, encoding: str = '') -> dict[str, object]
 ```
 
-Read the full contents of a file. The result carries `version`
-(`<size>:<mtime_ns>`), which edit tools accept as `expected_version`.
-
-### read_lines
-
-```python
-def read_lines(path: str, start: int = 1, end: int | None = None) -> dict[str, object]
-```
-
-Read a specific range of lines from a file (1-indexed).
+Read a file as numbered lines, `<n>\t<line>` with the numbers right-aligned
+to one width (TOOLR-10); `line_numbers=False` returns the raw text. `offset`
+(1-based) and `limit` (0 = the rest) select a range. The result carries
+`total_lines`, `lines_returned`, `offset` and `version` (`<size>:<mtime_ns>`,
+which edit tools accept as `expected_version`). A read cut at the output cap
+stops at a whole line and sets `truncated` and `next_offset`. Without
+`encoding`, a file with a NUL byte in its first 8 KB or that is not UTF-8
+returns `binary: true`, `size_bytes` and `mime_type` and no content; an
+explicit `encoding` decodes it with replacement and is never cached.
 
 ### search_files
 
 ```python
-def search_files(pattern: str, path: str = '.', recursive: bool = True) -> dict[str, object]
+def search_files(pattern: str, path: str = '.', recursive: bool = True, sort: str = 'path') -> dict[str, object]
 ```
 
-Find files matching a glob pattern.
+Find files matching a glob pattern. `sort="mtime"` lists the most recently
+modified first.
 
 ### write_file
 
@@ -5657,21 +5662,16 @@ def run_tests(path: str = 'tests/', framework: str = 'pytest', args: list[str] |
 
 Run the test suite and return pass/fail counts.
 
-### shell
-
-```python
-def shell(command: str, timeout: float = 30.0, background: bool = False, label: str = '', cwd: str = '', env: dict[str, str] | None = None, lifecycle: str = 'oneshot', readiness: dict[str, str | int | bool | dict[str, str | int | bool]] | None = None) -> dict[str, object]
-```
-
-Execute a shell command and return stdout/stderr.
-
 ### wait_terminal
 
 ```python
 def wait_terminal(terminal_id: str, timeout: float = 0.0) -> dict[str, object]
 ```
 
-Wait for an owned background terminal handle.
+Wait for an owned background terminal handle. `wait_terminal`,
+`inspect_terminal` and `wait_terminal_ready` carry the `read` capability: they
+observe a terminal the agent started, so Plan and Safe mode allow them without
+approval. `stop_terminal` carries `execute`.
 
 ### inspect_terminal
 
@@ -5882,6 +5882,22 @@ EXEC_GROUP = ToolGroup
 ```python
 OUTLOOK_GROUP = ToolGroup
 ```
+
+`ToolGroup.unavailable` is an optional `Callable[[], str | None]` returning why
+the group cannot work here (TOOLR-08). `ToolRegistry.register_group` leaves an
+unavailable group out of the catalog and records it in
+`ToolRegistry.unavailable`; `describe()` ends with a "### Unavailable here"
+section listing `<label>: unavailable (<reason>)`. `OUTLOOK_GROUP` uses
+`outlook_unavailable()`: available with `MSGRAPH_TOKEN`, or on Windows with
+`pywin32`; otherwise `"set MSGRAPH_TOKEN"`.
+
+### outlook_unavailable
+
+```python
+def outlook_unavailable() -> str | None
+```
+
+Why the Outlook tools cannot work here, or `None`.
 
 ### INTROSPECT_GROUP
 
@@ -6350,9 +6366,9 @@ class ScopeManager:
 ```python
 class FsToolKit:
     def tools(self, workspace_root: str = ".") -> list[Tool]: ...
-    # Returns 14 tools: read_file, write_file, append_file, delete_file,
-    # move_file, copy_file, list_directory, make_directory, file_exists,
-    # search_files, grep_files, get_file_info, read_lines, patch_file
+    # Returns 12 tools: read_file, write_file, append_file, delete_file,
+    # move_file, copy_file, list_directory, make_directory, search_files,
+    # grep_files, get_file_info, patch_file
 ```
 
 All tools use `WorkspaceView` to enforce path-prefix sandbox. Traversal

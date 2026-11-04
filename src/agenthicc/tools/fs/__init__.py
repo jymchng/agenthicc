@@ -10,9 +10,13 @@ import stat
 from collections.abc import Callable, Mapping
 from contextlib import AbstractAsyncContextManager
 from pathlib import Path
+from typing import TYPE_CHECKING, Literal, cast
 from agenthicc.tools.base import Tool, arg_bool, arg_int, arg_str
 from agenthicc.tools.sandbox import WorkspaceView
 from agenthicc.tools.workspace_access import WorkspaceAccessPolicy, current_workspace_access
+
+if TYPE_CHECKING:
+    from agenthicc.tools.fs.discovery import DiscoveredEntry
 
 __all__ = ["FsToolKit"]
 
@@ -22,7 +26,7 @@ _MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 # context window.  These are upstream guards; the pre-send budget guard (Layer C)
 # is the hard backstop.
 _MAX_LIST_ENTRIES = 1000  # max entries from list_directory/search_files
-_MAX_TOOL_OUTPUT_CHARS = 100_000  # ~25k tokens cap for read_file/read_lines
+_MAX_TOOL_OUTPUT_CHARS = 100_000  # ~25k tokens cap for read_file
 
 
 #: Why a discovery stopped early, as told to the model.
@@ -40,20 +44,6 @@ def _grep_slot() -> "AbstractAsyncContextManager[object]":
     from agenthicc.tools.fs.discovery import _limiter
 
     return _limiter()
-
-
-def _truncate_output(text: str, limit: int = _MAX_TOOL_OUTPUT_CHARS) -> tuple[str, bool]:
-    """Cap *text* to ≤ *limit* chars (head+tail with a marker).  Returns (text, truncated)."""
-    if len(text) <= limit:
-        return text, False
-    marker = (
-        f"\n…[truncated {len(text) - limit} of {len(text)} chars — "
-        "read a line range with read_lines for the rest]…\n"
-    )
-    keep = max(0, limit - len(marker))
-    head = (keep * 2) // 3
-    tail = keep - head
-    return text[:head] + marker + (text[-tail:] if tail else ""), True
 
 
 _walk_limit = 2
@@ -215,14 +205,29 @@ def _safe_stat(path: Path) -> dict[str, object]:
     }
 
 
+#: Bytes inspected for a NUL when deciding whether a file is binary.
+_BINARY_SNIFF_BYTES = 8 * 1024
+
+
+def _number_lines(lines: list[str], first: int) -> str:
+    """*lines* as ``<n>\t<line>``, numbers right-aligned to one width."""
+    width = len(str(first + len(lines) - 1)) if lines else 1
+    return "\n".join(f"{first + index:>{width}}\t{line}" for index, line in enumerate(lines))
+
+
 class ReadFileTool(Tool):
+    """Read a file as numbered lines, a range of it, or report it is binary (TOOLR-10)."""
+
     name = "read_file"
-    description = "Read the full content of a file within the workspace."
+    description = "Read a file within the workspace as numbered lines."
     parameters = {
         "type": "object",
         "properties": {
             "path": {"type": "string"},
-            "encoding": {"type": "string", "default": "utf-8"},
+            "offset": {"type": "integer", "default": 1},
+            "limit": {"type": "integer", "default": 0},
+            "line_numbers": {"type": "boolean", "default": True},
+            "encoding": {"type": "string", "default": ""},
         },
         "required": ["path"],
     }
@@ -230,12 +235,22 @@ class ReadFileTool(Tool):
     async def execute(
         self, args: Mapping[str, object], context: Mapping[str, object]
     ) -> dict[str, object]:
+        from agenthicc.tools.errors import ToolErrorCode, tool_error
+
         path = arg_str(args, "path")
-        encoding = arg_str(args, "encoding", "utf-8")
+        explicit_encoding = arg_str(args, "encoding", "")
+        encoding = explicit_encoding or "utf-8"
+        offset = arg_int(args, "offset", 1)
+        limit = arg_int(args, "limit", 0)
+        numbered = arg_bool(args, "line_numbers", True)
+        if offset < 1 or limit < 0:
+            return tool_error(
+                ToolErrorCode.INVALID_ARGUMENT, "offset must be >= 1 and limit >= 0", path=path
+            )
         try:
             resolved = await _resolve_path(context, path, operation="read", tool_name=self.name)
         except PermissionError as e:
-            return {"ok": False, "error": f"permission_denied: {e}"}
+            return tool_error(ToolErrorCode.PERMISSION_DENIED, str(e), path=path)
 
         def _read() -> dict[str, object]:
             # TOOLR-09: one thread does the whole read. The cache stamp is the
@@ -247,19 +262,44 @@ class ReadFileTool(Tool):
             try:
                 before = resolved.stat()
             except FileNotFoundError:
-                return {"ok": False, "error_code": "not_found", "error": f"not_found: {path}"}
+                return tool_error(ToolErrorCode.NOT_FOUND, f"not found: {path}", path=path)
             if before.st_size > _MAX_FILE_SIZE:
-                return {
-                    "ok": False,
-                    "error_code": "too_large",
-                    "error": f"file_too_large: {before.st_size} bytes",
-                }
-            cache = get_file_cache()
+                return tool_error(
+                    ToolErrorCode.TOO_LARGE,
+                    f"file is {before.st_size} bytes; read_file reads up to {_MAX_FILE_SIZE}",
+                    path=path,
+                )
+            version = file_version(before)
+            # Only automatic UTF-8 reads use the cache: a lossy explicit decode
+            # must never be served later as proof the file is text.
+            cache = None if explicit_encoding else get_file_cache()
             content = cache.get_fresh(str(resolved), encoding=encoding) if cache else None
             cached = content is not None
             if content is None:
-                content = resolved.read_text(encoding=encoding, errors="replace")
+                data = resolved.read_bytes()
                 after = resolved.stat()
+                if explicit_encoding:
+                    content = data.decode(encoding, errors="replace")
+                else:
+                    try:
+                        if b"\0" in data[:_BINARY_SNIFF_BYTES]:
+                            raise UnicodeDecodeError("utf-8", data, 0, 1, "NUL byte")
+                        content = data.decode("utf-8")
+                    except UnicodeDecodeError:
+                        import mimetypes
+
+                        FILE_VERSIONS.record(resolved, version)
+                        mime, _ = mimetypes.guess_type(resolved.name)
+                        return {
+                            "ok": True,
+                            "binary": True,
+                            "path": path,
+                            "size_bytes": before.st_size,
+                            "mime_type": mime or "application/octet-stream",
+                            "version": version,
+                            "note": "binary file; pass encoding to read it as text",
+                        }
+                content = content.replace("\r\n", "\n").replace("\r", "\n")
                 if cache is not None and (after.st_mtime_ns, after.st_size) == (
                     before.st_mtime_ns,
                     before.st_size,
@@ -271,29 +311,56 @@ class ReadFileTool(Tool):
                         size=before.st_size,
                         encoding=encoding,
                     )
-            version = file_version(before)
             FILE_VERSIONS.record(resolved, version)
-            # PRD-133 Layer A: cap returned content to bound context tokens.
-            out, truncated = _truncate_output(content)
+
+            lines = content.split("\n")
+            if lines and lines[-1] == "":
+                lines.pop()
+            total = len(lines)
+            selected = lines[offset - 1 : offset - 1 + limit] if limit else lines[offset - 1 :]
+            # PRD-133 Layer A: cap returned content, by whole lines.
+            kept: list[str] = []
+            used = 0
+            line_cut = False
+            for line in selected:
+                cost = len(line) + 8
+                if kept and used + cost > _MAX_TOOL_OUTPUT_CHARS:
+                    break
+                if len(line) > _MAX_TOOL_OUTPUT_CHARS:
+                    line, line_cut = line[:_MAX_TOOL_OUTPUT_CHARS], True
+                kept.append(line)
+                used += cost
+            whole = offset == 1 and len(kept) == total and not line_cut
+            if numbered:
+                rendered = _number_lines(kept, offset)
+            else:
+                rendered = content if whole else "\n".join(kept)
             result: dict[str, object] = {
                 "ok": True,
-                "content": out,
+                "content": rendered,
+                "total_lines": total,
+                "offset": offset,
+                "lines_returned": len(kept),
                 "size_bytes": before.st_size,
                 "encoding": encoding,
                 "version": version,
             }
             if cached:
                 result["cached"] = True
-            if truncated:
+            if offset - 1 + len(kept) < min(total, offset - 1 + limit if limit else total):
                 result["truncated"] = True
+                result["next_offset"] = offset + len(kept)
+            elif line_cut:
+                result["truncated"] = True
+                result["note"] = f"a line longer than {_MAX_TOOL_OUTPUT_CHARS} characters was cut"
             return result
 
         try:
             return await asyncio.to_thread(_read)
         except (OSError, LookupError) as e:
-            from agenthicc.tools.errors import classify_exception, tool_error
+            from agenthicc.tools.errors import classify_exception
 
-            return tool_error(classify_exception(e), str(e))
+            return tool_error(classify_exception(e), str(e), path=path)
 
 
 class WriteFileTool(Tool):
@@ -653,32 +720,6 @@ class MakeDirectoryTool(Tool):
             return {"ok": False, "error": str(e)}
 
 
-class FileExistsTool(Tool):
-    name = "file_exists"
-    description = "Check whether a file or directory exists in the workspace."
-    parameters = {
-        "type": "object",
-        "properties": {"path": {"type": "string"}},
-        "required": ["path"],
-    }
-
-    async def execute(
-        self, args: Mapping[str, object], context: Mapping[str, object]
-    ) -> dict[str, object]:
-        path = arg_str(args, "path")
-        try:
-            resolved = await _resolve_path(context, path, operation="metadata", tool_name=self.name)
-        except PermissionError as exc:
-            from agenthicc.tools.errors import ToolErrorCode, tool_error
-
-            return tool_error(ToolErrorCode.PERMISSION_DENIED, str(exc), path=path)
-        exists = resolved.exists()
-        file_type = None
-        if exists:
-            file_type = "dir" if resolved.is_dir() else "file"
-        return {"ok": True, "exists": exists, "path": path, "type": file_type}
-
-
 class SearchFilesTool(Tool):
     name = "search_files"
     description = "Find files matching a glob pattern within the workspace."
@@ -688,6 +729,7 @@ class SearchFilesTool(Tool):
             "pattern": {"type": "string"},
             "path": {"type": "string", "default": "."},
             "recursive": {"type": "boolean", "default": True},
+            "sort": {"type": "string", "enum": ["path", "mtime"], "default": "path"},
         },
         "required": ["pattern"],
     }
@@ -723,7 +765,26 @@ class SearchFilesTool(Tool):
             operation="search",
             tool_name=self.name,
         )
-        matches = [item.relative for item in found.entries]
+        sort = arg_str(args, "sort", "path")
+        if sort not in {"path", "mtime"}:
+            from agenthicc.tools.errors import ToolErrorCode, tool_error
+
+            return tool_error(ToolErrorCode.INVALID_ARGUMENT, "sort must be path or mtime")
+        entries = list(found.entries)
+        if sort == "mtime":
+
+            def _mtime(entry: DiscoveredEntry) -> float:
+                try:
+                    return entry.canonical.stat().st_mtime
+                except OSError:
+                    return 0.0
+
+            stamps = await asyncio.to_thread(lambda: [_mtime(entry) for entry in entries])
+            ranked = sorted(
+                zip(stamps, entries, strict=True), key=lambda pair: (-pair[0], pair[1].relative)
+            )
+            entries = [entry for _, entry in ranked]
+        matches = [item.relative for item in entries]
         result: dict[str, object] = {
             "ok": True,
             "matches": matches,
@@ -736,16 +797,33 @@ class SearchFilesTool(Tool):
         return result
 
 
+def _arg_globs(args: Mapping[str, object], key: str) -> tuple[str, ...]:
+    """A glob argument given as one string or a list of strings."""
+    value = args.get(key)
+    if value is None or value == "":
+        return ()
+    if isinstance(value, str):
+        return (value,)
+    if isinstance(value, list) and all(isinstance(item, str) for item in value):
+        return tuple(value)
+    raise ValueError(f"tool argument {key!r} must be a string or a list of strings")
+
+
 class GrepFilesTool(Tool):
     name = "grep_files"
-    description = "Search for a regex pattern in file contents."
+    description = "Search file contents for a pattern; a file path searches that file."
     parameters = {
         "type": "object",
         "properties": {
             "pattern": {"type": "string"},
             "path": {"type": "string", "default": "."},
-            "recursive": {"type": "boolean", "default": True},
-            "max_results": {"type": "integer", "default": 100},
+            "glob": {"type": "array", "items": {"type": "string"}},
+            "exclude": {"type": "array", "items": {"type": "string"}},
+            "case_sensitive": {"type": "boolean"},
+            "fixed_string": {"type": "boolean", "default": False},
+            "context_lines": {"type": "integer", "default": 0},
+            "max_results": {"type": "integer", "default": 50},
+            "output": {"type": "string", "enum": ["matches", "files", "count"]},
         },
         "required": ["pattern"],
     }
@@ -753,78 +831,111 @@ class GrepFilesTool(Tool):
     async def execute(
         self, args: Mapping[str, object], context: Mapping[str, object]
     ) -> dict[str, object]:
+        from agenthicc.tools.errors import ToolErrorCode, tool_error
+        from agenthicc.tools.fs.search import (
+            GrepQuery,
+            SearchFile,
+            compile_query,
+            filter_files,
+            ripgrep_path,
+            search_with_python,
+            search_with_ripgrep,
+        )
+
         path = arg_str(args, "path", ".")
-        pattern = arg_str(args, "pattern")
-        max_results = arg_int(args, "max_results", 100)
-        recursive = arg_bool(args, "recursive", True)
+        output = arg_str(args, "output", "matches")
+        if output not in {"matches", "files", "count"}:
+            return tool_error(
+                ToolErrorCode.INVALID_ARGUMENT, "output must be matches, files or count"
+            )
+        raw_case = args.get("case_sensitive")
+        if raw_case is not None and not isinstance(raw_case, bool):
+            raise ValueError("tool argument 'case_sensitive' must be a boolean")
+        query = GrepQuery.create(
+            arg_str(args, "pattern"),
+            case_sensitive=raw_case,
+            fixed_string=arg_bool(args, "fixed_string", False),
+            context_lines=arg_int(args, "context_lines", 0),
+            max_results=arg_int(args, "max_results", 50),
+            output=cast("Literal['matches', 'files', 'count']", output),
+        )
+        include, exclude = _arg_globs(args, "glob"), _arg_globs(args, "exclude")
+        try:
+            compile_query(query)
+        except re.error as exc:
+            return tool_error(ToolErrorCode.INVALID_ARGUMENT, f"invalid regular expression: {exc}")
         try:
             resolved = await _resolve_path(context, path, operation="search", tool_name=self.name)
         except PermissionError as e:
-            return {"ok": False, "error": f"permission_denied: {e}"}
+            return tool_error(ToolErrorCode.PERMISSION_DENIED, str(e), path=path)
 
-        try:
-            compiled = re.compile(pattern)
-        except re.error as exc:
-            return {
-                "ok": False,
-                "error_code": "invalid_argument",
-                "error": f"invalid regular expression: {exc}",
-            }
-        from agenthicc.tools.fs.discovery import discover
+        discovery: dict[str, object] | None = None
+        truncation = ""
+        if resolved.is_file():
+            root = resolved.parent
+            files = [SearchFile(resolved.name, resolved)]
+        elif resolved.is_dir():
+            from agenthicc.tools.fs.discovery import discover
 
-        found = await discover(
-            context,
-            resolved,
-            pattern="*",
-            recursive=recursive,
-            files_only=True,
-            include_ignored=arg_bool(args, "include_ignored", False),
-            limit=_MAX_GREP_FILES,
-            operation="search",
-            tool_name=self.name,
-        )
-
-        def _grep() -> tuple[list[dict[str, object]], int]:
-            matches: list[dict[str, object]] = []
-            files_matched = 0
-            for item in found.entries:
-                try:
-                    text = item.canonical.read_text(encoding="utf-8", errors="strict")
-                except (UnicodeDecodeError, OSError):
-                    continue
-                hit = False
-                for i, line in enumerate(text.splitlines(), 1):
-                    if compiled.search(line):
-                        hit = True
-                        matches.append(
-                            {"file": item.relative, "line_number": i, "line": line.rstrip()}
-                        )
-                        if len(matches) >= max_results:
-                            return matches, files_matched + 1
-                files_matched += hit
-            return matches, files_matched
+            found = await discover(
+                context,
+                resolved,
+                pattern="*",
+                recursive=arg_bool(args, "recursive", True),
+                files_only=True,
+                include_ignored=arg_bool(args, "include_ignored", False),
+                limit=_MAX_GREP_FILES,
+                operation="search",
+                tool_name=self.name,
+            )
+            root = resolved
+            files = [SearchFile(item.relative, item.canonical) for item in found.entries]
+            discovery = found.diagnostics()
+            truncation = found.truncated
+        else:
+            return tool_error(ToolErrorCode.NOT_FOUND, f"not found: {path}", path=path)
+        files = filter_files(files, include, exclude)
 
         async with _grep_slot():
-            matches, files_matched = await asyncio.to_thread(_grep)
-        result: dict[str, object] = {
+            rg = ripgrep_path()
+            result = await search_with_ripgrep(rg, root, files, query) if rg else None
+            if result is None:
+                result = await asyncio.to_thread(search_with_python, files, query)
+
+        payload: dict[str, object] = {
             "ok": True,
-            "matches": matches,
-            "count": len(matches),
-            "files_matched": files_matched,
-            "discovery": found.diagnostics(),
+            "total_matches": result.total_matches,
+            "files_matched": result.files_matched,
+            "files_searched": len(files),
+            "backend": result.backend,
         }
-        if len(matches) >= max_results:
-            result["truncated"] = True
-            result["note"] = f"stopped at max_results={max_results}"
-        elif found.truncated:
-            result["truncated"] = True
-            result["note"] = _TRUNCATION_NOTES[found.truncated]
-        return result
+        if query.output == "matches":
+            payload["matches"] = result.matches
+        elif query.output == "files":
+            payload["files"] = list(result.counts)
+        else:
+            payload["counts"] = result.counts
+        if discovery is not None:
+            payload["discovery"] = discovery
+        notes: list[str] = []
+        if query.output == "matches" and result.truncated:
+            notes.append(
+                f"showing {len(result.matches)} of {result.total_matches} matches; "
+                "raise max_results or narrow the pattern, path or glob"
+            )
+        if truncation == "result_cap":
+            notes.append(f"searched the first {_MAX_GREP_FILES} files; narrow the path or glob")
+        elif truncation:
+            notes.append(f"searched {len(files)} files: {_TRUNCATION_NOTES[truncation]}")
+        if notes:
+            payload["truncated"] = True
+            payload["note"] = "; ".join(notes)
+        return payload
 
 
 class GetFileInfoTool(Tool):
     name = "get_file_info"
-    description = "Return metadata for a file or directory."
+    description = "Return whether a path exists and its metadata."
     parameters = {
         "type": "object",
         "properties": {"path": {"type": "string"}},
@@ -842,74 +953,9 @@ class GetFileInfoTool(Tool):
 
             return tool_error(ToolErrorCode.PERMISSION_DENIED, str(e), path=path)
         if not resolved.exists():
-            from agenthicc.tools.errors import ToolErrorCode, tool_error
-
-            return tool_error(ToolErrorCode.NOT_FOUND, f"not found: {path}", path=path)
+            return {"ok": True, "exists": False, "path": path, "type": None}
         info = await asyncio.to_thread(_safe_stat, resolved)
-        return {"ok": True, **info, "path": str(resolved)}
-
-
-class ReadLinesTool(Tool):
-    name = "read_lines"
-    description = "Read a specific range of lines from a file (1-indexed)."
-    parameters = {
-        "type": "object",
-        "properties": {
-            "path": {"type": "string"},
-            "start": {"type": "integer", "default": 1},
-            "end": {"type": "integer"},
-        },
-        "required": ["path"],
-    }
-
-    async def execute(
-        self, args: Mapping[str, object], context: Mapping[str, object]
-    ) -> dict[str, object]:
-        path = arg_str(args, "path")
-        start = max(1, arg_int(args, "start", 1))
-        end_value = args.get("end")
-        end = arg_int(args, "end") if end_value is not None else None
-        try:
-            resolved = await _resolve_path(context, path, operation="read", tool_name=self.name)
-        except PermissionError as e:
-            return {"ok": False, "error": f"permission_denied: {e}"}
-        if not resolved.exists():
-            return {"ok": False, "error": f"not_found: {path}"}
-        try:
-            all_lines = await asyncio.to_thread(
-                resolved.read_text, encoding="utf-8", errors="replace"
-            )
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
-        lines = all_lines.splitlines()
-        total = len(lines)
-        end = min(total, end) if end is not None else total
-        selected = lines[start - 1 : end]
-        # PRD-133 Layer A: cap output to bound context tokens.
-        out_lines: list[str] = []
-        used = 0
-        truncated = False
-        for ln in selected:
-            if used + len(ln) + 1 > _MAX_TOOL_OUTPUT_CHARS:
-                truncated = True
-                break
-            out_lines.append(ln)
-            used += len(ln) + 1
-        result: dict[str, object] = {
-            "lines": out_lines,
-            "ok": True,
-            "total_lines": total,
-            "version": _record_version(resolved),
-            "start": start,
-            "end": start - 1 + len(out_lines),
-        }
-        if truncated:
-            result["truncated"] = True
-            result["note"] = (
-                f"output capped; {len(selected) - len(out_lines)} more lines in range "
-                "— request a smaller line range"
-            )
-        return result
+        return {"ok": True, "exists": True, **info, "path": str(resolved)}
 
 
 class PatchFileTool(Tool):
@@ -1049,7 +1095,7 @@ class PatchFileTool(Tool):
 
 
 class FsToolKit:
-    """Factory that returns all 14 filesystem tools."""
+    """Factory that returns the 12 class-form filesystem tools."""
 
     def __init__(self, backend: object = None) -> None:
         self._backend = backend
@@ -1064,16 +1110,14 @@ class FsToolKit:
             CopyFileTool(),
             ListDirectoryTool(),
             MakeDirectoryTool(),
-            FileExistsTool(),
             SearchFilesTool(),
             GrepFilesTool(),
             GetFileInfoTool(),
-            ReadLinesTool(),
             PatchFileTool(),
         ]
 
     def all_agent_tools(self) -> list[Callable[..., object]]:
-        """Return all 24 @tool()-decorated agent tools (14 original + 10 new)."""
+        """Return every @tool()-decorated filesystem agent tool."""
         from agenthicc.tools.fs.agent_tools import FS_AGENT_TOOLS
 
         return FS_AGENT_TOOLS

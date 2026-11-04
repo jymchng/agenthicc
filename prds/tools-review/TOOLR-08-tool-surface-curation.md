@@ -1,6 +1,6 @@
 ---
 title: "TOOLR-08: A smaller, accurate tool surface"
-status: Proposed
+status: Implemented with amendments (2026-11-04; tools wave 7, pending merge)
 version: 1.0.0
 date: 2026-11-04
 scope: "which tools a turn is offered: duplicates, tools that cannot work in this environment, capability tags that misclassify read-only tools, and the per-request cost of the catalog"
@@ -9,6 +9,44 @@ tags: [tools, effectiveness, context-budget]
 ---
 
 # TOOLR-08: A smaller, accurate tool surface
+
+## Implementation status (2026-11-04)
+
+Delivered in tools wave 7 (branch `tools-wave-7-surface-and-search`).
+
+- **Duplicates removed (goal 1).** `shell`, `grep_file`, `file_exists` and
+  `read_lines` are deleted, not aliased, along with the `FileExistsTool` and
+  `ReadLinesTool` classes. Their names are gone from the subagent types,
+  mode lists, workspace path maps, TUI labels, prompts, docs and skills.
+  - `grep_files` given a file path searches that file, with context lines.
+  - `get_file_info` on a missing path returns `ok: true, exists: false`.
+  - `read_file` takes `offset` and `limit` (TOOLR-10).
+- **Only what can work (goal 2).** `ToolGroup.unavailable` returns a reason
+  or `None`. `ToolRegistry.register_group` leaves an unavailable group out,
+  and `describe()` ends with "### Unavailable here". Outlook is available
+  with `MSGRAPH_TOKEN`, or on Windows with `pywin32`; otherwise the section
+  says `Outlook / Calendar: unavailable (set MSGRAPH_TOKEN)`.
+- **Accurate capabilities (goal 3).** `inspect_terminal`, `wait_terminal` and
+  `wait_terminal_ready` carry `read`, and `stop_terminal` keeps `execute`.
+  `tests/unit/test_tool_surface.py` pins all 56 built-in tools against a
+  reviewed table.
+- **A catalog budget (goal 4).** The built-in catalog, without Outlook, is
+  22,730 schema characters, 15.1 % below 26,772. The test fails above
+  `CATALOG_CEILING = 22_756`.
+- **Shorter descriptions (goal 5).** `run_command`'s shared execution
+  parameters say "As run_bash."
+
+Amendments:
+
+- **Only Outlook needs an environment predicate.** `web_search` and the
+  browser tools are already offered only when configured (the skill's API
+  key, `[tools.cloakbrowser]` / `[tools.playwright]`). They are not listed as
+  unavailable when off.
+- **Evaluated per registry build.** The predicate runs each time the
+  registry is built (once per turn), not once per session. It is an
+  environment lookup.
+- **Where the ceiling lives.** It is a constant in the test, not an entry in
+  `performance-budgets.json`, which holds AGX-14's CPU and count metrics.
 
 ## 1. Problem
 

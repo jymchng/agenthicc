@@ -35,16 +35,13 @@ __all__ = [
     "checksum_file",
     "copy_file",
     "delete_file",
-    "file_exists",
     "get_file_info",
-    "grep_file",
     "grep_files",
     "list_directory",
     "make_directory",
     "move_file",
     "patch_file",
     "read_file",
-    "read_lines",
     "search_files",
     "touch_file",
     "truncate_file",
@@ -112,16 +109,34 @@ def configure_router(router: "BackendRouter") -> None:
 @tool_exploratory
 @tool_read
 @tool()
-async def read_file(path: str, encoding: str = "utf-8") -> dict[str, object]:
-    """Read the full contents of a file.
+async def read_file(
+    path: str,
+    offset: int = 1,
+    limit: int = 0,
+    line_numbers: bool = True,
+    encoding: str = "",
+) -> dict[str, object]:
+    """Read a file as "N<tab>line" lines (strip N<tab> before patching); binary files give binary: true.
 
     Args:
-        path: File path to read (relative to workspace root).
-        encoding: Text encoding (default utf-8).
+        path: File path (relative to workspace root).
+        offset: First line to return, 1-based (default 1).
+        limit: Lines to return; 0 returns the rest of the file.
+        line_numbers: Prefix each line with its number (default true).
+        encoding: Force this text encoding (skips binary detection).
     """
     from agenthicc.tools.fs import ReadFileTool
 
-    return await ReadFileTool().execute({"path": path, "encoding": encoding}, _CTX())
+    return await ReadFileTool().execute(
+        {
+            "path": path,
+            "offset": offset,
+            "limit": limit,
+            "line_numbers": line_numbers,
+            "encoding": encoding,
+        },
+        _CTX(),
+    )
 
 
 @tool_write
@@ -248,61 +263,79 @@ async def make_directory(path: str) -> dict[str, object]:
 
 
 @tool_exploratory
-@tool_read
-@tool()
-async def file_exists(path: str) -> dict[str, object]:
-    """Check whether a file or directory exists.
-
-    Args:
-        path: Path to check.
-    """
-    from agenthicc.tools.fs import FileExistsTool
-
-    return await FileExistsTool().execute({"path": path}, _CTX())
-
-
-@tool_exploratory
 @tool_read_search
 @tool()
-async def search_files(pattern: str, path: str = ".", recursive: bool = True) -> dict[str, object]:
+async def search_files(
+    pattern: str, path: str = ".", recursive: bool = True, sort: str = "path"
+) -> dict[str, object]:
     """Find files matching a glob pattern.
 
     Args:
         pattern: Glob pattern (e.g. "*.py", "**/*.ts").
         path: Root directory to search (default: current directory).
         recursive: Search subdirectories recursively (default True).
+        sort: "path" (default) or "mtime", most recently modified first.
     """
     from agenthicc.tools.fs import SearchFilesTool
 
     return await SearchFilesTool().execute(
-        {"pattern": pattern, "path": path, "recursive": recursive}, _CTX()
+        {"pattern": pattern, "path": path, "recursive": recursive, "sort": sort}, _CTX()
     )
 
 
 @tool_exploratory
 @tool_read_search
 @tool()
-async def grep_files(pattern: str, path: str = ".", max_results: int = 50) -> dict[str, object]:
-    """Search file contents for a regex pattern and return matching lines.
+async def grep_files(
+    pattern: str,
+    path: str = ".",
+    glob: list[str] | None = None,
+    exclude: list[str] | None = None,
+    case_sensitive: bool | None = None,
+    fixed_string: bool = False,
+    context_lines: int = 0,
+    max_results: int = 50,
+    output: str = "matches",
+) -> dict[str, object]:
+    """Search file contents for a regex; honours .gitignore; reports total_matches.
 
     Args:
-        pattern: Regular expression to search for.
-        path: Directory to search (default: current directory).
-        max_results: Maximum number of matches to return (default 50).
+        pattern: Regular expression, or literal text with fixed_string.
+        path: Directory or single file to search (default ".").
+        glob: Only files matching these globs, e.g. ["*.py"].
+        exclude: Skip files matching these globs.
+        case_sensitive: Omit for smart case (insensitive unless a capital).
+        fixed_string: Match pattern literally.
+        context_lines: Lines shown around each match (0-5).
+        max_results: Most matches returned (default 50).
+        output: "matches", "files" or "count".
     """
     from agenthicc.tools.fs import GrepFilesTool
 
-    return await GrepFilesTool().execute(
-        {"pattern": pattern, "path": path, "recursive": True, "max_results": max_results},
-        _CTX(),
-    )
+    arguments: dict[str, object] = {
+        "pattern": pattern,
+        "path": path,
+        "fixed_string": fixed_string,
+        "context_lines": context_lines,
+        "max_results": max_results,
+        "output": output,
+    }
+    if glob:
+        arguments["glob"] = glob
+    if exclude:
+        arguments["exclude"] = exclude
+    if case_sensitive is not None:
+        arguments["case_sensitive"] = case_sensitive
+    return await GrepFilesTool().execute(arguments, _CTX())
 
 
 @tool_exploratory
 @tool_read
 @tool()
 async def get_file_info(path: str) -> dict[str, object]:
-    """Return metadata for a file or directory (size, dates, permissions).
+    """Return whether a path exists and, if so, its type, size, dates and permissions.
+
+    A missing path is ok: true with exists: false.
 
     Args:
         path: File or directory path.
@@ -310,25 +343,6 @@ async def get_file_info(path: str) -> dict[str, object]:
     from agenthicc.tools.fs import GetFileInfoTool
 
     return await GetFileInfoTool().execute({"path": path}, _CTX())
-
-
-@tool_exploratory
-@tool_read
-@tool()
-async def read_lines(path: str, start: int = 1, end: int | None = None) -> dict[str, object]:
-    """Read a specific range of lines from a file (1-indexed).
-
-    Args:
-        path: File path to read.
-        start: First line to read (1-indexed, default 1).
-        end: Last line to read inclusive (default: end of file).
-    """
-    from agenthicc.tools.fs import ReadLinesTool
-
-    args: dict[str, object] = {"path": path, "start": start}
-    if end is not None:
-        args["end"] = end
-    return await ReadLinesTool().execute(args, _CTX())
 
 
 @tool_write
@@ -373,65 +387,6 @@ async def patch_file(
     )
 
 
-@tool_exploratory
-@tool_read_search
-@tool()
-async def grep_file(
-    path: str,
-    pattern: str,
-    case_sensitive: bool = True,
-    context_lines: int = 0,
-) -> dict[str, object]:
-    """Search a single file for a regex pattern, returning per-line match details.
-
-    Args:
-        path: File path to search (relative to workspace root).
-        pattern: Regular expression pattern to search for.
-        case_sensitive: Whether the match is case-sensitive (default True).
-        context_lines: Number of surrounding lines to include with each match (default 0).
-    """
-    from agenthicc.tools.fs import _authorized_path
-
-    context = _CTX()
-    try:
-        resolved = await _authorized_path(
-            context, path, operation="search", tool_name="grep_file", tool_input={"path": path}
-        )
-        text = await asyncio.to_thread(resolved.read_text, encoding="utf-8", errors="replace")
-    except FileNotFoundError:
-        return {"ok": False, "error_code": "not_found", "error": f"file not found: {path}"}
-    except PermissionError:
-        return {"ok": False, "error_code": "permission_denied", "error": "permission_denied"}
-
-    flags = 0 if case_sensitive else re.IGNORECASE
-    try:
-        compiled = re.compile(pattern, flags)
-    except re.error as exc:
-        return {
-            "ok": False,
-            "error_code": "invalid_argument",
-            "error": f"invalid regular expression: {exc}",
-        }
-    lines = text.splitlines()
-    matches = []
-    for i, line in enumerate(lines):
-        m = compiled.search(line)
-        if m:
-            entry: dict[str, object] = {
-                "line_number": i + 1,
-                "line": line,
-                "match_start": m.start(),
-                "match_end": m.end(),
-            }
-            if context_lines > 0:
-                before_start = max(0, i - context_lines)
-                after_end = min(len(lines), i + context_lines + 1)
-                entry["context_before"] = lines[before_start:i]
-                entry["context_after"] = lines[i + 1 : after_end]
-            matches.append(entry)
-    return {"ok": True, "path": path, "matches": matches, "total_matches": len(matches)}
-
-
 @tool_write
 @tool()
 async def apply_diff(
@@ -447,9 +402,9 @@ async def apply_diff(
     its context within 50 lines; the result reports where each hunk landed.
 
     Args:
-        path: File path to patch (relative to workspace root).
+        path: File path to patch.
         diff: Unified diff string (output of ``diff -u`` or similar).
-        allow_partial: If True, apply successfully-matched hunks even when some fail (default False).
+        allow_partial: Apply the hunks that match even if others fail.
         expected_version: The ``version`` from your last read; refuse if the file differs.
         force: Edit even if the file changed since you last read it.
     """
@@ -957,13 +912,10 @@ FS_AGENT_TOOLS: list[Callable[..., object]] = [
     copy_file,
     list_directory,
     make_directory,
-    file_exists,
     search_files,
     grep_files,
     get_file_info,
-    read_lines,
     patch_file,
-    grep_file,
     apply_diff,
     checksum_file,
     truncate_file,

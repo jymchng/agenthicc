@@ -216,14 +216,11 @@ _EXPLORER_TOOLS = frozenset(
         "list_directory",
         "search_files",
         "grep_files",
-        "grep_file",
         "git_log",
         "git_show",
         "git_blame",
         "git_grep",
-        "file_exists",
         "get_file_info",
-        "read_lines",
     }
 )
 
@@ -233,9 +230,6 @@ _PLANNER_TOOLS = frozenset(
         "list_directory",
         "search_files",
         "grep_files",
-        "grep_file",
-        "read_lines",
-        "file_exists",
     }
 )
 
@@ -248,10 +242,7 @@ _IMPLEMENTER_TOOLS = frozenset(
         "list_directory",
         "search_files",
         "grep_files",
-        "grep_file",
         "run_python_expr",
-        "read_lines",
-        "file_exists",
         "get_file_info",
     }
 )
@@ -263,7 +254,6 @@ _IMPLEMENTER_TOOLS = frozenset(
 # the active security ceiling.
 _EXECUTOR_TOOLS = _IMPLEMENTER_TOOLS | frozenset(
     {
-        "shell",
         "run_bash",
         "run_command",
         "run_python",
@@ -282,7 +272,6 @@ _TESTER_TOOLS = frozenset(
         "list_directory",
         "search_files",
         "grep_files",
-        "read_lines",
     }
 )
 
@@ -292,12 +281,9 @@ _REVIEWER_TOOLS = frozenset(
         "list_directory",
         "search_files",
         "grep_files",
-        "grep_file",
         "git_diff",
         "git_log",
         "run_python_expr",
-        "read_lines",
-        "file_exists",
     }
 )
 
@@ -308,7 +294,6 @@ _DOCUMENTER_TOOLS = frozenset(
         "patch_file",
         "search_files",
         "list_directory",
-        "read_lines",
     }
 )
 
@@ -317,20 +302,16 @@ _VERIFIER_TOOLS = frozenset(
         "read_file",
         "search_files",
         "grep_files",
-        "grep_file",
         "run_tests",
         "run_python_expr",
         "git_diff",
         "git_log",
-        "read_lines",
-        "file_exists",
     }
 )
 
 _RESEARCHER_TOOLS = frozenset(
     {
         "read_file",
-        "read_lines",
         "search_files",
         "grep_files",
         "list_directory",

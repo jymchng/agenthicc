@@ -22,7 +22,6 @@ from agenthicc.tools.fs.agent_tools import (
     append_file,
     copy_file,
     delete_file,
-    file_exists,
     get_file_info,
     grep_files,
     list_directory,
@@ -30,7 +29,6 @@ from agenthicc.tools.fs.agent_tools import (
     move_file,
     patch_file,
     read_file,
-    read_lines,
     search_files,
     write_file,
 )
@@ -60,7 +58,6 @@ from agenthicc.tools.exec.agent_tools import (
     run_python,
     run_python_expr,
     run_tests,
-    shell,
     stop_terminal,
     wait_terminal,
     wait_terminal_ready,
@@ -103,7 +100,6 @@ __all__ = [
     "append_file",
     "copy_file",
     "delete_file",
-    "file_exists",
     "get_file_info",
     "grep_files",
     "list_directory",
@@ -111,7 +107,6 @@ __all__ = [
     "move_file",
     "patch_file",
     "read_file",
-    "read_lines",
     "search_files",
     "write_file",
     # git
@@ -132,7 +127,6 @@ __all__ = [
     "run_python",
     "run_python_expr",
     "run_tests",
-    "shell",
     "wait_terminal",
     "inspect_terminal",
     "wait_terminal_ready",
@@ -168,6 +162,7 @@ __all__ = [
     "GIT_GROUP",
     "EXEC_GROUP",
     "OUTLOOK_GROUP",
+    "outlook_unavailable",
     "INTROSPECT_GROUP",
     "MCP_GROUP",
     "BUILTIN_GROUPS",
@@ -209,12 +204,31 @@ EXEC_GROUP = ToolGroup(
     priority=2,
 )
 
+
+def outlook_unavailable() -> str | None:
+    """Why the Outlook tools cannot work here, or ``None`` (TOOLR-08).
+
+    They need the Microsoft Graph token, or Windows with ``pywin32`` for the
+    local Outlook client. Without either, every call would fail.
+    """
+    import importlib.util
+    import os
+    import sys
+
+    if os.environ.get("MSGRAPH_TOKEN", "").strip():
+        return None
+    if sys.platform == "win32" and importlib.util.find_spec("win32com") is not None:
+        return None
+    return "set MSGRAPH_TOKEN"
+
+
 OUTLOOK_GROUP = ToolGroup(
     name="outlook",
     label="Outlook / Calendar",
     description="Read and send email, manage calendar events via Graph API.",
     tools=cast(list[PluginTool], list(OUTLOOK_AGENT_TOOLS)),
     priority=1,
+    unavailable=outlook_unavailable,
 )
 
 # Rendered last (priority 0): a supporting capability rather than a primary one,

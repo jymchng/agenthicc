@@ -352,9 +352,7 @@ class WorkspaceAccessPolicy:
 
     _PATH_FIELDS: dict[str, tuple[tuple[str, str], ...]] = {
         "read_file": (("path", "read"),),
-        "read_lines": (("path", "read"),),
         "get_file_info": (("path", "metadata"),),
-        "file_exists": (("path", "metadata"),),
         "write_file": (("path", "write"),),
         "append_file": (("path", "write"),),
         "patch_file": (("path", "write"),),
@@ -365,13 +363,11 @@ class WorkspaceAccessPolicy:
         "list_directory": (("path", "list"),),
         "search_files": (("path", "search"),),
         "grep_files": (("path", "search"),),
-        "grep_file": (("path", "search"),),
         "apply_diff": (("path", "write"),),
         "checksum_file": (("path", "read"),),
         "move_file": (("source", "write"), ("destination", "write")),
         "copy_file": (("source", "read"), ("destination", "write")),
         "run_bash": (("cwd", "execute_cwd"),),
-        "shell": (("cwd", "execute_cwd"),),
         "run_command": (("cwd", "execute_cwd"),),
         "run_python": (("cwd", "execute_cwd"),),
         "run_python_expr": (("cwd", "execute_cwd"),),
