@@ -78,13 +78,22 @@ async def _safe_call(coro):
         }
 
 
+def _listed(key: str, value: object) -> dict[str, object]:
+    """A backend list as ``{"ok": true, key: [...], "count": n}``; a failure unchanged."""
+    if isinstance(value, list):
+        return {"ok": True, key: value, "count": len(value)}
+    if isinstance(value, dict):
+        return value
+    return {"ok": True, key: value}
+
+
 @tool_network_read
 @tool()
 async def list_emails(
     folder: str = "Inbox",
     n: int = 20,
     unread_only: bool = False,
-) -> list:
+) -> dict[str, object]:
     """List emails from an Outlook folder.
 
     Args:
@@ -92,7 +101,10 @@ async def list_emails(
         n: Maximum number of emails to return (default 20).
         unread_only: Only return unread messages when True.
     """
-    return await _safe_call(_backend().list_emails(folder=folder, n=n, unread_only=unread_only))
+    return _listed(
+        "emails",
+        await _safe_call(_backend().list_emails(folder=folder, n=n, unread_only=unread_only)),
+    )
 
 
 @tool_network_read
@@ -154,7 +166,7 @@ async def search_emails(
     query: str,
     folder: str = "Inbox",
     n: int = 20,
-) -> list:
+) -> dict[str, object]:
     """Search emails in Outlook by keyword.
 
     Args:
@@ -162,7 +174,9 @@ async def search_emails(
         folder: Folder to search within (default: Inbox).
         n: Maximum number of results to return (default 20).
     """
-    return await _safe_call(_backend().search_emails(query=query, folder=folder, n=n))
+    return _listed(
+        "emails", await _safe_call(_backend().search_emails(query=query, folder=folder, n=n))
+    )
 
 
 @tool_network_write
@@ -179,21 +193,24 @@ async def move_email(email_id: str, destination: str) -> dict:
 
 @tool_network_read
 @tool()
-async def list_folders() -> list:
+async def list_folders() -> dict[str, object]:
     """List all available Outlook mail folders."""
-    return await _safe_call(_backend().list_folders())
+    return _listed("folders", await _safe_call(_backend().list_folders()))
 
 
 @tool_network_read
 @tool()
-async def calendar_events(start_date: str, end_date: str) -> list:
+async def calendar_events(start_date: str, end_date: str) -> dict[str, object]:
     """Retrieve calendar events within a date range.
 
     Args:
         start_date: Start of the range in ISO-8601 format (e.g. "2026-06-01").
         end_date: End of the range in ISO-8601 format (e.g. "2026-06-30").
     """
-    return await _safe_call(_backend().calendar_events(start_date=start_date, end_date=end_date))
+    return _listed(
+        "events",
+        await _safe_call(_backend().calendar_events(start_date=start_date, end_date=end_date)),
+    )
 
 
 @tool_network_write

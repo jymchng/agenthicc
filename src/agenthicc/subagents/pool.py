@@ -573,6 +573,8 @@ class SubagentResult:
     not_started: bool = False
     #: This worker's completed ledger spend, across all of its attempts.
     usage: PoolUsage = field(default_factory=PoolUsage)
+    #: Declared tools that could not be registered for this worker (TOOLR-04).
+    tool_registration_failures: tuple[str, ...] = ()
 
 
 def _worker_context_window(
@@ -1300,6 +1302,7 @@ class SubagentWorker:
         self.label = f"{spec.name} #{index}"
         self._tool_calls: list[str] = []
         self._successful_tool_calls: list[str] = []
+        self._registration_failures: tuple[str, ...] = ()
         self._changed_paths: list[str] = []
         self._result_value: JSONMapping | None = None
         self._result_text = ""
@@ -1320,6 +1323,13 @@ class SubagentWorker:
 
     async def run(self) -> SubagentResult:
         """Execute the task; return SubagentResult regardless of success/failure."""
+        self._registration_failures = ()
+        result = await self._run()
+        if self._registration_failures:
+            result = replace(result, tool_registration_failures=self._registration_failures)
+        return result
+
+    async def _run(self) -> SubagentResult:
         t0 = time.monotonic()
         self._tool_calls.clear()
         self._successful_tool_calls.clear()
@@ -1653,7 +1663,9 @@ class SubagentWorker:
         class _SubAgent: ...  # type: ignore[type-var]  # lauren-ai dynamic subagent class
 
         agent_instance = _SubAgent()
-        populate_agent_tools(agent_instance, filtered)
+        self._registration_failures = tuple(
+            failure.describe() for failure in populate_agent_tools(agent_instance, filtered)
+        )
 
         hooks: list[object] = []
         if self._app_state is not None:
@@ -1699,9 +1711,9 @@ class SubagentWorker:
                 return AfterToolHookDecision.proceed()
 
         hooks.append(_MutationEvidenceHook())
-        from agenthicc.tools.capability_gate import order_security_gates
+        from agenthicc.tools.approval import order_global_hooks
 
-        hooks = order_security_gates(hooks)
+        hooks = order_global_hooks(hooks)
 
         signals = SignalBus()
 
@@ -3423,6 +3435,11 @@ class SubagentPool:
             "duration_ms": result.duration_ms,
             "tool_calls": list(result.tool_calls),
             "changed_paths": list(result.changed_paths),
+            **(
+                {"tool_registration_failures": list(result.tool_registration_failures)}
+                if result.tool_registration_failures
+                else {}
+            ),
             "done": self._state.done,
             "total": self._state.total,
         }

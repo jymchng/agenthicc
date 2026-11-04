@@ -239,7 +239,11 @@ async def wait_terminal(terminal_id: str, timeout: float = 0.0) -> dict[str, obj
 @tool_execute
 @tool()
 async def inspect_terminal(terminal_id: str) -> dict[str, object]:
-    """Inspect one owned terminal and its bounded output tail."""
+    """Inspect one owned terminal and its bounded output tail.
+
+    Args:
+        terminal_id: The ``terminal_id`` a background command returned.
+    """
 
     from agenthicc.tools.exec import InspectTerminalTool
 
@@ -252,7 +256,13 @@ async def wait_terminal_ready(
     terminal_id: str,
     readiness: dict[str, ReadinessValue] | None = None,
 ) -> dict[str, object]:
-    """Wait for an owned service readiness probe without stopping it."""
+    """Wait for an owned service readiness probe without stopping it.
+
+    Args:
+        terminal_id: The ``terminal_id`` a background command returned.
+        readiness: The probe to wait for, as for ``run_bash``'s ``readiness``;
+            the terminal's own probe when omitted.
+    """
 
     from agenthicc.tools.exec import WaitTerminalReadinessTool
 
@@ -264,7 +274,12 @@ async def wait_terminal_ready(
 @tool_execute
 @tool()
 async def stop_terminal(terminal_id: str, force: bool = False) -> dict[str, object]:
-    """Stop one exact owned terminal, escalating only when needed."""
+    """Stop one exact owned terminal, escalating only when needed.
+
+    Args:
+        terminal_id: The ``terminal_id`` a background command returned.
+        force: Kill at once instead of terminating gracefully first.
+    """
 
     from agenthicc.tools.exec import StopTerminalTool
 

@@ -128,7 +128,7 @@ def test_legacy_process_mapping_cannot_normalize_to_success() -> None:
         {"stdout": "bad\n", "stderr": "", "returncode": 7, "timed_out": False}
     )
     assert normalized.ok is False
-    assert normalized.error_kind == "execution"
+    assert normalized.error_kind == "internal"
     assert normalized.value["returncode"] == 7  # type: ignore[index]
 
 
@@ -148,7 +148,7 @@ async def test_lauren_wrapper_and_agenthicc_executor_propagate_command_failure(
         "prd151-executor",
     )
     assert adapted.ok is False
-    assert adapted.error_kind == "execution"
+    assert adapted.error_kind == "internal"
 
 
 async def test_service_marker_readiness_keeps_process_owned_and_blocks_duplicates(

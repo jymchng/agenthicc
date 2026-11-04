@@ -53,6 +53,7 @@ from agenthicc.workflows.payload import (
     payload_strings,
 )
 from agenthicc.workflows.plugin import PhaseSpec, WorkflowParams, WorkflowPlugin
+from agenthicc.tools.capabilities import tool_control, tool_write
 
 if TYPE_CHECKING:
     from lauren_ai._memory import ShortTermMemory
@@ -687,6 +688,7 @@ def _make_toc_tools(
     """
     from lauren_ai._tools import tool
 
+    @tool_control
     @tool()
     async def submit_toc(summary: str) -> dict[str, object]:
         """Verify the written TOC manifest and record a concise summary."""
@@ -834,6 +836,7 @@ def _make_research_tools(
     """Return the compact, file-backed research handoff gate."""
     from lauren_ai._tools import tool
 
+    @tool_control
     @tool()
     async def submit_research(summary: str) -> dict[str, object]:
         """Scan the research handoff and record its concise summary."""
@@ -924,6 +927,7 @@ def _make_chapter_tools(
             chapter_title=chapter_title,
         )
 
+    @tool_control
     @tool()
     async def confirm_chapter_complete(summary: str) -> dict[str, object]:
         """Verify the current chapter, deriving path, count, and assets.
@@ -1024,6 +1028,7 @@ def _make_assets_tools(
     """
     from lauren_ai._tools import tool
 
+    @tool_control
     @tool()
     async def confirm_assets_ready(summary: str) -> dict[str, object]:
         """Scan and verify all figure/diagram assets under the asset root."""
@@ -1187,6 +1192,7 @@ def _make_front_matter_tools(
     """Return the summary-only front-matter inventory gate."""
     from lauren_ai._tools import tool
 
+    @tool_control
     @tool()
     async def confirm_front_matter_ready(summary: str) -> dict[str, object]:
         """Scan ``front-matter/`` and record its Markdown files."""
@@ -1231,6 +1237,7 @@ def _make_back_matter_tools(
     """Return the summary-only back-matter inventory gate."""
     from lauren_ai._tools import tool
 
+    @tool_control
     @tool()
     async def confirm_back_matter_ready(summary: str) -> dict[str, object]:
         """Scan ``back-matter/`` and record its Markdown files."""
@@ -1283,6 +1290,7 @@ def _make_layout_tools(
     """
     from lauren_ai._tools import tool
 
+    @tool_control
     @tool()
     async def confirm_layout_ready(summary: str) -> dict[str, object]:
         """Verify image, diagram, and table bounds before the next phase."""
@@ -1450,6 +1458,7 @@ def _make_compile_tools(
             ),
         }
 
+    @tool_write
     @tool()
     async def create_build_book() -> dict[str, object]:
         """Create the reusable build_book.py PDF and EPUB builder.
@@ -1463,6 +1472,7 @@ def _make_compile_tools(
 
         return _create_builder()
 
+    @tool_control
     @tool()
     async def mark_book_complete(summary: str) -> dict[str, object]:
         """Discover, validate, and accept the compiled PDF and EPUB under dist/."""
@@ -1550,6 +1560,7 @@ def _make_compile_tools(
             "message": f"Book marked as complete: {data['pdf_path']} and {data['epub_path']}.",
         }
 
+    @tool_control
     @tool()
     async def reject_book(summary: str) -> dict[str, object]:
         """Record a compile failure summary and recover the whole book."""

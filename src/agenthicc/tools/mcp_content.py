@@ -10,7 +10,8 @@ envelope the model receives:
   base64 text in the model's context;
 - embedded text resources return their text, and resource links return
   ``{uri, name, mime_type}``;
-- an ``isError`` result is ``ok: false, error_code: "remote_error"``;
+- an ``isError`` result is ``ok: false, error_code: "internal",
+  reason: "remote_error"``;
 - text is cut at :data:`MAX_RESULT_CHARS` with ``truncated`` and
   ``original_chars``.
 
@@ -175,7 +176,8 @@ def tool_result(result: object, *, server: str) -> dict[str, object]:
     if _field(result, "isError") is True:
         return {
             "ok": False,
-            "error_code": "remote_error",
+            "error_code": "internal",
+            "reason": "remote_error",
             "error": f"MCP server {server!r}: {_error_text(result)}"[:1_000],
             "retryable": False,
         }

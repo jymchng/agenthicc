@@ -661,7 +661,7 @@ class TestSubagentWorkerRouting:
 
         monkeypatch.setattr(agents_module, "agent", agent_decorator)
         monkeypatch.setattr(agents_module, "use_tools", use_tools)
-        monkeypatch.setattr(tool_populator, "populate_agent_tools", lambda *_args: None)
+        monkeypatch.setattr(tool_populator, "populate_agent_tools", lambda *_args: ())
         monkeypatch.setattr(AgentRunnerBase, "run", run)
         assert await worker._execute() == "worker output"  # type: ignore[attr-defined]
         return captured

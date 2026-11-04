@@ -143,7 +143,12 @@ def _search_results(payload: object) -> list[dict[str, object]]:
     description="Search the web and return ranked Brave Search results.",
 )
 class SearchWebTool:
-    """Search the web with the Brave Search API."""
+    """Search the web with the Brave Search API.
+
+    Args:
+        query: Search terms.
+        n: Maximum number of results, from 1 to 20.
+    """
 
     name = "search_web"
 
@@ -215,7 +220,12 @@ class SearchWebTool:
     description="Fetch a web page and extract its visible text.",
 )
 class FetchPageTool:
-    """Fetch a URL and return readable text extracted from its HTML."""
+    """Fetch a URL and return readable text extracted from its HTML.
+
+    Args:
+        url: Page URL to fetch (http or https).
+        offset: Character offset into the page text, to read past the first page.
+    """
 
     name = "fetch_page"
 
@@ -284,7 +294,8 @@ class FetchPageTool:
         ):
             return {
                 "ok": False,
-                "error_code": "unsupported_content",
+                "error_code": "undecodable",
+                "reason": "unsupported_content",
                 "error": f"{content_type} is not text; fetch_page returns text pages only",
                 "content_type": content_type,
                 "bytes": len(body),

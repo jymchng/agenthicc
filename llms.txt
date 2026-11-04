@@ -72,7 +72,7 @@ The primary entry point is `agenthicc.__main__:main`.
 | `CommandOutcome` / `CommandState` / `CommandKind` | `agenthicc.tools.exec` | Canonical command states, deadlines, cancellation, and service lifecycle |
 | `ToolSandbox` / `WorkspaceView` | `agenthicc.tools` | Timeout, resource, network, and real-path boundaries |
 | `WorkspaceScope` / `WorkspaceAccessPolicy` | `agenthicc.tools.workspace_access` | Session-wide canonical roots and Safe/Plan/Yolo path authorization |
-| `ToolMetadata` / `ToolErrorKind` | `agenthicc.tools` | Generated catalog metadata and stable error taxonomy |
+| `ToolMetadata` / `ToolErrorCode` / `ToolContractHook` | `agenthicc.tools` | Generated catalog metadata, the tool error vocabulary, and the hook that enforces the result envelope |
 | `SearchWebTool` / `FetchPageTool` | `agenthicc.skills.web_search` | Native lauren-ai tools for Brave search and visible page-text extraction |
 | `WorkflowPlugin` | `agenthicc.workflows` | Custom workflow definition |
 | `PhaseSpec` | `agenthicc.workflows.plugin` | Declarative phase metadata; `system_prompt_override` replaces the role prompt only in the generic runner and remains dynamic under the cache contract |

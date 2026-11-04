@@ -1,6 +1,6 @@
 ---
 title: "TUIR-05: The attention badge says what it counts"
-status: Proposed
+status: Implemented (2026-11-04; tools wave 6, pending merge)
 version: 1.0.0
 date: 2026-11-03
 scope: "the footer's background-attention badges: name what they count so they are not read as subagent state"
@@ -15,6 +15,30 @@ tags:
 ---
 
 # TUIR-05: The attention badge says what it counts
+
+## Implementation status (2026-11-04)
+
+Delivered in tools wave 6 (branch `tools-wave-6-result-contract`).
+
+- `agenthicc.tui.attention_labels` words both badges in singular and plural:
+  `◆ 7 sessions need you`, `◆ 1 session needs you`, `● 1 session running`.
+  The footer, the terminal title and the coalesced toast all use it.
+- When space allows, the needs-you badge carries the `agents.open_hub` key
+  from the keymap: `◆ 7 sessions need you (Ctrl+G)`.
+- Narrower widths step down in this order:
+  1. drop the key;
+  2. shorten the running badge to `● 1 sess.`;
+  3. shorten both to `sess.`;
+  4. show the bare numbers.
+
+  The needs-you badge keeps its words longest.
+- Subagent counts stay on the pool panel; the footer row only counts
+  sessions.
+
+Tests: `tests/unit/test_attention_badges.py` renders a real `AppState` with
+seven waiting sessions at 80 and 120 columns, steps down through 40, 26 and
+14 columns, and checks singular and plural for 1 and 2.
+`tests/unit/test_tui_attention.py` checks the title and the toast.
 
 ## 1. Problem
 

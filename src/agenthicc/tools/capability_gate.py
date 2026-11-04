@@ -12,9 +12,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from agenthicc.tools.approval import FailClosedGate, order_security_gates
+from agenthicc.tools.approval import FailClosedGate, order_global_hooks
 
-__all__ = ["FailClosedGate", "ToolCapabilityGate", "order_security_gates"]
+__all__ = ["FailClosedGate", "ToolCapabilityGate", "order_global_hooks"]
 
 if TYPE_CHECKING:
     from agenthicc.tools.context import ToolCallContext

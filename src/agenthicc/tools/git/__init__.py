@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import ClassVar, Final
 
 from agenthicc.tools.base import Tool, arg_bool, arg_int, arg_str
+from agenthicc.tools.errors import ToolErrorCode, tool_error
 from agenthicc.tools.workspace_access import WorkspaceAccessPolicy, current_workspace_access
 
 __all__ = ["GIT_COMMIT_TIMEOUT_S", "GIT_TIMEOUT_S", "GitRun", "GitToolKit"]
@@ -173,30 +174,36 @@ async def _run_git(
     )
 
 
-def _failure(run: GitRun, *, default_code: str = "git_failed") -> dict[str, object]:
-    """The TOOLR-04 envelope for a failed git run, with a classified code."""
+def _failure(run: GitRun) -> dict[str, object]:
+    """The TOOLR-04 envelope for a failed git run.
+
+    ``error_code`` is from the shared vocabulary; ``reason`` names the git
+    condition when there is a more specific one.
+    """
     text = run.err.strip() or run.out.strip()
     lowered = text.lower()
+    reason = ""
     if run.timed_out:
-        code = "timeout"
+        code = ToolErrorCode.TIMEOUT
     elif "not a git repository" in lowered:
-        code = "not_a_repository"
+        code, reason = ToolErrorCode.NOT_FOUND, "not_a_repository"
     elif "conflict" in lowered or "would be overwritten" in lowered:
-        code = "conflict"
+        code = ToolErrorCode.CONFLICT
     elif "nothing to commit" in lowered or "no changes added to commit" in lowered:
-        code = "nothing_to_commit"
+        code, reason = ToolErrorCode.INVALID_ARGUMENT, "nothing_to_commit"
     elif "hook" in lowered:
-        code = "hook_failed"
+        code, reason = ToolErrorCode.PERMISSION_DENIED, "hook_rejected"
     elif "unknown revision" in lowered or "bad revision" in lowered or "invalid" in lowered:
-        code = "invalid_argument"
+        code = ToolErrorCode.INVALID_ARGUMENT
     else:
-        code = default_code
-    return {
-        "ok": False,
-        "error_code": code,
-        "error": text[:1_000] or f"git exited with {run.returncode}",
-        "retryable": code == "timeout",
-    }
+        code = ToolErrorCode.INTERNAL
+    fields: dict[str, object] = {"reason": reason} if reason else {}
+    return tool_error(
+        code,
+        text or f"git exited with {run.returncode}",
+        retryable=code is ToolErrorCode.TIMEOUT,
+        **fields,
+    )
 
 
 def _invalid(message: str) -> dict[str, object]:

@@ -47,13 +47,25 @@ def make_playwright_tools(manager: "BrowserSessionManager") -> list["ToolLike"]:
     @tool_network_read
     @tool(name="playwright_open")
     async def playwright_open(url: str, operation_id: str = "") -> dict[str, object]:
-        """Open an operator-allow-listed HTTP(S) URL in the Playwright browser."""
+        """Open an operator-allow-listed HTTP(S) URL in the Playwright browser.
+
+        Args:
+            url: The HTTP(S) URL to open; its host must be on the allow-list.
+            operation_id: Optional idempotency key; a repeated ID returns the first
+                call's result instead of acting twice.
+        """
         return await manager.open(url, operation_id or None)
 
     @tool_network_read
     @tool(name="playwright_snapshot")
     async def playwright_snapshot(page_id: str, operation_id: str = "") -> dict[str, object]:
-        """Return bounded page text, links, and accessible controls."""
+        """Return bounded page text, links, and accessible controls.
+
+        Args:
+            page_id: The ``page_id`` returned by playwright_open.
+            operation_id: Optional idempotency key; a repeated ID returns the first
+                call's result instead of acting twice.
+        """
         return await manager.snapshot(page_id, operation_id or None)
 
     @tool_network_write
@@ -61,7 +73,14 @@ def make_playwright_tools(manager: "BrowserSessionManager") -> list["ToolLike"]:
     async def playwright_click(
         page_id: str, selector: str, operation_id: str = ""
     ) -> dict[str, object]:
-        """Click one bounded selector in an open page."""
+        """Click one bounded selector in an open page.
+
+        Args:
+            page_id: The ``page_id`` returned by playwright_open.
+            selector: CSS selector of the element to click.
+            operation_id: Optional idempotency key; a repeated ID returns the first
+                call's result instead of acting twice.
+        """
         return await manager.click(page_id, selector, operation_id or None)
 
     @tool_network_write
@@ -72,7 +91,15 @@ def make_playwright_tools(manager: "BrowserSessionManager") -> list["ToolLike"]:
         value: str,
         operation_id: str = "",
     ) -> dict[str, object]:
-        """Fill a non-sensitive visible form field without echoing its value."""
+        """Fill a non-sensitive visible form field without echoing its value.
+
+        Args:
+            page_id: The ``page_id`` returned by playwright_open.
+            selector: CSS selector of the field to fill.
+            value: The text to enter; it is not echoed back.
+            operation_id: Optional idempotency key; a repeated ID returns the first
+                call's result instead of acting twice.
+        """
         return await manager.fill(page_id, selector, value, operation_id or None)
 
     @tool_network_write
@@ -83,7 +110,15 @@ def make_playwright_tools(manager: "BrowserSessionManager") -> list["ToolLike"]:
         selector: str = "body",
         operation_id: str = "",
     ) -> dict[str, object]:
-        """Press one allow-listed keyboard key in an open page."""
+        """Press one allow-listed keyboard key in an open page.
+
+        Args:
+            page_id: The ``page_id`` returned by playwright_open.
+            key: The key to press, e.g. ``Enter`` or ``Tab``.
+            selector: CSS selector of the element to focus first (default ``body``).
+            operation_id: Optional idempotency key; a repeated ID returns the first
+                call's result instead of acting twice.
+        """
         return await manager.press(page_id, key, selector, operation_id or None)
 
     @tool_network_read
@@ -94,7 +129,15 @@ def make_playwright_tools(manager: "BrowserSessionManager") -> list["ToolLike"]:
         value: str,
         operation_id: str = "",
     ) -> dict[str, object]:
-        """Wait for a selector, text, approved URL, or load state."""
+        """Wait for a selector, text, approved URL, or load state.
+
+        Args:
+            page_id: The ``page_id`` returned by playwright_open.
+            condition: One of ``selector``, ``text``, ``url`` or ``load_state``.
+            value: The selector, text, URL or load state to wait for.
+            operation_id: Optional idempotency key; a repeated ID returns the first
+                call's result instead of acting twice.
+        """
         return await manager.wait_for(page_id, condition, value, operation_id or None)
 
     @tool_network_read
@@ -105,7 +148,15 @@ def make_playwright_tools(manager: "BrowserSessionManager") -> list["ToolLike"]:
         full_page: bool = False,
         operation_id: str = "",
     ) -> dict[str, object]:
-        """Save a bounded screenshot below the workspace artifact directory."""
+        """Save a bounded screenshot below the workspace artifact directory.
+
+        Args:
+            page_id: The ``page_id`` returned by playwright_open.
+            image_type: ``png`` or ``jpeg``.
+            full_page: Capture the whole scrollable page, not only the viewport.
+            operation_id: Optional idempotency key; a repeated ID returns the first
+                call's result instead of acting twice.
+        """
         return await manager.screenshot(page_id, image_type, full_page, operation_id or None)
 
     @tool_write
@@ -115,7 +166,14 @@ def make_playwright_tools(manager: "BrowserSessionManager") -> list["ToolLike"]:
         all_pages: bool = False,
         operation_id: str = "",
     ) -> dict[str, object]:
-        """Close one page or all pages in this Playwright browser context."""
+        """Close one page or all pages in this Playwright browser context.
+
+        Args:
+            page_id: The page to close; ignored when ``all_pages`` is true.
+            all_pages: Close every page in this browser context.
+            operation_id: Optional idempotency key; a repeated ID returns the first
+                call's result instead of acting twice.
+        """
         return await manager.close(page_id, all_pages, operation_id or None)
 
     return [

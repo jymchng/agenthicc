@@ -44,6 +44,7 @@ from typing import TYPE_CHECKING
 from agenthicc.workflows.code_plan.runner import CodePlanRunner
 from agenthicc.workflows.payload import payload_int, payload_mappings, payload_strings
 from agenthicc.workflows.plugin import PhaseSpec, WorkflowParams, WorkflowPlugin
+from agenthicc.tools.capabilities import tool_control
 
 # Cache-contract boundary: the inherited ``run_phase`` calls
 # ``build_workflow_prompt_contract`` before every phase turn. This runner keeps
@@ -145,6 +146,7 @@ def _make_analyze_tools(
     """Return the only tool that can end the analyze phase."""
     from lauren_ai._tools import tool
 
+    @tool_control
     @tool()
     async def submit_tool_plan(
         tool_name: str,
@@ -249,6 +251,7 @@ def _make_generate_tools(
     """Return the tool that ends the generate phase."""
     from lauren_ai._tools import tool
 
+    @tool_control
     @tool()
     async def confirm_generation_complete(
         file_path: str,
@@ -297,6 +300,7 @@ def _make_validate_tools(
     """Return the pass/fail decision tools for the validate phase."""
     from lauren_ai._tools import tool
 
+    @tool_control
     @tool()
     async def approve_tool(summary: str) -> dict[str, object]:
         """Signal that the tool plugin passes validation.
@@ -315,6 +319,7 @@ def _make_validate_tools(
         event.set()
         return {"ok": True, "message": "Tool approved."}
 
+    @tool_control
     @tool()
     async def reject_tool(issue: str) -> dict[str, object]:
         """Signal that the tool needs fixes before it can be approved.
@@ -617,8 +622,10 @@ class MakeToolRunner(CodePlanRunner):
                     "project environment when possible.\n"
                     "8. Bounded, structured returns — always return a dict:\n"
                     '        return {"ok": True, ...}\n'
-                    "   and for recoverable failures:\n"
-                    '        return {"ok": False, "error": "...", "recoverable": True}\n'
+                    "   and for failures, the shared envelope:\n"
+                    "        from agenthicc.tools.errors import ToolErrorCode, tool_error\n"
+                    '        return tool_error(ToolErrorCode.NOT_FOUND, "...")\n'
+                    "   (error_code from ToolErrorCode; retryable is set from the code).\n"
                     "   Bound inputs and outputs; never log credentials, tokens, or "
                     "unbounded remote responses.\n"
                     "9. NO import-time side effects: no network calls, file mutation, "

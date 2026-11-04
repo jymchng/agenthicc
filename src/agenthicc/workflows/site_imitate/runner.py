@@ -34,6 +34,7 @@ if TYPE_CHECKING:
     from agenthicc.workflows.config import WorkflowConfig
 
 from agenthicc.workflows import name_that_ui
+from agenthicc.tools.capabilities import tool_control, tool_read
 
 log = logging.getLogger(__name__)
 
@@ -181,6 +182,7 @@ def _make_analyze_tools(
     """Return the tools that can end or enrich the analyze phase."""
     from lauren_ai._tools import tool
 
+    @tool_read
     @tool()
     async def lookup_component(description: str) -> dict[str, object]:
         """Name a UI element from a sloppy description using the NameThatUI dictionary.
@@ -209,6 +211,7 @@ def _make_analyze_tools(
             "message": name_that_ui.format_matches(matches),
         }
 
+    @tool_read
     @tool()
     async def list_components(platform: str = "", query: str = "") -> dict[str, object]:
         """List the component names available in the NameThatUI dictionary.
@@ -235,6 +238,7 @@ def _make_analyze_tools(
             "message": name_that_ui.format_name_list(names),
         }
 
+    @tool_control
     @tool()
     async def submit_analysis(analysis: str, components: str = "") -> dict[str, object]:
         """Record the structured analysis of the reference website and advance.
@@ -269,6 +273,7 @@ def _make_plan_tools(
     """Return tools that can end or redirect the plan phase."""
     from lauren_ai._tools import tool
 
+    @tool_control
     @tool()
     async def submit_plan(plan: str, components: list[str] | None = None) -> dict[str, object]:
         """Record the architecture and build plan, then advance to scaffold.
@@ -305,6 +310,7 @@ def _make_plan_tools(
             "message": f"Plan recorded with {len(components)} components. The scaffold phase starts next.",
         }
 
+    @tool_control
     @tool()
     async def request_reanalysis(question: str) -> dict[str, object]:
         """Signal that more analysis is needed before a plan can be written.
@@ -327,6 +333,7 @@ def _make_scaffold_tools(
     """Return the tool that ends the scaffold phase."""
     from lauren_ai._tools import tool
 
+    @tool_control
     @tool()
     async def scaffold_complete(path: str) -> dict[str, object]:
         """Signal that the NextJS project has been scaffolded with all deps.
@@ -355,6 +362,7 @@ def _make_build_tools(
     """Return the tools that can end or enrich the build phase."""
     from lauren_ai._tools import tool
 
+    @tool_read
     @tool()
     async def lookup_component(description: str) -> dict[str, object]:
         """Name a UI element from a sloppy description using the NameThatUI dictionary.
@@ -381,6 +389,7 @@ def _make_build_tools(
             "message": name_that_ui.format_matches(matches),
         }
 
+    @tool_control
     @tool()
     async def component_built() -> dict[str, object]:
         """Signal that this phase's component has been implemented.
@@ -404,6 +413,7 @@ def _make_verify_tools(
     """Return the pass/fail decision tools for one component's verify phase."""
     from lauren_ai._tools import tool
 
+    @tool_control
     @tool()
     async def component_verified(summary: str) -> dict[str, object]:
         """Signal that the current component passed verification.
@@ -420,6 +430,7 @@ def _make_verify_tools(
         event.set()
         return {"ok": True, "message": "Component verified. Advancing to the next component."}
 
+    @tool_control
     @tool()
     async def component_verification_failed(errors: str) -> dict[str, object]:
         """Signal that the current component failed verification.
@@ -443,6 +454,7 @@ def _make_final_verify_tools(
     """Return the pass/fail decision tools for the final verify phase."""
     from lauren_ai._tools import tool
 
+    @tool_control
     @tool()
     async def final_verify_passed(summary: str) -> dict[str, object]:
         """Signal that the whole site builds and all routes compile.
@@ -458,6 +470,7 @@ def _make_final_verify_tools(
         event.set()
         return {"ok": True, "message": "Final verify passed. The site is complete."}
 
+    @tool_control
     @tool()
     async def final_verify_failed(errors: str) -> dict[str, object]:
         """Signal that the whole-site build failed with errors to fix.

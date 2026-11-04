@@ -64,9 +64,10 @@ class TestFsEdgeCases:
         r = await MakeDirectoryTool().execute({"path": "../../bad"}, ctx(tmp_path))
         assert r["ok"] is False
 
-    async def test_file_exists_traversal_returns_false(self, tmp_path):
+    async def test_file_exists_traversal_is_denied_not_reported_missing(self, tmp_path):
         r = await FileExistsTool().execute({"path": "../../etc/passwd"}, ctx(tmp_path))
-        assert r["exists"] is False
+        assert r["ok"] is False and r["error_code"] == "permission_denied"
+        assert "exists" not in r
 
     async def test_search_traversal_denied(self, tmp_path):
         r = await SearchFilesTool().execute({"pattern": "*.py", "path": "../../"}, ctx(tmp_path))
@@ -148,7 +149,11 @@ class TestGitEdgeCases:
     async def test_blame_error(self, mg):
         mg.return_value = GitRun(128, "", "fatal: not a git repository")
         r = await GitBlameTool().execute({"path": "nope.py"}, {})
-        assert r["ok"] is False and r["error_code"] == "not_a_repository"
+        assert (
+            r["ok"] is False
+            and r["error_code"] == "not_found"
+            and r["reason"] == "not_a_repository"
+        )
 
     async def test_diff_error(self, mg):
         mg.return_value = GitRun(128, "", "fatal error")

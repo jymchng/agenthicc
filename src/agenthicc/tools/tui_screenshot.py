@@ -180,13 +180,16 @@ class TuiScreenshotTool:
             if op == "close":
                 return await self._op_close(sid)
         except _ToolError as exc:
-            return {"ok": False, "error": str(exc), "recoverable": True}
+            from agenthicc.tools.errors import classify_message, tool_error
 
-        return {
-            "ok": False,
-            "error": f"Unknown operation: {operation!r}",
-            "recoverable": True,
-            "valid_operations": [
+            return tool_error(classify_message(str(exc)), str(exc))
+
+        from agenthicc.tools.errors import ToolErrorCode, tool_error
+
+        return tool_error(
+            ToolErrorCode.INVALID_ARGUMENT,
+            f"Unknown operation: {operation!r}",
+            valid_operations=[
                 "create",
                 "list",
                 "status",
@@ -196,7 +199,7 @@ class TuiScreenshotTool:
                 "render",
                 "close",
             ],
-        }
+        )
 
     # ------------------------------------------------------------------ ops
     async def _op_create(self, sid: str, command: str, backend: str) -> dict[str, object]:

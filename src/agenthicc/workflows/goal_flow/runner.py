@@ -780,7 +780,9 @@ def _make_summarize_tools(
         if can_complete is not None and not can_complete():
             return {
                 "ok": False,
-                "error_code": "pending_goals",
+                "error_code": "conflict",
+                "reason": "pending_goals",
+                "retryable": False,
                 "error": "The workflow cannot complete while a goal is pending or active.",
                 "fix": "Implement and verify every pending goal before calling complete_workflow.",
             }

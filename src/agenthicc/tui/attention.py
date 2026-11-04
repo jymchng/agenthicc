@@ -175,11 +175,13 @@ class AgentAttentionRouter:
             conversation.agents_target.set(target.session_id if target is not None else None)
             conversation.agents_item_target.set(None)
         if self._set_terminal_title is not None:
+            from agenthicc.tui.attention_labels import sessions_need_you, sessions_running
+
             parts = ["Agenthicc"]
             if snapshot.needs_you_count:
-                parts.append(f"{snapshot.needs_you_count} need you")
+                parts.append(sessions_need_you(snapshot.needs_you_count))
             if snapshot.running_count:
-                parts.append(f"{snapshot.running_count} running")
+                parts.append(sessions_running(snapshot.running_count))
             self._set_terminal_title(" · ".join(parts))
 
     def _observe(
@@ -283,7 +285,9 @@ class AgentAttentionRouter:
             if counts["failed"]:
                 parts.append(f"✗ {counts['failed']} failed")
             if counts["needs"]:
-                parts.append(f"◆ {counts['needs']} need you")
+                from agenthicc.tui.attention_labels import sessions_need_you
+
+                parts.append(f"◆ {sessions_need_you(counts['needs'])}")
             message = " · ".join(parts)
 
         target = next((notice for notice in notices if notice.kind == "needs"), notices[0])

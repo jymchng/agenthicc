@@ -25,7 +25,7 @@ from agenthicc.tools import (
     Tool,
     ToolBase,
     ToolCallContext,
-    ToolErrorKind,
+    ToolErrorCode,
     ToolResult,
     ToolResultEnvelope,
     ToolSandbox,
@@ -216,7 +216,7 @@ async def test_approval_signal_path_and_approved_callback() -> None:
     signal_result = await requires_signal.execute(
         "add_numbers", {"left": 1, "right": 2}, "signal-1"
     )
-    assert signal_result.error_kind == ToolErrorKind.approval_required.value
+    assert signal_result.error_kind == ToolErrorCode.APPROVAL_DENIED
 
     async def approve(meta: object, ctx: ToolCallContext) -> ApprovalDecision:
         return ApprovalDecision.approved
@@ -281,7 +281,7 @@ async def test_unknown_tool_is_structured_and_emits_completion() -> None:
     result = await AgenthiccToolExecutor(event_sink=sink).execute("missing", {}, "missing-1")
 
     assert result.ok is False
-    assert result.error_kind == ToolErrorKind.unknown.value
+    assert result.error_kind == ToolErrorCode.NOT_FOUND
     assert len(sink.events) == 1
     assert sink.events[0].__class__.__name__ == "ToolCallComplete"
 
@@ -323,12 +323,12 @@ async def test_approval_timeout_and_error_taxonomy() -> None:
     denied_executor = AgenthiccToolExecutor(approval_handler=deny)
     denied_executor.register(add_numbers, requires_approval=True)
     denied = await denied_executor.execute("add_numbers", {"left": 1, "right": 2}, "deny-1")
-    assert denied.error_kind == ToolErrorKind.denied.value
+    assert denied.error_kind == ToolErrorCode.APPROVAL_DENIED
 
     timeout_executor = AgenthiccToolExecutor()
     timeout_executor.register(slow_tool, timeout_s=0.001)
     timeout = await timeout_executor.execute("slow_tool", {}, "timeout-1")
-    assert timeout.error_kind == ToolErrorKind.timeout.value
+    assert timeout.error_kind == ToolErrorCode.TIMEOUT
 
     network = await AgenthiccToolExecutor([network_failure]).execute(
         "network_failure", {}, "network-1"
@@ -339,9 +339,9 @@ async def test_approval_timeout_and_error_taxonomy() -> None:
     provider = await AgenthiccToolExecutor([provider_failure]).execute(
         "provider_failure", {}, "provider-1"
     )
-    assert network.error_kind == ToolErrorKind.network.value
-    assert permission.error_kind == ToolErrorKind.denied.value
-    assert provider.error_kind == ToolErrorKind.provider.value
+    assert network.error_kind == ToolErrorCode.NETWORK
+    assert permission.error_kind == ToolErrorCode.PERMISSION_DENIED
+    assert provider.error_kind == ToolErrorCode.INTERNAL
 
 
 @pytest.mark.asyncio
@@ -364,7 +364,7 @@ async def test_structured_legacy_denial_is_classified_without_retry() -> None:
     result = await executor.execute("denying_tool", {}, "denied-1")
 
     assert result.ok is False
-    assert result.error_kind == ToolErrorKind.denied.value
+    assert result.error_kind == ToolErrorCode.OUTSIDE_WORKSPACE
     assert calls == 1
 
 

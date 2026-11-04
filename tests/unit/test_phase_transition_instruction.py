@@ -42,13 +42,18 @@ def test_control_metadata_advertises_custom_transition_tools() -> None:
     assert "prose" in prompt
 
 
-def test_known_transition_name_remains_compatible_without_metadata() -> None:
+def test_only_control_metadata_makes_a_transition_tool() -> None:
+    """A familiar name without ``@tool_control`` is not a transition (TOOLR-04)."""
+
     async def finalize_plan() -> None:
         return None
 
     prompt = phase_transition_instruction([finalize_plan], phase_name="plan")
 
-    assert "`finalize_plan`" in prompt
+    assert "`finalize_plan`" not in prompt
+    assert "`finalize_plan`" in phase_transition_instruction(
+        [_control_tool("finalize_plan")], phase_name="plan"
+    )
 
 
 def test_expected_names_narrow_shared_declarative_tool_groups() -> None:

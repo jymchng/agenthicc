@@ -165,7 +165,7 @@ async def test_an_interrupted_write_leaves_the_original_and_no_temporary(
     monkeypatch.setattr(os, "replace", failing_replace)
     result = await _patch(workspace, path="f.txt", old_content="original", new_content="new")
 
-    assert result["ok"] is False and result["error_code"] == "io_error"
+    assert result["ok"] is False and result["error_code"] == "internal"
     assert target.read_bytes() == b"original\n"
     assert sorted(path.name for path in workspace.iterdir()) == ["f.txt"]
 
