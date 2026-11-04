@@ -866,6 +866,18 @@ def _cmd_perf(ctx: CommandContext) -> bool:
         "Synchronized output: " + ("on" if capabilities.synchronized_output else "off"),
         markup=False,
     )
+    monitor = ctx.loop_lag() if ctx.loop_lag is not None else None
+    if monitor is not None:
+        lag = monitor.summary()
+        ctx.console.print(
+            f"Event-loop lag: p50 {lag['p50_ms']:.1f} ms · p95 {lag['p95_ms']:.1f} ms · "
+            f"max {lag['max_ms']:.0f} ms",
+            markup=False,
+        )
+        for stall in monitor.stalls():
+            ctx.console.print(
+                f"  stall {stall.duration_s * 1_000:.0f} ms at {stall.culprit}", markup=False
+            )
     return True
 
 

@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from agenthicc.runners.loop_scheduler import LoopManager
     from agenthicc.runners.startup import StartupCoordinator
     from agenthicc.tui.keymap_service import KeymapService
+    from agenthicc.tui.loop_lag import LoopLagMonitor
     from agenthicc.tui.workspace.frames import FrameStats
     from agenthicc.schedules.manager import ScheduleManager
     from agenthicc.memory.tool_history import ToolHistoryRecoveryState
@@ -104,6 +105,7 @@ class CommandContext:
     terminal_manager: "TerminalManager | None" = None
     startup: "StartupCoordinator | None" = None
     frame_stats: "Callable[[], FrameStats | None] | None" = None
+    loop_lag: "Callable[[], LoopLagMonitor | None] | None" = None
     keymap_service: "KeymapService | None" = None
     set_pending_skill: "Callable[[str], None] | None" = None
     set_pending_menu: "Callable[[Overlay], None] | None" = None

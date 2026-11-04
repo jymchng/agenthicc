@@ -1,6 +1,6 @@
 ---
 title: "TUIR-03: Journal work off the event loop — an incremental subagent projection and a durable writer thread"
-status: Proposed
+status: Implemented with amendments (2026-11-04; tools wave 5, pending merge)
 version: 1.0.0
 date: 2026-11-03
 scope: "the cost of ConversationJournal on the event loop: subagent queries that re-read the whole file, and synchronous write+fsync per record — without weakening the write-before-expose durability rule"
@@ -18,6 +18,51 @@ tags:
 ---
 
 # TUIR-03: Journal work off the event loop
+
+## Implementation status (2026-11-04)
+
+Delivered in tools wave 5 (branch `tools-wave-5-journal-and-lag`).
+
+- **An incremental subagent projection (goals 1 and 2).**
+  - `ConversationJournal` keeps the subagent and `agent_message_event` records
+    in memory. They are built by one pass over the file on first query, which
+    stops at the first torn line, and extended by every append.
+  - Every subagent fold, `find_subagent_pool`,
+    `completed_background_subagent_pools` and `subagent_pool_records` filter
+    that view and never re-read the file.
+  - `_fold_subagent_kind` is replaced by `_subagent_kind`, which reads the view.
+- **One durability table (goal 4).** `RECORD_DURABILITY` declares every record
+  kind. A test fails when a kind written by the journal is missing from it.
+- **Advisory writes leave the loop.**
+  - `usage_record` is the only advisory kind. It is queued and written by one
+    writer thread, which fsyncs outside the lock.
+  - Queued advisory records are written before the next durable record, so
+    sequence order on disk is unchanged.
+  - Every read drains the queue first, and `close()` flushes it.
+
+Amendments:
+
+- **Goal 3, durable writes.** Durable writes stay synchronous on the calling
+  thread: write, fsync, then return. An awaited writer thread would have
+  changed every caller to `await` and moved the write-before-expose ordering
+  across a thread boundary. At 1.2 ms locally, the fsync was not what TUIR-00
+  measured; the 240–300 ms folds were. Group commit for advisory records is
+  one fsync per writer wake-up, not a 50 ms timer.
+- **Goal 5, the resume read.** Not changed. Resume still reads the file once
+  before the TUI accepts input, on the loop, as before.
+- The property test lives in `tests/unit/test_journal_projection.py`, not
+  `test_conversation_journal.py`.
+
+Tests (`tests/unit/test_journal_projection.py`):
+
+- with a 50 MB journal, each query takes under 1 ms (criterion 1);
+- a Hypothesis test checks the projection equals a fresh read, including a
+  torn tail and a reopen (criterion 3);
+- with a 50 ms injected fsync, usage appends stay under 10 ms (criterion 5);
+- sequence order is kept across queued and durable records;
+- every kind is declared (criterion 6).
+
+The existing worker-result ordering tests still pass (criterion 4).
 
 ## 1. Problem
 

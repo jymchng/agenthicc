@@ -1648,6 +1648,16 @@ interrupted and does not rerun them. Stable message IDs on
 `append_message()` and `has_message_id()` support exactly-once synthetic
 completion delivery across resume and compaction.
 
+Durability is declared per record kind in `RECORD_DURABILITY` (a
+`Mapping[str, Durability]`, where `Durability = Literal["durable", "advisory"]`).
+Durable records are written and `fsync`-ed before the append returns. Advisory
+records (`usage_record` only) are queued and written by a background writer
+thread, always before the next durable record so sequence order is kept; every
+read drains the queue first, and `close()` flushes it. Subagent and
+agent-message queries are answered from an in-memory projection built by one
+pass over the file and then extended on each append, so
+`subagent_pool_records(pool_id)` and the subagent folds do not re-read the file.
+
 ### IncompleteTurn
 
 ```python
@@ -1865,6 +1875,31 @@ an unbound sequence is never `ESC`. `decode_control`, `decode_csi`,
 The current overlay host maps approval request kinds to overlay classes in
 `runners.tui_session.TUISession`; `PlanApprovalOverlay` is the current plan
 review surface. See `docs/guides/tui.md` for rendering and resize contracts.
+
+### LoopLagMonitor
+
+```python
+class LoopLagMonitor:
+    def __init__(self, *, interval_s: float = SAMPLE_INTERVAL_S, threshold_s: float = STALL_THRESHOLD_S) -> None: ...
+    def start(self) -> None: ...
+    async def stop(self) -> None: ...
+    def stalls(self) -> list[Stall]: ...
+    def summary(self) -> dict[str, float]: ...
+```
+
+`agenthicc.tui.loop_lag` (TUIR-04). A sampler task wakes every
+`SAMPLE_INTERVAL_S` (0.05 s) and records how late it woke; `summary()` returns
+`samples`, `p50_ms`, `p95_ms` and `max_ms` over the last 1,024 samples. A
+watchdog thread snapshots the loop thread's stack once when the sampler has
+not ticked for `STALL_THRESHOLD_S` (0.25 s); `stalls()` returns the last five
+`Stall(started_at, duration_s, frames, gc_s)` records. A `gc.callbacks` entry
+times garbage collections; `Stall.culprit` is `"garbage collection (N ms)"`
+when collection took at least half the stall, otherwise the innermost frame
+outside asyncio, threading and selectors. A stall the watchdog could not
+observe (the GIL was held throughout) is recorded by the sampler without
+frames. `TUISession` starts
+one monitor per session and stops it on teardown; `/perf` prints the lag
+percentiles and one line per stall.
 
 ## Historical TUI API — not in the current checkout
 

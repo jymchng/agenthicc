@@ -38,3 +38,4 @@ Discovery cost is owned by
 | 2 | `tools-wave-2-exec-and-git` | TOOLR-02, TOOLR-03 |
 | 3 | `tools-wave-3-network-and-mcp` | TOOLR-05, TOOLR-06 |
 | 4 | `tools-wave-4-discovery-off-loop` | TOOLR-09 (with TUIR-01, TUIR-02) |
+| 5 | `tools-wave-5-journal-and-lag` | TUIR-03, TUIR-04 (event-loop budget the TOOLR-09 work is held to) |
