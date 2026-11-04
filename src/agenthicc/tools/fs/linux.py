@@ -84,10 +84,9 @@ class LinuxFilesystemBackend:
         data: bytes,
         create_parents: bool = True,
     ) -> int:
-        resolved = self._resolve(path)
-        if create_parents:
-            resolved.parent.mkdir(parents=True, exist_ok=True)
-        resolved.write_bytes(data)
+        from agenthicc.tools.fs.edits import atomic_write
+
+        atomic_write(self._resolve(path), data, create_parents=create_parents)
         return len(data)
 
     def write_text(
@@ -97,11 +96,11 @@ class LinuxFilesystemBackend:
         encoding: str = "utf-8",
         create_parents: bool = True,
     ) -> int:
-        resolved = self._resolve(path)
-        if create_parents:
-            resolved.parent.mkdir(parents=True, exist_ok=True)
-        resolved.write_text(content, encoding=encoding)
-        return len(content.encode(encoding))
+        from agenthicc.tools.fs.edits import atomic_write
+
+        data = content.encode(encoding)
+        atomic_write(self._resolve(path), data, create_parents=create_parents)
+        return len(data)
 
     def append_text(self, path: str, content: str) -> int:
         resolved = self._resolve(path)
