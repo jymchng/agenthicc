@@ -1,7 +1,7 @@
 ---
 title: "SUBAGENT-04: Nesting depth and fan-out governance"
-status: Proposed
-version: 0.1.0
+status: Implemented (phase 1)
+version: 0.2.0
 date: 2026-10-29
 scope: "the bounds on how much work a pool may create and how deep delegation may go, and how both are enforced and reported to the parent and the TUI"
 area: A-4
@@ -19,6 +19,44 @@ tags:
 ---
 
 # SUBAGENT-04: Nesting depth and fan-out governance
+
+## Implementation status (2026-11-03)
+
+Evaluated at `0a63bfba1dca68e61a06fe3b9acb4f536637396b` — the merge of PR #6 that put the series on `main` — by
+SUBAGENT-10 §3 (0.2.0). Verdicts: **D** delivered, **P** partial, **M** missing.
+Criteria are judged by behaviour; a case that exists in a file the criterion
+does not name is marked *placement* and tracked by SUBAGENT-10 R6/WP-8. Line
+numbers below are at `0a63bfb`; this document's §2–§3 keep the citations of
+the commit they were written against.
+
+**Verdict: implemented, with one criterion contradicted by the code and
+amended.** Goals 9 D / 1 P / 0 M; criteria 8 D / 3 P / 0 M (counted by
+SUBAGENT-10 0.1.0, which marked placement-only cases partial: criteria 2 and
+11 are placement-only, criterion 6 is behavioural). Phase 2 is SUBAGENT-10 WP-3
+(D-1) and WP-9.
+
+| Item | Verdict | Evidence |
+|---|---|---|
+| Goals 1–3 depth default 1, refusal with remedy, withholding | D | `src/agenthicc/subagents/tool.py:242-250` (depth refusal); `src/agenthicc/subagents/governance.py:19` (`resolve_depth_tier`) |
+| Goal 4 per-depth task and concurrency ceilings; call may lower, never raise | **P** | Ceilings and per-depth tiers exist (`src/agenthicc/config.py:1255-1256`); a request above the concurrency ceiling is **refused** (`tool.py:335-343`), where criterion 6 said lowered |
+| Goal 5 active-pool limit | D | `src/agenthicc/subagents/pool.py:2380-2390` — a *rolling minimum* of every active pool's own limit (`:2383`), which the body does not describe |
+| Goals 6–10 ancestry, visibility, defaults, narrow-only tiers, no new keys | D | `governance.py`; `SubagentPoolState.depth`/`parent_pool_id` (`pool.py:364-365`) |
+
+**Decision D-1 (SUBAGENT-10 §4): criterion 6 is amended to refusal**, in §6
+below. The test `test_nested_depth_tier_refuses_concurrency_above_inherited_limit`
+(`tests/integration/test_subagent_tool_execution.py:905`) already asserts the
+refusal, the ceiling (`max_concurrent_limit == 2`), its source
+(`subagents.depth_limits.2.max_concurrent`) and ancestor inheritance (a depth-3
+pool resolving to the depth-2 entry), so the amendment needed no code or test
+change. There is no clamp in either direction: a value below 1 is refused too
+(`tool.py:333-334`); `tool.py:263` only normalises the metadata attached to a
+refusal, which therefore reports `max_concurrent_used` equal to the refused
+request — a misleading field WP-9 corrects.
+
+**Undocumented behaviour to add to §7 (WP-9):** two per-depth tables —
+`depth_limits` and `depth_tiers` (`config.py:1255-1256`) — resolved by different
+code; and the rolling-minimum active-pool cap, under which one low-configured
+pool tightens admission for every other.
 
 ## 1. Executive summary
 
@@ -337,11 +375,16 @@ The A-4 boundaries from the research report §5.3, restated as commitments:
    configured source it came from. The same test declares a per-depth table in
    which depth 2 allows fewer tasks than depth 1, and asserts the depth-2 pool is
    held to its own smaller maximum: `tests/unit/test_subagent_pool.py`.
-6. A `max_concurrent` argument above the declared ceiling is lowered to the
-   ceiling, and the returned result reports the value actually used, so the
-   model is told rather than silently obeyed. A depth with no entry inherits the
-   nearest declared ancestor's ceiling rather than falling back to unlimited:
-   `tests/integration/test_subagent_tool_execution.py`.
+6. *(Amended 2026-11-03 by SUBAGENT-10 D-1.)* A `max_concurrent` argument above
+   the declared ceiling is refused before any worker starts, and the refusal
+   names the ceiling and the configured source it came from, so the model is
+   told rather than silently obeyed or silently reduced. A depth with no entry
+   inherits the nearest declared ancestor's ceiling rather than falling back to
+   unlimited. A value below 1 is likewise refused; no value is clamped:
+   `tests/integration/test_subagent_tool_execution.py`
+   (`test_nested_depth_tier_refuses_concurrency_above_inherited_limit`). The
+   original text required lowering to the ceiling; the shipped refusal is
+   stricter and was adopted instead.
 7. Exceeding the pool-count limit is refused with an error naming the limit and
    the pools currently running: `tests/unit/test_subagent_pool.py`.
 8. A child pool whose `(type, task)` signature repeats in its ancestry is

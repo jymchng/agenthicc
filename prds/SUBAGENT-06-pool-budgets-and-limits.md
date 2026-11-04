@@ -1,7 +1,7 @@
 ---
 title: "SUBAGENT-06: Pool budgets and limits"
 status: Proposed
-version: 0.1.0
+version: 0.2.0
 date: 2026-10-29
 scope: "token, cost and wall-clock budget accounting for one subagent pool: measuring spend from the existing usage ledger, declaring a limit, and reporting both to the parent, the transcript and the TUI — never the act of stopping a pool"
 area: A-6
@@ -20,6 +20,43 @@ tags:
 ---
 
 # SUBAGENT-06: Pool budgets and limits
+
+## Implementation status (2026-11-03)
+
+Evaluated at `0a63bfba1dca68e61a06fe3b9acb4f536637396b` — the merge of PR #6 that put the series on `main` — by
+SUBAGENT-10 §3 (0.2.0). Verdicts: **D** delivered, **P** partial, **M** missing.
+Criteria are judged by behaviour; a case that exists in a file the criterion
+does not name is marked *placement* and tracked by SUBAGENT-10 R6/WP-8. Line
+numbers below are at `0a63bfb`; this document's §2–§3 keep the citations of
+the commit they were written against.
+
+**Verdict: not implemented.** Goals 0 D / 1 P / 9 M; criteria 0 D / 1 P / 10 M.
+What occupies this document's settings block is a resource governor that does
+the stopping §5 forbids; SUBAGENT-10 decision D-2 reclassifies it rather than
+removing it. The work is SUBAGENT-10 WP-4 and WP-7.
+
+- **Goals 1–8 — M.** The worker run id carries no pool id
+  (`src/agenthicc/subagents/pool.py:1601`), so no pool total is computable;
+  `max_budget` and a `budget:` argument do not exist; `SubagentResult`,
+  `AggregatedResult` and `SubagentPoolState` (`pool.py:347-366`) carry no spend.
+- **Goal 9 — P.** A crossing is recorded (`AggregatedResult.budget_exceeded_reason`),
+  and it also triggers a stop (`pool.py:2126-2135`). Under D-2 that response is
+  SUBAGENT-08 goal 9's, so the detection half stands here and the response is
+  attributed there.
+- **Goal 10 — M, and §7's default claim is corrected.** §7 says "No budget is
+  declared by default … day-one behaviour is today's". The shipped defaults arm
+  four **operator ceilings** for every pool — `max_tokens = 200_000`,
+  `max_total_time_s = 600.0`, `max_tool_calls`, `max_iterations`
+  (`src/agenthicc/config.py:1236-1256`) — and the user guides document them as
+  armed (`docs/guides/subagents.md:441-447`, `docs/guides/configuration.md:282-284`).
+  D-2 keeps them armed and introduces *operator ceiling* as a category this PRD
+  did not anticipate: always present, set by the operator, distinct from the
+  optional per-call `budget:` declaration, which may lower but never raise them.
+- **A second meter exists.** The governor counts input plus output tokens from
+  the worker's signal bus into a private counter (`pool.py:1578-1584`,
+  `:2151-2154`); the ledger records the same calls with cache tokens and cost.
+  D-2 requires the two to agree until WP-7 replaces the counter with the
+  ledger-derived pool total.
 
 ## 1. Executive summary
 
@@ -429,11 +466,20 @@ The A-6 boundaries from the research report §5.3, restated as commitments.
 
 ## 7. Rollout, migration and security
 
-**Defaults.** No budget is declared by default and
-`subagents.max_budget` ships unset, so day-one behaviour is today's: no
-aggregation requested, no clamp applied, no new text in the digest, attestation
-fields present but empty. A pool opts in per call; a project opts in by setting
-a ceiling.
+**Defaults.** *(Amended 2026-11-03 by SUBAGENT-10 D-2.)* No per-call budget is
+declared by default and `subagents.max_budget` ships unset, so no per-call
+clamp is applied and no declared-budget text appears in the digest. That is
+**not** the same as "no limits": four *operator ceilings* are armed for every
+pool by default — `subagents.max_tokens = 200000`,
+`subagents.max_total_time_s = 600.0`, `subagents.max_tool_calls = 256` and
+`subagents.max_iterations = 128` (`src/agenthicc/config.py:1236-1256`) — and the user
+guides document them as armed (`docs/guides/subagents.md:441-447`,
+`docs/guides/configuration.md:282-284`). Crossing one triggers SUBAGENT-08's
+response (`subagents.on_budget_exceeded`, default `drain`). The text this
+paragraph replaced said "day-one behaviour is today's"; it was written before
+the ceilings shipped and is retracted. Operator ceilings are a category this
+PRD did not anticipate: always present, set by the operator, and lowered — never
+raised — by a per-call `budget:` declaration of the same unit.
 
 **Migration.** Three ordered steps, each independently shippable:
 

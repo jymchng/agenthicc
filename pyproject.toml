@@ -145,6 +145,16 @@ module = [
 ignore_missing_imports = true
 ignore_errors = true
 
+# numpy is not a dependency of this project, but a development environment can
+# contain it transitively (for example through speech tools installed beside the
+# project). Its current stubs use Python 3.12 syntax, which a python_version =
+# "3.11" analysis cannot parse, so the gate would depend on what else happens to
+# be installed. Never analyse it: an import of numpy resolves to Any either way.
+[[tool.mypy.overrides]]
+module = ["numpy", "numpy.*"]
+follow_imports = "skip"
+follow_imports_for_stubs = true
+
 [tool.ruff]
 line-length = 100
 

@@ -933,6 +933,53 @@ async def test_nested_depth_tier_refuses_concurrency_above_inherited_limit() -> 
     assert result["max_concurrent_limit"] == 2
     assert result["max_concurrent_limit_source"] == "subagents.depth_limits.2.max_concurrent"
     assert "requested max_concurrent=99 exceeds configured max_concurrent=2" in result["error"]
+    # A refusal reports what was asked for, never the refused value as "used".
+    assert result["max_concurrent_requested"] == 99
+    assert "max_concurrent_used" not in result
+    assert "max_concurrent" not in result
+
+
+async def test_concurrency_below_one_is_refused_without_reporting_a_used_value() -> None:
+    """SUBAGENT-10 criterion 27: no value is clamped, and a refusal reports none as used."""
+    transport = MockTransport()
+    spawn = make_spawn_subagents_tool(
+        AgentRunnerBase(transport=transport),
+        "mock-model",
+        [],
+        registry=_registry("not-a-parent-tool"),
+    )
+
+    result = await spawn(
+        tasks=[{"type": "researcher", "task": "Check API compatibility."}],
+        max_concurrent=0,
+        timeout_s=30,
+    )
+
+    assert result["ok"] is False
+    assert result["error"] == "max_concurrent must be a positive integer"
+    assert result["max_concurrent_requested"] == 0
+    assert "max_concurrent_used" not in result
+
+
+async def test_accepted_concurrency_is_reported_as_used() -> None:
+    transport = MockTransport()
+    transport.queue_response(_final("Compatible.", "final"))
+    spawn = make_spawn_subagents_tool(
+        AgentRunnerBase(transport=transport),
+        "mock-model",
+        [],
+        registry=_registry("not-a-parent-tool"),
+    )
+
+    result = await spawn(
+        tasks=[{"type": "researcher", "task": "Check API compatibility."}],
+        max_concurrent=2,
+        timeout_s=30,
+    )
+
+    assert result["max_concurrent"] == 2
+    assert result["max_concurrent_used"] == 2
+    assert "max_concurrent_requested" not in result
 
 
 async def test_synthetic_delegating_type_cannot_spawn_past_max_depth() -> None:

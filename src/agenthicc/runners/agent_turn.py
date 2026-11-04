@@ -2009,6 +2009,7 @@ class AgentTurnRunner:
                         else ctx.max_agent_turns,
                     ),
                     system_prompt=prompt or definition.description,
+                    description=definition.description,
                     model=model,
                     policy=subagent_policy,
                     effort=definition.effort,

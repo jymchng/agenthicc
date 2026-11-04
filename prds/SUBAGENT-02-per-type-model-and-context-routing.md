@@ -1,7 +1,7 @@
 ---
 title: "SUBAGENT-02: Per-type model, reasoning-effort and context routing"
-status: Proposed
-version: 0.1.0
+status: Implemented (2026-11-02)
+version: 0.2.0
 date: 2026-10-29
 scope: "which model, reasoning effort and context budget a worker of a given type runs with, and how those values take precedence over the inherited execution policy"
 area: A-2
@@ -19,6 +19,25 @@ tags:
 ---
 
 # SUBAGENT-02: Per-type model, reasoning-effort and context routing
+
+## Implementation status (2026-11-03)
+
+Evaluated at `0a63bfba1dca68e61a06fe3b9acb4f536637396b` — the merge of PR #6 that put the series on `main` — by
+SUBAGENT-10 §3 (0.2.0). Verdicts: **D** delivered, **P** partial, **M** missing.
+Criteria are judged by behaviour; a case that exists in a file the criterion
+does not name is marked *placement* and tracked by SUBAGENT-10 R6/WP-8. Line
+numbers below are at `0a63bfb`; this document's §2–§3 keep the citations of
+the commit they were written against.
+
+**Verdict: implemented.** Goals 9 D / 0 P / 0 M. SUBAGENT-10 raises no item
+against this document. The precedence chain lives in one place per knob: model
+in `src/agenthicc/runners/agent_turn.py:1985-1997` (definition, `inherit`,
+operator default), effort in `src/agenthicc/subagents/pool.py:500-530`
+(`_worker_effort`: call override, type, operator default, inherited) and
+`:532-545` (`_request_options_with_effort` adds one option while keeping every
+inherited one, goal 6). Worker usage records carry the serving model
+(`pool.py:1599-1606`), which is the precondition SUBAGENT-06's per-model
+attribution needs.
 
 ## 1. Executive summary
 

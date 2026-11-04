@@ -149,6 +149,38 @@ the roadmap; the others each own one improvement.
 - [AGX-13 — Unified keymap, generated help, mouse and accessibility (implemented)](agx-13-unified-keymap-and-accessibility.md)
 - [AGX-14 — CPU-time performance budgets in CI and perf diagnostics](agx-14-performance-budgets-and-diagnostics.md)
 
+### SUBAGENT series — subagent management
+
+The SUBAGENT documents (prefix `SUBAGENT-`, separate from the numbered sequence)
+come from a cross-harness study of how coding agents define, run and govern
+subagents. The research report locks nine capability areas and the house format;
+SUBAGENT-01…09 each own one area; SUBAGENT-10 records how the shipped code
+measures against them and the decisions and work packages that close the gaps;
+SUBAGENT-11 adds the model-facing half of background and lifecycle control.
+Statuses below are as of the evaluation at `0a63bfb` (2026-11-03); each document
+carries an implementation-status section with per-goal evidence.
+
+- [SUBAGENT research — how coding-agent harnesses manage subagents (historical)](SUBAGENT-research-harness-comparison.md)
+- [SUBAGENT-01 — Declarative subagent type definitions and discovery (implemented: phase 1)](SUBAGENT-01-declarative-subagent-types.md)
+- [SUBAGENT-02 — Per-type model, reasoning-effort and context routing (implemented)](SUBAGENT-02-per-type-model-and-context-routing.md)
+- [SUBAGENT-03 — Structured result contracts and schema-validated findings (implemented)](SUBAGENT-03-structured-result-contracts.md)
+- [SUBAGENT-04 — Nesting depth and fan-out governance (implemented: phase 1)](SUBAGENT-04-nesting-depth-and-fan-out.md)
+- [SUBAGENT-05 — Per-type permission narrowing (implemented)](SUBAGENT-05-per-type-permission-narrowing.md)
+- [SUBAGENT-06 — Pool budgets and limits (proposed)](SUBAGENT-06-pool-budgets-and-limits.md)
+- [SUBAGENT-07 — Background and non-blocking orchestration (implemented: phase 1)](SUBAGENT-07-background-orchestration.md)
+- [SUBAGENT-08 — Worker lifecycle controls (implemented: phase 1)](SUBAGENT-08-worker-lifecycle-controls.md)
+- [SUBAGENT-09 — Observability and the transcript/event contract (proposed)](SUBAGENT-09-observability-and-transcript-contract.md)
+- [SUBAGENT-10 — Gap remediation for the SUBAGENT series (proposed)](SUBAGENT-10-gap-remediation.md)
+- [SUBAGENT-11 — Model-facing background spawn, collection and worker control (proposed)](SUBAGENT-11-model-facing-pool-control.md)
+- [SUBAGENT series — coverage and scope audit (historical)](SUBAGENT-series-audit.md)
+
+Recommended implementation order, from SUBAGENT-10 §7: redact worker text
+before every sink (WP-1, a security fix), thread definition descriptions
+(WP-2), settle the concurrency criterion and the armed operator ceilings
+(WP-3, WP-4), fix the background delivery defects (WP-5, WP-6), then per-pool
+accounting (WP-7, completing SUBAGENT-06), then SUBAGENT-11, and SUBAGENT-09's
+event contract last.
+
 ### PRD-220–239 — OpenCode, Claude Code, and Codex feature study
 
 These 20 PRDs originated as proposals from an evidence-based comparison of the

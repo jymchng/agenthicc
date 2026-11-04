@@ -255,19 +255,14 @@ def make_spawn_subagents_tool(
         task_ceiling, concurrency_ceiling, task_limit_source, concurrency_limit_source = (
             _settings.limits_for_depth(pool_depth)
         )
-        requested_concurrency = (
-            max_concurrent
-            if isinstance(max_concurrent, int) and not isinstance(max_concurrent, bool)
-            else 1
-        )
-        effective_max_concurrent = max(1, requested_concurrency)
+        # ``max_concurrent``/``max_concurrent_used`` are added only once the
+        # requested value has been validated: a refusal must not report the
+        # value it refused as the one that was used.
         pool_metadata: dict[str, object] = {
             "depth": pool_depth,
             "parent_pool_id": parent_pool_id,
             "max_tasks": task_ceiling,
             "task_limit_source": task_limit_source,
-            "max_concurrent": effective_max_concurrent,
-            "max_concurrent_used": effective_max_concurrent,
             "max_concurrent_limit": concurrency_ceiling,
             "max_concurrent_limit_source": concurrency_limit_source,
             "max_active_pools": _settings.max_active_pools,
@@ -331,7 +326,12 @@ def make_spawn_subagents_tool(
         if isinstance(max_concurrent, bool) or not isinstance(max_concurrent, int):
             return {"ok": False, "error": "max_concurrent must be an integer", **pool_metadata}
         if max_concurrent < 1:
-            return {"ok": False, "error": "max_concurrent must be a positive integer"}
+            return {
+                "ok": False,
+                "error": "max_concurrent must be a positive integer",
+                "max_concurrent_requested": max_concurrent,
+                **pool_metadata,
+            }
         if max_concurrent > concurrency_ceiling:
             return {
                 "ok": False,
@@ -340,8 +340,12 @@ def make_spawn_subagents_tool(
                     f"requested max_concurrent={max_concurrent} exceeds configured "
                     f"max_concurrent={concurrency_ceiling} from {concurrency_limit_source}"
                 ),
+                "max_concurrent_requested": max_concurrent,
                 **pool_metadata,
             }
+        effective_max_concurrent = max_concurrent
+        pool_metadata["max_concurrent"] = effective_max_concurrent
+        pool_metadata["max_concurrent_used"] = effective_max_concurrent
         if len(tasks) > task_ceiling:
             return {
                 "ok": False,

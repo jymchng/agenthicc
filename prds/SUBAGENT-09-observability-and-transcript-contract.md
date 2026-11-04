@@ -1,7 +1,7 @@
 ---
 title: "SUBAGENT-09: Observability and the transcript/event contract"
 status: Proposed
-version: 0.1.0
+version: 0.2.0
 date: 2026-10-29
 scope: "one documented, versioned event and transcript schema shared by kernel events, durable transcripts and the TUI rails, with uniform redaction, visible truncation, per-pool replay and the derived counters that diagnose stuck or over-budget pools — never the panel's information architecture, a usage meter, or a change to what a result is"
 area: A-9
@@ -21,6 +21,53 @@ tags:
 ---
 
 # SUBAGENT-09: Observability and the transcript/event contract
+
+## Implementation status (2026-11-03)
+
+Evaluated at `0a63bfba1dca68e61a06fe3b9acb4f536637396b` — the merge of PR #6 that put the series on `main` — by
+SUBAGENT-10 §3 (0.2.0). Verdicts: **D** delivered, **P** partial, **M** missing.
+Criteria are judged by behaviour; a case that exists in a file the criterion
+does not name is marked *placement* and tracked by SUBAGENT-10 R6/WP-8. Line
+numbers below are at `0a63bfb`; this document's §2–§3 keep the citations of
+the commit they were written against.
+
+**Verdict: not implemented, and two sinks leak.** Goals 1 D / 3 P / 8 M;
+criteria 2 D / 2 P / 10 M. The research report §5.7 sequences this area last,
+after the events of A-6, A-7 and A-8 exist; SUBAGENT-10 keeps that order for
+everything except the redaction fix, which it promotes to WP-1 because it is a
+security defect.
+
+**Goal 7's first fix delivered in SUBAGENT-10 wave 1** (pending merge): every
+scroll and kernel payload field carrying worker or task text — including
+`SubagentPoolCompleted.text`, which §3 of SUBAGENT-10 had missed — is redacted
+and then bounded through `SubagentPool._display_fields`, with `truncated` /
+`text_length` markers (goal 6 for those fields). Pinned in
+`tests/unit/test_subagent_pool.py`.
+
+- **Goal 7 — P, security (SUBAGENT-10 B-3).** Transcripts redact through the
+  session-export redactor (`src/agenthicc/subagents/transcripts.py:267-274`) and
+  structured values through `_redact_result_value`
+  (`src/agenthicc/subagents/pool.py:669-676`), but the scroll payload's
+  `summary` (`pool.py:2685`) and the `SubagentCompleted`/`SubagentFailed` kernel
+  payload's `text` (`pool.py:3104`) carry raw worker text.
+- **Goal 3 — P.** Journal records carry `schema_version: 1`
+  (`src/agenthicc/memory/journal.py:1015`, `:1054`); kernel events do not.
+- **Goal 4 — P.** The kernel payload carries `pool_id`; the
+  `subagent_worker_done` scroll payload carries neither `pool_id` nor, except on
+  a stopped or partial worker, `worker_id` (`pool.py:2680-2706`); transcript
+  lines carry neither (`transcripts.py:72-92`).
+- **Goals 1, 2, 5, 6, 8, 9, 10, 11 — M.** No `SubagentEvent`, lifecycle table,
+  `subagent_worker_failed` kind (success and failure both emit
+  `subagent_worker_done`, `pool.py:2707`), truncation marker, normative result
+  table, `replay_pool`, derived counters or degraded-transcript signal.
+- **Goal 12 — D.** The panel reads `SubagentPoolState` from real pools.
+
+Criteria 13 and 14 **D**; 4 and 8 **P**; 1–3, 5–7 and 9–12 **M**.
+
+**New input this document must absorb when written:** SUBAGENT-08's transition
+fields (already on scroll and kernel payloads), SUBAGENT-07's journal lifecycle
+kinds (including SUBAGENT-10 WP-5's `subagent_pool_stopped`), and SUBAGENT-11's
+completion notice and tool results.
 
 ## 1. Executive summary
 

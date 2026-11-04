@@ -1031,11 +1031,22 @@ the numbers and the mapping are not.
 | A-7 | `prds/SUBAGENT-07-background-orchestration.md` | Background and non-blocking orchestration | G-7 | Strong (4 of 6) |
 | A-8 | `prds/SUBAGENT-08-worker-lifecycle-controls.md` | Worker steering, cancellation, retry, salvage | G-8 | Strong (Codex is a working model) |
 | A-9 | `prds/SUBAGENT-09-observability-and-transcript-contract.md` | Observability and transcript contract | G-9 | Moderate |
+| A-10 | `prds/SUBAGENT-10-gap-remediation.md` | Gap remediation for A-1…A-9 (added 2026-10-31, revised 2026-11-03) | — (completes G-1, G-4, G-5, G-6, G-9) | Not applicable: remediation, judged against A-1…A-9's own criteria |
+| A-11 | `prds/SUBAGENT-11-model-facing-pool-control.md` | Model-facing background spawn, collection and worker control (added 2026-11-03) | G-7, G-8 (model-facing half) | Strong (Codex and opencode at code depth) |
 
 The invariant is checked mechanically at the end of the series: every locked
 area has exactly one PRD, every PRD names exactly one area, and no PRD exists
 outside this table. If a PRD later splits into two, this table is updated
 *first*, because it is the authority — not the PRD.
+
+**Amendment, 2026-11-03.** Rows A-10 and A-11 were added under the rule above.
+Neither is a tenth or eleventh *capability*: A-10 is a remediation document
+whose acceptance criteria are the other nine areas' criteria, and A-11 carries
+the model-facing half of A-7 and A-8 after their mechanisms shipped with only a
+human-facing surface. §5.3's nine locked capability areas are unchanged, and
+the bijection now reads eleven documents to eleven rows. The series audit
+(`prds/SUBAGENT-series-audit.md` §3) recorded this section's exception as
+unused at `4fd8cbe`; this amendment is its first use.
 
 ### 5.7 Ordering: writing order is not implementation order
 
