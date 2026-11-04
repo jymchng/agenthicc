@@ -1072,6 +1072,9 @@ async def _build_session_context_impl(
     from agenthicc.tools.exec.child import configure as _configure_exec
 
     _configure_exec(cfg.tools.exec)
+    from agenthicc.tools.fs import configure_walk_limit
+
+    configure_walk_limit(cfg.tools.max_fs_walks)
 
     console = Console(
         highlight=False,

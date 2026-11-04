@@ -213,7 +213,23 @@ def atomic_write(path: Path, data: bytes, *, create_parents: bool = True) -> str
         raise
     version = file_version(os.stat(path))
     FILE_VERSIONS.record(path, version)
+    _refresh_cache(path, data)
     return version
+
+
+def _refresh_cache(path: Path, data: bytes) -> None:
+    """Keep the read cache exact for a file this process just wrote (TOOLR-09)."""
+    from agenthicc.tools.fs.file_cache import get_file_cache
+
+    cache = get_file_cache()
+    if cache is None:
+        return
+    try:
+        # The cache holds what read_file returns: universal newlines applied.
+        text = data.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+        cache.store(str(path), text)
+    except UnicodeDecodeError:
+        cache.forget(str(path))
 
 
 def diff_preview(before: str, after: str, name: str) -> tuple[str, bool]:

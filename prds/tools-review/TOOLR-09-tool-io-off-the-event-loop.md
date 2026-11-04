@@ -1,6 +1,6 @@
 ---
 title: "TOOLR-09: Tool I/O off the event loop, and a race-free file cache"
-status: Proposed
+status: Implemented (2026-11-04; tools wave 4, pending merge)
 version: 1.0.0
 date: 2026-11-04
 scope: "the tools that still do blocking file, hash, SQLite or tree-walk work on the asyncio loop, and the read-cache store race"
@@ -9,6 +9,31 @@ tags: [tools, performance, event-loop, correctness]
 ---
 
 # TOOLR-09: Tool I/O off the event loop
+
+
+## Implementation status (2026-11-04)
+
+Delivered in tools wave 4 (branch `tools-wave-4-discovery-off-loop`).
+
+- **Off the loop.**
+  - `read_file` does its stat, cache lookup, read and store in one worker
+    thread.
+  - `grep_file`, `checksum_file` (now streamed, so any size), every `batch_*`
+    tool and the self-inspection tools also run in worker threads.
+- **Race-free cache.** The cache stamps content with the stat taken *before*
+  the read, and stores it only when a second stat agrees
+  (`WorkspaceFileCache.store_stamped`). Its SQLite connection is shared under
+  a lock (`check_same_thread=False`).
+- **Writes refresh the cache.** Every TOOLR-01 write refreshes the cache with
+  the text it wrote, with universal newlines applied as `read_file` returns
+  them.
+
+Not delivered: goal 4, the hash comparison on coarse-mtime filesystems.
+
+Tests: `tests/unit/test_fs_discovery.py`. It injects a write between the read
+and the stat (mutation-checked against stamping after the read), refreshes the
+cache after a write, and runs checksum and source search under a loop-lag
+sampler.
 
 ## 1. Problem
 

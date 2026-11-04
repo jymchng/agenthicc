@@ -1,6 +1,6 @@
 ---
 title: "TUIR-02: Bounded filesystem discovery — prune before walking, filter before authorizing, share a limiter"
-status: Proposed
+status: Implemented (2026-11-04; tools wave 4, pending merge)
 version: 1.0.0
 date: 2026-11-03
 scope: "the cost and concurrency of discovery tools: what they walk, in which order they filter, how they stop, and how many run at once across a session and its subagents"
@@ -17,6 +17,29 @@ tags:
 ---
 
 # TUIR-02: Bounded filesystem discovery
+
+
+## Implementation status (2026-11-04)
+
+Delivered in tools wave 4 (branch `tools-wave-4-discovery-off-loop`).
+
+- **Pruning.** Ignored directories are skipped before the walk descends:
+  - in a git repository, from one cached `git ls-files --others --ignored
+    --exclude-standard --directory -z` per root and index mtime;
+  - otherwise, `DEFAULT_IGNORED_NAMES`;
+  - `include_ignored=true` bypasses both.
+- **Order of checks:** type and glob, then the result cap, then
+  authorization, then content.
+- **Budgets.** `MAX_EXAMINED_ENTRIES` (50,000) and `MAX_WALK_SECONDS` (10)
+  stop a walk and report the reason. The walker yields the GIL every 1,000
+  entries.
+- **One limiter.** `[tools] max_fs_walks` (default 2) bounds walks and
+  content scans across the session and its subagents.
+
+The limiter is held in `agenthicc.tools.fs` so startup can set it without
+importing the walker before the first frame.
+
+Tests: `tests/unit/test_fs_discovery.py` (criteria 1, 2, 4–6).
 
 ## 1. Problem
 

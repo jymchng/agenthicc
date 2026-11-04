@@ -1,6 +1,6 @@
 ---
 title: "TUIR-01: Discovered-path authorization — one cheap decision per kept result, off the event loop"
-status: Proposed
+status: Implemented (2026-11-04; tools wave 4, pending merge)
 version: 1.0.0
 date: 2026-11-03
 scope: "how search_files, grep_files, list_directory and every other discovery tool authorize the paths they find: once, cheaply, in a worker thread, for the results they keep — with the full policy kept for any path that resolves outside the scope"
@@ -16,6 +16,32 @@ tags:
 ---
 
 # TUIR-01: Discovered-path authorization off the event loop
+
+
+## Implementation status (2026-11-04)
+
+Delivered in tools wave 4 (branch `tools-wave-4-discovery-off-loop`).
+
+`agenthicc.tools.fs.discovery.discover()` is the one walker for
+`search_files`, `grep_files` and `list_directory`:
+- it runs a single `os.scandir` walk in a worker thread;
+- an entry reached without a symlink from an in-scope root is kept with no
+  syscall;
+- a symlink is resolved once and classified by prefix;
+- symlinks out of the scope go to the full `policy.authorize`, so Safe asks,
+  Plan omits and Yolo returns.
+
+Results carry `discovery` diagnostics (`examined`, `kept`, `symlinked`,
+`outside_scope`, `denied`, `truncated_by`). `_authorize_discovered_paths` and
+`_git_keep_filter` are deleted.
+
+Amendment: symlinked *directories* are not descended, matching the previous
+`rglob` behaviour. This makes loops impossible, and no `(st_dev, st_ino)` set
+is needed.
+
+Tests: `tests/unit/test_fs_discovery.py`. It counts `realpath` and
+`authorize` calls, covers each mode for an escaping symlink, and includes a
+symlink loop. Mutation-checked.
 
 ## 1. Problem
 

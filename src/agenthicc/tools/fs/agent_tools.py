@@ -397,14 +397,21 @@ async def grep_file(
         resolved = await _authorized_path(
             context, path, operation="search", tool_name="grep_file", tool_input={"path": path}
         )
-        text = resolved.read_text(encoding="utf-8", errors="replace")
+        text = await asyncio.to_thread(resolved.read_text, encoding="utf-8", errors="replace")
     except FileNotFoundError:
-        return {"ok": False, "error": f"file not found: {path}"}
+        return {"ok": False, "error_code": "not_found", "error": f"file not found: {path}"}
     except PermissionError:
-        return {"ok": False, "error": "permission_denied"}
+        return {"ok": False, "error_code": "permission_denied", "error": "permission_denied"}
 
     flags = 0 if case_sensitive else re.IGNORECASE
-    compiled = re.compile(pattern, flags)
+    try:
+        compiled = re.compile(pattern, flags)
+    except re.error as exc:
+        return {
+            "ok": False,
+            "error_code": "invalid_argument",
+            "error": f"invalid regular expression: {exc}",
+        }
     lines = text.splitlines()
     matches = []
     for i, line in enumerate(lines):
@@ -609,17 +616,32 @@ async def checksum_file(path: str, algorithm: str = "sha256") -> dict[str, objec
         resolved = await _authorized_path(
             context, path, operation="read", tool_name="checksum_file", tool_input={"path": path}
         )
-        data = resolved.read_bytes()
     except FileNotFoundError:
-        return {"ok": False, "error": f"file not found: {path}"}
+        return {"ok": False, "error_code": "not_found", "error": f"file not found: {path}"}
     except PermissionError:
-        return {"ok": False, "error": "permission_denied"}
+        return {"ok": False, "error_code": "permission_denied", "error": "permission_denied"}
+    try:
+        hashlib.new(algorithm)
+    except ValueError:
+        return {
+            "ok": False,
+            "error_code": "invalid_argument",
+            "error": f"unsupported algorithm: {algorithm}",
+        }
+
+    def _digest() -> str:
+        # Streamed in a worker thread (TOOLR-09): any size, no loop stall.
+        digest = hashlib.new(algorithm)
+        with resolved.open("rb") as handle:
+            for block in iter(lambda: handle.read(1 << 20), b""):
+                digest.update(block)
+        return digest.hexdigest()
 
     try:
-        h = hashlib.new(algorithm, data)
-    except ValueError:
-        return {"ok": False, "error": f"unsupported algorithm: {algorithm}"}
-    return {"ok": True, "path": path, "algorithm": algorithm, "digest": h.hexdigest()}
+        value = await asyncio.to_thread(_digest)
+    except FileNotFoundError:
+        return {"ok": False, "error_code": "not_found", "error": f"file not found: {path}"}
+    return {"ok": True, "path": path, "algorithm": algorithm, "digest": value}
 
 
 @tool_write
@@ -731,7 +753,7 @@ async def batch_read(paths: list[str], encoding: str = "utf-8") -> dict[str, obj
         return {"ok": False, "error": str(exc), "results": [], "total": len(paths)}
     b = _get_backend(context=context)
     backend_paths = [str(path) for path in authorized] if authorized else paths
-    results = b.batch_read(backend_paths, encoding)
+    results = await asyncio.to_thread(b.batch_read, backend_paths, encoding)
     for original, result in zip(paths, results, strict=False):
         result["path"] = original
     total_ok = sum(1 for r in results if r["ok"])
@@ -779,7 +801,7 @@ async def batch_write(
     if authorized:
         for entry, path in zip(backend_files, authorized, strict=False):
             entry["path"] = str(path)
-    results = b.batch_write(backend_files, create_parents)
+    results = await asyncio.to_thread(b.batch_write, backend_files, create_parents)
     for original, result in zip(files, results, strict=False):
         result["path"] = original["path"]
     total_ok = sum(1 for r in results if r["ok"])
@@ -811,7 +833,7 @@ async def batch_delete(paths: list[str]) -> dict[str, object]:
         return {"ok": False, "error": str(exc), "results": [], "total": len(paths)}
     b = _get_backend(context=context)
     backend_paths = [str(path) for path in authorized] if authorized else paths
-    results = b.batch_delete(backend_paths)
+    results = await asyncio.to_thread(b.batch_delete, backend_paths)
     for original, result in zip(paths, results, strict=False):
         result["path"] = original
     total_ok = sum(1 for r in results if r["ok"])
@@ -853,7 +875,7 @@ async def batch_move(moves: list[_BatchMoveFile]) -> dict[str, object]:
             src = str(authorized[index * 2])
             dst = str(authorized[index * 2 + 1])
         try:
-            b.move(src, dst)
+            await asyncio.to_thread(b.move, src, dst)
             results.append({"source": display_src, "destination": display_dst, "ok": True})
         except Exception as exc:
             results.append(
@@ -903,7 +925,7 @@ async def batch_copy(copies: list[_BatchMoveFile]) -> dict[str, object]:
             src = str(authorized[index * 2])
             dst = str(authorized[index * 2 + 1])
         try:
-            b.copy(src, dst)
+            await asyncio.to_thread(b.copy, src, dst)
             results.append({"source": display_src, "destination": display_dst, "ok": True})
         except Exception as exc:
             results.append(

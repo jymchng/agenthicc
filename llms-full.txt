@@ -4851,6 +4851,26 @@ structured content whole, text joined, binary blocks saved as artifacts
 providers; `McpToolBridge.call_tool` returns the envelope, reconnects once, and
 opens a circuit after `CIRCUIT_FAILURES` (5) for `CIRCUIT_OPEN_S` (30 s).
 
+### discover
+
+```python
+async def discover(
+    context: Mapping[str, object], root: Path, *, pattern: str = "*",
+    recursive: bool = True, include_hidden: bool = True, files_only: bool = False,
+    include_ignored: bool = False, limit: int = 1_000, operation: str, tool_name: str,
+) -> DiscoveryResult: ...
+```
+
+From `agenthicc.tools.fs.discovery` (TUIR-01/02): the one walker behind
+`search_files`, `grep_files` and `list_directory`. One `os.scandir` walk in a
+thread under the session limiter (`[tools] max_fs_walks`), pruning ignored
+directories first (git `--ignored --directory` list, else
+`DEFAULT_IGNORED_NAMES`), filtering by type and glob before authorization,
+stopping at `limit`, `MAX_EXAMINED_ENTRIES` or `MAX_WALK_SECONDS`. In-scope
+non-symlink entries need no policy call; escaping symlinks go to
+`policy.authorize`. `DiscoveryResult.diagnostics()` reports examined, kept,
+symlinked, outside_scope, denied and truncated_by.
+
 ### SubagentExecutionPolicy
 
 ```python

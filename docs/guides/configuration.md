@@ -364,6 +364,7 @@ denied = ["delete_file"]
 plugins = []
 max_live_tool_calls = 5
 group_exploratory_calls = true  # presentation-only grouping of marked reads
+max_fs_walks = 2                # search/grep/list walks that may run at once
 
 [tools.exec]
 env_passthrough = []        # credential-like variables a command may keep, e.g. ["GITHUB_TOKEN"]
