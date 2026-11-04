@@ -1,6 +1,6 @@
 ---
 title: "TOOLR-04: One result and error contract, enforced across the whole tool surface"
-status: Proposed
+status: Implemented with amendments (2026-11-04; tools wave 6, pending merge)
 version: 1.0.0
 date: 2026-11-04
 scope: "the shape every tool result takes, the error-code vocabulary, how tool exceptions and registration failures surface, and one test that walks every tool agenthicc can expose"
@@ -9,6 +9,78 @@ tags: [tools, contract, testing, effectiveness]
 ---
 
 # TOOLR-04: One tool result contract
+
+## Implementation status (2026-11-04)
+
+Delivered in tools wave 6 (branch `tools-wave-6-result-contract`).
+
+- **The envelope and its vocabulary (goals 1 and 2).**
+  - `agenthicc.tools.errors` defines `ToolErrorCode` (a `StrEnum` of the 21
+    codes) and `tool_error()`, which builds a failure with a bounded `error`
+    and a default `retryable` from its code.
+  - `complete_envelope()` fills in a result's missing required keys.
+  - `ToolErrorKind` is deleted. `AgenthiccToolExecutor` now reports
+    `ToolErrorCode` values.
+  - Codes a tool used to invent are mapped to the vocabulary, with the
+    specific condition kept in a `reason` field:
+
+    | Old code | Now |
+    |---|---|
+    | `not_a_repository` | `not_found`, `reason: "not_a_repository"` |
+    | `nothing_to_commit` | `invalid_argument`, `reason: "nothing_to_commit"` |
+    | `no_match` | `not_found`, `reason: "no_match"` |
+    | `remote_error` | `internal`, `reason: "remote_error"` |
+    | `unsupported_content` | `undecodable`, `reason: "unsupported_content"` |
+    | `pending_goals` | `conflict`, `reason: "pending_goals"` |
+    | `io_error` | classified from the exception |
+
+  - `get_file_info` and `file_exists` now return `ok: true`. `file_exists`
+    reports a permission denial as `permission_denied` instead of
+    `exists: false`.
+  - Outlook's bare lists moved under `emails`, `folders` and `events`.
+  - `recoverable` is replaced by `retryable` everywhere.
+- **No escaping exceptions (goal 3).** `ToolContractHook` is the last global
+  hook on every agent turn and subagent worker (`order_global_hooks`).
+  - Its `on_tool_error` turns any exception into a `tool_error` result with a
+    classified code; cancellation still propagates.
+  - Its `after_tool_call` completes every mapping result.
+  - This covers built-in, workflow, browser, web and MCP tools alike.
+- **Loud registration (goal 4).**
+  - `populate_agent_tools` returns `ToolRegistrationFailure`s and logs each
+    one. A duplicate name names both sources.
+  - The agent turn shows each failure once as a system line.
+  - A worker records its failures in `SubagentResult.tool_registration_failures`
+    and in its `worker_finished` / `worker_failed` event.
+- **One contract test (goal 5).** `tests/unit/test_tool_contract.py` covers 93
+  runtime tools: the built-ins, both browser backends, the subagent spawn and
+  communication tools, and `search_web`/`fetch_page`. It checks:
+  - names are provider-safe and unique;
+  - descriptions and every parameter are documented (93 parameters gained
+    docs);
+  - schemas have an object root;
+  - capability metadata is present;
+  - an invalid argument, sent through lauren-ai's real executor, returns
+    `invalid_argument`.
+
+  It also checks 105 workflow phase tools statically. That check found 26
+  workflow tools without capability metadata, which made them `UNDECLARED`:
+  blocked in Plan, approval in Safe. They are now tagged, and the name-based
+  transition fallback in `workflows/plugin.py` is deleted. A further test
+  pins every literal `error_code` in `tools/`, `skills/` and `workflows/` to
+  the vocabulary.
+
+Amendments:
+
+- **A hook, not a decorator.** Goal 3's decorator is a global hook instead.
+  lauren-ai's `on_tool_error` can suppress an exception with a fallback
+  result, so one hook covers tools agenthicc does not define, such as MCP
+  adapters and plugin tools, without wrapping each callable.
+- **Registration in tests.** Registration failures do not raise in tests.
+  The contract test asserts that the session catalog registers with no
+  failure, rather than switching behaviour on whether a test is running.
+- **Workflow tools are checked statically.** They are built inside runners
+  from run-specific state, so the contract test reads them from source rather
+  than invoking each one.
 
 ## 1. Problem
 

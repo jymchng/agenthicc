@@ -890,7 +890,13 @@ def make_child_communication_tools(
     @tool_control
     @tool()
     async def send_parent_message(message: str, kind: str = "information") -> dict[str, object]:
-        """Send a bounded status or finding to the main agent."""
+        """Send a bounded status or finding to the main agent.
+
+        Args:
+            message: The status or finding, at most 16 KB.
+            kind: ``status``, ``information``, ``instruction``, ``handoff`` or ``error``
+                (default ``information``).
+        """
         envelope = await broker.send(
             sender=worker_id,
             recipient="main",
@@ -907,7 +913,14 @@ def make_child_communication_tools(
         expected_answer: str = "text",
         timeout_s: float = DEFAULT_MESSAGE_TIMEOUT_S,
     ) -> dict[str, object]:
-        """Ask the main agent for missing information and await continuation."""
+        """Ask the main agent for missing information and await continuation.
+
+        Args:
+            question: What you need to know.
+            context: What you already tried or know, to make the answer precise.
+            expected_answer: The answer's form, e.g. ``text`` or ``yes/no``.
+            timeout_s: Seconds to wait for the answer before continuing without it.
+        """
         return await broker.open_question(
             sender=worker_id,
             recipient="main",
@@ -920,7 +933,11 @@ def make_child_communication_tools(
     @tool_control
     @tool()
     async def poll_agent_messages(limit: int = 16) -> dict[str, object]:
-        """Read ordered parent and peer messages for this worker."""
+        """Read ordered parent and peer messages for this worker.
+
+        Args:
+            limit: The most messages to return (default 16).
+        """
         messages = await broker.poll(worker_id, limit=limit)
         return {"ok": True, "messages": messages}
 
@@ -931,7 +948,14 @@ def make_child_communication_tools(
         message: str,
         kind: str = "information",
     ) -> dict[str, object]:
-        """Send a bounded message to another worker in this pool."""
+        """Send a bounded message to another worker in this pool.
+
+        Args:
+            recipient: The peer worker's ID in this pool.
+            message: The message, at most 16 KB.
+            kind: ``status``, ``information``, ``instruction``, ``handoff`` or ``error``
+                (default ``information``).
+        """
         envelope = await broker.send(
             sender=worker_id,
             recipient=recipient,
@@ -948,7 +972,14 @@ def make_child_communication_tools(
         context: str = "",
         timeout_s: float = DEFAULT_MESSAGE_TIMEOUT_S,
     ) -> dict[str, object]:
-        """Ask a same-pool peer for information."""
+        """Ask a same-pool peer for information.
+
+        Args:
+            recipient: The peer worker's ID in this pool.
+            question: What you need to know.
+            context: What you already tried or know.
+            timeout_s: Seconds to wait for the answer.
+        """
         return await broker.open_question(
             sender=worker_id,
             recipient=recipient,
@@ -960,7 +991,12 @@ def make_child_communication_tools(
     @tool_control
     @tool()
     async def answer_peer(question_id: str, answer: str) -> dict[str, object]:
-        """Answer a question addressed to this worker."""
+        """Answer a question addressed to this worker.
+
+        Args:
+            question_id: The ``question_id`` of the question you received.
+            answer: Your answer.
+        """
         result = await broker.answer_question(
             answerer=worker_id,
             question_id=question_id,
@@ -1011,7 +1047,13 @@ def make_parent_communication_tools(
         question_id: str,
         answer: str,
     ) -> dict[str, object]:
-        """Answer a clarification raised by one of your subagents."""
+        """Answer a clarification raised by one of your subagents.
+
+        Args:
+            pool_id: The ``pool_id`` spawn_subagents returned.
+            question_id: The ``question_id`` the worker's question carries.
+            answer: Your answer.
+        """
         handle = _handle(pool_id)
         result = await handle.broker.answer_question(
             answerer="main",
@@ -1028,7 +1070,15 @@ def make_parent_communication_tools(
         message: str,
         kind: str = "instruction",
     ) -> dict[str, object]:
-        """Send a bounded instruction or clarification to one worker."""
+        """Send a bounded instruction or clarification to one worker.
+
+        Args:
+            pool_id: The ``pool_id`` spawn_subagents returned.
+            worker_id: The worker to message.
+            message: The instruction or clarification, at most 16 KB.
+            kind: ``status``, ``information``, ``instruction``, ``handoff`` or ``error``
+                (default ``instruction``).
+        """
         handle = _handle(pool_id)
         envelope = await handle.broker.send(
             sender="main",
@@ -1054,6 +1104,12 @@ def make_parent_communication_tools(
         maximum) and, if the pool is still running, returns the running
         snapshot with timed_out=true. Do not poll: you are notified when a
         background pool finishes.
+
+        Args:
+            pool_id: The ``pool_id`` spawn_subagents returned.
+            wait: Wait for the pool to finish instead of returning a snapshot.
+            timeout_s: With wait, the most seconds to wait (capped by the configured
+                maximum).
         """
         if not isinstance(wait, bool):
             raise CommunicationError("wait must be true or false")
@@ -1140,6 +1196,13 @@ def make_parent_communication_tools(
         running workers finish and starts no pending ones. Omitted, it is
         "abort" for one worker and "drain" for a whole pool. Stopping is final
         for that attempt; retry_subagent starts a new one.
+
+        Args:
+            pool_id: The ``pool_id`` spawn_subagents returned.
+            worker_id: One worker to stop; omitted, every worker of the pool.
+            mode: ``abort`` cancels now and keeps partial output; ``drain`` lets
+                running workers finish and starts no pending ones.
+            reason: Why, recorded with the stop (at most 256 characters).
         """
         handle = _handle(pool_id)
         pool = handle.pool
@@ -1201,6 +1264,10 @@ def make_parent_communication_tools(
 
         Succeeded workers are never rerun. The retry is refused, with the
         reason, while the pool is still running or after its wall-clock limit.
+
+        Args:
+            pool_id: The ``pool_id`` of the finished pool.
+            worker_id: The failed or cancelled worker to run again.
         """
         handle = _handle(pool_id)
         pool = handle.pool

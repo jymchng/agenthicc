@@ -1468,11 +1468,25 @@ class AgentTurnRunner:
         from agenthicc.agents.plugin import BASE_SYSTEM_PROMPT as _BASE
         from agenthicc.plugins.registry import build_registry
         from agenthicc.runners.prompt_contract import PromptBlock
-        from agenthicc.runners.tool_populator import populate_agent_tools
+        from agenthicc.runners.tool_populator import populate_agent_tools as _populate
         from agenthicc.tools.capabilities import (
             get_tool_capabilities,
             is_exploratory_tool,
         )
+
+        published_failures: set[str] = set()
+
+        def populate_agent_tools(agent: object, tools: Sequence[object]) -> None:
+            """Register *tools* and tell the user about any that could not be (TOOLR-04)."""
+            for failure in _populate(agent, tools):
+                text = failure.describe()
+                if text in published_failures:
+                    continue
+                published_failures.add(text)
+                if self._ctx.conv_store is not None:
+                    self._ctx.conv_store.append_event(
+                        "system", {"text": f"⚠ Tool not registered: {text}"}
+                    )
 
         ctx = self._ctx
 
@@ -1600,9 +1614,9 @@ class AgentTurnRunner:
                 from agenthicc.tools.approval import ApprovalGate
 
                 hooks.append(ApprovalGate(gate_state, ctx.approval_svc, ctx.workspace_access))
-            from agenthicc.tools.capability_gate import order_security_gates
+        from agenthicc.tools.approval import order_global_hooks
 
-            hooks = order_security_gates(hooks)
+        hooks = order_global_hooks(hooks)
 
         runner_class: type[AgentRunnerBase] = _RunnerBase
         next_queued_message = ctx.next_queued_message

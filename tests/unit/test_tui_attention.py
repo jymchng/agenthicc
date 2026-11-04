@@ -108,7 +108,7 @@ def test_router_publishes_counts_target_and_terminal_title() -> None:
     assert app_state.conversation.background_needs_you() == 1
     assert app_state.conversation.background_running() == 2
     assert app_state.conversation.agents_target() == "session-a"
-    assert titles[-1] == "Agenthicc · 1 need you · 2 running"
+    assert titles[-1] == "Agenthicc · 1 session needs you · 2 sessions running"
 
 
 def test_router_coalesces_waiting_transition_and_defers_for_modal() -> None:
@@ -138,7 +138,9 @@ def test_router_coalesces_waiting_transition_and_defers_for_modal() -> None:
 
     app_state.modal_open.set(False)
     router._flush_if_ready(102.0)
-    assert app_state.conversation.background_toast() == "✓ 1 agents finished · ◆ 1 need you"
+    assert (
+        app_state.conversation.background_toast() == "✓ 1 agents finished · ◆ 1 session needs you"
+    )
     assert app_state.conversation.agents_toast_target() == "session-a"
 
 

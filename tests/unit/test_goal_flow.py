@@ -610,7 +610,7 @@ async def test_complete_workflow_rejects_pending_goal_without_setting_transition
     result = await complete(summary="premature", files=[])
 
     assert result["ok"] is False
-    assert result["error_code"] == "pending_goals"
+    assert result["error_code"] == "conflict" and result["reason"] == "pending_goals"
     assert not event.is_set()
     assert data == {}
 

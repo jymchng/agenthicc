@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from lauren_ai import tool
 
-from agenthicc.tools import AgenthiccToolExecutor, ToolErrorKind
+from agenthicc.tools import AgenthiccToolExecutor, ToolErrorCode
 from agenthicc.tools.approval import ApprovalGate, ApprovalResponse
 from agenthicc.tools.capability_gate import ToolCapabilityGate
 from agenthicc.tools.capabilities import ToolCapability, tool_read, tool_write
@@ -65,7 +65,7 @@ async def test_safe_read_write_and_retry_flow() -> None:
     allowed = await executor.execute("write_probe", {}, "write-2")
 
     assert read.ok and read.value == "read"
-    assert not denied.ok and denied.error_kind == ToolErrorKind.denied.value
+    assert not denied.ok and denied.error_kind == ToolErrorCode.APPROVAL_DENIED
     assert allowed.ok and allowed.value == "write"
     assert [request.tool_name for request in approval.requests] == [
         "write_probe",
@@ -117,8 +117,8 @@ async def test_plan_hard_block_never_calls_approval_or_tool() -> None:
     write = await _executor(app, approval).execute("write_probe", {}, "plan-write")
     unknown = await _executor(app, approval).execute("unknown_probe", {}, "plan-unknown")
 
-    assert not write.ok and write.error_kind == ToolErrorKind.denied.value
-    assert not unknown.ok and unknown.error_kind == ToolErrorKind.denied.value
+    assert not write.ok and write.error_kind == ToolErrorCode.BLOCKED_BY_MODE
+    assert not unknown.ok and unknown.error_kind == ToolErrorCode.BLOCKED_BY_MODE
     assert approval.requests == []
 
 

@@ -34,6 +34,7 @@ from agenthicc.tools.capabilities import (
     is_exploratory_tool,
 )
 from agenthicc.tools.context import ToolCallContext
+from agenthicc.tools.errors import ToolErrorCode, classify_exception, classify_message
 from agenthicc.tools.sandbox import ToolSandbox
 from agenthicc.tools.exec.outcome import CommandState, outcome_from_mapping
 
@@ -43,23 +44,10 @@ if TYPE_CHECKING:
 __all__ = [
     "ApprovalDecision",
     "AgenthiccToolExecutor",
-    "ToolErrorKind",
     "ToolMetadata",
     "ToolExecutor",
     "normalize_result",
 ]
-
-
-class ToolErrorKind(str, Enum):
-    """Stable error categories exposed by the Agenthicc envelope."""
-
-    unknown = "unknown"
-    denied = "denied"
-    approval_required = "approval_required"
-    timeout = "timeout"
-    network = "network"
-    provider = "provider"
-    execution = "execution"
 
 
 class ApprovalDecision(str, Enum):
@@ -112,7 +100,7 @@ def normalize_result(raw: object) -> ToolResult:
     if isinstance(raw, LaurenToolResult):
         content = raw.content
         if raw.is_error:
-            return ToolResult.failure(str(content), error_kind=ToolErrorKind.execution.value)
+            return ToolResult.failure(str(content), error_kind=ToolErrorCode.INTERNAL.value)
         if isinstance(content, str):
             try:
                 decoded = json.loads(content)
@@ -154,9 +142,7 @@ def _normalize_decoded(value: object) -> ToolResult:
             or value.get("stderr")
             or "tool returned an error"
         )
-        return ToolResult(
-            ok=False, value=value, error=error, error_kind=_result_error_kind(error).value
-        )
+        return ToolResult(ok=False, value=value, error=error, error_kind=_error_code(value, error))
     if outcome is not None:
         failure_states = {
             CommandState.FAILED,
@@ -181,9 +167,17 @@ def _normalize_decoded(value: object) -> ToolResult:
                 ok=False,
                 value=value,
                 error=error,
-                error_kind=_result_error_kind(error).value,
+                error_kind=_error_code(value, error),
             )
     return ToolResult.success(value)
+
+
+def _error_code(value: dict[str, object], error: str) -> str:
+    """The result's own ``error_code`` when it is in the vocabulary, else one from *error*."""
+    code = value.get("error_code")
+    if isinstance(code, str) and code in ToolErrorCode._value2member_map_:
+        return code
+    return classify_message(error).value
 
 
 class AgenthiccToolExecutor:
@@ -278,7 +272,7 @@ class AgenthiccToolExecutor:
                 ok=False,
                 error=f"Unknown tool: '{tool_name}'",
                 duration_ms=0.0,
-                error_kind=ToolErrorKind.unknown.value,
+                error_kind=ToolErrorCode.NOT_FOUND.value,
             )
             await self._emit_complete(result)
             return result
@@ -335,7 +329,7 @@ class AgenthiccToolExecutor:
                     tool_use_id,
                     started,
                     str(exc),
-                    ToolErrorKind.approval_required,
+                    ToolErrorCode.APPROVAL_DENIED,
                 )
             else:
                 call_context.tool_input = dict(exc.tool_input)
@@ -347,7 +341,7 @@ class AgenthiccToolExecutor:
                         tool_use_id,
                         started,
                         "Permission denied by approval policy.",
-                        ToolErrorKind.denied,
+                        ToolErrorCode.APPROVAL_DENIED,
                     )
                 else:
                     approved_call = ToolCall(
@@ -367,11 +361,11 @@ class AgenthiccToolExecutor:
                 tool_use_id,
                 started,
                 f"Tool '{tool_name}' timed out after {entry.metadata.timeout_s:.3g}s.",
-                ToolErrorKind.timeout,
+                ToolErrorCode.TIMEOUT,
             )
         except Exception as exc:  # noqa: BLE001
             original = exc.original if isinstance(exc, ToolExecutionError) else exc
-            kind = _classify_error(original)
+            kind = classify_exception(original)
             execution_result = self._failed_result(
                 tool_name, tool_use_id, started, str(original), kind
             )
@@ -569,7 +563,7 @@ class AgenthiccToolExecutor:
                 ok=False,
                 error=str(raw.content),
                 duration_ms=duration,
-                error_kind=ToolErrorKind.execution.value,
+                error_kind=ToolErrorCode.INTERNAL.value,
             )
         normalized = normalize_result(raw.content)
         if not normalized.ok:
@@ -579,7 +573,7 @@ class AgenthiccToolExecutor:
                 ok=False,
                 error=normalized.error,
                 duration_ms=duration,
-                error_kind=normalized.error_kind or ToolErrorKind.execution.value,
+                error_kind=normalized.error_kind or ToolErrorCode.INTERNAL.value,
             )
         return ToolResultEnvelope(
             tool_call_id=tool_use_id,
@@ -595,7 +589,7 @@ class AgenthiccToolExecutor:
         tool_use_id: str,
         started: float,
         error: str,
-        kind: ToolErrorKind,
+        kind: ToolErrorCode,
     ) -> ToolResultEnvelope:
         result = ToolResultEnvelope(
             tool_call_id=tool_use_id,
@@ -803,48 +797,6 @@ def _unwrap_agenthicc_result(result: object) -> object:
             return result.value
         return {"ok": False, "error": result.error or "tool failed"}
     return result
-
-
-def _classify_error(exc: BaseException) -> ToolErrorKind:
-    from agenthicc.tools.http import is_network_error
-
-    if isinstance(exc, asyncio.TimeoutError):
-        return ToolErrorKind.timeout
-    if isinstance(exc, PermissionError):
-        return ToolErrorKind.denied
-    if is_network_error(exc):
-        return ToolErrorKind.network
-    module = type(exc).__module__.lower()
-    name = type(exc).__name__.lower()
-    if any(
-        token in module or token in name for token in ("anthropic", "openai", "provider", "mcp")
-    ):
-        return ToolErrorKind.provider
-    return ToolErrorKind.execution
-
-
-def _result_error_kind(error: str) -> ToolErrorKind:
-    """Classify a structured ``{"ok": false}`` result without rethrowing it."""
-    lowered = error.lower()
-    if any(
-        token in lowered
-        for token in (
-            "permission",
-            "denied",
-            "forbidden",
-            "outside workspace",
-            "outside_workspace",
-            "blocked in",
-        )
-    ):
-        return ToolErrorKind.denied
-    if "timeout" in lowered or "timed out" in lowered:
-        return ToolErrorKind.timeout
-    if any(token in lowered for token in ("network", "connection", "dns")):
-        return ToolErrorKind.network
-    if any(token in lowered for token in ("provider", "anthropic", "openai", "mcp")):
-        return ToolErrorKind.provider
-    return ToolErrorKind.execution
 
 
 async def _emit_signal(sink: object | None, signal: object) -> None:

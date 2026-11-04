@@ -190,12 +190,20 @@ async def test_git_never_prompts_or_reads_stdin(repo: Path) -> None:
 
 async def test_outside_a_repository_is_classified(tmp_path: Path) -> None:
     result = await GitStatusTool().execute({}, _ctx(tmp_path))
-    assert result["ok"] is False and result["error_code"] == "not_a_repository"
+    assert (
+        result["ok"] is False
+        and result["error_code"] == "not_found"
+        and result["reason"] == "not_a_repository"
+    )
 
 
 async def test_nothing_to_commit_is_classified(repo: Path) -> None:
     result = await GitCommitTool().execute({"message": "empty"}, _ctx(repo))
-    assert result["ok"] is False and result["error_code"] == "nothing_to_commit"
+    assert (
+        result["ok"] is False
+        and result["error_code"] == "invalid_argument"
+        and result["reason"] == "nothing_to_commit"
+    )
 
 
 def test_the_toolkit_has_eleven_tools() -> None:

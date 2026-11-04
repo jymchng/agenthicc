@@ -1293,11 +1293,58 @@ calls resume via lauren's `execute_approved()` path.
 **Return**: `ToolResultEnvelope` — inspect `.ok`, `.value`, `.error`, and
 `.error_kind`.
 
-### ToolErrorKind and ApprovalDecision — `agenthicc.tools.executor`
+### ApprovalDecision — `agenthicc.tools.executor`
 
-`ToolErrorKind` is a string enum with `unknown`, `denied`,
-`approval_required`, `timeout`, `network`, `provider`, and `execution` values.
-`ApprovalDecision` has `approved` and `denied` values.
+`ApprovalDecision` has `approved` and `denied` values. A
+`ToolResultEnvelope.error_kind` from `AgenthiccToolExecutor` is a
+`ToolErrorCode` value.
+
+### ToolErrorCode — `agenthicc.tools.errors`
+
+```python
+class ToolErrorCode(StrEnum): ...
+```
+
+The one error vocabulary every tool result uses (TOOLR-04):
+`invalid_argument`, `not_found`, `already_exists`, `permission_denied`,
+`outside_workspace`, `approval_denied`, `blocked_by_mode`, `ambiguous_match`,
+`stale_file`, `undecodable`, `too_large`, `timeout`, `cancelled`,
+`output_limit`, `network`, `http_status`, `unavailable`, `conflict`,
+`framework_unavailable`, `sandbox_unavailable` and `internal`.
+`classify_exception(exc)` and `classify_message(text)` map an exception or a
+free-text failure to a code.
+
+Every tool result is a JSON object: `ok` always; on failure `error_code`,
+`error` (at most `ERROR_MESSAGE_LIMIT` = 1,000 characters) and `retryable`;
+`truncated` when a field was cut; then the tool's own fields.
+`timeout`, `network`, `unavailable`, `conflict` and `stale_file` are retryable
+by default.
+
+### tool_error — `agenthicc.tools.errors`
+
+```python
+def tool_error(code: ToolErrorCode, message: str, *, retryable: bool | None = None, **fields: object) -> dict[str, object]
+```
+
+Build a failure envelope. `complete_envelope(result)` fills in the required
+keys of a mapping result: `ok: true` when it has neither `ok` nor `error`;
+`error_code` (from the vocabulary, else classified from `error`) and
+`retryable` on a failure.
+
+### ToolContractHook — `agenthicc.tools.errors`
+
+The last global hook on every agent and subagent runner. `on_tool_error`
+turns any exception a tool raises into a `tool_error` result with a classified
+code (cancellation is a `BaseException` and still propagates);
+`after_tool_call` replaces a result with `complete_envelope(result)`. It
+covers built-in, workflow, browser and MCP tools alike.
+
+`agenthicc.runners.tool_populator.populate_agent_tools(agent, tools)` returns
+a tuple of `ToolRegistrationFailure(tool, source, error)`: an object without
+`@tool()` metadata, a name already registered by another source (naming both),
+or a registration lauren-ai rejected. Each failure is logged; the agent turn
+shows it once as a system line, and a subagent worker records it in
+`SubagentResult.tool_registration_failures`.
 
 ---
 

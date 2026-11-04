@@ -35,7 +35,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "FailClosedGate",
-    "order_security_gates",
+    "order_global_hooks",
     "ApprovalBroker",
     "ApprovalRequest",
     "ApprovalRequester",
@@ -596,15 +596,21 @@ class FailClosedGate:
         return ErrorToolHookDecision.reraise()
 
 
-def order_security_gates(hooks: Sequence[object]) -> list[object]:
-    """*hooks* with every :class:`FailClosedGate` moved last, in its own order.
+def order_global_hooks(hooks: Sequence[object]) -> list[object]:
+    """*hooks* in the order a runner must apply them.
 
-    Gates decide on the input the tool will actually receive: a hook that
-    rewrites ``tool_input`` must run before them, never after.
+    Every :class:`FailClosedGate` moves after the other hooks, in its own
+    order: gates decide on the input the tool will actually receive, so a hook
+    that rewrites ``tool_input`` must run before them, never after. One
+    :class:`~agenthicc.tools.errors.ToolContractHook` comes last, so every
+    other hook sees a tool's raw result or exception and the provider sees
+    the completed envelope (TOOLR-04).
     """
-    others = [hook for hook in hooks if not isinstance(hook, FailClosedGate)]
+    from agenthicc.tools.errors import ToolContractHook
+
+    others = [hook for hook in hooks if not isinstance(hook, (FailClosedGate, ToolContractHook))]
     gates = [hook for hook in hooks if isinstance(hook, FailClosedGate)]
-    return [*others, *gates]
+    return [*others, *gates, ToolContractHook()]
 
 
 class ApprovalGate(FailClosedGate):

@@ -291,7 +291,9 @@ class ReadFileTool(Tool):
         try:
             return await asyncio.to_thread(_read)
         except (OSError, LookupError) as e:
-            return {"ok": False, "error_code": "io_error", "error": str(e)}
+            from agenthicc.tools.errors import classify_exception, tool_error
+
+            return tool_error(classify_exception(e), str(e))
 
 
 class WriteFileTool(Tool):
@@ -371,7 +373,9 @@ class WriteFileTool(Tool):
         try:
             return await asyncio.to_thread(_write)
         except OSError as e:
-            return {"ok": False, "error_code": "io_error", "error": str(e)}
+            from agenthicc.tools.errors import classify_exception, tool_error
+
+            return tool_error(classify_exception(e), str(e))
 
 
 class AppendFileTool(Tool):
@@ -664,13 +668,15 @@ class FileExistsTool(Tool):
         path = arg_str(args, "path")
         try:
             resolved = await _resolve_path(context, path, operation="metadata", tool_name=self.name)
-        except PermissionError:
-            return {"exists": False, "path": path, "type": None}
+        except PermissionError as exc:
+            from agenthicc.tools.errors import ToolErrorCode, tool_error
+
+            return tool_error(ToolErrorCode.PERMISSION_DENIED, str(exc), path=path)
         exists = resolved.exists()
         file_type = None
         if exists:
             file_type = "dir" if resolved.is_dir() else "file"
-        return {"exists": exists, "path": path, "type": file_type}
+        return {"ok": True, "exists": exists, "path": path, "type": file_type}
 
 
 class SearchFilesTool(Tool):
@@ -832,12 +838,15 @@ class GetFileInfoTool(Tool):
         try:
             resolved = await _resolve_path(context, path, operation="metadata", tool_name=self.name)
         except PermissionError as e:
-            return {"ok": False, "error": f"permission_denied: {e}"}
+            from agenthicc.tools.errors import ToolErrorCode, tool_error
+
+            return tool_error(ToolErrorCode.PERMISSION_DENIED, str(e), path=path)
         if not resolved.exists():
-            return {"ok": False, "error": f"not_found: {path}"}
+            from agenthicc.tools.errors import ToolErrorCode, tool_error
+
+            return tool_error(ToolErrorCode.NOT_FOUND, f"not found: {path}", path=path)
         info = await asyncio.to_thread(_safe_stat, resolved)
-        info["path"] = str(resolved)
-        return info
+        return {"ok": True, **info, "path": str(resolved)}
 
 
 class ReadLinesTool(Tool):
@@ -994,7 +1003,8 @@ class PatchFileTool(Tool):
             if count == 0:
                 return {
                     "ok": False,
-                    "error_code": "no_match",
+                    "error_code": "not_found",
+                    "reason": "no_match",
                     "error": f"old_content not found in {path}",
                     "replacements": 0,
                 }
@@ -1033,7 +1043,9 @@ class PatchFileTool(Tool):
         try:
             return await asyncio.to_thread(_patch)
         except OSError as e:
-            return {"ok": False, "error_code": "io_error", "error": str(e)}
+            from agenthicc.tools.errors import classify_exception, tool_error
+
+            return tool_error(classify_exception(e), str(e))
 
 
 class FsToolKit:

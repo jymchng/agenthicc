@@ -121,7 +121,7 @@ def test_needs_you_footer_row_precedes_submit_hints() -> None:
     plain = [Text.from_markup(row).plain for row in rows]
 
     assert "reviewer |" in plain[0]
-    assert "◆ 4 need you  |  ● 3 running" in plain[1]
+    assert "◆ 4 sessions need you (Ctrl+G)  |  ● 3 sessions running" in plain[1]
     assert "Enter submit" in plain[2]
 
 

@@ -677,6 +677,51 @@ class FooterComponent:
             *(Text.from_markup(row, emoji=False) for row in self.markup_lines(_get_cols()))
         )
 
+    def _attention_badges(self, needs_you: int, running: int, dnd: bool, cols: int) -> str:
+        """The background-session badges, as many words as *cols* allows (TUIR-05)."""
+        if not (needs_you or running or dnd):
+            return ""
+        from agenthicc.tui.attention_labels import (
+            BadgeForm,
+            sessions_need_you,
+            sessions_running,
+        )
+        from agenthicc.tui.keymap import KeymapError, display_key
+        from agenthicc.tui.rendering import visible_len
+
+        hub_key = ""
+        try:
+            action = self._state.keymap().action("agents.open_hub")
+            if action.keys:
+                hub_key = display_key(action.keys[0])
+        except KeymapError:
+            hub_key = ""
+
+        def badges(needs: BadgeForm, active: BadgeForm, *, with_key: bool) -> str:
+            parts: list[str] = []
+            if needs_you:
+                key = f" [dim]({hub_key})[/dim]" if with_key and hub_key else ""
+                parts.append(
+                    f"[bold yellow]◆ {sessions_need_you(needs_you, needs)}[/bold yellow]{key}"
+                )
+            if running:
+                parts.append(f"[cyan]● {sessions_running(running, active)}[/cyan]")
+            if dnd:
+                parts.append("[dim]◉ DND[/dim]")
+            return "  [dim]|[/dim]  ".join(parts)
+
+        # The needs-you badge keeps its words longest: it is the one to act on.
+        candidates = (
+            badges("full", "full", with_key=True),
+            badges("full", "full", with_key=False),
+            badges("full", "short", with_key=False),
+            badges("short", "short", with_key=False),
+        )
+        for candidate in candidates:
+            if visible_len(f"  {candidate}") <= cols:
+                return candidate
+        return badges("bare", "bare", with_key=False)
+
     def markup_lines(self, cols: int) -> list[str]:
         """Return the footer's rows as markup, each fitted to *cols*."""
         from agenthicc.tui.runtime.mode_manager import build_mode_str
@@ -690,16 +735,12 @@ class FooterComponent:
         _wf_ovr_raw = conv.workflow_override()
         _wf_ovr = _wf_ovr_raw if isinstance(_wf_ovr_raw, str) else None
         _wf_suffix = f"  [cyan dim]⬡ {_e(_wf_ovr)}[/cyan dim]" if _wf_ovr else ""
-        needs_you = conv.background_needs_you()
-        running_agents = conv.background_running()
-        attention_badges: list[str] = []
-        if needs_you:
-            attention_badges.append(f"[bold yellow]◆ {needs_you} need you[/bold yellow]")
-        if running_agents:
-            attention_badges.append(f"[cyan]● {running_agents} running[/cyan]")
-        if conv.background_dnd():
-            attention_badges.append("[dim]◉ DND[/dim]")
-        attention_suffix = "  [dim]|[/dim]  ".join(attention_badges)
+        attention_suffix = self._attention_badges(
+            _signal_int(conv, "background_needs_you", 0),
+            _signal_int(conv, "background_running", 0),
+            conv.background_dnd() is True,
+            cols,
+        )
         # AGX-09: the primary agent, once another than the default is chosen.
         agent = self._state.agent()
         agent_prefix = (

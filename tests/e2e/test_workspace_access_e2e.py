@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 import asyncio
 
-from agenthicc.tools import AgenthiccToolExecutor, ToolErrorKind
+from agenthicc.tools import AgenthiccToolExecutor, ToolErrorCode
 from agenthicc.tools.approval import ApprovalGate, ApprovalResponse
 from agenthicc.tools.capability_gate import ToolCapabilityGate
 from agenthicc.tools.fs.agent_tools import read_file
@@ -72,7 +72,7 @@ async def test_safe_plan_yolo_parent_workspace_journey(
     assert safe.ok is True
     assert safe.value["content"] == "parent data"
     assert plan.ok is False
-    assert plan.error_kind == ToolErrorKind.denied.value
+    assert plan.error_kind == ToolErrorCode.OUTSIDE_WORKSPACE
     assert yolo.ok is True
     assert yolo.value["content"] == "parent data"
     assert len(approvals.requests) == 1

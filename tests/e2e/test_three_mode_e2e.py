@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from lauren_ai import tool
 
-from agenthicc.tools import AgenthiccToolExecutor, ToolErrorKind
+from agenthicc.tools import AgenthiccToolExecutor, ToolErrorCode
 from agenthicc.tools.approval import ApprovalGate, ApprovalResponse
 from agenthicc.tools.capabilities import tool_read, tool_write
 from agenthicc.tools.capability_gate import ToolCapabilityGate
@@ -60,9 +60,9 @@ async def test_one_session_moves_safe_plan_yolo_with_distinct_enforcement() -> N
     yolo = await executor.execute("_e2e_write", {}, "yolo-write")
 
     assert read.ok and read.value == "read-ok"
-    assert not denied.ok and denied.error_kind == ToolErrorKind.denied.value
+    assert not denied.ok and denied.error_kind == ToolErrorCode.APPROVAL_DENIED
     assert retried.ok and retried.value == "write-ok"
-    assert not plan.ok and plan.error_kind == ToolErrorKind.denied.value
+    assert not plan.ok and plan.error_kind == ToolErrorCode.BLOCKED_BY_MODE
     assert yolo.ok and yolo.value == "write-ok"
     assert approvals.requests == ["_e2e_write", "_e2e_write"]
     assert app.active_mode().name == "Yolo"

@@ -21,3 +21,4 @@ and TUIR-02 together, then TUIR-03, then TUIR-05.
 |---|---|---|
 | tools 4 | `tools-wave-4-discovery-off-loop` | TUIR-01, TUIR-02 |
 | tools 5 | `tools-wave-5-journal-and-lag` | TUIR-03, TUIR-04 |
+| tools 6 | `tools-wave-6-result-contract` | TUIR-05 |

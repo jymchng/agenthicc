@@ -13,10 +13,11 @@ from agenthicc.subagents.tool import make_spawn_subagents_tool
 from agenthicc.subagents.types import SubagentTypeRegistry, SubagentTypeSpec
 from agenthicc.tools.approval import ApprovalGate
 from agenthicc.tools.capabilities import CAPABILITIES_KEY, ToolCapability, tool_write
+from agenthicc.tools.errors import ToolContractHook
 from agenthicc.tools.capability_gate import (
     FailClosedGate,
     ToolCapabilityGate,
-    order_security_gates,
+    order_global_hooks,
 )
 from agenthicc.tui.conversation_store import AppState
 from agenthicc.tui.runtime.mode_manager import build_default_registry
@@ -77,7 +78,7 @@ async def test_a_raising_capability_lookup_blocks_the_call() -> None:
     assert decision._abort_result["error_code"] == "internal"  # type: ignore[attr-defined]
 
 
-def test_security_gates_run_after_every_other_hook() -> None:
+def test_security_gates_run_after_every_other_hook_and_the_contract_last() -> None:
     class _Rewriter:
         async def before_tool_call(self, ctx: ToolCallContext) -> object:
             return None
@@ -87,10 +88,12 @@ def test_security_gates_run_after_every_other_hook() -> None:
     approval = ApprovalGate(app, _BrokenApprovals())  # type: ignore[arg-type]
     first, second = _Rewriter(), _Rewriter()
 
-    ordered = order_security_gates([capability, first, approval, second])
+    ordered = order_global_hooks([capability, first, approval, second])
 
-    assert ordered == [first, second, capability, approval]
-    assert all(isinstance(hook, FailClosedGate) for hook in ordered[2:])
+    assert ordered[:4] == [first, second, capability, approval]
+    assert all(isinstance(hook, FailClosedGate) for hook in ordered[2:4])
+    assert isinstance(ordered[4], ToolContractHook) and len(ordered) == 5
+    assert len(order_global_hooks(ordered)) == 5
 
 
 @pytest.mark.asyncio

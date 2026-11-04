@@ -560,7 +560,8 @@ def _apply_diff_sync(
             if not allow_partial:
                 return {
                     "ok": False,
-                    "error_code": "no_match",
+                    "error_code": "not_found",
+                    "reason": "no_match",
                     "error": f"hunk {number} context not found within {_HUNK_FUZZ_LINES} lines",
                     "hunks_applied": 0,
                     "hunks_failed": len(failed),

@@ -17,8 +17,12 @@ runtime.
 
 ### Cross-session attention
 
-While background agents run, the TUI status bar shows the counts that need you
-and are running. New approvals, questions, input requests, completions and
+While background agents run, the TUI status bar counts the background
+**sessions** that need you and that are running, for example
+`◆ 7 sessions need you (Ctrl+G)  |  ● 1 session running`. These are agents hub
+sessions, not the workers of a subagent pool; a pool's workers are counted on
+its own panel. At narrow widths the badges shorten to `◆ 7 sess.` and then
+`◆ 7`, and the terminal title uses the same words. New approvals, questions, input requests, completions and
 failures appear as brief, coalesced toasts; a toast waits until a modal closes.
 Ctrl+G opens the oldest pending item in **Needs you**; otherwise it opens
 **Running** and selects the toast's agent when a toast is visible. The ← agents

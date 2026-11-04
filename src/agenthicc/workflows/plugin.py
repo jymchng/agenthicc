@@ -32,56 +32,6 @@ if TYPE_CHECKING:
     from agenthicc.tui.runtime.mode_manager import ModeManager
 
 
-# These are the built-in workflow handoff tools.  The prompt helper also uses
-# ToolCapability.CONTROL below, so custom workflow tools marked with
-# ``@tool_control`` are advertised without needing to be added here.  The
-# name-based fallback preserves compatibility with older plugin callables that
-# predate capability metadata.
-_PHASE_TRANSITION_TOOL_NAMES = frozenset(
-    {
-        "request_plan_approval",
-        "finalize_plan",
-        "exit_code_plan",
-        "mark_execute_complete",
-        "approve_review",
-        "reject_review",
-        "request_design_approval",
-        "finalize_design",
-        "exit_create_workflow",
-        "mark_generation_complete",
-        "approve_workflow",
-        "reject_workflow",
-        "submit_tool_plan",
-        "confirm_generation_complete",
-        "approve_tool",
-        "reject_tool",
-        "submit_toc",
-        "submit_research",
-        "submit_responsive_research",
-        "approve_research_baseline",
-        "approve_degraded_research",
-        "reject_research_baseline",
-        "confirm_chapter_complete",
-        "confirm_assets_ready",
-        "confirm_front_matter_ready",
-        "confirm_back_matter_ready",
-        "mark_book_complete",
-        "reject_book",
-        "submit_analysis",
-        "submit_plan",
-        "request_reanalysis",
-        "scaffold_complete",
-        "component_built",
-        "component_verified",
-        "component_verification_failed",
-        "final_verify_passed",
-        "final_verify_failed",
-        "submit_release_plan",
-        "release_passed",
-        "release_blocked",
-    }
-)
-
 # These tools carry workflow control metadata because they mutate durable
 # workflow state, but they do not end the current phase.  Keeping them out of
 # the transition list prevents the generic prompt helper from telling the
@@ -125,13 +75,12 @@ def phase_transition_instruction(
         is_control_tool = name != "ask_user" and ToolCapability.CONTROL in get_tool_capabilities(
             tool
         )
-        is_known_transition = name in _PHASE_TRANSITION_TOOL_NAMES
         if name in _NON_TRANSITION_CONTROL_TOOL_NAMES:
             if expected is None or name in expected:
                 if name not in mutations:
                     mutations.append(name)
             continue
-        if (is_control_tool or is_known_transition) and (expected is None or name in expected):
+        if is_control_tool and (expected is None or name in expected):
             if name not in available:
                 available.append(name)
 

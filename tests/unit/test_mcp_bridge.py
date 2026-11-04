@@ -253,7 +253,11 @@ async def test_call_tool_reports_a_remote_error():
     bridge._client = AsyncMock()
     bridge._client.call_tool = AsyncMock(return_value=err_result)
     result = await bridge.call_tool("t", {})
-    assert result["ok"] is False and result["error_code"] == "remote_error"
+    assert (
+        result["ok"] is False
+        and result["error_code"] == "internal"
+        and result["reason"] == "remote_error"
+    )
 
 
 @pytest.mark.asyncio
@@ -607,7 +611,11 @@ def test_an_is_error_result_is_an_envelope():
     envelope = tool_result(
         {"isError": True, "content": [{"type": "text", "text": "quota exceeded"}]}, server="s"
     )
-    assert envelope["ok"] is False and envelope["error_code"] == "remote_error"
+    assert (
+        envelope["ok"] is False
+        and envelope["error_code"] == "internal"
+        and envelope["reason"] == "remote_error"
+    )
     assert "quota exceeded" in envelope["error"]
 
 

@@ -174,7 +174,7 @@ async def test_binary_content_is_reported_not_decoded(
 
     result = await FetchPageTool().run("https://example.com/doc.pdf")
 
-    assert result["error_code"] == "unsupported_content"
+    assert result["error_code"] == "undecodable" and result["reason"] == "unsupported_content"
     assert result["content_type"] == "application/pdf" and result["bytes"] == 15
 
 

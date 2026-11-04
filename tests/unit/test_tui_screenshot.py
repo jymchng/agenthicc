@@ -82,14 +82,15 @@ async def test_run_dispatches_operations_and_reports_errors(
     listed = await tool.run(operation="list")
     assert listed == {"ok": True, "operation": "list", "sessions": [], "count": 0}
     unknown = await tool.run(operation="nope")
-    assert unknown["ok"] is False
+    assert unknown["ok"] is False and unknown["error_code"] == "invalid_argument"
     assert "valid_operations" in unknown
 
     monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setattr(tool, "_tmux_has_session", lambda _sid: False)
     status = await tool.run(operation="status", session="missing")
     assert status["ok"] is False
-    assert status["recoverable"] is True
+    assert status["error_code"] in {"not_found", "invalid_argument", "internal"}
+    assert isinstance(status["retryable"], bool) and "recoverable" not in status
     monkeypatch.undo()
 
     created = await tool.run(operation="create", session="bad", backend="invalid")
