@@ -12,7 +12,6 @@ from agenthicc.tools.mcp import (
     AgenthiccMcpTool,
     McpToolRegistry,
     McpToolCallError,
-    _extract_tool_content,
 )
 from agenthicc.tools.mcp_server_config import McpServerConfig, McpConfigurationError
 
@@ -129,9 +128,9 @@ def test_tool_description_passthrough():
     assert tool.description == "Does stuff"
 
 
-def test_tool_parameters_passthrough():
+def test_tool_parameters_are_provider_safe():
     tool = _make_tool()
-    assert tool.parameters == {"type": "object"}
+    assert tool.parameters == {"type": "object", "properties": {}}
 
 
 @pytest.mark.asyncio
@@ -236,14 +235,15 @@ async def test_connect_preserves_bounded_stderr_after_startup_failure():
 
 
 @pytest.mark.asyncio
-async def test_call_tool_raises_when_not_connected():
+async def test_call_tool_raises_when_not_connected_and_reconnect_fails():
     bridge = McpToolBridge(McpServerConfig(name="s", url="u"))
+    bridge.connect = AsyncMock(side_effect=McpToolCallError("Failed to connect"))  # type: ignore[method-assign]
     with pytest.raises(McpToolCallError, match="not connected"):
         await bridge.call_tool("t", {})
 
 
 @pytest.mark.asyncio
-async def test_call_tool_raises_on_mcp_error():
+async def test_call_tool_reports_a_remote_error():
     cfg = McpServerConfig(name="s", url="u")
     bridge = McpToolBridge(cfg)
     bridge._connected = True
@@ -252,8 +252,8 @@ async def test_call_tool_raises_on_mcp_error():
     err_result.content = []
     bridge._client = AsyncMock()
     bridge._client.call_tool = AsyncMock(return_value=err_result)
-    with pytest.raises(McpToolCallError):
-        await bridge.call_tool("t", {})
+    result = await bridge.call_tool("t", {})
+    assert result["ok"] is False and result["error_code"] == "remote_error"
 
 
 @pytest.mark.asyncio
@@ -272,15 +272,11 @@ async def test_call_tool_returns_content_on_success():
     cfg = McpServerConfig(name="s", url="u")
     bridge = McpToolBridge(cfg)
     bridge._connected = True
-    ok_result = MagicMock()
-    ok_result.isError = False
-    block = MagicMock()
-    block.text = "output"
-    ok_result.content = [block]
+    ok_result = {"isError": False, "content": [{"type": "text", "text": "output"}]}
     bridge._client = AsyncMock()
     bridge._client.call_tool = AsyncMock(return_value=ok_result)
     result = await bridge.call_tool("t", {"arg": "val"}, tool_call_id="id1")
-    assert result == "output"
+    assert result == {"ok": True, "content": "output"}
 
 
 @pytest.mark.asyncio
@@ -514,15 +510,23 @@ async def test_shutdown_disconnects_all_bridges():
     assert not bridge_b.is_connected
 
 
-# ── _extract_tool_content ─────────────────────────────────────────────────────
+# ── tool_result (TOOLR-06) ───────────────────────────────────────────────────
+
+
+def _content(result: object) -> object:
+    from agenthicc.tools.mcp_content import tool_result
+
+    envelope = tool_result(result, server="s")
+    assert envelope["ok"] is True
+    return envelope["content"]
 
 
 def test_extract_single_text_block():
-    block = MagicMock()
+    block = MagicMock(spec=["text"])
     block.text = "hello"
-    result = MagicMock()
+    result = MagicMock(spec=["content"])
     result.content = [block]
-    assert _extract_tool_content(result) == "hello"
+    assert _content(result) == "hello"
 
 
 def test_extract_structured_content_from_json_result():
@@ -531,46 +535,170 @@ def test_extract_structured_content_from_json_result():
         "structuredContent": {"result": ["README.md"]},
         "isError": False,
     }
-    assert _extract_tool_content(result) == ["README.md"]
+    assert _content(result) == ["README.md"]
 
 
-def test_extract_json_mapping_text_blocks():
-    result = {"content": [{"type": "text", "text": "hello"}]}
-    assert _extract_tool_content(result) == "hello"
+def test_structured_content_without_a_result_key_is_used_whole():
+    result = {"content": [], "structuredContent": {"rows": 3, "ok": True}}
+    assert _content(result) == {"rows": 3, "ok": True}
 
 
 def test_extract_json_encoded_text_payload():
     result = {"content": [{"type": "text", "text": '{"created": true}'}]}
-    assert _extract_tool_content(result) == {"created": True}
+    assert _content(result) == {"created": True}
 
 
-def test_extract_multiple_blocks():
-    b1, b2 = MagicMock(), MagicMock()
-    b1.text = "a"
-    b2.text = "b"
-    result = MagicMock()
-    result.content = [b1, b2]
-    out = _extract_tool_content(result)
-    assert out == ["a", "b"]
+def test_extract_multiple_text_blocks_are_joined():
+    result = {"content": [{"type": "text", "text": "a"}, {"type": "text", "text": "b"}]}
+    assert _content(result) == "a\nb"
 
 
 def test_extract_empty_content_returns_none():
-    result = MagicMock()
-    result.content = []
-    assert _extract_tool_content(result) is None
+    assert _content({"content": []}) is None
 
 
-def test_extract_no_content_attr_returns_none():
-    result = MagicMock(spec=[])  # no attributes
-    assert _extract_tool_content(result) is None
+def test_an_image_block_becomes_an_artifact_not_base64(tmp_path, monkeypatch):
+    import base64
+
+    from agenthicc.tools import mcp_content
+
+    monkeypatch.setattr(mcp_content, "_artifact_root", tmp_path)
+    png = b"\x89PNG\r\n" + b"\0" * 200_000
+    encoded = base64.b64encode(png).decode()
+    result = {
+        "content": [
+            {"type": "text", "text": "a chart"},
+            {"type": "image", "data": encoded, "mimeType": "image/png"},
+        ]
+    }
+
+    value = _content(result)
+
+    assert value["text"] == "a chart"
+    (artifact,) = value["artifacts"]
+    assert artifact["mime_type"] == "image/png" and artifact["bytes"] == len(png)
+    assert open(artifact["path"], "rb").read() == png
+    assert encoded[:100] not in str(value)
 
 
-def test_extract_data_block_when_no_text():
-    block = MagicMock(spec=["data"])
-    block.data = b"bytes"
-    result = MagicMock()
-    result.content = [block]
-    assert _extract_tool_content(result) == b"bytes"
+def test_resources_and_links_are_described():
+    result = {
+        "content": [
+            {"type": "resource", "resource": {"uri": "file:///a", "text": "inline text"}},
+            {"type": "resource_link", "uri": "file:///b", "name": "b", "mimeType": "text/plain"},
+        ]
+    }
+    value = _content(result)
+    assert value["text"] == "inline text"
+    assert value["resource_links"] == [{"uri": "file:///b", "name": "b", "mime_type": "text/plain"}]
+
+
+def test_a_huge_text_result_is_bounded():
+    from agenthicc.tools.mcp_content import MAX_RESULT_CHARS, tool_result
+
+    envelope = tool_result({"content": [{"type": "text", "text": "x" * 1_000_000}]}, server="s")
+    assert envelope["truncated"] is True and envelope["original_chars"] == 1_000_000
+    assert len(envelope["content"]) == MAX_RESULT_CHARS
+
+
+def test_an_is_error_result_is_an_envelope():
+    from agenthicc.tools.mcp_content import tool_result
+
+    envelope = tool_result(
+        {"isError": True, "content": [{"type": "text", "text": "quota exceeded"}]}, server="s"
+    )
+    assert envelope["ok"] is False and envelope["error_code"] == "remote_error"
+    assert "quota exceeded" in envelope["error"]
+
+
+@pytest.mark.parametrize(
+    ("schema", "wrapped"),
+    [
+        (
+            {
+                "type": "object",
+                "properties": {"item": {"$ref": "#/$defs/Item"}},
+                "$defs": {"Item": {"type": "object", "properties": {"id": {"type": "string"}}}},
+            },
+            False,
+        ),
+        (
+            {
+                "oneOf": [
+                    {"type": "object", "properties": {"a": {"type": "string"}}},
+                    {"type": "object", "properties": {"b": {"type": "integer"}}},
+                ]
+            },
+            False,
+        ),
+        ({"type": "string"}, True),
+        ({"$schema": "http://json-schema.org/draft-07/schema#", "type": "object"}, False),
+    ],
+    ids=["ref", "one-of", "string-root", "meta"],
+)
+def test_schemas_are_made_provider_safe(schema, wrapped):
+    from agenthicc.tools.mcp_content import provider_safe_schema
+
+    safe = provider_safe_schema(schema)
+
+    assert safe is not None and safe.wrapped is wrapped
+    rendered = str(safe.schema)
+    assert safe.schema["type"] == "object" and isinstance(safe.schema["properties"], dict)
+    assert "$ref" not in rendered and "$defs" not in rendered and "$schema" not in rendered
+    assert "oneOf" not in rendered
+
+
+def test_an_unrepairable_schema_is_rejected():
+    from agenthicc.tools.mcp_content import provider_safe_schema
+
+    assert provider_safe_schema({"type": "object", "properties": ["not", "a", "map"]}) is None
+
+
+async def test_a_wrapped_schema_unwraps_arguments_on_call():
+    bridge = MagicMock()
+    bridge.server_name = "s"
+    bridge.call_tool = AsyncMock(return_value={"ok": True, "content": "done"})
+    tool = AgenthiccMcpTool(bridge, McpToolSchema("echo", "", {"type": "string"}))
+
+    assert tool.parameters["required"] == ["value"]
+    await tool.execute({"value": "hello"}, {})
+
+    bridge.call_tool.assert_awaited_once_with("echo", "hello", tool_call_id="")
+
+
+async def test_a_dead_server_reconnects_once_and_a_failing_one_opens_the_circuit():
+    import agenthicc.tools.mcp as mcp_module
+
+    bridge = McpToolBridge(McpServerConfig(name="s", url="u"))
+    connects: list[int] = []
+
+    async def connect() -> None:
+        connects.append(1)
+        bridge._connected = True
+        bridge._client = AsyncMock()
+        bridge._client.call_tool = AsyncMock(
+            return_value={"content": [{"type": "text", "text": "ok"}]}
+        )
+
+    bridge.connect = connect  # type: ignore[method-assign]
+    result = await bridge.call_tool("t", {})
+    assert result == {"ok": True, "content": "ok"} and connects == [1]
+
+    async def connect_to_a_broken_server() -> None:
+        connects.append(1)
+        bridge._connected = True
+        bridge._client = AsyncMock()
+        bridge._client.call_tool = AsyncMock(side_effect=ConnectionResetError("gone"))
+
+    bridge.connect = connect_to_a_broken_server  # type: ignore[method-assign]
+    bridge._client.call_tool = AsyncMock(side_effect=ConnectionResetError("gone"))
+    for _ in range(mcp_module.CIRCUIT_FAILURES):
+        with pytest.raises(McpToolCallError):
+            await bridge.call_tool("t", {})
+    fast = await bridge.call_tool("t", {})
+    assert fast["ok"] is False and fast["error_code"] == "unavailable"
+    # Each failure after the first reconnected before failing again.
+    assert len(connects) == mcp_module.CIRCUIT_FAILURES
 
 
 # ── _build_client transport paths ─────────────────────────────────────────────

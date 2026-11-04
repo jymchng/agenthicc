@@ -264,3 +264,34 @@ problem cannot be fixed by editing a tool allow-list.
 An unavailable MCP server does not fall back to a local implementation. The
 choice is fail-closed: the dependent operation reports the missing required
 resource rather than silently proceeding without the tools it declared.
+
+## How results and schemas reach the model
+
+Every MCP call returns an envelope: `{"ok": true, "content": …}` or
+`{"ok": false, "error_code": …, "error": …}`.
+
+- **Structured content** (`structuredContent`) is used whole when the server
+  sends it.
+- **Text blocks** are joined; a single JSON text block is decoded.
+- **Image, audio and binary resource blocks** are written to the session's
+  `mcp-artifacts/` directory and described as `{type, mime_type, path, bytes}`.
+  They never reach the model as base64.
+- **Resource links** are listed as `{uri, name, mime_type}`.
+- **Size bound:** text beyond 50,000 characters is cut, with `truncated: true`
+  and `original_chars`.
+- **Server errors:** a server's `isError` result is `error_code: "remote_error"`.
+- **Timeouts:** a call past `tool_timeout_s` is `error_code: "timeout"`.
+
+Input schemas are rewritten once per catalog into a shape every provider
+accepts:
+- local `$ref`s are inlined;
+- a top-level `oneOf`/`anyOf`/`allOf` is flattened into one object;
+- a non-object root is wrapped as `{value: …}` and unwrapped on the call;
+- meta keywords are dropped.
+
+A tool whose schema cannot be repaired is withheld, with a warning in the log,
+instead of breaking every request.
+
+If a server stops responding, the next call reconnects once before it runs.
+After 5 consecutive transport failures, calls fail fast with
+`error_code: "unavailable"` for 30 seconds.

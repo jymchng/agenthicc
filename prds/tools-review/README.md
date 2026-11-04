@@ -36,3 +36,4 @@ Discovery cost is owned by
 |---|---|---|
 | 1 | `tools-wave-1-gates-and-edits` | TOOLR-07, TOOLR-01 |
 | 2 | `tools-wave-2-exec-and-git` | TOOLR-02, TOOLR-03 |
+| 3 | `tools-wave-3-network-and-mcp` | TOOLR-05, TOOLR-06 |

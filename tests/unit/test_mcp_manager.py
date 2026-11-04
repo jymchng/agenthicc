@@ -283,7 +283,7 @@ async def test_catalog_snapshot_freezes_nested_metadata_and_has_stable_serializa
     assert first == second
     assert "captured_at" not in first
     assert snapshot.runtime_dict()["captured_at"] == snapshot.captured_at
-    assert manager.catalog()[0]["parameters"] == {"type": "object"}
+    assert manager.catalog()[0]["parameters"] == {"type": "object", "properties": {}}
     await manager.shutdown()
 
 

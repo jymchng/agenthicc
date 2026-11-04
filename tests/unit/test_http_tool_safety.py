@@ -132,7 +132,7 @@ async def test_search_web_tool_returns_error_dict_on_read_timeout() -> None:
 
     assert result["ok"] is False
     assert "ReadTimeout" in result["error"]
-    assert result.get("recoverable") is True
+    assert result["error_code"] == "network" and result["retryable"] is True
 
 
 @pytest.mark.unit
@@ -172,24 +172,36 @@ async def test_search_web_tool_reraises_non_network_errors() -> None:
 
 
 @pytest.mark.unit
-async def test_fetch_page_tool_error_includes_class_name() -> None:
-    """FetchPageTool already catches errors — verify class name is in error."""
+async def test_fetch_page_tool_error_includes_class_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A transport timeout becomes a retryable network envelope naming the class."""
     import httpx
+
     from agenthicc.skills.web_search import FetchPageTool
+    from agenthicc.tools import http as http_tools
 
-    tool = FetchPageTool()
+    async def resolver(host: str) -> list[str]:
+        return ["93.184.216.34"]
 
-    with patch("agenthicc.tools.http.agenthicc_http_client") as mock_cm:
-        mock_client = AsyncMock()
-        mock_client.get.side_effect = httpx.ReadTimeout("read timed out", request=MagicMock())
-        mock_cm.return_value.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_cm.return_value.__aexit__ = AsyncMock(return_value=False)
+    def timeout_handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("read timed out", request=request)
 
-        result = await tool.run("https://example.com")
+    original = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda **kwargs: original(transport=httpx.MockTransport(timeout_handler), **kwargs),
+    )
+    monkeypatch.setattr(
+        http_tools,
+        "_network_policy",
+        http_tools.HttpDestinationPolicy(allow_all=True, resolver=resolver),
+    )
+
+    result = await FetchPageTool().run("https://example.com")
 
     assert result["ok"] is False
     assert "ReadTimeout" in result["error"]  # class name present
-    assert result.get("recoverable") is True
+    assert result["error_code"] == "network" and result["retryable"] is True
 
 
 # ── Outlook _OutlookNetworkError boundary ─────────────────────────────────────
@@ -245,7 +257,7 @@ async def test_outlook_safe_call_converts_to_error_dict() -> None:
     result = await _safe_call(failing_coro())
     assert result["ok"] is False
     assert "ReadTimeout" in result["error"]
-    assert result["recoverable"] is True
+    assert result["error_code"] == "network" and result["retryable"] is True
 
 
 @pytest.mark.unit

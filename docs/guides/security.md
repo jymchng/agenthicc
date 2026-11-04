@@ -36,6 +36,23 @@ Configure the real project paths in `[security].allowed_paths`. The illustrative
 `network_allow_list` denies outbound destinations. Network tools must use the
 shared HTTP client so connect and read timeout policy is consistent.
 
+Model-chosen HTTP destinations (`fetch_page`) are checked by the session's
+`HttpDestinationPolicy` before the first request and again on every redirect
+hop, up to 5 hops. Only `http`/`https` are allowed. The host must be on
+`network_allow_list`, or `network_allow_all = true` must be set. Every address
+the host resolves to must be public: loopback, private, link-local and reserved
+ranges, which include cloud metadata at `169.254.169.254`, are refused even
+under `network_allow_all`. Responses are read up to 5 MB, and page text is
+returned 40,000 characters at a time, with an `offset` for the rest.
+Operator-configured fixed endpoints — the Brave Search API and Microsoft
+Graph — are not model-chosen and are not gated by the allow-list.
+
+```toml
+[security]
+network_allow_list = ["docs.python.org", "example.com"]
+network_allow_all = false   # true: any public host for fetch_page
+```
+
 ### Browser-specific boundaries
 
 Browser backends are optional and selected by `[tools].browser_backend`;

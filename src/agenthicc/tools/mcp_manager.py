@@ -980,6 +980,12 @@ class McpSessionManager:
                 catalog_revision=revision,
                 catalog_revision_checker=self._is_catalog_binding_current,
             )
+            if not tool.schema_is_provider_safe:
+                # One bad schema must not break every provider request.
+                log.warning(
+                    "MCP tool %r withheld: its input schema is not provider-safe", tool.name
+                )
+                continue
             provider_name = _provider_safe_tool_name(tool.name)
             owner = candidate_provider.get(provider_name)
             if owner is not None and owner != tool.name:

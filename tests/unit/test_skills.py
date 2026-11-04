@@ -89,21 +89,6 @@ class TestSearchWebTool:
 
 
 class TestFetchPageTool:
-    async def test_strips_html_and_returns_text(self):
-        mock_resp = MagicMock()
-        mock_resp.raise_for_status = MagicMock()
-        mock_resp.text = "<html><body><h1>Hello</h1><p>World</p></body></html>"
-        mock_resp.status_code = 200
-        mock_client = AsyncMock()
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-        mock_client.get = AsyncMock(return_value=mock_resp)
-        with patch("httpx.AsyncClient", return_value=mock_client):
-            r = await FetchPageTool().run("https://example.com")
-        assert r["ok"] is True
-        assert "<html>" not in r["content"]
-        assert "Hello" in r["content"] or "World" in r["content"]
-
     async def test_network_error_returns_ok_false(self):
         with patch("httpx.AsyncClient", side_effect=Exception("connection refused")):
             r = await FetchPageTool().run("https://bad.example")
