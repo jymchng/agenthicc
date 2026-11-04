@@ -38,7 +38,7 @@ async def test_slow_agent_run_accepts_usage_immediately_then_releases_fifo_queue
             await release.wait()
 
     monkeypatch.setattr(tui_session_module, "_run_agent_turn", fake_agent_turn)
-    monkeypatch.setattr(tui_session_module, "_make_session_tools", lambda *args, **kwargs: [])
+    monkeypatch.setattr("agenthicc.runners.session_tools.session_tools", lambda *args, **kwargs: [])
 
     await bus.dispatch_async(SendMessageCommand(text="first request"))
     first_task = session._agent_task

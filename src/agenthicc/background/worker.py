@@ -27,7 +27,6 @@ from agenthicc.background.model import (
 )
 from agenthicc.background.store import BackgroundStore, InvalidSessionTransition
 from agenthicc.cli.context import CLIContext, CLIFlags
-from agenthicc.config import DEFAULT_QUESTION_TIMEOUT_S
 
 logger = logging.getLogger(__name__)
 
@@ -138,19 +137,6 @@ def _request_attribute(value: object, name: str, default: object = None) -> obje
         return object.__getattribute__(value, name)
     except AttributeError:
         return default
-
-
-def _session_question_timeout(session: object) -> float:
-    value = _request_attribute(
-        _request_attribute(_request_attribute(session, "cfg", None), "tools", None),
-        "question_timeout_s",
-        DEFAULT_QUESTION_TIMEOUT_S,
-    )
-    return (
-        float(value)
-        if isinstance(value, (int, float)) and not isinstance(value, bool)
-        else DEFAULT_QUESTION_TIMEOUT_S
-    )
 
 
 @dataclass(frozen=True)
@@ -586,20 +572,29 @@ class BackgroundApprovalService:
         self,
         store: BackgroundStore,
         session_id: str,
-        question_timeout_s: float = DEFAULT_QUESTION_TIMEOUT_S,
+        question_timeout_s: float | None = None,
         conversation_store: object | None = None,
         inbox: object | None = None,
+        auto_approve_capabilities: bool = False,
     ) -> None:
-        if (
+        if question_timeout_s is not None and (
             isinstance(question_timeout_s, bool)
             or not isinstance(question_timeout_s, (int, float))
             or not math.isfinite(float(question_timeout_s))
             or float(question_timeout_s) <= 0
         ):
-            raise ValueError("tools.question_timeout_s must be a finite number greater than zero")
+            raise ValueError(
+                "background.question_timeout_s must be a finite number greater than zero"
+            )
         self.store = store
         self.session_id = session_id
-        self.question_timeout_s = float(question_timeout_s)
+        #: ``--dangerously-skip-permissions``: tool approvals are granted at
+        #: once, questions still wait for the operator (AGI-03).
+        self.auto_approve_capabilities = auto_approve_capabilities
+        #: ``None``: a question waits for the operator without a deadline (AGI-02).
+        self.question_timeout_s = (
+            float(question_timeout_s) if question_timeout_s is not None else None
+        )
         self.conversation_store = conversation_store
         if inbox is None:
             from agenthicc.background.inbox import BackgroundInteractionInbox
@@ -822,8 +817,8 @@ class BackgroundApprovalService:
         req: object,
         *,
         outcome: str,
-        timeout_s: float,
-        deadline_at: float,
+        timeout_s: float | None,
+        deadline_at: float | None,
     ) -> None:
         conversation = self.conversation_store
         append_event = _request_attribute(conversation, "append_event")
@@ -855,6 +850,15 @@ class BackgroundApprovalService:
 
         if req.kind == "questions":
             return await self.request_input(req)
+        if self.auto_approve_capabilities:
+            # A dangerous-permissions flag approves capabilities, not a wider
+            # workspace: access outside the project still needs a scope policy.
+            if _request_attribute(req, "workspace_access", None):
+                return ApprovalResponse(
+                    allowed=False,
+                    message="workspace access is denied without an explicit scope policy",
+                )
+            return ApprovalResponse(allowed=True, message="approved (permissions skipped)")
 
         request_id = str(
             _request_attribute(req, "request_id", "")
@@ -905,7 +909,7 @@ class BackgroundApprovalService:
             timeout_s = None
         if not isinstance(timeout_s, (int, float)) or isinstance(timeout_s, bool) or timeout_s <= 0:
             timeout_s = self.question_timeout_s
-        deadline_wall = time.time() + float(timeout_s)
+        deadline_wall = time.time() + float(timeout_s) if timeout_s is not None else None
         request_id = str(
             _request_attribute(req, "request_id", "")
             or _request_attribute(req, "tool_use_id", "")
@@ -917,7 +921,7 @@ class BackgroundApprovalService:
         # diagnostics.
         try:
             object.__setattr__(req, "request_id", request_id)
-            object.__setattr__(req, "timeout_s", float(timeout_s))
+            object.__setattr__(req, "timeout_s", float(timeout_s) if timeout_s else None)
             object.__setattr__(req, "deadline_at", deadline_wall)
         except (AttributeError, TypeError):
             pass
@@ -926,7 +930,7 @@ class BackgroundApprovalService:
             "question_wait_started",
             req,
             outcome="pending",
-            timeout_s=float(timeout_s),
+            timeout_s=float(timeout_s) if timeout_s is not None else None,
             deadline_at=deadline_wall,
         )
         try:
@@ -935,14 +939,14 @@ class BackgroundApprovalService:
                 kind="question" if target.get("question_ids") else "input",
                 request_id=request_id,
                 target=target,
-                timeout_s=float(timeout_s),
+                timeout_s=float(timeout_s) if timeout_s is not None else None,
             )
         except KeyError:
             self._emit_question_event(
                 "question_wait_failed",
                 req,
                 outcome="failed",
-                timeout_s=float(timeout_s),
+                timeout_s=float(timeout_s) if timeout_s is not None else None,
                 deadline_at=deadline_wall,
             )
             return ApprovalResponse(
@@ -950,14 +954,14 @@ class BackgroundApprovalService:
                 message="background session was removed",
                 outcome="failed",
                 request_id=request_id,
-                timeout_s=float(timeout_s),
+                timeout_s=float(timeout_s) if timeout_s is not None else None,
             )
         except (InvalidSessionTransition, ValueError):
             self._emit_question_event(
                 "question_wait_failed",
                 req,
                 outcome="failed",
-                timeout_s=float(timeout_s),
+                timeout_s=float(timeout_s) if timeout_s is not None else None,
                 deadline_at=deadline_wall,
             )
             return ApprovalResponse(
@@ -965,14 +969,14 @@ class BackgroundApprovalService:
                 message="background session is no longer active",
                 outcome="failed",
                 request_id=request_id,
-                timeout_s=float(timeout_s),
+                timeout_s=float(timeout_s) if timeout_s is not None else None,
             )
         if isinstance(value, dict):
             self._emit_question_event(
                 "question_answered",
                 req,
                 outcome="answered",
-                timeout_s=float(timeout_s),
+                timeout_s=float(timeout_s) if timeout_s is not None else None,
                 deadline_at=deadline_wall,
             )
             return ApprovalResponse(
@@ -980,14 +984,14 @@ class BackgroundApprovalService:
                 message=value.get("message", "") if isinstance(value.get("message"), str) else "",
                 outcome=str(value.get("outcome", "answered")),
                 request_id=request_id,
-                timeout_s=float(timeout_s),
+                timeout_s=float(timeout_s) if timeout_s is not None else None,
             )
         if outcome == "expired":
             self._emit_question_event(
                 "question_timed_out",
                 req,
                 outcome="timed_out",
-                timeout_s=float(timeout_s),
+                timeout_s=float(timeout_s) if timeout_s is not None else None,
                 deadline_at=deadline_wall,
             )
             return ApprovalResponse(
@@ -1001,14 +1005,14 @@ class BackgroundApprovalService:
                 timed_out=True,
                 decision_required=True,
                 request_id=request_id,
-                timeout_s=float(timeout_s),
+                timeout_s=float(timeout_s) if timeout_s is not None else None,
             )
         if outcome == "cancelled":
             self._emit_question_event(
                 "question_cancelled",
                 req,
                 outcome="cancelled",
-                timeout_s=float(timeout_s),
+                timeout_s=float(timeout_s) if timeout_s is not None else None,
                 deadline_at=deadline_wall,
             )
         return ApprovalResponse(
@@ -1020,7 +1024,7 @@ class BackgroundApprovalService:
             ),
             outcome="cancelled" if outcome == "cancelled" else "failed",
             request_id=request_id,
-            timeout_s=float(timeout_s),
+            timeout_s=float(timeout_s) if timeout_s is not None else None,
         )
 
     def respond(self, allowed: bool, **kwargs: object) -> None:
@@ -1103,6 +1107,7 @@ async def _run_direct_turn(
     """Run a direct turn through the canonical agent-turn runner."""
 
     from agenthicc.runners.agent_turn import _run_agent_turn
+    from agenthicc.runners.session_tools import session_tools
 
     agent_runner = session.agent_runner
     if agent_runner is None:
@@ -1132,7 +1137,12 @@ async def _run_direct_turn(
         skills=session.skills,
         skill_permissions=cfg.agents.skill_permissions_for(agent.spec.name),
         mention_cache=session.mention_cache,
-        project_plugin_tools=list(getattr(session.project_plugins, "all_tools", ())),
+        # AGI-03: the same session tools as a foreground turn, so a background
+        # agent can ask the operator (ask_user → the inbox) and use memory.
+        project_plugin_tools=[
+            *list(getattr(session.project_plugins, "all_tools", ())),
+            *session_tools(session),
+        ],
         mcp_registry=session.mcp_registry,
         subagent_registry=session.subagent_registry,
         active_agent=agent.spec.name,
@@ -1884,7 +1894,6 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
 
         heartbeat_task = asyncio.create_task(_heartbeat(), name="background-heartbeat")
         from agenthicc.runners.headless import (
-            _HeadlessApprovalService,
             _close_headless_session,
             execute_workflow,
             _select_headless_workflow_resume,
@@ -1958,17 +1967,16 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
         terminal_manager = getattr(session, "terminal_manager", None)
         if terminal_manager is not None:
             terminal_token = set_current_terminal_manager(terminal_manager)
-        session.approval_svc = (
-            _HeadlessApprovalService(request.dangerously_skip_permissions)
-            if request.dangerously_skip_permissions
-            else BackgroundApprovalService(
-                store,
-                request.session_id,
-                question_timeout_s=_session_question_timeout(session),
-                conversation_store=_request_attribute(
-                    _request_attribute(session, "app_state", None), "conversation", None
-                ),
-            )
+        # AGI-03: --dangerously-skip-permissions grants capability approvals
+        # only; ask_user still reaches the operator through the inbox.
+        session.approval_svc = BackgroundApprovalService(
+            store,
+            request.session_id,
+            question_timeout_s=background_settings.question_timeout_s or None,
+            conversation_store=_request_attribute(
+                _request_attribute(session, "app_state", None), "conversation", None
+            ),
+            auto_approve_capabilities=request.dangerously_skip_permissions,
         )
         workspace_access = getattr(session, "workspace_access", None)
         if workspace_access is not None:

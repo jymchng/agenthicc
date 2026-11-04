@@ -186,9 +186,7 @@ text, including whitespace and pasted newlines. Nothing has to be written as
 JSON.
 
 **Approvals.** `a` approves with the least broad available scope, `n` rejects,
-and `x` expires the request. `a` approves with
-the least broad available scope, `n` rejects, and `x` expires the request. Plan
-reviews can be approved with the displayed mode choices. A version conflict or
+and `x` expires the request. Plan reviews can be approved with the displayed mode choices. A version conflict or
 stale/deleted session is shown without delivering the response elsewhere.
 
 First list CLI items to get the current version, then use it and a
@@ -208,9 +206,32 @@ question IDs, and the error names the expected keys. Approval
 commands accept optional `--message`, `--mode`, `--remember`, `--remember-all`,
 and `--scope-grant`; workspace access defaults to `target_once`. Accepted
 answers are stored privately and omitted from item projections. Compare-and-set
-versions ensure only one concurrent operator wins. Question expiry uses the
-existing `[tools].question_timeout_s` setting; approvals can be explicitly
+versions ensure only one concurrent operator wins. Approvals can be explicitly
 rejected or expired by an operator.
+
+### Questions wait for you
+
+A background agent is unattended, so its `ask_user` questions have no
+deadline by default. A waiting question stays in Needs you until you answer
+it, expire it (`x`), or stop the session. The row's age shows how long the
+agent has waited.
+
+`[background] question_timeout_s` sets a deadline (seconds; `0`, the
+default, means none). When it passes, the agent continues with its safest
+assumption, and the question stays listed as `◇ answer late` while the
+session runs. Answering it sends your answers to the agent as its next
+message, beginning "Late answers to your earlier questions…". `x` dismisses
+it. `[tools] question_timeout_s` governs only the foreground Questions
+overlay.
+
+A request left by an earlier attempt of a session is marked stale when the
+inbox is read, and is never shown as needing you.
+
+Background direct agents get the same session tools as a foreground turn:
+`ask_user`, the memory tools and the browser tools. With
+`--dangerously-skip-permissions`, tool approvals are granted at once, but
+questions still wait for you. Workspace access outside the project still
+needs an explicit scope policy.
 
 The authenticated session service exposes `GET /v1/inbox`,
 `POST /v1/inbox/{item_id}/respond`, and `POST /v1/inbox/{item_id}/expire`.
@@ -705,6 +726,7 @@ dispatch_lease_s = 30.0
 cancel_grace_s = 5.0
 stale_after_s = 30.0
 wall_timeout_s = 0.0       # 0 means no wall-clock timeout
+question_timeout_s = 0.0   # 0: background ask_user waits for the operator
 max_activity_bytes = 64000
 trash_retention_days = 30
 terminals_enabled = true

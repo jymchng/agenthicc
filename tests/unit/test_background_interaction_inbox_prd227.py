@@ -246,17 +246,19 @@ def test_question_answer_contract_and_opaque_input_preserve_exact_text(tmp_path:
 
 def test_project_type_age_filters_are_oldest_first(tmp_path: Path) -> None:
     store, session = _running(tmp_path)
+    other = BackgroundSession.create(
+        "other-session",
+        title="other",
+        cwd=session.cwd,
+        workflow_name="goal_flow",
+        intent="other",
+    ).evolve(status=SessionStatus.RUNNING, worker_pid=os.getpid(), lease_token="other", attempt=1)
+    store.create(other)
     inbox = BackgroundInteractionInbox(store)
     first = _pending(inbox, session, request_id="first", kind="approval")
-    store.transition(
-        session.session_id,
-        SessionStatus.RUNNING,
-        expected_status=SessionStatus.WAITING_APPROVAL,
-        approval_item_id="",
-    )
     second = _pending(
         inbox,
-        store.get(session.session_id),
+        store.get(other.session_id),
         request_id="second",
         kind="input",
         target={"tool_name": "input"},
@@ -264,6 +266,22 @@ def test_project_type_age_filters_are_oldest_first(tmp_path: Path) -> None:
     assert inbox.list_items(item_type="input") == (second,)
     assert inbox.list_items(project_root=tmp_path / "elsewhere") == ()
     assert inbox.list_items(older_than_s=0, now=second.created_at)[0].item_id == first.item_id
+
+
+def test_a_pending_item_whose_session_moved_on_is_stale_on_read(tmp_path: Path) -> None:
+    """AGI-02: a dead attempt's request is never shown as needing the operator."""
+    store, session = _running(tmp_path)
+    inbox = BackgroundInteractionInbox(store)
+    item = _pending(inbox, session, request_id="old-attempt", kind="approval")
+    store.transition(
+        session.session_id,
+        SessionStatus.RUNNING,
+        expected_status=SessionStatus.WAITING_APPROVAL,
+        approval_item_id="",
+    )
+
+    assert inbox.list_items() == ()
+    assert inbox.get(item.item_id).status == "stale"
 
 
 def test_approval_service_publishes_and_delivers_exact_question_answer(tmp_path: Path) -> None:

@@ -433,7 +433,9 @@ def make_questions_tool(
         automatically — do not include it in options.
 
         Returns a dict mapping each question id to the answer string, or
-        {"cancelled": True} if the user cancels.
+        {"cancelled": True} if the user cancels. In a background session the
+        question waits for the operator, possibly for hours. If it returns
+        timed_out, a later message may bring the operator's late answers.
 
         On invalid input returns {"error": ..., "problems": [...]} so you
         can correct the format and retry.

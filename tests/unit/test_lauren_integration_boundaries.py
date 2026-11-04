@@ -19,7 +19,7 @@ from agenthicc.testing.recording_transport import RecordingTransport
 from agenthicc.runners.tool_populator import populate_agent_tools
 from agenthicc.tools.fs.agent_tools import batch_copy, batch_move, batch_write, read_file
 from agenthicc.plugins.registry import build_registry
-from agenthicc.runners.tui_session import _make_session_tools
+from agenthicc.runners.session_tools import session_tools as build_session_tools
 from agenthicc.subagents.tool import make_spawn_subagents_tool
 from agenthicc.tools.mcp import AgenthiccMcpTool, McpToolSchema
 
@@ -45,7 +45,11 @@ def test_dynamic_session_tools_generate_warning_free_schemas(caplog, monkeypatch
     """The actual session registry generates no unrecognised-type warnings."""
     monkeypatch.setenv("MSGRAPH_TOKEN", "token")  # offer the Outlook group too
     with caplog.at_level(logging.WARNING, logger="lauren_ai._tools._schema"):
-        session_tools = _make_session_tools(None)
+        session_tools = build_session_tools(
+            SimpleNamespace(
+                approval_svc=None, memory_router=None, semantic_index=None, browser_tools=()
+            )
+        )
         session_tools.append(make_spawn_subagents_tool(None, "mock", []))
         registry = build_registry(project_plugin_tools=session_tools)
         schemas = {

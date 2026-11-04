@@ -1,6 +1,6 @@
 ---
 title: "AGI-02: Background questions wait for the operator, can be answered late, and never linger stale"
-status: Proposed
+status: Implemented with amendments (2026-11-05; AGI wave 3, pending merge)
 version: 1.0.0
 date: 2026-11-04
 scope: "the deadline a background ask_user waits under, what happens to an answer after the deadline, and the inbox items the hub shows as needing the operator"
@@ -9,6 +9,53 @@ tags: [background-sessions, ask_user, inbox, attention]
 ---
 
 # AGI-02: Background questions wait for the operator
+
+## Implementation status (2026-11-05)
+
+Delivered in AGI wave 3 (branch `agi-wave-3-questions-wait`).
+
+- **No background deadline by default.**
+  `[background] question_timeout_s` defaults to `0`, which means no
+  deadline. `BackgroundApprovalService(question_timeout_s=None)` publishes
+  the question with no expiry and waits until it is answered, expired by the
+  operator, or the session stops. `[tools] question_timeout_s` now governs
+  the foreground overlay only.
+- **Late answers.** The hub lists an expired question, for a session still
+  active on the same attempt, as `◇ answer late` ("timed out · …").
+  - Answering it through AGI-01's form enqueues one input message through
+    `enqueue_input_async`: "Late answers to your earlier questions (they
+    timed out after N s and you continued with an assumption): id: answer;
+    … Revisit your assumption if these change it."
+  - The item is then closed as `delivered` (`inbox.close_expired`).
+  - `x` on it dismisses it (`rejected`).
+- **Stale items.** `list_items()` marks a pending item stale on read when
+  its session no longer waits on it, so stale items never count in Needs
+  you or the badge.
+- **The time waited.** The row's age column already shows it ("2h").
+- **The model knows.** The `ask_user` description says a background session
+  waits for the operator, and that a `timed_out` result may be followed by
+  late answers.
+
+Amendments:
+
+- **Stale on read, not reconcile on open.** This covers every reader (the
+  hub, the CLI and `/inbox`) without a separate call.
+- **The label is `◇ answer late`.** "expired — answer anyway" did not fit the
+  status column.
+- **Approvals are unchanged.** Approval waits were already unbounded.
+
+Tests: `tests/unit/test_background_questions_wait.py` (7). They cover:
+
+- the setting's default;
+- a wait past 0.3 s that is then answered;
+- a configured deadline expiring;
+- a late answer delivered as one message;
+- `x` dismissing an expired question;
+- a stale pending item giving a zero Needs-you count;
+- the "2h" age.
+
+`tests/unit/test_background_interaction_inbox_prd227.py` adds the
+stale-on-read case.
 
 ## 1. Problem
 

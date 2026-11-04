@@ -3810,6 +3810,26 @@ and uses expected-version compare-and-set plus idempotency keys for responses.
 Accepted answers are private; stale and expired state is reconciled against
 the background session store.
 
+AGI-02 adds two behaviours:
+- `list_items()` marks a pending item `stale` on read when its session no
+  longer waits on it (a different attempt, status or item), so a dead
+  attempt's request is never listed as pending.
+- `close_expired(item_id, status, reason)` closes an expired question as
+  `delivered` (answered late) or `rejected` (dismissed). The agents hub lists
+  an expired question for a running session on the same attempt as
+  `◇ answer late`. Answering it enqueues one input message beginning
+  "Late answers to your earlier questions…" and closes the item as
+  delivered; `x` dismisses it.
+
+`BackgroundApprovalService(store, session_id, *, question_timeout_s=None,
+auto_approve_capabilities=False)`:
+- `question_timeout_s=None` (the default) makes `ask_user` wait for the
+  operator; the worker passes `[background] question_timeout_s` when it is
+  non-zero.
+- `auto_approve_capabilities` (used for `--dangerously-skip-permissions`)
+  grants tool approvals at once, still denies workspace access outside the
+  project, and still publishes questions to the inbox.
+
 ### InboxConflict
 
 ```python
@@ -4128,6 +4148,17 @@ file is missing, or an override does not parse. `recorded_launch(session_id)`
 reads the record; sessions from before AGI-04 are migrated from their last
 worker request.
 
+### session_tools
+
+```python
+def session_tools(session: SessionToolSource) -> list[ToolLike]
+```
+
+`agenthicc.runners.session_tools` (AGI-03): the tools bound to one session,
+used by the foreground TUI turn, its effective-tools preview and the
+background worker's direct turn. They are `ask_user` (through the session's
+approval service), the memory tools and the session's browser tools.
+
 ### LaunchSpec
 
 ```python
@@ -4177,7 +4208,8 @@ class BackgroundSettings
 ```
 
 Fields: `enabled`, `store_path`, `max_workers`, `max_workers_per_project`,
-`cancel_grace_s`, `stale_after_s`, `wall_timeout_s`, `max_activity_bytes`,
+`cancel_grace_s`, `stale_after_s`, `wall_timeout_s`, `question_timeout_s` (0 = a
+background `ask_user` waits for the operator; AGI-02), `max_activity_bytes`,
 `trash_retention_days`, `terminals_enabled`, … (22 fields total). Queue settings
 include the opt-in `queue_enabled` flag, `max_queue_length`, optional
 `max_workers_per_user`, `priority_aging_interval_s`, and `dispatch_lease_s`.

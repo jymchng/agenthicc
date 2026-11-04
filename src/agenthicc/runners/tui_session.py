@@ -86,7 +86,6 @@ if TYPE_CHECKING:
         ExecutionSettings,
         PlaywrightSettings,
     )
-    from agenthicc.memory.router import MemoryRouter
     from agenthicc.memory.tool_history import ToolHistoryRecoveryState
     from agenthicc.memory.vector import SemanticIndex
     from agenthicc.plugins.discovery import PluginToolSet
@@ -97,7 +96,7 @@ if TYPE_CHECKING:
     from agenthicc.runners.workflow_recovery import WorkflowRecoveryRecord
     from agenthicc.skills.loader import SkillDef, SkillDiscoveryResult
     from agenthicc.subagents.pool import SubagentPool
-    from agenthicc.tools.approval import ApprovalBroker, ApprovalRequest, ApprovalRequester
+    from agenthicc.tools.approval import ApprovalRequest, ApprovalRequester
     from agenthicc.tools.base import ToolLike
     from agenthicc.tools.cloakbrowser.session import BrowserSessionManager
     from agenthicc.tui.input.unified_session import UnifiedInputSession
@@ -117,18 +116,6 @@ if TYPE_CHECKING:
     from agenthicc.subagents.types import SubagentTypeRegistry
     from agenthicc.workflows.plugin import WorkflowPlugin
     from agenthicc.workflows.registry import WorkflowRegistry
-
-
-def _make_session_tools(
-    approval_svc: ApprovalBroker | None,
-    memory_router: MemoryRouter | None = None,
-    semantic_index: SemanticIndex | None = None,
-) -> list[ToolLike]:
-    """Tools injected into every interactive agent turn (Yolo mode + plan phase)."""
-    from agenthicc.workflows.code_plan.phase_tools import make_questions_tool
-    from agenthicc.workflows.memory_tools import make_memory_tools
-
-    return make_questions_tool(approval_svc) + make_memory_tools(memory_router, semantic_index)
 
 
 def _build_agent_runner(
@@ -2818,16 +2805,12 @@ class TUISession:
         def effective_tools(spec: AgentSpec, policy_state: AppState) -> tuple[str, ...]:
             from agenthicc.plugins.registry import build_registry
             from agenthicc.runners.agent_turn import _effective_agent_tool_names
+            from agenthicc.runners.session_tools import session_tools
 
             mcp_tools = ctx.mcp_registry.all_tools() if ctx.mcp_registry is not None else []
             project_tools: list[ToolLike] = [
                 *cast("list[ToolLike]", ctx.project_plugins.all_tools),
-                *_make_session_tools(
-                    ctx.approval_svc,
-                    memory_router=ctx.memory_router,
-                    semantic_index=ctx.semantic_index,
-                ),
-                *list(ctx.browser_tools),
+                *session_tools(ctx),
                 *mcp_tools,
             ]
             registry = build_registry(
@@ -4639,6 +4622,8 @@ class TUISession:
                     # Before any provider call: never another agent silently.
                     ctx.app_state.conversation.append_event("error", {"message": f"⚠ {exc}"})
                     return
+                from agenthicc.runners.session_tools import session_tools
+
                 await _run_agent_turn(
                     text,
                     ctx.agent_runner,
@@ -4653,13 +4638,7 @@ class TUISession:
                     skill_permissions=ctx.cfg.agents.skill_permissions_for(agent.spec.name),
                     mention_cache=ctx.mention_cache,
                     project_plugin_tools=(
-                        cast("list[ToolLike]", ctx.project_plugins.all_tools)
-                        + _make_session_tools(
-                            ctx.approval_svc,
-                            memory_router=ctx.memory_router,
-                            semantic_index=ctx.semantic_index,
-                        )
-                        + list(ctx.browser_tools)
+                        cast("list[ToolLike]", ctx.project_plugins.all_tools) + session_tools(ctx)
                     ),
                     mcp_registry=ctx.mcp_registry,
                     active_agent=agent.spec.name,

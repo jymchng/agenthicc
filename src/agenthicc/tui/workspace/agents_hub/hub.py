@@ -604,7 +604,11 @@ class AgentsHub:
             if wanted and item.item_id == wanted:
                 return item
         for item in self._inbox_items:
-            if item.session_id == session.session_id and item.attempt == session.attempt:
+            if (
+                item.session_id == session.session_id
+                and item.attempt == session.attempt
+                and item.status == "pending"
+            ):
                 return item
         return None
 
@@ -834,6 +838,21 @@ class AgentsHub:
             running: dict[str, BackgroundSession] = {}
             for session in (*active, *pinned, *recent):
                 running.setdefault(session.session_id, session)
+            # AGI-02: an expired question can still be answered late while
+            # its session runs on the same attempt.
+            expired = await service.inbox_list_async(
+                status="expired", item_type="question", limit=100
+            )
+            items = (
+                *items,
+                *(
+                    item
+                    for item in expired
+                    if (owner := running.get(item.session_id)) is not None
+                    and owner.status in ACTIVE_STATUSES
+                    and owner.attempt == item.attempt
+                ),
+            )
             positions: dict[str, int] = {}
             if any(item.status is SessionStatus.QUEUED for item in running.values()):
                 try:
@@ -3010,14 +3029,22 @@ class AgentsHub:
         )
 
     async def _deliver_answer(self, view: AnswerView) -> ManagerOperationResult:
-        """Resolve the exact item at the version the operator saw (PRD-227)."""
+        """Resolve the exact item at the version the operator saw (PRD-227).
+
+        An expired question was already answered by the agent's own
+        assumption; its answers are sent as the session's next message
+        instead, and the item is closed as delivered (AGI-02).
+        """
         try:
-            result = await self._service.inbox_respond_async(
-                view.item.item_id,
-                view.response(),
-                expected_version=view.item.version,
-                idempotency_key=uuid.uuid4().hex,
-            )
+            if view.item.status == "expired":
+                result = await self._deliver_late_answer(view)
+            else:
+                result = await self._service.inbox_respond_async(
+                    view.item.item_id,
+                    view.response(),
+                    expected_version=view.item.version,
+                    idempotency_key=uuid.uuid4().hex,
+                )
         finally:
             view.sending = False
         if result.ok:
@@ -3026,6 +3053,27 @@ class AgentsHub:
             if self._answer is view:
                 self._answer = None
         self._mark_dirty("answer_delivered")
+        return result
+
+    async def _deliver_late_answer(self, view: AnswerView) -> ManagerOperationResult:
+        from agenthicc.tui.workspace.agents_hub.answer import late_answer_message
+
+        session = self._sessions.get(view.item.session_id)
+        if session is None:
+            return ManagerOperationResult(
+                "", view.item.session_id, "failed", False, message="the agent is gone"
+            )
+        result = await self._service.enqueue_input_async(
+            session.session_id,
+            late_answer_message(view),
+            expected_attempt=session.attempt,
+            expected_lease_token=session.lease_token,
+            message_id=uuid.uuid4().hex,
+        )
+        if result.ok:
+            await self._service.inbox_close_expired_async(
+                view.item.item_id, "delivered", "answered late as a message"
+            )
         return result
 
     def _close_answer(self) -> None:
@@ -3129,6 +3177,19 @@ class AgentsHub:
         row = self.selected_row()
         item = row.item if row is not None else None
         if item is None:
+            return
+        if item.status == "expired":
+            # An expired question is listed to be answered late; x dismisses it.
+            self._start_operation(
+                item.session_id,
+                "dismiss",
+                functools.partial(
+                    self._service.inbox_close_expired_async,
+                    item.item_id,
+                    "rejected",
+                    "dismissed by operator",
+                ),
+            )
             return
         self._start_operation(
             item.session_id,

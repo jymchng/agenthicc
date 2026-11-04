@@ -909,7 +909,7 @@ async def test_tui_direct_turn_timeout_and_success(monkeypatch: pytest.MonkeyPat
     from agenthicc.runners import tui_session
 
     session, ctx, _workspace, input_session = _make_session()
-    monkeypatch.setattr(tui_session, "_make_session_tools", lambda *args, **kwargs: [])
+    monkeypatch.setattr("agenthicc.runners.session_tools.session_tools", lambda *args, **kwargs: [])
     calls: list[str] = []
 
     async def run_agent(text: str, *args: object, **kwargs: object) -> None:
