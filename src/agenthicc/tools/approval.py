@@ -26,6 +26,7 @@ from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from agenthicc.config import DEFAULT_QUESTION_TIMEOUT_S
+from agenthicc.tools.capability_gate import FailClosedGate
 
 if TYPE_CHECKING:
     from agenthicc.tools.context import ToolCallContext
@@ -536,7 +537,7 @@ class ApprovalService:
         self._timed_out_question_fingerprints.clear()
 
 
-class ApprovalGate:
+class ApprovalGate(FailClosedGate):
     """Soft-block: pauses tool execution and asks the user for approval.
 
     Registered as the second global hook after ToolCapabilityGate.
@@ -553,7 +554,7 @@ class ApprovalGate:
         self._service = service
         self._workspace_access = workspace_access
 
-    async def before_tool_call(self, ctx: ToolCallContext) -> object:
+    async def decide(self, ctx: ToolCallContext) -> object:
         from lauren_ai._tools._hooks import BeforeToolHookDecision
         from agenthicc.tools.capabilities import (
             CAPABILITIES_KEY,
@@ -616,16 +617,7 @@ class ApprovalGate:
         return BeforeToolHookDecision.abort(
             {
                 "ok": False,
+                "error_code": "approval_denied",
                 "error": f"User denied permission to run '{ctx.tool_name}'.",
             }
         )
-
-    async def after_tool_call(self, result: object, ctx: ToolCallContext) -> object:
-        from lauren_ai._tools._hooks import AfterToolHookDecision
-
-        return AfterToolHookDecision.proceed()
-
-    async def on_tool_error(self, exc: Exception, ctx: ToolCallContext) -> object:
-        from lauren_ai._tools._hooks import ErrorToolHookDecision
-
-        return ErrorToolHookDecision.reraise()

@@ -1699,6 +1699,9 @@ class SubagentWorker:
                 return AfterToolHookDecision.proceed()
 
         hooks.append(_MutationEvidenceHook())
+        from agenthicc.tools.capability_gate import order_security_gates
+
+        hooks = order_security_gates(hooks)
 
         signals = SignalBus()
 

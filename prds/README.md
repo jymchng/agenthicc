@@ -182,6 +182,25 @@ before every sink (WP-1, a security fix), thread definition descriptions
 accounting (WP-7, completing SUBAGENT-06), then SUBAGENT-11, and SUBAGENT-09's
 event contract last.
 
+### TOOLR series — tool robustness and effectiveness
+
+A review of every tool agenthicc offers its agents (60 built-in tools and the
+browser, web, MCP, workflow and control-plane tools), with findings reproduced
+against the shipped code, and ten PRDs that act on them; see
+[`tools-review/`](tools-review/README.md).
+
+- [TOOLR-00 — Review of every tool agenthicc gives its agents](tools-review/TOOLR-00-tool-review.md)
+- [TOOLR-01 — Lossless, exact and atomic file edits (proposed)](tools-review/TOOLR-01-lossless-file-edits.md)
+- [TOOLR-02 — Command execution hygiene (proposed)](tools-review/TOOLR-02-command-execution-hygiene.md)
+- [TOOLR-03 — Git tool correctness (proposed)](tools-review/TOOLR-03-git-tool-correctness.md)
+- [TOOLR-04 — One tool result contract (proposed)](tools-review/TOOLR-04-one-tool-result-contract.md)
+- [TOOLR-05 — Network tools under one policy (proposed)](tools-review/TOOLR-05-network-tools-under-one-policy.md)
+- [TOOLR-06 — MCP results, schemas and reconnection (proposed)](tools-review/TOOLR-06-mcp-results-and-schemas.md)
+- [TOOLR-07 — Gates fail closed (proposed)](tools-review/TOOLR-07-gates-fail-closed.md)
+- [TOOLR-08 — A smaller, accurate tool surface (proposed)](tools-review/TOOLR-08-tool-surface-curation.md)
+- [TOOLR-09 — Tool I/O off the event loop (proposed)](tools-review/TOOLR-09-tool-io-off-the-event-loop.md)
+- [TOOLR-10 — Search and read effectiveness (proposed)](tools-review/TOOLR-10-search-and-read-effectiveness.md)
+
 ### TUIR series — TUI responsiveness while subagents run
 
 A measured study of the frozen TUI reported while six subagents searched a

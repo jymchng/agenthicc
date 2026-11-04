@@ -1600,6 +1600,9 @@ class AgentTurnRunner:
                 from agenthicc.tools.approval import ApprovalGate
 
                 hooks.append(ApprovalGate(gate_state, ctx.approval_svc, ctx.workspace_access))
+            from agenthicc.tools.capability_gate import order_security_gates
+
+            hooks = order_security_gates(hooks)
 
         runner_class: type[AgentRunnerBase] = _RunnerBase
         next_queued_message = ctx.next_queued_message

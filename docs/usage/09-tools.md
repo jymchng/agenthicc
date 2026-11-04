@@ -42,6 +42,18 @@ tools discovered from `.agenthicc/tools/`.
 - **Deadline and cleanup** — command execution derives success only from a
   zero exit and records the deadline owner.
 - **Bounded output** — results are capped so the transcript cannot flood.
+- **Lossless, atomic edits** — `write_file`, `patch_file`, `apply_diff`,
+  `truncate_file` and backend writes go through a temporary file that is
+  fsynced and renamed into place, keeping the file's mode. Edits preserve the
+  file's encoding, byte-order mark and line endings byte for byte; a file that
+  does not decode is refused rather than rewritten. `patch_file` must match
+  exactly once unless told otherwise (`expected_replacements`, `replace_all`),
+  and every edit refuses a file that changed since it was last read
+  (`stale_file`, or pass `expected_version` / `force`).
+- **Gates fail closed** — if the capability or approval check itself fails,
+  the tool is not run and the model receives `error_code: "internal"`
+  (`FailClosedGate`). The gates run after every other hook, so they decide on
+  the input the tool will receive.
 
 ## MCP tools
 

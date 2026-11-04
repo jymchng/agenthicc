@@ -5317,10 +5317,17 @@ Move or rename a file within the workspace.
 ### patch_file
 
 ```python
-def patch_file(path: str, old_content: str, new_content: str) -> dict[str, object]
+def patch_file(path: str, old_content: str, new_content: str, expected_replacements: int = 1, replace_all: bool = False, expected_version: str = '', force: bool = False) -> dict[str, object]
 ```
 
-Replace all occurrences of old_content with new_content in a file.
+Replace an exact string, keeping every other byte (encoding, BOM, line endings)
+unchanged. `old_content` must occur exactly `expected_replacements` times, else
+nothing is written and `error_code="ambiguous_match"` reports the count and
+lines; `replace_all` replaces every occurrence. An LF anchor matches a CRLF
+file. A file that does not decode strictly is refused (`undecodable`); a file
+changed since it was last read is refused (`stale_file`) unless `force`. The
+result carries `version`, `changed_lines` and a diff capped at 4,000 chars.
+Edits are written atomically (`agenthicc.tools.fs.edits.atomic_write`).
 
 ### read_file
 
@@ -5328,7 +5335,8 @@ Replace all occurrences of old_content with new_content in a file.
 def read_file(path: str, encoding: str = 'utf-8') -> dict[str, object]
 ```
 
-Read the full contents of a file.
+Read the full contents of a file. The result carries `version`
+(`<size>:<mtime_ns>`), which edit tools accept as `expected_version`.
 
 ### read_lines
 
@@ -5349,10 +5357,13 @@ Find files matching a glob pattern.
 ### write_file
 
 ```python
-def write_file(path: str, content: str, create_parents: bool = True) -> dict[str, object]
+def write_file(path: str, content: str, create_parents: bool = True, expected_version: str = '', force: bool = False) -> dict[str, object]
 ```
 
-Write content to a file (creates parent directories if needed).
+Write content atomically (temporary file, fsync, rename; the existing mode is
+kept). An existing file changed since it was last read is refused with
+`stale_file` unless `force`. Returns `version`, `created` and, for an
+overwrite, a capped diff.
 
 ### git_add
 

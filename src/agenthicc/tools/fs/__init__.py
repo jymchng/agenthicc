@@ -228,6 +228,15 @@ async def _authorize_tool(
     return authorized
 
 
+def _record_version(path: Path) -> str:
+    """Record and return *path*'s current version for later stale-write checks."""
+    from agenthicc.tools.fs.edits import FILE_VERSIONS, file_version
+
+    version = file_version(path.stat())
+    FILE_VERSIONS.record(path, version)
+    return version
+
+
 def _safe_stat(path: Path) -> dict[str, object]:
     s = path.stat()
     return {
@@ -276,10 +285,12 @@ class ReadFileTool(Tool):
                 # PRD-133 Layer A: cap returned content (cache keeps the full bytes).
                 _out, _trunc = _truncate_output(_hit)
                 _res: dict[str, object] = {
+                    "ok": True,
                     "content": _out,
                     "size_bytes": resolved.stat().st_size,
                     "encoding": encoding,
                     "cached": True,
+                    "version": _record_version(resolved),
                 }
                 if _trunc:
                     _res["truncated"] = True
@@ -292,7 +303,13 @@ class ReadFileTool(Tool):
                 _fc.store(_abspath, content, encoding=encoding)  # store full content
             # PRD-133 Layer A: cap returned content to bound context tokens.
             _out, _trunc = _truncate_output(content)
-            _res = {"content": _out, "size_bytes": resolved.stat().st_size, "encoding": encoding}
+            _res = {
+                "ok": True,
+                "content": _out,
+                "size_bytes": resolved.stat().st_size,
+                "encoding": encoding,
+                "version": _record_version(resolved),
+            }
             if _trunc:
                 _res["truncated"] = True
             return _res
@@ -302,7 +319,7 @@ class ReadFileTool(Tool):
 
 class WriteFileTool(Tool):
     name = "write_file"
-    description = "Write content to a file, creating parent directories if needed."
+    description = "Write content to a file atomically, creating parent directories if needed."
     parameters = {
         "type": "object",
         "properties": {
@@ -310,6 +327,8 @@ class WriteFileTool(Tool):
             "content": {"type": "string"},
             "encoding": {"type": "string", "default": "utf-8"},
             "create_parents": {"type": "boolean", "default": True},
+            "expected_version": {"type": "string", "default": ""},
+            "force": {"type": "boolean", "default": False},
         },
         "required": ["path", "content"],
     }
@@ -321,6 +340,8 @@ class WriteFileTool(Tool):
         content = arg_str(args, "content")
         encoding = arg_str(args, "encoding", "utf-8")
         create_parents = arg_bool(args, "create_parents", True)
+        expected_version = arg_str(args, "expected_version", "")
+        force = arg_bool(args, "force", False)
         try:
             resolved = await _resolve_path(
                 context,
@@ -330,18 +351,50 @@ class WriteFileTool(Tool):
                 capabilities=frozenset({"write"}),
             )
         except PermissionError as e:
-            return {"ok": False, "error": f"permission_denied: {e}"}
-        try:
-            if create_parents:
-                await asyncio.to_thread(resolved.parent.mkdir, parents=True, exist_ok=True)
-            await asyncio.to_thread(resolved.write_text, content, encoding=encoding)
             return {
+                "ok": False,
+                "error_code": "permission_denied",
+                "error": f"permission_denied: {e}",
+            }
+
+        def _write() -> dict[str, object]:
+            from agenthicc.tools.fs.edits import (
+                FILE_VERSIONS,
+                EditError,
+                atomic_write,
+                diff_preview,
+            )
+
+            try:
+                FILE_VERSIONS.check(resolved, expected_version=expected_version, force=force)
+                data = content.encode(encoding)
+            except EditError as exc:
+                return exc.result()
+            except (LookupError, UnicodeEncodeError) as exc:
+                return {"ok": False, "error_code": "invalid_argument", "error": str(exc)}
+            try:
+                before = resolved.read_bytes().decode(encoding)
+            except (FileNotFoundError, UnicodeDecodeError, IsADirectoryError):
+                before = None
+            version = atomic_write(resolved, data, create_parents=create_parents)
+            result: dict[str, object] = {
                 "ok": True,
                 "path": str(resolved),
-                "bytes_written": len(content.encode(encoding)),
+                "bytes_written": len(data),
+                "version": version,
+                "created": before is None,
             }
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
+            if before is not None and before != content:
+                diff, diff_truncated = diff_preview(before, content, resolved.name)
+                result["diff"] = diff
+                if diff_truncated:
+                    result["diff_truncated"] = True
+            return result
+
+        try:
+            return await asyncio.to_thread(_write)
+        except OSError as e:
+            return {"ok": False, "error_code": "io_error", "error": str(e)}
 
 
 class AppendFileTool(Tool):
@@ -375,7 +428,7 @@ class AppendFileTool(Tool):
                     f.write(content)
 
             await asyncio.to_thread(_append)
-            return {"ok": True, "path": str(resolved)}
+            return {"ok": True, "path": str(resolved), "version": _record_version(resolved)}
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
@@ -407,6 +460,9 @@ class DeleteFileTool(Tool):
             return {"ok": False, "error": f"not_found: {path}"}
         try:
             await asyncio.to_thread(resolved.unlink)
+            from agenthicc.tools.fs.edits import FILE_VERSIONS
+
+            FILE_VERSIONS.forget(resolved)
             return {"ok": True, "path": str(resolved)}
         except Exception as e:
             return {"ok": False, "error": str(e)}
@@ -453,6 +509,10 @@ class MoveFileTool(Tool):
             return {"ok": False, "error": f"permission_denied: {e}"}
         try:
             await asyncio.to_thread(shutil.move, str(src), str(dst))
+            from agenthicc.tools.fs.edits import FILE_VERSIONS
+
+            FILE_VERSIONS.forget(src)
+            _record_version(dst)
             return {"ok": True, "source": str(src), "destination": str(dst)}
         except Exception as e:
             return {"ok": False, "error": str(e)}
@@ -846,7 +906,9 @@ class ReadLinesTool(Tool):
             used += len(ln) + 1
         result: dict[str, object] = {
             "lines": out_lines,
+            "ok": True,
             "total_lines": total,
+            "version": _record_version(resolved),
             "start": start,
             "end": start - 1 + len(out_lines),
         }
@@ -861,13 +923,21 @@ class ReadLinesTool(Tool):
 
 class PatchFileTool(Tool):
     name = "patch_file"
-    description = "Replace all occurrences of old_content with new_content in a file."
+    description = (
+        "Replace an exact string in a file. By default old_content must occur exactly "
+        "expected_replacements times (1); set replace_all to replace every occurrence."
+    )
     parameters = {
         "type": "object",
         "properties": {
             "path": {"type": "string"},
             "old_content": {"type": "string"},
             "new_content": {"type": "string"},
+            "expected_replacements": {"type": "integer", "default": 1},
+            "replace_all": {"type": "boolean", "default": False},
+            "expected_version": {"type": "string", "default": ""},
+            "force": {"type": "boolean", "default": False},
+            "encoding": {"type": "string", "default": "utf-8"},
         },
         "required": ["path", "old_content", "new_content"],
     }
@@ -878,6 +948,23 @@ class PatchFileTool(Tool):
         path = arg_str(args, "path")
         old = arg_str(args, "old_content")
         new = arg_str(args, "new_content")
+        expected = arg_int(args, "expected_replacements", 1)
+        replace_all = arg_bool(args, "replace_all", False)
+        expected_version = arg_str(args, "expected_version", "")
+        force = arg_bool(args, "force", False)
+        encoding = arg_str(args, "encoding", "utf-8")
+        if not old:
+            return {
+                "ok": False,
+                "error_code": "invalid_argument",
+                "error": "old_content must not be empty",
+            }
+        if expected < 1 and not replace_all:
+            return {
+                "ok": False,
+                "error_code": "invalid_argument",
+                "error": "expected_replacements must be at least 1 (or set replace_all)",
+            }
         try:
             resolved = await _resolve_path(
                 context,
@@ -887,25 +974,84 @@ class PatchFileTool(Tool):
                 capabilities=frozenset({"write"}),
             )
         except PermissionError as e:
-            return {"ok": False, "error": f"permission_denied: {e}"}
-        if not resolved.exists():
-            return {"ok": False, "error": f"not_found: {path}"}
-        try:
-            original = await asyncio.to_thread(
-                resolved.read_text, encoding="utf-8", errors="replace"
-            )
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
-        if old not in original:
             return {
                 "ok": False,
-                "error": f"old_content not found in {path}",
-                "replacements": 0,
+                "error_code": "permission_denied",
+                "error": f"permission_denied: {e}",
             }
-        patched = original.replace(old, new)
-        replacements = original.count(old)
-        await asyncio.to_thread(resolved.write_text, patched, encoding="utf-8")
-        return {"ok": True, "replacements": replacements}
+
+        def _patch() -> dict[str, object]:
+            from agenthicc.tools.fs.edits import (
+                FILE_VERSIONS,
+                EditError,
+                atomic_write,
+                changed_line_ranges,
+                decode_for_edit,
+                diff_preview,
+            )
+
+            try:
+                data = resolved.read_bytes()
+            except FileNotFoundError:
+                return {"ok": False, "error_code": "not_found", "error": f"not_found: {path}"}
+            try:
+                FILE_VERSIONS.check(resolved, expected_version=expected_version, force=force)
+                decoded = decode_for_edit(data, encoding)
+            except EditError as exc:
+                return exc.result()
+            text = decoded.text
+            target, replacement = old, new
+            count = text.count(target)
+            if count == 0 and "\n" in old:
+                # The model writes LF; match a CRLF (or mixed) file's lines too.
+                crlf_old = old.replace("\r\n", "\n").replace("\n", "\r\n")
+                if text.count(crlf_old):
+                    target = crlf_old
+                    replacement = new.replace("\r\n", "\n").replace("\n", "\r\n")
+                    count = text.count(target)
+            if count == 0:
+                return {
+                    "ok": False,
+                    "error_code": "no_match",
+                    "error": f"old_content not found in {path}",
+                    "replacements": 0,
+                }
+            if not replace_all and count != expected:
+                lines: list[int] = []
+                position = text.find(target)
+                while position != -1 and len(lines) < 3:
+                    lines.append(text.count("\n", 0, position) + 1)
+                    position = text.find(target, position + 1)
+                return {
+                    "ok": False,
+                    "error_code": "ambiguous_match",
+                    "error": (
+                        f"old_content occurs {count} times in {path}, expected {expected}; "
+                        "add surrounding lines to make it unique or set replace_all"
+                    ),
+                    "occurrences": count,
+                    "lines": lines,
+                    "replacements": 0,
+                }
+            patched = text.replace(target, replacement)
+            version = atomic_write(resolved, decoded.encode(patched))
+            diff, diff_truncated = diff_preview(text, patched, resolved.name)
+            result: dict[str, object] = {
+                "ok": True,
+                "path": str(resolved),
+                "replacements": count,
+                "version": version,
+                "changed_lines": changed_line_ranges(text, patched),
+                "diff": diff,
+            }
+            if diff_truncated:
+                result["diff_truncated"] = True
+            return result
+
+        try:
+            return await asyncio.to_thread(_patch)
+        except OSError as e:
+            return {"ok": False, "error_code": "io_error", "error": str(e)}
 
 
 class FsToolKit:
