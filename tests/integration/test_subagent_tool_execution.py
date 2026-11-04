@@ -1047,3 +1047,156 @@ async def test_redriven_turn_replays_a_budget_stopped_pool_with_its_results(
     # The replay came from the journal: no second provider call was made.
     assert len(transport.calls) == 1
     journal.close()
+
+
+# ── SUBAGENT-06 declared budgets through the spawn tool ───────────────────────
+
+
+def _budget_spawn(
+    transport: MockTransport,
+    *,
+    ledger: object | None = None,
+    settings: object | None = None,
+    model: str = "mock-model",
+) -> object:
+    from agenthicc.config import SubagentSettings
+
+    return make_spawn_subagents_tool(
+        AgentRunnerBase(transport=transport),
+        model,
+        [],
+        registry=_registry("not-a-parent-tool"),
+        subagent_settings=settings if settings is not None else SubagentSettings(),
+        usage_ledger=ledger,  # type: ignore[arg-type]
+        parent_run_id="turn-budget",
+    )
+
+
+_TASKS = [{"type": "researcher", "task": "Check API compatibility."}]
+
+
+async def test_malformed_budget_is_refused_before_any_provider_call() -> None:
+    transport = MockTransport()
+    spawn = _budget_spawn(transport)
+
+    result = await spawn(tasks=_TASKS, timeout_s=30, budget={"tokens": -1})  # type: ignore[operator]
+
+    assert result["ok"] is False
+    assert result["status"] == "refused"
+    assert result["budget_field"] == "tokens"
+    assert result["error"].startswith("budget.tokens:")
+    assert transport.calls == []
+
+
+async def test_no_budget_keeps_the_digest_unchanged_and_still_reports_usage() -> None:
+    from agenthicc.runners.usage_ledger import UsageLedger
+
+    transport = MockTransport()
+    transport.queue_response(_final("Compatible.", "final"))
+    ledger = UsageLedger("session")
+    spawn = _budget_spawn(transport, ledger=ledger)
+
+    result = await spawn(tasks=_TASKS, timeout_s=30)  # type: ignore[operator]
+
+    assert result["ok"] is True
+    assert "[pool usage]" not in result["results"]
+    assert result["usage"]["total_tokens"] == 8  # _final reports 3 in / 5 out
+    assert "crossed" not in result["budget"]
+    assert result["budget"]["sources"] == {"tokens": "operator", "wall_clock_s": "operator"}
+
+
+async def test_crossing_a_declared_token_limit_is_reported_with_its_source() -> None:
+    from agenthicc.runners.usage_ledger import UsageLedger
+
+    transport = MockTransport()
+    transport.queue_response(_final("Compatible.", "final"))
+    spawn = _budget_spawn(transport, ledger=UsageLedger("session"))
+
+    result = await spawn(tasks=_TASKS, timeout_s=30, budget={"tokens": 5})  # type: ignore[operator]
+
+    assert result["status"] == "budget_exceeded"
+    assert result["budget_exceeded_reason"] == "max_tokens_exceeded"
+    assert result["budget"]["crossed"]["source"] == "declared"
+    assert result["budget"]["limits"]["tokens"] == 5
+    assert "CROSSED max_tokens_exceeded (declared limit)" in result["results"]
+    assert "limits: tokens 5 (declared)" in result["results"]
+    # The drain let the running worker finish, so its answer is still delivered.
+    assert "Compatible." in result["results"]
+
+
+async def test_a_declaration_above_the_settings_ceiling_is_clamped_and_reported() -> None:
+    from agenthicc.config import SubagentBudgetCeiling, SubagentSettings
+    from agenthicc.runners.usage_ledger import UsageLedger
+
+    transport = MockTransport()
+    transport.queue_response(_final("Compatible.", "final"))
+    spawn = _budget_spawn(
+        transport,
+        ledger=UsageLedger("session"),
+        settings=SubagentSettings(max_budget=SubagentBudgetCeiling(tokens=1_000)),
+    )
+
+    result = await spawn(tasks=_TASKS, timeout_s=30, budget={"tokens": 50_000})  # type: ignore[operator]
+
+    assert result["ok"] is True
+    assert result["budget"]["limits"]["tokens"] == 1_000
+    assert result["budget"]["clamped_from"] == {"tokens": 50_000}
+    assert result["budget"]["sources"]["tokens"] == "settings_ceiling"
+    assert "clamped to subagents.max_budget: tokens requested 50000" in result["results"]
+
+
+async def test_a_cost_budget_is_refused_for_an_unpriced_model_or_without_a_ledger() -> None:
+    from agenthicc.runners.usage_ledger import UsageLedger
+
+    unpriced = MockTransport()
+    result = await _budget_spawn(unpriced, ledger=UsageLedger("session"))(  # type: ignore[operator]
+        tasks=_TASKS, timeout_s=30, budget={"cost_usd": 1.0}
+    )
+    assert result["status"] == "refused"
+    assert result["budget_field"] == "cost_usd"
+    assert "no known price for 'mock-model'" in result["error"]
+    assert unpriced.calls == []
+
+    no_ledger = MockTransport()
+    result = await _budget_spawn(no_ledger, model="claude-sonnet-4-5")(  # type: ignore[operator]
+        tasks=_TASKS, timeout_s=30, budget={"cost_usd": 1.0}
+    )
+    assert result["status"] == "refused"
+    assert "no usage ledger" in result["error"]
+    assert no_ledger.calls == []
+
+
+async def test_pool_completed_event_carries_usage_against_limits() -> None:
+    from agenthicc.runners.usage_ledger import UsageLedger
+
+    transport = MockTransport()
+    transport.queue_response(_final("Compatible.", "final"))
+    emitted: list[object] = []
+
+    class _Processor:
+        async def emit(self, event: object) -> None:
+            emitted.append(event)
+
+        async def drain(self) -> None:
+            return None
+
+    spawn = make_spawn_subagents_tool(
+        AgentRunnerBase(transport=transport),
+        "mock-model",
+        [],
+        registry=_registry("not-a-parent-tool"),
+        usage_ledger=UsageLedger("session"),
+        parent_run_id="turn-budget",
+        processor=_Processor(),  # type: ignore[arg-type]
+    )
+
+    await spawn(tasks=_TASKS, timeout_s=30, budget={"tokens": 1_000})  # type: ignore[operator]
+
+    completed = next(
+        event.payload  # type: ignore[attr-defined]
+        for event in emitted
+        if event.event_type == "SubagentPoolCompleted"  # type: ignore[attr-defined]
+    )
+    assert completed["budget"]["usage"]["total_tokens"] == 8
+    assert completed["budget"]["limits"]["tokens"] == 1_000
+    assert completed["budget"]["sources"]["tokens"] == "declared"

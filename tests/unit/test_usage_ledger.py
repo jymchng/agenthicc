@@ -248,3 +248,133 @@ def test_failed_journal_write_surfaces_degraded_durability() -> None:
     call = ledger.begin_call(run_id="run", model="mock")
     ledger.complete(call, _usage(1, 1), cost_usd=0.01)
     assert ledger.snapshot().durability_status == DurabilityStatus.DEGRADED
+
+
+def test_cost_reported_at_completion_is_an_estimate_not_unavailable() -> None:
+    """A non-streaming call (every subagent worker) gets its cost only at completion.
+
+    It used to inherit ``begin_call``'s ``unavailable`` placeholder, so every
+    worker record carried a cost value labelled unavailable and any total that
+    included a worker reported its cost as unavailable.
+    """
+    ledger = UsageLedger("session")
+    tracker = UsageRunTracker(ledger, run_id="run", provider="mock", model="claude-sonnet-4-5")
+    tracker.ensure_call()
+    tracker.on_model_complete(ModelCallComplete(usage=_usage(1_000, 200), cost_usd=0.006))
+
+    record = ledger.records()[0]
+    assert record.cost_usd == pytest.approx(0.006)
+    assert record.cost_status == CostStatus.ESTIMATED
+    assert ledger.snapshot().cost_status == CostStatus.ESTIMATED
+
+    explicit = ledger.begin_call(run_id="run", model="claude-sonnet-4-5")
+    ledger.complete(explicit, _usage(1, 1), cost_usd=0.01, cost_status=CostStatus.AUTHORITATIVE)
+    assert ledger.records()[-1].cost_status == CostStatus.AUTHORITATIVE
+
+
+# ── SUBAGENT-06 / SUBAGENT-10 WP-7: per-pool accounting from the ledger ───────
+
+
+def _worker_call(
+    ledger: UsageLedger,
+    *,
+    pool_id: str,
+    task_id: str,
+    usage: object,
+    cost: float | None = None,
+    complete: bool = True,
+    parent_run_id: str = "turn-1",
+) -> None:
+    from agenthicc.subagents.budget import worker_run_id
+
+    call = ledger.begin_call(
+        run_id=worker_run_id(parent_run_id, pool_id, task_id),
+        model="claude-sonnet-4-5",
+        category="subagent",
+    )
+    if complete:
+        ledger.complete(call, usage, cost_usd=cost)
+    else:
+        ledger.observe(call, usage)
+
+
+def test_pool_total_is_the_sum_of_its_workers_records_and_a_subset_of_the_session() -> None:
+    from agenthicc.subagents.budget import pool_usage, worker_usage
+
+    ledger = UsageLedger("session")
+    _worker_call(ledger, pool_id="pool-a", task_id="task-0", usage=_usage(100, 20), cost=0.01)
+    _worker_call(ledger, pool_id="pool-a", task_id="task-1", usage=_usage(300, 60), cost=0.03)
+    _worker_call(ledger, pool_id="pool-a", task_id="task-1", usage=_usage(50, 5), cost=0.005)
+    parent = ledger.begin_call(run_id="turn-1", model="claude-sonnet-4-5")
+    ledger.complete(parent, _usage(1_000, 100), cost_usd=0.1)
+
+    pool = pool_usage(ledger, "pool-a")
+
+    assert (pool.input_tokens, pool.output_tokens, pool.calls) == (450, 85, 3)
+    assert pool.total_tokens == 535
+    assert pool.cost_usd == pytest.approx(0.045)
+    assert pool.cost_status == "estimated"
+    # Per-worker totals partition the pool, across a worker's repeated calls.
+    first = worker_usage(ledger, "pool-a", "task-0")
+    second = worker_usage(ledger, "pool-a", "task-1")
+    assert first.total_tokens + second.total_tokens == pool.total_tokens
+    assert second.calls == 2
+    # The aggregation reads the ledger; the session total is unchanged by it.
+    session = ledger.snapshot()
+    assert session.input_tokens == 1_450 and session.output_tokens == 185
+
+
+def test_two_pools_of_one_parent_run_have_disjoint_totals() -> None:
+    from agenthicc.subagents.budget import pool_usage
+
+    ledger = UsageLedger("session")
+    _worker_call(ledger, pool_id="pool-a", task_id="task-0", usage=_usage(10, 1))
+    _worker_call(ledger, pool_id="pool-b", task_id="task-0", usage=_usage(20, 2))
+
+    assert pool_usage(ledger, "pool-a").total_tokens == 11
+    assert pool_usage(ledger, "pool-b").total_tokens == 22
+
+
+def test_unknown_cost_is_unavailable_not_zero() -> None:
+    from agenthicc.subagents.budget import pool_usage
+
+    ledger = UsageLedger("session")
+    _worker_call(ledger, pool_id="pool-a", task_id="task-0", usage=_usage(10, 1), cost=0.01)
+    _worker_call(ledger, pool_id="pool-a", task_id="task-1", usage=_usage(10, 1))
+
+    pool = pool_usage(ledger, "pool-a")
+
+    assert pool.cost_status == "unavailable"
+    assert pool.to_dict()["cost_usd"] is None
+    assert pool.total_tokens == 22
+
+
+def test_provisional_calls_are_excluded_so_the_total_is_monotone() -> None:
+    from agenthicc.subagents.budget import pool_usage
+
+    ledger = UsageLedger("session")
+    _worker_call(ledger, pool_id="pool-a", task_id="task-0", usage=_usage(10, 1))
+    _worker_call(ledger, pool_id="pool-a", task_id="task-1", usage=_usage(500, 50), complete=False)
+
+    before = pool_usage(ledger, "pool-a")
+    assert before.total_tokens == 11 and before.calls == 1
+
+    active = next(
+        record for record in ledger.records(include_provisional=True) if record.is_provisional
+    )
+    from agenthicc.runners.usage_ledger import UsageCall
+
+    call = UsageCall(active.record_id, active.run_id, active.call_index)
+    ledger.complete(call, _usage(500, 50))
+    ledger.complete(call, _usage(500, 50))  # a duplicate completion is not counted twice
+
+    after = pool_usage(ledger, "pool-a")
+    assert after.total_tokens == 561 and after.calls == 2
+    assert after.total_tokens >= before.total_tokens
+
+
+def test_no_ledger_or_no_records_reports_an_empty_unavailable_usage() -> None:
+    from agenthicc.subagents.budget import PoolUsage, pool_usage
+
+    assert pool_usage(None, "pool-a") == PoolUsage()
+    assert pool_usage(UsageLedger("session"), "pool-a").cost_status == "unavailable"

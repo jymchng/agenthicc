@@ -3449,11 +3449,30 @@ class SubagentSettings:
     max_total_time_s: float = 600.0
     on_budget_exceeded: Literal["abort", "drain"] = "drain"
     stop_grace_s: float = 5.0
+    max_budget: SubagentBudgetCeiling = SubagentBudgetCeiling()
     depth_limits: Mapping[int, SubagentDepthLimit]
     depth_tiers: Mapping[int, Mapping[str, SubagentDepthTier]]
 
     def limits_for_depth(self, depth: int) -> tuple[int, int, str, str]: ...
 ```
+
+`max_tool_calls`, `max_iterations`, `max_tokens` and `max_total_time_s` are
+*operator ceilings*: armed for every pool by default. `max_budget` caps what a
+per-call `spawn_subagents(budget=...)` declaration may request.
+
+### SubagentBudgetCeiling
+
+```python
+@dataclass(frozen=True)
+class SubagentBudgetCeiling:
+    tokens: int | None = None
+    cost_usd: float | None = None
+    wall_clock_s: float | None = None
+```
+
+`[subagents.max_budget]`. Unset fields leave that unit uncapped by the ceiling
+(operator ceilings still apply). A declaration above it is clamped down and the
+clamp is reported. Non-positive, non-finite or unknown values fail config load.
 
 Operator model/effort/context defaults, a model allowlist, the opt-in for per-call
 model and effort overrides, pool governance, and per-pool resource budgets. The
@@ -4474,6 +4493,108 @@ stays under `MAX_TRANSCRIPT_BYTES` (2 MiB) by dropping its oldest events behind
 a `truncated` marker that counts them. Stop requests, lifecycle changes, message
 acknowledgements, and attempt boundaries are recorded with per-attempt metadata.
 The parent agent never reads them.
+
+### Pool usage and budgets — `agenthicc.subagents.budget`
+
+```python
+class BudgetError(ValueError):
+    field: str
+
+@dataclass(frozen=True, slots=True)
+class PoolUsage:
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    calls: int = 0
+    cost_usd: float = 0.0
+    cost_status: Literal["authoritative", "estimated", "unavailable"] = "unavailable"
+    total_tokens: int  # property: input + output
+
+@dataclass(frozen=True, slots=True)
+class PoolBudget:
+    tokens: int | None = None
+    cost_usd: float | None = None
+    wall_clock_s: float | None = None
+
+@dataclass(frozen=True, slots=True)
+class EffectiveBudget:
+    limits: PoolBudget
+    declared: PoolBudget
+    sources: Mapping[str, Literal["declared", "operator", "settings_ceiling"]]
+    clamped: Mapping[str, float]
+
+def worker_run_id(parent_run_id: str, pool_id: str, task_id: str) -> str: ...
+def pool_usage(ledger: UsageLedger | None, pool_id: str) -> PoolUsage: ...
+def worker_usage(ledger: UsageLedger | None, pool_id: str, task_id: str) -> PoolUsage: ...
+def parse_budget(value: object) -> PoolBudget: ...  # raises BudgetError naming the field
+def resolve_budget(declared: PoolBudget, *, ceiling: PoolBudget,
+                   operator_tokens: int, operator_wall_clock_s: float) -> EffectiveBudget: ...
+def model_has_known_price(model: str) -> bool: ...
+def budget_report(usage: PoolUsage, budget: EffectiveBudget | None, *,
+                  crossed_reason: str = "", stop_mode: str = "") -> dict[str, object]: ...
+def budget_digest(usage: PoolUsage, budget: EffectiveBudget | None, *,
+                  crossed_reason: str = "", stop_mode: str = "") -> str: ...
+```
+
+SUBAGENT-06 accounting reads the session usage ledger, never a second meter.
+Worker records use `worker_run_id`, so a pool's spend is its completed records
+(provisional calls excluded, so a total is monotone). Unknown cost is
+`unavailable`, never zero. `SubagentResult.usage` and `AggregatedResult.usage`
+carry worker and pool spend; `AggregatedResult.budget` the resolved limits.
+A declaration may only lower limits: above `max_budget` it is clamped and
+reported, and a declared `tokens`/`wall_clock_s` replaces the operator ceiling
+only when lower. `cost_usd` requires a ledger and a priced model. Crossing an
+effective limit triggers the pool's stop policy; `budget_digest` returns a
+`results` line only when a budget was declared or a limit was crossed.
+
+### BudgetError
+
+Raised by `parse_budget` for a malformed declaration; `field` names the key.
+
+### PoolUsage
+
+Completed ledger spend for one pool or worker.
+
+### PoolBudget
+
+Per-pool limits; `None` leaves a unit unlimited at that layer.
+
+### EffectiveBudget
+
+The limits a pool runs under, their sources and any clamps.
+
+### worker_run_id
+
+Ledger run id `<parent>:<pool>:subagent:<task>`.
+
+### pool_usage
+
+Sum of a pool's completed ledger records.
+
+### worker_usage
+
+Sum of one worker's completed records across attempts.
+
+### parse_budget
+
+Validate a model-supplied `budget:` mapping.
+
+### resolve_budget
+
+Combine a declaration with the settings ceiling and operator ceilings.
+
+### model_has_known_price
+
+Whether lauren-ai has a real price for a model rather than its fallback.
+
+### budget_report
+
+Usage against limits for tool results and completion events; counts only.
+
+### budget_digest
+
+The one-line `results` suffix stating usage, limits and any crossing.
 
 ### Background completion delivery — `agenthicc.subagents.delivery`
 
@@ -6303,6 +6424,13 @@ per commit — what a background worker copies into its session record (AGX-07).
 
 Standard workflow phases, generated `create_workflow` workflows, subagents, and
 compaction receive the ledger through `WorkflowConfig` and `_run_agent_turn()`.
+
+`reported_call_cost(value) -> float | None` interprets a provider-call signal's
+`cost_usd`: lauren-ai's default `0.0` is missing information, never a free
+call. A cost supplied at completion is recorded as `estimated` (or the caller's
+status); a call that streamed no chunks no longer keeps `begin_call`'s
+`unavailable` placeholder beside a real value. Subagent budgets meter cost
+through the same function, so they agree with the ledger.
 See `docs/guides/usage-accounting.md` and
 `docs/reference/usage-ledger.md` for persistence and quality rules.
 

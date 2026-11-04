@@ -284,6 +284,13 @@ max_total_time_s = 600.0    # pool wall-clock budget
 on_budget_exceeded = "drain" # abort | drain
 stop_grace_s = 5.0          # cleanup grace for cancelled workers
 
+# The most a spawn_subagents(budget=...) declaration may ask for. Unset means
+# no per-call ceiling; the operator ceilings above still apply to every pool.
+# [subagents.max_budget]
+# tokens = 100000
+# cost_usd = 1.0
+# wall_clock_s = 300
+
 # Nesting is opt-in: raise max_depth and add spawn_subagents to a type's
 # allowed_tools before workers of that type can delegate.
 # [subagents.depth_limits."2"]

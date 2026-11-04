@@ -107,6 +107,13 @@ def summary_line(
         parts.append(f"{counts.done}/{state.total} done")
     if counts.queued and state.limit > 0:
         parts.append(f"limit {state.limit}")
+    # A declared budget (SUBAGENT-06) is shown as usage against it; a pool that
+    # declared none renders exactly as before.
+    if state.budget_tokens is not None:
+        used = compact_token_count(state.tokens) if state.tokens > 0 else "0"
+        parts.append(f"{used}/{compact_token_count(state.budget_tokens)} tok")
+    if state.budget_cost_usd is not None:
+        parts.append(f"${state.cost_usd:.2f}/${state.budget_cost_usd:.2f}")
 
     name = "Subagents" if plain else "  [bold magenta]Subagents[/bold magenta]"
     if not parts:
@@ -128,7 +135,7 @@ def summary_line(
     # At constrained widths, drop ordinary progress and then its explanatory
     # limit before fitting; failures and waits stay at the front of the line.
     reduced = list(parts)
-    for marker in (" done", "limit ", " queued", " running", " run"):
+    for marker in ("$", " tok", " done", "limit ", " queued", " running", " run"):
         if visible_len(name + separator + separator.join(reduced)) <= cols:
             break
         reduced = [

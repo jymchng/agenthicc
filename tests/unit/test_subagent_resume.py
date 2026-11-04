@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from agenthicc.subagents.types import SubagentTypeRegistry, SubagentTypeSpec
-from agenthicc.subagents.pool import SubagentTask
+from agenthicc.subagents.pool import AggregatedResult, SubagentTask
 from agenthicc.subagents.tool import _find_cached_result, _find_cached_values, _tasks_fingerprint
 from agenthicc.memory.journal import ConversationJournal
 from agenthicc.tui.conversation_store import ConversationStore
@@ -202,7 +202,7 @@ class TestFindCachedValues:
 class TestResumeCacheRoundTrip:
     async def test_tool_caches_and_retrieves_result(self) -> None:
         """Full round-trip: run pool, cache, retrieve on second call."""
-        from unittest.mock import AsyncMock, MagicMock, patch
+        from unittest.mock import AsyncMock, patch
 
         from agenthicc.subagents.tool import make_spawn_subagents_tool
 
@@ -217,13 +217,13 @@ class TestResumeCacheRoundTrip:
         tasks = [{"type": "explorer", "task": "Find auth module"}]
 
         # Patch SubagentPool.run() so no real LLM call is made.
-        fake_result = MagicMock()
-        fake_result.pool_id = "pool-123"
-        fake_result.total = 1
-        fake_result.succeeded = 1
-        fake_result.failed = 0
-        fake_result.text = "=== explorer #1 (✓ 1.0s) ===\nFound auth.py"
-        fake_result.budget_exceeded_reason = ""
+        fake_result = AggregatedResult(
+            pool_id="pool-123",
+            total=1,
+            succeeded=1,
+            failed=0,
+            text="=== explorer #1 (✓ 1.0s) ===\nFound auth.py",
+        )
 
         with patch(
             "agenthicc.subagents.pool.SubagentPool.run", new=AsyncMock(return_value=fake_result)
@@ -247,7 +247,7 @@ class TestResumeCacheRoundTrip:
 
     async def test_changed_context_does_not_reuse_cached_result(self) -> None:
         """Context changes alter the work request and must execute again."""
-        from unittest.mock import AsyncMock, MagicMock, patch
+        from unittest.mock import AsyncMock, patch
 
         from agenthicc.subagents.tool import make_spawn_subagents_tool
 
@@ -258,7 +258,7 @@ class TestResumeCacheRoundTrip:
             _transport = None
 
         tool_fn = make_spawn_subagents_tool(FakeRunner(), "test-model", [], conv_store=conv)
-        first = MagicMock(
+        first = AggregatedResult(
             pool_id="pool-1",
             total=1,
             succeeded=1,
@@ -266,7 +266,7 @@ class TestResumeCacheRoundTrip:
             text="first context result",
             budget_exceeded_reason="",
         )
-        second = MagicMock(
+        second = AggregatedResult(
             pool_id="pool-2",
             total=1,
             succeeded=1,
@@ -292,7 +292,6 @@ class TestResumeCacheRoundTrip:
         self, tmp_path
     ) -> None:
         """A completed pool remains resumable when the TUI projection is absent."""
-        from types import SimpleNamespace
         from unittest.mock import AsyncMock, patch
 
         from agenthicc.subagents.tool import make_spawn_subagents_tool
@@ -316,7 +315,7 @@ class TestResumeCacheRoundTrip:
             )
         )
         journal = ConversationJournal(tmp_path / "conversation-journal.jsonl")
-        first = SimpleNamespace(
+        first = AggregatedResult(
             pool_id="pool-durable",
             total=1,
             succeeded=1,

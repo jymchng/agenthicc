@@ -1233,6 +1233,39 @@ class SubagentDepthTier:
 
 
 @dataclass(frozen=True)
+class SubagentBudgetCeiling:
+    """The most a ``spawn_subagents(budget=...)`` declaration may ask for.
+
+    Unset fields leave that unit unlimited by this ceiling. A larger
+    declaration is clamped down to the ceiling and the clamp is reported; the
+    operator ceilings (``max_tokens``, ``max_total_time_s``) still apply.
+    """
+
+    tokens: int | None = None
+    cost_usd: float | None = None
+    wall_clock_s: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.tokens is not None and (
+            isinstance(self.tokens, bool) or not isinstance(self.tokens, int) or self.tokens < 1
+        ):
+            raise ValueError("subagents.max_budget.tokens must be a positive integer")
+        for name, value in (("cost_usd", self.cost_usd), ("wall_clock_s", self.wall_clock_s)):
+            if value is None:
+                continue
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                or value <= 0
+            ):
+                raise ValueError(
+                    f"subagents.max_budget.{name} must be a finite number greater than zero"
+                )
+            object.__setattr__(self, name, float(value))
+
+
+@dataclass(frozen=True)
 class SubagentSettings:
     """Operator defaults, model-selection policy, and pool governance."""
 
@@ -1252,6 +1285,7 @@ class SubagentSettings:
     max_total_time_s: float = 600.0
     on_budget_exceeded: Literal["abort", "drain"] = "drain"
     stop_grace_s: float = 5.0
+    max_budget: SubagentBudgetCeiling = field(default_factory=SubagentBudgetCeiling)
     depth_limits: Mapping[int, SubagentDepthLimit] = field(default_factory=dict)
     depth_tiers: Mapping[int, Mapping[str, SubagentDepthTier]] = field(default_factory=dict)
 
@@ -1982,6 +2016,15 @@ class AgenthiccConfig:
                 "max_tasks": self.subagents.max_tasks,
                 "max_concurrent": self.subagents.max_concurrent,
                 "max_active_pools": self.subagents.max_active_pools,
+                "max_budget": {
+                    key: value
+                    for key, value in (
+                        ("tokens", self.subagents.max_budget.tokens),
+                        ("cost_usd", self.subagents.max_budget.cost_usd),
+                        ("wall_clock_s", self.subagents.max_budget.wall_clock_s),
+                    )
+                    if value is not None
+                },
                 "depth_limits": {
                     str(depth): {
                         key: value
@@ -2751,6 +2794,19 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
     max_total_time_s = subagent_data.get("max_total_time_s", 600.0)
     if isinstance(max_total_time_s, bool) or not isinstance(max_total_time_s, (int, float)):
         raise ValueError("subagents.max_total_time_s must be a finite number greater than zero")
+    raw_max_budget = subagent_data.get("max_budget", {})
+    if not isinstance(raw_max_budget, Mapping):
+        raise ValueError("subagents.max_budget must be a table")
+    unknown_budget_keys = sorted(
+        str(key) for key in raw_max_budget if key not in {"tokens", "cost_usd", "wall_clock_s"}
+    )
+    if unknown_budget_keys:
+        raise ValueError(f"subagents.max_budget.{unknown_budget_keys[0]} is not a budget setting")
+    max_budget = SubagentBudgetCeiling(
+        tokens=raw_max_budget.get("tokens"),
+        cost_usd=raw_max_budget.get("cost_usd"),
+        wall_clock_s=raw_max_budget.get("wall_clock_s"),
+    )
 
     subagents = SubagentSettings(
         default_model=_as_str(subagent_data.get("default_model"), "").strip(),
@@ -2771,6 +2827,7 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
         max_total_time_s=float(max_total_time_s),
         on_budget_exceeded=cast(Literal["abort", "drain"], on_budget_exceeded),
         stop_grace_s=float(stop_grace_s),
+        max_budget=max_budget,
     )
 
     # [workflows] section — dict[workflow_name, dict[str, Any]] (PRD-111)

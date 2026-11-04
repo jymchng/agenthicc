@@ -448,7 +448,8 @@ running workers finish and prevents queued workers from starting; `"abort"`
 cancels running workers, subject to `stop_grace_s`. A budget-limited aggregate
 is reported with `status: "budget_exceeded"` and is never written as a
 successful resume-cache result, even if all workers happened to finish
-successfully during drain. The durable pool journal records it as cancelled,
+successfully during drain. The durable pool journal records it as `stopped`,
+with its counts, the aggregate of the workers that ran and the crossed limit,
 and the pool completion event and TUI summary include the reason. The wall-clock
 limit is a stop threshold, not a hard completion deadline:
 `drain` can take longer while active workers wind down, and `abort` may use the
@@ -467,6 +468,60 @@ max_total_time_s = 600.0
 on_budget_exceeded = "drain" # abort | drain
 stop_grace_s = 5.0
 ```
+
+### Pool usage and declared budgets
+
+Every pool reports what it spent. A worker's provider calls are recorded in the
+session usage ledger under a run id that names its pool
+(`<parent run>:<pool id>:subagent:<task id>`), so a pool's usage is the sum of
+its workers' completed ledger records — the same records the session total is
+built from, never a second meter. The tool result carries:
+
+- `usage`: `input_tokens`, `output_tokens`, `cache_read_tokens`,
+  `cache_write_tokens`, `total_tokens` (input plus output), `calls`,
+  `cost_usd` and `cost_status`. Cost is summed only over calls with a known
+  cost; if any call's cost is unknown, `cost_status` is `unavailable` and
+  `cost_usd` is `null`, never `0`.
+- `budget`: the same `usage`, the effective `limits`, the `declared` values,
+  where each limit came from (`sources`: `declared`, `settings_ceiling` or
+  `operator`), any `clamped_from` values, and — when a limit stopped the pool —
+  `crossed` (`reason`, `unit`, `source`, `stop_mode`).
+
+The `SubagentPoolCompleted` kernel event and the `subagent_pool_done` scroll
+event carry the same `budget` report. It holds counts and limits only, never
+prompt or result text.
+
+The model may declare a tighter budget for one call:
+
+```json
+{"tasks": [...], "budget": {"tokens": 50000, "cost_usd": 0.25, "wall_clock_s": 120}}
+```
+
+Any subset of `tokens`, `cost_usd` and `wall_clock_s` may be given. A
+declaration can only lower limits:
+
+- A declared `tokens` or `wall_clock_s` replaces `subagents.max_tokens` or
+  `subagents.max_total_time_s` only when it is lower; a larger value leaves
+  the operator ceiling in force and reports its source as `operator`.
+- `subagents.max_budget` caps what a call may declare. A larger declaration is
+  clamped down to it and reported in `clamped_from`.
+- A malformed budget — an unknown key, a non-integer or non-positive `tokens`,
+  a non-finite or non-positive number — is refused before any worker starts,
+  naming the field (`budget_field`).
+- `cost_usd` is refused when the session has no usage ledger, or when a worker
+  would run on a model with no known price. lauren-ai prices unlisted models
+  at a flat fallback rate, and a limit metered against a guess is not a limit.
+
+Crossing an effective limit — declared or operator — is answered by the same
+stop policy as any operator ceiling (`on_budget_exceeded`). When a budget was
+declared or a limit was crossed, the `results` text ends with one line that
+states usage against the limits and names a crossed limit and its source, for
+example `CROSSED max_tokens_exceeded (declared limit)`. A pool that declared
+nothing and crossed nothing keeps exactly the text it always had.
+
+The panel's summary line shows usage against a declared budget — for example
+`2.0k/10.0k tok · $0.12/$0.50` — and omits it otherwise. It is the first part
+dropped at narrow widths.
 
 `timeout_s` is a finite, positive per-worker wall-clock deadline for this
 invocation and defaults to one hour. It overrides the role's

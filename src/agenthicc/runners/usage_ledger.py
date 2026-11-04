@@ -39,6 +39,7 @@ __all__ = [
     "UsageSource",
     "UsageValues",
     "UsageRunTracker",
+    "reported_call_cost",
     "summarize_usage_records",
 ]
 
@@ -485,11 +486,21 @@ class UsageLedger:
         values = UsageValues.from_provider(usage)
         if not values.known and current.values.known:
             values = current.values
+        # A cost supplied at completion is a new observation: it takes the
+        # caller's status, or ``estimated``, never the ``unavailable``
+        # placeholder ``begin_call`` gave a call that streamed no chunks.
+        # Without a new cost the call keeps what its chunks established.
         cost, status = self._cost_for(
             values,
             current.model,
             cost_usd=cost_usd if cost_usd is not None else current.cost_usd,
-            cost_status=cost_status if cost_status is not None else current.cost_status,
+            cost_status=(
+                cost_status
+                if cost_status is not None
+                else None
+                if cost_usd is not None
+                else current.cost_status
+            ),
         )
         now = self._clock()
         updated = replace(
@@ -796,7 +807,7 @@ class UsageRunTracker:
         # unavailable unless a chunk already established a known value; this
         # preserves genuine known-zero chunk usage without inventing zero.
         usage = signal_usage if signal_values.any_tokens else None
-        reported_cost = _reported_cost(getattr(signal, "cost_usd", None))
+        reported_cost = reported_call_cost(getattr(signal, "cost_usd", None))
         if not observed.known and usage is None:
             self.ledger.complete(call, None, source=UsageSource.MODEL_CALL_COMPLETE)
         else:
@@ -896,8 +907,13 @@ def _provider_cost(usage: object | None, model: str) -> float | None:
     return value if math.isfinite(value) and value >= 0 else None
 
 
-def _reported_cost(value: object) -> float | None:
-    """Treat lauren-ai's default ``0.0`` as missing cost information."""
+def reported_call_cost(value: object) -> float | None:
+    """The cost a provider-call signal reports, or ``None`` when it reports none.
+
+    lauren-ai's ``ModelCallComplete.cost_usd`` defaults to ``0.0``; that default
+    is treated as missing information, never as a free call. Subagent budgets
+    meter cost through this same function so they agree with the ledger.
+    """
     number = _finite_float(value)
     return number if number is not None and number > 0 else None
 

@@ -69,6 +69,7 @@ PRD's `status:` is promoted only when the PR is merged (research report §6.6).
 |---|---|---|---|
 | 1 | `subagent-wave-1-redaction-and-fixes` | WP-1 (B-3 redaction and visible truncation in every scroll and kernel payload, including task text and errors), WP-2 (definition descriptions reach the spawn tool), WP-3 (D-1, documentation), WP-4 (armed operator ceilings pinned against the guide and SUBAGENT-06), WP-9 (refusals no longer report `max_concurrent_used`; guide corrected from "clamped" to "refused") | 11, 12, 17, 18, 23, 27 |
 | 2 | `subagent-wave-2-background-delivery` | WP-5 (B-1: budget-ended pools journaled as `stopped` with counts, text, values and reason; delivery and turn-resume report the real cause; session-close `cancelled` records now keep their counts too), WP-6 (B-2: delivery composed by `agenthicc.subagents.delivery`, worker text framed as untrusted, redacted, bounded at 16,000 characters, frame-closing tag neutralised), WP-8 (SUBAGENT-05 criteria 4 and 8, SUBAGENT-08 criteria 5 and 8, test-location amendments in SUBAGENT-04/05/07/08) | 13, 14, 15, 19, 20, 21, 22, 25 |
+| 3 | `subagent-wave-3-pool-budgets` | WP-7 (SUBAGENT-06 goals 1–8, 10: pool-scoped worker run ids, ledger-derived worker and pool usage, `budget:` argument with validation, `subagents.max_budget` downward clamp, cost metering and `max_cost_usd_exceeded`, usage-versus-limit report on the tool result, the completion events, the `results` digest and the panel); ledger fix for cost labelled `unavailable` on every non-streaming call; WP-4 criterion 24 | 1–10, 24 |
 
 Wave 1 found a third leak site beyond §3 R15: `SubagentPoolCompleted.text`
 carried the complete aggregate, unbounded and unredacted
@@ -712,10 +713,12 @@ states D-1. Criteria 17–27 are new.
 9. `SubagentPoolState` publishes the pool's tokens, cost and limit, and the panel
    renders them through PRD-157's existing signals:
    `tests/unit/test_subagent_panel_agx08.py`.
-10. Crossing a *declared* `budget:` limit records the crossing and cancels
-    nothing beyond what the operator ceilings and `on_budget_exceeded` already
-    do: worker counts, statuses and returned text are identical to the same run
-    without the declaration: `tests/unit/test_subagent_pool.py`.
+10. *(Amended in wave 3.)* Crossing a *declared* `budget:` limit is answered
+    exactly like crossing an operator ceiling — by `on_budget_exceeded` — and
+    the report names the limit and that it was declared:
+    `tests/integration/test_subagent_tool_execution.py::test_crossing_a_declared_token_limit_is_reported_with_its_source`.
+    The original wording ("cancels nothing") predates D-2 and contradicted
+    SUBAGENT-08 goal 9.
 11. A definition-loaded type appears in the spawn tool's description with its own
     description text, not "No description provided":
     `tests/unit/test_subagent_plugin.py`.
@@ -767,8 +770,11 @@ states D-1. Criteria 17–27 are new.
     guides document, and SUBAGENT-06 §7 and `docs/guides/subagents.md` state the
     same numbers: `tests/unit/test_config.py`.
 24. **D-2:** for one pool the governor's token count equals the input-plus-output
-    sum of that pool's ledger records (and, after WP-7, is computed from them):
-    `tests/unit/test_subagent_budgets.py`.
+    sum of that pool's ledger records. *(Amended in wave 3.)* The counter is
+    kept as the real-time trigger — reading the ledger on every model-call
+    signal would order the governor after the ledger's own sink — and is pinned
+    equal to the ledger total:
+    `tests/unit/test_subagent_pool.py::test_each_worker_reports_its_own_spend_and_the_pool_reports_the_total`.
 25. **SUBAGENT-08 criterion 5:** stopping a worker that waits on an approval
     leaves no answerable prompt for it and leaves a sibling's pending approval
     answerable: `tests/unit/test_subagent_lifecycle.py` (with the criterion
