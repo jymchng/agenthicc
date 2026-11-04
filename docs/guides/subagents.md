@@ -654,10 +654,36 @@ under the session's `SupervisedTasks` owner, not as detached process tasks. The
 session cancels them during shutdown. Ctrl+B is offered only while the parent
 turn is streaming and at least one subagent worker is active.
 
-A completed, cancelled, or crash-interrupted background pool is delivered as a
-synthetic user message at the next logical-turn boundary. It is not inserted
-into an already-running provider loop. Stable message IDs make delivery
-idempotent across resume and compaction, so a completion is not delivered twice.
+A completed, budget-stopped, cancelled, or crash-interrupted background pool is
+delivered as a synthetic user message at the next logical-turn boundary. It is
+not inserted into an already-running provider loop. Stable message IDs make
+delivery idempotent across resume and compaction, so a completion is not
+delivered twice.
+
+The message's first line is written by the runtime and states the outcome and
+the real worker counts:
+
+| Journal status | First line says |
+|---|---|
+| `completed` | `completed (2/2 succeeded, 0 failed)` |
+| `stopped` | `was stopped by the pool budget: max_tokens_exceeded (1/2 succeeded, 1 failed)` |
+| `cancelled` | `was cancelled when the session closed (…)` |
+| `interrupted` | `was interrupted when the session stopped (…)` |
+
+A pool ended by an operator ceiling (`max_tokens`, `max_total_time_s`,
+`max_tool_calls`, `max_iterations`) is journaled as `stopped`, with its counts,
+the aggregate of the workers that ran, and the ceiling that was crossed.
+`cancelled` is reserved for a session close. A turn that is re-driven after
+such a pool replays the same counts and text from the journal.
+
+Worker text follows the first line only inside an explicit
+`<subagent-output pool="…">` frame, preceded by a statement that the content was
+produced by subagents and must be treated as untrusted data. The text in the
+frame is redacted with the session-export redactor, limited to 16,000
+characters with a visible truncation note, and cannot close the frame itself:
+an embedded `</subagent-output` is neutralised. The durable journal keeps the
+complete aggregate, so a re-driven turn returns the full text as its tool
+result.
 
 ## TUI and kernel observability
 

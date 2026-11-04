@@ -139,3 +139,97 @@ class TestPermissionCheckerWithScope:
     def test_no_scope_manager_uses_policy(self):
         checker = PermissionChecker(policy=self._policy())
         assert checker.check("run_bash") == "allow"
+
+
+class TestSubagentPermissionMergeTable:
+    """SUBAGENT-05 criterion 8: effective scope == inherited.restrict(declared).
+
+    Each row is one type declaration applied by the subagent permission path
+    (``SubagentExecutionPolicy.restrict_by``). The expectation is computed with
+    ``AgentCapabilityScope.restrict`` itself — never a reimplementation — so the
+    table fails if the subagent path ever diverges from the scope algebra.
+    """
+
+    INHERITED = AgentCapabilityScope(
+        allowed_tools=frozenset({"read_file", "grep_files", "run_bash", "outlook_send"}),
+        denied_tools=frozenset({"write_file"}),
+        max_tool_call_budget=40,
+    )
+
+    ROWS: tuple[tuple[str, frozenset[str], frozenset[str], frozenset[str]], ...] = (
+        ("empty declaration", frozenset(), frozenset(), frozenset()),
+        ("deny one allowed tool", frozenset({"run_bash"}), frozenset(), frozenset()),
+        ("deny by wildcard", frozenset({"outlook_*"}), frozenset(), frozenset()),
+        ("deny a tool not inherited", frozenset({"web_fetch"}), frozenset(), frozenset()),
+        ("repeat an inherited deny", frozenset({"write_file"}), frozenset(), frozenset()),
+        ("deny a capability", frozenset(), frozenset({"execute"}), frozenset()),
+        ("require approval", frozenset(), frozenset(), frozenset({"write"})),
+        (
+            "deny and require the same capability",
+            frozenset(),
+            frozenset({"network"}),
+            frozenset({"network"}),
+        ),
+        (
+            "everything at once",
+            frozenset({"run_bash", "outlook_*"}),
+            frozenset({"execute"}),
+            frozenset({"read"}),
+        ),
+    )
+
+    @staticmethod
+    def _inherited_policy() -> object:
+        from agenthicc.subagents.policy import SubagentExecutionPolicy
+
+        return SubagentExecutionPolicy(
+            mode_name="Safe",
+            badge="",
+            color="",
+            description="",
+            system_prompt_suffix="",
+            blocked_capabilities=frozenset({"admin"}),
+            approval_required=frozenset({"write"}),
+            visible_tool_names=frozenset(
+                TestSubagentPermissionMergeTable.INHERITED.allowed_tools or ()
+            ),
+            capability_scope=TestSubagentPermissionMergeTable.INHERITED,
+        )
+
+    @pytest.mark.parametrize(
+        ("name", "deny_tools", "deny_capabilities", "require_approval"),
+        ROWS,
+        ids=[row[0] for row in ROWS],
+    )
+    def test_effective_scope_is_the_restriction_of_the_declaration(
+        self,
+        name: str,
+        deny_tools: frozenset[str],
+        deny_capabilities: frozenset[str],
+        require_approval: frozenset[str],
+    ) -> None:
+        from agenthicc.subagents.policy import SubagentExecutionPolicy
+        from agenthicc.subagents.types import SubagentPermissionConstraints
+
+        inherited = self._inherited_policy()
+        assert isinstance(inherited, SubagentExecutionPolicy)
+        declared = SubagentPermissionConstraints(
+            deny_tools=deny_tools,
+            deny_capabilities=deny_capabilities,
+            require_approval=require_approval,
+        )
+
+        effective = inherited.restrict_by(None, permissions=declared, type_name="typed")
+
+        expected_scope = self.INHERITED.restrict(AgentCapabilityScope(denied_tools=deny_tools))
+        assert effective.capability_scope == expected_scope, name
+        # Narrow-only: nothing the inherited scope refused becomes allowed.
+        for tool in ("read_file", "grep_files", "run_bash", "outlook_send", "write_file", "web"):
+            if not self.INHERITED.is_tool_allowed(tool):
+                assert not effective.capability_scope.is_tool_allowed(tool), (name, tool)
+        expected_blocked = inherited.blocked_capabilities | deny_capabilities
+        assert effective.blocked_capabilities == expected_blocked, name
+        assert effective.approval_required == (
+            (inherited.approval_required | require_approval) - expected_blocked
+        ), name
+        assert inherited.blocked_capabilities <= effective.blocked_capabilities

@@ -401,6 +401,18 @@ The A-4 boundaries from the research report §5.3, restated as commitments:
     `pytest tests/unit/test_subagent_pool.py -q` pass unchanged, proving the
     default path (`max_depth=1`) admits exactly what it admits today.
 
+### Test locations (amended 2026-11-03)
+
+SUBAGENT-10 WP-8. The criteria above name the file a case was expected in;
+this table records where each proving case actually lives, so the criteria can
+be checked against the tree. Criterion 6 was amended in place (D-1).
+
+| Criterion | Proving case |
+|---|---|
+| 2 | `tests/unit/test_subagent_pool.py` (withholding at the default depth), not `test_subagent_plugin.py` |
+| 6 | `tests/integration/test_subagent_tool_execution.py::test_nested_depth_tier_refuses_concurrency_above_inherited_limit`, plus `test_concurrency_below_one_is_refused_without_reporting_a_used_value` and `test_accepted_concurrency_is_reported_as_used` |
+| 11 | Amended: the named suites pass, but not *unchanged* — this series added cases to both (SUBAGENT-10 R6). The default-path guarantee is that every pre-existing case passes unedited |
+
 ## 7. Rollout, migration and security
 
 **Defaults, and the one behaviour change.** `max_depth` defaults to `1`, which

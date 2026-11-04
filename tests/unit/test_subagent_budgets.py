@@ -266,3 +266,46 @@ async def test_budget_limited_pool_is_not_cached_as_success() -> None:
     assert result["status"] == "budget_exceeded"
     assert result["budget_exceeded_reason"] == "max_tokens_exceeded"
     assert _find_cached_result(conversation, fingerprint) is None
+
+
+async def test_budget_drained_pool_journals_a_stopped_record_with_its_results(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: object,
+) -> None:
+    """SUBAGENT-10 B-1: a budget crossing is journaled as stopped, not cancelled."""
+    from pathlib import Path
+
+    from agenthicc.memory.journal import ConversationJournal
+
+    _prepare_worker(monkeypatch, "tokens")
+    journal = ConversationJournal(Path(str(tmp_path)) / "journal.jsonl")
+    pool = SubagentPool(
+        [SubagentTask("worker-1", "researcher", "research")],
+        parent_runner=SimpleNamespace(_transport=None),
+        parent_model="model",
+        all_tools=[],
+        max_concurrent=1,
+        registry=DEFAULT_REGISTRY,
+        max_workers=1,
+        max_tokens=10,
+        on_budget_exceeded="drain",
+        conversation_journal=journal,
+    )
+    try:
+        result = await pool.run()
+
+        assert result.budget_exceeded_reason == "max_tokens_exceeded"
+        lifecycle = next(
+            record
+            for record in journal.fold_subagent_pool_lifecycle()
+            if record["pool_id"] == pool.pool_id
+        )
+        assert lifecycle["status"] == "stopped"
+        assert lifecycle["kind"] == "subagent_pool_stopped"
+        assert lifecycle["reason"] == "max_tokens_exceeded"
+        # The drain let the running worker finish; its result is kept.
+        assert lifecycle["total"] == 1
+        assert lifecycle["succeeded"] == 1
+        assert "finished" in str(lifecycle["text"])
+    finally:
+        journal.close()

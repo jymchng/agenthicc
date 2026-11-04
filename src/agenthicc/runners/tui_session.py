@@ -4311,6 +4311,7 @@ class TUISession:
     def _deliver_completed_background_subagents(self) -> None:
         """Append durable background results at the next logical-turn boundary."""
         from agenthicc.memory.journaled import JournaledShortTermMemory
+        from agenthicc.subagents.delivery import background_pool_completion_message
 
         session_conversation = self._ctx.session_conversation
         if session_conversation is None or self._tool_history_blocked():
@@ -4325,25 +4326,7 @@ class TUISession:
             if not isinstance(pool_id_value, str) or not pool_id_value:
                 continue
             pool_id = pool_id_value
-            status = str(record.get("status", "interrupted"))
-            total = record.get("total", 0)
-            succeeded = record.get("succeeded", 0)
-            failed = record.get("failed", 0)
-            total_count = total if isinstance(total, int) else 0
-            succeeded_count = succeeded if isinstance(succeeded, int) else 0
-            failed_count = failed if isinstance(failed, int) else 0
-            status_text = {
-                "completed": "completed",
-                "interrupted": "was interrupted when the session stopped",
-                "cancelled": "was cancelled when the session closed",
-            }.get(status, "finished")
-            message = (
-                f"Background subagent pool {pool_id} {status_text} "
-                f"({succeeded_count}/{total_count} succeeded, {failed_count} failed)."
-            )
-            results = record.get("text")
-            if isinstance(results, str) and results:
-                message = f"{message}\n\n{results}"
+            message = background_pool_completion_message(record)
             message_id = f"subagent-completion:{pool_id}"
             memory.add_user_once(message, message_id=message_id)
             conversation.append_event(

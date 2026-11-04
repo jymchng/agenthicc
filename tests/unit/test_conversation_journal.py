@@ -248,3 +248,97 @@ class TestPathHelper:
         assert p.name == "conversation-journal.jsonl"
         assert p.parent.name == "sess-123"
         assert p.parent.parent.name == "sessions"
+
+
+class TestSubagentPoolTerminalRecords:
+    """SUBAGENT-10 B-1: every terminal pool record carries counts, text and cause."""
+
+    @staticmethod
+    def _start(journal: ConversationJournal) -> None:
+        journal.subagent_pool_started(
+            pool_id="pool-1",
+            fingerprint="fp-1",
+            parent_run_id="turn-1",
+            tasks=[
+                {"task_id": "task-0", "agent_type": "explorer"},
+                {"task_id": "task-1", "agent_type": "tester"},
+            ],
+        )
+        journal.subagent_worker_result(
+            pool_id="pool-1",
+            fingerprint="fp-1",
+            task_id="task-0",
+            agent_type="explorer",
+            label="explorer #1",
+            ok=True,
+            text="drained worker result",
+            error="",
+            duration_ms=3.0,
+            tool_calls=[],
+            changed_paths=[],
+        )
+        journal.subagent_pool_backgrounded(
+            pool_id="pool-1", tool_result={"status": "backgrounded", "pool_id": "pool-1"}
+        )
+
+    def test_budget_stopped_pool_folds_to_stopped_with_counts_text_and_reason(
+        self, tmp_path
+    ) -> None:
+        journal = ConversationJournal(tmp_path / "j.jsonl")
+        self._start(journal)
+        journal.subagent_pool_stopped(
+            pool_id="pool-1",
+            total=2,
+            succeeded=1,
+            failed=1,
+            text="=== explorer #1 (✓) ===\ndrained worker result",
+            reason="max_tokens_exceeded",
+            values=[],
+        )
+        journal.close()
+
+        recovered = ConversationJournal(tmp_path / "j.jsonl")
+        lifecycle = recovered.find_subagent_pool("turn-1", "fp-1")
+        assert lifecycle is not None
+        assert lifecycle["status"] == "stopped"
+        assert (lifecycle["total"], lifecycle["succeeded"], lifecycle["failed"]) == (2, 1, 1)
+        assert lifecycle["reason"] == "max_tokens_exceeded"
+        assert "drained worker result" in str(lifecycle["text"])
+        # A stopped pool is terminal: restart recovery leaves it alone.
+        assert recovered.recover_interrupted_subagent_pools() == []
+        # The never-started worker is recorded, distinguishable from a failure.
+        never_started = next(
+            worker
+            for worker in recovered.fold_subagent_worker_results()
+            if worker["task_id"] == "task-1"
+        )
+        assert never_started["status"] == "cancelled"
+        assert "stopped by pool budget (max_tokens_exceeded)" in str(never_started["error"])
+        delivered = recovered.completed_background_subagent_pools()
+        assert [record["status"] for record in delivered] == ["stopped"]
+        recovered.close()
+
+    def test_session_cancelled_pool_keeps_its_counts_and_text(self, tmp_path) -> None:
+        journal = ConversationJournal(tmp_path / "j.jsonl")
+        self._start(journal)
+        journal.subagent_pool_cancelled(pool_id="pool-1")
+
+        lifecycle = journal.find_subagent_pool("turn-1", "fp-1")
+        assert lifecycle is not None
+        assert lifecycle["status"] == "cancelled"
+        assert (lifecycle["total"], lifecycle["succeeded"], lifecycle["failed"]) == (2, 1, 1)
+        assert "drained worker result" in str(lifecycle["text"])
+        journal.close()
+
+    def test_stop_after_a_terminal_record_is_ignored(self, tmp_path) -> None:
+        journal = ConversationJournal(tmp_path / "j.jsonl")
+        self._start(journal)
+        journal.subagent_pool_finished(pool_id="pool-1", total=2, succeeded=2, failed=0, text="ok")
+        journal.subagent_pool_stopped(
+            pool_id="pool-1", total=2, succeeded=0, failed=2, text="", reason="max_tokens_exceeded"
+        )
+
+        lifecycle = journal.find_subagent_pool("turn-1", "fp-1")
+        assert lifecycle is not None
+        assert lifecycle["status"] == "completed"
+        journal.close()
