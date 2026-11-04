@@ -267,6 +267,27 @@ jobs:
           version: "0.12.4"
       - run: uv tool install nox==2026.7.11
       - run: nox -s coverage -- -q
+      - name: Describe coverage data files and leftover processes
+        if: failure()
+        run: |
+          # A combine failure names a data file; record who wrote it and what
+          # was still running, so the next failure is diagnosable from the log.
+          ls -la --time-style=full-iso .coverage* || true
+          python3 - <<'PY'
+          import glob, os, sqlite3
+          for path in sorted(glob.glob(".coverage.*")):
+              info = os.stat(path)
+              print("==", path, "size", info.st_size, "mode", oct(info.st_mode), "uid", info.st_uid)
+              try:
+                  db = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+                  tables = [row[0] for row in db.execute("select name from sqlite_master")]
+                  print("   tables", tables)
+                  if "meta" in tables:
+                      print("   meta", db.execute("select key, value from meta").fetchall())
+              except sqlite3.Error as exc:
+                  print("   unreadable:", exc)
+          PY
+          ps -eo pid,ppid,etimes,user,args --sort=start_time | tail -40
       - name: Upload coverage report
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
