@@ -352,6 +352,55 @@ class PriorityChange:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class LaunchSpec:
+    """How a background session's worker is configured (AGI-04).
+
+    Recorded once, when the session is created or explicitly relaunched with
+    new flags, and reused by every resume and retry. Secret overrides are
+    ``KEY=ENV_VAR`` references: only the variable's name is stored, and the
+    value is read from the launching process's environment.
+    """
+
+    config_path: str | None = None
+    set_overrides: tuple[str, ...] = ()
+    set_secret_overrides: tuple[str, ...] = ()
+    dangerously_skip_permissions: bool = False
+
+    def secret_variables(self) -> tuple[tuple[str, str], ...]:
+        """``(ENV_VAR, override)`` for each secret reference, in order."""
+        pairs: list[tuple[str, str]] = []
+        for override in self.set_secret_overrides:
+            _key, separator, name = override.partition("=")
+            if separator and name.strip():
+                pairs.append((name.strip(), override))
+        return tuple(pairs)
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "config_path": self.config_path,
+            "set_overrides": list(self.set_overrides),
+            "set_secret_overrides": list(self.set_secret_overrides),
+            "dangerously_skip_permissions": self.dangerously_skip_permissions,
+        }
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, object]) -> "LaunchSpec":
+        def strings(key: str) -> tuple[str, ...]:
+            raw = value.get(key, ())
+            if not isinstance(raw, (list, tuple)):
+                return ()
+            return tuple(item for item in raw if isinstance(item, str))
+
+        config_path = value.get("config_path")
+        return cls(
+            config_path=config_path if isinstance(config_path, str) and config_path else None,
+            set_overrides=strings("set_overrides"),
+            set_secret_overrides=strings("set_secret_overrides"),
+            dangerously_skip_permissions=value.get("dangerously_skip_permissions") is True,
+        )
+
+
 @dataclass(frozen=True)
 class BackgroundSession:
     """One durable background execution and its recoverable metadata."""
@@ -455,6 +504,9 @@ class BackgroundSession:
     tokens_in: int = 0
     tokens_out: int = 0
     cost_usd: float = 0.0
+    # AGI-04: a retry is a new session linked to the failed one.
+    retried_from: str = ""
+    retried_as: str = ""
 
     @classmethod
     def create(
@@ -697,6 +749,8 @@ class BackgroundSession:
             tokens_in=_count(changes.get("tokens_in", self.tokens_in)),
             tokens_out=_count(changes.get("tokens_out", self.tokens_out)),
             cost_usd=_amount(changes.get("cost_usd", self.cost_usd)),
+            retried_from=_bounded_str("retried_from", self.retried_from, 128),
+            retried_as=_bounded_str("retried_as", self.retried_as, 128),
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -777,10 +831,14 @@ class BackgroundSession:
             "tokens_in": self.tokens_in,
             "tokens_out": self.tokens_out,
             "cost_usd": self.cost_usd,
+            "retried_from": self.retried_from,
+            "retried_as": self.retried_as,
         }
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, object]) -> "BackgroundSession":
+        raw_retried_from = value.get("retried_from")
+        raw_retried_as = value.get("retried_as")
         session_id = value.get("session_id")
         if not isinstance(session_id, str) or not session_id:
             raise ValueError("background session record has no session_id")
@@ -943,4 +1001,6 @@ class BackgroundSession:
             tokens_in=_count(value.get("tokens_in")),
             tokens_out=_count(value.get("tokens_out")),
             cost_usd=_amount(value.get("cost_usd")),
+            retried_from=raw_retried_from[:128] if isinstance(raw_retried_from, str) else "",
+            retried_as=raw_retried_as[:128] if isinstance(raw_retried_as, str) else "",
         )

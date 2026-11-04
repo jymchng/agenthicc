@@ -815,8 +815,8 @@ def test_background_cli_list_status_and_mutations(
     store.create(session)
     supervisor = SimpleNamespace(
         cancel=lambda sid: session,
-        resume=lambda sid: session,
-        retry=lambda sid: session,
+        resume=lambda sid, **kwargs: session,
+        retry=lambda sid, **kwargs: session,
         archive=lambda sid: session,
         delete=lambda sid: session,
         restore_deleted=lambda sid: session,

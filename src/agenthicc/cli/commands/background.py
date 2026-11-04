@@ -19,6 +19,7 @@ from agenthicc.cli.context import CLIContext
 from agenthicc.cli.registry import optional_positionals
 
 if TYPE_CHECKING:
+    from agenthicc.background.model import LaunchSpec
     from agenthicc.tui.workspace.agents_hub.model import LibraryEntry
 
 
@@ -359,10 +360,7 @@ async def run(
             workflow_name=workflow,
             title=title,
             cwd=str(Path.cwd()),
-            config_path=ctx.config_path,
-            set_overrides=ctx.set_overrides,
-            dangerously_skip_permissions=ctx.flags.dangerously_skip_permissions,
-            set_secret_overrides=ctx.set_secret_overrides,
+            launch=_launch_from_flags(ctx),
             mode_name=ctx.mode_name,
             priority=priority,
             idempotency_key=idempotency_key,
@@ -540,23 +538,41 @@ def agents_status(ctx: CLIContext, session_id: str, json: bool = False) -> None:
             print(f"Error: {payload['error']}")
 
 
+def _launch_from_flags(ctx: CLIContext) -> "LaunchSpec":
+    """The launch configuration these command-line flags describe (AGI-04)."""
+    from agenthicc.background.model import LaunchSpec
+
+    return LaunchSpec(
+        config_path=ctx.config_path,
+        set_overrides=tuple(ctx.set_overrides),
+        set_secret_overrides=tuple(ctx.set_secret_overrides),
+        dangerously_skip_permissions=ctx.flags.dangerously_skip_permissions,
+    )
+
+
+def _explicit_launch(ctx: CLIContext) -> "LaunchSpec | None":
+    """A replacement launch configuration, only if the command line gave one."""
+    given = (
+        ctx.config_path is not None
+        or bool(ctx.set_overrides)
+        or bool(ctx.set_secret_overrides)
+        or ctx.flags.dangerously_skip_permissions
+    )
+    return _launch_from_flags(ctx) if given else None
+
+
 def _mutate(ctx: CLIContext, session_id: str, action: str) -> None:
+    from agenthicc.background.supervisor import LaunchPreflightError
+
     _store, supervisor = _store_and_supervisor(ctx)
     try:
         if action == "cancel":
             session = supervisor.cancel(session_id)
-        elif action == "resume":
-            session = (
-                supervisor.resume(session_id)
-                if ctx.mode_name is None
-                else supervisor.resume(session_id, mode_name=ctx.mode_name)
-            )
-        elif action == "retry":
-            session = (
-                supervisor.retry(session_id)
-                if ctx.mode_name is None
-                else supervisor.retry(session_id, mode_name=ctx.mode_name)
-            )
+        elif action in {"resume", "retry"}:
+            # --config/--set/--set-secret replace the recorded launch
+            # configuration; without them the session's own is reused.
+            operation = supervisor.resume if action == "resume" else supervisor.retry
+            session = operation(session_id, mode_name=ctx.mode_name, launch=_explicit_launch(ctx))
         elif action == "archive":
             session = supervisor.archive(session_id)
         elif action == "delete":
@@ -565,6 +581,9 @@ def _mutate(ctx: CLIContext, session_id: str, action: str) -> None:
             session = supervisor.restore_deleted(session_id)
         else:
             raise ValueError(f"unknown agent operation: {action}")
+    except LaunchPreflightError as exc:
+        print(f"Unable to {action} {session_id}: {exc}")
+        raise SystemExit(2) from exc
     except (KeyError, RuntimeError, ValueError) as exc:
         print(f"Unable to {action} {session_id}: {exc}")
         raise SystemExit(1) from exc

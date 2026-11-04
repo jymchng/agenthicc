@@ -4053,6 +4053,42 @@ reservation token before launching workers. `queue_positions()` reports
 advisory one-based positions; `dispatch_pending()` recovers and starts eligible
 accepted requests.
 
+`submit(..., launch=LaunchSpec(...))` and `handoff(..., launch=...)` record a
+session's launch configuration once (`launch/<id>.json`). In `handoff`,
+`launch=None` reuses the recorded configuration. `resume(session_id, *,
+mode_name=None, launch=None)` continues the same session with the recorded
+(or given) launch configuration. `retry(...)` starts a failed session's
+request as a new session linked by `retried_from`/`retried_as`. Both call
+`preflight_launch(launch, action=...)` first, and raise `LaunchPreflightError`
+without changing anything when a `--set-secret` variable is unset, the config
+file is missing, or an override does not parse. `recorded_launch(session_id)`
+reads the record; sessions from before AGI-04 are migrated from their last
+worker request.
+
+### LaunchSpec
+
+```python
+@dataclass(frozen=True, slots=True)
+class LaunchSpec:
+    config_path: str | None = None
+    set_overrides: tuple[str, ...] = ()
+    set_secret_overrides: tuple[str, ...] = ()
+    dangerously_skip_permissions: bool = False
+```
+
+`agenthicc.background.LaunchSpec`: how a background session's worker is
+configured (AGI-04). Secret overrides are `KEY=ENV_VAR` references; only the
+variable name is stored. `secret_variables()` returns `(ENV_VAR, override)`
+pairs.
+
+### LaunchPreflightError
+
+```python
+class LaunchPreflightError(ValueError)
+```
+
+A resume or retry cannot start correctly; the session was not changed.
+
 ### QueueFullError
 
 ```python

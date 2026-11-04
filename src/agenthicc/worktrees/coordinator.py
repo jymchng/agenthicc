@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from agenthicc.background.model import LaunchSpec
+
 import asyncio
 import threading
 import uuid
@@ -45,10 +47,7 @@ class WorkerLauncher(Protocol):
         title: str = "",
         cwd: str | None = None,
         session_id: str | None = None,
-        config_path: str | None = None,
-        set_overrides: tuple[str, ...] = (),
-        dangerously_skip_permissions: bool = False,
-        set_secret_overrides: tuple[str, ...] = (),
+        launch: LaunchSpec = ...,
         parent_session_id: str = "",
         role: str = "",
         task_id: str = "",
@@ -340,7 +339,9 @@ class ParallelCoordinator:
                     title=f"Worker {task.task_id}",
                     cwd=record.path,
                     session_id=worker_session_id,
-                    dangerously_skip_permissions=self.worker_dangerously_skip_permissions,
+                    launch=LaunchSpec(
+                        dangerously_skip_permissions=self.worker_dangerously_skip_permissions
+                    ),
                     parent_session_id=self.parent_session_id,
                     role="worker",
                     task_id=task.task_id,

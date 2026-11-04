@@ -196,6 +196,19 @@ def _handoff(session: TUISession) -> bool:
             ctx.session_id,
             owner_lease,
         )
+        from agenthicc.background.model import LaunchSpec
+
+        flags = vars(ctx.app_state).get("cli_flags")
+        launch = LaunchSpec(
+            config_path=config_path,
+            set_overrides=tuple(vars(ctx).get("cfg_overrides", ())),
+            set_secret_overrides=tuple(vars(ctx).get("cfg_secret_overrides", ())),
+            dangerously_skip_permissions=bool(
+                vars(flags).get("dangerously_skip_permissions", False)
+                if flags is not None
+                else False
+            ),
+        )
         prepared = True
         try:
             record = supervisor.handoff(
@@ -203,14 +216,7 @@ def _handoff(session: TUISession) -> bool:
                 intent=intent,
                 workflow_name=workflow_name,
                 cwd=str(Path.cwd()),
-                config_path=config_path,
-                set_overrides=tuple(vars(ctx).get("cfg_overrides", ())),
-                set_secret_overrides=tuple(vars(ctx).get("cfg_secret_overrides", ())),
-                dangerously_skip_permissions=bool(
-                    vars(flags).get("dangerously_skip_permissions", False)
-                    if (flags := vars(ctx.app_state).get("cli_flags")) is not None
-                    else False
-                ),
+                launch=launch,
                 run_id=goal_run_id,
                 start=False,
                 mode_name=mode_name,
@@ -227,14 +233,7 @@ def _handoff(session: TUISession) -> bool:
                     intent=intent,
                     workflow_name=workflow_name,
                     cwd=str(Path.cwd()),
-                    config_path=config_path,
-                    set_overrides=tuple(vars(ctx).get("cfg_overrides", ())),
-                    set_secret_overrides=tuple(vars(ctx).get("cfg_secret_overrides", ())),
-                    dangerously_skip_permissions=bool(
-                        vars(flags).get("dangerously_skip_permissions", False)
-                        if (flags := vars(ctx.app_state).get("cli_flags")) is not None
-                        else False
-                    ),
+                    launch=launch,
                     run_id=goal_run_id,
                     start=False,
                     mode_name=mode_name,
@@ -252,14 +251,7 @@ def _handoff(session: TUISession) -> bool:
                     intent=intent,
                     workflow_name=workflow_name,
                     cwd=str(Path.cwd()),
-                    config_path=config_path,
-                    set_overrides=tuple(vars(ctx).get("cfg_overrides", ())),
-                    set_secret_overrides=tuple(vars(ctx).get("cfg_secret_overrides", ())),
-                    dangerously_skip_permissions=bool(
-                        vars(flags).get("dangerously_skip_permissions", False)
-                        if (flags := vars(ctx.app_state).get("cli_flags")) is not None
-                        else False
-                    ),
+                    launch=launch,
                     run_id=goal_run_id,
                     mode_name=mode_name,
                     requested_profile_name=requested_profile_name,

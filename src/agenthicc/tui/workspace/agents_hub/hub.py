@@ -129,7 +129,8 @@ _RESUMABLE = frozenset(
         SessionStatus.ARCHIVED,
     }
 )
-_RETRYABLE = frozenset({SessionStatus.FAILED, SessionStatus.CANCELLED})
+#: Retry starts a new session from a failed one (AGI-04); resume continues the same one.
+_RETRYABLE = frozenset({SessionStatus.FAILED})
 #: A worktree agent's change summary (``git diff``) is re-read at most this often.
 CHANGES_INTERVAL_S = 5.0
 #: A second click on the same row within this long opens it.

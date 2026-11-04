@@ -48,8 +48,8 @@ agenthicc agents list                # list background agents
 agenthicc agents status <id>         # show one agent
 agenthicc agents priority <id> urgent # set urgent, normal, or low priority
 agenthicc agents cancel <id>         # stop an agent
-agenthicc agents resume <id>         # resume an agent
-agenthicc agents retry <id>          # retry a failed agent
+agenthicc agents resume <id>         # continue an agent, with its own --set/--set-secret flags
+agenthicc agents retry <id>          # start a failed agent's request again, as a new agent
 agenthicc agents approve <id>        # approve a waiting agent
 agenthicc agents reject <id>         # reject a waiting agent
 agenthicc agents input <id>          # provide input to a waiting agent

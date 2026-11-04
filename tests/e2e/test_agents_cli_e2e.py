@@ -136,12 +136,16 @@ def test_resume_and_retry_requeue_like_the_hub(
     monkeypatch.setattr(
         BackgroundSupervisor,
         "resume",
-        lambda self, session_id: calls.append(("resume", session_id)) or store.get(session_id),
+        lambda self, session_id, **kwargs: (
+            calls.append(("resume", session_id)) or store.get(session_id)
+        ),
     )
     monkeypatch.setattr(
         BackgroundSupervisor,
         "retry",
-        lambda self, session_id: calls.append(("retry", session_id)) or store.get(session_id),
+        lambda self, session_id, **kwargs: (
+            calls.append(("retry", session_id)) or store.get(session_id)
+        ),
     )
     _agent(store, "lost", SessionStatus.ORPHANED)
     _agent(store, "failed", SessionStatus.FAILED)
