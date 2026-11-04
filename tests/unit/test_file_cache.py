@@ -103,12 +103,12 @@ class TestReadFileIntegration:
         configure_file_cache(WorkspaceFileCache(tmp_path / "c.db"))
         ctx = {"workspace_root": str(tmp_path)}
 
-        r1 = await ReadFileTool().execute({"path": "a.txt"}, ctx)
+        r1 = await ReadFileTool().execute({"path": "a.txt", "line_numbers": False}, ctx)
         assert r1["content"] == "hello world"
         assert "cached" not in r1  # first read = miss
         assert len(get_file_cache()) == 1
 
-        r2 = await ReadFileTool().execute({"path": "a.txt"}, ctx)
+        r2 = await ReadFileTool().execute({"path": "a.txt", "line_numbers": False}, ctx)
         assert r2.get("cached") is True
         assert r2["content"] == "hello world"
 
@@ -121,10 +121,10 @@ class TestReadFileIntegration:
         configure_file_cache(WorkspaceFileCache(tmp_path / "c.db"))
         ctx = {"workspace_root": str(tmp_path)}
 
-        await ReadFileTool().execute({"path": "a.txt"}, ctx)
+        await ReadFileTool().execute({"path": "a.txt", "line_numbers": False}, ctx)
         time.sleep(0.01)
         f.write_text("new content")
-        r = await ReadFileTool().execute({"path": "a.txt"}, ctx)
+        r = await ReadFileTool().execute({"path": "a.txt", "line_numbers": False}, ctx)
         assert r["content"] == "new content"
         assert "cached" not in r
 
@@ -136,7 +136,7 @@ class TestReadFileIntegration:
         f.write_text("hello")
         configure_file_cache(None)  # disabled
         ctx = {"workspace_root": str(tmp_path)}
-        r1 = await ReadFileTool().execute({"path": "a.txt"}, ctx)
-        r2 = await ReadFileTool().execute({"path": "a.txt"}, ctx)
+        r1 = await ReadFileTool().execute({"path": "a.txt", "line_numbers": False}, ctx)
+        r2 = await ReadFileTool().execute({"path": "a.txt", "line_numbers": False}, ctx)
         assert r1["content"] == r2["content"] == "hello"
         assert "cached" not in r1 and "cached" not in r2

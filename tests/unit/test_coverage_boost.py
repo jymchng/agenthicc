@@ -10,12 +10,11 @@ from agenthicc.tools.fs import (
     CopyFileTool,
     ListDirectoryTool,
     MakeDirectoryTool,
-    FileExistsTool,
     SearchFilesTool,
     GrepFilesTool,
     GetFileInfoTool,
-    ReadLinesTool,
     PatchFileTool,
+    ReadFileTool,
 )
 from agenthicc.tools.git import GitBlameTool, GitShowTool, GitStashTool, GitDiffTool
 from agenthicc.tools.exec import RunCommandTool, RunPythonTool, RunTestsTool
@@ -64,8 +63,8 @@ class TestFsEdgeCases:
         r = await MakeDirectoryTool().execute({"path": "../../bad"}, ctx(tmp_path))
         assert r["ok"] is False
 
-    async def test_file_exists_traversal_is_denied_not_reported_missing(self, tmp_path):
-        r = await FileExistsTool().execute({"path": "../../etc/passwd"}, ctx(tmp_path))
+    async def test_file_info_traversal_is_denied_not_reported_missing(self, tmp_path):
+        r = await GetFileInfoTool().execute({"path": "../../etc/passwd"}, ctx(tmp_path))
         assert r["ok"] is False and r["error_code"] == "permission_denied"
         assert "exists" not in r
 
@@ -81,9 +80,9 @@ class TestFsEdgeCases:
         r = await GetFileInfoTool().execute({"path": "../../etc/passwd"}, ctx(tmp_path))
         assert r["ok"] is False
 
-    async def test_read_lines_not_found(self, tmp_path):
-        r = await ReadLinesTool().execute({"path": "missing.txt"}, ctx(tmp_path))
-        assert r["ok"] is False
+    async def test_read_range_not_found(self, tmp_path):
+        r = await ReadFileTool().execute({"path": "missing.txt", "offset": 2}, ctx(tmp_path))
+        assert r["ok"] is False and r["error_code"] == "not_found"
 
     async def test_patch_file_not_found(self, tmp_path):
         r = await PatchFileTool().execute(

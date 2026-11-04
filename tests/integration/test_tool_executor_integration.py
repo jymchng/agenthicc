@@ -53,7 +53,9 @@ async def test_builtin_and_plugin_tools_share_lauren_execution_contract(tmp_path
     executor.register(mcp_tool, source="mcp")
     executor.register(plugin_echo, source="plugin")
 
-    read = await executor.execute("read_file", {"path": "hello.txt"}, "read-1")
+    read = await executor.execute(
+        "read_file", {"path": "hello.txt", "line_numbers": False}, "read-1"
+    )
     git = await executor.execute("git_status", {}, "git-1")
     command = await executor.execute("run_command", {"argv": ["echo", "ok"]}, "exec-1")
     folders = await executor.execute("outlook_list_folders", {}, "outlook-1")

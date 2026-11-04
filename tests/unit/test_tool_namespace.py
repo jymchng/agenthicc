@@ -21,6 +21,12 @@ from agenthicc.subagents.pool import _expand_allowed
 pytestmark = pytest.mark.unit
 
 
+@pytest.fixture(autouse=True)
+def _outlook_configured(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests cover the full catalog, so the Outlook group is available."""
+    monkeypatch.setenv("MSGRAPH_TOKEN", "token")
+
+
 # ── ToolGroup dataclass ───────────────────────────────────────────────────────
 
 
@@ -48,7 +54,7 @@ class TestBuiltinGroups:
         names = {g.name for g in BUILTIN_GROUPS}
         assert names == {"fs", "git", "exec", "outlook", "introspect", "mcp"}
 
-    def test_fs_group_has_24_tools(self) -> None:
+    def test_fs_group_has_every_fs_tool(self) -> None:
         assert len(FS_GROUP.tools) == len(FS_AGENT_TOOLS)
 
     def test_git_group_has_11_tools(self) -> None:
@@ -206,7 +212,7 @@ class TestDescribe:
     def test_describe_shows_tool_count_in_header(self) -> None:
         reg = build_registry()
         desc = reg.describe()
-        assert "### File System (24 tools)" in desc
+        assert "### File System (21 tools)" in desc
         assert "### Git (11 tools)" in desc
 
     def test_describe_shows_tool_name_and_docstring(self) -> None:
@@ -272,7 +278,7 @@ class TestBuildRegistry:
 
     def test_build_registry_total_tool_count(self) -> None:
         reg = build_registry()
-        assert len(reg.tools) == 60
+        assert len(reg.tools) == 56
 
 
 # ── _expand_allowed glob helper ───────────────────────────────────────────────

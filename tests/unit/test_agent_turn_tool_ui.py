@@ -57,7 +57,7 @@ def test_phase_allowlist_builds_agent_with_write_file_but_not_shell() -> None:
     assert set(meta.tools) == {"write_file"}
     assert "shell" not in meta.tools
     assert "run_bash" not in meta.tools
-    assert "Do not call shell" in meta.system
+    assert "Do not call run_bash" in meta.system
     assert "path and complete content" in meta.system
 
 

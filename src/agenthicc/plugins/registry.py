@@ -42,6 +42,11 @@ class ToolGroup:
         The callables belonging to this group.
     priority:
         Display order in ``describe()``; higher value → rendered first.
+    unavailable:
+        Returns why the group cannot work in this environment, or ``None``
+        when it can (TOOLR-08). An unavailable group's tools are left out of
+        the catalog, and ``describe()`` lists the group and the reason in one
+        line, so the model can tell the user what to configure.
     """
 
     name: str
@@ -49,6 +54,7 @@ class ToolGroup:
     description: str
     tools: list[PluginTool]
     priority: int = 0
+    unavailable: Callable[[], str | None] | None = None
 
 
 @dataclass
@@ -70,6 +76,7 @@ class ToolRegistry:
     _tool_groups: dict[str, str] = field(default_factory=dict)  # name → group.name
     _source_by_name: dict[str, str] = field(default_factory=dict)
     _groups: list[ToolGroup] = field(default_factory=list)
+    _unavailable: list[tuple[str, str]] = field(default_factory=list)  # (label, reason)
 
     # ── mutation ──────────────────────────────────────────────────────────
 
@@ -139,6 +146,10 @@ class ToolRegistry:
         ``ToolGroup`` object twice is prevented by identity check.
         """
         if any(g is group for g in self._groups):
+            return
+        reason = group.unavailable() if group.unavailable is not None else None
+        if reason:
+            self._unavailable.append((group.label, reason))
             return
         self._groups.append(group)
         for tool in group.tools:
@@ -231,7 +242,19 @@ class ToolRegistry:
                 doc = (tool.__doc__ or "").strip().splitlines()[0] if tool.__doc__ else ""
                 lines.append(f"- **{name}**: {doc}")
 
+        if self._unavailable:
+            lines.append("### Unavailable here")
+            lines.extend(
+                f"- {label}: unavailable ({reason})" for label, reason in self._unavailable
+            )
+            lines.append("")
+
         return "\n".join(lines)
+
+    @property
+    def unavailable(self) -> list[tuple[str, str]]:
+        """``(label, reason)`` for each built-in group left out of this catalog."""
+        return list(self._unavailable)
 
     def summary_log(self) -> dict[str, object]:
         """Serialisable tool count summary for session log."""

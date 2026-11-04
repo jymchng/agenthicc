@@ -9,11 +9,9 @@ import pytest
 from agenthicc.tools.fs import (
     ListDirectoryTool,
     ReadFileTool,
-    ReadLinesTool,
     SearchFilesTool,
     _MAX_LIST_ENTRIES,
     _MAX_TOOL_OUTPUT_CHARS,
-    _truncate_output,
 )
 
 pytestmark = pytest.mark.unit
@@ -23,16 +21,6 @@ def _git_init(d) -> None:
     subprocess.run(["git", "init", "-q"], cwd=str(d), check=True)
     subprocess.run(["git", "config", "user.email", "t@t"], cwd=str(d), check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=str(d), check=True)
-
-
-class TestTruncateOutput:
-    def test_short_unchanged(self) -> None:
-        out, trunc = _truncate_output("hello", 100)
-        assert out == "hello" and trunc is False
-
-    def test_long_truncated(self) -> None:
-        out, trunc = _truncate_output("A" * 10_000, 1_000)
-        assert trunc is True and len(out) <= 1_000 and "truncated" in out
 
 
 class TestGitIgnoreFiltering:
@@ -99,20 +87,25 @@ class TestReadCaps:
         from agenthicc.tools.fs.file_cache import configure_file_cache
 
         configure_file_cache(None)
-        r = await ReadFileTool().execute({"path": "big.txt"}, ctx)
+        r = await ReadFileTool().execute({"path": "big.txt", "line_numbers": False}, ctx)
         assert r.get("truncated") is True
         assert len(r["content"]) <= _MAX_TOOL_OUTPUT_CHARS + 500  # + marker
         assert r["size_bytes"] == _MAX_TOOL_OUTPUT_CHARS + 50_000  # real size reported
 
     @pytest.mark.asyncio
-    async def test_read_lines_caps_output(self, tmp_path) -> None:
+    async def test_a_read_is_cut_by_whole_lines_with_the_next_offset(self, tmp_path) -> None:
         f = tmp_path / "big.txt"
         f.write_text("\n".join("L" * 200 for _ in range(2000)))  # ~400k chars
         ctx = {"workspace_root": str(tmp_path)}
-        r = await ReadLinesTool().execute({"path": "big.txt"}, ctx)  # no end → whole file
+        r = await ReadFileTool().execute({"path": "big.txt", "line_numbers": False}, ctx)
         assert r.get("truncated") is True
-        assert sum(len(line) for line in r["lines"]) <= _MAX_TOOL_OUTPUT_CHARS
+        assert len(r["content"]) <= _MAX_TOOL_OUTPUT_CHARS
         assert r["total_lines"] == 2000  # true total still reported
+        assert r["next_offset"] == r["lines_returned"] + 1
+        rest = await ReadFileTool().execute(
+            {"path": "big.txt", "offset": r["next_offset"], "limit": 5}, ctx
+        )
+        assert rest["content"].splitlines()[0].startswith(f"{r['next_offset']}\t")
 
     @pytest.mark.asyncio
     async def test_small_read_not_truncated(self, tmp_path) -> None:
@@ -122,5 +115,5 @@ class TestReadCaps:
         from agenthicc.tools.fs.file_cache import configure_file_cache
 
         configure_file_cache(None)
-        r = await ReadFileTool().execute({"path": "small.txt"}, ctx)
+        r = await ReadFileTool().execute({"path": "small.txt", "line_numbers": False}, ctx)
         assert "truncated" not in r and r["content"] == "hello world"

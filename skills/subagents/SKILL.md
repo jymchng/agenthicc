@@ -65,7 +65,7 @@ recover a tool the parent phase did not have.
 | `explorer` | reads, listing, search, `git_blame`, `git_grep`, `git_log`, `git_show` |
 | `planner` | reads, listing, search |
 | `implementer` | reads, listing, search, `write_file`, `patch_file`, `append_file`, `run_python_expr` |
-| `executor` | the implementer set plus `run_bash`, `run_command`, `run_python`, `shell`, `run_tests` |
+| `executor` | the implementer set plus `run_bash`, `run_command`, `run_python`, `run_tests` |
 | `tester` | reads, listing, `write_file`, `patch_file`, `run_bash`, `run_tests`, `run_python_expr` |
 | `reviewer` | reads, listing, search, `git_diff`, `git_log`, `run_python_expr` |
 | `documenter` | reads, listing, search, `write_file`, `patch_file` |
@@ -193,7 +193,7 @@ from agenthicc.subagents import (
 
 SPELUNKER = SubagentTypeSpec(
     name="spelunker",
-    allowed_tools=frozenset({"read_file", "read_lines", "grep_files"}),
+    allowed_tools=frozenset({"read_file", "grep_files", "search_files"}),
     max_turns=6,
     system_prompt=(
         "You trace one symbol to its origin. Read only what you need, then "

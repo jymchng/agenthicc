@@ -15,13 +15,11 @@ __all__ = ["build_default_registry", "BUILTIN_MODES"]
 _PLAN_ALLOWED: frozenset[str] = frozenset(
     {
         "read_file",
-        "read_lines",
         "list_directory",
         "list_files",
         "search_files",
         "grep_files",
         "get_file_info",
-        "file_exists",
         "git_status",
         "git_diff",
         "git_log",

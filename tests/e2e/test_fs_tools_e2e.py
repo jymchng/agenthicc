@@ -156,7 +156,7 @@ async def test_agent_batch_write_files(tmp_path):
 
 
 async def test_agent_grep_and_patch(tmp_path):
-    """Agent uses grep_file to locate a function then apply_diff to patch it."""
+    """Agent uses grep_files to locate a function then apply_diff to patch it."""
     _configure_router(tmp_path)
 
     src = tmp_path / "utils.py"
@@ -170,7 +170,7 @@ async def test_agent_grep_and_patch(tmp_path):
             path: File path.
             pattern: Regex pattern.
         """
-        return await _at.grep_file(path, pattern)
+        return await _at.grep_files(pattern, path=path)
 
     @tool()
     async def diff_t(path: str, diff: str) -> dict:
@@ -284,7 +284,7 @@ async def test_backend_router_in_agent_context(tmp_path):
         # Round-trip through the agent tool directly (no agent runner needed)
         f = tmp_path / "probe.txt"
         f.write_text("probe")
-        result = await _at.grep_file(str(f), "probe")
+        result = await _at.grep_files("probe", path=str(f))
         assert result["ok"] is True
         assert result["total_matches"] == 1
     finally:

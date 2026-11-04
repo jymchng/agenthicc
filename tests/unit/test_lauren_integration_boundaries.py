@@ -41,8 +41,9 @@ def test_batch_filesystem_inputs_generate_structured_schemas(caplog):
         assert item_schema["items"]["type"] == "object"
 
 
-def test_dynamic_session_tools_generate_warning_free_schemas(caplog):
+def test_dynamic_session_tools_generate_warning_free_schemas(caplog, monkeypatch):
     """The actual session registry generates no unrecognised-type warnings."""
+    monkeypatch.setenv("MSGRAPH_TOKEN", "token")  # offer the Outlook group too
     with caplog.at_level(logging.WARNING, logger="lauren_ai._tools._schema"):
         session_tools = _make_session_tools(None)
         session_tools.append(make_spawn_subagents_tool(None, "mock", []))
@@ -54,7 +55,7 @@ def test_dynamic_session_tools_generate_warning_free_schemas(caplog):
     assert not [
         record for record in caplog.records if "unrecognised type annotation" in record.message
     ]
-    assert len(schemas) == 66
+    assert len(schemas) == 62
     assert (
         schemas["ask_user"]["input_schema"]["properties"]["questions"]["items"]["type"] == "object"
     )

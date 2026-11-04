@@ -67,13 +67,10 @@ _TOOL_OP: dict[str, str] = {
 
 _TOOL_DISPLAY_OP: dict[str, str] = {
     "read_file": "Read",
-    "read_lines": "Read",
     "batch_read": "Read",
     "list_directory": "List",
     "search_files": "Search",
-    "grep_file": "Search",
     "grep_files": "Search",
-    "file_exists": "Check",
     "get_file_info": "Inspect",
     "checksum_file": "Checksum",
     "list_agenthicc_docs": "List",
@@ -81,7 +78,6 @@ _TOOL_DISPLAY_OP: dict[str, str] = {
     "search_agenthicc_docs": "Search",
     "inspect_agenthicc_source": "Inspect",
     "search_agenthicc_source": "Search",
-    "shell": "Run",
     "run_bash": "Run",
     "run_command": "Run",
     "run_python": "Run",

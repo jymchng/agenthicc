@@ -6,13 +6,36 @@ through `ToolCapability` (see [Security](10-security.md)).
 
 ## Built-in tools
 
-The filesystem group (14):
+The core filesystem tools (the group also has `apply_diff`, `checksum_file`,
+`touch_file`, `truncate_file` and the `batch_*` tools):
 
 ```text
-append_file  copy_file  delete_file  file_exists  get_file_info
-grep_files   list_directory  make_directory  move_file  patch_file
-read_file    read_lines  search_files  write_file
+append_file  copy_file  delete_file  get_file_info  grep_files
+list_directory  make_directory  move_file  patch_file  read_file
+search_files  write_file
 ```
+
+- `read_file` returns numbered lines (`<n>\t<line>`, numbers right-aligned to
+  one width) with `total_lines` and `version`. `offset` and `limit` read a
+  range; `line_numbers=false` returns the raw text. A long read stops at a
+  whole line and returns `next_offset`. A file with a NUL byte in its first
+  8 KB, or that is not UTF-8, returns `binary: true` with its size and MIME
+  type instead of replacement characters; pass `encoding` to read it as text.
+- `grep_files` searches a directory or one file. `glob` and `exclude` filter
+  files; `case_sensitive` defaults to smart case (insensitive unless the
+  pattern has a capital); `fixed_string` matches literally; `context_lines`
+  (up to 5) adds lines around each match; `output` is `matches`, `files` or
+  `count`. It always reports `total_matches` and `files_matched`, and
+  `truncated` when `max_results` cut the list. When `rg` is on `PATH` it runs
+  the search, over the same files and with the same result; a pattern `rg`
+  cannot compile falls back to Python.
+- `search_files` takes `sort: "mtime"` to list the most recently changed
+  files first.
+- `get_file_info` on a missing path returns `ok: true, exists: false`.
+- `run_bash` is the one shell tool. The terminal observation tools
+  (`inspect_terminal`, `wait_terminal`, `wait_terminal_ready`) are `read`
+  capability, so Plan and Safe mode let an agent watch a terminal it started;
+  `stop_terminal` is `execute`.
 
 The git group (11):
 
@@ -30,6 +53,12 @@ Also available: command/terminal execution with guards and deadlines, tools
 contributed by connected MCP servers, browser tools (CloakBrowser or
 Playwright), Outlook and document-introspection tools, and project-defined
 tools discovered from `.agenthicc/tools/`.
+
+A tool group that cannot work in this environment is left out of the catalog
+and named in one line of the system prompt's tool section, so the model can
+tell you what to configure. The Outlook tools need `MSGRAPH_TOKEN`, or Windows
+with `pywin32`; without either the section says
+`Outlook / Calendar: unavailable (set MSGRAPH_TOKEN)`.
 
 ## What is enforced on every call
 

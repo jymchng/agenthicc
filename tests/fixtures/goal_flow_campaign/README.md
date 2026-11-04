@@ -29,6 +29,10 @@ mode). It is replayed by `tests/integration/test_goal_flow_cassette_replay.py`.
   never accepted (its signature last changed on 2026-07-23). It was a model
   error when recorded, and the test pins it as the only known contract
   violation.
+- **Tools removed since recording.** The recording offered `shell`,
+  `grep_file`, `file_exists` and `read_lines`, which TOOLR-08 deleted
+  (2026-11-04). Their offers are not counted as violations, and calls to them
+  now get an unknown-tool result.
 
 The recorded shell commands `cd` into the recording machine's checkout and
 include git commits, so the replay must stay hermetic: every side-effecting

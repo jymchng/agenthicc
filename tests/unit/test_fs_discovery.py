@@ -273,7 +273,7 @@ async def test_grep_reports_files_and_refuses_a_bad_regex(tmp_path: Path) -> Non
     found = await GrepFilesTool().execute({"pattern": "handler_0_1"}, context)
     bad = await GrepFilesTool().execute({"pattern": "("}, context)
 
-    assert found["count"] == 1 and found["files_matched"] == 1
+    assert found["total_matches"] == 1 and found["files_matched"] == 1
     assert bad["ok"] is False and bad["error_code"] == "invalid_argument"
 
 
@@ -312,18 +312,22 @@ async def test_a_write_between_read_and_stat_is_never_cached(
     monkeypatch.setattr(file_cache, "_cache", cache)
     target = tmp_path / "f.txt"
     target.write_text("old")
-    original_read = Path.read_text
+    original_read = Path.read_bytes
 
-    def racing_read(self: Path, *args: object, **kwargs: object) -> str:
-        text = original_read(self, *args, **kwargs)  # type: ignore[arg-type]
+    def racing_read(self: Path) -> bytes:
+        data = original_read(self)
         if self == target:
             target.write_text("new content")  # lands after the read, before the stat
-        return text
+        return data
 
-    monkeypatch.setattr(Path, "read_text", racing_read)
-    first = await ReadFileTool().execute({"path": str(target)}, _context(tmp_path))
-    monkeypatch.setattr(Path, "read_text", original_read)
-    second = await ReadFileTool().execute({"path": str(target)}, _context(tmp_path))
+    monkeypatch.setattr(Path, "read_bytes", racing_read)
+    first = await ReadFileTool().execute(
+        {"path": str(target), "line_numbers": False}, _context(tmp_path)
+    )
+    monkeypatch.setattr(Path, "read_bytes", original_read)
+    second = await ReadFileTool().execute(
+        {"path": str(target), "line_numbers": False}, _context(tmp_path)
+    )
 
     assert first["content"] == "old" and "cached" not in first
     assert second["content"] == "new content"
@@ -338,7 +342,7 @@ async def test_a_write_refreshes_the_cache_with_what_was_written(
     context = _context(tmp_path)
     await WriteFileTool().execute({"path": "f.txt", "content": "a\r\nb\r\n"}, context)
 
-    result = await ReadFileTool().execute({"path": "f.txt"}, context)
+    result = await ReadFileTool().execute({"path": "f.txt", "line_numbers": False}, context)
 
     assert result["cached"] is True and result["content"] == "a\nb\n"
 

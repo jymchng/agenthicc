@@ -213,7 +213,6 @@ class TestSummaryLine:
         [
             ("read_file", "Read"),
             ("grep_files", "Search"),
-            ("shell", "Run"),
             ("git_diff", "Diff"),
         ],
     )
@@ -462,7 +461,7 @@ class TestSummaryLine:
 
     def test_overflow_summary_precedes_next_assistant_header(self):
         appender, console = _make_appender()
-        events = [_tool(name="shell") for _ in range(_LIMIT + 32)]
+        events = [_tool(name="run_bash") for _ in range(_LIMIT + 32)]
         events.extend(
             [
                 _ev("turn_complete", elapsed_s=1.0),
@@ -485,7 +484,7 @@ class TestSummaryLine:
 
     def test_flush_persists_overflow_when_interrupted_without_boundary_event(self):
         appender, console = _make_appender()
-        _flush(appender, [_tool(name="shell") for _ in range(_LIMIT + 4)])
+        _flush(appender, [_tool(name="run_bash") for _ in range(_LIMIT + 4)])
 
         # An interrupt can cancel the agent before its turn_complete event is
         # delivered.  The workspace explicitly flushes the appender at that

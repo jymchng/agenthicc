@@ -68,7 +68,7 @@ def test_builtin_classification_keeps_side_effecting_families_unmarked() -> None
         "write_file",
         "delete_file",
         "run_command",
-        "shell",
+        "run_bash",
         "git_commit",
         "playwright_open",
     }:

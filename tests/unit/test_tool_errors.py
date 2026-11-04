@@ -138,14 +138,14 @@ async def test_an_invalid_regex_and_a_bad_args_list_are_invalid_arguments(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from agenthicc.tools.exec.agent_tools import run_tests
-    from agenthicc.tools.fs.agent_tools import grep_file
+    from agenthicc.tools.fs.agent_tools import grep_files
     from agenthicc.tools.workspace_access import reset_current_workspace_access
 
     (tmp_path / "a.txt").write_text("x\n")
     monkeypatch.chdir(tmp_path)
     token = _workspace(tmp_path)
     try:
-        regex = await _call(grep_file, {"path": "a.txt", "pattern": "("})
+        regex = await _call(grep_files, {"path": "a.txt", "pattern": "("})
         args = await _call(run_tests, {"args": "not-a-list"})
     finally:
         reset_current_workspace_access(token)  # type: ignore[arg-type]

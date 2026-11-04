@@ -68,7 +68,9 @@ async def test_read_and_write_adapters_share_one_approved_parent_scope(
         approval_service=approval,  # type: ignore[arg-type]
     )
 
-    read = await ReadFileTool().execute({"path": str(target)}, _context(policy))
+    read = await ReadFileTool().execute(
+        {"path": str(target), "line_numbers": False}, _context(policy)
+    )
     write = await WriteFileTool().execute(
         {"path": str(target), "content": "after"}, _context(policy)
     )

@@ -27,6 +27,10 @@ password-notification feature of a separate repository. It is replayed by
   `read_file`, which has never accepted them (`read_lines` does), and entry 51
   calls `patch_file` without `path`. The test pins these three as the only
   contract violations.
+- **Tools removed since recording.** The recording offered `grep_file` and
+  `read_lines`, which TOOLR-08 deleted (2026-11-04). Their offers are not
+  counted as violations; the recorded calls to them now get an unknown-tool
+  result, and the replay still completes every phase.
 - **Execution approvals.** The recording predates per-plan execute modes: its
   execute phase always ran in the unrestricted mode of the time, and its plan
   approval carries no mode. Today that approval selects the default Safe execute

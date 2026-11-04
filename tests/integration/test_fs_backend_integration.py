@@ -75,12 +75,12 @@ async def test_configure_router_affects_tools(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# batch_write then grep_file
+# batch_write then grep_files on one file
 # ---------------------------------------------------------------------------
 
 
-async def test_batch_write_then_grep_file(tmp_path):
-    """Writing 3 Python files and then grep_file finds the correct pattern."""
+async def test_batch_write_then_grep_files(tmp_path):
+    """Writing 3 Python files and then grep_files finds the correct pattern."""
     _at.configure_router(_make_router(tmp_path))
     try:
         files = [
@@ -90,7 +90,7 @@ async def test_batch_write_then_grep_file(tmp_path):
         ]
         await _at.batch_write(files)
 
-        result = await _at.grep_file(str(tmp_path / "gamma.py"), r"def helper")
+        result = await _at.grep_files(r"def helper", path=str(tmp_path / "gamma.py"))
         assert result["ok"] is True
         assert result["total_matches"] == 1
         assert "helper" in result["matches"][0]["line"]

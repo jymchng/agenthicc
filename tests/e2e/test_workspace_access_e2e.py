@@ -61,11 +61,17 @@ async def test_safe_plan_yolo_parent_workspace_journey(
     )
     token = set_current_workspace_access(policy)
     try:
-        safe = await executor.execute("read_file", {"path": str(target)}, "safe")
+        safe = await executor.execute(
+            "read_file", {"path": str(target), "line_numbers": False}, "safe"
+        )
         manager.set_by_name("Plan")
-        plan = await executor.execute("read_file", {"path": str(target)}, "plan")
+        plan = await executor.execute(
+            "read_file", {"path": str(target), "line_numbers": False}, "plan"
+        )
         manager.set_by_name("Yolo")
-        yolo = await executor.execute("read_file", {"path": str(target)}, "yolo")
+        yolo = await executor.execute(
+            "read_file", {"path": str(target), "line_numbers": False}, "yolo"
+        )
     finally:
         reset_current_workspace_access(token)
 

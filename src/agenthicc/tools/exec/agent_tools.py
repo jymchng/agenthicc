@@ -5,7 +5,7 @@ NOTE: no ``from __future__ import annotations`` — @tool() inspects real annota
 
 import os
 from lauren_ai._tools import tool
-from agenthicc.tools.capabilities import tool_execute
+from agenthicc.tools.capabilities import tool_execute, tool_read
 from agenthicc.tools.workspace_access import current_workspace_access
 
 ReadinessValue = str | int | bool | dict[str, str | int | bool]
@@ -20,7 +20,6 @@ __all__ = [
     "inspect_terminal",
     "wait_terminal_ready",
     "stop_terminal",
-    "shell",
     "EXEC_AGENT_TOOLS",
 ]
 
@@ -43,47 +42,6 @@ def _CTX() -> dict[str, object]:
         context["terminal_manager"] = manager
     context["terminal_wait_policy"] = get_current_terminal_wait_policy()
     return context
-
-
-@tool_execute
-@tool()
-async def shell(
-    command: str,
-    timeout: float = 30.0,
-    background: bool = False,
-    label: str = "",
-    cwd: str = "",
-    env: dict[str, str] | None = None,
-    lifecycle: str = "oneshot",
-    readiness: dict[str, ReadinessValue] | None = None,
-) -> dict[str, object]:
-    """Execute a shell command and return stdout/stderr.
-
-    Args:
-        command: Shell command string to execute.
-        timeout: Maximum seconds to wait (default 30).
-        background: Return an owned terminal handle instead of waiting.
-        label: Optional bounded label shown in the terminal manager.
-        cwd: Working directory for the command; defaults to the workspace.
-        env: String environment overlay.
-        lifecycle: ``oneshot`` or owned ``service``.
-        readiness: Optional URL, TCP, or output-marker readiness probe.
-    """
-    from agenthicc.tools.exec import RunBashTool
-
-    return await RunBashTool().execute(
-        {
-            "command": command,
-            "timeout": timeout,
-            "background": background,
-            "label": label,
-            "cwd": cwd,
-            "env": env,
-            "lifecycle": lifecycle,
-            "readiness": readiness,
-        },
-        _CTX(),
-    )
 
 
 @tool_execute
@@ -142,14 +100,14 @@ async def run_command(
     """Execute an executable directly (no shell) and return stdout/stderr.
 
     Args:
-        argv: Command and arguments as a list, e.g. ["python", "-c", "print(1)"].
-        timeout: Maximum seconds to wait (default 30).
-        background: Return an owned terminal handle instead of waiting.
-        label: Optional bounded label shown in the terminal manager.
-        cwd: Working directory for the command; defaults to the workspace.
-        env: String environment overlay.
-        lifecycle: ``oneshot`` or owned ``service``.
-        readiness: Optional URL, TCP, or output-marker readiness probe.
+        argv: Command and arguments, e.g. ["python", "-c", "print(1)"].
+        timeout: As run_bash.
+        background: As run_bash.
+        label: As run_bash.
+        cwd: As run_bash.
+        env: As run_bash.
+        lifecycle: As run_bash.
+        readiness: As run_bash.
     """
     from agenthicc.tools.exec import RunCommandTool
 
@@ -220,7 +178,7 @@ async def run_tests(
     )
 
 
-@tool_execute
+@tool_read
 @tool()
 async def wait_terminal(terminal_id: str, timeout: float = 0.0) -> dict[str, object]:
     """Wait for an owned background terminal handle.
@@ -236,7 +194,7 @@ async def wait_terminal(terminal_id: str, timeout: float = 0.0) -> dict[str, obj
     )
 
 
-@tool_execute
+@tool_read
 @tool()
 async def inspect_terminal(terminal_id: str) -> dict[str, object]:
     """Inspect one owned terminal and its bounded output tail.
@@ -250,7 +208,7 @@ async def inspect_terminal(terminal_id: str) -> dict[str, object]:
     return await InspectTerminalTool().execute({"terminal_id": terminal_id}, _CTX())
 
 
-@tool_execute
+@tool_read
 @tool()
 async def wait_terminal_ready(
     terminal_id: str,
@@ -260,8 +218,7 @@ async def wait_terminal_ready(
 
     Args:
         terminal_id: The ``terminal_id`` a background command returned.
-        readiness: The probe to wait for, as for ``run_bash``'s ``readiness``;
-            the terminal's own probe when omitted.
+        readiness: Probe as run_bash; default the terminal's own.
     """
 
     from agenthicc.tools.exec import WaitTerminalReadinessTool
@@ -288,7 +245,6 @@ async def stop_terminal(terminal_id: str, force: bool = False) -> dict[str, obje
 
 #: All exec agent tools — ready to pass to @use_tools().
 EXEC_AGENT_TOOLS = [
-    shell,
     run_bash,
     run_command,
     run_python,
