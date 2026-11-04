@@ -81,7 +81,7 @@ context or misleads the model.
 | E4 | Output is buffered whole by `communicate()` and truncated only after exit | **verified**: 300 MB of output → 881 MB RSS for a 64 KB result | S1 | TOOLR-02 |
 | E5 | Truncation keeps the head and drops the tail, where test summaries and tracebacks are | `_truncate` (`exec/__init__.py:123`) | S3 | TOOLR-02 |
 | E6 | The child gets the full agenthicc environment, including provider API keys | `effective_env = {**os.environ, ...}` (`:139`) | S2 | TOOLR-02 |
-| E7 | `[security] sandbox_mode`, `max_tool_cpu_seconds`, `max_tool_memory_mb` are inert, and `ResourceLimits` is never applied | grep finds no reader | S2 | TOOLR-02 |
+| E7 | No CPU or memory limit applies to a command. *(Corrected in wave 2: the `[security] sandbox_mode`/`max_tool_*` keys in older TOML files were deliberately deleted by PRD-250; they are stale keys, not inert settings.)* | grep finds no reader | S2 | TOOLR-02 |
 | E8 | `shell` and `run_bash` are the same tool under two names (2,586 schema chars) | `exec/agent_tools.py` | S3 | TOOLR-08 |
 | E9 | `inspect_terminal`, `wait_terminal` and `wait_terminal_ready` are tagged `execute`: Plan mode blocks a read of a running terminal, and Safe mode asks for approval | `@tool_execute` | S3 | TOOLR-08 |
 

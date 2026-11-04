@@ -19,6 +19,7 @@ from agenthicc.tools.fs import (
 )
 from agenthicc.tools.git import GitBlameTool, GitShowTool, GitStashTool, GitDiffTool
 from agenthicc.tools.exec import RunCommandTool, RunPythonTool, RunTestsTool
+from agenthicc.tools.git import GitRun
 from agenthicc.tools.outlook import (
     GraphApiOutlookBackend,
     OutlookMoveEmailTool,
@@ -119,36 +120,38 @@ class TestGitEdgeCases:
             yield m
 
     async def test_show_parses(self, mg):
-        mg.return_value = (0, "abc\x1fAlice\x1f2025-01-01\x1fFix things\ndiff --git a/f.py\n", "")
+        mg.return_value = GitRun(
+            0, "abc\x1fAlice\x1f2025-01-01\x1fFix things\x1e\ndiff --git a/f.py\n", ""
+        )
         r = await GitShowTool().execute({"ref": "HEAD"}, {})
-        assert r["hash"] == "abc"
+        assert r["hash"] == "abc" and r["diff"].startswith("diff --git")
 
     async def test_show_parse_error(self, mg):
-        mg.return_value = (128, "", "fatal: bad revision")
+        mg.return_value = GitRun(128, "", "fatal: bad revision")
         r = await GitShowTool().execute({}, {})
-        assert r["ok"] is False
+        assert r["ok"] is False and r["error_code"] == "invalid_argument"
 
     async def test_stash_push(self, mg):
-        mg.return_value = (0, "Saved working directory as stash@{0}\n", "")
+        mg.return_value = GitRun(0, "Saved working directory as stash@{0}\n", "")
         r = await GitStashTool().execute({"action": "push"}, {})
-        assert r["ok"] is True
+        assert r["ok"] is True and r["stash_ref"] == "stash@{0}"
 
     async def test_blame_parses(self, mg):
-        mg.return_value = (
+        mg.return_value = GitRun(
             0,
             "abc1234def5678\nauthor Alice\nauthor-time 1234567890\n\thello world\n",
             "",
         )
         r = await GitBlameTool().execute({"path": "f.py"}, {})
-        assert isinstance(r["lines"], list)
+        assert r["lines"][0]["content"] == "hello world"
 
     async def test_blame_error(self, mg):
-        mg.return_value = (128, "", "fatal: not a git repo")
+        mg.return_value = GitRun(128, "", "fatal: not a git repository")
         r = await GitBlameTool().execute({"path": "nope.py"}, {})
-        assert r.get("ok") is False or "lines" in r  # error or empty
+        assert r["ok"] is False and r["error_code"] == "not_a_repository"
 
     async def test_diff_error(self, mg):
-        mg.return_value = (128, "", "fatal error")
+        mg.return_value = GitRun(128, "", "fatal error")
         r = await GitDiffTool().execute({}, {})
         assert r["ok"] is False
 

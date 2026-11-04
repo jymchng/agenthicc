@@ -6,7 +6,6 @@ import asyncio
 from contextvars import ContextVar
 import os
 import signal
-import sys
 import tempfile
 import time
 import re
@@ -16,6 +15,13 @@ from typing import TYPE_CHECKING, cast
 
 from agenthicc.tools.base import Tool, arg_bool, arg_str
 from agenthicc.tools.workspace_access import WorkspaceAccessPolicy, current_workspace_access
+from agenthicc.tools.exec.child import (
+    StreamCapture,
+    child_env,
+    child_preexec,
+    exec_settings,
+    project_python,
+)
 from agenthicc.tools.exec.outcome import (
     CommandKind,
     CommandOutcome,
@@ -27,18 +33,67 @@ from agenthicc.tools.exec.outcome import (
 )
 
 
-def _consume_json_report(path: str) -> dict[str, object]:
-    """Read a JSON report written by a test run, then delete it."""
-    import json
+def _junit_summary(path: str) -> dict[str, object] | None:
+    """Counts and the first failures from a pytest ``--junitxml`` report, then delete it."""
+    import xml.etree.ElementTree as ElementTree
     from contextlib import suppress
 
     try:
-        with open(path, encoding="utf-8") as handle:
-            report = json.load(handle)
+        root = ElementTree.parse(path).getroot()
+    except (OSError, ElementTree.ParseError):
+        return None
     finally:
         with suppress(FileNotFoundError):
             os.unlink(path)
-    return report if isinstance(report, dict) else {}
+    suites = [root] if root.tag == "testsuite" else list(root.iter("testsuite"))
+    totals = {"tests": 0, "failures": 0, "errors": 0, "skipped": 0}
+    for suite in suites:
+        for key in totals:
+            value = suite.get(key, "0")
+            totals[key] += int(value) if value.isdigit() else 0
+    failures: list[dict[str, str]] = []
+    for case in root.iter("testcase"):
+        problem = case.find("failure")
+        if problem is None:
+            problem = case.find("error")
+        if problem is None or len(failures) >= 20:
+            continue
+        classname = case.get("classname", "")
+        node = classname.replace(".", "/") + ".py::" if classname else ""
+        failures.append(
+            {
+                "test": f"{node}{case.get('name', '')}",
+                "kind": problem.tag,
+                "message": (problem.get("message") or "")[:500],
+            }
+        )
+    passed = totals["tests"] - totals["failures"] - totals["errors"] - totals["skipped"]
+    return {
+        "passed": max(0, passed),
+        "failed": totals["failures"],
+        "errors": totals["errors"],
+        "skipped": totals["skipped"],
+        "failures": failures,
+    }
+
+
+def _unittest_summary(output: str) -> dict[str, object]:
+    """Counts from ``python -m unittest`` output (its summary goes to stderr)."""
+    ran = re.search(r"^Ran (\d+) tests?", output, re.MULTILINE)
+    failures = re.search(r"failures=(\d+)", output)
+    errors = re.search(r"errors=(\d+)", output)
+    skipped = re.search(r"skipped=(\d+)", output)
+    total = int(ran.group(1)) if ran else 0
+    failed = int(failures.group(1)) if failures else 0
+    errored = int(errors.group(1)) if errors else 0
+    skipped_count = int(skipped.group(1)) if skipped else 0
+    return {
+        "passed": max(0, total - failed - errored - skipped_count) if ran else None,
+        "failed": failed if ran else None,
+        "errors": errored if ran else None,
+        "skipped": skipped_count if ran else None,
+        "failures": [],
+    }
 
 
 # Direct callers historically receive a structured ``cancelled`` outcome when
@@ -70,7 +125,6 @@ __all__ = [
     "CommandState",
 ]
 
-_MAX_OUTPUT_BYTES = 64 * 1024
 _CANCELLATION_OUTPUT_GRACE_S = 0.3
 _SECRET_FLAGS = re.compile(
     r"(?i)(--?(?:password|passwd|token|secret|api[-_]?key|authorization))\s*(?:=|\s)\s*([^\s]+)"
@@ -120,11 +174,23 @@ def _result_text(result: Mapping[str, object], key: str) -> str:
     return value if isinstance(value, str) else ""
 
 
-def _truncate(text: str, max_bytes: int = _MAX_OUTPUT_BYTES) -> str:
-    encoded = text.encode("utf-8", errors="replace")
-    if len(encoded) <= max_bytes:
-        return text
-    return encoded[:max_bytes].decode("utf-8", errors="replace") + "\n[... truncated]"
+async def _drain(
+    stream: asyncio.StreamReader | None,
+    capture: StreamCapture,
+    limit_reached: asyncio.Event,
+) -> None:
+    """Read *stream* into *capture* until EOF or until the output limit."""
+    if stream is None:
+        return
+    limit = exec_settings().max_output_bytes
+    while True:
+        chunk = await stream.read(65_536)
+        if not chunk:
+            return
+        capture.feed(chunk)
+        if capture.total > limit:
+            limit_reached.set()
+            return
 
 
 async def _run_proc(
@@ -136,11 +202,15 @@ async def _run_proc(
     shell: bool = False,
 ) -> dict[str, object]:
     t0 = time.perf_counter()
-    effective_env = {**os.environ, **(env or {})}
+    effective_env = child_env(env)
     kind = CommandKind.SHELL if shell else CommandKind.EXEC
     deadline = resolve_deadline(timeout)
     process: asyncio.subprocess.Process | None = None
-    communication: asyncio.Task[tuple[bytes, bytes]] | None = None
+    communication: asyncio.Task[None] | None = None
+    stdout_capture = StreamCapture()
+    stderr_capture = StreamCapture()
+    stderr_notes: list[str] = []
+    limit_reached = asyncio.Event()
 
     if not await asyncio.to_thread(os.path.isdir, cwd):
         return CommandOutcome(
@@ -191,32 +261,43 @@ async def _run_proc(
             except asyncio.TimeoutError:
                 return "cleanup_unproven"
 
-    async def output_after_cleanup() -> tuple[bytes, bytes]:
+    async def collect(proc: asyncio.subprocess.Process) -> None:
+        await asyncio.gather(
+            _drain(proc.stdout, stdout_capture, limit_reached),
+            _drain(proc.stderr, stderr_capture, limit_reached),
+        )
+        await proc.wait()
+
+    async def output_after_cleanup() -> None:
         if communication is None:
-            return b"", b""
+            return
         try:
-            return await asyncio.wait_for(asyncio.shield(communication), timeout=1.0)
+            await asyncio.wait_for(asyncio.shield(communication), timeout=1.0)
         except (asyncio.TimeoutError, asyncio.CancelledError):
-            return b"", b"[process output could not be fully drained]\n"
+            stderr_notes.append("[process output could not be fully drained]")
 
     async def spawn_process() -> asyncio.subprocess.Process:
         if shell:
             return await asyncio.create_subprocess_shell(
                 cmd[0],
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=cwd,
                 env=effective_env,
                 start_new_session=True,
+                preexec_fn=child_preexec(),
                 executable=await asyncio.to_thread(bash_executable),
             )
         return await asyncio.create_subprocess_exec(
             *cmd,
+            stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=cwd,
             env=effective_env,
             start_new_session=True,
+            preexec_fn=child_preexec(),
         )
 
     try:
@@ -234,7 +315,7 @@ async def _run_proc(
             proc = await asyncio.shield(spawn_task)
 
         process = proc
-        communication = asyncio.create_task(process.communicate(), name="command-output")
+        communication = asyncio.create_task(collect(process), name="command-output")
         cleanup_result = "not_required"
         state = CommandState.EXITED
         termination_reason: str | None = None
@@ -244,10 +325,9 @@ async def _run_proc(
             cancelled = True
             termination_reason = "owning task cancelled"
             # The cancellation may have arrived while the child was still
-            # being spawned. Let communicate() observe already-produced pipe
+            # being spawned. Let the readers observe already-produced pipe
             # data before terminating a process whose handle we only just
-            # recovered. This preserves the same partial-output contract as
-            # cancellation after normal process startup.
+            # recovered.
             try:
                 await asyncio.wait_for(
                     asyncio.shield(communication), timeout=_CANCELLATION_OUTPUT_GRACE_S
@@ -256,24 +336,33 @@ async def _run_proc(
                 pass
             cleanup_task = asyncio.create_task(cleanup(reason="cancellation"))
             cleanup_result = await asyncio.shield(cleanup_task)
-            stdout_b, stderr_b = await output_after_cleanup()
-            stderr_b += b"[process stopped: cancellation]\n"
+            await output_after_cleanup()
+            stderr_notes.append("[process stopped: cancellation]")
             if _PROPAGATE_TOOL_CANCELLATION.get():
                 raise asyncio.CancelledError
         else:
+            limit_task = asyncio.create_task(limit_reached.wait(), name="command-output-limit")
             try:
-                if deadline.effective_s is None:
-                    stdout_b, stderr_b = await asyncio.shield(communication)
-                else:
-                    stdout_b, stderr_b = await asyncio.wait_for(
-                        asyncio.shield(communication), timeout=deadline.effective_s
+                done, _pending = await asyncio.wait(
+                    {communication, limit_task},
+                    timeout=deadline.effective_s,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if limit_task in done and not communication.done():
+                    state = CommandState.FAILED
+                    termination_reason = "output_limit"
+                    cleanup_result = await cleanup(reason="output_limit")
+                    await output_after_cleanup()
+                    stderr_notes.append(
+                        f"[process stopped: output exceeded "
+                        f"{exec_settings().max_output_bytes} bytes]"
                     )
-            except asyncio.TimeoutError:
-                state = CommandState.TIMED_OUT
-                termination_reason = "command deadline expired"
-                cleanup_result = await cleanup(reason="timeout")
-                stdout_b, stderr_b = await output_after_cleanup()
-                stderr_b += b"[process stopped: command timeout]\n"
+                elif not done:
+                    state = CommandState.TIMED_OUT
+                    termination_reason = "command deadline expired"
+                    cleanup_result = await cleanup(reason="timeout")
+                    await output_after_cleanup()
+                    stderr_notes.append("[process stopped: command timeout]")
             except asyncio.CancelledError:
                 state = CommandState.CANCELLED
                 cancelled = True
@@ -286,10 +375,12 @@ async def _run_proc(
                     pass
                 cleanup_task = asyncio.create_task(cleanup(reason="cancellation"))
                 cleanup_result = await asyncio.shield(cleanup_task)
-                stdout_b, stderr_b = await output_after_cleanup()
-                stderr_b += b"[process stopped: cancellation]\n"
+                await output_after_cleanup()
+                stderr_notes.append("[process stopped: cancellation]")
                 if _PROPAGATE_TOOL_CANCELLATION.get():
                     raise
+            finally:
+                limit_task.cancel()
         if state is CommandState.EXITED and process.returncode != 0:
             state = CommandState.FAILED
             termination_reason = f"process exited with return code {process.returncode}"
@@ -309,8 +400,13 @@ async def _run_proc(
         )
         return outcome.to_dict()
 
-    stdout = _truncate(_redact_execution_text(stdout_b.decode(errors="replace")))
-    stderr = _truncate(_redact_execution_text(stderr_b.decode(errors="replace")))
+    stdout = _redact_execution_text(stdout_capture.render())
+    stderr_text = stderr_capture.render()
+    if stderr_notes:
+        stderr_text += ("" if not stderr_text or stderr_text.endswith("\n") else "\n") + (
+            "\n".join(stderr_notes) + "\n"
+        )
+    stderr = _redact_execution_text(stderr_text)
     outcome = CommandOutcome(
         state=state,
         command_kind=kind,
@@ -320,7 +416,7 @@ async def _run_proc(
         duration_ms=round((time.perf_counter() - t0) * 1000, 1),
         timed_out=state is CommandState.TIMED_OUT,
         cancelled=cancelled,
-        truncated=("[... truncated]" in stdout or "[... truncated]" in stderr),
+        truncated=stdout_capture.omitted > 0 or stderr_capture.omitted > 0,
         termination_reason=termination_reason,
         deadline=deadline,
         cleanup_result=cleanup_result,
@@ -328,7 +424,10 @@ async def _run_proc(
         argv=None if shell else tuple(_redact_execution_text(item) for item in cmd),
         cwd=cwd,
     )
-    return outcome.to_dict()
+    result = outcome.to_dict()
+    result["stdout_bytes"] = stdout_capture.total
+    result["stderr_bytes"] = stderr_capture.total
+    return result
 
 
 def _timeout(
@@ -593,13 +692,19 @@ class RunPythonTool(Tool):
         with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
             f.write(code)
             tmp_path = f.name
+        interpreter = await asyncio.to_thread(
+            project_python, cwd, arg_str(context, "workspace_root", cwd)
+        )
         try:
-            return await _run_proc(
-                [sys.executable, tmp_path],
+            result = await _run_proc(
+                [*interpreter.argv, tmp_path],
                 cwd=cwd,
                 timeout=timeout or 0.0,
                 shell=False,
             )
+            result["interpreter"] = " ".join(interpreter.argv)
+            result["interpreter_source"] = interpreter.source
+            return result
         finally:
             try:
                 os.unlink(tmp_path)
@@ -631,13 +736,18 @@ class RunPythonExprTool(Tool):
         if invalid is not None:
             return invalid
         code = f"_r = ({expression}); print(repr(_r))"
+        interpreter = await asyncio.to_thread(
+            project_python, cwd, arg_str(context, "workspace_root", cwd)
+        )
         result = await _run_proc(
-            [sys.executable, "-c", code],
+            [*interpreter.argv, "-c", code],
             cwd=cwd,
             timeout=timeout or 0.0,
             shell=False,
         )
         result["result"] = _result_text(result, "stdout").strip()
+        result["interpreter"] = " ".join(interpreter.argv)
+        result["interpreter_source"] = interpreter.source
         return result
 
 
@@ -657,7 +767,6 @@ class RunTestsTool(Tool):
     async def execute(
         self, args: Mapping[str, object], context: Mapping[str, object]
     ) -> dict[str, object]:
-        import re
         import uuid
 
         path = arg_str(args, "path", "tests/")
@@ -706,53 +815,56 @@ class RunTestsTool(Tool):
         raw_extra = args.get("args") or []
         if not isinstance(raw_extra, list) or not all(isinstance(item, str) for item in raw_extra):
             raise ValueError("tool argument 'args' must be a list of strings")
-        extra = list(raw_extra)
-        report_path = os.path.join(
-            tempfile.gettempdir(), f"agenthicc-pytest-report-{uuid.uuid4().hex}.json"
+        # The report location is ours; extra arguments may not redirect it.
+        extra = [item for item in raw_extra if not item.startswith(("--junitxml", "--junit-xml"))]
+        framework = arg_str(args, "framework", "pytest")
+        interpreter = await asyncio.to_thread(
+            project_python, cwd, arg_str(context, "workspace_root", cwd)
         )
-
-        if arg_str(args, "framework", "pytest") == "pytest":
+        report_path = os.path.join(tempfile.gettempdir(), f"agenthicc-junit-{uuid.uuid4().hex}.xml")
+        if framework == "pytest":
             cmd = [
-                sys.executable,
+                *interpreter.argv,
                 "-m",
                 "pytest",
                 executable_path,
-                "--json-report",
-                f"--json-report-file={report_path}",
+                f"--junitxml={report_path}",
                 "-q",
                 *extra,
             ]
         else:
-            cmd = [sys.executable, "-m", "unittest", "discover", executable_path, *extra]
+            cmd = [*interpreter.argv, "-m", "unittest", "discover", executable_path, *extra]
 
-        result = await _run_proc(
-            cmd,
-            cwd=cwd,
-            timeout=timeout or 0.0,
-            shell=False,
-        )
-
-        passed: object = None
-        failed: object = None
-        errors: object = None
-        try:
-            report = await asyncio.to_thread(_consume_json_report, report_path)
-            summary = report.get("summary")
-            if not isinstance(summary, dict):
-                raise ValueError("pytest JSON report has no summary")
-            passed = summary.get("passed", 0)
-            failed = summary.get("failed", 0)
-            errors = summary.get("error", 0)
-        except Exception:
-            stdout = _result_text(result, "stdout")
-            m = re.search(r"(\d+) passed", stdout)
-            if m:
-                passed = int(m.group(1))
-            m = re.search(r"(\d+) failed", stdout)
-            if m:
-                failed = int(m.group(1))
-
-        result.update({"passed": passed, "failed": failed, "errors": errors})
+        result = await _run_proc(cmd, cwd=cwd, timeout=timeout or 0.0, shell=False)
+        result["interpreter"] = " ".join(interpreter.argv)
+        result["interpreter_source"] = interpreter.source
+        if framework == "pytest":
+            summary = await asyncio.to_thread(_junit_summary, report_path)
+            if summary is None and "No module named pytest" in _result_text(result, "stderr"):
+                result.update(
+                    {
+                        "ok": False,
+                        "error_code": "framework_unavailable",
+                        "error": f"pytest is not installed for {result['interpreter']}",
+                        "passed": None,
+                        "failed": None,
+                        "errors": None,
+                    }
+                )
+                return result
+            if summary is None:
+                summary = {
+                    "passed": None,
+                    "failed": None,
+                    "errors": None,
+                    "skipped": None,
+                    "failures": [],
+                }
+        else:
+            summary = _unittest_summary(
+                _result_text(result, "stderr") + "\n" + _result_text(result, "stdout")
+            )
+        result.update(summary)
         return result
 
 

@@ -50,6 +50,16 @@ tools discovered from `.agenthicc/tools/`.
   exactly once unless told otherwise (`expected_replacements`, `replace_all`),
   and every edit refuses a file that changed since it was last read
   (`stale_file`, or pass `expected_version` / `force`).
+- **Command hygiene** — children get `/dev/null` as stdin, a scrubbed
+  environment, optional CPU and memory limits, and bounded head-and-tail
+  capture (see [configuration](../guides/configuration.md#tools-and-mcp)).
+  `run_tests` reads pytest's built-in JUnit XML report and returns passed,
+  failed, errors and skipped counts and the first 20 failures. No plugin is
+  needed.
+- **Non-interactive git** — git runs without a pager, editor or credential
+  prompt, under a deadline that kills it. Refs and branches that look like
+  options are refused. `git_commit` returns the hash from `git rev-parse HEAD`,
+  and `git_diff` counts from `--numstat`.
 - **Gates fail closed** — if the capability or approval check itself fails,
   the tool is not run and the model receives `error_code: "internal"`
   (`FailClosedGate`). The gates run after every other hook, so they decide on

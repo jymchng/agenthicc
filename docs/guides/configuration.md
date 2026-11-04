@@ -345,6 +345,18 @@ partial-result, retry, and reporting behavior.
 
 ## Tools and MCP
 
+Model-requested commands (`run_bash`, `run_command`, `run_python`,
+`run_tests`, background terminals and the git tools) never share
+agenthicc's stdin, and run with pagers and git prompts disabled. Their
+environment is agenthicc's own minus anything that looks like a credential:
+provider API keys, `*_TOKEN`, `*_SECRET`, `*_PASSWORD`, `*_API_KEY`, and
+agenthicc's `AGENTHICC_*` controls. `env_passthrough` re-admits named variables.
+Output is captured as the first 16 KB and the last 48 KB of each stream, with
+the true size reported. `run_python` and `run_tests` use the project's own
+interpreter, chosen in this order: `python`, an active `VIRTUAL_ENV`, the
+nearest `.venv`, `uv run python` for a uv project, and agenthicc's interpreter
+as a last resort.
+
 ```toml
 [tools]
 allowed = ["read_file", "git_*"]
@@ -352,6 +364,13 @@ denied = ["delete_file"]
 plugins = []
 max_live_tool_calls = 5
 group_exploratory_calls = true  # presentation-only grouping of marked reads
+
+[tools.exec]
+env_passthrough = []        # credential-like variables a command may keep, e.g. ["GITHUB_TOKEN"]
+python = ""                 # interpreter for run_python/run_tests; empty = auto-detect
+max_output_bytes = 67108864 # a stream past this stops the command (output_limit)
+max_cpu_seconds = 0         # RLIMIT_CPU per command on POSIX; 0 = no limit
+max_memory_mb = 0           # RLIMIT_AS per command on POSIX; 0 = no limit
 
 [[tools.mcp_servers]]
 name = "local-tools"

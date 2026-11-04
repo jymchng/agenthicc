@@ -1,6 +1,6 @@
 ---
 title: "TOOLR-02: Command execution that is isolated, bounded and runs the project's own interpreter"
-status: Proposed
+status: Implemented (2026-11-04; wave 2, pending merge)
 version: 1.0.0
 date: 2026-11-04
 scope: "run_bash/shell, run_command, run_python, run_python_expr and run_tests: stdin, output capture, environment, resource limits, interpreter selection and test reporting"
@@ -9,6 +9,41 @@ tags: [tools, exec, robustness, security]
 ---
 
 # TOOLR-02: Command execution hygiene
+
+
+## Implementation status (2026-11-04)
+
+Delivered in wave 2 (branch `tools-wave-2-exec-and-git`).
+
+`agenthicc.tools.exec.child` is shared by `_run_proc`, background terminals
+and the git runner. It provides:
+- `/dev/null` stdin;
+- `child_env`, which scrubs credentials and disables pagers and prompts;
+- `child_preexec` (resource limits);
+- `StreamCapture`, which keeps 16 KB of head and 48 KB of tail, reports
+  `stdout_bytes`/`stderr_bytes`, and stops the command at
+  `[tools.exec] max_output_bytes` with `termination_reason="output_limit"`;
+- `project_python`.
+
+`run_tests` reads pytest's built-in `--junitxml` and returns counts and the
+first 20 failures; unittest counts come from its summary line.
+
+Amendments:
+- **E7 corrected.** `security.sandbox_mode`, `max_tool_cpu_seconds` and
+  `max_tool_memory_mb` were deliberately deleted by PRD-250, which also added
+  a test that they stay gone. They are not inert fields in the schema, only
+  stale keys in older TOML files. The limits are therefore new:
+  `[tools.exec] max_cpu_seconds` / `max_memory_mb` (`RLIMIT_CPU` /
+  `RLIMIT_AS`).
+- **Not delivered.** Bubblewrap sandboxing of every command (goal 6, second
+  half) is not done. It would make every write outside the workspace fail
+  (package caches, `uv` itself), and needs its own design. No key claims it.
+- `CI=1` is not set, because it changes what many build tools do. Children get
+  `PAGER`/`GIT_PAGER=cat`, `GIT_TERMINAL_PROMPT=0` and `TERM=dumb`.
+- The interpreter fallback is agenthicc's own (`interpreter_source:
+  "agenthicc"`), not `python3` on `PATH`. The result says which one ran.
+
+Tests: `tests/unit/test_exec_hygiene.py` (criteria 1–7, minus the sandbox).
 
 ## 1. Problem
 

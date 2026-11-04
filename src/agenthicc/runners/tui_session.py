@@ -1061,6 +1061,9 @@ async def _build_session_context_impl(
     from agenthicc.tools.http import configure as _configure_http
 
     _configure_http(cfg.tools.http_timeout_s)
+    from agenthicc.tools.exec.child import configure as _configure_exec
+
+    _configure_exec(cfg.tools.exec)
 
     console = Console(
         highlight=False,

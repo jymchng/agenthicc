@@ -17,16 +17,16 @@ Flow for a side-effecting or unclassified tool in Safe mode:
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 import time
 import uuid
 from dataclasses import dataclass, field
 from dataclasses import replace
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from agenthicc.config import DEFAULT_QUESTION_TIMEOUT_S
-from agenthicc.tools.capability_gate import FailClosedGate
 
 if TYPE_CHECKING:
     from agenthicc.tools.context import ToolCallContext
@@ -34,6 +34,8 @@ if TYPE_CHECKING:
     from agenthicc.tools.workspace_access import WorkspaceAccessPolicy, WorkspaceAccessRequest
 
 __all__ = [
+    "FailClosedGate",
+    "order_security_gates",
     "ApprovalBroker",
     "ApprovalRequest",
     "ApprovalRequester",
@@ -535,6 +537,74 @@ class ApprovalService:
         self._remembered_turn = frozenset()
         self._scope_turn.clear()
         self._timed_out_question_fingerprints.clear()
+
+
+_log = logging.getLogger(__name__)
+
+
+class FailClosedGate:
+    """A security hook whose own failure blocks the tool instead of skipping it.
+
+    lauren-ai logs and *ignores* an exception raised by a ``before_tool_call``
+    hook, then runs the tool. A gate that raised would therefore be bypassed.
+    Subclasses implement :meth:`decide`; any exception it raises (other than
+    cancellation) aborts the call with ``error_code="internal"`` (TOOLR-07).
+    """
+
+    async def before_tool_call(self, ctx: ToolCallContext) -> object:
+        from lauren_ai._tools._hooks import BeforeToolHookDecision
+
+        try:
+            return await self.decide(ctx)
+        except Exception as exc:  # noqa: BLE001 - failing closed is the point
+            _log.error(
+                "%s failed for tool %r (%s); the call is blocked",
+                type(self).__name__,
+                ctx.tool_name,
+                ctx.tool_use_id,
+                exc_info=exc,
+            )
+            metadata = ctx.metadata
+            if isinstance(metadata, dict):
+                metadata["gate_failure"] = {
+                    "gate": type(self).__name__,
+                    "error": type(exc).__name__,
+                }
+            return BeforeToolHookDecision.abort(
+                {
+                    "ok": False,
+                    "error_code": "internal",
+                    "error": (
+                        f"The permission check for '{ctx.tool_name}' failed "
+                        f"({type(exc).__name__}); the tool was not run."
+                    ),
+                }
+            )
+
+    async def decide(self, ctx: ToolCallContext) -> object:
+        """Return this gate's ``BeforeToolHookDecision`` for *ctx*."""
+        raise NotImplementedError
+
+    async def after_tool_call(self, result: object, ctx: ToolCallContext) -> object:
+        from lauren_ai._tools._hooks import AfterToolHookDecision
+
+        return AfterToolHookDecision.proceed()
+
+    async def on_tool_error(self, exc: Exception, ctx: ToolCallContext) -> object:
+        from lauren_ai._tools._hooks import ErrorToolHookDecision
+
+        return ErrorToolHookDecision.reraise()
+
+
+def order_security_gates(hooks: Sequence[object]) -> list[object]:
+    """*hooks* with every :class:`FailClosedGate` moved last, in its own order.
+
+    Gates decide on the input the tool will actually receive: a hook that
+    rewrites ``tool_input`` must run before them, never after.
+    """
+    others = [hook for hook in hooks if not isinstance(hook, FailClosedGate)]
+    gates = [hook for hook in hooks if isinstance(hook, FailClosedGate)]
+    return [*others, *gates]
 
 
 class ApprovalGate(FailClosedGate):
