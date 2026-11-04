@@ -281,7 +281,7 @@ AGENTS_ACTIONS: tuple[Action, ...] = (
         "retry",
         ("R",),
         "retry",
-        "Retry the agent from scratch",
+        "Retry as a new agent, with the same request and configuration",
         priority=70,
         when=_flag("retryable"),
     ),

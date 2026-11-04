@@ -14,7 +14,7 @@ from .inbox import BackgroundInboxItem, BackgroundInteractionInbox
 from .index import SessionFilter, SessionOrder
 from .input_inbox import BackgroundInput
 from .maintenance import MaintenanceOutcome, MaintenanceScheduler, MaintenanceTrigger
-from .model import BackgroundSession
+from .model import BackgroundSession, LaunchSpec
 from .store import BackgroundStore, BackgroundWindow
 from .supervisor import BackgroundSupervisor
 
@@ -214,7 +214,7 @@ class AgentsService:
         return await self._invoke(session_id, self.supervisor.resume, session_id)
 
     async def retry_async(self, session_id: str) -> ManagerOperationResult:
-        """Retry from scratch, as ``agenthicc agents retry`` does (PRD-219)."""
+        """Retry as a new linked session, as ``agenthicc agents retry`` does (AGI-04)."""
         return await self._invoke(session_id, self.supervisor.retry, session_id)
 
     async def priority_async(self, session_id: str, priority: str) -> ManagerOperationResult:
@@ -250,10 +250,12 @@ class AgentsService:
             title=title,
             cwd=cwd,
             mode_name=mode_name,
-            config_path=config_path,
-            set_overrides=set_overrides,
-            set_secret_overrides=set_secret_overrides,
-            dangerously_skip_permissions=dangerously_skip_permissions,
+            launch=LaunchSpec(
+                config_path=config_path,
+                set_overrides=set_overrides,
+                set_secret_overrides=set_secret_overrides,
+                dangerously_skip_permissions=dangerously_skip_permissions,
+            ),
         )
 
     async def prepare_inbox_async(self) -> None:

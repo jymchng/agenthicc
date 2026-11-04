@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from agenthicc.background.model import LaunchSpec
+
 import subprocess
 import time
 import uuid
@@ -37,10 +39,7 @@ class _Supervisor(Protocol):
         title: str = "",
         cwd: str | None = None,
         session_id: str | None = None,
-        config_path: str | None = None,
-        set_overrides: tuple[str, ...] = (),
-        dangerously_skip_permissions: bool = False,
-        set_secret_overrides: tuple[str, ...] = (),
+        launch: LaunchSpec = ...,
         parent_session_id: str = "",
         role: str = "",
         task_id: str = "",
@@ -168,10 +167,12 @@ class GoalRunService:
                 title=run.goal[:80],
                 cwd=run.repository_root,
                 session_id=session_id,
-                config_path=config_path,
-                set_overrides=set_overrides,
-                set_secret_overrides=set_secret_overrides,
-                dangerously_skip_permissions=dangerously_skip_permissions,
+                launch=LaunchSpec(
+                    config_path=config_path,
+                    set_overrides=set_overrides,
+                    set_secret_overrides=set_secret_overrides,
+                    dangerously_skip_permissions=dangerously_skip_permissions,
+                ),
                 run_id=run.run_id,
                 role="main",
                 detached_goal=True,

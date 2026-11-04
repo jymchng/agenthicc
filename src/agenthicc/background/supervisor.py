@@ -22,6 +22,7 @@ from .input_inbox import BackgroundInput, BackgroundInputInbox
 from .model import (
     ACTIVE_STATUSES,
     BackgroundSession,
+    LaunchSpec,
     ModeApplicationStatus,
     QueueDispatchState,
     QueuePriority,
@@ -54,6 +55,14 @@ if TYPE_CHECKING:
 
 class QueueFullError(RuntimeError):
     """Admission was rejected because the durable pending queue is bounded."""
+
+
+#: The launch configuration of a session started without flags.
+_DEFAULT_LAUNCH = LaunchSpec()
+
+
+class LaunchPreflightError(ValueError):
+    """A resume or retry cannot start correctly; nothing was changed (AGI-04)."""
 
 
 class _BackgroundHandoffBlocked(InvalidSessionTransition):
@@ -433,6 +442,92 @@ class BackgroundSupervisor:
         os.replace(temporary, path)
         return path
 
+    def _launch_path(self, session_id: str) -> Path:
+        path = (self.store.root / "launch" / f"{session_id}.json").expanduser().resolve()
+        if path.name != f"{session_id}.json":
+            raise ValueError("invalid background session id")
+        return path
+
+    def _write_launch(self, session_id: str, launch: LaunchSpec) -> None:
+        """Record *session_id*'s launch configuration (AGI-04).
+
+        Only this method writes it: resume and retry read it back, and never
+        overwrite it with defaults.
+        """
+        path = self._launch_path(session_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(launch.to_dict(), indent=2), encoding="utf-8")
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+
+    def recorded_launch(self, session_id: str) -> LaunchSpec | None:
+        """The launch configuration recorded for *session_id*, if known.
+
+        Sessions created before AGI-04 have no launch record. For them, the
+        last worker request is the best evidence, and it is recorded on first
+        read. A request an earlier resume already overwrote with defaults
+        cannot be told apart from a launch without flags; ``agents resume``
+        with ``--set``/``--set-secret`` replaces it.
+        """
+        path = self._launch_path(session_id)
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            raw = None
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"cannot read the launch record for {session_id}: {exc}") from exc
+        if isinstance(raw, dict):
+            return LaunchSpec.from_mapping(raw)
+        try:
+            request = BackgroundRequest.from_mapping(
+                json.loads(self._request_path(session_id).read_text(encoding="utf-8"))
+            )
+        except (OSError, json.JSONDecodeError, ValueError):
+            return None
+        if request.session_id != session_id:
+            return None
+        launch = LaunchSpec(
+            config_path=request.config_path,
+            set_overrides=request.set_overrides,
+            set_secret_overrides=request.set_secret_overrides,
+            dangerously_skip_permissions=request.dangerously_skip_permissions,
+        )
+        self._write_launch(session_id, launch)
+        return launch
+
+    def preflight_launch(self, launch: LaunchSpec, *, action: str) -> None:
+        """Refuse a launch that cannot start correctly, before anything changes.
+
+        Every secret reference must name a set variable in this process's
+        environment, which the worker inherits. A configuration file must
+        exist, and every override must parse. The worker loads the project's
+        own configuration itself. ``action`` names the operation
+        in the message, for example ``Resume``.
+        """
+        missing = [
+            (name, override)
+            for name, override in launch.secret_variables()
+            if not os.environ.get(name, "")
+        ]
+        if missing:
+            name, override = missing[0]
+            raise LaunchPreflightError(
+                f"{action} needs {name} in this environment (from --set-secret {override}). "
+                f"Export it and try again."
+            )
+        if launch.config_path is not None and not Path(launch.config_path).expanduser().is_file():
+            raise LaunchPreflightError(
+                f"{action} needs the configuration file {launch.config_path}, which is missing."
+            )
+        from agenthicc.config import _apply_cli_overrides, _apply_cli_secret_overrides
+
+        try:
+            _apply_cli_overrides({}, list(launch.set_overrides))
+            _apply_cli_secret_overrides({}, list(launch.set_secret_overrides))
+        except ValueError as exc:
+            raise LaunchPreflightError(f"{action} has an invalid override: {exc}") from exc
+
     def _worker_command(self, request_path: Path) -> list[str]:
         return [
             sys.executable,
@@ -752,10 +847,7 @@ class BackgroundSupervisor:
         title: str = "",
         cwd: str | None = None,
         session_id: str | None = None,
-        config_path: str | None = None,
-        set_overrides: tuple[str, ...] = (),
-        dangerously_skip_permissions: bool = False,
-        set_secret_overrides: tuple[str, ...] = (),
+        launch: LaunchSpec = _DEFAULT_LAUNCH,
         parent_session_id: str = "",
         role: str = "",
         task_id: str = "",
@@ -788,7 +880,7 @@ class BackgroundSupervisor:
         owner_id = current_owner_id()
         profile_name = requested_profile_name
         if not profile_name:
-            for override in reversed(set_overrides):
+            for override in reversed(launch.set_overrides):
                 key, separator, value = override.partition("=")
                 if separator and key.strip() == "execution.profile":
                     profile_name = value.strip().strip("\"'")[:128]
@@ -838,10 +930,10 @@ class BackgroundSupervisor:
                 workflow_name=workflow_name,
                 intent=cleaned_intent,
                 cwd=project,
-                config_path=config_path,
-                set_overrides=set_overrides,
-                dangerously_skip_permissions=dangerously_skip_permissions,
-                set_secret_overrides=set_secret_overrides,
+                config_path=launch.config_path,
+                set_overrides=launch.set_overrides,
+                dangerously_skip_permissions=launch.dangerously_skip_permissions,
+                set_secret_overrides=launch.set_secret_overrides,
                 wall_timeout_s=self.wall_timeout_s,
                 max_activity_bytes=self.max_activity_bytes,
                 source="cli",
@@ -886,6 +978,7 @@ class BackgroundSupervisor:
             # Write the recoverable launch envelope before publishing the
             # accepted session event; no caller receives acceptance without
             # both durable records being committed.
+            self._write_launch(sid, launch)
             self._write_request(request)
             self.store.create(session)
             if self.queue_enabled and not queue_full:
@@ -1041,10 +1134,7 @@ class BackgroundSupervisor:
         workflow_name: str = "",
         title: str = "Foreground session",
         cwd: str | None = None,
-        config_path: str | None = None,
-        set_overrides: tuple[str, ...] = (),
-        dangerously_skip_permissions: bool = False,
-        set_secret_overrides: tuple[str, ...] = (),
+        launch: LaunchSpec | None = None,
         run_id: str = "",
         start: bool = True,
         mode_name: str | None = None,
@@ -1053,6 +1143,9 @@ class BackgroundSupervisor:
         foreground_owner_lease: "SessionOwnerLease | None" = None,
     ) -> BackgroundSession:
         """Detach an existing foreground session into one tracked worker.
+
+        *launch* replaces the session's recorded launch configuration; ``None``
+        reuses it (AGI-04), which is what resume and retry pass.
 
         An active lifecycle projection is reconciled only when this caller
         supplies its current foreground owner lease and the recorded worker
@@ -1090,6 +1183,10 @@ class BackgroundSupervisor:
                 foreground_owner_lease=foreground_owner_lease,
             )
         was_completed = existing.status is SessionStatus.COMPLETED
+        if launch is None:
+            launch = self.recorded_launch(session_id) or LaunchSpec()
+        else:
+            self._write_launch(session_id, launch)
         effective_mode_name = self._mode_name_for_resume(session_id, mode_name)
         effective_profile_name = (
             existing.requested_profile_name
@@ -1101,10 +1198,10 @@ class BackgroundSupervisor:
             workflow_name=workflow_name or existing.workflow_name,
             intent=intent or existing.intent,
             cwd=str(Path(cwd or existing.cwd).resolve()),
-            config_path=config_path,
-            set_overrides=set_overrides,
-            dangerously_skip_permissions=dangerously_skip_permissions,
-            set_secret_overrides=set_secret_overrides,
+            config_path=launch.config_path,
+            set_overrides=launch.set_overrides,
+            dangerously_skip_permissions=launch.dangerously_skip_permissions,
+            set_secret_overrides=launch.set_secret_overrides,
             run_id=run_id or existing.run_id,
             wall_timeout_s=self.wall_timeout_s,
             max_activity_bytes=self.max_activity_bytes,
@@ -1271,7 +1368,26 @@ class BackgroundSupervisor:
         except (OSError, json.JSONDecodeError, ValueError):
             return None
 
-    def resume(self, session_id: str, *, mode_name: str | None = None) -> BackgroundSession:
+    def _launch_for(self, session_id: str, launch: LaunchSpec | None) -> LaunchSpec:
+        """*launch*, else the recorded one, else a launch without flags."""
+        if launch is not None:
+            return launch
+        return self.recorded_launch(session_id) or _DEFAULT_LAUNCH
+
+    def resume(
+        self,
+        session_id: str,
+        *,
+        mode_name: str | None = None,
+        launch: LaunchSpec | None = None,
+    ) -> BackgroundSession:
+        """Continue *session_id* from its durable state, with its own launch configuration.
+
+        *launch* replaces the recorded configuration (``agents resume`` with
+        ``--config``/``--set``/``--set-secret``). The launch is checked before
+        any state changes, so a missing secret variable leaves the session,
+        its attempt and its retry count untouched.
+        """
         session = self.store.get(session_id)
         if session.status not in {
             SessionStatus.ORPHANED,
@@ -1280,16 +1396,49 @@ class BackgroundSupervisor:
             SessionStatus.ARCHIVED,
         }:
             raise InvalidSessionTransition(f"Cannot resume {session.status.value} session")
+        effective = self._launch_for(session_id, launch)
+        self.preflight_launch(effective, action="Resume")
         return self.handoff(
             session_id=session_id,
             intent=session.intent,
             workflow_name=session.workflow_name,
             cwd=session.cwd,
+            launch=effective,
             mode_name=self._mode_name_for_resume(session_id, mode_name),
         )
 
-    def retry(self, session_id: str, *, mode_name: str | None = None) -> BackgroundSession:
-        return self.resume(session_id, mode_name=mode_name)
+    def retry(
+        self,
+        session_id: str,
+        *,
+        mode_name: str | None = None,
+        launch: LaunchSpec | None = None,
+    ) -> BackgroundSession:
+        """Start the failed *session_id*'s request again, as a new session.
+
+        The new session has the original intent, workflow, directory, mode,
+        profile and launch configuration, and is linked both ways
+        (``retried_from`` / ``retried_as``). The failed session keeps its
+        transcript and history unchanged.
+        """
+        session = self.store.get(session_id)
+        if session.status is not SessionStatus.FAILED:
+            raise InvalidSessionTransition(f"Cannot retry {session.status.value} session")
+        effective = self._launch_for(session_id, launch)
+        self.preflight_launch(effective, action="Retry")
+        retried = self.submit(
+            intent=session.intent,
+            workflow_name=session.workflow_name,
+            title=f"Retry of {session.title}"[:120],
+            cwd=session.cwd,
+            launch=effective,
+            mode_name=mode_name if mode_name is not None else (session.mode_name or None),
+            priority=session.priority,
+            requested_profile_name=session.requested_profile_name,
+        )
+        self.store.update(retried.session_id, retried_from=session_id)
+        self.store.update(session_id, retried_as=retried.session_id)
+        return self.store.get(retried.session_id, include_deleted=True)
 
     def attach_foreground(self, session_id: str) -> BackgroundSession:
         """Stop background execution and release *session_id* to the TUI.

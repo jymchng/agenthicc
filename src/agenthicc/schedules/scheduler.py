@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from agenthicc.background.model import LaunchSpec
+
 import asyncio
 import logging
 import time
@@ -429,9 +431,9 @@ def build_background_dispatcher(
                 title=f"Scheduled {schedule.workflow_name}"[:80],
                 cwd=str(working_directory),
                 session_id=expected_session,
-                config_path=schedule.config_path or None,
-                set_overrides=overrides,
-                dangerously_skip_permissions=False,
+                launch=LaunchSpec(
+                    config_path=schedule.config_path or None, set_overrides=overrides
+                ),
                 parent_session_id=f"schedule:{schedule.schedule_id}",
                 task_id=occurrence.occurrence_id,
                 worktree_id=worktree_record.worktree_id if worktree_record else "",

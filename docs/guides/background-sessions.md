@@ -505,7 +505,7 @@ footer shows only the keys valid for the selected agent and `?` lists them all.
 | `Space` | Peek (Space or Esc closes it) | An agent row |
 | `y` / `n` | Approve / reject the exact pending request | It needs approval |
 | `i` | Reply: answer the question, or send input through the target-pinned composer | It accepts input |
-| `r` / `R` | Resume / retry, as `agenthicc agents resume`/`retry` | Orphaned, failed, cancelled or archived / failed or cancelled |
+| `r` / `R` | Resume / retry, as `agenthicc agents resume`/`retry` | Orphaned, failed, cancelled or archived / failed |
 | `c` | Stop (every marked agent, if any are marked) | Active |
 | `A` | Archive (every marked agent, if any are marked) | Finished |
 | `p`, `e`, `l`, `P` | Pin, rename, labels, queue priority | |
@@ -618,6 +618,38 @@ uv run agenthicc agents archive SESSION_ID
 uv run agenthicc agents delete SESSION_ID
 uv run agenthicc agents restore SESSION_ID
 ```
+
+### Resume and retry
+
+**Resume** (`r`, `agents resume`) continues the same session from its durable
+state. **Retry** (`R`, `agents retry`) starts a new session with the failed
+one's request. The new session has the same intent, workflow, directory,
+mode, profile and launch configuration, and the two are linked (`retried_from`
+/ `retried_as`). The failed session stays in History unchanged.
+
+**What is reused.** Both relaunch with the configuration the session was
+started with: `--config`, every `--set` override, every `--set-secret`
+reference and `--dangerously-skip-permissions`. It is recorded once, in
+`launch/<id>.json` under the background store. A `--set-secret KEY=ENV_VAR`
+reference stores only the variable's name; the value is read from the
+environment of the process that relaunches the worker.
+
+**Checked first.** Before anything changes, resume and retry check that every
+referenced variable is set and every override parses. A missing variable is
+reported, for example:
+
+```text
+Resume needs CMD_API_KEY in this environment
+(from --set-secret execution.default_headers.Authorization=CMD_API_KEY).
+Export it and try again.
+```
+
+The session, its attempt and its retry count are left untouched, and the CLI
+exits with status 2.
+
+**Replacing the configuration.** `agenthicc --set … --set-secret … agents
+resume ID` replaces the recorded configuration with the flags given and
+records them.
 
 `agenthicc agents list` prints statuses with the same glyphs and labels as the
 hub; its JSON output, and `agenthicc agents --json`, are complete and keep the

@@ -203,7 +203,10 @@ def _safe_provider_identifier(value: object) -> str | None:
     """Bound provider metadata to a small non-secret identifier alphabet."""
     if not isinstance(value, (str, int)) or isinstance(value, bool):
         return None
-    text = re.sub(r"[^A-Za-z0-9_.:-]", "", str(value))[:128]
+    # ``/`` and ``@`` appear in provider-qualified model IDs
+    # (``deepseek/deepseek-v4.1-flash``, ``model@version``); dropping them
+    # names a model that does not exist (AGI-04).
+    text = re.sub(r"[^A-Za-z0-9_.:/@-]", "", str(value))[:128]
     return text or None
 
 

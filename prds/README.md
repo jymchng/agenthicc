@@ -149,6 +149,20 @@ the roadmap; the others each own one improvement.
 - [AGX-13 — Unified keymap, generated help, mouse and accessibility (implemented)](agx-13-unified-keymap-and-accessibility.md)
 - [AGX-14 — CPU-time performance budgets in CI and perf diagnostics](agx-14-performance-budgets-and-diagnostics.md)
 
+### AGI series — answering, resuming and typing to an agent (proposed)
+
+The AGI PRDs (in `agents-interaction/`) fix three reported failures. The hub
+cannot answer an `ask_user` question; `R`/`r` end in an HTTP 401; and the
+`ask_user` overlay's input lacks `/`, `@` and paste. AGI-00 is the study,
+with the evidence from the operator's store and the reproductions.
+
+- [AGI-00 — Study: answering, resuming and typing to an agent](agents-interaction/AGI-00-study-answering-resuming-and-composing.md)
+- [AGI-01 — Answer an agent's questions in the agents hub](agents-interaction/AGI-01-answer-questions-in-the-agents-hub.md)
+- [AGI-02 — Background questions wait for the operator](agents-interaction/AGI-02-background-questions-wait-for-the-operator.md)
+- [AGI-03 — Background direct turns get the session tools](agents-interaction/AGI-03-background-turns-get-the-session-tools.md)
+- [AGI-04 — Resume and retry keep the launch configuration](agents-interaction/AGI-04-resume-and-retry-keep-the-launch-configuration.md)
+- [AGI-05 — One composer for every answer](agents-interaction/AGI-05-one-composer-for-every-answer.md)
+
 ### SUBAGENT series — subagent management
 
 The SUBAGENT documents (prefix `SUBAGENT-`, separate from the numbered sequence)

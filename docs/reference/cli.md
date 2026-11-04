@@ -118,8 +118,8 @@ help string the command registers.
 | `agents definitions validate` | Report invalid or untrusted definitions (exit status 1 when attention is required) |
 | `agents status SESSION_ID [--json]` | Show one background agent |
 | `agents cancel SESSION_ID` | Stop a background agent |
-| `agents resume SESSION_ID` | Resume a background agent |
-| `agents retry SESSION_ID` | Retry a failed background agent |
+| `agents resume SESSION_ID` | Continue a background agent with its recorded launch configuration; global `--config`/`--set`/`--set-secret` replace it; exit 2 when a referenced secret variable is unset |
+| `agents retry SESSION_ID` | Start a failed agent's request again as a new, linked session |
 | `agents priority SESSION_ID PRIORITY` | Change a background agent's queue priority (`urgent`, `normal`, `low`) |
 | `agents approve SESSION_ID` | Approve a waiting background agent |
 | `agents reject SESSION_ID` | Reject a waiting background agent |
