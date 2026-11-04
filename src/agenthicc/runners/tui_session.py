@@ -3188,6 +3188,7 @@ class TUISession:
             mcp_manager=ctx.mcp_manager,
             startup=ctx.startup,
             frame_stats=self._workspace.frame_stats,
+            loop_lag=lambda: vars(self).get("_loop_lag"),
             keymap_service=vars(self).get("_keymap_service"),
             mode_manager=ctx.mode_manager,
             terminal_manager=ctx.terminal_manager,
@@ -5311,6 +5312,12 @@ class TUISession:
         from agenthicc.tui.keymap_service import KeymapService
 
         self._keymap_service = KeymapService(ctx.app_state)
+        # TUIR-04: measure loop lag and name stalls for /perf (after the first
+        # frame, so the monitor costs startup nothing).
+        from agenthicc.tui.loop_lag import LoopLagMonitor
+
+        self._loop_lag = LoopLagMonitor()
+        self._loop_lag.start()
         # The Live shell is now visible. Discovery may execute trusted or
         # project extension code, so it starts only after that first frame and
         # is joined at the agent-operation boundary.
@@ -5434,6 +5441,9 @@ class TUISession:
             # alive during asyncio shutdown.
             self._msg_queue.clear()
             await self._tasks.aclose()
+            monitor = vars(self).get("_loop_lag")
+            if monitor is not None:
+                await monitor.stop()
             if loop_manager is not None:
                 await loop_manager.shutdown()
             agent_task = self._agent_task

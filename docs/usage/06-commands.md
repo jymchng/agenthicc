@@ -30,7 +30,7 @@ The canonical registry is `BUILTIN_COMMANDS` in
 | `/status` | — | Show session status |
 | `/startup` | — | Print startup milestones (process start → first frame → agent runtime ready, modules at first frame) and the bounded phase report |
 | `/keybindings` | — | Show the effective key bindings and where each comes from; create `~/.agenthicc/keybindings.toml` with every action listed |
-| `/perf` | — | Print live-block rendering diagnostics: frames drawn, full redraws, render and write time percentiles, characters per frame, and whether synchronized output is on |
+| `/perf` | — | Print live-block rendering diagnostics: frames drawn, full redraws, render and write time percentiles, characters per frame, whether synchronized output is on, event-loop lag (p50, p95, max) and the last five loop stalls with the code that caused them |
 | `/ps` | `[terminal-id] [--json]` | List processes (alias `/processes`) |
 | `/background` | — | Detach the active session into a background agent and open the agents hub with it selected (alias `/bg`) |
 | `/detach` | — | Detach the active session into a background agent |

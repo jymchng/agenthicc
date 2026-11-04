@@ -1,6 +1,6 @@
 ---
 title: "TUIR-04: An event-loop lag budget — a benchmark gate and a live watchdog"
-status: Proposed
+status: Implemented with amendments (2026-11-04; tools wave 5, pending merge)
 version: 1.0.0
 date: 2026-11-03
 scope: "make loop stalls measurable and enforced: the TUIR-00 harness as a permanent benchmark with a CI budget, and an in-session watchdog that names the stall in /perf"
@@ -19,6 +19,67 @@ tags:
 ---
 
 # TUIR-04: An event-loop lag budget
+
+## Implementation status (2026-11-04)
+
+Delivered in tools wave 5 (branch `tools-wave-5-journal-and-lag`).
+
+- **The benchmark (goal 1).** `tests/performance/test_subagent_loop_lag.py`
+  builds a 33,000-file project once per module, with a git-ignored
+  `node_modules/`. It runs a real `SubagentPool` of six `explorer` workers with
+  the real filesystem tools, workspace policy, journal and transcripts, and a
+  scripted transport. A 10 ms sleeper samples loop lag.
+- **The budget (goal 2).** The gate runs in the `E2E and performance tests` CI
+  job (`nox -s tests_performance`).
+- **The watchdog (goals 3 and 5).**
+  - `agenthicc.tui.loop_lag.LoopLagMonitor` is standard library only.
+  - The sampler wakes every 50 ms.
+  - When the loop has not ticked for 250 ms, a watchdog thread snapshots the
+    loop thread's stack through `sys._current_frames()`.
+  - It keeps the last five stalls in a lock-protected ring and never touches
+    loop state (criterion 4).
+  - `TUISession` starts one monitor per session and stops it on teardown.
+- **Garbage collection.** The first full-suite run failed the gate with a
+  432 ms stall that the watchdog attributed to `selectors.select`. A
+  `gc.callbacks` timer showed one gen-2 collection of 454 ms over the 447,000
+  objects the unit suite had left in the process. A collection holds the GIL,
+  so the loop stalls while its own stack looks idle. As a result:
+  - the monitor times collections, and `Stall.culprit` names garbage
+    collection when it took at least half the stall;
+  - the sampler records a stall the watchdog could not observe;
+  - the gate collects and `gc.freeze()`s the inherited heap before measuring.
+- **`/perf` (goal 4).** It prints loop-lag p50, p95 and max, then one line per
+  stall with its duration and its innermost non-asyncio frame as
+  `file:line in function`.
+
+Amendments:
+
+- **Budgets.** The worst stall must be under 250 ms (not 100 ms) and p95 under
+  25 ms (not p99).
+  - Measured locally over six runs: worst 81–90 ms, p99 9–12 ms, p95 2–3 ms.
+  - A run has about 155 samples, so p99 is the second-worst sample. One loaded
+    run measured 58 ms there.
+  - The 250 ms ceiling is the watchdog's stall threshold, and still fails the
+    93.7 s regression by three orders of magnitude.
+  - One main-loop `search_files` must stall under 100 ms (not 50 ms); it
+    measures under 6 ms, so the budget leaves room for a loaded CI runner.
+  - The budgets are constants in the test, not entries in
+    `performance-budgets.json`, because that file holds AGX-14's CPU and
+    count metrics for `scripts/perf_budget.py`.
+- **No `xfail` phase.** The benchmark landed after TUIR-01 and TUIR-02, so it
+  was never marked `xfail`. TUIR-00's harness measured the failure before them
+  (criterion 1).
+- **Sampler interval.** The live monitor samples every 50 ms, not 10 ms. That
+  keeps idle CPU at 0.81 % (measured over 20 s, criterion 3). The benchmark
+  still samples every 10 ms.
+
+Tests (`tests/unit/test_loop_lag.py`):
+
+- a `time.sleep(0.4)` stall is recorded with the blocking function's file and
+  name, and `/perf` prints it (criterion 2);
+- a forced collection over 1.2 million cyclic objects is attributed to
+  garbage collection;
+- an idle loop records no stall.
 
 ## 1. Problem
 

@@ -40,12 +40,13 @@ import json
 import hashlib
 import logging
 import os
+import threading
 import time
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Final, Literal
 
 __all__ = [
     "ConversationJournal",
@@ -266,6 +267,52 @@ def fold_resume_state(path: Path) -> IncompleteTurn | None:
     return None
 
 
+Durability = Literal["durable", "advisory"]
+
+#: How each record kind is written (TUIR-03). A ``durable`` record is on disk
+#: (fsynced) before ``_write`` returns, because later state depends on it. An
+#: ``advisory`` record is queued for the writer thread and group-committed, so
+#: a per-provider-call usage record never puts an fsync on the event loop.
+RECORD_DURABILITY: Final[Mapping[str, Durability]] = {
+    "agent_message_event": "durable",
+    "append": "durable",
+    "partial_fragment": "durable",
+    "reset": "durable",
+    "state_replace_commit": "durable",
+    "state_replace_prepare": "durable",
+    "step_committed": "durable",
+    "step_interrupted": "durable",
+    "step_started": "durable",
+    "subagent_pool_backgrounded": "durable",
+    "subagent_pool_cancelled": "durable",
+    "subagent_pool_finished": "durable",
+    "subagent_pool_interrupted": "durable",
+    "subagent_pool_notification_delivered": "durable",
+    "subagent_pool_result": "durable",
+    "subagent_pool_started": "durable",
+    "subagent_pool_stopped": "durable",
+    "subagent_worker_result": "durable",
+    "tool_exchange_aborted": "durable",
+    "tool_exchange_committed": "durable",
+    "tool_exchange_result_recorded": "durable",
+    "tool_exchange_started": "durable",
+    "tool_recorded": "durable",
+    "turn_aborted": "durable",
+    "turn_completed": "durable",
+    "turn_failed": "durable",
+    "turn_recovered": "durable",
+    "turn_recovery_started": "durable",
+    "turn_started": "durable",
+    "usage_record": "advisory",
+    "workflow_phase_boundary": "durable",
+}
+
+
+def _projected(kind: str) -> bool:
+    """Whether a record kind belongs to the in-memory subagent projection."""
+    return kind.startswith("subagent_") or kind == "agent_message_event"
+
+
 class ConversationJournal:
     """Append-only, ``fsync``-ed JSONL journal of conversation transitions.
 
@@ -273,7 +320,17 @@ class ConversationJournal:
     content is replayed via :meth:`fold`.
     """
 
-    __slots__ = ("_path", "_seq", "_fh", "_corrupt_trailing_records")
+    __slots__ = (
+        "_path",
+        "_seq",
+        "_fh",
+        "_corrupt_trailing_records",
+        "_subagent_records",
+        "_condition",
+        "_pending",
+        "_writer",
+        "_closed",
+    )
 
     def __init__(self, path: Path) -> None:
         self._path = path
@@ -281,6 +338,13 @@ class ConversationJournal:
         self._seq = self._count_existing()
         self._corrupt_trailing_records = 0
         self._fh = path.open("a", encoding="utf-8")
+        #: Every subagent record in journal order, built once on first query
+        #: and then kept current by ``_write`` (TUIR-03).
+        self._subagent_records: list[dict[str, object]] | None = None
+        self._condition = threading.Condition()
+        self._pending: list[bytes] = []
+        self._writer: threading.Thread | None = None
+        self._closed = False
 
     def _count_existing(self) -> int:
         if not self._path.exists():
@@ -289,32 +353,113 @@ class ConversationJournal:
             return sum(1 for line in fh if line.strip())
 
     def _write(self, entry: dict[str, object]) -> None:
-        self._fh.flush()
-        descriptor = self._fh.fileno()
-        start_offset = os.fstat(descriptor).st_size
         payload = (json.dumps(entry, default=str) + "\n").encode("utf-8")
-        offset = 0
-        try:
-            while offset < len(payload):
-                written = os.write(descriptor, payload[offset:])
+        kind = str(entry.get("kind", ""))
+        if RECORD_DURABILITY.get(kind, "durable") == "advisory":
+            with self._condition:
+                if self._closed:
+                    raise OSError("conversation journal is closed")
+                self._pending.append(payload)
+                self._seq += 1
+                self._start_writer()
+                self._condition.notify()
+            return
+        with self._condition:
+            self._fh.flush()
+            descriptor = self._fh.fileno()
+            # Queued advisory records go first, so the file keeps seq order.
+            self._write_pending_locked(descriptor)
+            start_offset = os.fstat(descriptor).st_size
+            offset = 0
+            try:
+                while offset < len(payload):
+                    written = os.write(descriptor, payload[offset:])
+                    if written <= 0:
+                        raise OSError("conversation journal write made no progress")
+                    offset += written
+                os.fsync(descriptor)
+            except BaseException:
+                # A partial JSONL record must not become visible as a successful
+                # state transition. Restore the exact previous EOF before
+                # propagating the original disk error.
+                try:
+                    os.ftruncate(descriptor, start_offset)
+                    os.fsync(descriptor)
+                except OSError as rollback_exc:
+                    logger.critical(
+                        "conversation journal append rollback failed (%s)",
+                        type(rollback_exc).__name__,
+                    )
+                raise
+            self._seq += 1
+        if _projected(kind) and self._subagent_records is not None:
+            self._subagent_records.append(json.loads(payload))
+
+    def _write_pending_locked(self, descriptor: int) -> None:
+        """Write queued advisory records (caller holds the condition)."""
+        batch, self._pending = self._pending, []
+        for item in batch:
+            offset = 0
+            while offset < len(item):
+                written = os.write(descriptor, item[offset:])
                 if written <= 0:
                     raise OSError("conversation journal write made no progress")
                 offset += written
-            os.fsync(descriptor)
-        except BaseException:
-            # A partial JSONL record must not become visible as a successful
-            # state transition. Restore the exact previous EOF before
-            # propagating the original disk error.
+
+    def _start_writer(self) -> None:
+        if self._writer is None:
+            self._writer = threading.Thread(
+                target=self._writer_loop, name="journal-writer", daemon=True
+            )
+            self._writer.start()
+
+    def _writer_loop(self) -> None:
+        """Group-commit advisory records: one fsync per batch, off the event loop."""
+        while True:
+            with self._condition:
+                while not self._pending and not self._closed:
+                    self._condition.wait()
+                if not self._pending:
+                    return
+                try:
+                    descriptor = self._fh.fileno()
+                    # Appending under the lock keeps seq order; it is only a
+                    # page-cache copy. The fsync runs after releasing it, so an
+                    # event-loop append never waits for the disk.
+                    self._write_pending_locked(descriptor)
+                except (OSError, ValueError) as exc:
+                    logger.error("conversation journal advisory write failed (%s)", exc)
+                    continue
             try:
-                os.ftruncate(descriptor, start_offset)
                 os.fsync(descriptor)
-            except OSError as rollback_exc:
-                logger.critical(
-                    "conversation journal append rollback failed (%s)",
-                    type(rollback_exc).__name__,
-                )
-            raise
-        self._seq += 1
+            except OSError as exc:
+                logger.error("conversation journal advisory fsync failed (%s)", exc)
+
+    def _drain(self) -> None:
+        """Make queued advisory records visible to readers of the file."""
+        with self._condition:
+            if self._pending:
+                self._write_pending_locked(self._fh.fileno())
+
+    def _subagent_view(self) -> list[dict[str, object]]:
+        """Every subagent record, in order: one pass over the file, then incremental."""
+        if self._subagent_records is None:
+            self._drain()
+            records: list[dict[str, object]] = []
+            if self._path.exists():
+                with self._path.open("r", encoding="utf-8") as fh:
+                    for raw in fh:
+                        line = raw.strip()
+                        if not line:
+                            continue
+                        try:
+                            entry = json.loads(line)
+                        except json.JSONDecodeError:
+                            break
+                        if isinstance(entry, dict) and _projected(str(entry.get("kind", ""))):
+                            records.append(entry)
+            self._subagent_records = records
+        return self._subagent_records
 
     def replace_state(self, messages: list[object], summary: str | None) -> None:
         """Atomically journal a full projection replacement for compaction.
@@ -362,6 +507,7 @@ class ConversationJournal:
 
     def has_message_id(self, message_id: str) -> bool:
         """Whether an idempotent message append with *message_id* is durable."""
+        self._drain()
         if not message_id or not self._path.exists():
             return False
         with self._path.open("r", encoding="utf-8") as fh:
@@ -685,6 +831,7 @@ class ConversationJournal:
         an auxiliary source for resume reconciliation, so malformed metadata
         must never make an otherwise valid checkpoint unusable.
         """
+        self._drain()
         if not self._path.exists():
             return []
         result: list[dict[str, object]] = []
@@ -818,6 +965,7 @@ class ConversationJournal:
         missing-result synthesis while remaining eligible for exact result
         reordering when every result is present.
         """
+        self._drain()
         if not self._path.exists():
             return frozenset()
         pending: dict[str, set[str]] = {}
@@ -854,6 +1002,7 @@ class ConversationJournal:
         deduplication.  A malformed trailing record is treated as an
         interrupted append, matching the normal journal folding contract.
         """
+        self._drain()
         if not self._path.exists():
             return []
         records: list[dict[str, object]] = []
@@ -1167,7 +1316,7 @@ class ConversationJournal:
         """Return pool IDs whose notification append has been acknowledged."""
         return frozenset(
             str(record["pool_id"])
-            for record in self._fold_subagent_kind("subagent_pool_notification_delivered")
+            for record in self._subagent_kind("subagent_pool_notification_delivered")
             if isinstance(record.get("pool_id"), str) and record.get("pool_id")
         )
 
@@ -1243,7 +1392,7 @@ class ConversationJournal:
             "subagent_pool_cancelled",
             "subagent_pool_stopped",
         }
-        records = [record for kind in kinds for record in self._fold_subagent_kind(kind)]
+        records = [record for kind in kinds for record in self._subagent_kind(kind)]
 
         def sequence(record: Mapping[str, object]) -> int:
             value = record.get("seq")
@@ -1358,7 +1507,7 @@ class ConversationJournal:
 
     def fold_agent_message_events(self) -> list[dict[str, object]]:
         """Return durable subagent communication events in journal order."""
-        return self._fold_subagent_kind("agent_message_event")
+        return self._subagent_kind("agent_message_event")
 
     def fold_subagent_worker_results(self) -> list[dict[str, object]]:
         """Return durable worker result records in journal order.
@@ -1367,11 +1516,11 @@ class ConversationJournal:
         provider-message fold. A corrupt trailing JSONL line is treated as an
         interrupted write, matching the other journal projections.
         """
-        return self._fold_subagent_kind("subagent_worker_result")
+        return self._subagent_kind("subagent_worker_result")
 
     def fold_subagent_pool_results(self) -> list[dict[str, object]]:
         """Return complete durable pool results in journal order."""
-        records = self._fold_subagent_kind("subagent_pool_result")
+        records = self._subagent_kind("subagent_pool_result")
         valid: list[dict[str, object]] = []
         for record in records:
             failed_value = record.get("failed", 1)
@@ -1390,46 +1539,17 @@ class ConversationJournal:
         return valid
 
     def subagent_pool_records(self, pool_id: str) -> list[dict[str, object]]:
-        """Every durable subagent record of *pool_id*, in journal order (one pass)."""
-        if not self._path.exists():
-            return []
-        records: list[dict[str, object]] = []
-        with self._path.open("r", encoding="utf-8") as fh:
-            for raw in fh:
-                line = raw.strip()
-                if not line:
-                    continue
-                try:
-                    entry = json.loads(line)
-                except json.JSONDecodeError:
-                    break
-                if (
-                    isinstance(entry, dict)
-                    and str(entry.get("kind", "")).startswith("subagent_")
-                    and entry.get("pool_id") == pool_id
-                ):
-                    records.append(entry)
-        return records
+        """Every durable subagent record of *pool_id*, in journal order."""
+        return [
+            record
+            for record in self._subagent_view()
+            if record.get("pool_id") == pool_id
+            and str(record.get("kind", "")).startswith("subagent_")
+        ]
 
-    def _fold_subagent_kind(self, kind: str) -> list[dict[str, object]]:
-        """Fold one auxiliary subagent record kind, tolerating a bad tail."""
-        if not self._path.exists():
-            return []
-        records: list[dict[str, object]] = []
-        with self._path.open("r", encoding="utf-8") as fh:
-            for raw in fh:
-                line = raw.strip()
-                if not line:
-                    continue
-                try:
-                    entry = json.loads(line)
-                except json.JSONDecodeError:
-                    break
-                if not isinstance(entry, dict):
-                    continue
-                if entry.get("kind") == kind:
-                    records.append(entry)
-        return records
+    def _subagent_kind(self, kind: str) -> list[dict[str, object]]:
+        """Subagent records of one kind, from the in-memory projection."""
+        return [record for record in self._subagent_view() if record.get("kind") == kind]
 
     def append_usage_record(self, record: Mapping[str, object]) -> None:
         """Durably append one PRD-157 provider-usage record.
@@ -1449,6 +1569,7 @@ class ConversationJournal:
 
     def fold_usage_records(self) -> list[dict[str, object]]:
         """Return the latest valid usage record for each record ID."""
+        self._drain()
         if not self._path.exists():
             return []
         latest: dict[str, dict[str, object]] = {}
@@ -1473,6 +1594,7 @@ class ConversationJournal:
 
     def fold(self) -> tuple[list[object], str | None]:
         """Reconstruct ``(messages, summary)`` by replaying the on-disk journal."""
+        self._drain()
         messages, summary, corrupt_count = fold_path_with_report(self._path)
         self._corrupt_trailing_records = corrupt_count
         return messages, summary
@@ -1484,6 +1606,7 @@ class ConversationJournal:
 
     def resume_state(self) -> IncompleteTurn | None:
         """Return the incomplete turn to resume, or ``None``."""
+        self._drain()
         return fold_resume_state(self._path)
 
     @property
@@ -1496,6 +1619,19 @@ class ConversationJournal:
         return self._path
 
     def close(self) -> None:
+        with self._condition:
+            self._closed = True
+            self._condition.notify_all()
+        writer = self._writer
+        if writer is not None:
+            writer.join(timeout=5.0)
+        try:
+            with self._condition:
+                if self._pending:
+                    self._write_pending_locked(self._fh.fileno())
+                    os.fsync(self._fh.fileno())
+        except (OSError, ValueError):
+            pass
         try:
             self._fh.close()
         except OSError:

@@ -290,6 +290,17 @@ result boundary is instead recorded in the same
   the parent. This closes the interval in which a parent cancellation could
   otherwise lose output before lauren-ai committed the parent tool result.
 
+Every record kind declares its durability in
+`agenthicc.memory.journal.RECORD_DURABILITY`. All kinds except `usage_record`
+are durable: written and fsync'd before the append returns. `usage_record` is
+advisory: a background writer thread appends and fsyncs it, and any queued
+usage records are written before the next durable record, so sequence order
+in the file is unchanged. Reads drain the queue first and `close()` flushes it,
+so a clean shutdown loses nothing; a crash can lose only the last usage
+records, which the ledger tolerates. Subagent and `agent_message_event` queries
+come from an in-memory projection built by one pass over the file at first use
+and extended by each append, so they no longer re-read a large journal.
+
 Subagent communication uses the same journal without entering provider memory:
 
 - `agent_message_event` records bounded sent, delivered, acknowledged,
