@@ -398,8 +398,24 @@ press `[` to scroll up one question line and `]` to scroll down one line;
 `↑`/`↓` remain option navigation and `←`/`→` remain question navigation. A
 range indicator shows when more question text is above or below the viewport.
 
-When entering an `Other` answer, Page Up/Page Down scroll the question by one
-viewport while `[` and `]` remain ordinary answer characters. Question text is
+When entering an `Other` answer, the input is the main composer embedded in
+the overlay (`EmbeddedComposer`):
+
+- paste (including condensed large pastes), `Ctrl+J` newline, word movement
+  and history all work;
+- `@` opens the mention picker, and mentions are resolved into the answer as
+  they would be in a message;
+- `/` opens the command and skill picker. A submitted command runs under the
+  waiting turn's busy policy instead of becoming the answer: `/usage` runs
+  at once, `/cancel` cancels the turn, and queued-only commands are refused
+  with a notice. Text such as `/etc/hosts` that is not a command is an
+  ordinary answer;
+- Esc closes an open picker first, then returns to the options, keeping what
+  was typed.
+
+The pickers render inside the overlay, so the questions stay mounted.
+Page Up/Page Down scroll the question by one viewport while `[` and `]` remain
+ordinary answer characters. Question text is
 rendered literally, so model text such as `[red]` is not interpreted as Rich
 markup. Scrolling and resizing change presentation state only; the answer
 payload and approval response remain unchanged.

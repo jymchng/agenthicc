@@ -87,10 +87,10 @@ def test_long_question_wraps_as_literal_text_and_bracket_scrolls(
     assert "[/] scroll" in initial
     assert len(overlay._question_lines[0]) > overlay._question_rows
 
-    cursor_before = overlay._states[0].cursor
+    cursor_before = overlay._form.states[0].cursor
     overlay.handle_key(Key.CHAR, "]")
     assert overlay._states[0].question_scroll == 1
-    assert overlay._states[0].cursor == cursor_before
+    assert overlay._form.states[0].cursor == cursor_before
     assert responses == []
 
     for _ in range(100):
@@ -155,13 +155,13 @@ def test_question_viewport_height_is_stable_across_scroll_and_questions(
     assert isinstance(scrolled, Group)
     assert len(scrolled.renderables) == initial_height
 
-    overlay._states[0].answer = "Yes"
-    overlay._states[0].answered = True
+    overlay._form.states[0].answer = "Yes"
+    overlay._form.states[0].answered = True
     overlay.handle_key(Key.RIGHT, "")
     second_question = overlay.render()
     assert isinstance(second_question, Group)
     assert len(second_question.renderables) == initial_height
-    assert overlay._states[0].answer == "Yes"
+    assert overlay._form.states[0].answer == "Yes"
     assert responses == []
 
 

@@ -131,8 +131,8 @@ async def test_resize_storm_repaints_one_current_waiting_modal(
             question_overlay = workspace.overlays.widget
             assert isinstance(question_overlay, QuestionsOverlay)
             assert question_overlay._current == 1
-            assert question_overlay._states[0].answered is True
-            assert question_overlay._states[0].answer == "Everything"
+            assert question_overlay._form.states[0].answered is True
+            assert question_overlay._form.states[0].answer == "Everything"
     finally:
         service.respond(allowed=True)
         await request_task

@@ -1,6 +1,6 @@
 ---
 title: "AGI-01: Answer an agent's questions in the agents hub — one question at a time, by choosing or typing"
-status: Proposed
+status: Implemented with amendments (2026-11-04; AGI wave 2, pending merge)
 version: 1.0.0
 date: 2026-11-04
 scope: "the agents hub's Needs you and detail views: present a background ask_user request as the same per-question form the foreground overlay uses, and deliver the answers without the operator writing JSON"
@@ -9,6 +9,53 @@ tags: [agents-hub, ask_user, background-sessions, ux]
 ---
 
 # AGI-01: Answer an agent's questions in the agents hub
+
+## Implementation status (2026-11-04)
+
+Delivered in AGI wave 2 (branch `agi-wave-2-answer-composer`).
+
+- **One form model.** `tui/workspace/question_form.py` holds `QuestionForm`
+  and `Question`. `QuestionsOverlay` keeps its rendering and scrolling
+  (`_QView`), but its focus, options and answers are the form's.
+- **The hub's answer form.**
+  - `agents_hub/answer.py` holds `AnswerView`. `i` on a question or input
+    item opens it.
+  - It shows the question with a scroll indicator, the options and Other,
+    the ●/○ progress and "question n of m".
+  - Keys: ↑↓, ←→, Enter, Ctrl+S, `[`/`]` and Esc.
+  - It delivers `{"answers": form.answers()}` (or `{"answer": text}`)
+    through `inbox_respond_async` at the version shown.
+  - A failed send keeps the form, its answers and the reason. Esc keeps
+    progress per item for the next `i`.
+- **Typed answers.** "Other" and input items use AGI-05's composer, built
+  off the event loop from the session's directory and recorded launch
+  configuration. Keys typed while it loads are replayed.
+- **The detail view.** Its Needs you card numbers each question and lists
+  each option on its own row.
+- **The CLI.** The multi-question error names the expected keys ("answer
+  with a JSON object with keys hero, assets").
+
+Amendments:
+
+- **The footer still reads `i reply`.** The keymap action's label is shared
+  with session input. `i` opens the answer form on a question item.
+- **`/` in the hub inserts text.** The hub has no session to run a command
+  in, so a command picked in a hub answer is inserted into the answer text.
+  `@` mentions resolve under a Safe-mode `WorkspaceAccessPolicy` scoped to
+  the agent's directory.
+- **No deadline display yet.** The form shows no time remaining; deadlines
+  are AGI-02.
+
+Tests: `tests/unit/test_agents_hub_answer_form.py` (7). They cover:
+
+- the study's two-question case, answered end to end through a real
+  `BackgroundApprovalService` wait;
+- Other with paste;
+- Esc progress;
+- a stale send;
+- the shared model;
+- the CLI error;
+- an eight-question item at 80×24.
 
 ## 1. Problem
 

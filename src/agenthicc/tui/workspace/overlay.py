@@ -83,6 +83,11 @@ class OverlayHost:
         if self._redraw:
             self._redraw()
 
+    def request_redraw(self) -> None:
+        """Repaint the active overlay, for state that changed outside a key."""
+        if self._redraw:
+            self._redraw()
+
     def render(self) -> RenderableType | None:
         if self._overlay:
             return self._overlay.render()

@@ -112,6 +112,7 @@ if TYPE_CHECKING:
     from agenthicc.tui.workspace import Workspace
     from agenthicc.tui.workspace.agents_hub import HubResult
     from agenthicc.tui.workspace.overlay import Overlay
+    from agenthicc.tui.workspace.overlays.questions import AnswerContext
     from agenthicc.tui.workspace.overlays.subagents import TranscriptTarget
     from agenthicc.subagents.types import SubagentTypeRegistry
     from agenthicc.workflows.plugin import WorkflowPlugin
@@ -1637,6 +1638,8 @@ class TUISession:
         self._ctx = ctx
         self._workspace = workspace
         self._input_session = input_session
+        #: Typed ask_user answers, navigable with ↑/↓ in the next answer.
+        self._answer_history: list[str] = []
 
         # Mutable session state
         self._pending_skill_body: list[str] = []
@@ -2420,12 +2423,88 @@ class TUISession:
         if req.kind == "plan_review":
             return PlanApprovalOverlay(req, approval_svc, hide)
         if req.kind == "questions":
-            return QuestionsOverlay(req, approval_svc, hide)
+            return QuestionsOverlay(req, approval_svc, hide, answers=self._answer_context())
         return ApprovalOverlay(
             req,
             approval_svc,
             hide,
             open_requester=lambda requester: self._open_requester_transcript(requester, req),
+        )
+
+    def _answer_context(self) -> AnswerContext:
+        """What an ask_user free-text answer can reach (AGI-05).
+
+        The same pickers as the main composer, scoped to this session; ``/``
+        commands run under the busy policy of the turn that is waiting; ``@``
+        mentions resolve as they would in a message.
+        """
+        from agenthicc.tui.input.embedded import ComposerContext
+        from agenthicc.tui.workspace.overlays.questions import AnswerContext
+
+        ctx = self._ctx
+        workspace_access = ctx.workspace_access
+        cwd = (
+            workspace_access.scope.primary_root
+            if workspace_access is not None
+            else Path(os.getcwd())
+        )
+        composer = ComposerContext(
+            cwd=cwd,
+            cfg=ctx.cfg,
+            commands=ctx.cmd_registry,
+            workflows=ctx.workflow_registry,
+            keymap=ctx.app_state.keymap(),
+            history=self._answer_history,
+            session_id=str(ctx.session_id),
+            mode_name=ctx.app_state.active_mode().name,
+        )
+
+        def run_command(text: str) -> bool:
+            decision = self._busy_decision(text)
+            if not decision.command_name:
+                return False  # not a command: "/etc/hosts" is an answer
+            if decision.policy.value in {"immediate-read-only", "immediate-control"}:
+                self._run_busy_immediate(text, decision)
+            elif decision.policy.value == "reject":
+                self._notify_busy_rejected(text, decision.reason)
+            else:
+                self._ctx.app_state.conversation.notification.set(
+                    f"⛔ {decision.command_name} is not available while the agent waits for "
+                    "your answer"
+                )
+            return True
+
+        async def expand(text: str) -> str:
+            from agenthicc.mentions.injector import InjectionConfig, build_context_prefix
+
+            prefix, injected = await build_context_prefix(
+                text,
+                cwd=cwd,
+                cfg=InjectionConfig(cwd=cwd, workspace_access=workspace_access),
+                cache=ctx.mention_cache,
+                current_turn=0,
+            )
+            if injected:
+                ctx.app_state.conversation.append_event(
+                    "mention_chips",
+                    {
+                        "chips": [
+                            {
+                                "raw": item.mention.raw,
+                                "kind": item.mention.kind.value,
+                                "ok": vars(item).get("ok", True),
+                            }
+                            for item in injected
+                        ]
+                    },
+                )
+            return prefix + text if prefix else text
+
+        return AnswerContext(
+            composer=composer,
+            run_command=run_command,
+            expand=expand,
+            redraw=self._workspace.overlays.request_redraw,
         )
 
     def _wire_approval_overlay(self) -> None:
