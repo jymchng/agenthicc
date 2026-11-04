@@ -510,3 +510,16 @@ def test_definition_description_reaches_spawn_tool_description_and_enum() -> Non
     assert "release_auditor: No description provided." not in description
     item = metadata.parameters["input_schema"]["properties"]["tasks"]["items"]
     assert "release_auditor" in item["properties"]["type"]["enum"]
+
+
+def test_a_plugin_spec_without_a_description_defaults_to_empty() -> None:
+    """SUBAGENT-01 criterion 5: the field is optional, so existing plugins keep working."""
+    from agenthicc.subagents.types import SubagentTypeSpec
+
+    spec = SubagentTypeSpec(
+        name="legacy_plugin_type",
+        allowed_tools=frozenset({"read_file"}),
+        max_turns=2,
+        system_prompt="Read.",
+    )
+    assert spec.description == ""

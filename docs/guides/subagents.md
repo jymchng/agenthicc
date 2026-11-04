@@ -879,7 +879,11 @@ lists rows; the store's tick clears it afterwards.
 
 Ctrl+O (or `/subagents`) moves focus from the prompt to the panel: ↑/↓ select
 a worker — the session's earlier pools are listed below the current one —,
-Enter opens its transcript and Esc returns to the prompt. In a transcript, ←
+Enter opens its transcript and Esc returns to the prompt. Earlier pools come
+from the conversation journal, with each pool's status (`completed`,
+`stopped`, `cancelled`, `interrupted`) in its header, so a restored session
+lists a pool a crash interrupted even when it left no transcripts; the
+transcripts add each worker's activity. In a transcript, ←
 and → move to its siblings, `f` follows new events, and Esc (or ↑ at the top)
 returns to the conversation. The keys are the key map's `subagents` and
 `transcript` contexts, so `~/.agenthicc/keybindings.toml` can rebind them. In

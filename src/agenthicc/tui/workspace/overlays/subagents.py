@@ -23,6 +23,7 @@ from agenthicc.subagents.transcripts import (
     PoolRecord,
     TranscriptEvent,
     TranscriptTail,
+    WorkerRecord,
     last_event,
     list_pools,
 )
@@ -32,6 +33,8 @@ from agenthicc.tui.workspace.overlay import Overlay
 
 if TYPE_CHECKING:
     from rich.console import RenderableType
+
+    from agenthicc.memory.journal import ConversationJournal
 
     from agenthicc.tui.conversation_store import AppState
 
@@ -68,17 +71,92 @@ class _Entry:
 
 @dataclass(frozen=True, slots=True)
 class EarlierPool:
-    """A pool of an earlier turn, as its transcripts left it."""
+    """A pool of an earlier turn, as its journal and transcripts left it."""
 
     record: PoolRecord
     workers: tuple[WorkerState, ...]
+    #: The journal's lifecycle status (``completed``, ``stopped``, ``cancelled``,
+    #: ``interrupted``…), or ``""`` for a pool known only from its transcripts.
+    status: str = ""
 
 
-def load_earlier(root: Path, *, limit: int = 20) -> tuple[EarlierPool, ...]:
-    """The session's recorded pools, newest first (blocking: run it off the loop)."""
-    return tuple(
-        EarlierPool(record, _record_workers(record)) for record in list_pools(root, limit=limit)
+def load_earlier(
+    root: Path, *, journal: ConversationJournal | None = None, limit: int = 20
+) -> tuple[EarlierPool, ...]:
+    """The session's pools, newest first (blocking: run it off the loop).
+
+    The journal is the record of which pools exist and how they ended; the
+    transcripts add what each worker did. A pool whose transcripts are gone —
+    or were never written — is still listed from the journal, including one a
+    crash left ``interrupted``.
+    """
+    lifecycle = (
+        {
+            str(record.get("pool_id", "")): record
+            for record in journal.fold_subagent_pool_lifecycle()
+        }
+        if journal is not None
+        else {}
     )
+    results: dict[str, dict[str, dict[str, object]]] = {}
+    if journal is not None:
+        for result in journal.fold_subagent_worker_results():
+            pool_results = results.setdefault(str(result.get("pool_id", "")), {})
+            pool_results[str(result.get("task_id", ""))] = result
+    pools: list[EarlierPool] = []
+    for record in list_pools(root, limit=limit):
+        journaled = lifecycle.pop(record.pool_id, None)
+        status = str(journaled.get("status", "")) if journaled is not None else ""
+        pools.append(EarlierPool(record, _record_workers(record), status))
+    for pool_id, journaled in lifecycle.items():
+        if pool_id:
+            pools.append(_journal_pool(root, pool_id, journaled, results.get(pool_id, {})))
+    pools.sort(key=lambda pool: pool.record.created_at, reverse=True)
+    return tuple(pools[:limit])
+
+
+def _journal_pool(
+    root: Path,
+    pool_id: str,
+    journaled: dict[str, object],
+    results: dict[str, dict[str, object]],
+) -> EarlierPool:
+    """A pool known only from the journal: its tasks and their recorded results."""
+    tasks = journaled.get("tasks")
+    rows = [task for task in tasks if isinstance(task, dict)] if isinstance(tasks, list) else []
+    created = journaled.get("at")
+    records: list[WorkerRecord] = []
+    workers: list[WorkerState] = []
+    per_type: dict[str, int] = {}
+    for task in rows:
+        worker_id = str(task.get("task_id", ""))
+        agent_type = str(task.get("agent_type", ""))
+        # Labels number workers per type, as the pool does ("tester #1").
+        per_type[agent_type] = per_type.get(agent_type, 0) + 1
+        result = results.get(worker_id)
+        label = str(result.get("label", "")) if result else f"{agent_type} #{per_type[agent_type]}"
+        records.append(WorkerRecord(worker_id, label, agent_type))
+        if result is None:
+            status, activity = "stopped", "interrupted"
+        elif result.get("ok") is True:
+            status, activity = "done", _first_line(str(result.get("text", "")))
+        elif result.get("status") in {"cancelled", "interrupted"}:
+            status, activity = "stopped", str(result.get("status"))
+        else:
+            status, activity = "failed", _first_line(str(result.get("error", "")))
+        workers.append(
+            WorkerState(label, agent_type, status, worker_id=worker_id, activity=activity)
+        )
+    record = PoolRecord(
+        pool_id=pool_id,
+        created_at=float(created)
+        if isinstance(created, (int, float)) and not isinstance(created, bool)
+        else 0.0,
+        finished_at=None,
+        workers=tuple(records),
+        directory=root / pool_id,
+    )
+    return EarlierPool(record, tuple(workers), str(journaled.get("status", "")))
 
 
 def _record_workers(record: PoolRecord) -> tuple[WorkerState, ...]:
@@ -224,10 +302,13 @@ class SubagentsOverlay(Overlay):
         for row in self.entries():
             if not row.current and row.pool_id != pool_seen:
                 pool_seen = row.pool_id
-                record = next(p.record for p in self._earlier if p.record.pool_id == row.pool_id)
+                pool = next(p for p in self._earlier if p.record.pool_id == row.pool_id)
+                record = pool.record
                 started = datetime.fromtimestamp(record.created_at).strftime("%Y-%m-%d %H:%M")
+                status = f" · {pool.status}" if pool.status else ""
                 lines.append(
-                    f"  [bold]Earlier[/bold] [dim]{started} · {len(record.workers)} workers[/dim]"
+                    f"  [bold]Earlier[/bold] [dim]{started} · {len(record.workers)} workers"
+                    f"{status}[/dim]"
                 )
             lines.append(
                 worker_line(

@@ -1,6 +1,6 @@
 ---
 title: "SUBAGENT-11: Model-facing background spawn, collection and worker control"
-status: Proposed
+status: Implemented (2026-11-04; pending merge of PRs #7–#13)
 version: 0.2.0
 date: 2026-11-03
 scope: "the parent model's half of background orchestration and worker lifecycle: requesting a background pool, collecting it without blocking, receiving its completion without worker text changing role, answering a backgrounded worker's question, and stopping, retrying and listing workers through the same paths the panel uses — never a new cancellation mechanism, meter, event schema or process supervisor"
@@ -28,6 +28,9 @@ tags:
 # SUBAGENT-11: Model-facing background spawn, collection and worker control
 
 ## Implementation status (2026-11-03)
+
+**Closed (2026-11-04).** Every §6 criterion now maps to a passing test, listed
+row by row in the [closure audit](SUBAGENT-series-closure-audit.md#subagent-11).
 
 **Wave 4 of SUBAGENT-10's plan delivers goals 2, 3, 4, 5 and 9** (branch
 `subagent-wave-4-collection-and-notices`, pending merge):

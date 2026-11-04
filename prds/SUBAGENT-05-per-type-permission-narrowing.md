@@ -23,6 +23,8 @@ tags:
 
 ## Implementation status (2026-11-03)
 
+**Re-verified (2026-11-04)** criterion by criterion in the [closure audit](SUBAGENT-series-closure-audit.md#subagent-05).
+
 Evaluated at `0a63bfba1dca68e61a06fe3b9acb4f536637396b` — the merge of PR #6 that put the series on `main` — by
 SUBAGENT-10 §3 (0.2.0). Verdicts: **D** delivered, **P** partial, **M** missing.
 Criteria are judged by behaviour; a case that exists in a file the criterion

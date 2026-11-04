@@ -1,6 +1,6 @@
 ---
 title: "SUBAGENT-07: Background and non-blocking orchestration"
-status: Implemented (phase 1)
+status: Implemented (2026-11-04; pending merge of PRs #7–#13)
 version: 0.2.0
 date: 2026-10-29
 scope: "a fire-and-return spawn mode for a subagent pool, a durable pool identity and ledger, and collection and resumption of a pool's result across turns and process restarts — never worker steering or cancellation, session lifecycle, or detached process supervision"
@@ -24,6 +24,11 @@ tags:
 # SUBAGENT-07: Background and non-blocking orchestration
 
 ## Implementation status (2026-11-03)
+
+**Closed (2026-11-04).** Every §6 criterion now maps to a passing test, listed
+row by row in the [closure audit](SUBAGENT-series-closure-audit.md#subagent-07).
+The verdicts below are the 0.2.0 audit's and the wave notes record what closed
+each gap.
 
 Evaluated at `0a63bfba1dca68e61a06fe3b9acb4f536637396b` — the merge of PR #6 that put the series on `main` — by
 SUBAGENT-10 §3 (0.2.0). Verdicts: **D** delivered, **P** partial, **M** missing.

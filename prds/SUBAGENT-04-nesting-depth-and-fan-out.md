@@ -1,6 +1,6 @@
 ---
 title: "SUBAGENT-04: Nesting depth and fan-out governance"
-status: Implemented (phase 1)
+status: Implemented (2026-11-04; pending merge of PRs #7–#13)
 version: 0.2.0
 date: 2026-10-29
 scope: "the bounds on how much work a pool may create and how deep delegation may go, and how both are enforced and reported to the parent and the TUI"
@@ -21,6 +21,11 @@ tags:
 # SUBAGENT-04: Nesting depth and fan-out governance
 
 ## Implementation status (2026-11-03)
+
+**Closed (2026-11-04).** Every §6 criterion now maps to a passing test, listed
+row by row in the [closure audit](SUBAGENT-series-closure-audit.md#subagent-04).
+The verdicts below are the 0.2.0 audit's and the wave notes record what closed
+each gap.
 
 Evaluated at `0a63bfba1dca68e61a06fe3b9acb4f536637396b` — the merge of PR #6 that put the series on `main` — by
 SUBAGENT-10 §3 (0.2.0). Verdicts: **D** delivered, **P** partial, **M** missing.

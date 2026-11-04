@@ -889,3 +889,96 @@ async def test_the_parent_model_drains_a_pool_and_learns_which_workers_never_sta
 
     assert result.not_started_workers == ("researcher #2",)
     assert _ControlledWorker.started["queued"].is_set() is False
+
+
+@pytest.mark.asyncio
+async def test_a_stopped_row_can_be_dismissed_like_a_failed_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SUBAGENT-08 criterion 11: dismiss_worker accepts stopped and failed rows."""
+    _prepare_workers(monkeypatch, ("stopped", "done"))
+    pool = _pool(
+        [SubagentTask("stopped", "researcher", "a"), SubagentTask("done", "researcher", "b")],
+        max_concurrent=2,
+        stop_grace_s=0,
+    )
+    run = asyncio.create_task(pool.run())
+    await asyncio.wait_for(_ControlledWorker.started["stopped"].wait(), timeout=1)
+    await asyncio.wait_for(_ControlledWorker.started["done"].wait(), timeout=1)
+    pool.request_stop("stopped", mode="abort", source="user", reason="not needed")
+    _ControlledWorker.release["done"].set()
+    await asyncio.wait_for(run, timeout=5)
+
+    rows = {worker.worker_id: worker for worker in pool.state.workers}
+    assert rows["stopped"].status == "stopped" and rows["done"].status == "done"
+    assert pool.dismiss_worker("done") is False  # a success stays until it folds
+    assert pool.dismiss_worker("stopped") is True
+    assert pool.state.worker("stopped").dismissed is True  # type: ignore[union-attr]
+    assert "stopped" not in {w.worker_id for w in pool.state.shown(now=10**10)}
+
+
+@pytest.mark.asyncio
+async def test_a_worker_failing_after_a_productive_turn_keeps_that_turns_text() -> None:
+    """SUBAGENT-08 criterion 13: a completed turn's text survives a later failure."""
+    from lauren_ai._agents._runner import AgentRunnerBase
+    from lauren_ai._transport import Completion, TokenUsage, ToolCall
+
+    usage = TokenUsage(input_tokens=1, output_tokens=1)
+    calls = [0]
+
+    class _Transport:
+        async def complete(self, messages: list[object], **kwargs: object) -> object:
+            calls[0] += 1
+            if calls[0] == 1:
+                return Completion(
+                    id="ask",
+                    model="m",
+                    content="",
+                    stop_reason="tool_use",
+                    usage=usage,
+                    tool_calls=[
+                        ToolCall(
+                            tool_use_id="q", name="ask_parent", input={"question": "Which module?"}
+                        )
+                    ],
+                )
+            if calls[0] == 2:
+                # The productive turn: it completes with real findings.
+                return Completion(
+                    id="t",
+                    model="m",
+                    content="Found three call sites.",
+                    tool_calls=[],
+                    stop_reason="end_turn",
+                    usage=usage,
+                )
+            raise RuntimeError("provider went away")
+
+    pool = SubagentPool(
+        [SubagentTask("w", "researcher", "look")],
+        parent_runner=AgentRunnerBase(transport=_Transport()),
+        parent_model="mock-model",
+        all_tools=[],
+        registry=DEFAULT_REGISTRY,
+        conversation_id="conv",
+        parent_run_id="turn-1",
+    )
+
+    async def answer() -> None:
+        broker = pool.communication
+        assert broker is not None
+        pending = await broker.wait_for_pending()
+        await broker.answer_question(
+            answerer="main", question_id=str(pending[0]["question_id"]), answer="the store"
+        )
+
+    answering = asyncio.create_task(answer())
+    result = await asyncio.wait_for(pool.run(), timeout=10)
+    await answering
+
+    worker = pool._results["w"]
+    assert result.failed == 1
+    assert worker.ok is False and worker.partial is True
+    assert worker.text == "Found three call sites."
+    assert "provider went away" in worker.stop_reason
+    assert "Found three call sites." in result.text and "provider went away" in result.text

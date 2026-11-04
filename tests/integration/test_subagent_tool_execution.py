@@ -1659,3 +1659,68 @@ async def test_a_nested_worker_retries_its_own_pool_and_is_refused_elsewhere(
     assert retried["ok"] is True and retried["attempt"] == 2
     for refused in (foreign, parent):
         assert "unknown subagent pool" in _json.dumps(refused)
+
+
+# ── SUBAGENT-07 criteria 9 and 13: concurrent background pools ──────────────
+
+
+async def test_two_background_pools_collect_independently_and_stay_on_the_panel(
+    tmp_path: Path,
+) -> None:
+    gates = {"alpha": asyncio.Event(), "beta": asyncio.Event()}
+
+    class _Transport:
+        async def complete(self, messages: list[object], **kwargs: object) -> object:
+            first = messages[0] if messages else {}
+            task = str(first.get("content", "")) if isinstance(first, dict) else ""
+            await gates[task].wait()
+            return _final(f"result for {task}", f"final-{task}")
+
+    journal = ConversationJournal(tmp_path / "journal.jsonl")
+    conv_store = ConversationStore()
+    supervisor = SupervisedTasks("two background pools")
+    spawn = make_spawn_subagents_tool(
+        AgentRunnerBase(transport=_Transport()),
+        "mock-model",
+        [],
+        registry=_registry("unused"),
+        conversation_id="conv",
+        parent_run_id="turn-1",
+        conversation_journal=journal,
+        conv_store=conv_store,
+    )
+    collect = _control_tools(spawn)["collect_subagent_results"]
+    try:
+        with bind_background_task_owner(supervisor, interactive=True):
+            first = await spawn(  # type: ignore[operator]
+                tasks=[{"type": "researcher", "task": "alpha"}], timeout_s=30, background=True
+            )
+            # Criterion 9: the running background pool is on the panel's signal.
+            shown = conv_store.subagent_pool_state()
+            assert shown is not None and shown.pool_id == first["pool_id"] and shown.active
+            second = await spawn(  # type: ignore[operator]
+                tasks=[{"type": "researcher", "task": "beta"}], timeout_s=30, background=True
+            )
+        assert first["pool_id"] != second["pool_id"]
+
+        # Finish and collect the second pool first; the first is still running.
+        gates["beta"].set()
+        while (await collect(second["pool_id"]))["status"] == "running":  # type: ignore[operator]
+            await asyncio.sleep(0.01)
+        beta = await collect(second["pool_id"])  # type: ignore[operator]
+        still = await collect(first["pool_id"])  # type: ignore[operator]
+        assert beta["status"] == "completed" and "result for beta" in beta["results"]
+        assert "alpha" not in beta["results"]
+        assert still["status"] == "running"
+
+        gates["alpha"].set()
+        assert await supervisor.wait(timeout=5)
+        alpha = await collect(first["pool_id"])  # type: ignore[operator]
+        assert alpha["status"] == "completed" and "result for alpha" in alpha["results"]
+        assert "beta" not in alpha["results"]
+        assert (await collect(second["pool_id"]))["results"] == beta["results"]  # type: ignore[operator]
+    finally:
+        for gate in gates.values():
+            gate.set()
+        await supervisor.aclose(timeout=0.1)
+        journal.close()

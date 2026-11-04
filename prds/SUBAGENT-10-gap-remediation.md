@@ -1,6 +1,6 @@
 ---
 title: "SUBAGENT-10: Gap remediation for the SUBAGENT series"
-status: Proposed
+status: Implemented (2026-11-04; pending merge of PRs #7–#13)
 version: 0.2.0
 date: 2026-11-03
 scope: "the decisions and file-scoped work needed to close the gaps found when SUBAGENT-01…09 were evaluated against their own §4 goals and §6 acceptance criteria at the commit that put them on main; not a redesign of the series"
@@ -61,9 +61,15 @@ cites the same commit and points back at the work-package ids defined here.
 
 ## Delivery log
 
+**Closed (2026-11-04).** All seven waves are open and green (PRs #7–#13). Every
+§6 criterion of this document and of SUBAGENT-01…09 and -11 maps to a passing
+test in the [closure audit](SUBAGENT-series-closure-audit.md).
+
 Work packages ship in waves, each as its own pull request to `main`. A wave's
-items move to *delivered* here when its PR is opened and green; the owning
-PRD's `status:` is promoted only when the PR is merged (research report §6.6).
+items move to *delivered* here when its PR is opened and green. With every
+wave green, each owning PRD's `status:` reads `Implemented (…; pending merge of
+PRs #7–#13)` and drops the qualifier when those PRs merge (research report
+§6.6).
 
 | Wave | Branch | Work packages | Criteria pinned |
 |---|---|---|---|
@@ -73,7 +79,7 @@ PRD's `status:` is promoted only when the PR is merged (research report §6.6).
 | 4 | `subagent-wave-4-collection-and-notices` | SUBAGENT-11 goals 2, 3, 4, 5, 9: supervised-only background pools, non-blocking idempotent `collect_subagent_results` with a bounded wait and journal fallback, notice-then-pull delivery (supersedes WP-6's framing), shared delivery for TUI and background sessions; R13 corrected | SUBAGENT-11 criteria 2–9, 17 (as delivery parity), 18 |
 | 5 | `subagent-wave-5-model-pool-control` | SUBAGENT-11 goals 1, 6, 7, 8, 10: `spawn_subagents(background=True)`, `subagents.on_clarification` with id-only question notices, `list_subagent_pools` / `stop_subagents` / `retry_subagent` over the existing stop and retry functions, lineage-scoped control for nested workers, a bounded conversation registry that keeps older pools retryable; three shipped defects fixed (below) | SUBAGENT-11 criteria 1, 10–16 |
 | 6 | `subagent-wave-6-event-contract` | SUBAGENT-09 goals 1–11: `SubagentEvent` and `LIFECYCLE_TABLE`, kernel `schema_version`, uniform `pool_id`/`worker_id` correlation (transcript lines included), the `subagent_worker_failed` split, one bounded-and-redacted display helper, the normative result table, `replay_pool`, derived counters with `stuck_workers`, and fail-visible transcript writes | SUBAGENT-09 criteria 1–14 |
-| 7 | `subagent-wave-7-control-remainder` | SUBAGENT-11 criteria left open by waves 4–5: session-dependent `on_clarification` default, drain reporting through `stop_subagents`, retry refusal at the budget and active-pool ceilings (a retry bypassed admission), a real nested-control integration test, headless turn-boundary delivery, and pinned parity of the foreground and Ctrl+B paths | SUBAGENT-11 criteria 3, 11, 13, 14, 17, 18 |
+| 7 | `subagent-wave-7-control-remainder` | SUBAGENT-11 criteria left open by waves 4–5: session-dependent `on_clarification` default, drain reporting through `stop_subagents`, retry refusal at the budget and active-pool ceilings (a retry bypassed admission), a real nested-control integration test, headless turn-boundary delivery, and pinned parity of the foreground and Ctrl+B paths; the closure audit's remaining evidence — journal-listed earlier pools on the panel, two background pools collected independently, message acknowledgement and undelivered counts, dismissing a stopped row, partial text after a later failure, the description default | SUBAGENT-11 criteria 3, 11, 13, 14, 17, 18; SUBAGENT-07 criteria 4, 9, 10, 12, 13; SUBAGENT-08 criteria 6, 11, 13; SUBAGENT-01 criterion 5 |
 
 Wave 1 found a third leak site beyond §3 R15: `SubagentPoolCompleted.text`
 carried the complete aggregate, unbounded and unredacted

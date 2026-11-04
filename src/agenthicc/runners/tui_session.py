@@ -2999,7 +2999,12 @@ class TUISession:
     async def _show_subagents(self) -> None:
         from agenthicc.tui.workspace.overlays.subagents import SubagentsOverlay, load_earlier
 
-        earlier = await asyncio.to_thread(load_earlier, self._subagents_root())
+        conversation = self._ctx.session_conversation
+        earlier = await asyncio.to_thread(
+            load_earlier,
+            self._subagents_root(),
+            journal=conversation.journal if conversation is not None else None,
+        )
         overlays = self._workspace.overlays
         if overlays.active and not isinstance(overlays.widget, SubagentsOverlay):
             return  # an approval or another screen took the terminal meanwhile
