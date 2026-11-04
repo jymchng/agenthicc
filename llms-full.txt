@@ -4819,6 +4819,38 @@ result and classify failures as `timeout`, `not_a_repository`, `conflict`,
 `nothing_to_commit`, `hook_failed` or `invalid_argument`; refs/branches
 starting with `-` are refused, and `git_commit` reports `git rev-parse HEAD`.
 
+### HttpDestinationPolicy
+
+```python
+@dataclass(frozen=True)
+class HttpDestinationPolicy:
+    allowed_domains: tuple[str, ...] = ()
+    allow_all: bool = False
+    resolver: Callable[[str], Awaitable[Iterable[str]]] | None = None
+
+    async def check(self, url: str) -> None: ...   # raises HttpPolicyError(code, message)
+```
+
+From `agenthicc.tools.http`, installed per session by
+`configure_network_policy()` from `security.network_allow_list` /
+`network_allow_all`; `network_policy()` returns it. `agenthicc_http_client(
+policy=...)` re-checks every request and redirect hop (`MAX_REDIRECTS = 5`).
+Private, loopback, link-local and reserved addresses are always refused.
+`fetch_page(url, offset=0)` uses it, streams up to `MAX_RESPONSE_BYTES` (5 MB),
+returns text in `MAX_PAGE_CHARS` (40,000) pages with `next_offset`, and reports
+`outside_allow_list`, `http_status` (with `retryable`), `unsupported_content`
+or `network`.
+
+### tool_result
+
+`agenthicc.tools.mcp_content.tool_result(result, *, server) -> dict` — the
+envelope for an MCP `CallToolResult` (`ok`/`content`, or `remote_error`):
+structured content whole, text joined, binary blocks saved as artifacts
+(`configure_artifact_root`), text bounded at `MAX_RESULT_CHARS` (50,000).
+`provider_safe_schema(schema) -> SafeSchema | None` rewrites input schemas for
+providers; `McpToolBridge.call_tool` returns the envelope, reconnects once, and
+opens a circuit after `CIRCUIT_FAILURES` (5) for `CIRCUIT_OPEN_S` (30 s).
+
 ### SubagentExecutionPolicy
 
 ```python

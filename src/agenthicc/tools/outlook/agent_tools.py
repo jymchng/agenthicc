@@ -49,15 +49,33 @@ async def _safe_call(coro):
 
     Prevents _OutlookNetworkError (wrapping ReadTimeout / ConnectTimeout from
     Graph API calls) from propagating to the agent turn layer and ending the
-    turn.  The agent receives {"ok": False, "error": "...", "recoverable": True}
+    turn.  The agent receives ``{"ok": False, "error_code": ..., "retryable": ...}``
     and can decide how to proceed.
     """
+    import httpx
+
     from agenthicc.tools.outlook import _OutlookNetworkError
 
     try:
         return await coro
     except _OutlookNetworkError as exc:
-        return {"ok": False, "error": str(exc), "recoverable": True}
+        cause = exc.__cause__
+        if isinstance(cause, httpx.HTTPStatusError):
+            status = cause.response.status_code
+            retryable = status in {408, 429} or status >= 500
+            return {
+                "ok": False,
+                "error_code": "http_status",
+                "status_code": status,
+                "error": f"Microsoft Graph returned HTTP {status}",
+                "retryable": retryable,
+            }
+        return {
+            "ok": False,
+            "error_code": "network",
+            "error": str(exc),
+            "retryable": True,
+        }
 
 
 @tool_network_read

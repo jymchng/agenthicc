@@ -43,6 +43,30 @@ for _git_variable in (
     os.environ.pop(_git_variable, None)
 
 
+# ── coverage: never combine an empty data file ─────────────────────────────────
+
+
+@pytest.hookimpl(hookwrapper=True, trylast=True)
+def pytest_runtestloop(session: pytest.Session) -> Iterator[None]:
+    """Delete empty ``.coverage.*`` files before pytest-cov combines them.
+
+    Under ``nox -s coverage`` (``patch = ["subprocess"]``) a child process
+    that is forked or killed before coverage saves leaves a zero-byte data
+    file behind, and the final combine then aborts the whole session with
+    ``no such table: coverage_schema`` after every test has run. An empty
+    file holds no measurements, so removing it loses nothing. This wrapper
+    is innermost (``trylast``), so its teardown runs before pytest-cov's.
+    """
+    yield
+    root = Path(str(session.config.rootpath))
+    for data_file in root.glob(".coverage.*"):
+        try:
+            if data_file.stat().st_size == 0:
+                data_file.unlink()
+        except OSError:
+            continue
+
+
 # ── cassette mark: skipped unless the file is explicitly targeted ─────────────
 
 _CASSETTE_FILE = Path(__file__).parent / "integration" / "test_cassette_replay.py"

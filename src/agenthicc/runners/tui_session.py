@@ -1061,6 +1061,14 @@ async def _build_session_context_impl(
     from agenthicc.tools.http import configure as _configure_http
 
     _configure_http(cfg.tools.http_timeout_s)
+    from agenthicc.tools.http import HttpDestinationPolicy, configure_network_policy
+
+    configure_network_policy(
+        HttpDestinationPolicy(
+            tuple(cfg.security.network_allow_list),
+            allow_all=cfg.security.network_allow_all,
+        )
+    )
     from agenthicc.tools.exec.child import configure as _configure_exec
 
     _configure_exec(cfg.tools.exec)
@@ -1343,10 +1351,14 @@ async def _build_session_context_impl(
     mcp_manager = None
     mcp_registry = None
     if cfg.tools.mcp_servers:
+        from agenthicc.memory.journal import journal_path_for
+        from agenthicc.tools.mcp_content import configure_artifact_root
         from agenthicc.tools.mcp_manager import (
             McpRequiredServerError,
             McpSessionManager,
         )
+
+        configure_artifact_root(journal_path_for(session_id).parent / "mcp-artifacts")
         from agenthicc.tools.sandbox import NetworkGuard
 
         try:

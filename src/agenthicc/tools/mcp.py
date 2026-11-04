@@ -5,9 +5,9 @@ from __future__ import annotations
 import asyncio
 import copy
 import hashlib
-import json
 import logging
 import re
+import time
 from pathlib import Path
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -18,10 +18,16 @@ if TYPE_CHECKING:
     from agenthicc.kernel.processor import EventProcessor
 
 from agenthicc.tools.base import Tool
+from agenthicc.tools.mcp_content import provider_safe_schema, tool_result
 from agenthicc.tools.mcp_server_config import McpServerConfig
 from agenthicc.kernel import Event
 
 log = logging.getLogger(__name__)
+
+#: Consecutive transport failures that open a server's circuit (TOOLR-06).
+CIRCUIT_FAILURES = 5
+#: How long an open circuit fails calls fast.
+CIRCUIT_OPEN_S = 30.0
 
 _INVALID_PROVIDER_TOOL_CHARS_RE = re.compile(r"[^A-Za-z0-9_-]")
 _PROVIDER_TOOL_NAME_MAX_LENGTH = 64
@@ -121,6 +127,13 @@ class AgenthiccMcpTool(Tool):
         self._provider_name_override = provider_name_override
         self.catalog_revision = catalog_revision
         self._catalog_revision_checker = catalog_revision_checker
+        # TOOLR-06: providers reject some JSON-schema constructs; rewrite once.
+        self._safe_schema = provider_safe_schema(schema.input_schema)
+
+    @property
+    def schema_is_provider_safe(self) -> bool:
+        """Whether the server's input schema could be made provider-safe."""
+        return self._safe_schema is not None
 
     @property
     def name(self) -> str:  # type: ignore[override]
@@ -137,7 +150,9 @@ class AgenthiccMcpTool(Tool):
 
     @property
     def parameters(self) -> dict[str, object]:  # type: ignore[override]
-        return _mutable_json_copy(self._schema.input_schema)  # type: ignore[return-value]
+        if self._safe_schema is None:
+            return {"type": "object", "properties": {}}
+        return _mutable_json_copy(self._safe_schema.schema)  # type: ignore[return-value]
 
     async def execute(
         self,
@@ -150,42 +165,17 @@ class AgenthiccMcpTool(Tool):
                 f"MCP tool {self.name!r} belongs to a stale catalog revision"
             )
         tool_call_id = context.get("tool_call_id", "")
+        if self._safe_schema is not None and self._safe_schema.wrapped:
+            wrapped = args.get("value")
+            return await self._bridge.call_tool(
+                self._schema.name, wrapped, tool_call_id=tool_call_id
+            )
         return await self._bridge.call_tool(self._schema.name, args, tool_call_id=tool_call_id)
 
 
 # ---------------------------------------------------------------------------
 # Helper functions
 # ---------------------------------------------------------------------------
-
-
-def _extract_tool_content(result: object) -> object:
-    """Extract the usable payload from an MCP ``CallToolResult``."""
-    structured = _result_field(result, "structuredContent", None)
-    if isinstance(structured, Mapping) and "result" in structured:
-        return structured["result"]
-
-    content = _result_field(result, "content", None)
-    if not content:
-        return None
-    if not isinstance(content, Sequence) or isinstance(content, (str, bytes)):
-        return content
-    if len(content) == 1:
-        block = content[0]
-        text = _result_field(block, "text", None)
-        if isinstance(text, str):
-            return _decode_json_text(text)
-        return _result_field(block, "data", None) or str(block)
-    return [
-        _result_field(b, "text", None) or _result_field(b, "data", None) or str(b) for b in content
-    ]
-
-
-def _decode_json_text(text: str) -> object:
-    """Decode JSON-encoded MCP text while leaving ordinary text untouched."""
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        return text
 
 
 def _result_field(result: object, field_name: str, default: object = None) -> object:
@@ -233,6 +223,8 @@ class McpToolBridge:
         self._network_guard = network_guard
         self._workspace_root = workspace_root.resolve() if workspace_root is not None else None
         self._last_stderr_tail = ""
+        self._consecutive_failures = 0
+        self._circuit_open_until = 0.0
 
     @property
     def server_name(self) -> str:
@@ -503,9 +495,7 @@ class McpToolBridge:
                 except Exception:  # noqa: BLE001
                     pass
 
-    async def _invoke_tool(
-        self, tool_name: str, args: dict[str, object], tool_call_id: str
-    ) -> object:
+    async def _invoke_tool(self, tool_name: str, args: object, tool_call_id: str) -> object:
         call = self._client.call_tool
         try:
             return await call(tool_name, args, tool_call_id=tool_call_id)
@@ -517,35 +507,69 @@ class McpToolBridge:
     async def call_tool(
         self,
         tool_name: str,
-        args: dict[str, object],
+        args: object,
         tool_call_id: str = "",
-    ) -> object:
-        """Call a tool on the remote MCP server and return the extracted result."""
+    ) -> dict[str, object]:
+        """Call a remote tool and return its TOOLR-04 envelope (TOOLR-06).
+
+        A server that is down gets one reconnect attempt per call; after
+        :data:`CIRCUIT_FAILURES` consecutive transport failures the circuit
+        opens for :data:`CIRCUIT_OPEN_S` and calls fail fast as
+        ``unavailable``. A remote ``isError`` is a result, not an exception.
+        """
+        now = time.monotonic()
+        if self._circuit_open_until > now:
+            return {
+                "ok": False,
+                "error_code": "unavailable",
+                "error": (
+                    f"MCP server {self._cfg.name!r} failed {CIRCUIT_FAILURES} times in a row; "
+                    f"retrying in {self._circuit_open_until - now:.0f}s"
+                ),
+                "retryable": True,
+            }
         if not self._connected:
-            raise McpToolCallError(f"Server {self._cfg.name!r} is not connected")
+            try:
+                await self.connect()
+            except Exception as exc:  # noqa: BLE001
+                self._record_failure()
+                raise McpToolCallError(
+                    f"Server {self._cfg.name!r} is not connected and did not reconnect: {exc}"
+                ) from exc
         try:
             result = await asyncio.wait_for(
                 self._invoke_tool(tool_name, args, tool_call_id),
                 timeout=self._cfg.effective_tool_timeout_s,
             )
+        except asyncio.TimeoutError:
+            return {
+                "ok": False,
+                "error_code": "timeout",
+                "error": (
+                    f"MCP call {self._cfg.name}/{tool_name} took longer than "
+                    f"{self._cfg.effective_tool_timeout_s:g}s"
+                ),
+                "retryable": True,
+            }
         except Exception as exc:  # noqa: BLE001
-            # Re-raise McpCallError from lauren_mcp transparently when available
-            if (
+            protocol_error = (
                 _LAUREN_MCP_AVAILABLE
                 and _McpCallError is not None
                 and isinstance(exc, _McpCallError)
-            ):
-                raise McpToolCallError(
-                    f"MCP call {self._cfg.name}/{tool_name} failed: {exc}"
-                ) from exc
-            raise McpToolCallError(f"MCP call {self._cfg.name}/{tool_name} failed: {exc}") from exc
-
-        if _result_field(result, "isError", False):
-            err_text = _extract_text_content(result)
-            raise McpToolCallError(
-                f"MCP server {self._cfg.name!r} returned error for {tool_name!r}: {err_text}"
             )
-        return _extract_tool_content(result)
+            if not protocol_error:
+                # A transport failure: the next call reconnects first.
+                self._connected = False
+                self._record_failure()
+            raise McpToolCallError(f"MCP call {self._cfg.name}/{tool_name} failed: {exc}") from exc
+        self._consecutive_failures = 0
+        return tool_result(result, server=self._cfg.name)
+
+    def _record_failure(self) -> None:
+        self._consecutive_failures += 1
+        if self._consecutive_failures >= CIRCUIT_FAILURES:
+            self._circuit_open_until = time.monotonic() + CIRCUIT_OPEN_S
+            self._consecutive_failures = 0
 
 
 # ---------------------------------------------------------------------------
@@ -600,6 +624,11 @@ class McpToolRegistry:
         tools: list[AgenthiccMcpTool] = []
         for schema in schemas:
             tool = AgenthiccMcpTool(bridge, schema)
+            if not tool.schema_is_provider_safe:
+                log.warning(
+                    "MCP tool %r withheld: its input schema is not provider-safe", tool.name
+                )
+                continue
             self._tools[tool.name] = tool
             await self._emit_tool_registered(tool)
             tools.append(tool)

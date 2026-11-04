@@ -1,6 +1,6 @@
 ---
 title: "TOOLR-05: Every network tool under one destination policy"
-status: Proposed
+status: Implemented (2026-11-04; wave 3, pending merge)
 version: 1.0.0
 date: 2026-11-04
 scope: "fetch_page, web_search, the Outlook Graph backend and any tool using agenthicc_http_client: allow-list, SSRF protection, redirects, response bounds, content handling and error classification"
@@ -9,6 +9,40 @@ tags: [tools, network, security]
 ---
 
 # TOOLR-05: Every network tool under one destination policy
+
+
+## Implementation status (2026-11-04)
+
+Delivered in wave 3 (branch `tools-wave-3-network-and-mcp`).
+
+- `agenthicc.tools.http.HttpDestinationPolicy` reuses `BrowserPolicy`'s origin
+  parsing and address checks. It is installed per session from
+  `security.network_allow_list` and the new `security.network_allow_all`.
+- `agenthicc_http_client(policy=…)` re-checks every request and redirect hop
+  through an httpx request hook, with `max_redirects=5`.
+- `fetch_page`:
+  - checks first, then streams the body up to 5 MB;
+  - extracts HTML text and links in a thread;
+  - pages text 40,000 characters at a time (`offset`, `next_offset`);
+  - refuses non-text content types with `unsupported_content`;
+  - returns `http_status`, `outside_allow_list` and `network` envelopes.
+- `search_web` and Outlook classify HTTP status errors as `http_status`,
+  using `retryable` instead of `recoverable`.
+
+Amendments:
+- Brave Search and Microsoft Graph are operator-configured fixed endpoints,
+  not model-chosen destinations, so they are not gated by the allow-list
+  (goal 5).
+- The 5 MB and 40,000-character bounds are module constants
+  (`MAX_RESPONSE_BYTES`, `MAX_PAGE_CHARS`), not settings.
+- Private and loopback addresses are always refused for `fetch_page`. Local
+  servers are reached through the browser tools, which allow loopback.
+- DNS is checked per request and per redirect hop, not per socket connection.
+- The "no private client" check covers `tools/`, `skills/` and `workflows/`.
+  The session-service client and the localhost readiness probe are internal
+  infrastructure.
+
+Tests: `tests/unit/test_fetch_page_policy.py` (criteria 1–7).
 
 ## 1. Problem
 

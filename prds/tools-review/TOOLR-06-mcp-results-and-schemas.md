@@ -1,6 +1,6 @@
 ---
 title: "TOOLR-06: MCP results, schemas and reconnection"
-status: Proposed
+status: Implemented (2026-11-04; wave 3, pending merge)
 version: 1.0.0
 date: 2026-11-04
 scope: "how remote MCP tools are presented to providers and how their results come back: content-block handling, size bounds, schema compatibility, and recovery from a crashed server"
@@ -9,6 +9,33 @@ tags: [tools, mcp, robustness]
 ---
 
 # TOOLR-06: MCP results, schemas and reconnection
+
+
+## Implementation status (2026-11-04)
+
+Delivered in wave 3 (branch `tools-wave-3-network-and-mcp`).
+
+`agenthicc.tools.mcp_content` provides:
+- `tool_result`: structured content whole, text joined, image/audio/binary
+  blocks written as artifacts, resource links described, a 50,000-character
+  bound, and `isError` → `remote_error`;
+- `provider_safe_schema`: inlines `$ref`, flattens combinators, wraps a
+  non-object root (unwrapped on call), and drops meta keywords.
+
+`McpToolBridge.call_tool` now returns the envelope. It reconnects once when a
+server is down, opens a circuit after 5 consecutive transport failures for 30
+seconds, and reports a timeout as `timeout`. Tools with unrepairable schemas
+are withheld by the session manager and the legacy registry. Artifacts go to
+the session's `mcp-artifacts/` directory.
+
+Not delivered:
+- `notifications/cancelled` on timeout (goal 5). It needs a cancellation API
+  in `lauren_mcp`, which this environment does not install. Timed-out calls
+  are reported but not cancelled server-side.
+- Native image content in provider requests. Artifacts are used for every
+  provider.
+
+Tests: `tests/unit/test_mcp_bridge.py` (criteria 1–5).
 
 ## 1. Problem
 

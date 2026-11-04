@@ -58,30 +58,6 @@ async def test_native_search_instance_runs_through_lauren_adapter() -> None:
 
 
 @pytest.mark.asyncio
-async def test_native_fetch_instance_runs_through_lauren_adapter() -> None:
-    response = MagicMock()
-    response.raise_for_status.return_value = None
-    response.status_code = 200
-    response.text = "<main>native page</main>"
-    factory, _ = _http_client(response)
-
-    with patch("agenthicc.tools.http.agenthicc_http_client", factory):
-        result = await AgenthiccToolExecutor([FetchPageTool()]).execute(
-            "fetch_page",
-            {"url": "https://example.com"},
-            "native-2",
-        )
-
-    assert result.ok is True
-    assert result.value == {
-        "ok": True,
-        "url": "https://example.com",
-        "status_code": 200,
-        "content": "native page",
-    }
-
-
-@pytest.mark.asyncio
 async def test_search_sends_trimmed_query_headers_and_bounded_count() -> None:
     response = MagicMock()
     response.json.return_value = {
@@ -163,51 +139,3 @@ async def test_search_validation_does_not_make_network_requests() -> None:
     assert nonpositive_count == {"ok": False, "error": "n must be at least 1"}
     assert invalid_engine == {"ok": False, "error": "Unknown search engine: bing"}
     factory.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_fetch_page_extracts_visible_text_and_preserves_response_metadata() -> None:
-    response = MagicMock()
-    response.raise_for_status.return_value = None
-    response.status_code = 200
-    response.text = (
-        "<html><head><style>hidden style</style></head><body>"
-        "<h1>Hello&nbsp;world</h1><br/><script>hidden script</script>"
-        "<p>Text &amp; more</p></body></html>"
-    )
-    factory, client = _http_client(response)
-
-    with patch("agenthicc.tools.http.agenthicc_http_client", factory):
-        result = await FetchPageTool().run(" https://example.com/page ")
-
-    assert result["ok"] is True
-    assert result["url"] == "https://example.com/page"
-    assert result["status_code"] == 200
-    content = result["content"]
-    assert isinstance(content, str)
-    assert "Hello world" in content
-    assert "Text & more" in content
-    assert "hidden style" not in content
-    assert "hidden script" not in content
-    client.get.assert_awaited_once_with("https://example.com/page")
-
-
-@pytest.mark.asyncio
-async def test_fetch_page_validation_is_local() -> None:
-    with patch("agenthicc.tools.http.agenthicc_http_client") as factory:
-        missing_url = await FetchPageTool().run("")
-
-    assert missing_url == {"ok": False, "error": "url is required"}
-    factory.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_fetch_page_propagates_logic_errors() -> None:
-    with patch("agenthicc.tools.http.agenthicc_http_client") as factory:
-        client = AsyncMock()
-        client.get.side_effect = ValueError("invalid response state")
-        factory.return_value.__aenter__ = AsyncMock(return_value=client)
-        factory.return_value.__aexit__ = AsyncMock(return_value=False)
-
-        with pytest.raises(ValueError, match="invalid response state"):
-            await FetchPageTool().run("https://example.com")

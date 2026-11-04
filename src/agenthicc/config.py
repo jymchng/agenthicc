@@ -1652,6 +1652,10 @@ class ToolSettings:
 class SecuritySettings:
     allowed_paths: list[str] = field(default_factory=lambda: ["/workspace"])
     network_allow_list: list[str] = field(default_factory=list)
+    #: Let model-chosen HTTP destinations (``fetch_page``) reach any public
+    #: host instead of only ``network_allow_list``. Private and loopback
+    #: addresses stay blocked either way (TOOLR-05).
+    network_allow_all: bool = False
 
 
 @dataclass
@@ -2703,6 +2707,7 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
     security = SecuritySettings(
         allowed_paths=_as_string_list(se.get("allowed_paths"), ("/workspace",)),
         network_allow_list=_as_string_list(se.get("network_allow_list")),
+        network_allow_all=_as_bool(se.get("network_allow_all"), False),
     )
 
     beh = _section(data.get("behaviour"))
