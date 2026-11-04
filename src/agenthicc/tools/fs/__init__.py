@@ -8,6 +8,7 @@ import re
 import shutil
 import stat
 from collections.abc import Callable, Mapping
+from contextlib import AbstractAsyncContextManager
 from pathlib import Path
 from agenthicc.tools.base import Tool, arg_bool, arg_int, arg_str
 from agenthicc.tools.sandbox import WorkspaceView
@@ -24,37 +25,21 @@ _MAX_LIST_ENTRIES = 1000  # max entries from list_directory/search_files
 _MAX_TOOL_OUTPUT_CHARS = 100_000  # ~25k tokens cap for read_file/read_lines
 
 
-def _git_keep_filter(root: Path) -> "Callable[[str], bool] | None":
-    """Return a predicate keeping only git-relevant paths, or ``None``.
+#: Why a discovery stopped early, as told to the model.
+_TRUNCATION_NOTES: dict[str, str] = {
+    "result_cap": f"results capped at {_MAX_LIST_ENTRIES}; narrow the pattern or path",
+    "examined_cap": "stopped after 50,000 entries; narrow the path",
+    "time_cap": "stopped after 10 s; narrow the path",
+}
+#: Files a grep reads at most before stopping.
+_MAX_GREP_FILES = 20_000
 
-    Uses ``git ls-files --cached --others --exclude-standard`` so the project's
-    own ``.gitignore`` defines what is relevant (tracked + untracked-not-ignored)
-    — far more complete and correct than a hardcoded blocklist.  Returns ``None``
-    when *root* is not inside a git repo (or git is unavailable), so the caller
-    falls back to reading everything (capped + backstopped by Layer C).
-    """
-    import subprocess
 
-    try:
-        proc = subprocess.run(
-            ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
-            cwd=str(root),
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if proc.returncode != 0:
-        return None
-    files = {line for line in proc.stdout.splitlines() if line}
-    # A directory is relevant if it is a prefix of any relevant file.
-    relevant: set[str] = set(files)
-    for f in files:
-        parts = f.split("/")
-        for i in range(1, len(parts)):
-            relevant.add("/".join(parts[:i]))
-    return lambda relpath: relpath in relevant
+def _grep_slot() -> "AbstractAsyncContextManager[object]":
+    """Content scanning shares the discovery walk limiter."""
+    from agenthicc.tools.fs.discovery import _limiter
+
+    return _limiter()
 
 
 def _truncate_output(text: str, limit: int = _MAX_TOOL_OUTPUT_CHARS) -> tuple[str, bool]:
@@ -69,6 +54,23 @@ def _truncate_output(text: str, limit: int = _MAX_TOOL_OUTPUT_CHARS) -> tuple[st
     head = (keep * 2) // 3
     tail = keep - head
     return text[:head] + marker + (text[-tail:] if tail else ""), True
+
+
+_walk_limit = 2
+
+
+def configure_walk_limit(limit: int) -> None:
+    """Set how many filesystem walks may run at once (``[tools] max_fs_walks``).
+
+    Lives here, not in :mod:`agenthicc.tools.fs.discovery`, so session
+    startup can set it without importing the walker before the first frame.
+    """
+    global _walk_limit
+    _walk_limit = max(1, limit)
+
+
+def walk_limit() -> int:
+    return _walk_limit
 
 
 def _view(context: Mapping[str, object]) -> WorkspaceView:
@@ -156,41 +158,6 @@ async def _authorized_path(
     return _view(context).resolve(path)
 
 
-async def _authorize_discovered_paths(
-    context: Mapping[str, object],
-    candidates: list[Path],
-    *,
-    operation: str,
-    tool_name: str,
-) -> list[tuple[Path, Path]]:
-    """Authorize each discovered path before metadata or content access.
-
-    Directory/search tools first authorize their root, then discover names.
-    A symlink or nested path can still resolve outside that root, so every
-    candidate gets its own canonical decision before the adapter calls
-    ``stat()``, ``is_file()``, or ``read_text()`` on it.  Denied candidates are
-    omitted from discovery results rather than leaking a decoy or causing a
-    batch search to fail open.
-    """
-
-    policy = _policy(context)
-    if policy is None:
-        return [(candidate, candidate) for candidate in candidates]
-    authorized: list[tuple[Path, Path]] = []
-    for candidate in candidates:
-        try:
-            canonical = await policy.authorize(
-                str(candidate),
-                operation=operation,
-                tool_name=tool_name,
-                tool_input={"path": str(candidate)},
-            )
-        except (OSError, PermissionError, ValueError):
-            continue
-        authorized.append((candidate, canonical))
-    return authorized
-
-
 async def _authorize_tool(
     context: Mapping[str, object],
     tool_name: str,
@@ -269,52 +236,62 @@ class ReadFileTool(Tool):
             resolved = await _resolve_path(context, path, operation="read", tool_name=self.name)
         except PermissionError as e:
             return {"ok": False, "error": f"permission_denied: {e}"}
-        if not resolved.exists():
-            return {"ok": False, "error": f"not_found: {path}"}
-        if resolved.stat().st_size > _MAX_FILE_SIZE:
-            return {"ok": False, "error": f"file_too_large: {resolved.stat().st_size} bytes"}
-        # PRD-132 L1: serve from the durable file cache when the file is
-        # unchanged (mtime/size/encoding match); otherwise read and record.
-        from agenthicc.tools.fs.file_cache import get_file_cache
 
-        _fc = get_file_cache()
-        _abspath = str(resolved)
-        if _fc is not None:
-            _hit = _fc.get_fresh(_abspath, encoding=encoding)
-            if _hit is not None:
-                # PRD-133 Layer A: cap returned content (cache keeps the full bytes).
-                _out, _trunc = _truncate_output(_hit)
-                _res: dict[str, object] = {
-                    "ok": True,
-                    "content": _out,
-                    "size_bytes": resolved.stat().st_size,
-                    "encoding": encoding,
-                    "cached": True,
-                    "version": _record_version(resolved),
+        def _read() -> dict[str, object]:
+            # TOOLR-09: one thread does the whole read. The cache stamp is the
+            # stat taken *before* the read, and content is cached only when a
+            # second stat agrees — a write landing mid-read is never cached.
+            from agenthicc.tools.fs.edits import FILE_VERSIONS, file_version
+            from agenthicc.tools.fs.file_cache import get_file_cache
+
+            try:
+                before = resolved.stat()
+            except FileNotFoundError:
+                return {"ok": False, "error_code": "not_found", "error": f"not_found: {path}"}
+            if before.st_size > _MAX_FILE_SIZE:
+                return {
+                    "ok": False,
+                    "error_code": "too_large",
+                    "error": f"file_too_large: {before.st_size} bytes",
                 }
-                if _trunc:
-                    _res["truncated"] = True
-                return _res
-        try:
-            content = await asyncio.to_thread(
-                resolved.read_text, encoding=encoding, errors="replace"
-            )
-            if _fc is not None:
-                _fc.store(_abspath, content, encoding=encoding)  # store full content
+            cache = get_file_cache()
+            content = cache.get_fresh(str(resolved), encoding=encoding) if cache else None
+            cached = content is not None
+            if content is None:
+                content = resolved.read_text(encoding=encoding, errors="replace")
+                after = resolved.stat()
+                if cache is not None and (after.st_mtime_ns, after.st_size) == (
+                    before.st_mtime_ns,
+                    before.st_size,
+                ):
+                    cache.store_stamped(
+                        str(resolved),
+                        content,
+                        mtime_ns=before.st_mtime_ns,
+                        size=before.st_size,
+                        encoding=encoding,
+                    )
+            version = file_version(before)
+            FILE_VERSIONS.record(resolved, version)
             # PRD-133 Layer A: cap returned content to bound context tokens.
-            _out, _trunc = _truncate_output(content)
-            _res = {
+            out, truncated = _truncate_output(content)
+            result: dict[str, object] = {
                 "ok": True,
-                "content": _out,
-                "size_bytes": resolved.stat().st_size,
+                "content": out,
+                "size_bytes": before.st_size,
                 "encoding": encoding,
-                "version": _record_version(resolved),
+                "version": version,
             }
-            if _trunc:
-                _res["truncated"] = True
-            return _res
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
+            if cached:
+                result["cached"] = True
+            if truncated:
+                result["truncated"] = True
+            return result
+
+        try:
+            return await asyncio.to_thread(_read)
+        except (OSError, LookupError) as e:
+            return {"ok": False, "error_code": "io_error", "error": str(e)}
 
 
 class WriteFileTool(Tool):
@@ -595,55 +572,50 @@ class ListDirectoryTool(Tool):
             resolved = await _resolve_path(context, path, operation="list", tool_name=self.name)
         except PermissionError as e:
             return {"ok": False, "error": f"permission_denied: {e}"}
-        if not resolved.is_dir():
-            return {"ok": False, "error": f"not_a_directory: {path}"}
+        if not await asyncio.to_thread(resolved.is_dir):
+            return {"ok": False, "error_code": "not_found", "error": f"not_a_directory: {path}"}
+        from agenthicc.tools.fs.discovery import discover
 
-        candidates = await asyncio.to_thread(
-            lambda: list((resolved.rglob if recursive else resolved.glob)(pattern))
-        )
-        authorized = await _authorize_discovered_paths(
+        found = await discover(
             context,
-            candidates,
+            resolved,
+            pattern=pattern,
+            recursive=recursive,
+            include_hidden=include_hidden,
+            include_ignored=not recursive or arg_bool(args, "include_ignored", False),
+            limit=_MAX_LIST_ENTRIES,
             operation="list",
             tool_name=self.name,
         )
 
-        def _list() -> tuple[list[dict[str, object]], bool]:
+        def _describe() -> list[dict[str, object]]:
             entries: list[dict[str, object]] = []
-            truncated = False
-            # Recursive listings respect .gitignore via git ls-files; a flat
-            # (non-recursive) listing shows the directory's literal contents.
-            keep = _git_keep_filter(resolved) if recursive else None
-            for original, canonical in authorized:
-                if not include_hidden and original.name.startswith("."):
-                    continue
-                rel = original.relative_to(resolved)
-                if keep is not None and not keep(str(rel)):
-                    continue
-                if len(entries) >= _MAX_LIST_ENTRIES:
-                    truncated = True
-                    break
+            for item in found.entries:
                 try:
-                    s = canonical.stat()
-                    entries.append(
-                        {
-                            "name": original.name,
-                            "path": str(rel),
-                            "type": "dir" if canonical.is_dir() else "file",
-                            "size_bytes": s.st_size,
-                            "modified_at": datetime.datetime.fromtimestamp(s.st_mtime).isoformat(),
-                        }
-                    )
+                    st = item.canonical.stat()
                 except OSError:
-                    pass
-            entries.sort(key=lambda e: str(e["path"]))
-            return entries, truncated
+                    continue
+                entries.append(
+                    {
+                        "name": item.original.name,
+                        "path": item.relative,
+                        "type": "dir" if item.is_dir else "file",
+                        "size_bytes": st.st_size,
+                        "modified_at": datetime.datetime.fromtimestamp(st.st_mtime).isoformat(),
+                    }
+                )
+            return entries
 
-        entries, truncated = await asyncio.to_thread(_list)
-        result: dict[str, object] = {"entries": entries, "count": len(entries)}
-        if truncated:
+        entries = await asyncio.to_thread(_describe)
+        result: dict[str, object] = {
+            "ok": True,
+            "entries": entries,
+            "count": len(entries),
+            "discovery": found.diagnostics(),
+        }
+        if found.truncated:
             result["truncated"] = True
-            result["note"] = f"results capped at {_MAX_LIST_ENTRIES}; narrow the pattern or path"
+            result["note"] = _TRUNCATION_NOTES[found.truncated]
         return result
 
 
@@ -732,38 +704,29 @@ class SearchFilesTool(Tool):
         except PermissionError as e:
             return {"ok": False, "error": f"permission_denied: {e}"}
 
-        candidates = await asyncio.to_thread(
-            lambda: list((resolved.rglob if recursive else resolved.glob)(pattern))
-        )
-        authorized = await _authorize_discovered_paths(
+        from agenthicc.tools.fs.discovery import discover
+
+        found = await discover(
             context,
-            candidates,
+            resolved,
+            pattern=pattern,
+            recursive=recursive,
+            files_only=True,
+            include_ignored=arg_bool(args, "include_ignored", False),
+            limit=_MAX_LIST_ENTRIES,
             operation="search",
             tool_name=self.name,
         )
-
-        def _search() -> tuple[list[str], bool]:
-            matches: list[str] = []
-            truncated = False
-            keep = _git_keep_filter(resolved)  # respect .gitignore; None → full walk
-            for original, canonical in authorized:
-                if not canonical.is_file():
-                    continue
-                rel = str(original.relative_to(resolved))
-                if keep is not None and not keep(rel):
-                    continue
-                if len(matches) >= _MAX_LIST_ENTRIES:
-                    truncated = True
-                    break
-                matches.append(rel)
-            matches.sort()
-            return matches, truncated
-
-        matches, truncated = await asyncio.to_thread(_search)
-        result: dict[str, object] = {"matches": matches, "count": len(matches)}
-        if truncated:
+        matches = [item.relative for item in found.entries]
+        result: dict[str, object] = {
+            "ok": True,
+            "matches": matches,
+            "count": len(matches),
+            "discovery": found.diagnostics(),
+        }
+        if found.truncated:
             result["truncated"] = True
-            result["note"] = f"results capped at {_MAX_LIST_ENTRIES}; narrow the pattern"
+            result["note"] = _TRUNCATION_NOTES[found.truncated]
         return result
 
 
@@ -793,45 +756,64 @@ class GrepFilesTool(Tool):
         except PermissionError as e:
             return {"ok": False, "error": f"permission_denied: {e}"}
 
-        candidates = await asyncio.to_thread(
-            lambda: list((resolved.rglob if recursive else resolved.glob)("*"))
-        )
-        authorized = await _authorize_discovered_paths(
+        try:
+            compiled = re.compile(pattern)
+        except re.error as exc:
+            return {
+                "ok": False,
+                "error_code": "invalid_argument",
+                "error": f"invalid regular expression: {exc}",
+            }
+        from agenthicc.tools.fs.discovery import discover
+
+        found = await discover(
             context,
-            candidates,
+            resolved,
+            pattern="*",
+            recursive=recursive,
+            files_only=True,
+            include_ignored=arg_bool(args, "include_ignored", False),
+            limit=_MAX_GREP_FILES,
             operation="search",
             tool_name=self.name,
         )
 
-        def _grep() -> list[dict[str, object]]:
-            compiled = re.compile(pattern)
+        def _grep() -> tuple[list[dict[str, object]], int]:
             matches: list[dict[str, object]] = []
-            keep = _git_keep_filter(resolved)  # respect .gitignore; None → full walk
-            for original, canonical in sorted(authorized, key=lambda item: str(item[0])):
-                if not canonical.is_file():
-                    continue
-                rel = str(original.relative_to(resolved))
-                if keep is not None and not keep(rel):
-                    continue
+            files_matched = 0
+            for item in found.entries:
                 try:
-                    text = canonical.read_text(encoding="utf-8", errors="strict")
+                    text = item.canonical.read_text(encoding="utf-8", errors="strict")
                 except (UnicodeDecodeError, OSError):
                     continue
+                hit = False
                 for i, line in enumerate(text.splitlines(), 1):
                     if compiled.search(line):
+                        hit = True
                         matches.append(
-                            {
-                                "file": rel,
-                                "line_number": i,
-                                "line": line.rstrip(),
-                            }
+                            {"file": item.relative, "line_number": i, "line": line.rstrip()}
                         )
                         if len(matches) >= max_results:
-                            return matches
-            return matches
+                            return matches, files_matched + 1
+                files_matched += hit
+            return matches, files_matched
 
-        matches = await asyncio.to_thread(_grep)
-        return {"matches": matches, "count": len(matches)}
+        async with _grep_slot():
+            matches, files_matched = await asyncio.to_thread(_grep)
+        result: dict[str, object] = {
+            "ok": True,
+            "matches": matches,
+            "count": len(matches),
+            "files_matched": files_matched,
+            "discovery": found.diagnostics(),
+        }
+        if len(matches) >= max_results:
+            result["truncated"] = True
+            result["note"] = f"stopped at max_results={max_results}"
+        elif found.truncated:
+            result["truncated"] = True
+            result["note"] = _TRUNCATION_NOTES[found.truncated]
+        return result
 
 
 class GetFileInfoTool(Tool):

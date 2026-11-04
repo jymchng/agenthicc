@@ -8,6 +8,8 @@ capability-restricted modes such as Plan.
 NOTE: no ``from __future__ import annotations`` — @tool() inspects real annotations.
 """
 
+import asyncio
+
 from lauren_ai._tools import tool
 
 from agenthicc.tools.capabilities import tool_exploratory, tool_read, tool_read_search
@@ -40,7 +42,7 @@ async def list_agenthicc_docs(section: str = "") -> dict[str, object]:
     """
     from agenthicc.tools.introspect import docs_root, list_docs
 
-    if docs_root() is None:
+    if await asyncio.to_thread(docs_root) is None:
         from agenthicc.tools.introspect import DOCS_DIR_ENV
 
         return {
@@ -52,7 +54,7 @@ async def list_agenthicc_docs(section: str = "") -> dict[str, object]:
             ),
         }
 
-    entries = list_docs(section)
+    entries = await asyncio.to_thread(list_docs, section)
     return {
         "ok": True,
         "section": section,
@@ -80,7 +82,7 @@ async def read_agenthicc_doc(
     """
     from agenthicc.tools.introspect import read_doc
 
-    return read_doc(path, start_line=start_line, max_lines=max_lines)
+    return await asyncio.to_thread(read_doc, path, start_line=start_line, max_lines=max_lines)
 
 
 @tool_exploratory
@@ -103,7 +105,7 @@ async def search_agenthicc_docs(
     """
     from agenthicc.tools.introspect import search_docs
 
-    return search_docs(query, max_results=max_results, section=section)
+    return await asyncio.to_thread(search_docs, query, max_results=max_results, section=section)
 
 
 @tool_exploratory
@@ -128,7 +130,7 @@ async def inspect_agenthicc_source(target: str, include_source: bool = True) -> 
     """
     from agenthicc.tools.introspect import resolve_source
 
-    return resolve_source(target, include_source=include_source)
+    return await asyncio.to_thread(resolve_source, target, include_source=include_source)
 
 
 @tool_exploratory
@@ -151,7 +153,7 @@ async def search_agenthicc_source(
     """
     from agenthicc.tools.introspect import search_source
 
-    return search_source(query, max_results=max_results, module=module)
+    return await asyncio.to_thread(search_source, query, max_results=max_results, module=module)
 
 
 #: All agenthicc self-inspection tools, in the order they are presented.

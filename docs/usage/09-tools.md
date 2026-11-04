@@ -60,6 +60,13 @@ tools discovered from `.agenthicc/tools/`.
   prompt, under a deadline that kills it. Refs and branches that look like
   options are refused. `git_commit` returns the hash from `git rev-parse HEAD`,
   and `git_diff` counts from `--numstat`.
+- **Bounded discovery** — `search_files`, `grep_files` and `list_directory`
+  walk once in a worker thread. They skip ignored directories before entering
+  them (`.gitignore`, or `node_modules`, `.venv`, `__pycache__`… outside git;
+  `include_ignored=true` bypasses this). They stop at 1,000 results, 50,000
+  examined entries or 10 seconds, and say which. At most `[tools]
+  max_fs_walks` walks run at once. In-scope paths need no per-file check;
+  only a symlink pointing outside the workspace goes to the approval policy.
 - **Gates fail closed** — if the capability or approval check itself fails,
   the tool is not run and the model receives `error_code: "internal"`
   (`FailClosedGate`). The gates run after every other hook, so they decide on

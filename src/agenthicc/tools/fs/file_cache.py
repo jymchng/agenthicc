@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import os
 import sqlite3
+import threading
 import time
 from pathlib import Path
 
@@ -43,17 +44,20 @@ class WorkspaceFileCache:
     the cache for a session does no disk I/O before its first frame (AGX-02).
     """
 
-    __slots__ = ("_db", "_db_path")
+    __slots__ = ("_db", "_db_path", "_lock")
 
     def __init__(self, db_path: Path) -> None:
         self._db_path = db_path
         self._db: sqlite3.Connection | None = None
+        # Tools read through worker threads (TOOLR-09): one connection,
+        # shared under a lock, is used from whichever thread runs the read.
+        self._lock = threading.RLock()
 
     def _connection(self) -> sqlite3.Connection:
         db = self._db
         if db is None:
             self._db_path.parent.mkdir(parents=True, exist_ok=True)
-            db = sqlite3.connect(str(self._db_path))
+            db = sqlite3.connect(str(self._db_path), check_same_thread=False)
             db.execute("PRAGMA journal_mode=WAL")
             db.executescript(_SCHEMA)
             db.commit()
@@ -71,14 +75,15 @@ class WorkspaceFileCache:
             st = os.stat(abspath)
         except OSError:
             return None
-        row = (
-            self._connection()
-            .execute(
-                "SELECT mtime_ns, size, encoding, content FROM files WHERE abspath=?",
-                (abspath,),
+        with self._lock:
+            row = (
+                self._connection()
+                .execute(
+                    "SELECT mtime_ns, size, encoding, content FROM files WHERE abspath=?",
+                    (abspath,),
+                )
+                .fetchone()
             )
-            .fetchone()
-        )
         if row is None:
             return None
         mtime_ns, size, enc, content = row
@@ -86,24 +91,45 @@ class WorkspaceFileCache:
             return content if isinstance(content, str) else None
         return None
 
+    def store_stamped(
+        self, abspath: str, content: str, *, mtime_ns: int, size: int, encoding: str = "utf-8"
+    ) -> None:
+        """Record *content* with the stamp the caller observed *before* reading it."""
+        sha = hashlib.sha256(content.encode(encoding, errors="replace")).hexdigest()
+        with self._lock:
+            db = self._connection()
+            db.execute(
+                "INSERT OR REPLACE INTO files "
+                "(abspath, sha256, mtime_ns, size, encoding, content, updated_at) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (abspath, sha, mtime_ns, size, encoding, content, time.time()),
+            )
+            db.commit()
+
     def store(self, abspath: str, content: str, encoding: str = "utf-8") -> None:
-        """Record *content* for *abspath* with its current freshness stamp."""
+        """Record bytes this process just wrote, stamped with the file's current state.
+
+        Only for content the caller wrote itself (TOOLR-01 writes): nothing
+        else can have changed it between the write and this stat.
+        """
         try:
             st = os.stat(abspath)
         except OSError:
             return
-        sha = hashlib.sha256(content.encode(encoding, errors="replace")).hexdigest()
-        db = self._connection()
-        db.execute(
-            "INSERT OR REPLACE INTO files "
-            "(abspath, sha256, mtime_ns, size, encoding, content, updated_at) "
-            "VALUES (?,?,?,?,?,?,?)",
-            (abspath, sha, st.st_mtime_ns, st.st_size, encoding, content, time.time()),
+        self.store_stamped(
+            abspath, content, mtime_ns=st.st_mtime_ns, size=st.st_size, encoding=encoding
         )
-        db.commit()
+
+    def forget(self, abspath: str) -> None:
+        """Drop *abspath*'s entry."""
+        with self._lock:
+            db = self._connection()
+            db.execute("DELETE FROM files WHERE abspath=?", (abspath,))
+            db.commit()
 
     def __len__(self) -> int:
-        return int(self._connection().execute("SELECT COUNT(*) FROM files").fetchone()[0])
+        with self._lock:
+            return int(self._connection().execute("SELECT COUNT(*) FROM files").fetchone()[0])
 
     def close(self) -> None:
         db = self._db

@@ -14,3 +14,9 @@ The study, and the PRDs that fix what it found. Start with
 
 Order: TUIR-04's benchmark lands first (it is the failing test), then TUIR-01
 and TUIR-02 together, then TUIR-03, then TUIR-05.
+
+## Delivery log
+
+| Wave | Branch | PRDs |
+|---|---|---|
+| tools 4 | `tools-wave-4-discovery-off-loop` | TUIR-01, TUIR-02 |
