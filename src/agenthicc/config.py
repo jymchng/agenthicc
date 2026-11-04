@@ -1286,6 +1286,8 @@ class SubagentSettings:
     on_budget_exceeded: Literal["abort", "drain"] = "drain"
     stop_grace_s: float = 5.0
     max_budget: SubagentBudgetCeiling = field(default_factory=SubagentBudgetCeiling)
+    #: Upper bound in seconds for ``collect_subagent_results(wait=True)``.
+    collect_wait_max_s: float = 60.0
     depth_limits: Mapping[int, SubagentDepthLimit] = field(default_factory=dict)
     depth_tiers: Mapping[int, Mapping[str, SubagentDepthTier]] = field(default_factory=dict)
 
@@ -1340,6 +1342,14 @@ class SubagentSettings:
         ):
             raise ValueError("subagents.max_total_time_s must be a finite number greater than zero")
         object.__setattr__(self, "max_total_time_s", float(self.max_total_time_s))
+        if (
+            isinstance(self.collect_wait_max_s, bool)
+            or not isinstance(self.collect_wait_max_s, (int, float))
+            or not math.isfinite(self.collect_wait_max_s)
+            or not 0 < self.collect_wait_max_s <= 3_600
+        ):
+            raise ValueError("subagents.collect_wait_max_s must be greater than 0 and at most 3600")
+        object.__setattr__(self, "collect_wait_max_s", float(self.collect_wait_max_s))
         if self.on_budget_exceeded not in {"abort", "drain"}:
             raise ValueError("subagents.on_budget_exceeded must be 'abort' or 'drain'")
         if (
@@ -2016,6 +2026,7 @@ class AgenthiccConfig:
                 "max_tasks": self.subagents.max_tasks,
                 "max_concurrent": self.subagents.max_concurrent,
                 "max_active_pools": self.subagents.max_active_pools,
+                "collect_wait_max_s": self.subagents.collect_wait_max_s,
                 "max_budget": {
                     key: value
                     for key, value in (
@@ -2802,6 +2813,9 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
     )
     if unknown_budget_keys:
         raise ValueError(f"subagents.max_budget.{unknown_budget_keys[0]} is not a budget setting")
+    collect_wait_max_s = subagent_data.get("collect_wait_max_s", 60.0)
+    if isinstance(collect_wait_max_s, bool) or not isinstance(collect_wait_max_s, (int, float)):
+        raise ValueError("subagents.collect_wait_max_s must be a number")
     max_budget = SubagentBudgetCeiling(
         tokens=raw_max_budget.get("tokens"),
         cost_usd=raw_max_budget.get("cost_usd"),
@@ -2828,6 +2842,7 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
         on_budget_exceeded=cast(Literal["abort", "drain"], on_budget_exceeded),
         stop_grace_s=float(stop_grace_s),
         max_budget=max_budget,
+        collect_wait_max_s=float(collect_wait_max_s),
     )
 
     # [workflows] section — dict[workflow_name, dict[str, Any]] (PRD-111)

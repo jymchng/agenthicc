@@ -863,9 +863,14 @@ async def test_subagent_can_pause_for_parent_clarification_and_resume() -> None:
         "Use v2.",
     )
     assert answered["status"] == "answered"
-    resumed = await collect_tool(pending["pool_id"])
+    # Waiting is an explicit, bounded request (SUBAGENT-11 goal 3).
+    resumed = await collect_tool(pending["pool_id"], wait=True, timeout_s=10)
     assert resumed["ok"] is True
+    assert resumed["status"] == "completed"
     assert "selected API version" in resumed["results"]
+    # Collection is idempotent: asking again returns the same result.
+    again = await collect_tool(pending["pool_id"])
+    assert again == resumed
 
 
 async def test_implementer_rejects_a_mutating_tool_error_result() -> None:
@@ -1200,3 +1205,57 @@ async def test_pool_completed_event_carries_usage_against_limits() -> None:
     assert completed["budget"]["usage"]["total_tokens"] == 8
     assert completed["budget"]["limits"]["tokens"] == 1_000
     assert completed["budget"]["sources"]["tokens"] == "declared"
+
+
+async def test_backgrounding_without_a_supervisor_is_refused_and_stops_the_pool(
+    tmp_path,
+) -> None:
+    """SUBAGENT-11 goal 2: a background pool must be owned; it never runs unowned."""
+    release = asyncio.Event()
+    started = asyncio.Event()
+
+    @tool()
+    async def wait_for_release(topic: str) -> str:
+        """Wait until the test releases the worker."""
+        started.set()
+        await release.wait()
+        return f"released:{topic}"
+
+    transport = MockTransport()
+    transport.queue_tool_use("wait_for_release", {"topic": "x"}, tool_use_id="wait-1")
+    transport.queue_response(_final("worker complete", "final"))
+    journal = ConversationJournal(tmp_path / "conversation-journal.jsonl")
+    conv_store = ConversationStore()
+    spawn = make_spawn_subagents_tool(
+        AgentRunnerBase(transport=transport),
+        "mock-model",
+        [wait_for_release],
+        registry=_registry("wait_for_release"),
+        conversation_id="conversation-1",
+        parent_run_id="turn-1",
+        conversation_journal=journal,
+        conv_store=conv_store,
+    )
+    try:
+        spawn_task = asyncio.create_task(
+            spawn(tasks=[{"type": "researcher", "task": "Wait."}], timeout_s=30)
+        )
+        await asyncio.wait_for(started.wait(), timeout=5)
+        state = conv_store.subagent_pool_state()
+        assert state is not None
+        pool = active_pool(state.pool_id)
+        assert pool is not None and pool.request_background()
+
+        receipt = await asyncio.wait_for(spawn_task, timeout=5)
+
+        assert receipt["ok"] is False
+        assert receipt["status"] == "background_unavailable"
+        assert "supervised background task owner" in receipt["error"]
+        # The pool was not left running unowned.
+        assert active_pool(state.pool_id) is None
+        lifecycle = journal.fold_subagent_pool_lifecycle()[0]
+        assert lifecycle["status"] == "cancelled"
+        assert lifecycle["backgrounded"] is False
+    finally:
+        release.set()
+        journal.close()

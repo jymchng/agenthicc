@@ -705,40 +705,59 @@ rerun interrupted work. A graceful session shutdown records `cancelled` instead.
 
 While a pool is running, Ctrl+B in the composer backgrounds it. The parent
 receives a durable `backgrounded` tool receipt immediately; workers continue
-under the session's `SupervisedTasks` owner, not as detached process tasks. The
+under the session's `SupervisedTasks` owner, not as detached process tasks. A
+background request is refused with `background_unavailable` — and the pool is
+stopped rather than left running unowned — when the session has no durable
+conversation journal or no supervised task owner. The
 session cancels them during shutdown. Ctrl+B is offered only while the parent
 turn is streaming and at least one subagent worker is active.
 
 A completed, budget-stopped, cancelled, or crash-interrupted background pool is
-delivered as a synthetic user message at the next logical-turn boundary. It is
-not inserted into an already-running provider loop. Stable message IDs make
-delivery idempotent across resume and compaction, so a completion is not
-delivered twice.
+announced at the next logical-turn boundary with a short notice. It is not
+inserted into an already-running provider loop. Stable message IDs make the
+notice idempotent across resume and compaction, so it is not delivered twice.
+The TUI and background sessions deliver it through the same function
+(`agenthicc.subagents.delivery.deliver_background_pool_notices`).
 
-The message's first line is written by the runtime and states the outcome and
-the real worker counts:
+The notice is written entirely by the runtime and contains **no worker
+output**: worker text is untrusted, and the notice is added in the user role.
+It states the outcome and the real worker counts, then tells the model to
+collect the results:
 
-| Journal status | First line says |
+| Journal status | Notice says |
 |---|---|
 | `completed` | `completed (2/2 succeeded, 0 failed)` |
 | `stopped` | `was stopped by the pool budget: max_tokens_exceeded (1/2 succeeded, 1 failed)` |
 | `cancelled` | `was cancelled when the session closed (…)` |
 | `interrupted` | `was interrupted when the session stopped (…)` |
 
-A pool ended by an operator ceiling (`max_tokens`, `max_total_time_s`,
-`max_tool_calls`, `max_iterations`) is journaled as `stopped`, with its counts,
-the aggregate of the workers that ran, and the ceiling that was crossed.
-`cancelled` is reserved for a session close. A turn that is re-driven after
-such a pool replays the same counts and text from the journal.
+…followed by `Its results are not included here: call
+collect_subagent_results(pool_id="…") to read them.` Only the governor's fixed
+stop reasons are ever quoted. A pool ended by an operator ceiling is journaled
+as `stopped`, with its counts, the aggregate of the workers that ran, and the
+crossed ceiling; `cancelled` is reserved for a session close. A turn that is
+re-driven after such a pool replays the same counts and text from the journal.
 
-Worker text follows the first line only inside an explicit
-`<subagent-output pool="…">` frame, preceded by a statement that the content was
-produced by subagents and must be treated as untrusted data. The text in the
-frame is redacted with the session-export redactor, limited to 16,000
-characters with a visible truncation note, and cannot close the frame itself:
-an embedded `</subagent-output` is neutralised. The durable journal keeps the
-complete aggregate, so a re-driven turn returns the full text as its tool
-result.
+### Collecting a pool
+
+`collect_subagent_results(pool_id, wait=False, timeout_s=None)` reads a pool
+without blocking unless asked to wait:
+
+- A running pool returns `status: "running"`, one row per worker (`worker_id`,
+  `label`, `type`, `status`, `attempt`, `elapsed_s`) and any question a worker
+  is waiting on (`pending_questions`).
+- `wait=true` waits up to `timeout_s` seconds, capped by
+  `subagents.collect_wait_max_s` (default 60, at most 3600). A pool still
+  running then returns the snapshot with `timed_out: true`; it never raises.
+- A finished pool returns its results — `status` (`completed` or `stopped`),
+  counts, `results`, `values`, `usage` — identically on every call.
+- A pool with no live handle — finished in an earlier turn, or left by a
+  process that restarted — is read from this conversation's journal, including
+  `interrupted` pools with their preserved worker output. A pool id from
+  another conversation is refused.
+
+The worker text therefore reaches the parent only as the output of a tool it
+called, as it does for a foreground pool.
 
 ## TUI and kernel observability
 

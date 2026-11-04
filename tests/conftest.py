@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -20,6 +21,26 @@ from agenthicc.kernel import (
     SystemSettings,
     root_reducer,
 )
+
+
+# ── git environment: never inherited from a hook ───────────────────────────────
+
+# A git hook (the pre-push suite) runs with GIT_DIR and related variables set
+# for the repository being pushed, as an absolute path from a linked worktree.
+# Tests drive git against temporary repositories with ``git -C <tmp>``, and an
+# inherited GIT_DIR silently redirects those commands to this repository:
+# ``git init`` re-initialises it as bare, ``git config`` writes test identities
+# into its config, and ``git add`` replaces its index. No test inherits them.
+for _git_variable in (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_PREFIX",
+):
+    os.environ.pop(_git_variable, None)
 
 
 # ── cassette mark: skipped unless the file is explicitly targeted ─────────────

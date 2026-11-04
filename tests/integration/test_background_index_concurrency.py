@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import multiprocessing
+import multiprocessing.resource_tracker
 from pathlib import Path
 
 import pytest
@@ -32,7 +33,7 @@ def _write_sessions(root: str, prefix: str) -> None:
         store.rename(session_id, f"{prefix} renamed {index}")
 
 
-def _read_pages(root: str, result: "multiprocessing.Queue[str]") -> None:
+def _read_pages(root: str, result: str) -> None:
     from agenthicc.background import BackgroundStore
 
     store = BackgroundStore(root)
@@ -44,7 +45,7 @@ def _read_pages(root: str, result: "multiprocessing.Queue[str]") -> None:
             problems.append("duplicate rows")
         if page.total != len(ids):
             problems.append(f"total {page.total} != {len(ids)} rows")
-    result.put(json.dumps(problems))
+    Path(result).write_text(json.dumps(problems), encoding="utf-8")
 
 
 @pytest.mark.timeout(300)
@@ -54,16 +55,24 @@ def test_two_writers_and_a_reader_keep_one_consistent_index(tmp_path: Path) -> N
     root = str(tmp_path / "background")
     BackgroundStore(root).list()  # create the registry and its index
     context = multiprocessing.get_context("spawn")
-    results: multiprocessing.Queue[str] = context.Queue()
+    results = tmp_path / "reader-problems.json"
     writers = [context.Process(target=_write_sessions, args=(root, name)) for name in ("a", "b")]
-    reader = context.Process(target=_read_pages, args=(root, results))
-    for process in (*writers, reader):
-        process.start()
-    for process in (*writers, reader):
-        process.join(240)
-        assert process.exitcode == 0
+    reader = context.Process(target=_read_pages, args=(root, str(results)))
+    try:
+        for process in (*writers, reader):
+            process.start()
+        for process in (*writers, reader):
+            process.join(240)
+            assert process.exitcode == 0
+    finally:
+        # Spawning starts multiprocessing's resource tracker, which otherwise
+        # lives until the test process exits. Under `nox -s coverage` it then
+        # writes its data file while pytest-cov is combining them, and the
+        # combine fails on the half-written file. Stop it with the test; a
+        # result file instead of a Queue leaves it no semaphore to clean up.
+        multiprocessing.resource_tracker._resource_tracker._stop()
 
-    assert json.loads(results.get(timeout=10)) == []
+    assert json.loads(results.read_text(encoding="utf-8")) == []
     store = BackgroundStore(root)
     sessions = store.list()
     assert len(sessions) == 2 * _SESSIONS_PER_WRITER
