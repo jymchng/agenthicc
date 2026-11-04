@@ -1583,6 +1583,33 @@ class PlaywrightSettings:
 
 
 @dataclass
+class ExecSettings:
+    """``[tools.exec]`` — how command tools run their child processes (TOOLR-02)."""
+
+    #: Environment variables a child may keep although they look like secrets.
+    env_passthrough: list[str] = field(default_factory=list)
+    #: The interpreter for ``run_python``/``run_tests``; empty means auto-detect.
+    python: str = ""
+    #: A stream past this many bytes stops the command (``output_limit``).
+    max_output_bytes: int = 64 * 1024 * 1024
+    #: ``RLIMIT_CPU`` for each child, in seconds; ``0`` means no limit.
+    max_cpu_seconds: int = 0
+    #: ``RLIMIT_AS`` for each child, in MiB; ``0`` means no limit.
+    max_memory_mb: int = 0
+
+    def __post_init__(self) -> None:
+        for name, value in (
+            ("max_output_bytes", self.max_output_bytes),
+            ("max_cpu_seconds", self.max_cpu_seconds),
+            ("max_memory_mb", self.max_memory_mb),
+        ):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"tools.exec.{name} must be a non-negative integer")
+        if self.max_output_bytes < 1024:
+            raise ValueError("tools.exec.max_output_bytes must be at least 1024")
+
+
+@dataclass
 class ToolSettings:
     mcp_servers: list[McpServerConfig] = field(default_factory=list)
     plugins: list[str] = field(default_factory=list)
@@ -1597,6 +1624,7 @@ class ToolSettings:
     cloakbrowser: CloakBrowserSettings = field(default_factory=CloakBrowserSettings)
     playwright: PlaywrightSettings = field(default_factory=PlaywrightSettings)
     browser_backend: str = "cloakbrowser"
+    exec: ExecSettings = field(default_factory=ExecSettings)
     """Read timeout in seconds for all outbound HTTP tool calls (PRD-108).
     Set via ``[tools] http_timeout_s = N`` in agenthicc.toml.
     Use ``0.0`` to disable the read timeout (unbounded)."""
@@ -2624,6 +2652,15 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
                 _section(to.get("cloakbrowser")).get("license_key_env"),
                 "CLOAKBROWSER_LICENSE_KEY",
             ),
+        ),
+        exec=ExecSettings(
+            env_passthrough=_as_string_list(_section(to.get("exec")).get("env_passthrough")),
+            python=_as_str(_section(to.get("exec")).get("python"), ""),
+            max_output_bytes=_as_int(
+                _section(to.get("exec")).get("max_output_bytes"), 64 * 1024 * 1024
+            ),
+            max_cpu_seconds=_as_int(_section(to.get("exec")).get("max_cpu_seconds"), 0),
+            max_memory_mb=_as_int(_section(to.get("exec")).get("max_memory_mb"), 0),
         ),
         playwright=PlaywrightSettings(
             enabled=_as_bool(_section(to.get("playwright")).get("enabled"), True),

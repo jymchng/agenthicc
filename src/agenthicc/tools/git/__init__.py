@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import fnmatch
+import os
 import re
+import signal
 from collections.abc import Mapping
-from typing import ClassVar
+from dataclasses import dataclass
+from typing import ClassVar, Final
 
 from agenthicc.tools.base import Tool, arg_bool, arg_int, arg_str
 from agenthicc.tools.workspace_access import WorkspaceAccessPolicy, current_workspace_access
 
-__all__ = ["GitToolKit"]
-
-_MAX_OUTPUT_BYTES = 64 * 1024  # 64 KB
+__all__ = ["GIT_COMMIT_TIMEOUT_S", "GIT_TIMEOUT_S", "GitRun", "GitToolKit"]
 
 
 async def _authorize_git(
@@ -71,25 +73,148 @@ async def _authorize_git_paths(
     return None, canonical
 
 
+@dataclass(frozen=True, slots=True)
+class GitRun:
+    """One finished git invocation: its exit code and bounded output."""
+
+    returncode: int
+    out: str
+    err: str
+    truncated: bool = False
+    timed_out: bool = False
+
+
+#: Read-only tools get this long; git_commit runs hooks and gets longer.
+GIT_TIMEOUT_S: Final = 30.0
+GIT_COMMIT_TIMEOUT_S: Final = 300.0
+
+
 async def _run_git(
-    git_root: str, args: list[str], input_data: str | None = None
-) -> tuple[int, str, str]:
-    """Run `git -C git_root *args` and return (returncode, stdout, stderr)."""
-    cmd = ["git", "-C", git_root, *args]
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        stdin=asyncio.subprocess.PIPE if input_data else None,
+    git_root: str,
+    args: list[str],
+    *,
+    timeout: float = GIT_TIMEOUT_S,
+    read_only: bool = True,
+) -> GitRun:
+    """Run git non-interactively with bounded output (TOOLR-03).
+
+    No pager, colour, editor, credential prompt or shared stdin; a deadline
+    kills the whole process group instead of escaping as ``TimeoutError``.
+    """
+    from agenthicc.tools.exec.child import StreamCapture, child_env
+
+    env = child_env({"LC_ALL": "C", "GIT_EDITOR": "true", "GIT_ASKPASS": ""})
+    if read_only:
+        env["GIT_OPTIONAL_LOCKS"] = "0"
+    cmd = [
+        "git",
+        "-c",
+        "core.pager=cat",
+        "-c",
+        "color.ui=never",
+        "-c",
+        "core.quotepath=off",
+        "-C",
+        git_root,
+        *args,
+    ]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
+            start_new_session=True,
+        )
+    except OSError as exc:
+        return GitRun(-1, "", f"git could not start: {exc}")
+    out_capture = StreamCapture()
+    err_capture = StreamCapture()
+
+    async def drain(stream: asyncio.StreamReader | None, capture: StreamCapture) -> None:
+        if stream is None:
+            return
+        while chunk := await stream.read(65_536):
+            capture.feed(chunk)
+
+    async def collect() -> None:
+        await asyncio.gather(drain(proc.stdout, out_capture), drain(proc.stderr, err_capture))
+        await proc.wait()
+
+    collector = asyncio.ensure_future(collect())
+    try:
+        await asyncio.wait_for(asyncio.shield(collector), timeout=timeout)
+        timed_out = False
+    except asyncio.TimeoutError:
+        timed_out = True
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            proc.kill()
+        try:
+            await asyncio.wait_for(collector, timeout=2.0)
+        except asyncio.TimeoutError:
+            collector.cancel()
+    except asyncio.CancelledError:
+        if proc.returncode is None:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
+                proc.kill()
+        collector.cancel()
+        raise
+    return GitRun(
+        returncode=proc.returncode if proc.returncode is not None else -1,
+        out=out_capture.render(),
+        err=err_capture.render()[-4096:],
+        truncated=out_capture.omitted > 0,
+        timed_out=timed_out,
     )
-    stdin_bytes = input_data.encode() if input_data else None
-    stdout, stderr = await asyncio.wait_for(
-        proc.communicate(input=stdin_bytes),
-        timeout=30.0,
-    )
-    out = stdout.decode(errors="replace")[:_MAX_OUTPUT_BYTES]
-    err = stderr.decode(errors="replace")[:4096]
-    return proc.returncode if proc.returncode is not None else -1, out, err
+
+
+def _failure(run: GitRun, *, default_code: str = "git_failed") -> dict[str, object]:
+    """The TOOLR-04 envelope for a failed git run, with a classified code."""
+    text = run.err.strip() or run.out.strip()
+    lowered = text.lower()
+    if run.timed_out:
+        code = "timeout"
+    elif "not a git repository" in lowered:
+        code = "not_a_repository"
+    elif "conflict" in lowered or "would be overwritten" in lowered:
+        code = "conflict"
+    elif "nothing to commit" in lowered or "no changes added to commit" in lowered:
+        code = "nothing_to_commit"
+    elif "hook" in lowered:
+        code = "hook_failed"
+    elif "unknown revision" in lowered or "bad revision" in lowered or "invalid" in lowered:
+        code = "invalid_argument"
+    else:
+        code = default_code
+    return {
+        "ok": False,
+        "error_code": code,
+        "error": text[:1_000] or f"git exited with {run.returncode}",
+        "retryable": code == "timeout",
+    }
+
+
+def _invalid(message: str) -> dict[str, object]:
+    return {"ok": False, "error_code": "invalid_argument", "error": message, "retryable": False}
+
+
+def _option_like(value: str) -> bool:
+    """A ref or branch that git would parse as an option."""
+    return value.startswith("-")
+
+
+def _access_failure(error: str) -> dict[str, object]:
+    return {
+        "ok": False,
+        "error_code": "permission_denied",
+        "code": "workspace_access",
+        "error": error,
+    }
 
 
 class GitStatusTool(Tool):
@@ -107,31 +232,55 @@ class GitStatusTool(Tool):
         root = arg_str(context, "workspace_root", ".")
         access_error, canonical_paths = await _authorize_git_paths(context, self.name, args)
         if access_error is not None:
-            return {"ok": False, "code": "workspace_access", "error": access_error}
+            return _access_failure(access_error)
         root = canonical_paths.get((root, "git_root"), root)
-        rc, out, err = await _run_git(root, ["status", "--porcelain=v1", "-b"])
-        if rc != 0:
-            return {"ok": False, "error": err}
-        lines = out.splitlines()
+        run = await _run_git(root, ["status", "--porcelain=v2", "--branch", "-z"])
+        if run.returncode != 0:
+            return _failure(run)
         branch = ""
-        staged, unstaged, untracked = [], [], []
-        for line in lines:
-            if line.startswith("##"):
-                parts = line[3:].split("...")
-                branch = parts[0].strip()
-            elif line.startswith("??"):
-                untracked.append(line[3:])
-            elif len(line) >= 2:
-                if line[0] != " ":
-                    staged.append(line[3:])
-                if line[1] != " ":
-                    unstaged.append(line[3:])
+        upstream = ""
+        ahead = behind = 0
+        staged: list[str] = []
+        unstaged: list[str] = []
+        untracked: list[str] = []
+        conflicted: list[str] = []
+        entries = run.out.split("\0")
+        index = 0
+        while index < len(entries):
+            entry = entries[index]
+            index += 1
+            if entry.startswith("# branch.head "):
+                branch = entry.removeprefix("# branch.head ")
+            elif entry.startswith("# branch.upstream "):
+                upstream = entry.removeprefix("# branch.upstream ")
+            elif entry.startswith("# branch.ab "):
+                counts = entry.removeprefix("# branch.ab ").split()
+                ahead = int(counts[0].lstrip("+")) if counts else 0
+                behind = int(counts[1].lstrip("-")) if len(counts) > 1 else 0
+            elif entry.startswith("? "):
+                untracked.append(entry[2:])
+            elif entry.startswith("u "):
+                conflicted.append(entry.split(" ", 10)[-1])
+            elif entry.startswith(("1 ", "2 ")):
+                fields = entry.split(" ", 8 if entry[0] == "1" else 9)
+                xy, path = fields[1], fields[-1]
+                if entry[0] == "2":
+                    index += 1  # the rename's original path follows
+                if xy[0] != ".":
+                    staged.append(path)
+                if xy[1] != ".":
+                    unstaged.append(path)
         return {
+            "ok": True,
             "branch": branch,
+            "upstream": upstream,
+            "ahead": ahead,
+            "behind": behind,
             "staged": staged,
             "unstaged": unstaged,
             "untracked": untracked,
-            "clean": not staged and not unstaged and not untracked,
+            "conflicted": conflicted,
+            "clean": not (staged or unstaged or untracked or conflicted),
         }
 
 
@@ -156,32 +305,59 @@ class GitDiffTool(Tool):
     ) -> dict[str, object]:
         root = arg_str(context, "workspace_root", ".")
         path = arg_str(args, "path", "")
+        ref = arg_str(args, "ref", "")
+        if ref and _option_like(ref):
+            return _invalid(f"ref must not start with '-': {ref!r}")
         access_error, canonical_paths = await _authorize_git_paths(context, self.name, args)
         if access_error is not None:
-            return {"ok": False, "code": "workspace_access", "error": access_error}
+            return _access_failure(access_error)
         root = canonical_paths.get((root, "git_root"), root)
         canonical_path = canonical_paths.get((path, "read"), path)
-        ref = arg_str(args, "ref", "")
-        cmd = ["diff"]
+        base = ["diff"]
         if arg_bool(args, "staged", False):
-            cmd.append("--cached")
-        if ref:
-            cmd.append(ref)
-        cmd += ["--stat", "--patch"]
-        if path:
-            cmd += ["--", canonical_path]
-        rc, out, err = await _run_git(root, cmd)
-        if rc not in (0, 1):  # git diff returns 1 when there are diffs
-            return {"ok": False, "error": err}
-        additions = out.count("\n+")
-        deletions = out.count("\n-")
-        files_changed = [line.split("|")[0].strip() for line in out.splitlines() if "|" in line]
-        return {
-            "diff": out,
-            "files_changed": files_changed,
+            base.append("--cached")
+        tail = (["--end-of-options", ref] if ref else []) + (["--", canonical_path] if path else [])
+        numstat = await _run_git(root, [*base, "--numstat", "-z", *tail])
+        if numstat.returncode not in (0, 1):
+            return _failure(numstat)
+        files: list[dict[str, object]] = []
+        additions = deletions = 0
+        records = numstat.out.split("\0")
+        index = 0
+        while index < len(records):
+            record = records[index]
+            index += 1
+            if not record:
+                continue
+            added, removed, name = (record.split("\t", 2) + ["", ""])[:3]
+            if not name:  # a rename: "<a>\t<d>\t" then old and new paths
+                name = records[index + 1] if index + 1 < len(records) else ""
+                index += 2
+            binary = added == "-"
+            files.append(
+                {
+                    "path": name,
+                    "additions": 0 if binary else int(added or 0),
+                    "deletions": 0 if binary else int(removed or 0),
+                    "binary": binary,
+                }
+            )
+            additions += 0 if binary else int(added or 0)
+            deletions += 0 if binary else int(removed or 0)
+        patch = await _run_git(root, [*base, "--patch", *tail])
+        if patch.returncode not in (0, 1):
+            return _failure(patch)
+        result: dict[str, object] = {
+            "ok": True,
+            "diff": patch.out,
+            "files": files,
+            "files_changed": [str(item["path"]) for item in files],
             "additions": additions,
             "deletions": deletions,
         }
+        if patch.truncated:
+            result["truncated"] = True
+        return result
 
 
 class GitLogTool(Tool):
@@ -192,7 +368,6 @@ class GitLogTool(Tool):
         "properties": {
             "n": {"type": "integer", "default": 10, "description": "Number of commits"},
             "path": {"type": "string"},
-            "format": {"type": "string", "default": "oneline"},
         },
     }
 
@@ -201,22 +376,24 @@ class GitLogTool(Tool):
     ) -> dict[str, object]:
         root = arg_str(context, "workspace_root", ".")
         n = arg_int(args, "n", 10)
+        if n < 1:
+            return _invalid("n must be at least 1")
         path = arg_str(args, "path", "")
         access_error, canonical_paths = await _authorize_git_paths(context, self.name, args)
         if access_error is not None:
-            return {"ok": False, "code": "workspace_access", "error": access_error}
+            return _access_failure(access_error)
         root = canonical_paths.get((root, "git_root"), root)
         canonical_path = canonical_paths.get((path, "read"), path)
-        fmt = "%H\x1f%h\x1f%an\x1f%ai\x1f%s"
-        cmd = ["log", f"-{n}", f"--format={fmt}"]
+        fmt = "%H\x1f%h\x1f%an\x1f%ai\x1f%s\x1e"
+        cmd = ["log", f"--max-count={n}", f"--format={fmt}"]
         if path:
             cmd += ["--", canonical_path]
-        rc, out, err = await _run_git(root, cmd)
-        if rc != 0:
-            return {"ok": False, "error": err}
+        run = await _run_git(root, cmd)
+        if run.returncode != 0:
+            return _failure(run)
         commits = []
-        for line in out.strip().splitlines():
-            parts = line.split("\x1f")
+        for record in run.out.split("\x1e"):
+            parts = record.strip("\n").split("\x1f")
             if len(parts) == 5:
                 commits.append(
                     {
@@ -227,7 +404,7 @@ class GitLogTool(Tool):
                         "message": parts[4],
                     }
                 )
-        return {"commits": commits}
+        return {"ok": True, "commits": commits}
 
 
 class GitAddTool(Tool):
@@ -245,15 +422,19 @@ class GitAddTool(Tool):
         root = arg_str(context, "workspace_root", ".")
         raw_paths = args.get("paths", [])
         if not isinstance(raw_paths, list) or not all(isinstance(path, str) for path in raw_paths):
-            raise ValueError("tool argument 'paths' must be a list of strings")
+            return _invalid("paths must be a list of strings")
         paths = list(raw_paths)
+        if not paths:
+            return _invalid("paths must name at least one file")
         access_error, canonical_paths = await _authorize_git_paths(context, self.name, args)
         if access_error is not None:
-            return {"ok": False, "code": "workspace_access", "error": access_error}
+            return _access_failure(access_error)
         root = canonical_paths.get((root, "git_root"), root)
         executable_paths = [canonical_paths.get((path, "write"), path) for path in paths]
-        rc, out, err = await _run_git(root, ["add", "--", *executable_paths])
-        return {"ok": rc == 0, "staged": paths, "error": err if rc != 0 else None}
+        run = await _run_git(root, ["add", "--", *executable_paths], read_only=False)
+        if run.returncode != 0:
+            return {**_failure(run), "staged": []}
+        return {"ok": True, "staged": paths}
 
 
 class GitCommitTool(Tool):
@@ -274,19 +455,32 @@ class GitCommitTool(Tool):
         root = arg_str(context, "workspace_root", ".")
         message = arg_str(args, "message")
         author = arg_str(args, "author", "")
+        if not message.strip():
+            return _invalid("message must not be empty")
         access_error, canonical_paths = await _authorize_git_paths(context, self.name, args)
         if access_error is not None:
-            return {"ok": False, "code": "workspace_access", "error": access_error}
+            return _access_failure(access_error)
         root = canonical_paths.get((root, "git_root"), root)
-        cmd = ["commit", "-m", message]
+        before = await _run_git(root, ["rev-parse", "--verify", "--quiet", "HEAD"])
+        head_before = before.out.strip() if before.returncode == 0 else ""
+        cmd = ["commit", f"--message={message}"]
         if author:
-            cmd += ["--author", author]
-        rc, out, err = await _run_git(root, cmd)
-        if rc != 0:
-            return {"ok": False, "error": err}
-        m = re.search(r"\[[\w/]+ ([0-9a-f]+)\]", out)
-        commit_hash = m.group(1) if m else ""
-        return {"ok": True, "hash": commit_hash, "message": message}
+            cmd.append(f"--author={author}")
+        run = await _run_git(root, cmd, timeout=GIT_COMMIT_TIMEOUT_S, read_only=False)
+        after = await _run_git(root, ["rev-parse", "--verify", "--quiet", "HEAD"])
+        head_after = after.out.strip() if after.returncode == 0 else ""
+        if run.returncode != 0 or run.timed_out:
+            failure = _failure(run)
+            failure["committed"] = bool(head_after) and head_after != head_before
+            if failure["committed"]:
+                failure["hash"] = head_after
+            return failure
+        return {
+            "ok": True,
+            "hash": head_after,
+            "short_hash": head_after[:7],
+            "message": message,
+        }
 
 
 class GitCheckoutTool(Tool):
@@ -306,16 +500,27 @@ class GitCheckoutTool(Tool):
     ) -> dict[str, object]:
         root = arg_str(context, "workspace_root", ".")
         branch = arg_str(args, "branch")
+        if not branch or _option_like(branch):
+            return _invalid(f"branch must be a branch name, not an option: {branch!r}")
         access_error, canonical_paths = await _authorize_git_paths(context, self.name, args)
         if access_error is not None:
-            return {"ok": False, "code": "workspace_access", "error": access_error}
+            return _access_failure(access_error)
         root = canonical_paths.get((root, "git_root"), root)
-        cmd = ["checkout"]
-        if arg_bool(args, "create", False):
-            cmd.append("-b")
-        cmd.append(branch)
-        rc, out, err = await _run_git(root, cmd)
-        return {"ok": rc == 0, "branch": branch, "error": err if rc != 0 else None}
+        check = await _run_git(root, ["check-ref-format", "--branch", branch])
+        if check.returncode != 0:
+            return _invalid(f"not a valid branch name: {branch!r}")
+        cmd = (
+            ["switch", "--create", branch]
+            if arg_bool(args, "create", False)
+            else [
+                "switch",
+                branch,
+            ]
+        )
+        run = await _run_git(root, cmd, read_only=False)
+        if run.returncode != 0:
+            return {**_failure(run), "branch": branch}
+        return {"ok": True, "branch": branch}
 
 
 class GitBranchTool(Tool):
@@ -333,26 +538,35 @@ class GitBranchTool(Tool):
         pattern = arg_str(args, "pattern", "")
         access_error, canonical_paths = await _authorize_git_paths(context, self.name, args)
         if access_error is not None:
-            return {"ok": False, "code": "workspace_access", "error": access_error}
+            return _access_failure(access_error)
         root = canonical_paths.get((root, "git_root"), root)
-        cmd = ["branch", "-a", "--format=%(refname:short)\x1f%(HEAD)\x1f%(upstream:short)"]
-        if pattern:
-            cmd.append(pattern)
-        rc, out, err = await _run_git(root, cmd)
-        if rc != 0:
-            return {"ok": False, "error": err}
+        run = await _run_git(
+            root,
+            [
+                "for-each-ref",
+                "--format=%(refname:short)\x1f%(HEAD)\x1f%(upstream:short)\x1f%(refname)",
+                "refs/heads",
+                "refs/remotes",
+            ],
+        )
+        if run.returncode != 0:
+            return _failure(run)
         branches = []
-        for line in out.strip().splitlines():
+        for line in run.out.strip().splitlines():
             parts = line.split("\x1f")
-            if len(parts) >= 2:
-                branches.append(
-                    {
-                        "name": parts[0],
-                        "current": parts[1] == "*",
-                        "remote": parts[2] if len(parts) > 2 else None,
-                    }
-                )
-        return {"branches": branches}
+            if len(parts) < 4 or parts[3].endswith("/HEAD"):
+                continue
+            if pattern and not fnmatch.fnmatch(parts[0], pattern):
+                continue
+            branches.append(
+                {
+                    "name": parts[0],
+                    "current": parts[1] == "*",
+                    "remote": parts[2] or None,
+                    "is_remote": parts[3].startswith("refs/remotes/"),
+                }
+            )
+        return {"ok": True, "branches": branches}
 
 
 class GitBlameTool(Tool):
@@ -375,7 +589,7 @@ class GitBlameTool(Tool):
         path = arg_str(args, "path")
         access_error, canonical_paths = await _authorize_git_paths(context, self.name, args)
         if access_error is not None:
-            return {"ok": False, "code": "workspace_access", "error": access_error}
+            return _access_failure(access_error)
         root = canonical_paths.get((root, "git_root"), root)
         canonical_path = canonical_paths.get((path, "read"), path)
         cmd = ["blame", "--line-porcelain"]
@@ -387,13 +601,13 @@ class GitBlameTool(Tool):
         elif start > 1:
             cmd += [f"-L{start}"]
         cmd += ["--", canonical_path]
-        rc, out, err = await _run_git(root, cmd)
-        if rc != 0:
-            return {"ok": False, "error": err}
+        run = await _run_git(root, cmd)
+        if run.returncode != 0:
+            return _failure(run)
         lines = []
         current: dict[str, object] = {}
         line_number = start
-        for raw in out.splitlines():
+        for raw in run.out.splitlines():
             if raw.startswith("\t"):
                 current["content"] = raw[1:]
                 current["line_number"] = line_number
@@ -408,7 +622,10 @@ class GitBlameTool(Tool):
                     current["author"] = value
                 elif key == "author-time":
                     current["date"] = value
-        return {"lines": lines}
+        result: dict[str, object] = {"ok": True, "lines": lines}
+        if run.truncated:
+            result["truncated"] = True
+        return result
 
 
 class GitGrepTool(Tool):
@@ -429,35 +646,35 @@ class GitGrepTool(Tool):
         root = arg_str(context, "workspace_root", ".")
         pattern = arg_str(args, "pattern")
         ref = arg_str(args, "ref", "HEAD")
+        if not pattern:
+            return _invalid("pattern must not be empty")
+        if _option_like(ref):
+            return _invalid(f"ref must not start with '-': {ref!r}")
         access_error, canonical_paths = await _authorize_git_paths(context, self.name, args)
         if access_error is not None:
-            return {"ok": False, "code": "workspace_access", "error": access_error}
+            return _access_failure(access_error)
         root = canonical_paths.get((root, "git_root"), root)
-        cmd = ["grep", "-n", "--line-number", pattern, ref]
-        rc, out, err = await _run_git(root, cmd)
-        if rc not in (0, 1):
-            return {"ok": False, "error": err}
+        run = await _run_git(root, ["grep", "--line-number", "-z", "-e", pattern, ref])
+        if run.returncode not in (0, 1):
+            return _failure(run)
         matches = []
-        for line in out.strip().splitlines():
-            # format: ref:file:line_number:content
-            parts = line.split(":", 3)
-            if len(parts) >= 4:
-                matches.append(
-                    {
-                        "file": parts[1],
-                        "line_number": int(parts[2]) if parts[2].isdigit() else 0,
-                        "line": parts[3],
-                    }
-                )
-            elif len(parts) == 3:
-                matches.append(
-                    {
-                        "file": parts[0],
-                        "line_number": int(parts[1]) if parts[1].isdigit() else 0,
-                        "line": parts[2],
-                    }
-                )
-        return {"matches": matches, "count": len(matches)}
+        for line in run.out.splitlines():
+            # -z separates ref:file, the line number and the text with NULs.
+            parts = line.split("\0")
+            if len(parts) < 3:
+                continue
+            name = parts[0].split(":", 1)[1] if parts[0].startswith(f"{ref}:") else parts[0]
+            matches.append(
+                {
+                    "file": name,
+                    "line_number": int(parts[1]) if parts[1].isdigit() else 0,
+                    "line": parts[2],
+                }
+            )
+        result: dict[str, object] = {"ok": True, "matches": matches, "count": len(matches)}
+        if run.truncated:
+            result["truncated"] = True
+        return result
 
 
 class GitShowTool(Tool):
@@ -473,27 +690,31 @@ class GitShowTool(Tool):
     ) -> dict[str, object]:
         root = arg_str(context, "workspace_root", ".")
         ref = arg_str(args, "ref", "HEAD")
+        if not ref or _option_like(ref):
+            return _invalid(f"ref must be a revision, not an option: {ref!r}")
         access_error, canonical_paths = await _authorize_git_paths(context, self.name, args)
         if access_error is not None:
-            return {"ok": False, "code": "workspace_access", "error": access_error}
+            return _access_failure(access_error)
         root = canonical_paths.get((root, "git_root"), root)
-        fmt = "%H\x1f%an\x1f%ai\x1f%B"
-        rc, out, err = await _run_git(root, ["show", f"--format={fmt}", ref])
-        if rc != 0:
-            return {"ok": False, "error": err}
-        parts = out.split("\x1f", 3)
-        if len(parts) < 4:
-            return {"ok": False, "error": "Could not parse git show output"}
-        diff_start = parts[3].find("\ndiff ")
-        message = parts[3][:diff_start].strip() if diff_start > 0 else parts[3].strip()
-        diff = parts[3][diff_start:] if diff_start > 0 else ""
-        return {
+        fmt = "%H\x1f%an\x1f%ai\x1f%B\x1e"
+        run = await _run_git(root, ["show", f"--format={fmt}", "--end-of-options", ref])
+        if run.returncode != 0:
+            return _failure(run)
+        header, separator, diff = run.out.partition("\x1e")
+        parts = header.split("\x1f", 3)
+        if len(parts) < 4 or not separator:
+            return {"ok": False, "error_code": "internal", "error": "unparsable git show output"}
+        result: dict[str, object] = {
+            "ok": True,
             "hash": parts[0],
             "author": parts[1],
             "date": parts[2],
-            "message": message,
-            "diff": diff,
+            "message": parts[3].strip(),
+            "diff": diff.lstrip("\n"),
         }
+        if run.truncated:
+            result["truncated"] = True
+        return result
 
 
 class GitStashTool(Tool):
@@ -516,21 +737,24 @@ class GitStashTool(Tool):
     ) -> dict[str, object]:
         root = arg_str(context, "workspace_root", ".")
         action = arg_str(args, "action", "push")
+        if action not in {"push", "pop", "list", "drop"}:
+            return _invalid("action must be push, pop, list or drop")
         message = arg_str(args, "message", "")
         access_error, canonical_paths = await _authorize_git_paths(context, self.name, args)
         if access_error is not None:
-            return {"ok": False, "code": "workspace_access", "error": access_error}
+            return _access_failure(access_error)
         root = canonical_paths.get((root, "git_root"), root)
         cmd = ["stash", action]
         if action == "push" and message:
-            cmd += ["-m", message]
-        rc, out, err = await _run_git(root, cmd)
-        m = re.search(r"stash@\{(\d+)\}", out)
+            cmd.append(f"--message={message}")
+        run = await _run_git(root, cmd, read_only=action == "list")
+        if run.returncode != 0:
+            return _failure(run)
+        m = re.search(r"stash@\{(\d+)\}", run.out)
         return {
-            "ok": rc == 0,
+            "ok": True,
             "stash_ref": m.group(0) if m else None,
-            "output": out.strip(),
-            "error": err if rc != 0 else None,
+            "output": run.out.strip(),
         }
 
 

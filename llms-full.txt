@@ -4789,6 +4789,36 @@ async def retry_subagent(pool_id: str, worker_id: str) -> dict[str, object]: ...
 Re-run a failed or cancelled worker of a finished pool. Refusal reasons come
 from `SubagentPool.retry_refusal(worker_id)`.
 
+### ExecSettings
+
+```python
+@dataclass
+class ExecSettings:            # [tools.exec]
+    env_passthrough: list[str] = []
+    python: str = ""
+    max_output_bytes: int = 64 * 1024 * 1024
+    max_cpu_seconds: int = 0
+    max_memory_mb: int = 0
+```
+
+`AgenthiccConfig.tools.exec`. `agenthicc.tools.exec.child` applies it to every
+model-requested child process (commands, background terminals, git):
+`/dev/null` stdin, `child_env()` (credential-like variables scrubbed unless
+passed through), `child_preexec()` (`RLIMIT_CPU`/`RLIMIT_AS`), `StreamCapture`
+(16 KB head + 48 KB tail per stream; results report `stdout_bytes`,
+`stderr_bytes`, `truncated`), and `project_python(cwd, workspace_root)` for
+`run_python`/`run_tests` (results report `interpreter`, `interpreter_source`).
+`run_tests` parses pytest's built-in `--junitxml` into `passed`, `failed`,
+`errors`, `skipped` and up to 20 `failures`.
+
+### GitRun
+
+`agenthicc.tools.git.GitRun(returncode, out, err, truncated, timed_out)` — the
+result of the non-interactive git runner. Git tools return `ok` on every
+result and classify failures as `timeout`, `not_a_repository`, `conflict`,
+`nothing_to_commit`, `hook_failed` or `invalid_argument`; refs/branches
+starting with `-` are refused, and `git_commit` reports `git rev-parse HEAD`.
+
 ### SubagentExecutionPolicy
 
 ```python

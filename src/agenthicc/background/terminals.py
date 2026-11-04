@@ -706,11 +706,15 @@ class TerminalManager:
         self._records[terminal_id] = record
         self.store.upsert(record)
         self._notify()
-        effective_env = {**os.environ, **dict(env or {})}
+        from agenthicc.tools.exec.child import child_env, child_preexec
+
+        effective_env = child_env(dict(env or {}))
         try:
             if shell:
                 process = await asyncio.create_subprocess_shell(
                     command or "",
+                    stdin=asyncio.subprocess.DEVNULL,
+                    preexec_fn=child_preexec(),
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     cwd=resolved_cwd,
@@ -721,6 +725,8 @@ class TerminalManager:
             else:
                 process = await asyncio.create_subprocess_exec(
                     *(argv or ()),
+                    stdin=asyncio.subprocess.DEVNULL,
+                    preexec_fn=child_preexec(),
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     cwd=resolved_cwd,

@@ -1,6 +1,6 @@
 ---
 title: "TOOLR-03: Git tools that are non-interactive, bounded and exact"
-status: Proposed
+status: Implemented (2026-11-04; wave 2, pending merge)
 version: 1.0.0
 date: 2026-11-04
 scope: "the eleven git_* tools: process handling, argument safety, parsing of git's output, and truthful result fields"
@@ -9,6 +9,33 @@ tags: [tools, git, correctness]
 ---
 
 # TOOLR-03: Git tool correctness
+
+
+## Implementation status (2026-11-04)
+
+Delivered in wave 2 (branch `tools-wave-2-exec-and-git`).
+
+- `_run_git` returns a `GitRun`. It disables the pager and colour, sets
+  `LC_ALL=C`, `GIT_EDITOR=true` and no askpass, uses `/dev/null` stdin and a
+  scrubbed environment, captures output with the head-and-tail bound, and on
+  its deadline kills the process group and reports `timeout`.
+- `git_commit` returns `rev-parse HEAD` and runs under
+  `GIT_COMMIT_TIMEOUT_S = 300`. A module constant rather than a setting, which
+  is amended from `git.commit_timeout_s`.
+- Option-shaped refs and branches are refused. `git_show` and `git_diff`
+  put `--end-of-options` before the ref, and `git_checkout` validates with
+  `check-ref-format --branch` and uses `git switch`.
+- Parsing now uses plumbing:
+  - `git_status` uses porcelain v2, with ahead/behind and conflicted files;
+  - `git_diff` counts with `--numstat -z`;
+  - `git_branch` uses `for-each-ref`;
+  - `git_grep` uses `-z -e`.
+- `git_log`'s inert `format` parameter is removed.
+- Every result carries `ok`. Failures are classified as `timeout`,
+  `not_a_repository`, `conflict`, `nothing_to_commit`, `hook_failed` or
+  `invalid_argument`.
+- Tests: `tests/unit/test_git_tools.py`, which runs against real repositories
+  (criteria 1–6).
 
 ## 1. Problem
 

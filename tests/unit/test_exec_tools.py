@@ -10,8 +10,8 @@ from agenthicc.tools.exec import (
     RunPythonTool,
     RunPythonExprTool,
     RunTestsTool,
-    _truncate,
 )
+from agenthicc.tools.exec.child import HEAD_BYTES, TAIL_BYTES, StreamCapture
 
 pytestmark = pytest.mark.unit
 
@@ -32,16 +32,22 @@ def _result(stdout="", stderr="", rc=0, timed_out=False):
     }
 
 
-class TestTruncate:
-    def test_short_unchanged(self):
-        assert _truncate("hi") == "hi"
+class TestStreamCapture:
+    def test_short_output_is_kept_whole(self):
+        capture = StreamCapture()
+        capture.feed(b"hi")
+        assert capture.render() == "hi" and capture.omitted == 0
 
-    def test_long_truncated(self):
-        r = _truncate("x" * 200_000, max_bytes=1024)
-        assert r.endswith("[... truncated]")
-
-    def test_exact_max_not_truncated(self):
-        assert "[... truncated]" not in _truncate("a" * 100, max_bytes=200)
+    def test_long_output_keeps_head_and_tail(self):
+        capture = StreamCapture()
+        capture.feed(b"H" * HEAD_BYTES)
+        capture.feed(b"m" * 100_000)
+        capture.feed(b"T" * TAIL_BYTES)
+        text = capture.render()
+        assert text.startswith("H" * HEAD_BYTES) and text.endswith("T" * TAIL_BYTES)
+        assert (
+            "[100000 bytes omitted]" in text and capture.total == HEAD_BYTES + 100_000 + TAIL_BYTES
+        )
 
 
 class TestRunBashTool:
@@ -78,9 +84,9 @@ class TestRunPythonTool:
     async def test_creates_temp_file(self, mock_proc):
         mock_proc.return_value = _result(stdout="test\n")
         await RunPythonTool().execute({"code": "print('test')"}, {})
-        # executable is sys.executable, second arg is temp .py file
+        # The project's interpreter runs the snippet from a temporary .py file.
         call_cmd = mock_proc.call_args[0][0]
-        assert call_cmd[1].endswith(".py")
+        assert call_cmd[-1].endswith(".py")
 
 
 class TestRunPythonExprTool:
@@ -91,11 +97,23 @@ class TestRunPythonExprTool:
 
 
 class TestRunTestsTool:
-    async def test_parses_passed_from_stdout(self, mock_proc):
-        mock_proc.return_value = _result(stdout="5 passed, 1 failed in 2.0s\n", rc=1)
-        with patch("builtins.open", side_effect=FileNotFoundError):
-            r = await RunTestsTool().execute({"framework": "pytest"}, {})
+    async def test_counts_come_from_the_junit_report(self, mock_proc):
+        def run(cmd, **kwargs):
+            report = next(arg for arg in cmd if arg.startswith("--junitxml="))
+            with open(report.split("=", 1)[1], "w", encoding="utf-8") as handle:
+                handle.write(
+                    '<testsuites><testsuite tests="6" failures="1" errors="0" skipped="0">'
+                    '<testcase classname="tests.test_a" name="test_bad">'
+                    '<failure message="assert 1 == 2"/></testcase></testsuite></testsuites>'
+                )
+            return _result(stdout="", rc=1)
+
+        mock_proc.side_effect = run
+        r = await RunTestsTool().execute({"framework": "pytest"}, {})
         assert r["passed"] == 5 and r["failed"] == 1
+        assert r["failures"] == [
+            {"test": "tests/test_a.py::test_bad", "kind": "failure", "message": "assert 1 == 2"}
+        ]
 
 
 class TestExecToolKit:

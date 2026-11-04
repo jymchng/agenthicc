@@ -273,7 +273,9 @@ async def test_git_adapter_executes_canonical_root_and_path(
         mode_provider=lambda: _Mode("Safe"),
         approval_service=approval,  # type: ignore[arg-type]
     )
-    run_git = AsyncMock(return_value=(0, "", ""))
+    from agenthicc.tools.git import GitRun
+
+    run_git = AsyncMock(return_value=GitRun(0, "", ""))
     monkeypatch.setattr("agenthicc.tools.git._run_git", run_git)
 
     result = await GitDiffTool().execute(
