@@ -34,7 +34,7 @@ import math
 import time
 import uuid
 from copy import deepcopy
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol, cast
@@ -64,6 +64,7 @@ from agenthicc.subagents.budget import (
     worker_run_id,
     worker_usage,
 )
+from agenthicc.subagents.events import SubagentEvent, SubagentEventKind
 from agenthicc.subagents.textual_tool_calls import (
     find_textual_tool_call,
     textual_tool_call_correction,
@@ -98,6 +99,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "FINISHED_ROW_S",
+    "STUCK_TIMEOUT_FRACTION",
     "AggregatedResult",
     "SubagentPool",
     "SubagentPoolState",
@@ -289,6 +291,9 @@ FINISHED_ROW_S = 30.0
 
 _LIVE_STATUSES = frozenset({"pending", "running", "waiting"})
 
+#: A ``running`` worker past this share of its time limit counts as stuck.
+STUCK_TIMEOUT_FRACTION = 0.8
+
 
 WorkerStopMode = Literal["abort", "drain"]
 WorkerLifecyclePhase = Literal[
@@ -352,11 +357,26 @@ class WorkerState:
     dismissed: bool = False
     depth: int = 1
     parent_pool_id: str = ""
+    #: The attempt's time limit, when one applies.
+    timeout_s: float | None = None
 
     @property
     def live(self) -> bool:
         """Whether the worker has not finished."""
         return self.status in _LIVE_STATUSES
+
+    def elapsed_s(self, now: float) -> float:
+        """Seconds since the attempt started, up to its finish; 0 before it starts."""
+        if self.started_at is None:
+            return 0.0
+        end = self.finished_at if self.finished_at is not None else now
+        return max(0.0, end - self.started_at)
+
+    def timeout_ratio(self, now: float) -> float | None:
+        """Elapsed time over the attempt's time limit, or ``None`` without a limit."""
+        if not self.timeout_s:
+            return None
+        return self.elapsed_s(now) / self.timeout_s
 
 
 @dataclass(frozen=True, slots=True)
@@ -387,6 +407,10 @@ class SubagentPoolState:
     budget_cost_usd: float | None = None
     #: Cost metered so far; maintained only while a cost limit is declared.
     cost_usd: float = 0.0
+    #: When the pool started running workers.
+    started_at: float | None = None
+    #: Transcript writes that failed; a non-zero value means a partial transcript.
+    transcript_write_failures: int = 0
 
     @property
     def tokens(self) -> int:
@@ -404,6 +428,70 @@ class SubagentPoolState:
 
     def worker(self, worker_id: str) -> WorkerState | None:
         return next((w for w in self.workers if w.worker_id == worker_id), None)
+
+    # ── derived counters (SUBAGENT-09 goal 10): no new meters ────────────────
+
+    def stuck_workers(self, now: float) -> int:
+        """Workers ``running`` past :data:`STUCK_TIMEOUT_FRACTION` of their limit.
+
+        A ``waiting`` worker (an approval or a question) is not stuck: it is
+        blocked on someone else.
+        """
+        return sum(
+            1
+            for worker in self.workers
+            if worker.status == "running"
+            and (ratio := worker.timeout_ratio(now)) is not None
+            and ratio >= STUCK_TIMEOUT_FRACTION
+        )
+
+    def wall_clock_s(self, now: float) -> float:
+        """Seconds the pool has run, up to its finish."""
+        if self.started_at is None:
+            return 0.0
+        end = self.finished_at if self.finished_at is not None else now
+        return max(0.0, end - self.started_at)
+
+    def success_rate_by_type(self) -> dict[str, float]:
+        """Per worker type, the share of its finished workers that succeeded."""
+        finished: dict[str, int] = {}
+        succeeded: dict[str, int] = {}
+        for worker in self.workers:
+            if worker.live:
+                continue
+            finished[worker.agent_type] = finished.get(worker.agent_type, 0) + 1
+            if worker.status == "done":
+                succeeded[worker.agent_type] = succeeded.get(worker.agent_type, 0) + 1
+        return {
+            agent_type: succeeded.get(agent_type, 0) / count
+            for agent_type, count in finished.items()
+        }
+
+    def budget_ratio(self) -> float | None:
+        """The larger share consumed of a declared token or cost budget, if any."""
+        ratios: list[float] = []
+        if self.budget_tokens:
+            ratios.append(self.tokens / self.budget_tokens)
+        if self.budget_cost_usd:
+            ratios.append(self.cost_usd / self.budget_cost_usd)
+        return max(ratios) if ratios else None
+
+    def diagnostics(self, now: float) -> dict[str, object]:
+        """Every derived counter at *now*, for a report or a test."""
+        return {
+            "wall_clock_s": self.wall_clock_s(now),
+            "stuck_workers": self.stuck_workers(now),
+            "success_rate_by_type": self.success_rate_by_type(),
+            "budget_ratio": self.budget_ratio(),
+            "transcript_write_failures": self.transcript_write_failures,
+            "workers": {
+                worker.worker_id: {
+                    "elapsed_s": worker.elapsed_s(now),
+                    "timeout_ratio": worker.timeout_ratio(now),
+                }
+                for worker in self.workers
+            },
+        }
 
     def with_worker(self, worker: WorkerState) -> SubagentPoolState:
         """This snapshot with *worker* replacing the worker with its ID."""
@@ -2083,6 +2171,7 @@ class SubagentPool:
         self._transcript_root = transcript_root
         self._transcripts: TranscriptWriter | None = None
         self._transcript_created_at: float | None = None
+        self._transcript_degraded_reported = False
         if on_budget_exceeded not in {"abort", "drain"}:
             raise ValueError("on_budget_exceeded must be 'abort' or 'drain'")
         self._on_budget_exceeded = on_budget_exceeded
@@ -2183,17 +2272,15 @@ class SubagentPool:
             ),
         )
         self._append_scroll_event(
-            "subagent_worker_stop_requested",
-            {
-                "pool_id": self.pool_id,
-                "worker_id": worker_id,
-                "request_id": request.request_id,
-                "mode": mode,
-                "source": source_value,
-                "reason": reason_value,
-                "phase": "requested",
-                "attempt": lifecycle.attempt,
-            },
+            self._event(
+                SubagentEventKind.STOP_REQUESTED,
+                worker_id,
+                request_id=request.request_id,
+                mode=mode,
+                source=source_value,
+                reason=reason_value,
+                phase="requested",
+            )
         )
         stop_event = self._stop_events.get(worker_id)
         if stop_event is not None:
@@ -2476,7 +2563,7 @@ class SubagentPool:
         worker = self._make_worker(task, spec, index, progress)
         self._workers[worker_id] = worker
         if self._transcript_root is not None:
-            self._transcripts = TranscriptWriter(self._transcript_root, self.pool_id)
+            self._transcripts = self._open_transcripts(self._transcript_root)
             self._transcripts.start(
                 [
                     WorkerRecord(
@@ -2536,16 +2623,6 @@ class SubagentPool:
             self._state = replace(self._state, finished_at=time.time())
             self._publish()
             await self._emit_pool_completed(aggregate)
-            self._append_scroll_event(
-                "subagent_pool_done",
-                {
-                    "succeeded": aggregate.succeeded,
-                    "total": aggregate.total,
-                    "failed": aggregate.failed,
-                    "budget_exceeded_reason": aggregate.budget_exceeded_reason,
-                    "budget": self._budget_report(aggregate),
-                },
-            )
             if self._journal is not None:
                 if aggregate.budget_exceeded_reason:
                     self._journal.subagent_pool_stopped(
@@ -2658,12 +2735,15 @@ class SubagentPool:
                     worker_id=task.task_id,
                     depth=self._depth,
                     parent_pool_id=self.pool_id,
+                    timeout_s=(
+                        self._timeout_s if self._timeout_s is not None else spec.max_turn_time_s
+                    ),
                 )
             )
 
         self._progress = progress
         if self._transcript_root is not None:
-            self._transcripts = TranscriptWriter(self._transcript_root, self.pool_id)
+            self._transcripts = self._open_transcripts(self._transcript_root)
             self._transcript_created_at = time.time()
             self._transcripts.start(
                 [
@@ -2686,6 +2766,7 @@ class SubagentPool:
             lifecycles=tuple(self._lifecycles.values()),
             budget_tokens=self._declared_token_limit(),
             budget_cost_usd=self._max_cost_usd,
+            started_at=time.time(),
         )
         self._publish()
         self._running.set()
@@ -2745,18 +2826,7 @@ class SubagentPool:
         progress: Mapping[str, _WorkerProgress],
     ) -> AggregatedResult:
         # Emit pool-started kernel + scroll-buffer events.
-        await self._emit_pool_started()
-        self._append_scroll_event(
-            "subagent_pool_started",
-            {
-                "total": len(workers),
-                "workers": [{"label": ws.label, "type": ws.agent_type} for ws in worker_states],
-                "timeout_s": self._timeout_s or DEFAULT_SUBAGENT_TIMEOUT_S,
-                "depth": self._depth,
-                "parent_pool_id": self._parent_pool_id,
-                "max_concurrent": self._max_concurrent,
-            },
-        )
+        await self._emit_pool_started(worker_states)
 
         # Run workers with a semaphore bounding concurrency.
         semaphore = asyncio.Semaphore(self._max_concurrent)
@@ -2848,34 +2918,6 @@ class SubagentPool:
                     ),
                 )
                 await self._emit_worker_done(result)
-                payload: dict[str, object] = {
-                    "label": result.label,
-                    "ok": result.ok,
-                    **self._display_fields("error", result.error, _MAX_DISPLAY_ERROR_CHARS),
-                    "duration_ms": result.duration_ms,
-                    **self._display_fields("summary", result.text, _MAX_DISPLAY_RESULT_CHARS),
-                    "tool_calls": list(result.tool_calls),
-                    "changed_paths": list(result.changed_paths),
-                    "done": self._state.done,
-                    "total": self._state.total,
-                }
-                if request is not None or result.partial or result.undelivered_messages:
-                    payload.update(
-                        {
-                            "worker_id": worker_id,
-                            "request_id": request.request_id if request is not None else "",
-                            "mode": request.mode if request is not None else "",
-                            "source": request.source if request is not None else "",
-                            "reason": request.reason if request is not None else "",
-                            "phase": lifecycle.phase,
-                            "partial": result.partial,
-                            "stop_reason": result.stop_reason,
-                            "undelivered_messages": result.undelivered_messages,
-                            "attempt": lifecycle.attempt,
-                            "cleanup_error": cleanup_error,
-                        }
-                    )
-                self._append_scroll_event("subagent_worker_done", payload)
                 return result
 
             async with semaphore:
@@ -3026,16 +3068,6 @@ class SubagentPool:
             )
         )
         await self._emit_pool_completed(aggregated)
-        self._append_scroll_event(
-            "subagent_pool_done",
-            {
-                "succeeded": aggregated.succeeded,
-                "total": aggregated.total,
-                "failed": aggregated.failed,
-                "budget_exceeded_reason": aggregated.budget_exceeded_reason,
-                "budget": self._budget_report(aggregated),
-            },
-        )
         # The finished pool stays on the panel while it has rows to show.
         self._state = replace(self._state, finished_at=time.time())
         self._publish()
@@ -3131,6 +3163,35 @@ class SubagentPool:
             self._state = self._state.with_worker(updated)
             self._publish()
 
+    def _open_transcripts(self, root: Path) -> TranscriptWriter:
+        """A writer whose failed writes are reported on this pool's event loop."""
+        loop = asyncio.get_running_loop()
+
+        def _failed(count: int) -> None:
+            # Called on the writer thread; the pool's state lives on the loop.
+            try:
+                loop.call_soon_threadsafe(self._transcript_write_failed, count)
+            except RuntimeError:
+                # The loop already closed: the session is gone, so is the panel.
+                return
+
+        return TranscriptWriter(root, self.pool_id, on_failure=_failed)
+
+    def _transcript_write_failed(self, count: int) -> None:
+        """Count a failed transcript write; report the first one per pool."""
+        self._state = replace(self._state, transcript_write_failures=count)
+        self._publish()
+        if self._transcript_degraded_reported:
+            return
+        self._transcript_degraded_reported = True
+        self._append_scroll_event(
+            self._event(
+                SubagentEventKind.TRANSCRIPT_DEGRADED,
+                transcript_write_failures=count,
+                text="a transcript write failed; this pool's transcripts are partial",
+            )
+        )
+
     def _record(self, worker_id: str, event: TranscriptEvent) -> None:
         if self._transcripts is not None:
             self._transcripts.append(worker_id, event)
@@ -3162,9 +3223,50 @@ class SubagentPool:
             fields["text_length" if main else f"{key}_length"] = len(text)
         return fields
 
-    def _append_scroll_event(self, kind: str, payload: dict[str, object]) -> None:
+    def _event(
+        self,
+        kind: SubagentEventKind,
+        worker_id: str = "",
+        *,
+        ok: bool | None = None,
+        fields: Mapping[str, object] | None = None,
+        **extra: object,
+    ) -> SubagentEvent:
+        """One SUBAGENT-09 record for this pool; its fields are already display-safe."""
+        lifecycle = self._lifecycles.get(worker_id) if worker_id else None
+        return SubagentEvent(
+            kind=kind,
+            pool_id=self.pool_id,
+            worker_id=worker_id,
+            attempt=lifecycle.attempt if lifecycle is not None else 1,
+            session_id=self._conversation_id,
+            run_id=(
+                worker_run_id(self._parent_run_id, self.pool_id, worker_id)
+                if worker_id and self._parent_run_id
+                else self._parent_run_id
+            ),
+            ok=ok,
+            fields={**(fields or {}), **extra},
+        )
+
+    def _append_scroll_event(self, event: SubagentEvent) -> None:
+        """Project *event* into the conversation store, when its row has a scroll kind."""
+        kind = event.row.scroll_kind
+        if kind is None:
+            raise ValueError(f"{event.kind.value} has no scroll projection")
         if self._conv_store is not None and hasattr(self._conv_store, "append_event"):
-            self._conv_store.append_event(kind, payload)
+            self._conv_store.append_event(kind, event.payload())
+
+    async def _emit_kernel_event(self, event: SubagentEvent) -> None:
+        """Project *event* into the kernel, when its row has a kernel type."""
+        kernel_type = event.row.kernel_type
+        if kernel_type is None:
+            raise ValueError(f"{event.kind.value} has no kernel projection")
+        if self._processor is None:
+            return
+        from agenthicc.kernel import Event
+
+        await self._processor.emit(Event.create(kernel_type, event.payload()))
 
     def _persist_worker_result(
         self,
@@ -3237,45 +3339,38 @@ class SubagentPool:
 
     # ── kernel event helpers ─────────────────────────────────────────────────
 
-    async def _emit_pool_started(self) -> None:
-        if self._processor is None:
-            return
-        from agenthicc.kernel import Event
-
-        await self._processor.emit(
-            Event.create(
-                "SubagentPoolStarted",
+    async def _emit_pool_started(self, worker_states: Sequence[WorkerState]) -> None:
+        tasks = {task.task_id: task for task in self._tasks}
+        event = self._event(
+            SubagentEventKind.POOL_OPENED,
+            total=len(worker_states),
+            workers=[
                 {
-                    "pool_id": self.pool_id,
-                    "tasks": [
-                        {
-                            "task_id": t.task_id,
-                            "type": t.agent_type,
-                            **self._display_fields(
-                                "description", t.task_description, _MAX_DISPLAY_TASK_CHARS
-                            ),
-                        }
-                        for t in self._tasks
-                    ],
-                    "max_concurrent": self._max_concurrent,
-                    "depth": self._depth,
-                    "parent_pool_id": self._parent_pool_id,
-                    "timeout_s": self._timeout_s or DEFAULT_SUBAGENT_TIMEOUT_S,
-                },
-            )
+                    "worker_id": state.worker_id,
+                    "label": state.label,
+                    "type": state.agent_type,
+                    **self._display_fields(
+                        "task",
+                        tasks[state.worker_id].task_description if state.worker_id in tasks else "",
+                        _MAX_DISPLAY_TASK_CHARS,
+                    ),
+                }
+                for state in worker_states
+            ],
+            max_concurrent=self._max_concurrent,
+            depth=self._depth,
+            parent_pool_id=self._parent_pool_id,
+            timeout_s=self._timeout_s or DEFAULT_SUBAGENT_TIMEOUT_S,
         )
+        await self._emit_kernel_event(event)
+        self._append_scroll_event(event)
 
     async def _emit_worker_started(self, worker: SubagentWorker) -> None:
-        if self._processor is None:
-            return
-        from agenthicc.kernel import Event
-
-        await self._processor.emit(
-            Event.create(
-                "SubagentStarted",
-                {
-                    "pool_id": self.pool_id,
-                    "task_id": worker._task.task_id,
+        await self._emit_kernel_event(
+            self._event(
+                SubagentEventKind.WORKER_STARTED,
+                worker._task.task_id,
+                fields={
                     "type": worker._task.agent_type,
                     "label": worker.label,
                     **self._display_fields(
@@ -3286,14 +3381,10 @@ class SubagentPool:
         )
 
     async def _emit_worker_done(self, result: SubagentResult) -> None:
-        if self._processor is None:
-            return
-        from agenthicc.kernel import Event
-
-        event_type = "SubagentCompleted" if result.ok else "SubagentFailed"
-        payload: dict[str, object] = {
-            "pool_id": self.pool_id,
-            "task_id": result.task_id,
+        """Report one finished attempt: ``worker_finished`` or ``worker_failed``."""
+        lifecycle = self._lifecycles.get(result.task_id)
+        request = lifecycle.stop_request if lifecycle is not None else None
+        fields: dict[str, object] = {
             "type": result.agent_type,
             "label": result.label,
             **self._display_fields("text", result.text, _MAX_DISPLAY_RESULT_CHARS),
@@ -3301,11 +3392,11 @@ class SubagentPool:
             "duration_ms": result.duration_ms,
             "tool_calls": list(result.tool_calls),
             "changed_paths": list(result.changed_paths),
+            "done": self._state.done,
+            "total": self._state.total,
         }
-        lifecycle = self._lifecycles.get(result.task_id)
-        request = lifecycle.stop_request if lifecycle is not None else None
         if request is not None or result.partial or result.undelivered_messages:
-            payload.update(
+            fields.update(
                 {
                     "request_id": request.request_id if request is not None else "",
                     "mode": request.mode if request is not None else "",
@@ -3315,33 +3406,38 @@ class SubagentPool:
                     "partial": result.partial,
                     "stop_reason": result.stop_reason,
                     "undelivered_messages": result.undelivered_messages,
-                    "attempt": lifecycle.attempt if lifecycle is not None else 1,
                     "cleanup_error": lifecycle.cleanup_error if lifecycle is not None else "",
                     "not_started": result.not_started,
                 }
             )
-        await self._processor.emit(Event.create(event_type, payload))
+        event = self._event(
+            SubagentEventKind.WORKER_FINISHED if result.ok else SubagentEventKind.WORKER_FAILED,
+            result.task_id,
+            ok=result.ok,
+            fields=fields,
+        )
+        await self._emit_kernel_event(event)
+        self._append_scroll_event(event)
 
     async def _emit_pool_completed(self, agg: AggregatedResult) -> None:
-        if self._processor is None:
-            return
-        from agenthicc.kernel import Event
-
-        await self._processor.emit(
-            Event.create(
-                "SubagentPoolCompleted",
-                {
-                    "pool_id": self.pool_id,
-                    "total": agg.total,
-                    "succeeded": agg.succeeded,
-                    "failed": agg.failed,
-                    **self._display_fields("text", agg.text, _MAX_EVENT_AGGREGATE_CHARS),
-                    "budget_exceeded_reason": agg.budget_exceeded_reason,
-                    "budget": self._budget_report(agg),
-                },
-            )
+        event = self._event(
+            SubagentEventKind.POOL_FINISHED,
+            ok=agg.failed == 0 and not agg.budget_exceeded_reason,
+            fields={
+                "total": agg.total,
+                "succeeded": agg.succeeded,
+                "failed": agg.failed,
+                **self._display_fields("text", agg.text, _MAX_EVENT_AGGREGATE_CHARS),
+                "budget_exceeded_reason": agg.budget_exceeded_reason,
+                "budget": self._budget_report(agg),
+                "stuck_workers": self._state.stuck_workers(time.time()),
+                "transcript_write_failures": self._state.transcript_write_failures,
+            },
         )
-        await self._processor.drain()
+        await self._emit_kernel_event(event)
+        if self._processor is not None:
+            await self._processor.drain()
+        self._append_scroll_event(event)
 
 
 # ── unknown-type sentinel worker ──────────────────────────────────────────────

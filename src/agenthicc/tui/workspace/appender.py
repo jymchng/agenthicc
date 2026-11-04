@@ -1100,6 +1100,7 @@ def _render_subagent_pool_started(self: ScrollBufferAppender, ev: ConversationEv
 
 
 @register_renderer("subagent_worker_done")
+@register_renderer("subagent_worker_failed")
 def _render_subagent_worker_done(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
     from rich.markup import escape as _e
 
@@ -1116,7 +1117,7 @@ def _render_subagent_worker_done(self: ScrollBufferAppender, ev: ConversationEve
             if len(changed_paths) > 3:
                 detail += f" (+{len(changed_paths) - 3} more)"
         else:
-            summary = str(ev.payload.get("summary", "")).strip().splitlines()[0:1]
+            summary = str(ev.payload.get("text", "")).strip().splitlines()[0:1]
             detail = f"  {_e(summary[0][:120])}" if summary else ""
         self._console.print(
             f"[green]✓[/green] [{done}/{total}] [cyan]{label}[/cyan]{dur}{detail}",
@@ -1130,6 +1131,17 @@ def _render_subagent_worker_done(self: ScrollBufferAppender, ev: ConversationEve
             markup=True,
             highlight=False,
         )
+
+
+@register_renderer("subagent_transcript_degraded")
+def _render_subagent_transcript_degraded(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
+    failures = _nonnegative_int(ev.payload, "transcript_write_failures")
+    self._console.print(
+        f"  [yellow]![/yellow] [dim]Subagent transcripts are partial: "
+        f"{failures} write{'s' if failures != 1 else ''} failed[/dim]",
+        markup=True,
+        highlight=False,
+    )
 
 
 @register_renderer("subagent_pool_done")

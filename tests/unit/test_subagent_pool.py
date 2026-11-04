@@ -1520,14 +1520,14 @@ async def test_worker_secret_is_masked_identically_in_every_sink(tmp_path: Path)
         event.text for event in read_transcript(record.transcript_path("task-0"))
     )
 
-    for sink in (completed["text"], pool_completed["text"], done["summary"], transcript_text):
+    for sink in (completed["text"], pool_completed["text"], done["text"], transcript_text):
         assert isinstance(sink, str)
         assert _WORKER_SECRET not in sink
         assert "<redacted>" in sink
     # The same value is masked the same way in the kernel and scroll payloads.
-    assert completed["text"] == done["summary"]
+    assert completed["text"] == done["text"]
     assert _TASK_SECRET not in str(started["task"])
-    assert _TASK_SECRET not in str(pool_started["tasks"])
+    assert _TASK_SECRET not in str(pool_started["workers"])
 
 
 @pytest.mark.asyncio
@@ -1555,7 +1555,7 @@ async def test_long_worker_text_is_cut_visibly_and_short_text_is_not(
     await pool.run()
 
     by_task = {
-        payload["task_id"]: payload for payload in _kernel(kernel_events, "SubagentCompleted")
+        payload["worker_id"]: payload for payload in _kernel(kernel_events, "SubagentCompleted")
     }
     assert by_task["long"]["text"] == long_text[: pool_module._MAX_DISPLAY_RESULT_CHARS]
     assert by_task["long"]["truncated"] is True
@@ -1565,8 +1565,8 @@ async def test_long_worker_text_is_cut_visibly_and_short_text_is_not(
     by_label = {
         payload["label"]: payload for payload in _scroll(scroll_events, "subagent_worker_done")
     }
-    long_done = next(p for p in by_label.values() if p["summary"] != "short")
-    short_done = next(p for p in by_label.values() if p["summary"] == "short")
+    long_done = next(p for p in by_label.values() if p["text"] != "short")
+    short_done = next(p for p in by_label.values() if p["text"] == "short")
     assert long_done["truncated"] is True and long_done["text_length"] == len(long_text)
     assert "truncated" not in short_done
 
@@ -1598,7 +1598,7 @@ async def test_failed_worker_error_is_redacted_in_scroll_and_kernel_payloads(
     await pool.run()
 
     failed = _kernel(kernel_events, "SubagentFailed")[0]
-    done = _scroll(scroll_events, "subagent_worker_done")[0]
+    done = _scroll(scroll_events, "subagent_worker_failed")[0]
     for error in (failed["error"], done["error"]):
         assert isinstance(error, str)
         assert _WORKER_SECRET not in error
@@ -1927,3 +1927,204 @@ async def test_a_type_declared_policy_narrows_the_first_attempt() -> None:
     assert executed == []
     worker = pool._workers["task-0"]
     assert worker._policy is not None and "write" in worker._policy.blocked_capabilities
+
+
+# ── SUBAGENT-09: the event contract ─────────────────────────────────────────
+
+
+def _fake_worker_class(results: dict[str, SubagentResult]) -> type:
+    class FakeWorker:
+        def __init__(self, task: SubagentTask, spec: object, index: int, **kwargs: object) -> None:
+            self._task = task
+            self.label = f"{task.agent_type} #{index}"
+
+        async def run(self) -> SubagentResult:
+            return results[self._task.task_id]
+
+    return FakeWorker
+
+
+@pytest.mark.asyncio
+async def test_every_subagent_record_carries_the_contract_envelope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Criteria 1, 3 and 4: one record shape, versioned and correlated, in every sink."""
+    import agenthicc.subagents.pool as pool_module
+    from agenthicc.subagents.events import SUBAGENT_EVENT_SCHEMA_VERSION, SubagentEventKind
+
+    results = {
+        "ok": SubagentResult("ok", "explorer", "explorer #1", True, "found it"),
+        "bad": SubagentResult("bad", "explorer", "explorer #2", False, "", "broke"),
+    }
+    monkeypatch.setattr(pool_module, "SubagentWorker", _fake_worker_class(results))
+    pool, kernel_events, scroll_events = _capture_pool(
+        [SubagentTask("ok", "explorer", "a"), SubagentTask("bad", "explorer", "b")]
+    )
+    pool._conversation_id = "conv-1"
+    pool._parent_run_id = "turn-1"
+
+    await pool.run()
+
+    kinds = {kind.value for kind in SubagentEventKind}
+    records = [event.to_dict() for event in kernel_events]  # type: ignore[attr-defined]
+    assert records and all(record["schema_version"] == 1 for record in records)
+    payloads = [record["payload"] for record in records] + [
+        event.payload  # type: ignore[attr-defined]
+        for event in scroll_events
+        if event.kind.startswith("subagent_")  # type: ignore[attr-defined]
+    ]
+    for payload in payloads:
+        assert isinstance(payload, dict)
+        assert payload["schema_version"] == SUBAGENT_EVENT_SCHEMA_VERSION
+        assert payload["event"] in kinds
+        assert payload["pool_id"] == pool.pool_id
+        assert payload["session_id"] == "conv-1"
+        assert isinstance(payload["event_id"], str) and payload["event_id"]
+        assert isinstance(payload["at"], float)
+    worker_scoped = [
+        payload
+        for payload in payloads
+        if isinstance(payload, dict) and payload["event"] not in {"pool_opened", "pool_finished"}
+    ]
+    assert worker_scoped
+    for payload in worker_scoped:
+        assert payload["worker_id"] in {"ok", "bad"}
+        assert payload["attempt"] == 1
+        assert payload["run_id"] == f"turn-1:{pool.pool_id}:subagent:{payload['worker_id']}"
+    started = _scroll(scroll_events, "subagent_pool_started")[0]
+    assert [worker["worker_id"] for worker in started["workers"]] == ["ok", "bad"]  # type: ignore[index]
+
+
+def test_an_event_without_a_version_argument_stays_valid() -> None:
+    """Criterion 3: the version is declared once and defaults for other producers."""
+    from agenthicc.kernel import Event
+    from agenthicc.kernel.events import EVENT_SCHEMA_VERSIONS
+
+    assert Event.create("SubagentStarted", {}).to_dict()["schema_version"] == 1
+    assert Event.create("WorkflowPhaseStarted", {}).schema_version == 1
+    assert Event.create("WorkflowPhaseStarted", {}, schema_version=3).schema_version == 3
+    assert set(EVENT_SCHEMA_VERSIONS) == {
+        "SubagentCompleted",
+        "SubagentFailed",
+        "SubagentPoolCompleted",
+        "SubagentPoolStarted",
+        "SubagentStarted",
+    }
+    stored = Event.create("SubagentStarted", {"pool_id": "p"}).to_dict()
+    assert Event.from_dict(stored) == Event.from_dict(stored)
+    legacy = {key: value for key, value in stored.items() if key != "schema_version"}
+    assert Event.from_dict(legacy).schema_version == 1
+    with pytest.raises(ValueError, match="schema_version"):
+        Event.from_dict({**stored, "schema_version": 0})
+
+
+@pytest.mark.asyncio
+async def test_success_and_failure_differ_only_in_kind_and_ok(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Criterion 6: subagent_worker_done and subagent_worker_failed are distinct kinds."""
+    import agenthicc.subagents.pool as pool_module
+
+    payloads: dict[bool, dict[str, object]] = {}
+    for ok in (True, False):
+        result = SubagentResult("w", "explorer", "explorer #1", ok, "same text", "")
+        monkeypatch.setattr(pool_module, "SubagentWorker", _fake_worker_class({"w": result}))
+        pool, _kernel_events, scroll_events = _capture_pool([SubagentTask("w", "explorer", "a")])
+        await pool.run()
+        kind = "subagent_worker_done" if ok else "subagent_worker_failed"
+        assert (
+            _scroll(scroll_events, "subagent_worker_done" if not ok else "subagent_worker_failed")
+            == []
+        )
+        payloads[ok] = _scroll(scroll_events, kind)[0]
+
+    identity = {"event_id", "at", "pool_id", "duration_ms"}
+    done = {key: value for key, value in payloads[True].items() if key not in identity}
+    failed = {key: value for key, value in payloads[False].items() if key not in identity}
+    differing = {key for key in done.keys() | failed.keys() if done.get(key) != failed.get(key)}
+    assert differing == {"event", "ok"}
+    assert (done["event"], failed["event"]) == ("worker_finished", "worker_failed")
+
+
+@pytest.mark.asyncio
+async def test_a_worker_secret_is_masked_in_the_panel_activity_too(tmp_path: Path) -> None:
+    """Criterion 8: the fourth sink, the panel row, masks the same value."""
+    from lauren_ai._transport import Completion, TokenUsage
+    from lauren_ai._transport._mock import MockTransport
+
+    transport = MockTransport()
+    transport.queue_response(
+        Completion(
+            id="final",
+            model="mock-model",
+            content=f"The key is {_WORKER_SECRET}.",
+            tool_calls=[],
+            stop_reason="end_turn",
+            usage=TokenUsage(input_tokens=5, output_tokens=5),
+        )
+    )
+    pool, kernel_events, _scroll_events = _capture_pool(
+        [SubagentTask("task-0", "explorer", "look")], transport=transport
+    )
+
+    await pool.run()
+
+    activity = pool.state.workers[0].activity
+    assert _WORKER_SECRET not in activity and "<redacted>" in activity
+    assert activity == str(_kernel(kernel_events, "SubagentCompleted")[0]["text"]).splitlines()[0]
+
+
+def test_stuck_workers_counts_long_running_workers_but_not_waiting_ones() -> None:
+    """Criterion 11: a derived counter from existing fields, no new meter."""
+    from agenthicc.subagents.pool import STUCK_TIMEOUT_FRACTION, SubagentPoolState, WorkerState
+
+    now = 1_000.0
+    late = now - 100 * STUCK_TIMEOUT_FRACTION - 1
+    state = SubagentPoolState(
+        "pool",
+        4,
+        workers=(
+            WorkerState("a #1", "explorer", "running", "a", started_at=late, timeout_s=100),
+            WorkerState("b #1", "explorer", "waiting", "b", started_at=late, timeout_s=100),
+            WorkerState("c #1", "explorer", "running", "c", started_at=now - 10, timeout_s=100),
+            WorkerState(
+                "d #1",
+                "tester",
+                "done",
+                "d",
+                started_at=now - 50,
+                finished_at=now - 40,
+                timeout_s=100,
+            ),
+        ),
+        started_at=now - 200,
+        budget_tokens=1_000,
+    )
+
+    assert state.stuck_workers(now) == 1
+    diagnostics = state.diagnostics(now)
+    assert diagnostics["stuck_workers"] == 1
+    assert diagnostics["wall_clock_s"] == 200.0
+    assert diagnostics["success_rate_by_type"] == {"tester": 1.0}
+    assert diagnostics["budget_ratio"] == 0.0
+    workers = diagnostics["workers"]
+    assert isinstance(workers, dict)
+    assert workers["d"] == {"elapsed_s": 10.0, "timeout_ratio": 0.1}
+    assert WorkerState("e", "explorer").timeout_ratio(now) is None
+
+
+@pytest.mark.asyncio
+async def test_the_pool_snapshot_and_completion_report_stuck_workers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Criterion 11: the value appears on the pool's completion record."""
+    import agenthicc.subagents.pool as pool_module
+
+    result = SubagentResult("w", "explorer", "explorer #1", True, "ok")
+    monkeypatch.setattr(pool_module, "SubagentWorker", _fake_worker_class({"w": result}))
+    pool, kernel_events, scroll_events = _capture_pool([SubagentTask("w", "explorer", "a")])
+    await pool.run()
+
+    assert _kernel(kernel_events, "SubagentPoolCompleted")[0]["stuck_workers"] == 0
+    assert _scroll(scroll_events, "subagent_pool_done")[0]["transcript_write_failures"] == 0
+    assert pool.state.started_at is not None

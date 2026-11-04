@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from agenthicc.kernel import PROJECTION_EVENT_TYPES, REDUCED_EVENT_TYPES
+from agenthicc.subagents.events import LIFECYCLE_TABLE
 
 pytestmark = pytest.mark.unit
 
@@ -24,6 +25,15 @@ SRC = Path(__file__).resolve().parents[2] / "src" / "agenthicc"
 
 #: Emitted by the processor itself, not through ``Event.create`` in a producer.
 PROCESSOR_OWNED = frozenset({"KernelEventRejected"})
+
+#: Emit sites whose type comes from a static, declared table rather than a
+#: literal: the subagent pool projects every SUBAGENT-09 event through one
+#: site, typed by ``LIFECYCLE_TABLE``.
+TABLE_DRIVEN_SITES: dict[tuple[str, str], frozenset[str]] = {
+    ("agenthicc/subagents/pool.py", "_emit_kernel_event"): frozenset(
+        row.kernel_type for row in LIFECYCLE_TABLE if row.kernel_type is not None
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -135,11 +145,14 @@ def _emit_sites() -> tuple[list[EmitSite], list[str]]:
                 continue
             argument = _event_type_argument(node)
             options = _string_options(argument) if argument is not None else None
+            relative = str(path.relative_to(SRC.parent))
             if options is None and isinstance(argument, ast.Name):
                 function = _enclosing_function(node, parents)
                 if function is not None:
-                    options = _resolve_name(argument.id, function, tree)
-            location = f"{path.relative_to(SRC.parent)}:{node.lineno}"
+                    options = TABLE_DRIVEN_SITES.get((relative, function.name))
+                    if options is None:
+                        options = _resolve_name(argument.id, function, tree)
+            location = f"{relative}:{node.lineno}"
             if options is None:
                 unresolved.append(location)
             else:
