@@ -49,7 +49,32 @@ tags:
   (`background/worker.py` `_deliver_background_pool_notices`), pinned by
   `tests/unit/test_background_worker_coverage.py::test_background_session_delivers_finished_pool_notices_like_the_tui`.
 
-Goals 1, 6, 7, 8 and 10 are wave 5.
+**Wave 5 delivers goals 1, 6, 7, 8 and 10** (branch
+`subagent-wave-5-model-pool-control`, pending merge):
+
+- Goal 1: `spawn_subagents(background=True)` waits only for the pool's
+  journaled start, then returns `status: "running"` with worker rows and the
+  do-not-poll instruction. The switch is `subagents.background_enabled`
+  (a flat key, not `subagents.background.enabled`). Pinned by
+  `tests/integration/test_subagent_tool_execution.py` (`test_a_model_requested_background_*`, `test_on_clarification_fail_*`).
+- Goal 6: `subagents.on_clarification` (`queue` | `fail`). Under `queue` the
+  parent gets one id-only notice per question
+  (`deliver_background_question_notices`); under `fail` the broker refuses
+  parent questions with `unanswerable_in_background`. The default is `queue`
+  everywhere: only `TUISession` binds a background task owner, so headless,
+  background and detached sessions refuse background pools under goal 2 and
+  never reach this policy, and the PRD-227 inbox route is not needed yet.
+- Goal 7: `list_subagent_pools` (journal fold plus live handles, with
+  `notice_pending`), `stop_subagents` (`source="parent_model"`, abort for one
+  worker, drain for a pool) and `retry_subagent`, which relays
+  `SubagentPool.retry_refusal`'s reason. The registry keeps every live pool and
+  the 32 most recent finished ones, so retryability no longer depends on the
+  panel. Pinned by `tests/unit/test_subagent_lifecycle.py` and
+  `tests/unit/test_subagent_communication.py`.
+- Goal 8: every handle records its owner lineage (`pool_id:task_id` per
+  level); a nested worker's tools resolve only handles whose lineage contains
+  its own, and never fall back to the journal.
+- Goal 10: defaults keep foreground behaviour unchanged.
 
 ## 1. Executive summary
 

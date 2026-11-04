@@ -3451,6 +3451,8 @@ class SubagentSettings:
     stop_grace_s: float = 5.0
     max_budget: SubagentBudgetCeiling = SubagentBudgetCeiling()
     collect_wait_max_s: float = 60.0
+    background_enabled: bool = True
+    on_clarification: Literal["queue", "fail"] = "queue"
     depth_limits: Mapping[int, SubagentDepthLimit]
     depth_tiers: Mapping[int, Mapping[str, SubagentDepthTier]]
 
@@ -4634,12 +4636,71 @@ async def collect_subagent_results(
 ```
 
 Parent tool from `make_parent_communication_tools(registry, conversation_id,
-journal=None, *, collect_wait_max_s=60.0)`. Never blocks unless `wait=True`;
+journal=None, *, collect_wait_max_s=60.0, owner="")`; a non-empty `owner`
+(the nested worker's `pool_id:task_id`) limits every control tool to pools
+whose lineage contains it. Never blocks unless `wait=True`;
 a wait is capped by `subagents.collect_wait_max_s` and returns the running
 snapshot with `timed_out: True` instead of raising. A running pool returns
 worker rows and pending questions; a finished pool returns its results
 idempotently; a pool with no live handle is read from the conversation journal
 (including `interrupted` pools). Other conversations' pools are refused.
+
+### find_textual_tool_call
+
+```python
+def find_textual_tool_call(text: str, tool_names: Collection[str]) -> str | None: ...
+```
+
+From `agenthicc.subagents.textual_tool_calls`. The first of the worker's tools
+that *text* calls through leaked provider markup (DeepSeek DSML or special
+tokens, XML `invoke`, Hermes `<tool_call>`), ignoring fenced code blocks. A
+worker whose reply matches gets one corrective turn
+(`textual_tool_call_correction(tool)`) and fails with `unexecuted_tool_call`
+if it writes the call as text again.
+
+### textual_tool_call_correction
+
+The corrective instruction sent once after a tool call written as text.
+
+### background_question_notice
+
+The runtime-authored notice that a backgrounded worker awaits an answer; it
+carries only the pool, worker and question ids, never the question text.
+
+### deliver_background_question_notices
+
+Announce each open parent question of a backgrounded pool once per question
+(message id `subagent-question:<question_id>`).
+
+### list_subagent_pools
+
+```python
+async def list_subagent_pools() -> dict[str, object]: ...
+```
+
+Parent tool listing the conversation's pools in the caller's scope:
+`{"ok": True, "pools": [{"pool_id", "status", "background", "total",
+"succeeded", "failed"}, ...]}`.
+
+### stop_subagents
+
+```python
+async def stop_subagents(
+    pool_id: str, worker_id: str | None = None, mode: str | None = None, reason: str = ""
+) -> dict[str, object]: ...
+```
+
+Stop one worker (default `abort`) or the whole pool (default `drain`) with
+source `parent_model`. Idempotent per worker; a finished pool is refused.
+
+### retry_subagent
+
+```python
+async def retry_subagent(pool_id: str, worker_id: str) -> dict[str, object]: ...
+```
+
+Re-run a failed or cancelled worker of a finished pool. Refusal reasons come
+from `SubagentPool.retry_refusal(worker_id)`.
 
 ### SubagentExecutionPolicy
 

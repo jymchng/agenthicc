@@ -26,11 +26,14 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from agenthicc.memory.journal import ConversationJournal
     from agenthicc.memory.journaled import JournaledShortTermMemory
+    from agenthicc.subagents.communication import PoolContinuationRegistry
     from agenthicc.tui.conversation_store import ConversationStore
 
 __all__ = [
     "background_pool_notice",
+    "background_question_notice",
     "deliver_background_pool_notices",
+    "deliver_background_question_notices",
 ]
 
 #: Stop reasons a notice may quote; anything else is reported generically.
@@ -111,3 +114,52 @@ def deliver_background_pool_notices(
         journal.subagent_pool_notification_delivered(pool_id=pool_id, message_id=message_id)
         delivered.append(pool_id)
     return tuple(delivered)
+
+
+def background_question_notice(pool_id: str, worker_id: str, question_id: str) -> str:
+    """The runtime-authored notice that a backgrounded worker awaits an answer.
+
+    Identifiers only: the question itself is worker-authored, so it is read
+    through ``collect_subagent_results`` (the tool role), never placed here.
+    """
+    return (
+        f"A worker ({worker_id[:64]}) of background subagent pool {pool_id[:128]} is waiting "
+        f"for your answer to question {question_id[:64]}. Call "
+        f'collect_subagent_results(pool_id="{pool_id[:128]}") to read it, then '
+        "answer_subagent(pool_id, question_id, answer)."
+    )
+
+
+def deliver_background_question_notices(
+    registry: PoolContinuationRegistry,
+    memory: JournaledShortTermMemory,
+    conversation: ConversationStore | None = None,
+) -> tuple[str, ...]:
+    """Tell the parent, once per question, that a backgrounded worker is waiting.
+
+    Under ``subagents.on_clarification = "queue"`` a backgrounded worker's
+    question stays open; without this notice nothing would surface it until
+    the message timeout. Returns the ids of the questions announced.
+    """
+    announced: list[str] = []
+    for handle in registry.handles():
+        if not handle.backgrounded or handle.task.done():
+            continue
+        for question in handle.broker.pending_questions(recipient="main"):
+            question_id = str(question.get("question_id", ""))
+            if not question_id:
+                continue
+            message_id = f"subagent-question:{question_id}"
+            notice = background_question_notice(
+                handle.pool_id, str(question.get("worker_id", "")), question_id
+            )
+            if not memory.add_user_once(notice, message_id=message_id):
+                continue
+            if conversation is not None:
+                conversation.append_event(
+                    "user_message",
+                    {"text": notice, "source": "subagent_question"},
+                    event_id=message_id,
+                )
+            announced.append(question_id)
+    return tuple(announced)

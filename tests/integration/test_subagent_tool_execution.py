@@ -1259,3 +1259,257 @@ async def test_backgrounding_without_a_supervisor_is_refused_and_stops_the_pool(
     finally:
         release.set()
         journal.close()
+
+
+# ── SUBAGENT-11 goals 1, 6, 7: model-facing background and control ────────────
+
+
+def _control_tools(spawn: object) -> dict[str, object]:
+    tools = spawn.__agenthicc_subagent_communication_tools__
+    return {getattr(item, "__name__", ""): item for item in tools}
+
+
+async def test_a_model_requested_background_pool_returns_running_at_once(tmp_path) -> None:
+    release = asyncio.Event()
+
+    @tool()
+    async def wait_for_release(topic: str) -> str:
+        """Wait until the test releases the worker."""
+        await release.wait()
+        return f"released:{topic}"
+
+    transport = MockTransport()
+    transport.queue_tool_use("wait_for_release", {"topic": "x"}, tool_use_id="wait-1")
+    transport.queue_response(_final("worker complete", "final"))
+    journal = ConversationJournal(tmp_path / "conversation-journal.jsonl")
+    conv_store = ConversationStore()
+    supervisor = SupervisedTasks("model background test")
+    spawn = make_spawn_subagents_tool(
+        AgentRunnerBase(transport=transport),
+        "mock-model",
+        [wait_for_release],
+        registry=_registry("wait_for_release"),
+        conversation_id="conversation-1",
+        parent_run_id="turn-1",
+        conversation_journal=journal,
+        conv_store=conv_store,
+    )
+    try:
+        with bind_background_task_owner(supervisor):
+            receipt = await asyncio.wait_for(
+                spawn(  # type: ignore[operator]
+                    tasks=[{"type": "researcher", "task": "Wait."}],
+                    timeout_s=30,
+                    background=True,
+                ),
+                timeout=1,
+            )
+
+        assert receipt["status"] == "running"
+        assert "Do not sleep, poll" in receipt["results"]
+        assert [row["worker_id"] for row in receipt["workers"]] == ["task-0"]
+        kinds = [record["kind"] for record in journal.fold_subagent_pool_lifecycle()]
+        lifecycle = journal.fold_subagent_pool_lifecycle()[0]
+        assert lifecycle["status"] == "backgrounded" and kinds
+        collect = _control_tools(spawn)["collect_subagent_results"]
+        snapshot = await collect(receipt["pool_id"])  # type: ignore[operator]
+        assert snapshot["status"] == "running"
+
+        release.set()
+        assert await supervisor.wait(timeout=5)
+        finished = await collect(receipt["pool_id"])  # type: ignore[operator]
+        assert finished["status"] == "completed"
+        assert "worker complete" in finished["results"]
+    finally:
+        release.set()
+        await supervisor.aclose(timeout=0.1)
+        journal.close()
+
+
+async def test_a_model_requested_background_is_refused_when_it_cannot_be_owned(tmp_path) -> None:
+    from agenthicc.config import SubagentSettings
+
+    transport = MockTransport()
+    journal = ConversationJournal(tmp_path / "conversation-journal.jsonl")
+    spawn = make_spawn_subagents_tool(
+        AgentRunnerBase(transport=transport),
+        "mock-model",
+        [],
+        registry=_registry("not-a-parent-tool"),
+        conversation_id="conversation-1",
+        conversation_journal=journal,
+    )
+    unowned = await spawn(  # type: ignore[operator]
+        tasks=[{"type": "researcher", "task": "x"}], timeout_s=30, background=True
+    )
+    assert unowned["status"] == "background_unavailable"
+
+    disabled = make_spawn_subagents_tool(
+        AgentRunnerBase(transport=transport),
+        "mock-model",
+        [],
+        registry=_registry("not-a-parent-tool"),
+        conversation_id="conversation-1",
+        conversation_journal=journal,
+        subagent_settings=SubagentSettings(background_enabled=False),
+    )
+    with bind_background_task_owner(SupervisedTasks("disabled")):
+        refused = await disabled(  # type: ignore[operator]
+            tasks=[{"type": "researcher", "task": "x"}], timeout_s=30, background=True
+        )
+    assert refused["status"] == "refused"
+    assert "subagents.background_enabled" in refused["error"]
+    assert transport.calls == []
+    assert journal.fold_subagent_pool_lifecycle() == []
+    journal.close()
+
+
+async def test_on_clarification_fail_ends_a_backgrounded_workers_wait_at_once(tmp_path) -> None:
+    from agenthicc.config import SubagentSettings
+
+    transport = MockTransport()
+    transport.queue_tool_use("ask_parent", {"question": "Which API version?"}, tool_use_id="ask-1")
+    transport.queue_response(_final("Waiting for the parent.", "after-ask"))
+    journal = ConversationJournal(tmp_path / "conversation-journal.jsonl")
+    supervisor = SupervisedTasks("clarification fail")
+    spawn = make_spawn_subagents_tool(
+        AgentRunnerBase(transport=transport),
+        "mock-model",
+        [],
+        registry=_registry("not-a-parent-tool"),
+        conversation_id="conversation-1",
+        parent_run_id="turn-1",
+        conversation_journal=journal,
+        conv_store=ConversationStore(),
+        subagent_settings=SubagentSettings(on_clarification="fail"),
+    )
+    try:
+        with bind_background_task_owner(supervisor):
+            receipt = await spawn(  # type: ignore[operator]
+                tasks=[{"type": "researcher", "task": "Ask first."}],
+                timeout_s=30,
+                background=True,
+            )
+        assert receipt["status"] == "running"
+        # The worker is not left waiting out the 300 s message timeout.
+        assert await supervisor.wait(timeout=2)
+        tool_results = [
+            str(block.get("content"))
+            for message in transport.calls[-1].messages
+            if isinstance(message, dict) and isinstance(message.get("content"), list)
+            for block in message["content"]
+            if isinstance(block, dict) and block.get("type") == "tool_result"
+        ]
+        assert len(tool_results) == 1
+        assert "unanswerable_in_background" in tool_results[0]
+        assert "continue with your best judgement" in tool_results[0]
+        finished = await _control_tools(spawn)["collect_subagent_results"](  # type: ignore[operator]
+            receipt["pool_id"]
+        )
+        assert finished["status"] == "completed"
+    finally:
+        await supervisor.aclose(timeout=0.1)
+        journal.close()
+
+
+# ── write_file in a subagent, and calls written as text ────────────────────
+
+#: The markup a DeepSeek gateway returned as text for two documenters, which
+#: were then reported as successful although no file was written.
+_DSML_WRITE = (
+    '\n<｜DSML｜ invoke name="write_file">\n'
+    '<｜DSML｜ parameter name="path" string="true">docs/02-stock.md</｜DSML｜ parameter>\n'
+    '<｜DSML｜ parameter name="content" string="true">## Stock footage\n'
+)
+
+
+def _yolo_workspace(tmp_path: Path) -> tuple[AppState, object]:
+    from agenthicc.tools.workspace_access import WorkspaceAccessPolicy, WorkspaceScope
+
+    parent_state = AppState.create()
+    parent_state.active_mode.set(build_default_registry().get("Yolo"))
+    policy = WorkspaceAccessPolicy(
+        WorkspaceScope.create(tmp_path), mode_provider=parent_state.active_mode
+    )
+    return parent_state, policy
+
+
+async def _spawn_documenter(
+    transport: MockTransport, tmp_path: Path, task: str
+) -> dict[str, object]:
+    from agenthicc.tools.workspace_access import (
+        WorkspaceAccessPolicy,
+        reset_current_workspace_access,
+        set_current_workspace_access,
+    )
+
+    parent_state, policy = _yolo_workspace(tmp_path)
+    assert isinstance(policy, WorkspaceAccessPolicy)
+    spawn = make_spawn_subagents_tool(
+        AgentRunnerBase(transport=transport),
+        "mock-model",
+        [write_file],
+        app_state=parent_state,
+        workspace_access=policy,
+    )
+    # The parent turn binds its workspace policy exactly like this.
+    token = set_current_workspace_access(policy)
+    try:
+        return await spawn(tasks=[{"type": "documenter", "task": task}], timeout_s=30)  # type: ignore[no-any-return]
+    finally:
+        reset_current_workspace_access(token)
+
+
+async def test_a_documenter_writes_a_real_file_through_write_file(tmp_path: Path) -> None:
+    """The built-in documenter's write_file call executes and the file lands."""
+    transport = MockTransport()
+    transport.queue_tool_use(
+        "write_file",
+        {"path": "docs/guide.md", "content": "# Guide\n\nAccurate docs.\n"},
+        tool_use_id="write-1",
+    )
+    transport.queue_response(_final("Wrote docs/guide.md (3 lines).", "final-doc"))
+
+    result = await _spawn_documenter(transport, tmp_path, "Write docs/guide.md.")
+
+    assert result["ok"] is True and result["succeeded"] == 1
+    assert (tmp_path / "docs" / "guide.md").read_text(encoding="utf-8") == (
+        "# Guide\n\nAccurate docs.\n"
+    )
+    assert "write_file" in _tool_names(transport.calls[0])
+
+
+async def test_a_call_written_as_text_gets_one_correction_and_then_runs(tmp_path: Path) -> None:
+    """Leaked call markup is not a result: the worker is told, and retries the call."""
+    transport = MockTransport()
+    transport.queue_response(_final(_DSML_WRITE, "leaked"))
+    transport.queue_tool_use(
+        "write_file",
+        {"path": "docs/02-stock.md", "content": "## Stock footage\n"},
+        tool_use_id="write-2",
+    )
+    transport.queue_response(_final("Wrote docs/02-stock.md.", "final-stock"))
+
+    result = await _spawn_documenter(transport, tmp_path, "Write docs/02-stock.md.")
+
+    assert result["ok"] is True
+    assert (tmp_path / "docs" / "02-stock.md").read_text(encoding="utf-8") == "## Stock footage\n"
+    assert len(transport.calls) == 3
+    correction = str(_message_content(transport.calls[1].messages[-1]))
+    assert "wrote a call to write_file as text" in correction
+    assert "DSML" not in str(result["results"])
+
+
+async def test_a_call_written_as_text_twice_fails_the_worker(tmp_path: Path) -> None:
+    """A worker never reports success on an unexecuted call."""
+    transport = MockTransport()
+    transport.queue_response(_final(_DSML_WRITE, "leaked-1"))
+    transport.queue_response(_final(_DSML_WRITE, "leaked-2"))
+
+    result = await _spawn_documenter(transport, tmp_path, "Write docs/02-stock.md.")
+
+    assert result["ok"] is False and result["failed"] == 1
+    assert "wrote a write_file call as text" in str(result["results"])
+    assert "DSML" not in str(result["results"])
+    assert not (tmp_path / "docs").exists()
+    assert len(transport.calls) == 2

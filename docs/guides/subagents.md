@@ -155,6 +155,8 @@ spawn_subagents(
     timeout_s: float = 3600.0,
     model: str | None = None,  # operator-gated
     effort: str | None = None,  # operator-gated
+    budget: Budget | None = None,  # tokens / cost_usd / wall_clock_s
+    background: bool = False,  # return "running" at once; see Background pools
 ) -> dict[str, object]
 ```
 
@@ -245,6 +247,17 @@ other write-capable roles should be instructed to make the change, but the
 strict mutation-evidence rule currently applies to the built-in
 `implementer`: it must successfully invoke at least one mutating tool. A prose
 claim such as “I would update the file” is reported as a failed implementer.
+
+A tool call the model writes as *text* is never executed. Some gateways return
+their own call markup in the assistant text when they fail to parse it — for
+example DeepSeek's `<｜DSML｜ invoke name="write_file">` after a long `content`
+argument — so the file is not written. When a worker's reply holds call markup
+for one of its own tools (outside fenced code blocks), it gets one corrective
+turn saying the call did not run. If the model writes the call as text again,
+the worker fails with `stop_reason` / `error_code` `unexecuted_tool_call` and
+the error `the model wrote a write_file call as text instead of calling the
+tool; it was not executed`. The markup is never passed to the parent as a
+result. Detection lives in `agenthicc.subagents.textual_tool_calls`.
 
 If a provider returns no final prose after tool calls, the worker synthesizes a
 bounded summary such as `Executed tool call(s): read_file.`. If it returns no
@@ -401,7 +414,10 @@ available control-plane operations are:
 | `poll_agent_messages` | child | Read ordered parent/peer mail |
 | `send_peer_message` | child → child | Coordinate within the same pool |
 | `ask_peer` / `answer_peer` | child ↔ child | Correlated peer clarification |
-| `collect_subagent_results` | main → pool | Collect a pool paused for clarification |
+| `collect_subagent_results` | main → pool | Read a running pool's snapshot or a finished pool's results |
+| `list_subagent_pools` | main | List this conversation's pools with status and worker counts |
+| `stop_subagents` | main → pool | Stop one worker (abort) or a whole pool (drain) |
+| `retry_subagent` | main → pool | Re-run one failed or cancelled worker of a finished pool |
 
 The clarification flow is deliberately non-reentrant:
 
@@ -738,6 +754,50 @@ as `stopped`, with its counts, the aggregate of the workers that ran, and the
 crossed ceiling; `cancelled` is reserved for a session close. A turn that is
 re-driven after such a pool replays the same counts and text from the journal.
 
+### The model backgrounds a pool
+
+`spawn_subagents(..., background=True)` asks for the background from the
+start. The call waits only until the pool has journaled its start, then returns
+`status: "running"` with the `pool_id` and one `{worker_id, label}` row per
+worker, and tells the model not to sleep, poll or duplicate the work. The
+pool then behaves exactly like one backgrounded with Ctrl+B (whose receipt says
+`backgrounded`): the same supervised owner, journal records and completion
+notice. The request is refused, before any worker starts, when
+`subagents.background_enabled = false` or the session has no durable journal
+or supervised task owner.
+
+A backgrounded worker that calls `ask_parent` follows
+`subagents.on_clarification`:
+
+- `queue` (default): the question stays open. At the next turn boundary the
+  parent receives a runtime-authored notice naming only the pool, worker and
+  question ids — once per question — and reads the question itself through
+  `collect_subagent_results` before answering with `answer_subagent`.
+- `fail`: every open and later parent question of that pool ends at once with
+  `unanswerable_in_background`, and the worker is told to continue with its
+  best judgement and state its assumptions.
+
+### Controlling pools from the model
+
+- `list_subagent_pools()` lists the pools of this conversation: live handles
+  and, for the root conversation, every pool folded from the journal (including
+  pools from earlier turns), each with `status`, `background`, `total`,
+  `succeeded` and `failed`.
+- `stop_subagents(pool_id, worker_id=None, mode=None, reason="")` stops one
+  worker (default mode `abort`) or the whole pool (default `drain`). The stop
+  is recorded with source `parent_model`; repeating it returns the same
+  request id. A finished pool answers `the pool is not running`.
+- `retry_subagent(pool_id, worker_id)` re-runs a failed or cancelled worker of
+  a finished pool as a new attempt with the original type, model, policy,
+  pool scope and depth. It refuses a pool still running, a pool stopped by its
+  budget or wall-clock limit, a worker that succeeded or never started, and an
+  unknown worker, each with its reason.
+
+Retryability does not depend on which pool the TUI panel shows: the
+conversation registry keeps every live pool and the 32 most recent finished
+ones. A nested worker's control tools see only the pools it spawned itself
+(its ownership lineage), never its parent's or siblings' pools.
+
 ### Collecting a pool
 
 `collect_subagent_results(pool_id, wait=False, timeout_s=None)` reads a pool
@@ -962,6 +1022,15 @@ The child must be created from the normal session turn path so the parent
 approval service is passed into `make_spawn_subagents_tool`. Test-only callers
 that provide `AppState` but no approval service have no service to display a
 prompt. Headless callers should supply their explicit approval adapter.
+
+### A worker "succeeded" but the file it wrote is missing
+
+Check the worker's `tool_calls`: a write that ran is listed there and in
+`changed_paths`. A reply that shows `write_file` markup as text means the
+provider leaked its call format; the worker now gets one correction and fails
+with `unexecuted_tool_call` if it repeats it (see
+[Role-specific success rules](#role-specific-success-rules)). Also check that
+the parent mode exposes the write tool: in Plan mode no worker receives one.
 
 ### A repeated call returns old results
 

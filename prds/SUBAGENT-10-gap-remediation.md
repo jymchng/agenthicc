@@ -71,6 +71,7 @@ PRD's `status:` is promoted only when the PR is merged (research report §6.6).
 | 2 | `subagent-wave-2-background-delivery` | WP-5 (B-1: budget-ended pools journaled as `stopped` with counts, text, values and reason; delivery and turn-resume report the real cause; session-close `cancelled` records now keep their counts too), WP-6 (B-2: delivery composed by `agenthicc.subagents.delivery`, worker text framed as untrusted, redacted, bounded at 16,000 characters, frame-closing tag neutralised), WP-8 (SUBAGENT-05 criteria 4 and 8, SUBAGENT-08 criteria 5 and 8, test-location amendments in SUBAGENT-04/05/07/08) | 13, 14, 15, 19, 20, 21, 22, 25 |
 | 3 | `subagent-wave-3-pool-budgets` | WP-7 (SUBAGENT-06 goals 1–8, 10: pool-scoped worker run ids, ledger-derived worker and pool usage, `budget:` argument with validation, `subagents.max_budget` downward clamp, cost metering and `max_cost_usd_exceeded`, usage-versus-limit report on the tool result, the completion events, the `results` digest and the panel); ledger fix for cost labelled `unavailable` on every non-streaming call; WP-4 criterion 24 | 1–10, 24 |
 | 4 | `subagent-wave-4-collection-and-notices` | SUBAGENT-11 goals 2, 3, 4, 5, 9: supervised-only background pools, non-blocking idempotent `collect_subagent_results` with a bounded wait and journal fallback, notice-then-pull delivery (supersedes WP-6's framing), shared delivery for TUI and background sessions; R13 corrected | SUBAGENT-11 criteria 2–9, 17 (as delivery parity), 18 |
+| 5 | `subagent-wave-5-model-pool-control` | SUBAGENT-11 goals 1, 6, 7, 8, 10: `spawn_subagents(background=True)`, `subagents.on_clarification` with id-only question notices, `list_subagent_pools` / `stop_subagents` / `retry_subagent` over the existing stop and retry functions, lineage-scoped control for nested workers, a bounded conversation registry that keeps older pools retryable; three shipped defects fixed (below) | SUBAGENT-11 criteria 1, 10–16 |
 
 Wave 1 found a third leak site beyond §3 R15: `SubagentPoolCompleted.text`
 carried the complete aggregate, unbounded and unredacted
@@ -87,6 +88,26 @@ record discarded them, so a pool cancelled at shutdown was delivered as
 that turn-resume (`tool.py:483-517`) read the same `cancelled` record, so a
 re-driven turn after a budget stop reported every worker as failed with no
 text; the `stopped` record fixes both paths.
+
+Wave 5 found three defects in shipped behaviour. (1) A worker's first attempt
+ignored its type's declared policy (`spec.policy`): only a retry passed it, so
+a type that narrowed its tools ran unnarrowed the first time (SUBAGENT-05).
+(2) `retry_worker` built the new attempt with a second, partial constructor
+call that dropped the provider, model routing, pool id, depth, sinks and
+communication, so a retried worker ran outside its pool's scope (SUBAGENT-08).
+Both attempts now share `SubagentPool._make_worker`. (3) A pool whose workers
+failed before asking anything returned `awaiting_clarification` with no
+questions: closing the broker woke the question waiter first. The waiter now
+counts only when a parent question is actually pending.
+
+Wave 5 also closes a defect reported from a real session: two documenters were
+reported as succeeded while their `write_file` calls had come back from a
+DeepSeek gateway as DSML text, so no file landed and the parent had to discard
+both replies. A worker whose reply holds call markup for one of its own tools
+now gets one corrective turn and otherwise fails with `unexecuted_tool_call`
+(`agenthicc.subagents.textual_tool_calls`); new integration tests also pin that
+the built-in documenter's real `write_file` writes the file under a session
+workspace policy.
 
 ## 1. Executive summary
 

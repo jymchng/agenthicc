@@ -644,3 +644,31 @@ def test_subagent_collect_wait_bound_loads_and_validates(tmp_path: Path) -> None
         project.write_text(f"[subagents]\ncollect_wait_max_s = {value}\n", encoding="utf-8")
         with pytest.raises(ValueError, match="collect_wait_max_s"):
             load_config(project_path=project, user_path=tmp_path / "missing.toml")
+
+
+def test_subagent_background_controls_load_validate_and_serialize(tmp_path: Path) -> None:
+    """SUBAGENT-11: the model background switch and the clarification policy."""
+    from agenthicc.config import SubagentSettings
+
+    defaults = SubagentSettings()
+    assert defaults.background_enabled is True and defaults.on_clarification == "queue"
+    project = tmp_path / "agenthicc.toml"
+    project.write_text(
+        '[subagents]\nbackground_enabled = false\non_clarification = "fail"\n', encoding="utf-8"
+    )
+    config = load_config(project_path=project, user_path=tmp_path / "missing.toml")
+    assert config.subagents.background_enabled is False
+    assert config.subagents.on_clarification == "fail"
+    redacted = config.redacted_dict()["subagents"]
+    assert redacted["background_enabled"] is False and redacted["on_clarification"] == "fail"
+    for line, key in (
+        ('background_enabled = "no"', "background_enabled"),
+        ("background_enabled = 1", "background_enabled"),
+        ('on_clarification = "ask"', "on_clarification"),
+        ("on_clarification = 1", "on_clarification"),
+    ):
+        project.write_text(f"[subagents]\n{line}\n", encoding="utf-8")
+        with pytest.raises(ValueError, match=key):
+            load_config(project_path=project, user_path=tmp_path / "missing.toml")
+    with pytest.raises(ValueError, match="on_clarification"):
+        SubagentSettings(on_clarification="ask")  # type: ignore[arg-type]

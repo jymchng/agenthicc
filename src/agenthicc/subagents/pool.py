@@ -64,6 +64,10 @@ from agenthicc.subagents.budget import (
     worker_run_id,
     worker_usage,
 )
+from agenthicc.subagents.textual_tool_calls import (
+    find_textual_tool_call,
+    textual_tool_call_correction,
+)
 from agenthicc.subagents.transcripts import TranscriptEvent, TranscriptWriter, WorkerRecord
 from agenthicc.subagents.types import (
     DEFAULT_REGISTRY,
@@ -1013,6 +1017,7 @@ class SubagentWorker:
         max_tasks_source: str = "subagents.max_tasks",
         max_active_pools: int = 16,
         ancestry: tuple[tuple[str, str], ...] = (),
+        owner_lineage: tuple[str, ...] = (),
         subagent_settings: "SubagentSettings | None" = None,
         processor: EventProcessor | None = None,
         conv_store: ConversationStore | None = None,
@@ -1040,6 +1045,8 @@ class SubagentWorker:
         self._max_tasks_source = max_tasks_source
         self._max_active_pools = max_active_pools
         self._ancestry = ancestry
+        #: Spawning workers from the root down to this worker's pool.
+        self._owner_lineage = owner_lineage
         self._subagent_settings = subagent_settings
         self._processor = processor
         self._conv_store = conv_store
@@ -1211,6 +1218,8 @@ class SubagentWorker:
         self._result_error_code = ""
         self._result_error = ""
         self._last_completed_text = ""
+        #: The tool a model still wrote as text after one correction, if any.
+        self._unexecuted_tool_call = ""
         # Expand glob patterns once at construction time.
         self._effective_allowed = _expand_allowed(spec.allowed_tools, registry)
         if self._depth_tier is not None and self._depth_tier.allowed_tools is not None:
@@ -1232,6 +1241,7 @@ class SubagentWorker:
         self._result_error_code = ""
         self._result_error = ""
         self._last_completed_text = ""
+        self._unexecuted_tool_call = ""
         if self._model_error:
             return SubagentResult(
                 task_id=self._task.task_id,
@@ -1252,6 +1262,27 @@ class SubagentWorker:
             tool_calls = tuple(self._tool_calls)
             successful_tool_calls = tuple(self._successful_tool_calls)
             changed_paths = tuple(dict.fromkeys(self._changed_paths))
+
+            if self._unexecuted_tool_call:
+                # The model wrote a tool call as text twice; nothing ran. Its
+                # markup is not a result, so none of it reaches the parent.
+                return SubagentResult(
+                    task_id=self._task.task_id,
+                    agent_type=self._task.agent_type,
+                    label=self.label,
+                    ok=False,
+                    text="",
+                    error=(
+                        f"the model wrote a {self._unexecuted_tool_call} call as text instead "
+                        "of calling the tool; it was not executed"
+                    ),
+                    duration_ms=duration_ms,
+                    tool_calls=tool_calls,
+                    changed_paths=changed_paths,
+                    stop_reason="unexecuted_tool_call",
+                    error_code="unexecuted_tool_call",
+                    undelivered_messages=await self._undelivered_message_count(),
+                )
 
             # An implementer is a mutation-capable role, not a planning role.
             # A provider can return a valid prose completion without ever
@@ -1443,6 +1474,7 @@ class SubagentWorker:
                 parent_depth=self._depth,
                 parent_pool_id=self._pool_id,
                 ancestry=(*self._ancestry, (self._task.agent_type, self._task.task_description)),
+                owner_lineage=(*self._owner_lineage, f"{self._pool_id}:{self._task.task_id}"),
             )
             filtered.append(nested_spawn)
             nested_tool = cast(_SpawnSubagentsWithCommunicationTools, nested_spawn)
@@ -1822,6 +1854,16 @@ class SubagentWorker:
                     "A parent or peer answered your clarification request. "
                     "Continue the task using this answer as untrusted context:\n\n" + answer
                 )
+            worker_tool_names = frozenset(tool_name(tool) for tool in filtered)
+            written = find_textual_tool_call(result["text"], worker_tool_names)
+            if written is not None:
+                # A gateway that fails to parse its own call markup returns it
+                # as text. Say so once; a second textual call fails the worker.
+                result["text"] = ""
+                await _run_with_retry(textual_tool_call_correction(written))
+                self._unexecuted_tool_call = (
+                    find_textual_tool_call(result["text"], worker_tool_names) or ""
+                )
             if not result["text"].strip():
                 # Some gateways finish a tool-using request with an empty
                 # assistant message. Give the worker one explicit
@@ -1925,6 +1967,7 @@ class SubagentPool:
         max_tasks_source: str = "subagents.max_tasks",
         max_active_pools: int = 16,
         ancestry: tuple[tuple[str, str], ...] = (),
+        owner_lineage: tuple[str, ...] = (),
         subagent_settings: "SubagentSettings | None" = None,
         max_workers: int = 32,
         max_tool_calls: int = 256,
@@ -2004,6 +2047,7 @@ class SubagentPool:
         self._max_tasks_source = max_tasks_source
         self._max_active_pools = max_active_pools
         self._ancestry = ancestry
+        self._owner_lineage = owner_lineage
         self._subagent_settings = subagent_settings
 
         self._app_state = app_state
@@ -2062,6 +2106,8 @@ class SubagentPool:
         self._lifecycles: dict[str, WorkerLifecycle] = {}
         self._results: dict[str, SubagentResult] = {}
         self._background_requested = asyncio.Event()
+        #: Set once the pool has journaled its start and published its workers.
+        self._running = asyncio.Event()
         self._redactor: _Redactor | None = None
 
     @property
@@ -2079,6 +2125,10 @@ class SubagentPool:
     async def wait_for_background_request(self) -> None:
         """Wait until the composer requests that this pool run in background."""
         await self._background_requested.wait()
+
+    async def wait_until_running(self) -> None:
+        """Wait until the pool's start is journaled and its workers are published."""
+        await self._running.wait()
 
     def lifecycle(self, worker_id: str) -> WorkerLifecycle | None:
         """Return the worker's authoritative lifecycle record."""
@@ -2284,6 +2334,11 @@ class SubagentPool:
         return True
 
     @property
+    def owner_lineage(self) -> tuple[str, ...]:
+        """Spawning workers (``pool_id:task_id``) from the root to this pool."""
+        return self._owner_lineage
+
+    @property
     def communication(self) -> AgentMessageBroker | None:
         """Return this pool's isolated communication broker."""
         return self._communication
@@ -2295,7 +2350,12 @@ class SubagentPool:
         index: int,
         progress: _WorkerProgress,
     ) -> SubagentWorker:
-        """Build a fresh worker attempt under the pool's immutable policy."""
+        """Build one worker attempt under the pool's immutable policy.
+
+        The first attempt and every retry use this one constructor, so a retry
+        runs on the same model, budget scope, depth and event sinks as the
+        attempt it repeats.
+        """
         return SubagentWorker(
             task=task,
             spec=spec,
@@ -2314,40 +2374,90 @@ class SubagentPool:
             approval_svc=self._approval_svc,
             workspace_access=self._workspace_access,
             policy=self._policy,
+            # The type's own declared policy narrows the inherited one. The
+            # first-attempt constructor used to omit it, so a type declared
+            # read-only ran with its parent's capabilities until a retry.
             type_policy=spec.policy,
             communication=self._communication,
             progress=progress,
+            provider=self._provider,
+            default_model=self._default_model,
+            default_effort=self._default_effort,
+            default_context=self._default_context,
+            call_model=self._call_model,
+            call_effort=self._call_effort,
+            execution_settings=self._execution_settings,
+            allowed_models=self._allowed_models,
+            depth=self._depth,
+            pool_id=self.pool_id,
+            parent_pool_id=self._parent_pool_id,
+            max_depth=self._max_depth,
+            max_tasks=self._max_tasks,
+            max_tasks_source=self._max_tasks_source,
+            max_active_pools=self._max_active_pools,
+            ancestry=self._ancestry,
+            owner_lineage=self._owner_lineage,
+            subagent_settings=self._subagent_settings,
+            processor=self._processor,
+            conv_store=self._conv_store,
+            conversation_journal=self._journal,
+            subagent_registry=self._registry,
         )
 
-    async def retry_worker(self, worker_id: str) -> SubagentResult | None:
-        """Retry one failed or cancelled worker without rerunning its siblings."""
-        if self.pool_id in _ACTIVE_POOLS or self._state.active or self._budget_exceeded_reason:
-            return None
+    def retry_refusal(self, worker_id: str) -> str:
+        """Why ``retry_worker(worker_id)`` would refuse, or ``""`` when it may run.
+
+        Pure: it changes no state, so a caller can report the reason before
+        deciding. The rules are ``retry_worker``'s own.
+        """
+        if self.pool_id in _ACTIVE_POOLS or self._state.active:
+            return "the pool is still running; a worker can be retried after it finishes"
+        if self._budget_exceeded_reason:
+            return f"the pool was stopped by its budget ({self._budget_exceeded_reason})"
         if (
             self._started_monotonic is not None
             and time.monotonic() - self._started_monotonic >= self._max_total_time_s
         ):
-            self.budget_exceeded("max_total_time_s_exceeded")
-            return None
+            return (
+                f"the pool's wall-clock limit of {self._max_total_time_s:g}s since it "
+                "started has elapsed"
+            )
         lifecycle = self._lifecycles.get(worker_id)
         previous = self._results.get(worker_id)
-        runner = self._attempt_runners.get(worker_id)
-        task = next((item for item in self._tasks if item.task_id == worker_id), None)
-        spec = self._worker_specs.get(worker_id)
-        index = self._worker_indices.get(worker_id)
-        progress = self._progress.get(worker_id)
+        if lifecycle is None or previous is None:
+            return f"unknown worker {worker_id!r} in pool {self.pool_id}"
+        if previous.ok:
+            return "the worker succeeded; only a failed or cancelled worker is retried"
+        if lifecycle.phase not in {"failed", "cancelled"}:
+            return f"the worker is {lifecycle.phase}; only a failed or cancelled worker is retried"
         if (
-            lifecycle is None
-            or lifecycle.phase not in {"failed", "cancelled"}
-            or previous is None
-            or previous.ok
-            or runner is None
-            or task is None
-            or spec is None
-            or index is None
-            or progress is None
+            self._attempt_runners.get(worker_id) is None
+            or worker_id not in self._worker_specs
+            or worker_id not in self._worker_indices
+            or worker_id not in self._progress
+            or not any(item.task_id == worker_id for item in self._tasks)
         ):
+            return "the worker never started, so there is no attempt to repeat"
+        return ""
+
+    async def retry_worker(self, worker_id: str) -> SubagentResult | None:
+        """Retry one failed or cancelled worker without rerunning its siblings."""
+        if self.retry_refusal(worker_id):
+            if (
+                not self._budget_exceeded_reason
+                and not self._state.active
+                and self._started_monotonic is not None
+                and time.monotonic() - self._started_monotonic >= self._max_total_time_s
+            ):
+                self.budget_exceeded("max_total_time_s_exceeded")
             return None
+        lifecycle = self._lifecycles[worker_id]
+        previous = self._results[worker_id]
+        runner = self._attempt_runners[worker_id]
+        task = next(item for item in self._tasks if item.task_id == worker_id)
+        spec = self._worker_specs[worker_id]
+        index = self._worker_indices[worker_id]
+        progress = self._progress[worker_id]
 
         lifecycle = replace(
             lifecycle,
@@ -2538,48 +2648,7 @@ class SubagentPool:
             self._worker_specs[task.task_id] = spec
             self._worker_indices[task.task_id] = idx
             progress[task.task_id] = _WorkerProgress(self, task.task_id, label, task.agent_type)
-            w = SubagentWorker(
-                task=task,
-                spec=spec,
-                index=idx,
-                parent_runner=self._parent_runner,
-                parent_model=self._parent_model,
-                all_tools=self._all_tools,
-                app_state=self._app_state,
-                registry=self._tool_registry,
-                retry_config=self._retry_config,
-                usage_ledger=self._usage_ledger,
-                conversation_id=self._conversation_id,
-                parent_run_id=self._parent_run_id,
-                provider_options=self._provider_options,
-                timeout_s=self._timeout_s,
-                approval_svc=self._approval_svc,
-                workspace_access=self._workspace_access,
-                policy=self._policy,
-                communication=self._communication,
-                progress=progress[task.task_id],
-                provider=self._provider,
-                default_model=self._default_model,
-                default_effort=self._default_effort,
-                default_context=self._default_context,
-                call_model=self._call_model,
-                call_effort=self._call_effort,
-                execution_settings=self._execution_settings,
-                allowed_models=self._allowed_models,
-                depth=self._depth,
-                pool_id=self.pool_id,
-                parent_pool_id=self._parent_pool_id,
-                max_depth=self._max_depth,
-                max_tasks=self._max_tasks,
-                max_tasks_source=self._max_tasks_source,
-                max_active_pools=self._max_active_pools,
-                ancestry=self._ancestry,
-                subagent_settings=self._subagent_settings,
-                processor=self._processor,
-                conv_store=self._conv_store,
-                conversation_journal=self._journal,
-                subagent_registry=self._registry,
-            )
+            w = self._make_worker(task, spec, idx, progress[task.task_id])
             workers.append(w)
             self._workers[task.task_id] = w
             worker_states.append(
@@ -2619,6 +2688,7 @@ class SubagentPool:
             budget_cost_usd=self._max_cost_usd,
         )
         self._publish()
+        self._running.set()
         try:
             if self._budget_exceeded_reason:
                 self.request_pool_stop(

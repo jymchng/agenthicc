@@ -1853,3 +1853,77 @@ async def test_a_pool_without_a_cost_limit_publishes_no_cost() -> None:
     assert state.cost_usd == 0.0
     assert result.budget is None
     assert result.usage.cost_status == "estimated"
+
+
+@pytest.mark.asyncio
+async def test_a_type_declared_policy_narrows_the_first_attempt() -> None:
+    """A type declared read-only cannot write, even under a Yolo parent.
+
+    The first attempt used to be built without the type's own policy, so the
+    narrowing only took effect on a retry (SUBAGENT-05 narrow-only invariant).
+    """
+    from lauren_ai._agents._runner import AgentRunnerBase
+    from lauren_ai._tools import tool
+    from lauren_ai._transport import Completion, TokenUsage
+    from lauren_ai._transport._mock import MockTransport
+
+    from agenthicc.subagents.policy import SubagentExecutionPolicy
+    from agenthicc.tools.capabilities import tool_write
+
+    executed: list[str] = []
+
+    @tool_write
+    @tool()
+    async def write_note(path: str, content: str) -> dict[str, object]:
+        """Write a note."""
+        executed.append(path)
+        return {"ok": True}
+
+    transport = MockTransport()
+    transport.queue_tool_use("write_note", {"path": "n.md", "content": "x"}, tool_use_id="w-1")
+    transport.queue_response(
+        Completion(
+            id="final",
+            model="mock-model",
+            content="done",
+            tool_calls=[],
+            stop_reason="end_turn",
+            usage=TokenUsage(input_tokens=1, output_tokens=1),
+        )
+    )
+    app_state = AppState.create()
+    app_state.active_mode.set(build_default_registry().get("Yolo"))
+    read_only = SubagentExecutionPolicy(
+        mode_name="Plan",
+        badge="",
+        color="",
+        description="",
+        system_prompt_suffix="",
+        blocked_capabilities=frozenset({"write"}),
+        approval_required=frozenset(),
+        visible_tool_names=frozenset(),
+    )
+    registry = SubagentTypeRegistry()
+    registry.register(
+        SubagentTypeSpec(
+            name="reader",
+            allowed_tools=frozenset({"write_note"}),
+            max_turns=4,
+            system_prompt="Read only.",
+            policy=read_only,
+        )
+    )
+    pool = SubagentPool(
+        [SubagentTask("task-0", "reader", "try to write")],
+        parent_runner=AgentRunnerBase(transport=transport),
+        parent_model="mock-model",
+        all_tools=[write_note],
+        app_state=app_state,
+        registry=registry,
+    )
+
+    await pool.run()
+
+    assert executed == []
+    worker = pool._workers["task-0"]
+    assert worker._policy is not None and "write" in worker._policy.blocked_capabilities

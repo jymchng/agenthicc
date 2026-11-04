@@ -481,3 +481,311 @@ async def test_retry_refuses_live_and_succeeded_workers_without_changing_lifecyc
     assert await pool.retry_worker("done") is None
     assert pool.lifecycle("done") == done_after
     assert done_after.attempt == 1
+
+
+@pytest.mark.asyncio
+async def test_a_retried_worker_keeps_its_pool_scope_model_and_policy() -> None:
+    """A retry is built by the same constructor as the first attempt.
+
+    The retry constructor used to drop the pool id, model routing, depth, event
+    sinks and the type's own policy, so a retried worker's usage fell outside
+    its pool's accounting and it could run on a different model.
+    """
+    from lauren_ai._agents._runner import AgentRunnerBase
+    from lauren_ai._transport import Completion, TokenUsage
+
+    from agenthicc.runners.usage_ledger import UsageLedger
+    from agenthicc.subagents.budget import worker_usage
+    from agenthicc.subagents.policy import SubagentExecutionPolicy
+    from agenthicc.subagents.types import SubagentTypeRegistry, SubagentTypeSpec
+    from agenthicc.tui.conversation_store import AppState
+
+    class _FailFirstTransport:
+        calls: list[str] = []
+
+        async def complete(self, messages: list[object], **kwargs: object) -> object:
+            self.calls.append(str(kwargs.get("model", "")))
+            if len(self.calls) == 1:
+                raise RuntimeError("transient provider failure")
+            return Completion(
+                id="final",
+                model="mock-model",
+                content="second attempt",
+                tool_calls=[],
+                stop_reason="end_turn",
+                usage=TokenUsage(input_tokens=40, output_tokens=2),
+            )
+
+    transport = _FailFirstTransport()
+    transport.calls = []
+    ledger = UsageLedger("session")
+    read_only = SubagentExecutionPolicy(
+        mode_name="Plan",
+        badge="",
+        color="",
+        description="",
+        system_prompt_suffix="",
+        blocked_capabilities=frozenset({"write"}),
+        approval_required=frozenset(),
+        visible_tool_names=frozenset(),
+    )
+    registry = SubagentTypeRegistry()
+    registry.register(
+        SubagentTypeSpec(
+            name="researcher",
+            allowed_tools=frozenset(),
+            max_turns=2,
+            system_prompt="Research.",
+            model="worker-model",
+            policy=read_only,
+        )
+    )
+    pool = SubagentPool(
+        [SubagentTask("task-0", "researcher", "research")],
+        parent_runner=AgentRunnerBase(transport=transport),
+        parent_model="parent-model",
+        all_tools=[],
+        app_state=AppState.create(),
+        registry=registry,
+        usage_ledger=ledger,
+        parent_run_id="turn-1",
+        retry_config=None,
+    )
+
+    first = await pool.run()
+    assert first.failed == 1
+    retried = await pool.retry_worker("task-0")
+
+    assert retried is not None and retried.ok is True
+    worker = pool._workers["task-0"]
+    assert worker._pool_id == pool.pool_id
+    assert worker._model_id == "worker-model"
+    assert worker._policy is not None and "write" in worker._policy.blocked_capabilities
+    assert set(transport.calls) == {"worker-model"}
+    assert worker_usage(ledger, pool.pool_id, "task-0").total_tokens == 42
+
+
+# ── SUBAGENT-11 goal 7: the parent model's stop, retry and list ───────────────
+
+
+def _control_tools(spawn: object) -> dict[str, object]:
+    tools = spawn.__agenthicc_subagent_communication_tools__
+    return {getattr(item, "__name__", ""): item for item in tools}
+
+
+def _registry_for(tool_names: frozenset[str]) -> object:
+    from agenthicc.subagents.types import SubagentTypeRegistry, SubagentTypeSpec
+
+    registry = SubagentTypeRegistry()
+    registry.register(
+        SubagentTypeSpec(
+            name="researcher",
+            allowed_tools=tool_names,
+            max_turns=4,
+            system_prompt="Research.",
+        )
+    )
+    return registry
+
+
+@pytest.mark.asyncio
+async def test_the_parent_model_stops_one_worker_of_a_running_pool(tmp_path: Path) -> None:
+    from lauren_ai._agents._runner import AgentRunnerBase
+    from lauren_ai._tools import tool
+    from lauren_ai._transport import Completion, TokenUsage, ToolCall
+
+    from agenthicc.memory.journal import ConversationJournal
+    from agenthicc.runners.agent_turn_context import bind_background_task_owner
+    from agenthicc.subagents.tool import make_spawn_subagents_tool
+    from agenthicc.supervised_tasks import SupervisedTasks
+
+    release = asyncio.Event()
+
+    @tool()
+    async def wait_for_release(topic: str) -> str:
+        """Wait until the test releases the worker."""
+        await release.wait()
+        return topic
+
+    class _Transport:
+        async def complete(self, messages: list[object], **kwargs: object) -> object:
+            done = any(
+                isinstance(m, dict)
+                and isinstance(m.get("content"), list)
+                and any(
+                    isinstance(b, dict) and b.get("type") == "tool_result" for b in m["content"]
+                )
+                for m in messages
+            )
+            usage = TokenUsage(input_tokens=1, output_tokens=1)
+            if done:
+                return Completion(
+                    id="f",
+                    model="m",
+                    content="done",
+                    tool_calls=[],
+                    stop_reason="end_turn",
+                    usage=usage,
+                )
+            return Completion(
+                id="t",
+                model="m",
+                content="",
+                stop_reason="tool_use",
+                usage=usage,
+                tool_calls=[
+                    ToolCall(tool_use_id="w", name="wait_for_release", input={"topic": "x"})
+                ],
+            )
+
+    journal = ConversationJournal(tmp_path / "journal.jsonl")
+    supervisor = SupervisedTasks("stop test")
+    store = ConversationStore()
+    spawn = make_spawn_subagents_tool(
+        AgentRunnerBase(transport=_Transport()),
+        "mock-model",
+        [wait_for_release],
+        registry=_registry_for(frozenset({"wait_for_release"})),  # type: ignore[arg-type]
+        conversation_id="conv",
+        parent_run_id="turn-1",
+        conversation_journal=journal,
+        conv_store=store,
+    )
+    tools = _control_tools(spawn)
+    try:
+        with bind_background_task_owner(supervisor):
+            receipt = await spawn(  # type: ignore[operator]
+                tasks=[
+                    {"type": "researcher", "task": "first"},
+                    {"type": "researcher", "task": "second"},
+                ],
+                max_concurrent=2,
+                timeout_s=30,
+                background=True,
+            )
+        pool_id = receipt["pool_id"]
+        await asyncio.sleep(0.05)
+
+        refused = await tools["retry_subagent"](pool_id, "task-0")  # type: ignore[operator]
+        assert refused["ok"] is False and "still running" in refused["error"]
+
+        first = await tools["stop_subagents"](pool_id, "task-0")  # type: ignore[operator]
+        again = await tools["stop_subagents"](pool_id, "task-0")  # type: ignore[operator]
+        assert first["ok"] is True and first["workers"][0]["mode"] == "abort"
+        assert again["workers"][0]["request_id"] == first["workers"][0]["request_id"]
+
+        listed = await tools["list_subagent_pools"]()  # type: ignore[operator]
+        row = next(item for item in listed["pools"] if item["pool_id"] == pool_id)
+        assert row["status"] == "running" and row["background"] is True
+
+        release.set()
+        assert await supervisor.wait(timeout=5)
+        from agenthicc.subagents.communication import registry_for_session
+
+        handle = registry_for_session("conv", store).get(pool_id)
+        assert handle is not None and handle.pool is not None
+        pool = handle.pool
+        stopped = pool.lifecycle("task-0")
+        sibling = pool.lifecycle("task-1")
+        assert stopped.phase == "cancelled" and stopped.stop_request.source == "parent_model"
+        assert sibling.phase == "completed"
+        late = await tools["stop_subagents"](pool_id, "task-1")  # type: ignore[operator]
+        assert late["ok"] is False and "not running" in late["error"]
+    finally:
+        release.set()
+        await supervisor.aclose(timeout=0.1)
+        journal.close()
+
+
+@pytest.mark.asyncio
+async def test_an_older_pool_stays_retryable_after_a_newer_one_finishes(tmp_path: Path) -> None:
+    """Criterion 15: retryability no longer depends on which pool the panel shows."""
+    from lauren_ai._agents._runner import AgentRunnerBase
+    from lauren_ai._transport import Completion, TokenUsage
+
+    from agenthicc.memory.journal import ConversationJournal
+    from agenthicc.subagents.tool import make_spawn_subagents_tool
+
+    class _Transport:
+        """Fails every call for task "a" until the provider recovers."""
+
+        def __init__(self) -> None:
+            self.calls = 0
+            self.provider_down = True
+
+        async def complete(self, messages: list[object], **kwargs: object) -> object:
+            self.calls += 1
+            last = messages[-1]
+            if self.provider_down and isinstance(last, dict) and last.get("content") == "a":
+                raise RuntimeError("provider failure")
+            return Completion(
+                id=f"c{self.calls}",
+                model="m",
+                content=f"answer {self.calls}",
+                tool_calls=[],
+                stop_reason="end_turn",
+                usage=TokenUsage(input_tokens=1, output_tokens=1),
+            )
+
+    transport = _Transport()
+    journal = ConversationJournal(tmp_path / "journal.jsonl")
+    store = ConversationStore()
+    spawn = make_spawn_subagents_tool(
+        AgentRunnerBase(transport=transport),
+        "mock-model",
+        [],
+        registry=_registry_for(frozenset()),  # type: ignore[arg-type]
+        conversation_id="conv",
+        parent_run_id="turn-1",
+        conversation_journal=journal,
+        conv_store=store,
+    )
+    tools = _control_tools(spawn)
+    try:
+        first = await spawn(tasks=[{"type": "researcher", "task": "a"}], timeout_s=30)  # type: ignore[operator]
+        second = await spawn(tasks=[{"type": "researcher", "task": "b"}], timeout_s=30)  # type: ignore[operator]
+        assert first["failed"] == 1 and second["ok"] is True
+
+        transport.provider_down = False
+        retried = await tools["retry_subagent"](first["pool_id"], "task-0")  # type: ignore[operator]
+        assert retried["ok"] is True and retried["attempt"] == 2
+        refusal = await tools["retry_subagent"](second["pool_id"], "task-0")  # type: ignore[operator]
+        assert refusal["ok"] is False and "succeeded" in refusal["error"]
+        listed = await tools["list_subagent_pools"]()  # type: ignore[operator]
+        assert {first["pool_id"], second["pool_id"]} <= {row["pool_id"] for row in listed["pools"]}
+    finally:
+        journal.close()
+
+
+@pytest.mark.asyncio
+async def test_a_pool_that_fails_at_once_reports_failure_not_a_clarification(
+    tmp_path: Path,
+) -> None:
+    """Closing the broker wakes the question waiter; that is not a question."""
+    from lauren_ai._agents._runner import AgentRunnerBase
+
+    from agenthicc.memory.journal import ConversationJournal
+    from agenthicc.subagents.tool import make_spawn_subagents_tool
+
+    class _DownTransport:
+        async def complete(self, messages: list[object], **kwargs: object) -> object:
+            raise RuntimeError("provider failure")
+
+    journal = ConversationJournal(tmp_path / "journal.jsonl")
+    spawn = make_spawn_subagents_tool(
+        AgentRunnerBase(transport=_DownTransport()),
+        "mock-model",
+        [],
+        registry=_registry_for(frozenset()),  # type: ignore[arg-type]
+        conversation_id="conv",
+        parent_run_id="turn-1",
+        conversation_journal=journal,
+        conv_store=ConversationStore(),
+    )
+    try:
+        for _ in range(3):
+            result = await spawn(tasks=[{"type": "researcher", "task": "a"}], timeout_s=30)  # type: ignore[operator]
+            assert result["status"] != "awaiting_clarification"
+            assert result["failed"] == 1 and result["ok"] is False
+    finally:
+        journal.close()
