@@ -1,6 +1,6 @@
 ---
 title: "AGI-03: Background direct turns get the same session tools as the foreground — including ask_user"
-status: Proposed
+status: Implemented with amendments (2026-11-05; AGI wave 3, pending merge)
 version: 1.0.0
 date: 2026-11-04
 scope: "one builder for the session-bound tools (ask_user, memory, browser), used by the foreground TUI turn and the background worker's direct turn"
@@ -9,6 +9,42 @@ tags: [background-sessions, ask_user, tools, parity]
 ---
 
 # AGI-03: Background direct turns get the session tools
+
+## Implementation status (2026-11-05)
+
+Delivered in AGI wave 3 (branch `agi-wave-3-questions-wait`).
+
+- **One builder.** `runners/session_tools.py`'s `session_tools(session)`
+  returns `ask_user`, the memory tools and the session's browser tools.
+  `TUISession`'s turn, its effective-tools preview and
+  `worker._run_direct_turn` all call it. `_make_session_tools` is deleted.
+- **Background agents can ask.** A background direct turn's `ask_user`
+  publishes a `question` item and waits (AGI-02). The answers reach the
+  model as the tool result.
+- **Skipped permissions keep questions.** `--dangerously-skip-permissions`
+  no longer swaps in `_HeadlessApprovalService`, which cancelled every
+  question. `BackgroundApprovalService(auto_approve_capabilities=True)`
+  grants tool approvals at once, denies outside-workspace access without a
+  scope policy, and still sends questions to the inbox.
+
+Amendments:
+
+- **No terminal-only list.** Every session tool works in the background, so
+  the builder needs no "terminal-only" exclusion list.
+- **Parity is checked structurally.** Criterion 2 is pinned by requiring
+  both call sites to use `session_tools()` and by the end-to-end check of
+  the offered names, rather than by diffing two catalogs.
+
+Tests: `tests/integration/test_background_session_tools.py` (3). They cover:
+
+- a real `run_worker` with the production session builder and a scripted
+  transport. The agent calls `ask_user`, the operator answers through the
+  inbox, and the tool result carries `{"ok": true, "lang": "Go"}`;
+- skipped permissions approving tools but still asking;
+- one builder.
+
+They were mutation-checked: dropping `session_tools` from the direct turn
+fails two of them.
 
 ## 1. Problem
 

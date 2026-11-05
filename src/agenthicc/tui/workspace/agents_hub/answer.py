@@ -34,7 +34,7 @@ if TYPE_CHECKING:
     from agenthicc.background.inbox import BackgroundInboxItem
     from agenthicc.tui.input.embedded import ComposerContext, EmbeddedComposer
 
-__all__ = ["AnswerView", "form_for_item"]
+__all__ = ["AnswerView", "form_for_item", "late_answer_message"]
 
 #: Question lines shown above the options; longer questions scroll with [ and ].
 _QUESTION_ROWS = 6
@@ -228,3 +228,21 @@ class AnswerView:
             hint = " Sending your answers…"
         lines.append(Text(hint, style="dim", no_wrap=True, overflow="ellipsis"))
         return lines
+
+
+def late_answer_message(view: AnswerView) -> str:
+    """The message that carries answers to a question that already timed out (AGI-02).
+
+    The agent continued with its own assumption; this tells it what the
+    operator chose, so it can revisit that assumption.
+    """
+    timeout = view.item.expires_at - view.item.created_at if view.item.expires_at else None
+    waited = f" after {timeout:.0f} s" if timeout else ""
+    parts = []
+    for question, state in zip(view.form.questions, view.form.states, strict=True):
+        if state.answered:
+            parts.append(f"{question.id}: {state.answer}" if question.id else state.answer)
+    return (
+        f"Late answers to your earlier questions (they timed out{waited} and you continued "
+        f"with an assumption): {'; '.join(parts)}. Revisit your assumption if these change it."
+    )

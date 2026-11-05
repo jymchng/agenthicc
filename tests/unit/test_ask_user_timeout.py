@@ -204,11 +204,13 @@ async def test_make_questions_tool_exposes_timeout_without_fabricating_answers()
 def test_question_timeout_configuration_defaults_and_loads_from_toml(tmp_path) -> None:
     assert ToolSettings().question_timeout_s == 300.0
     assert ApprovalService(AppState.create())._question_timeout_s == 300.0
+    # AGI-02: a background question waits for the operator unless
+    # [background] question_timeout_s sets a deadline.
     assert (
         BackgroundApprovalService(
             BackgroundStore(tmp_path / "background"), "session"
         ).question_timeout_s
-        == 300.0
+        is None
     )
     config_path = tmp_path / "agenthicc.toml"
     config_path.write_text("[tools]\nquestion_timeout_s = 180\n", encoding="utf-8")

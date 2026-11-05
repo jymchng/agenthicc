@@ -148,12 +148,19 @@ _BOLD = frozenset({SessionStatus.WAITING_APPROVAL, SessionStatus.WAITING_INPUT})
 def _inbox_cells(item: BackgroundInboxItem, context: RowContext) -> dict[str, tuple[str, str]]:
     session = context.sessions.get(item.session_id)
     label = "needs approval" if item.kind == "approval" else "needs input"
+    expired = item.status == "expired"
+    if expired:
+        # AGI-02: the agent moved on with an assumption; a late answer still
+        # reaches it as a message.
+        label = "answer late"
     target = dict(item.target)
     tool = str(target.get("tool_name") or item.kind)
     summary = " ".join(value for _label, value in approval_lines(item, session)[:1]).strip()
     activity = f"{tool}: {summary}" if summary and summary != tool else tool
+    if expired:
+        activity = f"timed out · {activity}"
     return {
-        "status": (f"◆ {label}", "bold yellow"),
+        "status": (f"{'◇' if expired else '◆'} {label}", "yellow" if expired else "bold yellow"),
         "title": (
             session.title if session is not None else item.workspace or item.session_id,
             "bold",

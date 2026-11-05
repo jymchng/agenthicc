@@ -7,7 +7,7 @@ import inspect
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, Literal
 
 from .deletion import DeleteResult
 from .inbox import BackgroundInboxItem, BackgroundInteractionInbox
@@ -286,6 +286,12 @@ class AgentsService:
             expected_version=expected_version,
             idempotency_key=idempotency_key,
         )
+
+    async def inbox_close_expired_async(
+        self, item_id: str, status: Literal["delivered", "rejected"], reason: str
+    ) -> ManagerOperationResult:
+        """Close an expired question, answered late or dismissed (AGI-02)."""
+        return await self._invoke(item_id, self.inbox.close_expired, item_id, status, reason)
 
     async def inbox_expire_async(
         self,

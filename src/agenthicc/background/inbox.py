@@ -498,7 +498,56 @@ class BackgroundInteractionInbox:
                 "ORDER BY created_at ASC, item_id ASC LIMIT ?",
                 (*params, limit),
             ).fetchall()
-        return tuple(self._parse(row) for row in rows)
+        items = [(self._parse(row), str(row["owner_hash"])) for row in rows]
+        if status in (None, "pending"):
+            # AGI-02: a pending item whose session moved on is stale; never
+            # show it as needing the operator.
+            items = [
+                (item, owner)
+                for item, owner in items
+                if item.status != "pending" or not self._mark_if_stale(item, owner)
+            ]
+        return tuple(item for item, _owner in items)
+
+    def _mark_if_stale(self, item: BackgroundInboxItem, owner_hash: str) -> bool:
+        """Mark a pending *item* stale when its session no longer waits on it."""
+        try:
+            session = self.store.get(item.session_id, include_deleted=True)
+            self._assert_current(session, item, owner_hash)
+        except KeyError:
+            reason = "owning session no longer exists"
+        except InboxConflict as exc:
+            reason = str(exc) or "owning session is stale"
+        else:
+            return False
+        self.set_terminal(item.item_id, "stale", reason)
+        return True
+
+    def close_expired(
+        self, item_id: str, status: Literal["delivered", "rejected"], reason: str
+    ) -> BackgroundInboxItem:
+        """Close an expired item: answered late (``delivered``) or dismissed (``rejected``).
+
+        An expired question stays listed so the operator can still answer it
+        (AGI-02); this is how it leaves the list.
+        """
+        current_time = time.time()
+        with closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            changed = connection.execute(
+                "UPDATE inbox_items SET status=?, version=version+1, resolution=?, updated_at=? "
+                "WHERE item_id=? AND status='expired'",
+                (status, reason[:240], current_time, item_id),
+            ).rowcount
+            row = connection.execute(
+                "SELECT * FROM inbox_items WHERE item_id=?", (item_id,)
+            ).fetchone()
+            connection.commit()
+        if row is None:
+            raise KeyError(item_id)
+        if not changed:
+            raise ValueError(f"inbox item is {row['status']}, not expired")
+        return self._parse(row)
 
     def respond(
         self,
