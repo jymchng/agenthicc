@@ -1,6 +1,6 @@
 ---
 title: "BEAU-2: Conversation Narrative, Progress, and Mention Blocks"
-status: Proposed
+status: "Proposed; render blocks and spacing (§3–§4) superseded by TUX-06"
 version: 2.0.0
 created: 2026-10-31
 scope: "specify exact visual blocks for turn_start, user_message, text, thinking_step, and mention_chips"

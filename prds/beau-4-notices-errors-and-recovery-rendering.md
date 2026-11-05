@@ -1,6 +1,6 @@
 ---
 title: "BEAU-4: Notices, Errors, Recovery, and Accessible Announcements"
-status: Proposed
+status: "Proposed; visual blocks (§4) superseded by TUX-08"
 version: 2.0.0
 created: 2026-10-31
 scope: "specify render blocks and urgency hierarchy for system/error/recovery/MCP/retry/announcement events"

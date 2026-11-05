@@ -163,6 +163,24 @@ with the evidence from the operator's store and the reproductions.
 - [AGI-04 — Resume and retry keep the launch configuration](agents-interaction/AGI-04-resume-and-retry-keep-the-launch-configuration.md)
 - [AGI-05 — One composer for every answer](agents-interaction/AGI-05-one-composer-for-every-answer.md)
 
+### TUX series — a sleek, ergonomic TUI (proposed)
+
+The TUX PRDs (in `tui-sleek/`) redesign the interactive screen. They come from a study of agenthicc run live beside Claude Code, Codex and OpenCode, plus Qoder's and DeepSeek Harness's documentation. TUX-00 holds the screenshots, the 21 findings with their evidence, and the routing. TUX-06 and TUX-08 supersede BEAU-2/3/4's render blocks.
+
+- [TUX-00 — Study: making agenthicc's TUI sleek and ergonomic](tui-sleek/TUX-00-study-sleek-ergonomic-tui.md)
+- [TUX-01 — Design tokens, themes and glyphs](tui-sleek/TUX-01-design-tokens-and-themes.md)
+- [TUX-02 — Screen layout and one status line](tui-sleek/TUX-02-layout-and-status-line.md)
+- [TUX-03 — Welcome header and first run](tui-sleek/TUX-03-welcome-and-first-run.md)
+- [TUX-04 — Composer ergonomics](tui-sleek/TUX-04-composer-ergonomics.md)
+- [TUX-05 — Pickers and command palette](tui-sleek/TUX-05-pickers-and-command-palette.md)
+- [TUX-06 — Transcript density and tool rows](tui-sleek/TUX-06-transcript-density-and-tool-rows.md)
+- [TUX-07 — One dialog component for approvals, plans and questions](tui-sleek/TUX-07-unified-dialogs.md)
+- [TUX-08 — Errors, notices and diagnostics](tui-sleek/TUX-08-errors-notices-and-diagnostics.md)
+- [TUX-09 — Navigation: transcript view, search and fullscreen mode](tui-sleek/TUX-09-navigation-and-transcript-view.md)
+- [TUX-10 — Motion, feedback and terminal integration](tui-sleek/TUX-10-motion-feedback-and-terminal-integration.md)
+
+Order: TUX-01 first (tokens), then TUX-04 and TUX-02, then TUX-08 with TUX-06, then TUX-07, TUX-05 and TUX-03, and TUX-09 and TUX-10 last.
+
 ### SUBAGENT series — subagent management
 
 The SUBAGENT documents (prefix `SUBAGENT-`, separate from the numbered sequence)
@@ -742,6 +760,9 @@ explicit example blocks without duplicating their behavior.
 - [BEAU-3 — Tool Activity, Exploratory Groups, and File Changes](beau-3-tool-activity-and-file-change-rendering.md)
 - [BEAU-4 — Notices, Errors, Recovery, and Accessible Announcements](beau-4-notices-errors-and-recovery-rendering.md)
 - [BEAU-5 — Workflow and Plan Mutation Render Blocks](beau-5-workflow-and-plan-mutation-rendering.md)
+
+TUX-06 and TUX-08 (TUX series) supersede the render blocks of BEAU-2, BEAU-3
+and BEAU-4. BEAU-1's renderer map and BEAU-5 stand.
 
 Implement BEAU-1 as the shared visual contract, then BEAU-2 through BEAU-5.
 Review PRD-161, PRD-255, PRD-256, and PRD-257 output against BEAU-1 while
