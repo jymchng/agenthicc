@@ -227,6 +227,55 @@ Shift/Alt/Ctrl with arrows, Home and End, Delete, Insert, F1–F12, focus
 reports, and SGR mouse reports. A key nothing binds is ignored — before AGX-13,
 Ctrl+letters, Alt combinations and unknown sequences arrived as Esc.
 
+### Themes and glyphs
+
+Every colour on screen comes from a semantic token of the active theme
+(`agenthicc.tui.theme`): `text`, `muted`, `subtle`, `accent`, `accent_bg`,
+`user_bg`, `success`, `warning`, `danger`, `info`, `agent`, the diff tokens and
+the three mode badges. No other module names a colour, and
+`tests/unit/test_theme_tokens.py` enforces that (TUX-01).
+
+```toml
+[ui]
+theme = "auto"    # auto | dark | light | high-contrast | ansi | <custom name>
+glyphs = "auto"   # auto | unicode | ascii
+```
+
+- **`auto`.** At start-up the TUI asks the terminal for its background
+  colour (OSC 11). It waits at most 50 ms, and only on an interactive
+  terminal. If there is no answer it uses `COLORFGBG`, and then `dark`.
+- **`ansi`.** Uses only the 16 terminal palette colours, so it follows your
+  terminal's own scheme.
+- **`high-contrast`.** Meets WCAG AAA (7:1) for body text.
+- **`NO_COLOR`.** When set, it wins: every colour is removed, and bold, dim and
+  reverse remain.
+- **`glyphs = "auto"`.** Picks `ascii` on a non-UTF-8 locale or the Linux
+  console, and `screen_reader = true` always uses `ascii`. The `unicode` set
+  uses only characters found in DejaVu Sans Mono, Noto Sans Mono, Menlo,
+  Consolas and Cascadia Mono, and never emoji.
+
+`/theme` opens a picker that previews a user message, a tool row, a diff and
+the status line in each theme. Enter applies the highlighted theme at once,
+without a restart, and `s` saves it as `[ui] theme` in your user
+configuration. `/theme light --save` does the same without the picker.
+
+A custom theme is a TOML file in `.agenthicc/themes/<name>.toml` (project) or
+`~/.agenthicc/themes/<name>.toml` (user). The project file wins. It sets any
+subset of tokens over a built-in base:
+
+```toml
+extends = "dark"          # dark | light | high-contrast | ansi
+syntax_theme = "monokai"  # any Pygments style, for code and diffs
+[tokens]
+accent = "#ff79c6"
+user_bg = "#202233"
+```
+
+An unknown token or an invalid colour is reported with the file and line,
+for example `themes/acme.toml:3: unknown token 'acent'`. The session then
+starts with `auto`. `agenthicc config show` prints the effective theme and
+glyph set.
+
 ### Accessibility and the mouse
 
 ```toml

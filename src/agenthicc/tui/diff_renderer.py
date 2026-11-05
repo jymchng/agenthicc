@@ -36,6 +36,8 @@ from rich.padding import Padding
 from rich.table import Table
 from rich.text import Text
 
+from agenthicc.tui.theme import current_theme, glyphs, palette
+
 Opcode = tuple[str, int, int, int, int]
 
 __all__ = ["render_file_diff", "render_file_create"]
@@ -47,12 +49,7 @@ CREATE_PREVIEW_LINES: int = 10
 #: than this keeps its first and last three rows and gets one omission row.
 DIFF_PREVIEW_LINES: int = 6
 
-# ── palette ───────────────────────────────────────────────────────────────────
-
-_BG_DEL = "on #3a1515"
-_BG_ADD = "on #153a15"
-_BG_DEL_WORD = "on #6a2020"
-_BG_ADD_WORD = "on #206a20"
+# Colours come from the active theme's diff tokens (TUX-01).
 
 
 # ── syntax highlighting ───────────────────────────────────────────────────────
@@ -78,7 +75,9 @@ def _highlight_block(lines: list[str], language: str) -> list[Text]:
     )
     with con.capture() as cap:
         con.print(
-            Syntax("\n".join(lines), language, theme="monokai", line_numbers=False),
+            Syntax(
+                "\n".join(lines), language, theme=current_theme().syntax_theme, line_numbers=False
+            ),
             end="",
         )
     raw = cap.get().splitlines()
@@ -147,10 +146,11 @@ def _word_spans(
 
 
 def _header(path: str, operation: str) -> Text:
+    p, g = palette(), glyphs()
     return Text.assemble(
-        ("● ", "green"),
+        (f"{g.bullet} ", p.success),
         (f"{operation}(", "bold"),
-        (path, "blue underline"),
+        (path, f"{p.accent} underline"),
         (")", "bold"),
     )
 
@@ -158,21 +158,22 @@ def _header(path: str, operation: str) -> Text:
 def _create_summary(n_lines: int) -> Text:
     word = "line" if n_lines == 1 else "lines"
     return Text.assemble(
-        ("└─ ", "dim"),
-        (f"Created {n_lines} {word}", "green"),
+        (f"{glyphs().elbow}{glyphs().rule} ", "dim"),
+        (f"Created {n_lines} {word}", palette().success),
     )
 
 
 def _summary(n_added: int, n_removed: int) -> Text:
-    parts: list[tuple[str, str]] = [("└─ ", "dim")]
+    p, g = palette(), glyphs()
+    parts: list[tuple[str, str]] = [(f"{g.elbow}{g.rule} ", "dim")]
     if n_added:
         word = "line" if n_added == 1 else "lines"
-        parts.append((f"Added {n_added} {word}", "green"))
+        parts.append((f"Added {n_added} {word}", p.success))
     if n_added and n_removed:
         parts.append((", ", "dim"))
     if n_removed:
         word = "line" if n_removed == 1 else "lines"
-        parts.append((f"removed {n_removed} {word}", "red"))
+        parts.append((f"removed {n_removed} {word}", p.danger))
     if not n_added and not n_removed:
         parts.append(("no changes", "dim"))
     return Text.assemble(*parts)
@@ -183,7 +184,7 @@ def _summary(n_added: int, n_removed: int) -> Text:
 
 def _context_row(table: Table, lineno: int, hl: Text) -> None:
     table.add_row(
-        Text(str(lineno), style="bright_black"),
+        Text(str(lineno), style=palette().muted),
         Text(" "),
         hl,
     )
@@ -191,7 +192,7 @@ def _context_row(table: Table, lineno: int, hl: Text) -> None:
 
 def _gap_row(table: Table) -> None:
     table.add_row(
-        Text("⋯", style="dim"),
+        Text(glyphs().ellipsis, style="dim"),
         Text(" "),
         Text(""),
     )
@@ -204,16 +205,18 @@ def _del_row(
     hl: Text,
     pair_raw: str | None,
 ) -> None:
+    p = palette()
+    background = p.on("diff_del_bg")
     code = hl.copy()
-    code.stylize(_BG_DEL)
+    code.stylize(background)
     if pair_raw is not None:
         for s, e in _word_spans(raw, pair_raw)[0]:
-            code.stylize(_BG_DEL_WORD, s, e)
+            code.stylize(p.on("diff_del_word"), s, e)
     table.add_row(
-        Text(str(lineno), style=f"red {_BG_DEL}"),
-        Text("-", style=f"red {_BG_DEL}"),
+        Text(str(lineno), style=f"{p.diff_del} {background}"),
+        Text("-", style=f"{p.diff_del} {background}"),
         code,
-        style=_BG_DEL,
+        style=background,
     )
 
 
@@ -224,16 +227,18 @@ def _add_row(
     hl: Text,
     pair_raw: str | None,
 ) -> None:
+    p = palette()
+    background = p.on("diff_add_bg")
     code = hl.copy()
-    code.stylize(_BG_ADD)
+    code.stylize(background)
     if pair_raw is not None:
         for s, e in _word_spans(pair_raw, raw)[1]:
-            code.stylize(_BG_ADD_WORD, s, e)
+            code.stylize(p.on("diff_add_word"), s, e)
     table.add_row(
-        Text(str(lineno), style=f"green {_BG_ADD}"),
-        Text("+", style=f"green {_BG_ADD}"),
+        Text(str(lineno), style=f"{p.diff_add} {background}"),
+        Text("+", style=f"{p.diff_add} {background}"),
         code,
-        style=_BG_ADD,
+        style=background,
     )
 
 
@@ -584,8 +589,8 @@ def render_file_create(
         parts.append(
             Padding(
                 Text.assemble(
-                    ("⋯ ", "dim"),
-                    (f"+{n_total - max_lines} more lines", "dim green"),
+                    (f"{glyphs().ellipsis} ", "dim"),
+                    (f"+{n_total - max_lines} more lines", f"dim {palette().diff_add}"),
                 ),
                 pad=(0, 0, 0, 2),
             )

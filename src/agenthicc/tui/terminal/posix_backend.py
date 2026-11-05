@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from typing import Generator
 
 from agenthicc.tui.cbreak_reader import Key, raw_mode as _raw_mode, read_key as _read_key
+from agenthicc.tui.cbreak_reader import query_background_color as _query_background
 from agenthicc.tui.cbreak_reader import set_reporting as _set_reporting
 
 __all__ = ["PosixBackend"]
@@ -62,6 +63,13 @@ class PosixBackend:
                     mouse=False if self._mouse_reporting else None,
                 )
                 self.restore()
+
+    def query_background(self, timeout: float) -> tuple[int, int, int] | None:
+        """Ask the terminal for its background colour (OSC 11, TUX-01)."""
+        fd = self._resolve_fd()
+        if fd is None or not self.is_interactive() or not sys.stdout.isatty():
+            return None
+        return _query_background(fd, timeout)
 
     def set_reporting(self, *, focus: bool | None = None, mouse: bool | None = None) -> None:
         """Turn focus and/or mouse reporting on or off (AGX-13)."""

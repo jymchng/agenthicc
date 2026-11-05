@@ -312,6 +312,67 @@ def _cmd_agent(ctx: CommandContext) -> bool:
     return True
 
 
+def _cmd_theme(ctx: CommandContext) -> bool:
+    """``/theme`` opens the picker; ``/theme NAME [--save]`` switches (TUX-01)."""
+    from pathlib import Path
+
+    from rich.markup import escape
+
+    from agenthicc.tui.preferences import save_ui_preference
+    from agenthicc.tui.theme import (
+        Theme,
+        ThemeError,
+        available_themes,
+        current_theme,
+        load_theme,
+        palette,
+        use_theme,
+    )
+
+    cwd = Path.cwd()
+
+    def apply(theme: Theme) -> None:
+        use_theme(theme.with_glyphs(current_theme().glyphs))
+
+    def save(name: str) -> str:
+        try:
+            path = save_ui_preference("theme", name)
+        except OSError as exc:
+            return f"Could not save the theme: {exc}"
+        return f"Saved theme = {name!r} to {path}"
+
+    parts = ctx.args.split()
+    if not parts:
+        if ctx.set_pending_menu is None:
+            ctx.console.print("Themes: " + ", ".join(available_themes(cwd)), markup=False)
+            return True
+        from agenthicc.tui.workspace.overlays.theme_picker import ThemePickerOverlay
+
+        ctx.set_pending_menu(
+            ThemePickerOverlay(
+                available_themes(cwd),
+                current=current_theme().name,
+                load=lambda name: load_theme(name, cwd),
+                apply=apply,
+                save=save,
+                close=ctx.close_overlay if ctx.close_overlay is not None else (lambda: None),
+            )
+        )
+        return True
+    name = parts[0]
+    try:
+        theme = load_theme(name, cwd)
+    except (ThemeError, OSError) as exc:
+        ctx.console.print(f"[{palette().danger}]! {escape(str(exc))}[/]")
+        return True
+    apply(theme)
+    message = f"Theme: {theme.name}"
+    if "--save" in parts[1:]:
+        message += f". {save(theme.name)}"
+    ctx.console.print(f"[{palette().muted}]{escape(message)}[/]")
+    return True
+
+
 def _cmd_subagents(ctx: CommandContext) -> bool:
     """The turn's subagents and the session's earlier ones (AGX-08 §5.2)."""
 
@@ -1510,6 +1571,13 @@ BUILTIN_COMMANDS: list[Command] = [
         busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
         busy_policy_resolver=_workflows_busy_policy,
         handler=_cmd_workflows,
+    ),
+    Command(
+        name="/theme",
+        description="Choose the colour theme; applies at once, no restart",
+        argument_hint="[name] [--save]",
+        busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
+        handler=_cmd_theme,
     ),
     Command(
         name="/config",

@@ -49,6 +49,14 @@ class TerminalBackend(Protocol):
         """Release what :meth:`read_key` uses, once no read is in progress."""
         ...
 
+    def query_background(self, timeout: float) -> tuple[int, int, int] | None:
+        """The terminal's background colour (OSC 11), or ``None`` (TUX-01).
+
+        Waits at most *timeout* seconds; never called on a non-interactive
+        terminal.
+        """
+        ...
+
     def set_reporting(self, *, focus: bool | None = None, mouse: bool | None = None) -> None:
         """Turn focus and/or mouse reporting on or off (AGX-13).
 

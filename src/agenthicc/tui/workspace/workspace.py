@@ -112,6 +112,10 @@ class Workspace:
         )
         self._live.start()
         self._flush_redraw()
+        from agenthicc.tui.theme import on_theme_change
+
+        # TUX-01: /theme applies at once; repaint every row with the new tokens.
+        self._unsubs.append(on_theme_change(lambda _theme: self._repaint_for_theme()))
         ui = _ui(self._state)
         if ui is not None and ui.screen_reader:
             from agenthicc.tui.workspace.announcer import Announcer
@@ -445,6 +449,13 @@ class Workspace:
         if self._state.pending_approval() is not None:
             return
         self._redraw()
+
+    def _repaint_for_theme(self) -> None:
+        """Drop cached rows and repaint the whole block (a theme changed)."""
+        self._markup_rows.clear()
+        if self._live is not None:
+            self._live.invalidate()
+        self._flush_redraw()
 
     def _reset_live_after_resize(self) -> None:
         """Repaint the whole block in the next frame.

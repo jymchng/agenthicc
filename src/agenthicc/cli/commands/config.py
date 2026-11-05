@@ -41,6 +41,19 @@ def config_show(ctx: CLIContext) -> None:
             continue
         for k, v in section.items():
             print(f"{k} = {v!r}")
+    import os
+
+    from agenthicc.tui.theme import ASCII_GLYPHS, resolve_theme
+
+    theme, notices = resolve_theme(
+        cfg.ui.theme, cfg.ui.glyphs, env=os.environ, screen_reader=cfg.ui.screen_reader
+    )
+    glyph_set = "ascii" if theme.glyphs is ASCII_GLYPHS else "unicode"
+    print(f"\n# Effective theme: {theme.name} ({glyph_set} glyphs)")
+    if cfg.ui.theme == "auto":
+        print("# (auto also asks the terminal for its background when the TUI starts)")
+    for notice in notices:
+        print(f"# {notice}")
 
 
 def config_validate(ctx: CLIContext) -> None:

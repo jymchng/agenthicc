@@ -1702,6 +1702,7 @@ class BehaviourSettings:
 
 
 _MOUSE_MODES = ("auto", "on", "off")
+_GLYPH_MODES = ("auto", "unicode", "ascii")
 
 
 @dataclass(frozen=True)
@@ -1716,10 +1717,21 @@ class UISettings:
     """No spinners or box drawing; state changes are also printed as sentences."""
     reduced_motion: bool = False
     """Keep the layout but replace animation with a static ``●``."""
+    theme: str = "auto"
+    """``auto`` follows the terminal background; or ``dark``, ``light``,
+    ``high-contrast``, ``ansi``, or a custom theme in ``.agenthicc/themes/``
+    (TUX-01). ``NO_COLOR`` overrides it."""
+    glyphs: str = "auto"
+    """``auto``, ``unicode`` or ``ascii``; ``auto`` picks ASCII on a non-UTF-8
+    locale or the Linux console (TUX-01)."""
 
     def __post_init__(self) -> None:
         if self.mouse not in _MOUSE_MODES:
             raise ValueError(f"ui.mouse must be one of: {', '.join(_MOUSE_MODES)}")
+        if self.glyphs not in _GLYPH_MODES:
+            raise ValueError(f"ui.glyphs must be one of: {', '.join(_GLYPH_MODES)}")
+        if not self.theme.strip():
+            raise ValueError("ui.theme must not be empty")
 
     @property
     def animated(self) -> bool:
@@ -2765,6 +2777,8 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
         mouse=_as_str(ui_data.get("mouse"), "auto").lower(),
         screen_reader=_as_bool(ui_data.get("screen_reader"), False),
         reduced_motion=_as_bool(ui_data.get("reduced_motion"), False),
+        theme=_as_str(ui_data.get("theme"), "auto").strip(),
+        glyphs=_as_str(ui_data.get("glyphs"), "auto").strip().lower(),
     )
 
     subagent_data = _section(data.get("subagents"))

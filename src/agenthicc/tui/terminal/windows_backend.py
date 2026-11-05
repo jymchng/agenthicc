@@ -537,6 +537,11 @@ class WindowsBackend:
             return (raw | _ENABLE_MOUSE_INPUT | _ENABLE_EXTENDED_FLAGS) & ~_ENABLE_QUICK_EDIT_MODE
         return raw
 
+    def query_background(self, timeout: float) -> tuple[int, int, int] | None:
+        """The console reads input records, where an OSC answer would surface
+        as typed characters, so it is never asked (TUX-01)."""
+        return None
+
     def set_reporting(self, *, focus: bool | None = None, mouse: bool | None = None) -> None:
         """Turn mouse input on or off (AGX-13); focus records always arrive."""
         del focus

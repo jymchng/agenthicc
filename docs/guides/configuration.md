@@ -577,7 +577,11 @@ resume_transcript_max_event_bytes = 16384
 
 `[ui]` holds accessibility and input preferences (AGX-13): `screen_reader`,
 `reduced_motion` and `mouse` (`"auto"`, `"on"` or `"off"`); see the
-[terminal workspace guide](tui.md#accessibility-and-the-mouse). Key bindings
+[terminal workspace guide](tui.md#accessibility-and-the-mouse). It also holds
+the colour theme and glyph set (TUX-01): `theme` (`"auto"`, `"dark"`,
+`"light"`, `"high-contrast"`, `"ansi"` or a custom theme name) and `glyphs`
+(`"auto"`, `"unicode"` or `"ascii"`); see
+[themes and glyphs](tui.md#themes-and-glyphs). Key bindings
 live in their own file, `~/.agenthicc/keybindings.toml`
 ([key bindings](tui.md#key-bindings)).
 

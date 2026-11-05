@@ -457,6 +457,84 @@ def _record_mode_report(body: bytes) -> None:
         capabilities.report_mode(int(mode), int(value))
 
 
+#: OSC 11: ask the terminal for its background colour (TUX-01).
+OSC_QUERY_BACKGROUND = "\x1b]11;?\x1b\\"
+
+
+def parse_osc_color(body: bytes) -> tuple[int, int, int] | None:
+    """Parse an OSC colour report body (``11;rgb:RRRR/GGGG/BBBB``) to 8-bit RGB."""
+    _, separator, value = body.partition(b";")
+    if not separator or not value.startswith(b"rgb:"):
+        return None
+    parts = value[4:].split(b"/")
+    if len(parts) != 3:
+        return None
+    channels: list[int] = []
+    for part in parts:
+        if not part or len(part) > 4:
+            return None
+        try:
+            number = int(part, 16)
+        except ValueError:
+            return None
+        channels.append(round(number * 255 / ((1 << (4 * len(part))) - 1)))
+    return (channels[0], channels[1], channels[2])
+
+
+def _read_osc_body(fd: int, timeout: float, cancel_fd: int | None) -> bytes:
+    """Read an OSC payload after ``ESC ]`` up to BEL or ST (``ESC \\``)."""
+    body = b""
+    while len(body) < 512 and _wait_readable(fd, timeout, cancel_fd):
+        byte = _read_input(fd, 1, cancel_fd)
+        if byte == b"\x07":
+            break
+        if byte == b"\x1b":
+            if _wait_readable(fd, timeout, cancel_fd):
+                _read_input(fd, 1, cancel_fd)  # the "\\" of ST
+            break
+        body += byte
+    return body
+
+
+def query_background_color(fd: int, timeout: float = 0.05) -> tuple[int, int, int] | None:
+    """Ask the terminal on *fd* for its background colour; ``None`` if it cannot say.
+
+    Briefly enters non-canonical, no-echo mode, writes OSC 11 and waits at most
+    *timeout* seconds for the answer.  A late answer is swallowed by
+    :func:`read_key`, never shown as typed text.
+    """
+    import sys
+
+    try:
+        import termios
+    except ImportError:
+        return None
+    try:
+        old = termios.tcgetattr(fd)
+    except Exception:  # noqa: BLE001 - not a terminal
+        return None
+    new = list(old)
+    new[3] &= ~(termios.ICANON | termios.ECHO)
+    try:
+        termios.tcsetattr(fd, termios.TCSANOW, new)
+        sys.stdout.write(OSC_QUERY_BACKGROUND)
+        sys.stdout.flush()
+        if not _wait_readable(fd, timeout, None):
+            return None
+        if os.read(fd, 1) != b"\x1b" or not _wait_readable(fd, timeout, None):
+            return None
+        if os.read(fd, 1) != b"]":
+            return None
+        return parse_osc_color(_read_osc_body(fd, timeout, None))
+    except OSError:
+        return None
+    finally:
+        try:
+            termios.tcsetattr(fd, termios.TCSANOW, old)
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def _wait_readable(fd: int, timeout: float | None, cancel_fd: int | None) -> bool:
     """Wait for input, raising promptly if the optional cancellation pipe fires."""
     watched = [fd] if cancel_fd is None else [fd, cancel_fd]
@@ -512,6 +590,12 @@ def read_key(fd: int, *, cancel_fd: int | None = None) -> tuple[Key, str]:
             if not _wait_readable(fd, 0.05, cancel_fd):
                 return (Key.ALT, "O")
             return decode_ss3(_read_input(fd, 1, cancel_fd))
+        if b2 == b"]":
+            if not _wait_readable(fd, 0.05, cancel_fd):
+                return (Key.ALT, "]")
+            # An OSC answer (a late OSC 11 colour report): never a keystroke.
+            _read_osc_body(fd, 0.05, cancel_fd)
+            return read_key(fd, cancel_fd=cancel_fd)
         if b2 != b"[":
             if b2 == b"\x1b":
                 return (Key.ESC, "")

@@ -69,6 +69,7 @@ if TYPE_CHECKING:
     from lauren_ai._config import LLMConfig
     from lauren_ai._memory import ShortTermMemory
     from lauren_ai._signals import SignalBus
+    from rich.console import Console
 
     from agenthicc.agents.registry import AgentsRegistry
     from agenthicc.background.agents_service import AgentsService
@@ -786,6 +787,37 @@ def _discover_workflow_registry_sync() -> WorkflowRegistry:
 # ── session construction ──────────────────────────────────────────────────────
 
 
+def _apply_startup_theme(console: Console, cfg: AgenthiccConfig) -> None:
+    """Choose the session's theme and glyphs before anything is drawn (TUX-01).
+
+    ``auto`` asks the terminal for its background (OSC 11, at most 50 ms, only
+    on an interactive terminal). A theme that cannot be loaded falls back to
+    ``auto`` and says so once.
+    """
+    from rich.markup import escape
+
+    from agenthicc.tui.terminal.backend import get_backend
+    from agenthicc.tui.theme import resolve_theme, use_theme
+
+    ui = cfg.ui
+    background: tuple[int, int, int] | None = None
+    if ui.theme == "auto" and "NO_COLOR" not in os.environ and console.is_terminal:
+        backend = get_backend()
+        if backend.is_interactive():
+            background = backend.query_background(0.05)
+    theme, notices = resolve_theme(
+        ui.theme,
+        ui.glyphs,
+        env=os.environ,
+        screen_reader=ui.screen_reader,
+        background=background,
+        cwd=Path.cwd(),
+    )
+    use_theme(theme)
+    for notice in notices:
+        console.print(f"[{theme.palette.warning}]! {escape(notice)}[/]")
+
+
 async def _build_session_context(
     resume_id: str | None,
     cli_overrides: list[str] | None,
@@ -1073,6 +1105,8 @@ async def _build_session_context_impl(
         force_terminal=not headless,
         quiet=headless,
     )
+    if not headless:
+        _apply_startup_theme(console, cfg)
     llm_config_error: str | None = None
     llm_config: Callable[[], LLMConfig] | None
     try:
@@ -1092,8 +1126,12 @@ async def _build_session_context_impl(
             llm_config()
     except ValueError as exc:
         llm_config_error = str(exc)
+        from rich.markup import escape as _escape
+
+        from agenthicc.tui.theme import palette as _palette
+
         console.print(
-            f"[red]LLM config error: {exc}[/red]\n"
+            f"[{_palette().danger}]LLM config error: {_escape(str(exc))}[/]\n"
             "[dim]Set ANTHROPIC_API_KEY or OPENAI_API_KEY, or --set execution.provider=...[/dim]",
             markup=True,
         )
