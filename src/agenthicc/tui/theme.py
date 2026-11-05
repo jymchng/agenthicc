@@ -487,10 +487,10 @@ def resolve_theme(
     ``dark``.  A broken custom theme falls back to ``auto`` with a notice.
     """
     notices: list[str] = []
+    theme: Theme | None = None
     if "NO_COLOR" in env:
         theme = BUILTIN_THEMES["no-color"]
     else:
-        theme = None
         if name != "auto":
             try:
                 theme = load_theme(name, cwd)
