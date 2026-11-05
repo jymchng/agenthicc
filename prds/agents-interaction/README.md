@@ -34,3 +34,4 @@ cause of these failures and is left for a store-compaction PRD.
 | Wave | Branch | PRDs |
 |---|---|---|
 | 1 | `agi-wave-1-resume-launch-spec` | AGI-00 (study), AGI-04 |
+| 2 | `agi-wave-2-answer-composer` | AGI-05, AGI-01 |

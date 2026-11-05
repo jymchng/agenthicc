@@ -1948,6 +1948,69 @@ frames. `TUISession` starts
 one monitor per session and stops it on teardown; `/perf` prints the lag
 percentiles and one line per stall.
 
+### EmbeddedComposer
+
+```python
+class EmbeddedComposer:
+    def __init__(self, context: ComposerContext, *, on_submit: Callable[[str], Awaitable[bool]], redraw: Callable[[], None] = ..., on_exit: Callable[[], None] = ..., exclude: Iterable[type[object]] = ()) -> None: ...
+    def feed(self, key: Key, ch: str) -> None: ...
+    async def settle(self) -> None: ...
+    def render(self) -> list[RenderableType]: ...
+    text: str
+    picker_open: bool
+```
+
+`agenthicc.tui.input.embedded` (AGI-05): the main composer inside another
+surface. It has its own `AppState`, its own `OverlayHost` for the `/` and `@`
+pickers, and a `UnifiedInputSession` with the main composer's capabilities.
+
+- `feed()` queues keys and dispatches them in order, without dropping any;
+  with no running loop it dispatches synchronously.
+- `on_submit(text)` returns whether to clear the prompt.
+- `ComposerContext(cwd, cfg, commands, workflows, keymap, history,
+  session_id, mode_name)` scopes the pickers;
+  `load_composer_context(cwd, launch=...)` builds one for a directory
+  (blocking).
+- `ANSWER_EXCLUDED()` lists the capabilities an answer leaves out: Ctrl+C,
+  Ctrl+D, the hub, the agent and subagent shortcuts, and interrupt.
+
+Uses: the agents hub's session input, the `ask_user` overlay's "Other" input,
+and the hub's answer form.
+
+### QuestionForm
+
+```python
+class QuestionForm:
+    questions: Sequence[Question]
+    current: int
+    def move(self, delta: int) -> None: ...
+    def go(self, delta: int) -> None: ...
+    def choose(self) -> bool: ...
+    def answer_typed(self, typed: str, delivered: str | None = None) -> None: ...
+    def answers(self) -> dict[str, str]: ...
+    complete: bool
+```
+
+`agenthicc.tui.workspace.question_form` (AGI-01): the answer model shared by
+`QuestionsOverlay` and the hub's answer form (`agents_hub.answer.AnswerView`).
+
+- It tracks focus, the highlighted option and each answer.
+- "Other" is always last (`OTHER_LABEL`).
+- A typed answer stores what the agent receives (`answer`, for example with
+  an `@` mention's context prefix) separately from what was typed (`label`).
+- `Question.parse_all(raw)` normalises an `ask_user` `questions` value.
+
+`QuestionsOverlay(req, service, close_fn, *, answers=AnswerContext(...))`:
+
+- `AnswerContext.composer` scopes the "Other" composer;
+- `run_command(text) -> bool` runs a submitted `/command` under the busy
+  policy (in `TUISession`: immediate commands run, others are refused);
+- `expand(text)` resolves mentions.
+
+In the agents hub, `i` on a question or input item opens `AnswerView`, which
+delivers `{"answers": {...}}` or `{"answer": text}` at the version shown. A
+failed send keeps the form open, and Esc keeps its progress.
+
 ## Historical TUI API — not in the current checkout
 
 The following prompt-toolkit symbols describe an older implementation. They are

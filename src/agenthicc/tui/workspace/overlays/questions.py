@@ -9,6 +9,13 @@ State machine:
     SELECTING  — ↑↓ option, ←→ question, Enter confirm/submit, Esc cancel
     TYPING     — free-text entry for the "Other" option of the current question
 
+The answer model (focus, highlighted options, answers) is a
+:class:`~agenthicc.tui.workspace.question_form.QuestionForm`, shared with the
+agents hub (AGI-01). TYPING uses an
+:class:`~agenthicc.tui.input.embedded.EmbeddedComposer`, the main composer with
+its own pickers, so paste, newline, ``@`` mentions and ``/`` commands work in an
+answer as they do in the main input panel (AGI-05).
+
 Height stability
 ----------------
 The question and options areas are always rendered as fixed-size viewports
@@ -26,7 +33,7 @@ from __future__ import annotations
 
 import shutil
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import TYPE_CHECKING, Callable
 
@@ -36,47 +43,43 @@ if TYPE_CHECKING:
     from agenthicc.tools.approval import ApprovalRequest, InteractiveApprovals
 
 from agenthicc.tui.cbreak_reader import Key
-from agenthicc.tui.workspace.overlays.prompt import PromptOverlay
+from agenthicc.tui.workspace.overlay import Overlay
+from agenthicc.tui.workspace.question_form import OTHER_LABEL, Question, QuestionForm
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable
+
+    from agenthicc.tui.input.embedded import ComposerContext, EmbeddedComposer
 
 _BORDER = "─"
-_OTHER_LABEL = "Other — type your answer"
+_OTHER_LABEL = OTHER_LABEL
 _MAX_QUESTION_ROWS = 12
 _LAYOUT_OVERHEAD = 20
 
 
-def _str_option(opt: object) -> str:
-    """Normalise an option to a plain string.
-
-    The LLM sometimes passes dicts (e.g. {'id': 'a', 'label': 'Frontend …'})
-    instead of plain strings.  Prefer 'label', then 'text', 'name', 'value',
-    then the first value of the dict, then str() as last resort.
-    """
-    if isinstance(opt, str):
-        return opt
-    if isinstance(opt, dict):
-        for key in ("label", "text", "name", "value"):
-            if opt.get(key):
-                return str(opt[key])
-        for v in opt.values():
-            if v:
-                return str(v)
-    return str(opt)
-
-
 @dataclass(frozen=True)
-class Question:
-    id: str
-    text: str
-    options: list[str]
+class AnswerContext:
+    """What a typed answer can reach (AGI-05).
+
+    ``composer`` scopes the ``@`` and ``/`` pickers. ``run_command`` runs a
+    submitted ``/command`` the way the main composer would while a turn is
+    busy, and returns whether it handled the text. ``expand`` resolves the
+    answer's ``@`` mentions into the context prefix a message would carry.
+    ``redraw`` repaints the overlay after an asynchronous key.
+    """
+
+    composer: ComposerContext
+    run_command: Callable[[str], bool] = field(default=lambda _text: False)
+    expand: Callable[[str], Awaitable[str]] | None = None
+    redraw: Callable[[], None] = field(default=lambda: None)
 
 
 @dataclass
-class _QState:
-    cursor: int = 0  # highlighted option index (absolute)
-    answer: str = ""  # confirmed answer (option label or typed text)
-    answered: bool = False
-    opt_scroll: int = 0  # index of first visible option in the viewport
-    question_scroll: int = 0  # first visible wrapped question line
+class _QView:
+    """Presentation state for one question: its two scroll offsets."""
+
+    opt_scroll: int = 0
+    question_scroll: int = 0
 
 
 class _Mode(Enum):
@@ -84,7 +87,7 @@ class _Mode(Enum):
     TYPING = auto()
 
 
-class QuestionsOverlay(PromptOverlay):
+class QuestionsOverlay(Overlay):
     """Multi-question overlay driven by ask_user()."""
 
     name = "questions"
@@ -94,28 +97,21 @@ class QuestionsOverlay(PromptOverlay):
         req: ApprovalRequest,
         service: InteractiveApprovals,
         close_fn: Callable[[], None],
+        *,
+        answers: AnswerContext | None = None,
     ) -> None:
         super().__init__()
         self._req = req
         self._service = service
         self._close = close_fn
+        self._answers = answers
         self._mode = _Mode.SELECTING
-        self._current = 0
-
         raw_value = (req.tool_input or {}).get("questions", [])
-        raw = raw_value if isinstance(raw_value, list) else []
-        self._questions: list[Question] = [
-            Question(
-                id=str(q.get("id", "")),
-                text=str(q.get("text", "")),
-                options=[_str_option(o) for o in q.get("options", [])]
-                if isinstance(q.get("options", []), list)
-                else [],
-            )
-            for q in raw
-            if isinstance(q, dict)
-        ]
-        self._states: list[_QState] = [_QState() for _ in self._questions]
+        self._form = QuestionForm(Question.parse_all(raw_value))
+        self._views: list[_QView] = [_QView() for _ in self._form.questions]
+        self._composer: EmbeddedComposer | None = None
+        #: Text typed for a question and left with Esc, kept for its next visit.
+        self._drafts: dict[int, str] = {}
 
         # Cached from the last render — read by the keyboard handlers. Question
         # lines are presentation-only and are never included in the answer or
@@ -125,23 +121,37 @@ class QuestionsOverlay(PromptOverlay):
         self._question_width: int = 0
         self._question_lines: dict[int, list[Text]] = {}
 
+    # ── compatibility views used by rendering ────────────────────────────────
+
+    @property
+    def _questions(self) -> list[Question]:
+        return list(self._form.questions)
+
+    @property
+    def _current(self) -> int:
+        return self._form.current
+
+    @property
+    def _states(self) -> list[_QView]:
+        return self._views
+
+    @property
+    def _prompt_text(self) -> str:
+        return self._composer.text if self._composer is not None else ""
+
     # ── Overlay interface ──────────────────────────────────────────────────────
 
     def on_mount(self) -> None:
-        super().on_mount()
         self._mode = _Mode.SELECTING
-        self._current = 0
-        for s in self._states:
-            s.cursor = 0
-            s.answer = ""
-            s.answered = False
-            s.opt_scroll = 0
-            s.question_scroll = 0
+        self._form = QuestionForm(list(self._form.questions))
+        self._views = [_QView() for _ in self._form.questions]
+        self._drafts.clear()
+        self._close_composer()
         self._question_width = 0
         self._question_lines.clear()
 
     def on_unmount(self) -> None:
-        pass
+        self._close_composer()
 
     def render(self) -> RenderableType:
         if not self._questions:
@@ -159,41 +169,34 @@ class QuestionsOverlay(PromptOverlay):
 
     def _opts(self, q_idx: int) -> list[str]:
         """Options for question q_idx with 'Other' appended."""
-        return self._questions[q_idx].options + [_OTHER_LABEL]
+        return self._form.options(q_idx)
 
     def _is_other_idx(self, q_idx: int, opt_idx: int) -> bool:
         return opt_idx == len(self._opts(q_idx)) - 1
 
     def _is_free_text_answer(self, q_idx: int) -> bool:
         """True when question was answered via free text (not one of the preset options)."""
-        st = self._states[q_idx]
-        return st.answered and st.answer not in self._questions[q_idx].options
+        return self._form.typed(q_idx)
 
     def _opt_label(self, q_idx: int, opt_idx: int) -> str:
         if self._is_other_idx(q_idx, opt_idx) and self._is_free_text_answer(q_idx):
-            text = self._states[q_idx].answer
+            text = " ".join(self._form.states[q_idx].label.split())
             if len(text) > 40:
                 text = text[:39] + "…"
             return f'Other: "{text}"'
         return self._opts(q_idx)[opt_idx]
 
     def _all_answered(self) -> bool:
-        return all(s.answered for s in self._states)
+        return self._form.complete
 
     def _advance(self) -> None:
         """Move focus to the next unanswered question."""
-        n = len(self._questions)
-        for i in range(1, n + 1):
-            idx = (self._current + i) % n
-            if not self._states[idx].answered:
-                self._current = idx
-                return
+        self._form.advance()
 
     def _submit(self) -> None:
         import json
 
-        answers = {q.id: s.answer for q, s in zip(self._questions, self._states, strict=True)}
-        self._respond(allowed=True, message=json.dumps(answers), outcome="answered")
+        self._respond(allowed=True, message=json.dumps(self._form.answers()), outcome="answered")
         self._close()
 
     def _respond(self, *, allowed: bool, message: str, outcome: str) -> None:
@@ -331,17 +334,18 @@ class QuestionsOverlay(PromptOverlay):
 
     def _clamp_opt_scroll(self, q_idx: int) -> None:
         """Ensure opt_scroll keeps the cursor inside the visible options window."""
-        st = self._states[q_idx]
+        cursor = self._form.states[q_idx].cursor
+        view = self._views[q_idx]
         n = len(self._opts(q_idx))
         opt_rows = self._opt_rows
         # Cursor below viewport → scroll down.
-        if st.cursor >= st.opt_scroll + opt_rows:
-            st.opt_scroll = st.cursor - opt_rows + 1
+        if cursor >= view.opt_scroll + opt_rows:
+            view.opt_scroll = cursor - opt_rows + 1
         # Cursor above viewport → scroll up.
-        if st.cursor < st.opt_scroll:
-            st.opt_scroll = st.cursor
+        if cursor < view.opt_scroll:
+            view.opt_scroll = cursor
         # Clamp scroll to valid range.
-        st.opt_scroll = max(0, min(st.opt_scroll, max(0, n - opt_rows)))
+        view.opt_scroll = max(0, min(view.opt_scroll, max(0, n - opt_rows)))
 
     # ── SELECTING ─────────────────────────────────────────────────────────────
 
@@ -356,7 +360,7 @@ class QuestionsOverlay(PromptOverlay):
 
         lines: list[RenderableType] = []
 
-        n_ans = sum(1 for s in self._states if s.answered)
+        n_ans = sum(1 for state in self._form.states if state.answered)
         n_total = len(self._questions)
 
         # Header
@@ -375,13 +379,14 @@ class QuestionsOverlay(PromptOverlay):
         left = "◀ " if q_idx > 0 else "  "
         right = " ▶" if q_idx < n_total - 1 else "  "
         nav = f"{left}Question {q_idx + 1} of {n_total}{right}"
-        dots = " ".join("●" if s.answered else "○" for s in self._states)
+        dots = " ".join("●" if state.answered else "○" for state in self._form.states)
         gap = max(1, border_w - 4 - len(nav) - len(dots))
         lines.append(Text(f"  {nav}" + " " * gap + dots, style="dim"))
         lines.append(Text(""))
 
         # Question text
-        st = self._states[q_idx]
+        st = self._form.states[q_idx]
+        view = self._views[q_idx]
         lines.extend(self._render_question_view(q_idx, question_rows))
         lines.append(Text(""))
 
@@ -390,7 +395,7 @@ class QuestionsOverlay(PromptOverlay):
         n = len(opts)
         opt_rows = self._opt_rows
         self._clamp_opt_scroll(q_idx)
-        scroll = st.opt_scroll
+        scroll = view.opt_scroll
         end = min(scroll + opt_rows, n)
         shown = end - scroll
 
@@ -439,10 +444,11 @@ class QuestionsOverlay(PromptOverlay):
                 self._close()
             return True
 
-        q_idx = self._current
-        st = self._states[q_idx]
-        opts = self._opts(q_idx)
-        n = len(opts)
+        form = self._form
+        q_idx = form.current
+        st = form.state
+        view = self._views[q_idx]
+        n = len(self._opts(q_idx))
         opt_rows = self._opt_rows
 
         match key:
@@ -451,36 +457,30 @@ class QuestionsOverlay(PromptOverlay):
             case Key.CHAR if ch == "]":
                 self._scroll_question(1)
             case Key.UP:
-                st.cursor = (st.cursor - 1) % n
+                form.move(-1)
                 if st.cursor == n - 1:  # wrapped to bottom
-                    st.opt_scroll = max(0, n - opt_rows)
-                elif st.cursor < st.opt_scroll:  # scrolled above viewport
-                    st.opt_scroll = st.cursor
+                    view.opt_scroll = max(0, n - opt_rows)
+                elif st.cursor < view.opt_scroll:  # scrolled above viewport
+                    view.opt_scroll = st.cursor
             case Key.DOWN:
-                st.cursor = (st.cursor + 1) % n
+                form.move(1)
                 if st.cursor == 0:  # wrapped to top
-                    st.opt_scroll = 0
-                elif st.cursor >= st.opt_scroll + opt_rows:  # scrolled below
-                    st.opt_scroll = st.cursor - opt_rows + 1
+                    view.opt_scroll = 0
+                elif st.cursor >= view.opt_scroll + opt_rows:  # scrolled below
+                    view.opt_scroll = st.cursor - opt_rows + 1
             case Key.LEFT:
-                self._current = max(0, self._current - 1)
+                form.go(-1)
             case Key.RIGHT:
-                self._current = min(len(self._questions) - 1, self._current + 1)
+                form.go(1)
             case Key.ENTER:
-                if self._is_other_idx(q_idx, st.cursor):
-                    # Enter TYPING; pre-fill if previously answered via free text.
-                    if self._is_free_text_answer(q_idx):
-                        self._buf.set(list(st.answer))
-                    else:
-                        self._buf.clear()
-                    self._mode = _Mode.TYPING
+                if form.on_other():
+                    self._start_typing()
                 else:
-                    st.answer = opts[st.cursor]
-                    st.answered = True
-                    if self._all_answered():
+                    form.choose()
+                    if form.complete:
                         self._submit()
                     else:
-                        self._advance()
+                        form.advance()
             case Key.ESC:
                 self._respond(allowed=False, message="", outcome="cancelled")
                 self._close()
@@ -490,6 +490,63 @@ class QuestionsOverlay(PromptOverlay):
         return True
 
     # ── TYPING ────────────────────────────────────────────────────────────────
+
+    def _start_typing(self) -> None:
+        """Open the composer for the current question's free-text answer."""
+        from pathlib import Path
+
+        from agenthicc.tui.input.embedded import (
+            ANSWER_EXCLUDED,
+            ComposerContext,
+            EmbeddedComposer,
+        )
+
+        context = self._answers.composer if self._answers else ComposerContext(cwd=Path.cwd())
+        redraw = self._answers.redraw if self._answers else (lambda: None)
+        self._close_composer()
+        composer = EmbeddedComposer(
+            context,
+            on_submit=self._confirm_typed,
+            redraw=redraw,
+            exclude=ANSWER_EXCLUDED(),
+        )
+        index = self._form.current
+        draft = self._drafts.get(index)
+        if draft is None and self._form.typed(index):
+            draft = self._form.states[index].label
+        if draft:
+            composer.set_text(draft)
+        self._composer = composer
+        self._mode = _Mode.TYPING
+
+    def _close_composer(self) -> None:
+        if self._composer is not None:
+            self._composer.close()
+            self._composer = None
+
+    async def _confirm_typed(self, text: str) -> bool:
+        """Handle the composer's submission: a command, or this question's answer."""
+        typed = text.strip()
+        if not typed:
+            return False
+        answers = self._answers
+        if typed.startswith("/") and answers is not None and answers.run_command(typed):
+            return True  # the command ran (or was refused) in place of an answer
+        delivered = text
+        if answers is not None and answers.expand is not None:
+            delivered = await answers.expand(text)
+        form = self._form
+        form.answer_typed(text, delivered)
+        self._drafts.pop(form.current, None)
+        self._mode = _Mode.SELECTING
+        self._close_composer()
+        if form.complete:
+            self._submit()
+        else:
+            form.advance()
+        if answers is not None:
+            answers.redraw()
+        return True
 
     def _render_typing(self) -> RenderableType:
         from rich.console import Group
@@ -510,38 +567,38 @@ class QuestionsOverlay(PromptOverlay):
         lines.append(Text(""))
         lines.extend(self._render_question_view(self._current, question_rows))
         lines.append(Text(""))
-        lines.append(Text.from_markup(f"  {self._render_prompt_line()}"))
+        if self._composer is not None:
+            lines.extend(self._composer.render())
         lines.append(Text(""))
         lines.append(Text(_BORDER * border_w, style="dim"))
         scroll_hint = "   PageUp/PageDown scroll" if len(question_lines) > question_rows else ""
-        lines.append(Text(f"  Enter confirm   Esc back{scroll_hint}", style="dim"))
+        lines.append(
+            Text(
+                f"  Enter confirm   Ctrl+J newline   @ mention   / command   Esc back{scroll_hint}",
+                style="dim",
+            )
+        )
 
         return Group(*lines)
 
     def _handle_typing(self, key: Key, ch: str) -> bool:
+        composer = self._composer
+        if composer is None:
+            self._mode = _Mode.SELECTING
+            return True
         match key:
-            case Key.PAGE_UP:
+            case Key.PAGE_UP if not composer.picker_open:
                 self._scroll_question(-self._question_rows)
-            case Key.PAGE_DOWN:
+            case Key.PAGE_DOWN if not composer.picker_open:
                 self._scroll_question(self._question_rows)
-            case Key.ENTER:
-                text = self._prompt_text.strip()
-                if text:
-                    st = self._states[self._current]
-                    st.answer = text
-                    st.answered = True
-                    self._buf.clear()
-                    self._mode = _Mode.SELECTING
-                    if self._all_answered():
-                        self._submit()
-                    else:
-                        self._advance()
-                # If text is empty, stay in TYPING so the user provides something.
-            case Key.ESC:
-                self._buf.clear()
+            case Key.ESC if not composer.picker_open:
+                # Leave the answer; what was typed is kept for the next visit.
+                if composer.text:
+                    self._drafts[self._form.current] = composer.text
+                self._close_composer()
                 self._mode = _Mode.SELECTING
             case _:
-                self._handle_prompt_key(key, ch)
+                composer.feed(key, ch)
         return True
 
     # ── fallback when no questions parsed ─────────────────────────────────────

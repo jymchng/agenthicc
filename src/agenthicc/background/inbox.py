@@ -128,12 +128,13 @@ def response_from_text(item: BackgroundInboxItem, text: str) -> dict[str, object
     )
     if len(ids) == 1:
         return {"answers": {ids[0]: text}}
+    expected = "answer with a JSON object with keys " + ", ".join(ids)
     try:
         value = json.loads(text)
     except json.JSONDecodeError as exc:
-        raise ValueError("multiple questions require a JSON object keyed by question ID") from exc
+        raise ValueError(expected) from exc
     if not isinstance(value, dict):
-        raise ValueError("question answer must be a JSON object")
+        raise ValueError(expected)
     return {"answers": value}
 
 

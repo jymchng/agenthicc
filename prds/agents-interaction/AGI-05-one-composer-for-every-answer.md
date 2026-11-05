@@ -1,6 +1,6 @@
 ---
 title: "AGI-05: One composer for every answer — the ask_user input works like the main input panel"
-status: Proposed
+status: Implemented with amendments (2026-11-04; AGI wave 2, pending merge)
 version: 1.0.0
 date: 2026-11-04
 scope: "the text input inside the ask_user overlay (foreground) and the agents hub's answer form (background): the main composer's paste, newline, cursor and history, @ mention picker and injection, and / command and skill picker, through one reusable embedded composer"
@@ -9,6 +9,56 @@ tags: [tui, composer, ask_user, mentions, slash-commands]
 ---
 
 # AGI-05: One composer for every answer
+
+## Implementation status (2026-11-04)
+
+Delivered in AGI wave 2 (branch `agi-wave-2-answer-composer`).
+
+- **`EmbeddedComposer`** (`tui/input/embedded.py`).
+  - It owns a private `AppState`, its own `OverlayHost` for the pickers, and
+    a `UnifiedInputSession`.
+  - `feed()` dispatches keys strictly in order. The hub's old composer
+    dropped a key that arrived while another was still being dispatched.
+  - `close()` is safe from inside a submit handler.
+  - `load_composer_context()` builds the commands, skills, workflows and
+    configuration for a directory, and replaces the hub's private builder.
+- **The overlay.**
+  - `QuestionsOverlay`'s "Other" mode hosts an `EmbeddedComposer`, and
+    pickers render inside the overlay.
+  - `TUISession._answer_context()` supplies:
+    - the session's registries;
+    - `/command` routing through `_busy_decision`/`_run_busy_immediate`
+      (refused commands get a notice; text that is not a command is an
+      answer);
+    - mention expansion through `build_context_prefix`, under the session's
+      workspace policy, recording `mention_chips`.
+  - Esc closes the picker first, then leaves typing with the draft kept.
+- **The hub.** Session input and AGI-01's answer form both use
+  `EmbeddedComposer`.
+
+Amendments:
+
+- **The editors not removed.** `PromptOverlay` remains the base of
+  `PlanApprovalOverlay`; `QuestionsOverlay` no longer inherits it. `LineEditor`
+  remains for the hub's rename, labels and search prompts; it is no longer
+  used for answers.
+- **`/` commands in the hub.** In the hub, `/` commands are inserted into
+  the answer text rather than run (see AGI-01).
+- **An answer leaves out the application shortcuts.** It excludes Ctrl+C,
+  Ctrl+D, the hub, the agent and subagent shortcuts, and interrupt
+  (`ANSWER_EXCLUDED()`). The overlay still owns Esc.
+
+Tests: `tests/unit/test_embedded_composer.py` (5). They cover:
+
+- the `qo.py` reproduction, with `@` picker, paste, Ctrl+J and mention
+  expansion, and no unmount;
+- `/command` against plain `/path`;
+- an Esc draft;
+- in-order keys;
+- a synchronous caller.
+
+The overlay, hub, attach and inbox suites pass unchanged, with tests updated
+for the moved state.
 
 ## 1. Problem
 

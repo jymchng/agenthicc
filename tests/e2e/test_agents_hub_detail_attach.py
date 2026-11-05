@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
+from types import SimpleNamespace
 from rich.console import Console
 
 from agenthicc.background import BackgroundSession, BackgroundStore, SessionStatus
@@ -177,10 +178,10 @@ async def test_details_input_composer_targets_live_owner_without_attach(tmp_path
     assert manager._composer_open
     assert manager._composer_target is not None
     assert manager._composer_target.session_id == session.session_id
-    assert manager._composer_input is not None
+    assert manager._composer is not None
     from agenthicc.tui.runtime.commands import SendMessageCommand
 
-    editor = manager._composer_input
+    editor = manager._composer.editor
     editor.set_text("/workflow goal_flow")
     first = await editor._bus.dispatch_async(SendMessageCommand(text="/workflow goal_flow"))
     assert first.ok
@@ -196,14 +197,14 @@ async def test_details_input_composer_targets_live_owner_without_attach(tmp_path
     manager.handle_key(Key.CHAR, "i")
     assert manager._composer_open
     manager.handle_key(Key.CHAR, "s")
-    assert manager._composer_task is not None
-    await manager._composer_task
+    assert manager._composer is not None
+    await manager._composer.settle()
     assert manager._composer_open
     assert editor._buf.text == "s"
     editor.set_text("second input")
     manager.handle_key(Key.ENTER, "")
-    assert manager._composer_task is not None
-    await manager._composer_task
+    assert manager._composer is not None
+    await manager._composer.settle()
 
     receipts = BackgroundInputInbox(store).receipts(session.session_id)
     current = store.get(session.session_id)
@@ -307,7 +308,9 @@ async def test_completed_details_input_opens_and_starts_new_background_attempt(
     manager = await _hub(store, tmp_path, supervisor=supervisor, detail=session)
 
     def prepare_editor(_target: BackgroundSession) -> None:
-        manager._composer_input = object()  # type: ignore[assignment]
+        manager._composer = SimpleNamespace(  # type: ignore[assignment]
+            picker_open=False, dispatch_task=None
+        )
 
     monkeypatch.setattr(manager, "_build_target_input_editor", prepare_editor)
     launches: list[tuple[object, BackgroundSession]] = []
@@ -391,7 +394,9 @@ async def test_details_input_recovers_stale_session_without_foreground_attach(
     manager = await _hub(store, tmp_path, supervisor=supervisor)
 
     def prepare_editor(_target: BackgroundSession) -> None:
-        manager._composer_input = object()  # type: ignore[assignment]
+        manager._composer = SimpleNamespace(  # type: ignore[assignment]
+            picker_open=False, dispatch_task=None
+        )
 
     monkeypatch.setattr(manager, "_build_target_input_editor", prepare_editor)
     launched: list[BackgroundSession] = []
@@ -557,14 +562,20 @@ async def test_target_input_context_build_does_not_block_manager_keys(
     started = threading.Event()
     release = threading.Event()
 
-    class FakeEditor:
+    class FakeComposer:
+        picker_open = False
+        dispatch_task = None
+
         def __init__(self) -> None:
             self.keys: list[tuple[object, str]] = []
 
-        async def _dispatch(self, key: object, char: str) -> None:
+        def feed(self, key: object, char: str) -> None:
             self.keys.append((key, char))
 
-    editor = FakeEditor()
+        async def settle(self) -> None:
+            return None
+
+    editor = FakeComposer()
 
     def slow_builder(target: BackgroundSession) -> None:
         assert target.session_id == session.session_id
@@ -572,7 +583,7 @@ async def test_target_input_context_build_does_not_block_manager_keys(
         if not release.wait(timeout=2):
             raise TimeoutError("test did not release composer preparation")
         manager._composer_target = target
-        manager._composer_input = editor  # type: ignore[assignment]
+        manager._composer = editor  # type: ignore[assignment]
 
     monkeypatch.setattr(manager, "_build_target_input_editor", slow_builder)
     try:
@@ -625,10 +636,10 @@ async def test_stop_as_the_whole_reply_from_the_peek_panel_stops_the_agent(
     hub.handle_key(Key.CHAR, " ")  # peek
     hub.handle_key(Key.CHAR, "i")  # reply from the peek panel
     await hub.settle()
-    assert hub._composer_open and hub._composer_input is not None
+    assert hub._composer_open and hub._composer is not None
     from agenthicc.tui.runtime.commands import SendMessageCommand
 
-    result = await hub._composer_input._bus.dispatch_async(SendMessageCommand(text="/stop"))
+    result = await hub._composer.editor._bus.dispatch_async(SendMessageCommand(text="/stop"))
     assert result.ok
     await hub.settle()
     assert stopped == ["peek-stop"]

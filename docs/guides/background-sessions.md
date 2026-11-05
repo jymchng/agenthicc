@@ -166,10 +166,27 @@ does not implicitly resume a workflow.
 /inbox project=/path/to/project status=pending
 ```
 
-The TUI lists the oldest pending requests first. Select a question/input item
-and press Enter to type an answer; one-question answers are sent as exact text,
-including whitespace and pasted newlines. For multiple questions, submit a JSON
-object keyed by the displayed question IDs. For approvals, `a` approves with
+The TUI lists the oldest pending requests first.
+
+**Answering questions.** Select a question or input item and press `i` to
+open the answer form. It works like the foreground Questions overlay:
+
+- it shows one question at a time, with its options and "Other — type your
+  answer";
+- ↑/↓ choose an option and ←/→ move between questions;
+- Enter confirms an answer; on the last unanswered question it sends them
+  all, and Ctrl+S sends once every question is answered;
+- Esc closes the form and keeps its progress for the next `i`.
+
+**Typed answers.** "Other", and an input request, open the full composer,
+scoped to the agent's directory. Paste, `Ctrl+J` newlines, `@` mentions and
+the `/` picker work as in the main input panel. Mentions resolve inside that
+directory and are delivered with the answer. Typed answers are sent as exact
+text, including whitespace and pasted newlines. Nothing has to be written as
+JSON.
+
+**Approvals.** `a` approves with the least broad available scope, `n` rejects,
+and `x` expires the request. `a` approves with
 the least broad available scope, `n` rejects, and `x` expires the request. Plan
 reviews can be approved with the displayed mode choices. A version conflict or
 stale/deleted session is shown without delivering the response elsewhere.
@@ -186,7 +203,8 @@ agenthicc agents inbox reject ITEM_ID VERSION request-uuid --message 'Not approv
 agenthicc agents inbox expire ITEM_ID VERSION request-uuid
 ```
 
-The JSON answer form is required only for multiple question IDs. Approval
+In the CLI, a multi-question item is answered with a JSON object keyed by its
+question IDs, and the error names the expected keys. Approval
 commands accept optional `--message`, `--mode`, `--remember`, `--remember-all`,
 and `--scope-grant`; workspace access defaults to `target_once`. Accepted
 answers are stored privately and omitted from item projections. Compare-and-set

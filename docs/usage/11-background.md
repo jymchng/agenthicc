@@ -79,8 +79,10 @@ Useful flags: `agents list --all --json --trash` and `agents status --json`.
 For one inbox covering approvals, questions, and explicit input prompts, use
 the hub's Needs you tab (`/inbox`) or `agenthicc agents inbox list`. Each write is tied to the
 listed item ID and version; use a fresh idempotency key for each intended
-response. Multi-question `ask_user` answers are JSON objects keyed by question
-ID. This inbox does not intercept or transform ordinary messages sent to an
+response. In the hub, `i` opens an answer form: choose each question's option,
+or type under "Other" with `@` mentions and paste. With
+`agenthicc agents inbox answer`, a multi-question answer is a JSON object
+keyed by question ID. This inbox does not intercept or transform ordinary messages sent to an
 agent from the hub's composer.
 
 ```bash

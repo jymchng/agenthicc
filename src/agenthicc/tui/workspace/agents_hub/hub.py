@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import asyncio
 import functools
-import json
 import re
 import threading
 import time
@@ -43,7 +42,7 @@ from agenthicc.agents.library import (
 from agenthicc.agents.selection import project_default, set_project_default
 from agenthicc.background.agents_service import AgentsService, ManagerOperationResult
 from agenthicc.background.deletion import DeleteFailure, DeleteResult
-from agenthicc.background.inbox import BackgroundInboxItem, response_from_text
+from agenthicc.background.inbox import BackgroundInboxItem
 from agenthicc.background.index import SessionFilter
 from agenthicc.background.maintenance import MaintenanceOutcome, MaintenanceTrigger
 from agenthicc.background.model import ACTIVE_STATUSES, BackgroundSession, SessionStatus
@@ -91,10 +90,10 @@ if TYPE_CHECKING:
     from agenthicc.background.watch import FileWatcher, WatchChanges
     from agenthicc.config import UISettings
     from agenthicc.tui.conversation_store import AppState
-    from agenthicc.tui.input.unified_session import UnifiedInputSession
+    from agenthicc.tui.input.embedded import EmbeddedComposer
+    from agenthicc.tui.workspace.agents_hub.answer import AnswerView
     from agenthicc.tui.terminal.backend import TerminalBackend
     from agenthicc.tui.workspace.live_region import LiveRegion
-    from agenthicc.tui.workspace.overlay import OverlayHost
 
 __all__ = [
     "AgentsHub",
@@ -169,9 +168,7 @@ def _read_library_definition(path: Path, scope: DefinitionScope, project_root: P
 class _Prompt:
     """A one-line editor at the bottom of the hub, and what Enter does with it."""
 
-    kind: Literal[
-        "search", "dispatch", "rename", "labels", "priority", "answer", "feedback", "library"
-    ]
+    kind: Literal["search", "dispatch", "rename", "labels", "priority", "feedback", "library"]
     label: str
     editor: LineEditor
     target: str = ""
@@ -400,11 +397,15 @@ class AgentsHub:
         # The target-scoped input composer (PRD-215–217).
         self._composer_target: BackgroundSession | None = None
         self._composer_open = False
-        self._composer_state: AppState | None = None
-        self._composer_input: UnifiedInputSession | None = None
-        self._composer_overlay: OverlayHost | None = None
+        # One embedded composer (AGI-05): private input state, its own
+        # pickers, and keys dispatched in order.
+        self._composer: EmbeddedComposer | None = None
+        # The answer form for a question or input item (AGI-01), and the
+        # progress of forms closed with Esc, by item ID.
+        self._answer: AnswerView | None = None
+        self._answer_progress: dict[str, AnswerView] = {}
+        self._answer_context_task: asyncio.Task[None] | None = None
         self._composer_history: dict[str, list[str]] = {}
-        self._composer_task: asyncio.Task[object] | None = None
         self._composer_build_task: asyncio.Task[None] | None = None
         self._composer_building = False
         self._composer_pending_keys: list[tuple[Key, str]] = []
@@ -1201,7 +1202,11 @@ class AgentsHub:
                     self._library_effective_task,
                     self._maintenance_task,
                     self._composer_build_task,
-                    self._composer_task,
+                    self._composer.dispatch_task if self._composer is not None else None,
+                    self._answer_context_task,
+                    self._answer.composer.dispatch_task
+                    if self._answer is not None and self._answer.composer is not None
+                    else None,
                     self._deletion_task,
                     *self._operation_tasks.values(),
                 )
@@ -1693,76 +1698,10 @@ class AgentsHub:
     # ── the input composer (PRD-215–217) ─────────────────────────────────────
 
     def _build_target_input_editor(self, target: BackgroundSession) -> None:
-        """Create the canonical editor with registries scoped to *target*."""
-        from agenthicc.commands.builtins import build_builtin_registry
-        from agenthicc.commands.plugin_loader import discover_command_plugins
-        from agenthicc.config import load_config
-        from agenthicc.runners.tui_session import _build_skill_command
-        from agenthicc.skills.loader import discover_skills
-        from agenthicc.tui.conversation_store import AppState
-        from agenthicc.tui.input.capabilities import IDLE_CAPABILITIES, ModeCycleCapability
-        from agenthicc.tui.input.unified_session import UnifiedInputSession
-        from agenthicc.tui.runtime.commands import CommandBus, SendMessageCommand
-        from agenthicc.tui.runtime.mode_manager import ModeManager
-        from agenthicc.tui.trigger import TriggerManager
-        from agenthicc.tui.triggers.at_mention import AtMentionTrigger
-        from agenthicc.tui.triggers.slash_command import SkillTrigger, SlashCommandTrigger
-        from agenthicc.tui.workspace.overlay import OverlayHost
-        from agenthicc.workflows.registry import build_workflow_registry
+        """Create the canonical editor with registries scoped to *target* (blocking)."""
+        from agenthicc.tui.input.embedded import EmbeddedComposer, load_composer_context
+        from agenthicc.tui.runtime.commands import SendMessageCommand
 
-        target_root = Path(target.cwd).expanduser().resolve()
-        project_agent_dir = target_root / ".agenthicc"
-        user_agent_dir = Path.home() / ".agenthicc"
-        config_path: str | None = None
-        set_overrides: list[str] = []
-        set_secret_overrides: list[str] = []
-        try:
-            request_path = Path(self.supervisor._request_path(target.session_id))
-            request_value = json.loads(request_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError, TypeError):
-            request_value = {}
-        if isinstance(request_value, dict):
-            raw_config_path = request_value.get("config_path")
-            config_path = raw_config_path if isinstance(raw_config_path, str) else None
-            for key, destination in (
-                ("set_overrides", set_overrides),
-                ("set_secret_overrides", set_secret_overrides),
-            ):
-                raw_values = request_value.get(key, ())
-                if isinstance(raw_values, (list, tuple)):
-                    destination.extend(item for item in raw_values if isinstance(item, str))
-        project_config = project_agent_dir / "agenthicc.toml"
-        cfg = load_config(
-            project_path=project_config if project_config.is_file() else None,
-            config_path=config_path,
-            cli_overrides=set_overrides,
-            cli_secret_overrides=set_secret_overrides,
-        )
-        commands = build_builtin_registry()
-        for command in discover_command_plugins(
-            project_dir=project_agent_dir, user_dir=user_agent_dir
-        ).all_commands:
-            commands.register(command)
-        skills = discover_skills(project_dir=project_agent_dir, user_dir=user_agent_dir)
-        for slug, skill in skills.items():
-            command = _build_skill_command(slug, skill)
-            if commands.get(command.name) is None:
-                commands.register(command)
-        workflows = build_workflow_registry(
-            project_dir=project_agent_dir, user_dir=user_agent_dir, load_external=True
-        )
-        triggers = TriggerManager()
-        triggers.register(AtMentionTrigger())
-        triggers.register(SlashCommandTrigger(commands, workflows))
-        triggers.register(SkillTrigger(commands))
-
-        state = AppState()
-        state.conversation.session_id.set(target.session_id)
-        state.keymap.set(self.keymap)
-        modes = ModeManager(app_state=state, default_name=target.mode_name or "Safe")
-        overlay = OverlayHost(state)
-        overlay.set_redraw_callback(lambda: self._mark_dirty("composer_overlay"))
-        bus = CommandBus()
         target_key = (target.session_id, target.attempt)
         history_key = f"{target.session_id}:{target.attempt}"
         history = self._composer_history.get(history_key)
@@ -1770,41 +1709,35 @@ class AgentsHub:
             data = self._details.get(target.session_id)
             history = list(data.history) if data is not None else []
             self._composer_history[history_key] = history
+        context = load_composer_context(
+            Path(target.cwd),
+            launch=self.supervisor.recorded_launch(target.session_id),
+            keymap=self.keymap,
+            history=history,
+            session_id=target.session_id,
+            mode_name=target.mode_name or "Safe",
+        )
 
-        async def submit(command: SendMessageCommand) -> ManagerOperationResult:
-            result = await self._submit_target_input(target, target_key, command)
-            # A trigger-picker submission arrives here from its own task rather
-            # than through Enter in _dispatch_composer_key; close on acceptance
-            # so a hidden composer cannot swallow the next key.
+        async def submit(text: str) -> bool:
+            result = await self._submit_target_input(
+                target, target_key, SendMessageCommand(text=text)
+            )
+            # A trigger-picker submission arrives from its own task rather
+            # than through Enter; close on acceptance so a hidden composer
+            # cannot swallow the next key.
             if result.ok:
                 self._close_input_composer()
-            return result
+            return result.ok
 
-        bus.register(SendMessageCommand, submit)
-        editor = UnifiedInputSession(
-            app_state=state,
-            command_bus=bus,
-            trigger_registry=triggers,
-            mode_manager=modes,
-            overlay_host=overlay,
-            cwd=target_root,
-            cfg=cfg,
-            history=history,
-            busy=True,
-            clear_after_acceptance=True,
-            preserve_submission_text=True,
+        # The target's owner applies mode changes; the embedded composer
+        # leaves Shift+Tab out, so a local copy of its mode cannot change.
+        self._composer = EmbeddedComposer(
+            context,
+            on_submit=submit,
+            redraw=lambda: self._mark_dirty("composer_overlay"),
+            on_exit=self._close_input_composer,
         )
-        # The target's owner applies mode changes; a local copy of its mode must
-        # not change here, so Shift+Tab is left out of this editor.
-        editor._capabilities = [
-            capability
-            for capability in IDLE_CAPABILITIES
-            if not isinstance(capability, ModeCycleCapability)
-        ]
         self._composer_target = target
-        self._composer_state = state
-        self._composer_input = editor
-        self._composer_overlay = overlay
         self._composer_receipt = ""
 
     async def _submit_target_input(
@@ -1915,12 +1848,11 @@ class AgentsHub:
             and self._composer_target.session_id == target.session_id
             and self._composer_target.attempt == target.attempt
             and self._composer_target.lease_token == target.lease_token
-            and self._composer_input is not None
+            and self._composer is not None
         )
         if not same_target:
             self._composer_target = target
-            self._composer_input = None
-            self._composer_state = None
+            self._composer = None
             self._composer_building = True
             self._composer_receipt = "Preparing target-scoped commands and mentions…"
             task = self._owned(
@@ -1948,26 +1880,23 @@ class AgentsHub:
             return
         finally:
             self._composer_building = False
-        editor = self._composer_input
-        if editor is not None:
-            from agenthicc.tui.input.capabilities import _EXIT
-
+        composer = self._composer
+        if composer is not None:
             pending, self._composer_pending_keys = self._composer_pending_keys, []
             for key, char in pending:
-                result = await editor._dispatch(key, char)
-                if result is _EXIT or self._composer_submitted:
-                    self._close_input_composer()
-                    break
+                composer.feed(key, char)
+            await composer.settle()
         self._mark_dirty("composer_context_ready")
 
     def _close_input_composer(self) -> None:
         self._composer_open = False
-        if self._composer_overlay is not None and self._composer_overlay.active:
-            self._composer_overlay.hide()
+        if self._composer is not None and self._composer.picker_open:
+            self._composer.overlay.hide()
         self._mark_dirty("composer_closed")
 
     def _dispatch_composer_key(self, key: Key, ch: str) -> None:
-        if self._composer_input is None:
+        composer = self._composer
+        if composer is None:
             if self._composer_building:
                 if len(self._composer_pending_keys) < 1_024:
                     self._composer_pending_keys.append((key, ch))
@@ -1975,30 +1904,11 @@ class AgentsHub:
                     self._composer_receipt = "Input context is still loading; key queue is full"
                     self._mark_dirty("composer_key_queue_full")
             return
-
-        async def dispatch() -> object:
-            from agenthicc.tui.input.capabilities import _EXIT
-
-            editor = self._composer_input
-            if editor is None:
-                return None
-            result = await editor._dispatch(key, ch)
-            if result is _EXIT or self._composer_submitted:
-                self._close_input_composer()
-            self._mark_dirty("composer_key")
-            return result
-
-        existing = self._composer_task
-        if existing is not None and not existing.done():
-            return
-        task = self._owned(asyncio.create_task(dispatch(), name="agenthicc-hub-input-key"))
-        self._composer_task = task
-        task.add_done_callback(_consume_task_result)
+        composer.feed(key, ch)
+        self._mark_dirty("composer_key")
 
     def _composer_lines(self, width: int) -> list[RenderableType]:
         from rich.text import Text
-
-        from agenthicc.tui.workspace.components import ComposerComponent
 
         target = self._composer_target
         lines: list[RenderableType] = [
@@ -2009,13 +1919,8 @@ class AgentsHub:
                 overflow="ellipsis",
             )
         ]
-        overlay = self._composer_overlay
-        if overlay is not None and overlay.active:
-            rendered = overlay.render()
-            if rendered is not None:
-                lines.append(rendered)
-        if self._composer_state is not None:
-            lines.append(ComposerComponent(self._composer_state).render())
+        if self._composer is not None:
+            lines.extend(self._composer.render())
         elif self._composer_building:
             lines.append(Text(" Loading target-scoped input context…", style="yellow"))
         if self._composer_submitting:
@@ -2138,6 +2043,9 @@ class AgentsHub:
             return self._handle_mouse(ch)
         if key in (Key.FOCUS_IN, Key.FOCUS_OUT, Key.UNKNOWN):
             return None
+        if self._answer is not None:
+            self._handle_answer_key(key, ch)
+            return None
         if self._choice is not None:
             return self._handle_choice(key, ch)
         if self._prompt is not None:
@@ -2147,7 +2055,7 @@ class AgentsHub:
             self._handle_library_view_key(key, ch)
             return None
         if self._composer_open:
-            overlay_active = self._composer_overlay is not None and self._composer_overlay.active
+            overlay_active = self._composer is not None and self._composer.picker_open
             if key is Key.ESC and not overlay_active:
                 self._close_input_composer()
             elif not self._composer_submitting:
@@ -2973,10 +2881,8 @@ class AgentsHub:
     def _act_input(self) -> None:
         _row, session, item = self._target()
         if item is not None and item.kind != "approval":
-            # Answers are delivered verbatim: line breaks and spacing kept.
-            self._prompt = _Prompt(
-                "answer", "Answer", LineEditor(multiline=True), target=item.item_id, item=item
-            )
+            # A question or input request opens the answer form (AGI-01).
+            self._open_answer(item, session)
         elif item is not None:
             self._prompt = _Prompt(
                 "feedback",
@@ -2991,6 +2897,146 @@ class AgentsHub:
                 self._schedule_detail_read()
             self._open_input_composer(session)
         self._mark_dirty("prompt_opened")
+
+    # ── the answer form (AGI-01) ─────────────────────────────────────────────
+
+    def _open_answer(self, item: BackgroundInboxItem, session: BackgroundSession | None) -> None:
+        from agenthicc.tui.workspace.agents_hub.answer import AnswerView, form_for_item
+
+        view = self._answer_progress.pop(item.item_id, None)
+        if view is None:
+            view = AnswerView(item, form_for_item(item))
+        view.item = item  # the version the operator now sees
+        view.title = session.title if session is not None else view.title
+        self._answer = view
+        if view.composer_context is None and session is not None:
+            task = self._owned(
+                asyncio.create_task(
+                    self._load_answer_context(view, session),
+                    name=f"agenthicc-hub-answer-context-{item.item_id}",
+                )
+            )
+            self._answer_context_task = task
+            task.add_done_callback(_consume_task_result)
+        elif view.free_text_only:
+            view.start_typing(
+                functools.partial(self._confirm_answer, view, session),
+                lambda: self._mark_dirty("answer_composer"),
+            )
+        self._mark_dirty("answer_opened")
+
+    async def _load_answer_context(self, view: AnswerView, session: BackgroundSession) -> None:
+        """Prepare the session-scoped pickers off the event loop, then type if needed."""
+        from agenthicc.tui.input.embedded import ComposerContext, load_composer_context
+
+        try:
+            context = await self._service.run_blocking(
+                lambda: load_composer_context(
+                    Path(session.cwd),
+                    launch=self.supervisor.recorded_launch(session.session_id),
+                    keymap=self.keymap,
+                    history=self._composer_history.setdefault(f"answer:{session.session_id}", []),
+                    session_id=session.session_id,
+                    mode_name=session.mode_name or "Safe",
+                )
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            self._notice = f"Answer context unavailable: {type(exc).__name__}: {exc}"[:240]
+            self._mark_dirty("answer_context_failed")
+            return
+        if not isinstance(context, ComposerContext):
+            raise TypeError("answer context loader returned an unexpected value")
+        view.composer_context = context
+        if self._answer is view and (view.free_text_only or view.typing):
+            view.start_typing(
+                functools.partial(self._confirm_answer, view, session),
+                lambda: self._mark_dirty("answer_composer"),
+            )
+        self._mark_dirty("answer_context_ready")
+
+    def _handle_answer_key(self, key: Key, ch: str) -> None:
+        view = self._answer
+        if view is None or view.sending:
+            return
+        session = self._sessions.get(view.item.session_id)
+        if view.typing or view.free_text_only:
+            composer = view.composer
+            if key is Key.ESC and (composer is None or not composer.picker_open):
+                if view.free_text_only:
+                    view.leave_typing()
+                    self._close_answer()
+                else:
+                    view.leave_typing()
+            elif composer is not None:
+                composer.feed(key, ch)
+            elif len(view.pending_keys) < 1_024:
+                view.pending_keys.append((key, ch))  # replayed once the context loads
+            self._mark_dirty("answer_key")
+            return
+        action = view.handle_choice_key(key, ch)
+        if action == "type":
+            view.typing = True
+            view.start_typing(
+                functools.partial(self._confirm_answer, view, session),
+                lambda: self._mark_dirty("answer_composer"),
+            )
+        elif action == "send":
+            self._send_answer(view)
+        elif action == "close":
+            self._close_answer()
+        self._mark_dirty("answer_key")
+
+    async def _confirm_answer(
+        self, view: AnswerView, session: BackgroundSession | None, text: str
+    ) -> bool:
+        """Confirm one typed answer, with its @ mentions resolved in the agent's directory."""
+        if not text.strip():
+            return False
+        delivered = text
+        if session is not None:
+            delivered = await _expand_mentions(text, Path(session.cwd))
+        view.confirm_typed(text, delivered)
+        if view.form.complete:
+            self._send_answer(view)
+        self._mark_dirty("answer_confirmed")
+        return True
+
+    def _send_answer(self, view: AnswerView) -> None:
+        view.sending = True
+        self._start_operation(
+            view.item.session_id, "answer", functools.partial(self._deliver_answer, view)
+        )
+
+    async def _deliver_answer(self, view: AnswerView) -> ManagerOperationResult:
+        """Resolve the exact item at the version the operator saw (PRD-227)."""
+        try:
+            result = await self._service.inbox_respond_async(
+                view.item.item_id,
+                view.response(),
+                expected_version=view.item.version,
+                idempotency_key=uuid.uuid4().hex,
+            )
+        finally:
+            view.sending = False
+        if result.ok:
+            view.close_composer()
+            self._answer_progress.pop(view.item.item_id, None)
+            if self._answer is view:
+                self._answer = None
+        self._mark_dirty("answer_delivered")
+        return result
+
+    def _close_answer(self) -> None:
+        """Close the form; its answers and drafts wait for the next ``i``."""
+        view = self._answer
+        if view is None:
+            return
+        view.leave_typing()
+        self._answer_progress[view.item.item_id] = view
+        self._answer = None
+        self._mark_dirty("answer_closed")
 
     def _act_lifecycle(self, action: Literal["resume", "retry"]) -> None:
         _row, session, _item = self._target()
@@ -3315,15 +3361,6 @@ class AgentsHub:
             self._start_operation(
                 target, "labels", functools.partial(self._service.labels_async, target, labels)
             )
-        elif prompt.kind == "answer" and prompt.item is not None:
-            try:
-                response = response_from_text(prompt.item, text)
-            except ValueError as exc:
-                self._notice = str(exc)[:240]
-                prompt.label = "Answer"
-                self._prompt = prompt
-                return
-            self._respond(prompt.item, response, "answer")
         elif prompt.kind == "feedback" and prompt.item is not None:
             options = prompt.item.target.get("mode_options")
             approval: dict[str, object] = {"allowed": True, "message": text}
@@ -3810,7 +3847,10 @@ class AgentsHub:
         lines: list[Text] = []
         choice = self._choice
         prompt = self._prompt
-        if choice is not None:
+        if self._answer is not None:
+            for renderable in self._answer.render(width, plain=plain):
+                lines.extend(_text_lines(self.console, renderable, width))
+        elif choice is not None:
             line = Text(no_wrap=True, overflow="crop")
             if choice.label:
                 line.append(f" {choice.label} ", style="bold")
@@ -3830,7 +3870,6 @@ class AgentsHub:
             else:
                 hint = {
                     "dispatch": "Enter start · Ctrl+J newline · @dir /workflow /mode /model · Esc cancel",
-                    "answer": "Enter send · Ctrl+J newline · Esc cancel",
                     "feedback": "Enter approve · Ctrl+J newline · Esc cancel",
                 }.get(prompt.kind, "Enter save · Esc cancel")
                 label = f" {prompt.label} "
@@ -4357,6 +4396,27 @@ def _trust_extensions(project: Path) -> None:
     for path, kind in project_extension_files(project):
         if path.is_file() and trust.check(path, kind=kind) is not None:
             trust.trust(path, kind=kind)
+
+
+async def _expand_mentions(text: str, cwd: Path) -> str:
+    """*text* with its @ mentions resolved inside *cwd*, as a message's would be.
+
+    The policy is Safe mode scoped to the agent's directory: a mention outside
+    it is refused, as it would be in that session.
+    """
+    from agenthicc.mentions.injector import InjectionConfig, build_context_prefix
+    from agenthicc.tools.workspace_access import WorkspaceAccessPolicy, WorkspaceScope
+    from agenthicc.tui.runtime.mode_manager import build_default_registry
+
+    if "@" not in text:
+        return text
+    root = await asyncio.to_thread(lambda: cwd.expanduser().resolve())
+    safe = build_default_registry().get("Safe")
+    policy = WorkspaceAccessPolicy(WorkspaceScope.create(root), mode_provider=lambda: safe)
+    prefix, _injected = await build_context_prefix(
+        text, cwd=root, cfg=InjectionConfig(cwd=root, workspace_access=policy)
+    )
+    return prefix + text if prefix else text
 
 
 def _text_lines(console: Console, renderable: RenderableType, width: int) -> list[Text]:

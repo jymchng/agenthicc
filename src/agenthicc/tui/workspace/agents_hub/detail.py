@@ -317,14 +317,21 @@ def approval_lines(
         if isinstance(reason, str) and reason.strip():
             rows.append(("why", f"“{_compact(redactor.value(reason, 'text'))}”"))
         return rows
-    questions = target.get("questions")
-    for question in questions[:4] if isinstance(questions, list) else []:
-        if not isinstance(question, dict):
-            continue
-        rows.append(("asks", _compact(redactor.value(question.get("text", ""), "text"))))
+    raw_questions = target.get("questions")
+    questions = (
+        [item for item in raw_questions if isinstance(item, dict)]
+        if isinstance(raw_questions, list)
+        else []
+    )
+    numbered = len(questions) > 1
+    for number, question in enumerate(questions[:8], 1):
+        label = f"asks {number}" if numbered else "asks"
+        rows.append((label, _compact(redactor.value(question.get("text", ""), "text"))))
         options = question.get("options")
-        if isinstance(options, list) and options:
-            rows.append(("options", _compact(", ".join(str(option) for option in options[:8]))))
+        for option in options[:8] if isinstance(options, list) else []:
+            rows.append(("", "• " + _compact(redactor.value(str(option), "text"))))
+    if len(questions) > 8:
+        rows.append(("", f"…and {len(questions) - 8} more questions (i to answer)"))
     if not rows:
         rows.append(("asks", tool))
     return rows
