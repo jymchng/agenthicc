@@ -21,7 +21,7 @@ from agenthicc.tui.keymap import Action
 from agenthicc.tui.keymap_service import KeymapService
 from agenthicc.tui.runtime.commands import CommandBus
 from agenthicc.tui.workspace import Workspace
-from agenthicc.tui.workspace.components import FooterComponent
+from agenthicc.tui.workspace.components import ComposerComponent, ComposerFrame
 from tests.tui_frames import settle_frames
 
 pytestmark = pytest.mark.unit
@@ -83,14 +83,15 @@ def test_every_composer_action_is_dispatchable_hinted_and_in_help(action: Action
     # In help.
     assert action.name in {entry.action for entry in keymap.help("composer")}
 
-    # In the footer whenever it applies and fits.
+    # In the hint row whenever it applies, if it is contextual (TUX-02): the
+    # always-available keys are in help, not repeated under every prompt.
     if action.hint_priority:
         if "running" in action.when:
             state.conversation.agent_state.set(AgentState.THINKING)
         if action.when & {"paste", "paste_at_cursor"}:
             state.input.paste_condensed.set(True)
-        footer = " ".join(FooterComponent(state).markup_lines(400))
-        assert action.label in footer
+        hint_row = ComposerFrame(state, ComposerComponent(state)).hint_row(400) or ""
+        assert (action.label in hint_row) is bool(action.when)
 
 
 async def test_typing_a_bound_key_runs_its_action() -> None:
@@ -109,8 +110,8 @@ async def test_rebinding_applies_without_restart(tmp_path: Path) -> None:
     path = tmp_path / "keybindings.toml"
     state = AppState.create()
     service = KeymapService(state, path)
-    footer = FooterComponent(state)
-    assert "Ctrl+J" in " ".join(footer.markup_lines(200))
+    hint = state.keymap().hint("composer.newline")
+    assert hint is not None and hint.keys == "Ctrl+J"
 
     watch = asyncio.create_task(service.watch())
     try:
@@ -126,8 +127,8 @@ async def test_rebinding_applies_without_restart(tmp_path: Path) -> None:
 
     assert "Key bindings reloaded" in str(state.conversation.notification())
     state.conversation.notification.set(None)
-    hints = " ".join(footer.markup_lines(200))
-    assert "Alt+Enter" in hints and "Ctrl+J" not in hints
+    hint = state.keymap().hint("composer.newline")
+    assert hint is not None and hint.keys == "Alt+Enter"
     session = UnifiedInputSession(state, CommandBus())
     await session._dispatch(Key.CHAR, "x")
     await session._dispatch(Key.CTRL_ENTER, "")
@@ -250,9 +251,9 @@ async def test_screen_reader_mode_draws_no_spinner_and_says_each_change_once() -
 def test_reduced_motion_keeps_the_layout_without_animation() -> None:
     state, workspace, _output = _workspace(UISettings(reduced_motion=True))
     state.conversation.begin_turn("agent", "turn-1")
-    first = workspace.status.markup_lines(100)
+    first = workspace.status.markup(100)
     state.conversation.frame.set(state.conversation.frame() + 3)
-    assert workspace.status.markup_lines(100) == first
-    assert first[0].startswith("●")
+    assert workspace.status.markup(100) == first
+    assert first.lstrip().startswith("[") and "●" in first.split("Thinking")[0]
     rows = ["".join(segment.text for segment in line) for line in workspace._build_lines()]
-    assert any(set(row) == {"─"} for row in rows)  # borders stay
+    assert rows[0].startswith("╭") and rows[2].startswith("╰")  # the frame stays

@@ -1,6 +1,6 @@
 ---
 title: "TUX-02: Screen layout and one status line"
-status: Proposed
+status: Implemented
 version: 1.0.0
 date: 2026-11-05
 scope: "the live region below the transcript: the composer frame, a single prioritised status line, one hint row, the session title, a context meter, a user statusline command, and the hub/composer hint conflict"
@@ -9,6 +9,53 @@ tags: [tui, layout, status-line, ergonomics]
 ---
 
 # TUX-02: Screen layout and one status line
+
+## Implementation status
+
+Implemented on branch `tux-tux02`.
+
+- **Code.**
+  - `StatusComponent` and `FooterComponent` are deleted. `StatusLine` and `ComposerFrame` replace them in `tui/workspace/components.py`.
+  - New: `tui/statusline.py` (user command, git branch, `/status` report) and `tests/unit/test_status_line.py` (§4 criteria 1–8).
+- **Live region.** Idle it is exactly four rows: three for the framed composer and one status line. There is no blank separator and no bottom margin row (the scroll buffer already ends each block with a blank row). A running turn adds one hint row.
+
+### Amendments to the design above
+
+1. **Right-hand hint.**
+   - It shows `? shortcuts` only once the keymap has a `composer.shortcuts` action. That binding is TUX-10's (`?` on an empty prompt).
+   - Until then it shows `/help`, so the status line never advertises a key that does nothing.
+2. **Attention wording.** The segment reads `◆ N sessions need you ←` (short forms `◆ N sess. ←`, `◆ N ←`), not "agents": TUIR-05 requires the badge to name the unit it counts.
+3. **Session title.**
+   - AGX-05 generates titles only for background sessions (`title or intent[:80]`). A foreground session has no generated title.
+   - The frame title is therefore the session's first prompt, cut by the same rule (`session_title_from`, first line, 80 characters), or "new session". Slash commands are ignored.
+   - A resumed transcript restores the title.
+4. **Segment 5 contents.**
+   - It holds the subagent workers, the workflow phase, the `/workflow` selection (`workflow <name>`), running background sessions (`● N sessions running`), DND, startup work still loading, and the background-terminal count during a terminal wait.
+   - The primary agent (AGX-09) moved into the frame badge: `reviewer · Safe`.
+5. **Hint row.**
+   - It shows only *contextual* keymap actions (those with a `when` condition: running, paste, subagents), plus `Esc interrupt · /ps view · /stop stop all` during a background-terminal wait.
+   - The always-available keys are in `/help`.
+   - Notices (notification, `/loop` status, attention toast) take the hint row's slot, wrapped whole so run IDs stay usable. TUX-08 can later move short notices to the right of the status line.
+6. **`← agents` hint deleted.** The `agents_hint` signal and the router's 10-second hint deadline are deleted, with their test.
+7. **Waiting state.** It reads `◆ Waiting for you` with no elapsed time, so a prompt that owns the terminal stays frozen. While work runs, elapsed time is shown from `0s`, so the row does not shift on the first tick.
+8. **Overlays.**
+   - `Overlay.owns_bottom_rows` (true for `AgentsHubOverlay`) hides the frame and the composer's hint row. The status line and any notice stay above the hub's rows.
+   - Every other overlay is drawn between the frame's two rules, as before.
+9. **AGX-11 bytes.**
+   - `LiveRegion` now patches a changed row in place. Segments shared at the start and end of the row are not rewritten, so a spinner frame writes one cell, under 80 bytes.
+   - A pyte fuzz test proves the screen matches a full redraw.
+   - Frame caches are keyed by markup, width and theme. Segments 2–7 are cached on the signal values they read.
+10. **Context meter.**
+    - Divides `UsageLedger.context_tokens()` by `ExecutionSettings.effective_context_window()`. The tokens are the latest main-agent call's input plus cache reads and writes; subagent, compaction and run-residual records are skipped. The window is set once at session start.
+    - A workflow phase that uses another model still uses the session's window.
+11. **`/status`.** It extends the existing read-only `/status` command rather than adding a second one. `CommandContext.app_state` carries the TUI state to it.
+12. **User status-line sandbox.**
+    - The command runs with the agent's `[tools.exec]` child environment (secrets scrubbed, non-interactive) and its resource limits, in its own process group, which is killed at 500 ms.
+    - There is no separate network sandbox: Bubblewrap applies only to worktree environments.
+    - Trust: `load_config` drops a project file's `[ui.statusline] command` unless `agenthicc trust add <file>` trusted that file's current content.
+13. **New glyph.** `Glyphs.approx` (`≈`, ASCII `~`) marks partial usage, so the ASCII glyph set stays ASCII.
+14. **Screenshots.** The screenshots in §6 were not produced. The width snapshots are text tests (`test_width_snapshot[40|50|80|120]`).
+
 
 ## 1. Problem
 

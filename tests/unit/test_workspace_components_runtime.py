@@ -1,4 +1,4 @@
-"""Coverage for status, composer, and footer rendering variants."""
+"""Coverage for status line, composer, frame and notice rendering variants."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from rich.console import Console
 from agenthicc.runners.startup import StartupCoordinator
 from agenthicc.tui.actions import DEFAULT_ACTIONS
 from agenthicc.tui.keymap import Keymap
+from agenthicc.tui.conversation_store import AppState
 from agenthicc.tui.workspace import components
 
 pytestmark = pytest.mark.unit
@@ -66,171 +67,111 @@ def _state() -> MagicMock:
     return state
 
 
-def test_status_running_compacting_and_helper_variants() -> None:
-    state = _state()
-    status = components.StatusComponent(state)
-    rendered = status.render()
-    assert "Compacting" in rendered.renderables[1].plain
-    assert status.height(80) == 6
+def _real(width_model: str = "anthropic/claude-opus-4-8") -> AppState:
+    state = AppState.create()
+    state.conversation.model_name.set(width_model)
+    return state
+
+
+def _plain(markup: str) -> str:
+    from rich.text import Text
+
+    return Text.from_markup(markup).plain
+
+
+def test_compaction_shows_in_the_state_segment() -> None:
+    state = _real()
+    state.conversation.begin_turn("agent", "turn-1")
+    state.conversation.compaction_active.set(True)
+    assert "Compacting" in _plain(components.StatusLine(state).markup(80))
     assert components._fmt_elapsed(61.2) == "1m 1s"
-    assert "bold" in components._thinking_markup(10)
-    assert components._hint_row((("X", "one word"),), 10)
 
 
-def test_status_keeps_full_identity_values_and_wraps_them_by_terminal_cells() -> None:
-    from rich.text import Text
-
-    from agenthicc.tui.rendering import visible_len
-
-    state = _state()
-    session_id = "session-" + "x" * 48
-    current_directory = "/workspace/" + "nested/" * 8 + "project"
-    state.conversation.session_id.return_value = session_id
-    state.conversation.current_directory.return_value = current_directory
-    component = components.StatusComponent(state)
-
-    wide = [Text.from_markup(row).plain for row in component.markup_lines(120)]
-    assert session_id in wide
-    assert current_directory in wide
-
-    narrow_rows = component.markup_lines(24)
-    narrow = [Text.from_markup(row).plain for row in narrow_rows]
-    assert all(visible_len(row) <= 24 for row in narrow_rows)
-    assert session_id in "".join(narrow)
-    assert current_directory in "".join(narrow)
-
-
-def test_needs_you_footer_row_precedes_submit_hints() -> None:
-    from rich.text import Text
-
-    from agenthicc.tui.workspace.components import FooterComponent
-
-    state = _state()
+def test_attention_and_running_sessions_are_status_segments() -> None:
+    state = _real()
     conv = state.conversation
-    conv.is_running.return_value = False
-    conv.background_needs_you.return_value = 4
-    conv.background_running.return_value = 3
-    conv.background_dnd.return_value = False
-    conv.subagent_pool_state.return_value = None
-    conv.notification.return_value = None
-    conv.loop_status.return_value = None
-    conv.background_toast.return_value = None
-    state.agent.return_value = "reviewer"
+    conv.background_needs_you.set(4)
+    conv.background_running.set(3)
+    state.agent.set("reviewer")
 
-    rows = FooterComponent(state).markup_lines(120)
-    plain = [Text.from_markup(row).plain for row in rows]
-
-    assert "reviewer |" in plain[0]
-    assert "◆ 4 sessions need you (Ctrl+G)  |  ● 3 sessions running" in plain[1]
-    assert "Enter submit" in plain[2]
+    line = _plain(components.StatusLine(state).markup(160))
+    assert "◆ 4 sessions need you ←" in line
+    assert "● 3 sessions running" in line
+    frame = components.ComposerFrame(state, components.ComposerComponent(state))
+    assert "reviewer · Safe" in _plain(frame.top(120))
 
 
 def test_status_reports_deferred_startup_without_claiming_readiness() -> None:
     coordinator = StartupCoordinator()
     coordinator.begin("extensions", deferred=True)
 
-    rendered = components.StatusComponent(_state(), coordinator).render()
+    line = _plain(components.StatusLine(_real(), coordinator).markup(120))
 
-    assert "Startup" in rendered.renderables[-1].plain
-    assert "loading" in rendered.renderables[-1].plain
+    assert "extensions loading" in line
 
 
 def test_status_preserves_priority_and_fits_display_cells() -> None:
-    from rich.text import Text
-
     from agenthicc.subagents.pool import SubagentPoolState, WorkerState
     from agenthicc.tui.rendering import visible_len
 
-    state = _state()
+    state = _real("openai/deepseek-v4.1-flash")
     conv = state.conversation
-    conv.agent_state.return_value = SimpleNamespace(name="THINKING")
-    conv.is_running.return_value = True
-    conv.compaction_active.return_value = False
-    conv.model_name.return_value = "openai/deepseek-v4.1-flash"
-    conv.activity_elapsed_s = 91.0
-    conv.active_tool.return_value = "run_tests tests/unit/test_status_layout.py"
-    conv.tokens_in.return_value = 230_044_280
-    conv.tokens_out.return_value = 1_506_692
-    conv.usage_status.return_value = "partial"
-    conv.cost_status.return_value = "unavailable"
-    conv.subagent_pool_state.return_value = SubagentPoolState(
-        "pool",
-        4,
-        (
-            WorkerState("done", "tester", "done"),
-            WorkerState("failed", "tester", "failed"),
-            WorkerState("running", "tester", "running"),
-            WorkerState("queued", "tester", "pending"),
-        ),
+    conv.begin_turn("agent", "turn-1")
+    conv.set_tool("run_tests tests/unit/test_status_layout.py")
+    conv.tokens_in.set(230_044_280)
+    conv.tokens_out.set(1_506_692)
+    conv.usage_status.set("partial")
+    conv.subagent_pool_state.set(
+        SubagentPoolState(
+            "pool",
+            4,
+            (
+                WorkerState("done", "tester", "done"),
+                WorkerState("failed", "tester", "failed"),
+                WorkerState("running", "tester", "running"),
+                WorkerState("queued", "tester", "pending"),
+            ),
+        )
     )
-    state.workflow_run.return_value = None
 
-    component = components.StatusComponent(state)
+    line = components.StatusLine(state)
     for width in (40, 48, 64, 80, 120, 200):
-        rows = component.markup_lines(width)
-        assert all(visible_len(row) <= width for row in rows)
-        assert "Thinking" in Text.from_markup(rows[0]).plain
-        assert any("usage partial" in Text.from_markup(row).plain for row in rows)
-        assert any("cost unknown" in Text.from_markup(row).plain for row in rows)
+        row = line.markup(width)
+        assert visible_len(row) <= width
+        assert "Running" in _plain(row)
 
-    wide_rows = [Text.from_markup(row).plain for row in component.markup_lines(120)]
-    assert "1/4 workers" in wide_rows[0]  # failures do not count as successful completions
-    assert "run_tests" in wide_rows[0]
-    assert "230M" in wide_rows[0] and "1.5M" in wide_rows[0]
-    assert " | " in wide_rows[0]
-    assert "openai | deepseek-v4.1-flash" in wide_rows[1]
-
-
-def test_unavailable_usage_stays_on_secondary_metadata_row() -> None:
-    from rich.text import Text
-
-    state = _state()
-    conv = state.conversation
-    conv.agent_state.return_value = SimpleNamespace(name="THINKING")
-    conv.is_running.return_value = True
-    conv.compaction_active.return_value = False
-    conv.tokens_in.return_value = 0
-    conv.tokens_out.return_value = 0
-    conv.usage_status.return_value = "unavailable"
-    conv.cost_status.return_value = "unavailable"
-    conv.subagent_pool_state.return_value = None
-    state.workflow_run.return_value = None
-
-    rows = [
-        Text.from_markup(row).plain for row in components.StatusComponent(state).markup_lines(120)
-    ]
-
-    assert "usage unavailable" not in rows[0]
-    assert any("usage unavailable" in row for row in rows[1:])
-    assert all("↑ 0" not in row and "↓ 0" not in row for row in rows)
+    wide = _plain(line.markup(200))
+    assert "Running run_tests tests/unit/test_status_layout.py" in wide
+    assert "1/4 workers" in wide  # failures do not count as successful completions
+    assert "≈↑230M ↓1.5M" in wide
+    assert "openai/deepseek-v4.1-flash" in wide
+    # Narrow: the tool argument goes before the state segment is cut.
+    assert "Running run_tests" in _plain(line.markup(40))
 
 
-def test_screen_reader_status_spells_out_exact_usage_and_quality() -> None:
-    from rich.text import Text
+def test_unavailable_usage_is_simply_absent() -> None:
+    state = _real()
+    state.conversation.begin_turn("agent", "turn-1")
+    line = _plain(components.StatusLine(state).markup(200))
+    assert "↑" not in line and "↓" not in line and "usage" not in line and "cost" not in line
 
+
+def test_screen_reader_status_spells_out_exact_usage() -> None:
     from agenthicc.config import UISettings
     from agenthicc.tui.rendering import visible_len
 
-    state = _state()
-    state.ui = UISettings(screen_reader=True)
+    state = _real()
+    state.ui.set(UISettings(screen_reader=True))
     conv = state.conversation
-    conv.agent_state.return_value = SimpleNamespace(name="THINKING")
-    conv.is_running.return_value = True
-    conv.activity_elapsed_s = 91.0
-    conv.tokens_in.return_value = 230_044_280
-    conv.tokens_out.return_value = 1_506_692
-    conv.usage_status.return_value = "partial"
-    conv.cost_status.return_value = "unavailable"
-    state.workflow_run.return_value = None
+    conv.tokens_in.set(230_044_280)
+    conv.tokens_out.set(1_506_692)
+    conv.usage_status.set("partial")
 
-    rows = components.StatusComponent(state).markup_lines(48)
-    plain = [Text.from_markup(row).plain for row in rows]
-
-    assert all(visible_len(row) <= 48 for row in rows)
-    assert any("230,044,280" in row and "Input tokens" in row for row in plain)
-    assert any("1,506,692" in row and "Output tokens" in row for row in plain)
-    assert any("usage partial" in row for row in plain)
-    assert all("↑" not in row and "↓" not in row and "?" not in row for row in plain)
+    line = components.StatusLine(state)
+    wide = _plain(line.markup(200))
+    assert "about 230,044,280 tokens in, 1,506,692 out" in wide
+    assert all(glyph not in wide for glyph in "↑↓●·")
+    assert visible_len(line.markup(48)) <= 48
 
 
 def test_idle_header_uses_compact_usage_quality_and_width(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -321,48 +262,60 @@ def test_composer_condensed_multiline_and_height() -> None:
     assert composer.height(4) == 2
 
 
-def test_footer_notification_paste_hints_workflow_and_pool() -> None:
-    state = _state()
-    footer = components.FooterComponent(state)
-    rendered = footer.render()
-    assert len(rendered.renderables) >= 4
-    assert footer.height(80) == 4  # the workers are the subagent panel's (AGX-08)
+def test_notices_replace_the_hint_row_and_hints_follow_the_state() -> None:
+    from agenthicc.tui.workspace.live_region import lines_text
 
-    state.conversation.notification.return_value = None
-    state.input.paste_condensed.return_value = True
-    state.conversation.subagent_pool_state.return_value = None
-    state.workflow_run.return_value = None
-    assert footer.render().renderables[1].plain.startswith("Ctrl+V expand paste")
+    state = _real()
+    console = Console(file=__import__("io").StringIO(), width=80, height=30, color_system=None)
+    from agenthicc.tui.workspace.workspace import Workspace
 
-    # Hints are the composer bindings that apply now (AGX-13).
-    state.input.paste_condensed.return_value = False
-    running = footer.render().renderables[1].plain
+    workspace = Workspace(state, console)
+    state.conversation.begin_turn("agent", "turn-1")
+    state.conversation.notification.set("first\nsecond")
+    rows = lines_text(workspace._build_lines())
+    assert rows[-2:] == ["first", "second"]
+
+    state.conversation.notification.set(None)
+    running = lines_text(workspace._build_lines())[-1]
     assert "Esc pause" in running and "expand paste" not in running
-    state.conversation.is_running.return_value = False
-    assert "pause" not in footer.render().renderables[1].plain
+
+    state.input.update(list("x"), 1, paste_condensed=True, paste_label="x")
+    assert "Ctrl+V expand paste" in lines_text(workspace._build_lines())[-1]
+
+    state.input.update([], 0)
+    state.conversation.close_turn()
+    assert "Idle" in lines_text(workspace._build_lines())[-1]
 
 
-def test_footer_wraps_complete_workflow_run_ids_instead_of_ellipsizing(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    state = _state()
-    state.workflow_run.return_value = None
-    state.conversation.subagent_pool_state.return_value = None
+def test_workflow_phase_is_a_status_segment() -> None:
+    state = _real()
+    state.update_workflow_phase(
+        workflow_name="flow",
+        phase_name="execute",
+        phase_index=1,
+        total_phases=3,
+        run_id="run",
+        intent="x",
+        model_id="anthropic/claude-sonnet-4-5",
+    )
+    line = _plain(components.StatusLine(state).markup(160))
+    assert "2/3 execute" in line
+    assert "sonnet-4.5" in line  # the phase's model
+
+
+def test_notices_wrap_complete_workflow_run_ids_instead_of_ellipsizing() -> None:
+    state = _real()
     run_ids = (
         "542c8a3e-4f1b-4d2c-9a7e-123456789abc",
         "7f6e5d4c-3b2a-1908-fedc-ba9876543210",
     )
     message = f"2 workflows can be resumed. Use /workflow resume <run-id>: {', '.join(run_ids)}"
-    state.conversation.notification.return_value = message
-    monkeypatch.setattr(components, "_get_cols", lambda: 40)
+    state.conversation.notification.set(message)
 
-    footer = components.FooterComponent(state)
-    rendered = footer.render()
-    notification_text = "\n".join(
-        renderable.plain for renderable in rendered.renderables[1:] if hasattr(renderable, "plain")
-    )
+    rows = components.notice_rows(state, 40)
+    text = "\n".join(_plain(row) for row in rows)
 
-    assert message in notification_text.replace("\n", "")
-    assert all(run_id in notification_text for run_id in run_ids)
-    assert "…" not in notification_text
-    assert footer.height(40) == len(components._wrap_notification(message, 40)) + 1
+    assert message in text.replace("\n", "")
+    assert all(run_id in text for run_id in run_ids)
+    assert "…" not in text
+    assert len(rows) == len(components._wrap_notification(message, 40))

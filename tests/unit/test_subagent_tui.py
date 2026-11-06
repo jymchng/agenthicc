@@ -6,7 +6,7 @@ import pytest
 from unittest.mock import MagicMock
 
 from agenthicc.subagents.pool import WorkerState, SubagentPoolState
-from agenthicc.tui.conversation_store import ConversationStore
+from agenthicc.tui.conversation_store import AppState, ConversationStore
 
 pytestmark = pytest.mark.unit
 
@@ -263,112 +263,54 @@ class TestScrollBufferRenderers:
         assert "budget exceeded: max tokens exceeded" in out.lower()
 
 
-# ── StatusComponent N/M counter ───────────────────────────────────────────────
+# ── StatusLine N/M counter and the composer's subagent hint (TUX-02) ─────────
 
 
-class TestStatusComponentSubagentCounter:
-    def _make_state(self, pool_state=None) -> MagicMock:
-        state = MagicMock()
-        state.conversation.frame.return_value = 0
-        state.conversation.elapsed_s = 0.0
-        state.conversation.model_name.return_value = "test-model"
-        state.conversation.session_id.return_value = "s1"
-        state.conversation.turn_count.return_value = 0
-        state.conversation.cost_usd.return_value = 0.0
-        state.conversation.tokens_in.return_value = 0
-        state.conversation.tokens_out.return_value = 0
-        state.conversation.agent_state.return_value = MagicMock(name="IDLE")
-        state.conversation.agent_state().name = "IDLE"
-        state.conversation.is_running.return_value = False
-        state.conversation.compaction_active.return_value = False
-        state.conversation.notification.return_value = None
-        state.conversation.workflow_override.return_value = None
-        state.conversation.subagent_pool_state.return_value = pool_state
-        state.active_mode.return_value = MagicMock(badge="⏵⏵")
-        state.workflow_run.return_value = None
-        return state
+def _app_state(pool_state: SubagentPoolState | None = None) -> AppState:
+    state = AppState.create()
+    state.conversation.model_name.set("test-model")
+    state.conversation.subagent_pool_state.set(pool_state)
+    return state
+
+
+class TestStatusLineSubagentCounter:
+    def _line(self, pool_state: SubagentPoolState | None) -> str:
+        from rich.text import Text
+
+        from agenthicc.tui.workspace.components import StatusLine
+
+        return Text.from_markup(StatusLine(_app_state(pool_state)).markup(120)).plain
 
     def test_no_counter_when_pool_is_none(self) -> None:
-        from rich.console import Console
-        from agenthicc.tui.workspace.components import StatusComponent
-
-        state = self._make_state(pool_state=None)
-        comp = StatusComponent(state)
-        console = Console(highlight=False, markup=False, no_color=True, width=120)
-        with console.capture() as cap:
-            console.print(comp.render())
-        assert "subagents" not in cap.get().lower()
+        assert "workers" not in self._line(None)
 
     def test_counter_shown_when_pool_active(self) -> None:
-        from rich.console import Console
-        from agenthicc.tui.workspace.components import StatusComponent
-
         workers = (
             WorkerState("explorer #1", "explorer", "done"),
             WorkerState("tester #1", "tester", "running"),
             WorkerState("reviewer #1", "reviewer", "pending"),
         )
-        pool = SubagentPoolState("pool-1", 3, workers)
-        state = self._make_state(pool_state=pool)
-        comp = StatusComponent(state)
-        console = Console(highlight=False, markup=False, no_color=True, width=120)
-        with console.capture() as cap:
-            console.print(comp.render())
-        rendered = cap.get()
-        assert "workers" in rendered.lower()
-        assert "1/3" in rendered  # successful completions out of all workers
+        assert "1/3 workers" in self._line(SubagentPoolState("pool-1", 3, workers))
 
 
-# ── FooterComponent and the subagent panel ────────────────────────────────────
+class TestComposerSubagentHint:
+    def _hint(self, pool_state: SubagentPoolState | None = None) -> str:
+        from agenthicc.tui.workspace.components import ComposerComponent, ComposerFrame
 
+        state = _app_state(pool_state)
+        return ComposerFrame(state, ComposerComponent(state)).hint_row(200) or ""
 
-class TestFooterComponentSubagentHint:
-    @staticmethod
-    def _state(pool_state=None) -> MagicMock:
-        from agenthicc.tui.actions import DEFAULT_ACTIONS
-        from agenthicc.tui.keymap import Keymap
-
-        state = MagicMock()
-        state.keymap.return_value = Keymap.build(DEFAULT_ACTIONS)
-        state.conversation.notification.return_value = None
-        state.conversation.loop_status.return_value = None
-        state.conversation.agent_state.return_value = MagicMock(name="IDLE")
-        state.conversation.agent_state().name = "IDLE"
-        state.conversation.workflow_override.return_value = None
-        state.conversation.subagent_pool_state.return_value = pool_state
-        state.active_mode.return_value = MagicMock(badge="⏵⏵", name="Auto", color="green")
-        state.input.paste_condensed.return_value = False
-        state.workflow_run.return_value = None
-        return state
-
-    def _render_footer(self, pool_state=None) -> str:
-        from rich.console import Console
-        from agenthicc.tui.workspace.components import FooterComponent
-
-        comp = FooterComponent(self._state(pool_state))
-        console = Console(highlight=False, markup=False, no_color=True, width=120)
-        with console.capture() as cap:
-            console.print(comp.render())
-        return cap.get()
-
-    def test_footer_lists_no_workers(self) -> None:
-        # Workers are the subagent panel's (AGX-08); the footer offers its key.
-        from agenthicc.tui.workspace.components import FooterComponent
-
+    def test_hint_row_lists_no_workers_but_offers_the_panel_key(self) -> None:
+        # Workers are the subagent panel's (AGX-08); the hint row offers its key.
         workers = (WorkerState("explorer #1", "explorer", "running", worker_id="w"),)
-        with_pool = " ".join(
-            FooterComponent(self._state(SubagentPoolState("p", 1, workers))).markup_lines(200)
-        )
+        with_pool = self._hint(SubagentPoolState("p", 1, workers))
         assert "explorer #1" not in with_pool
         assert "Ctrl+O" in with_pool and "subagents" in with_pool
-        assert "Ctrl+O" not in " ".join(FooterComponent(self._state()).markup_lines(200))
+        assert "Ctrl+O" not in self._hint()
 
-    def test_footer_height_does_not_grow_with_a_pool(self) -> None:
-        from agenthicc.tui.workspace.components import FooterComponent
+    def test_status_line_height_does_not_grow_with_a_pool(self) -> None:
+        from agenthicc.tui.workspace.components import StatusLine
 
-        state = self._state()
-        comp = FooterComponent(state)
-        height_no_pool = comp.height(80)
         workers = (WorkerState("x #1", "explorer", "running", worker_id="w"),)
-        state.conversation.subagent_pool_state.return_value = SubagentPoolState("p", 1, workers)
-        assert comp.height(80) == height_no_pool
+        assert StatusLine(_app_state()).height(80) == 1
+        assert StatusLine(_app_state(SubagentPoolState("p", 1, workers))).height(80) == 1

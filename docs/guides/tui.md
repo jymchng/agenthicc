@@ -27,7 +27,8 @@ is indented beneath its related activity; the in-progress
 | Live region | `tui/workspace/live_region.py` | Writes the live block by line diff; repaints around scroll-buffer output |
 | Frame scheduler | `tui/workspace/frames.py` | Merges redraw requests into capped frames; frame statistics |
 | Scroll buffer | `tui/workspace/appender.py` | Prints conversation and tool events above the live block |
-| Live components | `tui/workspace/components.py` | Status, composer, footer |
+| Live components | `tui/workspace/components.py` | Status line, composer and its frame |
+| Status-line inputs | `tui/statusline.py` | Git branch, the user status-line command, `/status` |
 | Overlay host | `tui/workspace/overlay.py` | Shows one active overlay and redraws the workspace |
 | Input session | `tui/input/unified_session.py` | One raw-mode lifetime and capability pipeline |
 | Terminal backend | `tui/terminal/` | POSIX/Windows raw mode and key reads |
@@ -43,12 +44,87 @@ terminal
 │   ├── tool results and collapsed tool groups
 │   └── workflow/system/retry notifications
 └── permanent live block
-    ├── blank separator
-    ├── status component
-    ├── composer or active overlay
-    ├── border
-    └── footer
+    ├── overflow bridge (while a tool group is collapsed)
+    ├── composer frame: title, prompt, mode badge (or an overlay in its place)
+    ├── subagent panel (while a pool has rows)
+    ├── status line
+    └── one notice or one contextual hint row, or nothing
 ```
+
+Idle, the live block is four rows (TUX-02): the composer in a rounded box
+whose top border carries the session title and the mode badge, and one
+status line.
+
+```text
+╭─ fix flaky scheduler test ──────────────────────────────── Safe ─╮
+│ ❯ ▌ask, or type / for commands, @ for files                      │
+╰──────────────────────────────────────────────────────────────────╯
+ ● Idle · ◆ 2 sessions need you ← · ctx 12% ▰▱▱▱▱ · opus-4.8   /help
+```
+
+- **The title** is the session's first prompt (its first line, cut to 80
+  characters as a background session's intent is), or `new session` before
+  there is one. A resumed transcript restores it.
+- **The mode badge** is the permission mode in its `mode_*` theme token,
+  after the primary agent when another than `default` is chosen.
+  `[ui] composer_frame = "rules"` draws a rule above and below the prompt
+  instead of the box.
+- **The status line** shows segments in a fixed priority order and drops the
+  lowest ones when the line is too narrow; a segment is never cut mid-word:
+
+  | Priority | Segment | Shown when |
+  |---|---|---|
+  | 1 | `● Idle`, a spinner with `Thinking` / `Running <tool>` and the elapsed time, or `◆ Waiting for you` | always |
+  | 2 | `◆ N sessions need you ←` (AGX-10) | a background session needs you |
+  | 3 | `ctx 42% ▰▰▱▱▱`, green below 60 %, amber below 85 %, red above | after the first response that reported usage |
+  | 4 | the model, short (`opus-4.8`; the provider when it is not the default) | always |
+  | 5 | subagent workers `1/3 workers`, the workflow phase `2/4 implement`, a `/workflow` selection, running background sessions, startup work still loading | when active |
+  | 6 | tokens `↑12k ↓3k` (`≈` when partial) and cost `$0.42` (`~` when estimated) | only when the provider reported them |
+  | 7 | the git branch, `*` when the tree has changes | in a repository |
+  | right | the shortcuts hint (`/help`) | 60 columns and more |
+
+  The context meter divides the input tokens the provider reported for the
+  latest main-agent call (cache reads and writes included) by the model's
+  context window (`ExecutionSettings.effective_context_window()`). Below 60
+  columns the frame becomes two rules and the status line keeps only the
+  state, attention and context segments; below 40 columns only the state.
+- **The hint row** appears only for contextual keys: while a turn runs
+  (`Esc pause · Ctrl+C cancel`, plus the subagent keys while a pool is shown),
+  with a condensed paste, or during a background-terminal wait. Idle, there is
+  none: the always-available keys are in `/help`. A notification, the `/loop`
+  status or an attention toast takes the hint row's place, wrapped whole.
+- **Absent values are not shown.** "cost unknown" and "usage unavailable" never
+  appear on the status line, and the session ID and working directory are not
+  in the live block: `/status` prints them, together with the model, provider,
+  mode, turns, tokens, cost (or why there is none), context use and the paths
+  of the session log and memory journal.
+- **Overlays.** The agents hub owns the bottom rows: while it is open the
+  composer frame and its hint row are hidden, so the hub's hint row is the only
+  one. Closing it restores the composer exactly (draft, cursor and paste). Any
+  other overlay is drawn between the frame's two rules.
+
+### A user status line
+
+`[ui.statusline] command` replaces segments 3–7 with the first line a command
+prints:
+
+```toml
+[ui.statusline]
+command = "~/.agenthicc/statusline.sh"
+```
+
+The command runs in the working directory with the same scrubbed environment
+and resource limits as the agent's `[tools.exec]` children, at most once a
+second and only after the state changed, with a 500 ms timeout. It reads a JSON
+object on stdin with `session_id`, `title`, `cwd`, `git_branch`, `model`,
+`provider`, `mode`, `state`, `context_used_pct`, `tokens_in`, `tokens_out`,
+`cost_usd`, `agents_need_you` and `workers_running`; a value that is not known
+is `null`. Every control sequence except SGR colour is removed from its output,
+which is fitted to the space left. A command that fails or is too slow brings
+the built-in segments back and is named once in a notice. A project's
+`.agenthicc/agenthicc.toml` may set the command only once the file is trusted
+(`agenthicc trust add .agenthicc/agenthicc.toml`); an untrusted project's
+command is ignored.
 
 `Workspace.start()` is called once, before the processor and input loop begin;
 `Workspace.stop()` is called once during teardown. Starting/stopping the block
@@ -69,15 +145,18 @@ Redraws cost what changed, not what is on screen (AGX-11):
   event-loop iteration. The spinner advances at 10 Hz, and only while a turn or
   compaction is running; an idle TUI draws no frames.
 - **Rows.** Each frame is a list of rows rendered at exactly the terminal width,
-  so the terminal never wraps one. Status and footer rows are built as markup
-  and rendered once per distinct row and width, so a spinner frame renders one
-  row and an unchanged footer parses no markup.
+  so the terminal never wraps one. Status-line and frame rows are built as
+  markup and rendered once per distinct row, width and theme, so an unchanged
+  row parses no markup. The status line's segments 2–7 are rebuilt only when a
+  signal they read changes; a spinner frame recomputes the state segment alone.
 - **Composer.** Each logical line of the prompt is folded at the width and the
   fold is cached per line, so a keystroke in a 200-line prompt re-folds one line.
   At most `[behaviour] composer_max_rows` rows (12) are shown around the cursor;
   `↑ N more lines` / `↓ N more lines` stand for the rest.
 - **Writes.** The live region keeps the rows it last wrote and rewrites only the
-  rows that differ — a spinner frame is one row, about 50 bytes. A resize, a
+  rows that differ. Within a changed row, segments shared with the old row at
+  its start and end are not written again, so a spinner frame overwrites the
+  one spinner cell, well under 80 bytes. A resize, a
   width change or a frame that changes more than half of the rows is a full
   redraw. Output printed while the block is live (the scroll buffer, or anything
   written to stdout/stderr) is printed above it and the block repainted below.
@@ -106,7 +185,7 @@ thinking, tool execution, recovery, or compaction. Idle, complete, and error
 states do not publish frame ticks, and the workspace defensively ignores
 compatibility frame writes in those static states. This prevents captured
 terminals that do not interpret Rich's erase controls from accumulating
-identical `✿ Idle` panels while preserving active animation and ordinary state
+identical `● Idle` status lines while preserving active animation and ordinary state
 redraws.
 
 Tool results use the same operation-style block: `● Read(...)`, `● Run(...)`,
@@ -117,7 +196,7 @@ changed rows; longer blocks retain their first and last three rows and show a
 single `...` omission row so large edits do not flood the scroll buffer.
 When a tool group is collapsed, its `...and N more tool calls` line is flushed
 to the scroll buffer at the next conversation boundary and immediately when
-the agent is interrupted; it is never left only in the live status footer.
+the agent is interrupted; it is never left only in the live status line.
 Subagent pool headings, worker-completion rows, and pool summaries are level-1
 scrollback rows alongside tool headings; only the worker previews below a pool
 heading are indented as child rows. A pool that does not fully succeed is
@@ -159,8 +238,8 @@ movement and basic editing.
 
 Keys are not hard-coded (AGX-13). Each key resolves, once per keystroke, to a
 named action in the composer's context — `composer.submit`, `composer.newline`,
-`composer.interrupt` … — and the footer's hints are the applicable actions'
-labels from the same registry (`agenthicc.tui.actions`), so the footer can no
+`composer.interrupt` … — and the hint row shows the applicable contextual
+actions' labels from the same registry (`agenthicc.tui.actions`), so it can no
 longer advertise a key that does nothing. An action can depend on the
 composer's conditions (`running`, `paste`, `paste_at_cursor`): Esc deletes a
 condensed paste when the cursor is right after it and pauses a running turn
@@ -217,7 +296,7 @@ leader_timeout_ms = 2000
 
 Edits apply at once in running sessions. An edit that names an unknown
 action, binds two actions that can apply together to one key, or does not
-parse is not applied: the defaults stay in effect and the footer says why.
+parse is not applied: the defaults stay in effect and a notice says why.
 `/keybindings` creates the file (every action listed, commented out) and shows
 the effective bindings and where each comes from; `agenthicc keybindings
 edit` opens the file in `$VISUAL`/`$EDITOR` from the shell.
@@ -285,11 +364,13 @@ reduced_motion = false  # keep the layout, replace animation with a static ●
 mouse = "auto"          # "auto": full-screen agents hub only; "on": also here; "off": never
 ```
 
-With `screen_reader`, the status bar and footer use commas instead of
-box-drawing separators and words instead of arrows, the borders are dropped,
-nothing animates, and each change — the agent thinking, running a tool,
+With `screen_reader`, the status line uses commas instead of separators and
+words instead of arrows and meters, the composer has no frame, nothing
+animates, and each change — the agent thinking, running a tool,
 finishing or failing, a prompt waiting for approval, a notification, a mode
-switch — is printed once as a plain sentence in the scroll buffer.
+switch — is printed once as a plain sentence in the scroll buffer. Between
+turns the status line is announced too, only when it changes: "Idle. Opus 4.8.
+Context 12 percent."
 Announcements are not written to the session's event log. With
 `mouse = "on"`, the wheel moves the composer's cursor through a tall prompt;
 `"off"` never writes a mouse-reporting sequence. `NO_COLOR` is respected.
@@ -339,21 +420,14 @@ immediately; ordinary requests, skills, mutations, and workflow actions show
 their queue position and wait in FIFO order. The slash picker labels the same
 outcomes, so picker selection and manual typing cannot disagree. `/usage`
 shows the current local token/cost snapshot without sending a message to the
-agent. The live status and one-time idle header compact large token totals for
-scanning (for example, `↑ 230M ↓ 1.5M`); `/usage` remains the exact-value view
-and is not affected by display rounding. A partial usage snapshot adds a compact
-`?` to the token display and an explicit `usage partial` label on the metadata
-row. Unavailable usage is written as `usage unavailable` on the secondary
-metadata row, never as a known zero. Estimated cost uses `~$0.123` visually and
-is spoken as `estimated cost $0.123`; `cost unknown` stays separate from token
-quality. With `screen_reader`, input and output are announced as exact integer
-counts with direction and units, followed by the quality wording. Visual status
-and footer segments use `|` delimiters; screen-reader rows use commas and spoken
-labels instead. The status row prioritizes state, elapsed time, active tool, pool
-progress, then usage; the model may shorten to fit, while the full session ID and
-current directory occupy separate rows with cell-aware wrapping and no added
-labels. Cross-session attention counts appear on their own footer row immediately
-before the composer shortcuts. `/config` immediately opens the configuration
+agent. The status line compacts large token totals for scanning (for example,
+`↑230M ↓1.5M`, with `≈` in front when the usage is partial) and shows them only
+when the provider reported usage; `/usage` and `/status` remain the exact-value
+views and are not affected by display rounding. Unavailable usage and an
+unknown cost are absent from the status line, never shown as a known zero;
+`/status` says "not reported by <provider>". With `screen_reader`, token counts
+are spoken as exact integers ("about 230,044,280 tokens in, 1,506,692 out").
+`/config` immediately opens the configuration
 overlay, including during a response, while its edits remain local to the overlay
 until saved. `/cancel`/`/interrupt` share the Ctrl+C cancellation owner, and
 `/bg`/`/background` use the background-session control plane.
@@ -395,7 +469,8 @@ For repeatable large-log measurements without provider credentials, run
 use `--tool-event-every 1 --large-event-bytes 0` for an all-tool-event log.
 
 When a tool approval, plan review, or `ask_user()` question is pending, the
-status bar changes from the animated Thinking state to a stable waiting label.
+status line changes from the animated Thinking state to a stable
+`◆ Waiting for you`.
 The Thinking duration is the total wall-clock time for the outer user activity:
 it continues across internal LLM turns and workflow phases and ends only when
 the activity returns to IDLE. Resize redraws do not derive a new timestamp

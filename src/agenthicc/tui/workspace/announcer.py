@@ -6,6 +6,10 @@ a tool running, a prompt waiting for approval, a notification, a mode switch —
 is also printed once, as a sentence, in the scroll buffer, where a screen
 reader reads it in order. Announcements are presentation only: they are not
 written to the session's event log.
+
+Between turns the status line is announced as sentences too ("Idle. Opus 4.8.
+Context 12 percent."), and again only when it changes (TUX-02). While a turn
+runs the state sentences above say what is happening instead.
 """
 
 from __future__ import annotations
@@ -46,8 +50,15 @@ class Announcer:
             (self._state.pending_approval, self._on_approval),
             (conv.notification, self._on_notification),
             (self._state.active_mode, self._on_mode),
+            (conv.agent_state, self._on_status),
+            (conv.model_name, self._on_status),
+            (conv.context_tokens, self._on_status),
+            (conv.context_window, self._on_status),
+            (conv.background_needs_you, self._on_status),
+            (self._state.pending_approval, self._on_status),
         ):
             self._unsubscribe.append(signal.subscribe(handler))
+        self._on_status()
 
     def stop(self) -> None:
         for unsubscribe in self._unsubscribe:
@@ -86,6 +97,15 @@ class Announcer:
     def _on_notification(self) -> None:
         text = self._state.conversation.notification()
         self._say("notification", text if isinstance(text, str) else "")
+
+    def _on_status(self) -> None:
+        """Say the status line between turns, once per change (TUX-02)."""
+        conv = self._state.conversation
+        if conv.is_running() or self._state.pending_approval() is not None:
+            return
+        from agenthicc.tui.workspace.components import status_sentence
+
+        self._say("status", status_sentence(self._state))
 
     def _on_mode(self) -> None:
         self._say("mode", f"{self._state.active_mode().name} mode.")

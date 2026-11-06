@@ -1703,6 +1703,7 @@ class BehaviourSettings:
 
 _MOUSE_MODES = ("auto", "on", "off")
 _GLYPH_MODES = ("auto", "unicode", "ascii")
+_COMPOSER_FRAMES = ("box", "rules")
 
 
 @dataclass(frozen=True)
@@ -1724,10 +1725,21 @@ class UISettings:
     glyphs: str = "auto"
     """``auto``, ``unicode`` or ``ascii``; ``auto`` picks ASCII on a non-UTF-8
     locale or the Linux console (TUX-01)."""
+    composer_frame: str = "box"
+    """``box`` draws the prompt in a rounded box; ``rules`` draws a rule above
+    and below it instead (TUX-02). Narrow terminals always use rules."""
+    statusline_command: str = ""
+    """``[ui.statusline] command``: a shell command whose first line of output
+    replaces the status line's context, model, worker, usage and branch
+    segments (TUX-02). It receives the session state as JSON on stdin, runs at
+    most once a second with a 500 ms timeout, and is ignored in an untrusted
+    project configuration."""
 
     def __post_init__(self) -> None:
         if self.mouse not in _MOUSE_MODES:
             raise ValueError(f"ui.mouse must be one of: {', '.join(_MOUSE_MODES)}")
+        if self.composer_frame not in _COMPOSER_FRAMES:
+            raise ValueError(f"ui.composer_frame must be one of: {', '.join(_COMPOSER_FRAMES)}")
         if self.glyphs not in _GLYPH_MODES:
             raise ValueError(f"ui.glyphs must be one of: {', '.join(_GLYPH_MODES)}")
         if not self.theme.strip():
@@ -2779,6 +2791,8 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
         reduced_motion=_as_bool(ui_data.get("reduced_motion"), False),
         theme=_as_str(ui_data.get("theme"), "auto").strip(),
         glyphs=_as_str(ui_data.get("glyphs"), "auto").strip().lower(),
+        composer_frame=_as_str(ui_data.get("composer_frame"), "box").strip().lower(),
+        statusline_command=_as_str(_section(ui_data.get("statusline")).get("command"), "").strip(),
     )
 
     subagent_data = _section(data.get("subagents"))
@@ -2972,6 +2986,32 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
 _build_config = _dict_to_config
 
 
+def _without_untrusted_commands(layer: dict[str, object], path: Path) -> dict[str, object]:
+    """Drop a project layer's ``[ui.statusline] command`` unless the file is trusted.
+
+    A repository's configuration must not run a command on the user's machine
+    by itself: like a project extension, the status-line command (TUX-02)
+    needs ``agenthicc trust add <file>`` for the file's current content.
+    """
+    ui = layer.get("ui")
+    statusline = ui.get("statusline") if isinstance(ui, dict) else None
+    if not isinstance(ui, dict) or not isinstance(statusline, dict):
+        return layer
+    if "command" not in statusline:
+        return layer
+    from agenthicc.plugins.trust import current_extension_trust
+
+    if current_extension_trust().permits(path, kind="statusline"):
+        return layer
+    return {
+        **layer,
+        "ui": {
+            **ui,
+            "statusline": {key: value for key, value in statusline.items() if key != "command"},
+        },
+    }
+
+
 def load_config(
     project_path: str | Path | None = None,
     user_path: str | Path | None = None,
@@ -3031,11 +3071,18 @@ def load_config(
     if effective_project is not None:
         project_file = Path(effective_project)
         if project_file.is_file():
-            merged = deep_merge(merged, _resolve_extends(project_file))
+            merged = deep_merge(
+                merged, _without_untrusted_commands(_resolve_extends(project_file), project_file)
+            )
     else:
         found_project_file = _find_config_file(PROJECT_CONFIG_CANDIDATES)
         if found_project_file is not None:
-            merged = deep_merge(merged, _load_toml_with_extends(found_project_file))
+            merged = deep_merge(
+                merged,
+                _without_untrusted_commands(
+                    _load_toml_with_extends(found_project_file), found_project_file
+                ),
+            )
 
     # 4. Environment variable overrides (AGENTHICC_*) — override both config files
     if env_overrides:

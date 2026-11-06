@@ -1,6 +1,6 @@
 """The words the attention badges use (TUIR-05).
 
-The footer's ``◆`` and ``●`` badges count **background sessions** from the
+The status line's ``◆`` and ``●`` segments (TUX-02) count **background sessions** from the
 agents hub (PRD-141), not the workers of a subagent pool shown beside them.
 They say so: ``◆ 7 sessions need you``, ``● 1 session running``. The
 terminal title uses the same words.

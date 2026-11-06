@@ -16,6 +16,9 @@ class Overlay(ABC):
     """Base class for all transient overlays."""
 
     name: str = "overlay"
+    #: The overlay owns the live block's bottom rows: the workspace hides the
+    #: composer frame and its hint row while it is shown (TUX-02 §2.4).
+    owns_bottom_rows: bool = False
 
     def on_mount(self) -> None:
         """Called when overlay becomes active."""

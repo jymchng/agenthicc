@@ -7,7 +7,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from rich.console import Console
 
 from agenthicc.commands.command import UsageSnapshot
 from agenthicc.runners.session_conversation import SessionConversation
@@ -17,7 +16,9 @@ from agenthicc.tui.runtime import RuntimeMode
 from agenthicc.tui.runtime.commands import InterruptAgentCommand
 from agenthicc.workflows.plugin import PhaseSpec, WorkflowContext, WorkflowPlugin
 from agenthicc.runners.workflow_recovery import WorkflowRecoveryCoordinator
-from agenthicc.tui.workspace.components import FooterComponent
+from rich.text import Text
+
+from agenthicc.tui.workspace.components import StatusLine
 
 from .test_tui_session_coverage import _make_session
 
@@ -471,9 +472,8 @@ async def test_tui_can_pause_and_resume_the_same_workflow_run_repeatedly(
                 assert session._start_workflow_continuation("continue the run") is True
             assert session._workflow_override == Demo.name
             assert ctx.app_state.conversation.workflow_override() == Demo.name
-            footer_console = Console(record=True, width=120)
-            footer_console.print(FooterComponent(ctx.app_state).render())
-            assert f"⬡ {Demo.name}" in footer_console.export_text()
+            status = Text.from_markup(StatusLine(ctx.app_state).markup(200)).plain
+            assert f"workflow {Demo.name}" in status
             await asyncio.sleep(0)
             task = session._agent_task
             assert task is not None

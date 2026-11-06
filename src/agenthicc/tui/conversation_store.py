@@ -147,6 +147,20 @@ class ConversationStore:
         self.session_id: Signal[str] = Signal("", name="session_id")
         self.current_directory: Signal[str] = Signal(os.getcwd(), name="current_directory")
         self.model_name: Signal[str] = Signal("", name="model_name")
+        # TUX-02: the composer frame's title and the status line's context meter.
+        self.session_title: Signal[str] = Signal("", name="session_title")
+        """The session's title: the first prompt, cut as AGX-05 cuts a
+        background session's intent; empty until the first prompt."""
+        self.context_tokens: Signal[int] = Signal(0, name="context_tokens")
+        """Input tokens (cache reads and writes included) the provider reported
+        for the latest main-agent call: how full the context window is."""
+        self.context_window: Signal[int] = Signal(0, name="context_window")
+        """The model's context window in tokens; 0 when it is not known."""
+        self.git_branch: Signal[str] = Signal("", name="git_branch")
+        """The working directory's branch, ``""`` outside a repository."""
+        self.git_dirty: Signal[bool] = Signal(False, name="git_dirty")
+        self.statusline_text: Signal[str] = Signal("", name="statusline_text")
+        """The user status-line command's last good output (one sanitized line)."""
         self.notification: Signal[str | None] = Signal(None, name="notification")
         self.loop_status: Signal[str | None] = Signal(None, name="loop_status")
         """Persistent footer projection for an active session ``/loop``."""
@@ -183,7 +197,6 @@ class ConversationStore:
             None, name="background_toast_kind"
         )
         self.terminal_focused: Signal[bool] = Signal(True, name="terminal_focused")
-        self.agents_hint: Signal[bool] = Signal(False, name="agents_hint")
         self.agents_target: Signal[str | None] = Signal(None, name="agents_target")
         self.agents_item_target: Signal[str | None] = Signal(None, name="agents_item_target")
         self.agents_toast_target: Signal[str | None] = Signal(None, name="agents_toast_target")
@@ -202,7 +215,7 @@ class ConversationStore:
         # Number of tool calls currently hidden above the scroll-buffer threshold.
         # Set live by ScrollBufferAppender as each overflow call arrives;
         # reset to 0 when the group closes (text/error event).
-        # FooterComponent renders this as a live "⎿ …and N more" footer row.
+        # The workspace renders this as a live "└ …and N more" bridge row.
         self.live_tool_overflow: Signal[int] = Signal(0, name="live_tool_overflow")
 
         # ── computed values ───────────────────────────────────────────────────
@@ -579,6 +592,9 @@ class ConversationStore:
     # ── metrics ───────────────────────────────────────────────────────────────
 
     def add_tokens(self, inp: int, out: int, cost: float) -> None:
+        if inp > 0:
+            # One call's input is the context it sent (TUX-02 context meter).
+            self.context_tokens.set(inp)
         self.tokens_in.set(self.tokens_in() + inp)
         self.tokens_out.set(self.tokens_out() + out)
         self.cost_usd.set(self.cost_usd() + cost)
@@ -625,6 +641,8 @@ class ConversationStore:
             self.tool_group_count.set(self.tool_group_count.get() + 1)
         elif kind in ("text", "turn_start"):
             self.tool_group_count.set(0)
+        elif kind == "user_message":
+            self._title_from(ev)
         for sub in list(self._event_subscribers):
             try:
                 sub(ev)
@@ -636,6 +654,16 @@ class ConversationStore:
         """Seed replayed event IDs without re-emitting or persisting them."""
         for event in events:
             self._events_by_id[event.event_id] = event
+            if event.kind == "user_message":
+                self._title_from(event)
+
+    def _title_from(self, event: ConversationEvent) -> None:
+        """Title the session after its first prompt, once (TUX-02)."""
+        if self.session_title():
+            return
+        text = event.payload.get("text")
+        if isinstance(text, str):
+            self.session_title.set(session_title_from(text))
 
     def _has_event_id(self, event_id: str) -> bool:
         """Return whether an event ID is already present in this projection."""
@@ -654,6 +682,24 @@ class ConversationStore:
             self._event_subscribers.remove(fn)
         except ValueError:
             pass
+
+
+#: The longest title kept: AGX-05 titles a background session ``intent[:80]``.
+SESSION_TITLE_MAX = 80
+
+
+def session_title_from(prompt: str) -> str:
+    """The title a prompt gives its session, or ``""`` (a slash command).
+
+    The first non-empty line, with runs of whitespace collapsed and cut to
+    :data:`SESSION_TITLE_MAX` characters, as AGX-05 titles a background
+    session after its intent.
+    """
+    line = next((line for line in prompt.splitlines() if line.strip()), "")
+    title = " ".join(line.split())
+    if title.startswith("/"):
+        return ""
+    return title[:SESSION_TITLE_MAX]
 
 
 # ── Input state ───────────────────────────────────────────────────────────────

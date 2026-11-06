@@ -31,7 +31,6 @@ _PENDING: frozenset[str] = frozenset(
         "tui/workspace/agents_hub/hub.py",
         "tui/workspace/agents_hub/render.py",
         "tui/workspace/appender.py",
-        "tui/workspace/components.py",
         "tui/workspace/overlays/approval.py",
         "tui/workspace/overlays/config_menu.py",
         "tui/workspace/overlays/help.py",
@@ -45,7 +44,6 @@ _PENDING: frozenset[str] = frozenset(
         "tui/workspace/overlays/terminals.py",
         "tui/workspace/overlays/transcript_history.py",
         "tui/workspace/subagent_panel.py",
-        "tui/workspace/workspace.py",
     }
 )
 

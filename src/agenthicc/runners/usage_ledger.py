@@ -389,6 +389,7 @@ class UsageLedger:
             usage_calls = getattr(store, "usage_calls", None)
             if usage_calls is not None:
                 usage_calls.set(snapshot.calls)
+            store.context_tokens.set(self.context_tokens())
 
         self._projection = project
         project(self.snapshot())
@@ -606,6 +607,35 @@ class UsageLedger:
             durability_status=(
                 DurabilityStatus.DEGRADED if self._persistence_failed else DurabilityStatus.DURABLE
             ),
+        )
+
+    def context_tokens(self) -> int:
+        """Input tokens of the latest main-agent call, or 0 before one reports.
+
+        A call's input (with its cache reads and writes) is the context it
+        sent, which the TUI's context meter divides by the model's window
+        (TUX-02). Subagent, compaction and run-residual records are skipped:
+        they did not use the session's context.
+        """
+        latest: UsageRecord | None = None
+        for record in (*self._records.values(), *self._active.values()):
+            if (
+                record.category != UsageCategory.AGENT
+                or record.input_tokens is None
+                or record.source in (UsageSource.RUN_COMPLETE, UsageSource.LEGACY)
+            ):
+                continue
+            if latest is None or (record.created_at, record.call_index) >= (
+                latest.created_at,
+                latest.call_index,
+            ):
+                latest = record
+        if latest is None:
+            return 0
+        return (
+            (latest.input_tokens or 0)
+            + (latest.cache_read_tokens or 0)
+            + (latest.cache_write_tokens or 0)
         )
 
     def records(self, *, include_provisional: bool = False) -> tuple[UsageRecord, ...]:

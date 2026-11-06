@@ -116,6 +116,8 @@ class Glyphs:
     meter_full: str
     meter_empty: str
     sep: str
+    approx: str
+    """Marks an approximate value, such as partially reported token usage."""
 
 
 UNICODE_GLYPHS = Glyphs(
@@ -141,6 +143,7 @@ UNICODE_GLYPHS = Glyphs(
     meter_full="▰",
     meter_empty="▱",
     sep="·",
+    approx="≈",
 )
 
 ASCII_GLYPHS = Glyphs(
@@ -166,6 +169,7 @@ ASCII_GLYPHS = Glyphs(
     meter_full="#",
     meter_empty=".",
     sep="-",
+    approx="~",
 )
 
 

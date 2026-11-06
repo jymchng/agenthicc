@@ -872,8 +872,22 @@ def _cmd_skills(ctx: CommandContext) -> bool:
 
 
 def _cmd_status(ctx: CommandContext) -> bool:
-    ctx.console.print(f"  [dim]Session:[/dim] {ctx.session_id or '(new)'}")
-    ctx.console.print(f"  [dim]Model:[/dim] {ctx.model or '(unknown)'}")
+    """Print the session's identity, model, usage and files (TUX-02 §2.2).
+
+    The session ID, directory and usage left the status line; this is where
+    they are, and where an absent value (cost, tokens) is explained.
+    """
+    from rich.markup import escape
+
+    if ctx.app_state is None:
+        rows = [("Session", ctx.session_id or "not saved yet"), ("Model", ctx.model or "unknown")]
+    else:
+        from agenthicc.tui.statusline import status_report
+
+        rows = status_report(ctx.app_state)
+    width = max(len(label) for label, _ in rows) + 1
+    for label, value in rows:
+        ctx.console.print(f"  [dim]{label + ':':<{width}}[/dim] {escape(value)}")
     return True
 
 
@@ -1648,7 +1662,7 @@ BUILTIN_COMMANDS: list[Command] = [
     ),
     Command(
         name="/status",
-        description="Show running agents and their tasks",
+        description="Show the session, model, mode, usage, context and log paths",
         busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
         handler=_cmd_status,
     ),

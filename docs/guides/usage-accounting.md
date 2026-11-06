@@ -24,17 +24,17 @@ Additional fields identify quality and durability, for example
 `durability=durable`. Missing provider usage is shown as `unknown`/`partial`,
 not as a fabricated zero. A provider-supplied zero remains a known zero.
 
-The TUI status and idle header are display-only projections: large counts may be
-rounded for scanning (for example, `230M`), while `/usage`, session inspection,
-and exports retain exact integers. Partial usage may use a compact `?` beside
-the live token counts, with `usage partial` written explicitly on the metadata
-row. Screen-reader output spells out exact input/output counts, units, and
-quality. Unavailable usage is labeled `usage unavailable` on the secondary
-metadata row, never formatted as zero. Cost provenance is independent: estimated
-cost is shown as `~$0.123` (or spoken as `estimated cost $0.123`), while
-unavailable cost is `cost unknown`. The live TUI shows the full session ID on its
-own row; the current directory is shown as a separate, cell-wrapped row without
-labels.
+The TUI status line and idle header are display-only projections: large counts
+may be rounded for scanning (for example, `230M`), while `/usage`, `/status`,
+session inspection, and exports retain exact integers. On the status line
+(TUX-02) tokens and cost appear only when the provider reported them: partial
+usage is marked `≈` before the token counts, estimated cost is `~$0.42`, and
+unavailable usage or cost is simply absent, never formatted as zero. `/status`
+explains an absent value ("not reported by anthropic"). The status line's
+context meter divides the input tokens of the latest main-agent call (cache
+reads and writes included, `UsageLedger.context_tokens()`) by the model's
+context window. The session ID and working directory are printed by `/status`,
+not kept in the live block.
 
 ## Workflows and generated workflows
 

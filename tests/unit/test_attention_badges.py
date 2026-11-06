@@ -1,4 +1,4 @@
-"""TUIR-05: the attention badges say they count sessions, at every width."""
+"""TUIR-05 in the TUX-02 status line: attention segments say they count sessions."""
 
 from __future__ import annotations
 
@@ -8,39 +8,40 @@ from rich.text import Text
 from agenthicc.tui.attention_labels import sessions_need_you, sessions_running
 from agenthicc.tui.conversation_store import AppState
 from agenthicc.tui.rendering import visible_len
-from agenthicc.tui.workspace.components import FooterComponent
+from agenthicc.tui.workspace.components import StatusLine
 
 pytestmark = pytest.mark.unit
 
 
-def _footer(needs_you: int, running: int) -> FooterComponent:
+def _line(needs_you: int, running: int, cols: int) -> str:
     app = AppState.create()
     app.conversation.background_needs_you.set(needs_you)
     app.conversation.background_running.set(running)
-    return FooterComponent(app)
-
-
-def _attention_row(footer: FooterComponent, cols: int) -> str:
-    rows = footer.markup_lines(cols)
-    assert all(visible_len(row) <= cols for row in rows)
-    (row,) = [Text.from_markup(row).plain for row in rows if "◆" in row or "●" in row]
-    return row
+    markup = StatusLine(app).markup(cols)
+    assert visible_len(markup) <= cols
+    return Text.from_markup(markup).plain
 
 
 @pytest.mark.parametrize("cols", [80, 120])
 def test_seven_waiting_sessions_read_as_sessions(cols: int) -> None:
-    row = _attention_row(_footer(7, 1), cols)
+    line = _line(7, 1, cols)
 
-    assert "◆ 7 sessions need you (Ctrl+G)" in row
-    assert "● 1 session running" in row
+    assert "◆ 7 sessions need you ←" in line
+    assert "● 1 session running" in line
+
+
+def test_the_needs_you_segment_outlasts_the_running_one() -> None:
+    assert "● 1 session running" not in _line(7, 1, 60)
+    assert _line(7, 1, 50) == " ● Idle · ◆ 7 sessions need you ←"
 
 
 def test_narrow_widths_drop_words_before_the_unit() -> None:
-    footer = _footer(7, 1)
-
-    assert _attention_row(footer, 40).strip() == "◆ 7 sessions need you  |  ● 1 sess."
-    assert _attention_row(footer, 26).strip() == "◆ 7 sess.  |  ● 1 sess."
-    assert _attention_row(footer, 14).strip() == "◆ 7  |  ● 1"
+    app = AppState.create()
+    app.conversation.background_needs_you.set(7)
+    app.conversation.context_window.set(100)
+    app.conversation.context_tokens.set(42)
+    line = Text.from_markup(StatusLine(app).markup(40)).plain
+    assert line == " ● Idle · ◆ 7 sess. ← · ctx 42%"
 
 
 @pytest.mark.parametrize(

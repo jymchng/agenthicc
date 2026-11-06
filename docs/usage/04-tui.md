@@ -12,10 +12,13 @@ terminal
 │   ├── tool results and collapsed tool groups
 │   └── workflow/system notifications
 └── live block
-    ├── status component (mode, tokens, cost)
-    ├── composer or active overlay
-    └── footer
+    ├── composer frame (session title, prompt, mode badge) or an overlay
+    ├── status line (state, attention, context, model, workers, usage, branch)
+    └── one contextual hint row, only while it applies
 ```
+
+`/status` prints the session ID, directory, branch, model, mode, usage,
+context use and the session's file paths.
 
 ## Input triggers
 
@@ -43,8 +46,8 @@ Shift+Tab cycles **Safe → Plan → Yolo**. `/mode` switches directly. The alia
 
 Tools that write, run commands, or touch the network require approval depending
 on the active mode. Requests appear as an inline prompt, and while an approval,
-plan review, or question is pending the status bar shows a stable waiting
-label.
+plan review, or question is pending the status line shows a stable
+`◆ Waiting for you`.
 
 ## Bracketed paste
 

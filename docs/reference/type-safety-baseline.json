@@ -3,7 +3,7 @@
   "bare_list_annotations": 0,
   "explicit_any_annotations": 10,
   "functions_with_missing_annotations": 12,
-  "getattr_calls": 476,
+  "getattr_calls": 472,
   "hasattr_calls": 32,
   "missing_parameter_annotations": 11,
   "missing_return_annotations": 12,

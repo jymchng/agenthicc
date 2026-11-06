@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from agenthicc.tui.workspace.frames import FrameStats
     from agenthicc.schedules.manager import ScheduleManager
     from agenthicc.memory.tool_history import ToolHistoryRecoveryState
+    from agenthicc.tui.conversation_store import AppState
 
 __all__ = [
     "Command",
@@ -137,6 +138,8 @@ class CommandContext:
     select_agent: "Callable[[str], str] | None" = None
     #: Shows the primary-agent picker (AGX-09); TUI only.
     open_agent_picker: "Callable[[], None] | None" = None
+    #: The TUI's presentation state, for ``/status`` (TUX-02); TUI only.
+    app_state: "AppState | None" = None
 
 
 # A handler takes a CommandContext and returns True if it handled the command.
