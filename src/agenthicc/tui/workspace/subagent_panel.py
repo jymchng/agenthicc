@@ -9,6 +9,7 @@ from rich.markup import escape
 
 from agenthicc.subagents.pool import SubagentPoolState, WorkerState
 from agenthicc.tui.rendering import fit, visible_len
+from agenthicc.tui.theme import glyphs, palette
 from agenthicc.tui.workspace.formatters import compact_token_count, pool_status_counts
 
 __all__ = [
@@ -26,15 +27,6 @@ __all__ = [
 MAX_ROWS = 6
 #: Below this terminal height the panel is its summary line alone.
 COMPACT_BELOW_ROWS = 24
-
-_LOOKS: dict[str, tuple[str, str, str]] = {
-    "pending": ("◌", "dim", "queued"),
-    "running": ("●", "cyan", "running"),
-    "waiting": ("◆", "yellow", "waiting for approval"),
-    "done": ("✓", "green", "done"),
-    "failed": ("✗", "red", "failed"),
-    "stopped": ("⊘", "dim", "stopped"),
-}
 
 _TOOL_LABELS: dict[str, str] = {
     "read_file": "Read",
@@ -58,8 +50,21 @@ _TOOL_LABELS: dict[str, str] = {
 
 
 def status_glyph(status: str) -> tuple[str, str, str]:
-    """Glyph, style and spoken word for a worker status."""
-    return _LOOKS.get(status, ("?", "dim", status or "unknown"))
+    """Glyph, style and spoken word for a worker status, from the active theme.
+
+    The style is one Rich style string (a theme token or ``dim``), so it can
+    open a markup tag on its own.
+    """
+    p, g = palette(), glyphs()
+    looks: dict[str, tuple[str, str, str]] = {
+        "pending": (g.info, "dim", "queued"),
+        "running": (g.bullet, p.info, "running"),
+        "waiting": (g.diamond, p.warning, "waiting for approval"),
+        "done": (g.ok, p.success, "done"),
+        "failed": (g.fail, p.danger, "failed"),
+        "stopped": (g.fail, "dim", "stopped"),
+    }
+    return looks.get(status, ("?", "dim", status or "unknown"))
 
 
 def elapsed(worker: WorkerState, now: float) -> str:
@@ -113,7 +118,7 @@ def summary_line(
     if state.budget_cost_usd is not None:
         parts.append(f"${state.cost_usd:.2f}/${state.budget_cost_usd:.2f}")
 
-    name = "Subagents" if plain else "  [bold magenta]Subagents[/bold magenta]"
+    name = "Subagents" if plain else f"  [bold][{palette().agent}]Subagents[/][/bold]"
     if not parts:
         parts.append("none" if plain else "0 workers")
     depth = f"depth {state.depth}" if state.depth > 1 else ""
@@ -169,8 +174,9 @@ def worker_line(
             body += f", elapsed {time_text}"
         return fit(escape(body), cols)
 
-    marker = "▸" if selected else " "
-    lead = f" {marker}[{style}]{glyph}[/{style}] {escape(identity)}"
+    p = palette()
+    marker = f"[{p.accent}]{glyphs().bar}[/]" if selected else " "
+    lead = f" {marker}[{style}]{glyph}[/] {escape(identity)}"
     tail = ""
     if cols >= 64 and time_text:
         time_part = f"  {time_text}"
@@ -188,7 +194,8 @@ def worker_line(
     else:
         line = f"{lead}{tail}"
     if selected:
-        line = f"[reverse]{line}[/reverse]"
+        # The selected row: an accent bar on the selected-row background.
+        line = f"[{p.on('accent_bg')}]{line}[/]"
     return fit(line, cols)
 
 

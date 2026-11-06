@@ -938,8 +938,8 @@ The shell for shell-mode commands: `/bin/bash`, else `bash` on `PATH`, else
 @dataclass(frozen=True)
 class RuntimeMode:
     name: str
-    badge: str = "⏵⏵"
-    color: str = "white"
+    badge: str = field(default_factory=lambda: glyphs().prompt * 2)
+    color: str = "text"
     description: str = ""
     system_prompt_suffix: str = ""
     blocked_capabilities: frozenset[str] = frozenset()
@@ -949,7 +949,11 @@ class RuntimeMode:
 ```
 
 Canonical immutable runtime mode state. The selectable built-ins are Safe,
-Plan, and Yolo in that order. Replay is internal-only.
+Plan, and Yolo in that order. Replay is internal-only. `color` is a theme
+token (`mode_safe`, `mode_plan`, `mode_yolo`; Replay uses `muted`) that
+`build_mode_str` resolves through `mode_style` each time the badge is drawn;
+a mode plugin's own Rich colour is used as given. Built-in badges come from the glyph set when the mode is
+built: Safe `✓`, Plan `◆`, Yolo `❯❯`, Replay `←` (`+`, `*`, `>>`, `<` in ASCII).
 
 ### ModeRegistry
 
@@ -3839,7 +3843,7 @@ AGI-02 adds two behaviours:
 - `close_expired(item_id, status, reason)` closes an expired question as
   `delivered` (answered late) or `rejected` (dismissed). The agents hub lists
   an expired question for a running session on the same attempt as
-  `◇ answer late`. Answering it enqueues one input message beginning
+  `◆ answer late` (not bold). Answering it enqueues one input message beginning
   "Late answers to your earlier questions…" and closes the item as
   delivered; `x` dismisses it.
 

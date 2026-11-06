@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Callable
 
+from rich.style import Style
+
 from agenthicc.tui.cbreak_reader import Key
+from agenthicc.tui.theme import glyphs, palette, style
 from agenthicc.tui.workspace.overlay import Overlay
 
 if TYPE_CHECKING:
@@ -125,20 +128,20 @@ class TerminalListOverlay(Overlay):
         preview = " … ".join(lines[-self._MAX_OUTPUT_LINES :]) or "(no output)"
         return self._shorten(preview, self._MAX_OUTPUT_CHARS)
 
-    def _text_line(self, value: str, *, style: str = "") -> "RenderableType":
+    def _text_line(self, value: str, *, look: str | Style = "") -> "RenderableType":
         from rich.text import Text
 
-        text = Text(value, style=style, no_wrap=True, overflow="crop")
+        text = Text(value, style=look, no_wrap=True, overflow="crop")
         text.truncate(self._viewport_width, overflow="crop")
         return text
 
     @staticmethod
-    def _cell(value: str, *, style: str = "") -> "RenderableType":
+    def _cell(value: str, *, look: str | Style = "") -> "RenderableType":
         """Render manager data literally so Rich markup is never evaluated."""
 
         from rich.text import Text
 
-        return Text(value, style=style, no_wrap=True, overflow="crop")
+        return Text(value, style=look, no_wrap=True, overflow="crop")
 
     def _footer(self, *, details: bool = False) -> "RenderableType":
         if details:
@@ -147,7 +150,7 @@ class TerminalListOverlay(Overlay):
             hint = "↑↓ PgUp/PgDn   s   Esc close"
         else:
             hint = "↑↓/j/k select   PgUp/PgDn page   Home/End   Enter details   s stop   Ctrl+X stop   Esc close"
-        return self._text_line(hint, style="dim")
+        return self._text_line(hint, look="dim")
 
     def render(self) -> "RenderableType":
         from rich.console import Group
@@ -165,7 +168,7 @@ class TerminalListOverlay(Overlay):
                 return Group(
                     self._text_line(
                         f"Terminal Details · {self._shorten(selected.terminal_id, 32)}",
-                        style="bold cyan",
+                        look=style("accent", bold=True),
                     ),
                     self._text_line(f"State: {self._shorten(selected.state.value, 24)}"),
                     self._footer(details=True),
@@ -173,7 +176,7 @@ class TerminalListOverlay(Overlay):
             return Group(
                 self._text_line(
                     f"Terminal Details · {self._shorten(selected.terminal_id, 32)}",
-                    style="bold cyan",
+                    look=style("accent", bold=True),
                 ),
                 self._text_line(f"State: {self._shorten(selected.state.value, 24)}"),
                 self._text_line(f"Command: {self._shorten(selected.command, 120)}"),
@@ -211,8 +214,10 @@ class TerminalListOverlay(Overlay):
         for index in range(start, end):
             record = records[index]
             table.add_row(
-                self._cell("▶" if index == self._index else " "),
-                self._cell(self._shorten(record.terminal_id, 28), style="bold"),
+                self._cell(glyphs().bar, look=palette().accent)
+                if index == self._index
+                else self._cell(" "),
+                self._cell(self._shorten(record.terminal_id, 28), look="bold"),
                 self._cell(self._shorten(record.state.value, 16)),
                 self._cell(self._shorten(record.label, 48)),
                 self._cell(

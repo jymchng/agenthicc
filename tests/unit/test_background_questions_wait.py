@@ -21,6 +21,7 @@ from agenthicc.background.input_inbox import BackgroundInputInbox
 from agenthicc.background.settings import BackgroundSettings
 from agenthicc.background.worker import BackgroundApprovalService
 from agenthicc.tui.cbreak_reader import Key
+from agenthicc.tui.theme import glyphs
 from agenthicc.tui.workspace.agents_hub import AgentsHub, Tab
 from agenthicc.tui.workspace.agents_hub.prefs import HubPrefs
 
@@ -136,7 +137,7 @@ async def test_an_expired_question_can_be_answered_late_as_a_message(tmp_path: P
     item_id = await _expired(store, session)
     hub = await _hub(store, tmp_path)
     try:
-        assert "◇ answer late" in _text(hub) and "timed out" in _text(hub)
+        assert f"{glyphs().diamond} answer late" in _text(hub) and "timed out" in _text(hub)
         for key in ((Key.CHAR, "i"), (Key.DOWN, ""), (Key.ENTER, "")):
             hub.handle_key(*key)
             await hub.settle()

@@ -29,6 +29,7 @@ from agenthicc.subagents.transcripts import (
 )
 from agenthicc.tui.cbreak_reader import Key, key_name
 from agenthicc.tui.keymap import Dispatcher
+from agenthicc.tui.theme import glyphs, palette
 from agenthicc.tui.workspace.overlay import Overlay
 
 if TYPE_CHECKING:
@@ -293,11 +294,14 @@ class SubagentsOverlay(Overlay):
         entry = self.selected()
         chosen = (entry.pool_id, entry.worker.worker_id) if entry is not None else None
         lines: list[str] = []
+        selected_line = -1
         current = self._state.conversation.subagent_pool_state()
         if current is not None:
             lines.append(summary_line(current, width))
         elif not self._earlier:
-            lines.append("  [bold magenta]Subagents[/bold magenta] [dim]none in this session[/dim]")
+            lines.append(
+                f"  [bold][{palette().agent}]Subagents[/][/bold] [dim]none in this session[/dim]"
+            )
         pool_seen = ""
         for row in self.entries():
             if not row.current and row.pool_id != pool_seen:
@@ -310,17 +314,13 @@ class SubagentsOverlay(Overlay):
                     f"  [bold]Earlier[/bold] [dim]{started} · {len(record.workers)} workers"
                     f"{status}[/dim]"
                 )
-            lines.append(
-                worker_line(
-                    row.worker,
-                    width,
-                    now=now,
-                    selected=(row.pool_id, row.worker.worker_id) == chosen,
-                )
-            )
+            selected = (row.pool_id, row.worker.worker_id) == chosen
+            if selected:
+                selected_line = len(lines)
+            lines.append(worker_line(row.worker, width, now=now, selected=selected))
         room = max(1, self._height - 1)
         if len(lines) > room:
-            index = next((i for i, line in enumerate(lines) if "[reverse]" in line), len(lines) - 1)
+            index = selected_line if selected_line >= 0 else len(lines) - 1
             start = min(max(0, index - room // 2), len(lines) - room)
             lines = lines[start : start + room]
         lines.append("  " + _hints(self._state, "subagents", self.conditions()))
@@ -360,13 +360,19 @@ class SubagentsOverlay(Overlay):
 
 # ── transcripts ──────────────────────────────────────────────────────────────
 
-_EVENT_LOOKS: dict[str, tuple[str, str]] = {
-    "prompt": ("▸", "bold"),
-    "text": ("”", ""),
-    "tool_started": ("●", "cyan"),
-    "approval_requested": ("◆", "yellow"),
-    "truncated": ("…", "dim"),
-}
+
+def _event_look(kind: str, ok: bool | None) -> tuple[str, str]:
+    """Glyph and style (one Rich style string) of a transcript event kind."""
+    p, g = palette(), glyphs()
+    if kind in ("tool_finished", "approval_resolved", "finished"):
+        return (g.ok, p.success) if ok else (g.fail, p.danger)
+    looks = {
+        "prompt": (g.right, "bold"),
+        "tool_started": (g.bullet, p.info),
+        "approval_requested": (g.diamond, p.warning),
+        "truncated": (g.ellipsis, "dim"),
+    }
+    return looks.get(kind, (g.info, ""))
 
 
 def transcript_lines(events: Sequence[TranscriptEvent], width: int) -> list[str]:
@@ -379,31 +385,24 @@ def transcript_lines(events: Sequence[TranscriptEvent], width: int) -> list[str]
     for event in events:
         clock = datetime.fromtimestamp(event.at).strftime("%H:%M:%S") if event.at else "        "
         text = " ".join(event.text.split())
+        glyph, style = _event_look(event.kind, event.ok)
         if event.kind == "tool_finished":
-            glyph, style = ("✓", "green") if event.ok else ("✗", "red")
             body = f"{event.tool} {text}".strip()
         elif event.kind == "approval_resolved":
-            glyph, style = ("✓", "green") if event.ok else ("✗", "red")
             body = f"{event.tool} {'approved' if event.ok else 'denied'}"
         elif event.kind == "finished":
-            glyph, style = ("✓", "green") if event.ok else ("✗", "red")
             body = ("done · " if event.ok else "failed · ") + text
         elif event.kind == "truncated":
-            glyph, style = _EVENT_LOOKS["truncated"]
             body = f"{event.dropped} earlier events dropped to keep the transcript small"
         elif event.kind == "approval_requested":
-            glyph, style = _EVENT_LOOKS["approval_requested"]
             body = f"needs approval: {event.tool} {text}".strip()
         elif event.kind == "tool_started":
-            glyph, style = _EVENT_LOOKS["tool_started"]
             body = f"{event.tool}  {text}".strip()
         elif event.kind == "prompt":
-            glyph, style = _EVENT_LOOKS["prompt"]
             body = f"task: {text}"
         else:
-            glyph, style = _EVENT_LOOKS["text"]
             body = text
-        styled = f"[{style}]{glyph}[/{style}]" if style else glyph
+        styled = f"[{style}]{escape(glyph)}[/]" if style else escape(glyph)
         line = f"  [dim]{clock}[/dim]  {styled} {escape(body)}"
         lines.append(fit(line, width) if visible_len(line) > width else line)
     return lines
@@ -491,7 +490,7 @@ class SubagentTranscriptOverlay(Overlay):
         facts = [word, elapsed(worker, self._clock()), tokens(worker.tokens)]
         position = f"{self._index + 1}/{len(self._workers)}" if len(self._workers) > 1 else ""
         head = (
-            f"  [{style}]{glyph}[/{style}] [bold]{escape(worker.label)}[/bold] "
+            f"  [{style}]{glyph}[/] [bold]{escape(worker.label)}[/bold] "
             f"[dim]({escape(worker.agent_type)}) · {' · '.join(f for f in facts if f)}"
             f"{'   ←→ ' + position if position else ''}[/dim]"
         )
