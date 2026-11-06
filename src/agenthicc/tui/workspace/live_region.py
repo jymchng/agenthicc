@@ -4,7 +4,10 @@ Rich's ``Live`` moves the cursor to the top of the block and rewrites every
 line on every refresh. :class:`LiveRegion` keeps the lines it last wrote and,
 for the next frame, rewrites only the lines that differ:
 
-- a changed line is erased and rewritten in place;
+- a changed line is patched in place: when only some of its segments
+  changed (a spinner glyph in the status line, TUX-02), only those cells are
+  rewritten; otherwise it is rewritten from the first changed segment and the
+  rest of the line is erased;
 - a taller block appends lines, a shorter one erases the lines it no longer
   uses;
 - a width change, an invalidation (resize) or a frame in which more than half
@@ -33,6 +36,7 @@ from typing import TextIO, cast
 from rich.console import Console, ConsoleRenderable, RenderHook
 from rich.control import Control
 from rich.file_proxy import FileProxy
+from rich.cells import cell_len
 from rich.segment import ControlType, Segment, Segments
 
 from agenthicc.tui.workspace.frames import FrameStats
@@ -44,6 +48,7 @@ Line = tuple[Segment, ...]
 
 _CR = Control(ControlType.CARRIAGE_RETURN).segment
 _ERASE_LINE = Control((ControlType.ERASE_IN_LINE, 2)).segment
+_ERASE_TO_END = Control((ControlType.ERASE_IN_LINE, 0)).segment
 _NEWLINE = Segment.line()
 _SYNC_BEGIN = Segment("\x1b[?2026h")
 _SYNC_END = Segment("\x1b[?2026l")
@@ -55,6 +60,39 @@ def _move(from_row: int, to_row: int) -> list[Segment]:
     if to_row > from_row:
         return [Control((ControlType.CURSOR_DOWN, to_row - from_row)).segment]
     return []
+
+
+def _width(segments: Sequence[Segment]) -> int:
+    return sum(cell_len(segment.text) for segment in segments)
+
+
+def _patch(old: Line, new: Line) -> list[Segment]:
+    """Turn the row *old* into *new*, the cursor anywhere on that row.
+
+    Segments the two rows share at the start and at the end are not written
+    again. When the changed middle keeps its width it is overwritten in
+    place; otherwise the row is rewritten from the first change and the rest
+    is erased.
+    """
+    limit = min(len(old), len(new))
+    prefix = 0
+    while prefix < limit and old[prefix] == new[prefix]:
+        prefix += 1
+    suffix = 0
+    while suffix < limit - prefix and old[-1 - suffix] == new[-1 - suffix]:
+        suffix += 1
+    column = _width(new[:prefix])
+    start = [_CR]
+    if column:
+        start.append(Control((ControlType.CURSOR_FORWARD, column)).segment)
+    if suffix:
+        middle_old = old[prefix : len(old) - suffix]
+        middle_new = new[prefix : len(new) - suffix]
+        if _width(middle_old) == _width(middle_new):
+            return [*start, *middle_new]
+    if prefix == 0:
+        return [_CR, _ERASE_LINE, *new]
+    return [*start, *new[prefix:], _ERASE_TO_END]
 
 
 def lines_text(lines: Sequence[Line]) -> list[str]:
@@ -164,7 +202,7 @@ class LiveRegion(RenderHook):
         row = height - 1
         for index in changed:
             segments += _move(row, index)
-            segments += [_CR, _ERASE_LINE, *new[index]]
+            segments += _patch(old[index], new[index])
             row = index
         if target > height:
             segments += _move(row, height - 1)

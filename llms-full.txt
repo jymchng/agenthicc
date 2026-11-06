@@ -1785,8 +1785,11 @@ class Workspace:
 ```
 
 The root owns one live block at the bottom of the terminal for the application
-lifetime. It renders status, composer, footer, overlays, and the scroll-buffer
-bridge. Start it once before the input loop and stop it once during session
+lifetime. It renders the overflow bridge, the `ComposerFrame` (or an overlay in
+its place), the subagent panel, the `StatusLine` and at most one notice or
+contextual hint row: idle, four rows (TUX-02). An overlay whose
+`Overlay.owns_bottom_rows` is true (the agents hub) replaces the frame and the
+composer's hint row; any other overlay is drawn between the frame's rules. Start it once before the input loop and stop it once during session
 teardown; do not start or stop it per agent turn. `flush_scroll()` commits
 queued transcript events and collapsed tool-group summaries before an agent
 interruption can cancel the normal turn-boundary event.
@@ -1795,10 +1798,11 @@ Rendering (AGX-11): signals request frames from `frames`
 (`agenthicc.tui.workspace.frames.FrameScheduler`), which draws at most one
 frame per `frame_interval_s` and draws typed input, cursor and overlay changes
 on the next loop iteration. Each frame is a list of segment lines
-(`agenthicc.tui.workspace.live_region.Line`); status and footer rows are built
-as markup and rendered once per distinct row and width. The block is a
-`LiveRegion` that rewrites only changed rows (a full redraw after a resize or
-when more than half the rows changed), repaints itself below anything printed
+(`agenthicc.tui.workspace.live_region.Line`); status-line and frame rows are
+built as markup and rendered once per distinct row, width and theme. The block
+is a `LiveRegion` that rewrites only changed rows, and within a changed row only
+the segments that differ (a spinner frame overwrites one cell); a full redraw
+follows a resize or a frame in which more than half the rows changed. It repaints itself below anything printed
 while it is live (the scroll buffer, or stdout/stderr), and brackets each write
 with synchronized-output mode 2026 when the terminal reported support.
 `frame_stats()` returns counts and render/write percentiles, shown by `/perf`.
@@ -1810,9 +1814,89 @@ after the mention group. Level-1 subagent rows align with tool headings while
 worker previews are indented children; completed `⎋ Compacted` notices are also
 indented. A pool that does not fully succeed is labeled `Subagents Failed`; its
 completion row is followed by one blank row before subsequent scrollback. The
-live status and footer use `|` between visual segments (screen-reader status
-retains comma-separated, spoken labels). Activity recaps use one separator before
-a next scrollback event or the persistent live status block.
+status line uses ` · ` between segments (the screen-reader status uses commas
+and words). Activity recaps use one separator before a next scrollback event or
+the persistent live block.
+
+### StatusLine
+
+```python
+class StatusLine:
+    def __init__(self, app_state: AppState, startup: StartupCoordinator | None = None) -> None: ...
+    def markup(self, cols: int) -> str: ...
+    def height(self, cols: int) -> int: ...  # always 1
+    def sentence(self) -> str: ...
+def status_sentence(app_state: AppState) -> str: ...
+def notice_rows(app_state: AppState, cols: int) -> tuple[str, ...]: ...
+```
+
+`agenthicc.tui.workspace.components`. One status row of prioritised segments
+(TUX-02): 1 state (`● Idle`, spinner + verb + elapsed, `◆ Waiting for you`),
+2 background sessions needing the user (`◆ N sessions need you ←`), 3 context
+meter (`ctx 42% ▰▰▱▱▱`; `success` < 60 % ≤ `warning` < 85 % ≤ `danger`), 4 short
+model (`opus-4.8`), 5 workers / workflow phase / background sessions / startup,
+6 tokens and cost (only when reported; `≈` partial, `~` estimated), 7 git
+branch (`main*`), then a right-aligned shortcuts hint at ≥ 60 columns. When the
+row is too narrow the lowest segments drop (from priority 4 first), then
+shorter forms are used; nothing is cut mid-word. Below 60 columns only
+segments 1–3 are allowed, below 40 only the state. "cost unknown",
+"usage unavailable" and the session ID never appear. Segments 2–7 are cached on
+the signal values they read; a spinner frame recomputes only the state.
+`sentence()` / `status_sentence()` is the screen-reader form ("Idle. Opus 4.8.
+Context 12 percent."), announced between turns only on change.
+`notice_rows()` is the notification, `/loop` status or attention toast,
+wrapped whole, shown in place of the hint row.
+
+### ComposerFrame
+
+```python
+class ComposerFrame:
+    def __init__(self, app_state: AppState, composer: ComposerComponent) -> None: ...
+    def form(self, cols: int) -> str: ...  # "box" | "rules" | "none"
+    def top(self, cols: int, form: str | None = None) -> str: ...
+    def body(self, cols: int, form: str | None = None) -> list[Line]: ...
+    def bottom(self, cols: int, form: str | None = None) -> str: ...
+    def hint_row(self, cols: int) -> str | None: ...
+    def height(self, cols: int) -> int: ...
+```
+
+The composer's rounded box (`[ui] composer_frame = "box"`; two rules with
+`"rules"` or below 60 columns; no frame with `screen_reader`). The top border
+carries the session title (`ConversationStore.session_title`, the first
+prompt cut to 80 characters, or `new session`) and the mode badge in its
+`mode_*` token. `hint_row()` returns only contextual hints — keymap actions
+with a `when` condition (a running turn, a condensed paste, a subagent pool)
+or the background-terminal wait keys — and `None` when idle.
+
+### User status line — `agenthicc.tui.statusline`
+
+```python
+class StatusLineCommand:
+    def __init__(self, command: str, app_state: AppState, cwd: str, *, timeout_s: float = 0.5, interval_s: float = 1.0) -> None: ...
+    def start(self) -> None: ...
+    def stop(self) -> None: ...
+    async def run_once(self) -> None: ...
+def statusline_input(app_state: AppState) -> dict[str, str | int | float | None]: ...
+def sanitize_status_output(raw: bytes) -> str: ...
+def read_git_branch(cwd: str | Path) -> str: ...
+async def refresh_git_status(app_state: AppState, cwd: str, *, timeout_s: float = 2.0) -> None: ...
+def status_report(app_state: AppState) -> list[tuple[str, str]]: ...
+```
+
+`[ui.statusline] command` (`UISettings.statusline_command`) runs after state
+changes, at most once a second, with a 500 ms timeout, in the working
+directory with `tools.exec.child.child_env()` and its resource limits. Its
+stdin is `statusline_input()` as JSON (`session_id`, `title`, `cwd`,
+`git_branch`, `model`, `provider`, `mode`, `state`, `context_used_pct`,
+`tokens_in`, `tokens_out`, `cost_usd`, `agents_need_you`, `workers_running`;
+unknown values are `null`). The first line of its stdout, with every control
+sequence except SGR removed, is published as `ConversationStore.statusline_text`
+and replaces segments 3–7. A failure clears it and posts one notice. A project
+configuration's command is dropped by `load_config` unless that file is trusted
+(`ExtensionTrust.permits(path, kind="statusline")`). `status_report()` is what
+`/status` prints (session, title, directory, branch, model, provider, mode,
+turns, tokens, cost or why it is absent, context, log and memory paths);
+`CommandContext.app_state` carries the TUI state to it.
 
 ### ComposerComponent
 
@@ -1828,13 +1912,20 @@ Folds each logical line of the prompt at the width (continuation rows indented
 under `❯`), caching the fold per line, and shows at most `max_rows` rows around
 the cursor with `↑ N more lines` / `↓ N more lines` for the rest. `render()`
 returns a renderable laid out at the width it is given (the agents screen
-embeds it); `StatusComponent.markup_lines(cols)` and
-`FooterComponent.markup_lines(cols)` return their rows as markup.
+embeds it). An empty prompt shows the muted placeholder
+`ask, or type / for commands, @ for files` after the cursor (shorter forms when
+narrow; none for a screen reader).
 
 ### ConversationStore and reactive TUI AppState
 
 `tui.conversation_store` owns ephemeral turns, token/cost signals, input state,
-active mode, workflow progress, overlays, approvals, and notifications. This
+active mode, workflow progress, overlays, approvals, and notifications. TUX-02
+adds `session_title` (set by the first `user_message` event, also on replay,
+via `session_title_from(prompt)`), `context_tokens` (projected by
+`UsageLedger.bind_conversation_store` from `UsageLedger.context_tokens()`, the
+latest main-agent call's input plus cache tokens), `context_window` (set at
+session start from `ExecutionSettings.effective_context_window()`),
+`git_branch` / `git_dirty` and `statusline_text`. This
 `AppState` is intentionally distinct from `kernel.AppState`; it is not the
 durable domain model and must not replace event reduction.
 During `--continue` or `--resume SESSION_ID`, its `transcript_loading` signal

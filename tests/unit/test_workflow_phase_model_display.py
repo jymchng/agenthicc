@@ -135,171 +135,50 @@ def test_update_workflow_phase_clears_model_when_empty() -> None:
     assert wf.current_phase_model == ""
 
 
-# ── StatusComponent.render() model selection ─────────────────────────────────
+# ── StatusLine model segment (TUX-02) ───────────────────────────────────────
 
 
-@pytest.mark.unit
-def test_status_component_uses_phase_model_when_set() -> None:
-    """When current_phase_model is non-empty and status==running, line 2 shows it."""
-    from unittest.mock import MagicMock
-    from agenthicc.tui.workspace.components import StatusComponent
+def _status_text(workflow: WorkflowRun | None) -> str:
+    from rich.text import Text
 
-    state = MagicMock()
-    state.conversation.model_name.return_value = "openai/claude-opus"
-    state.conversation.session_id.return_value = "sess-1"
-    state.conversation.turn_count.return_value = 1
-    state.conversation.cost_usd.return_value = 0.0
-    state.conversation.tokens_in.return_value = 100
-    state.conversation.tokens_out.return_value = 50
-    state.active_mode.return_value = MagicMock(badge="⏵⏵")
+    from agenthicc.tui.workspace.components import StatusLine
 
-    wf = WorkflowRun(
+    state = AppState.create()
+    state.conversation.model_name.set("openai/claude-opus")
+    state.workflow_run.set(workflow)
+    return Text.from_markup(StatusLine(state).markup(160)).plain
+
+
+def _run(status: str, phase_model: str, phase: str | None = "execute") -> WorkflowRun:
+    return WorkflowRun(
         run_id="r1",
         workflow_name="code_plan",
         intent="do stuff",
-        current_phase="execute",
-        status="running",
-        current_phase_model="deepseek-v4-flash",
+        current_phase=phase,
+        status=status,
+        current_phase_model=phase_model,
     )
-    state.workflow_run.return_value = wf
-    state.conversation.agent_state.return_value = MagicMock(name="IDLE")
-    state.conversation.active_tool.return_value = ""
-    state.conversation.elapsed_s = 0.0
-    state.conversation.notification.return_value = None
-    state.conversation.workflow_override.return_value = None
-    state.conversation.frame.return_value = 0
-    state.conversation.compaction_active.return_value = False
-
-    from rich.console import Console
-
-    comp = StatusComponent(state)
-    console = Console(highlight=False, markup=False, no_color=True, width=120)
-    with console.capture() as cap:
-        console.print(comp.render())
-    rendered_str = cap.get()
-
-    # The phase model should appear, not the global model
-    assert "deepseek-v4-flash" in rendered_str
-    assert "claude-opus" not in rendered_str
 
 
 @pytest.mark.unit
-def test_status_component_uses_session_model_when_no_phase_override() -> None:
-    """When current_phase_model is empty, line 2 shows the session model."""
-    from unittest.mock import MagicMock
-    from agenthicc.tui.workspace.components import StatusComponent
-
-    state = MagicMock()
-    state.conversation.model_name.return_value = "openai/claude-opus"
-    state.conversation.session_id.return_value = "sess-1"
-    state.conversation.turn_count.return_value = 1
-    state.conversation.cost_usd.return_value = 0.0
-    state.conversation.tokens_in.return_value = 100
-    state.conversation.tokens_out.return_value = 50
-    state.active_mode.return_value = MagicMock(badge="⏵⏵")
-
-    wf = WorkflowRun(
-        run_id="r1",
-        workflow_name="code_plan",
-        intent="do stuff",
-        current_phase="plan",
-        status="running",
-        current_phase_model="",  # no override
-    )
-    state.workflow_run.return_value = wf
-    state.conversation.agent_state.return_value = MagicMock(name="IDLE")
-    state.conversation.active_tool.return_value = ""
-    state.conversation.elapsed_s = 0.0
-    state.conversation.notification.return_value = None
-    state.conversation.workflow_override.return_value = None
-    state.conversation.frame.return_value = 0
-    state.conversation.compaction_active.return_value = False
-
-    from rich.console import Console
-
-    comp = StatusComponent(state)
-    console = Console(highlight=False, markup=False, no_color=True, width=120)
-    with console.capture() as cap:
-        console.print(comp.render())
-    rendered_str = cap.get()
-
-    assert "claude-opus" in rendered_str
+def test_status_line_uses_phase_model_when_set() -> None:
+    text = _status_text(_run("running", "deepseek-v4-flash"))
+    assert "deepseek-v4-flash" in text
+    assert "claude-opus" not in text
 
 
 @pytest.mark.unit
-def test_status_component_reverts_to_session_model_after_workflow_ends() -> None:
-    """When workflow_run is None, line 2 shows the session model again."""
-    from unittest.mock import MagicMock
-    from agenthicc.tui.workspace.components import StatusComponent
-
-    state = MagicMock()
-    state.conversation.model_name.return_value = "openai/claude-opus"
-    state.conversation.session_id.return_value = "sess-1"
-    state.conversation.turn_count.return_value = 1
-    state.conversation.cost_usd.return_value = 0.0
-    state.conversation.tokens_in.return_value = 100
-    state.conversation.tokens_out.return_value = 50
-    state.active_mode.return_value = MagicMock(badge="⏵⏵")
-    state.workflow_run.return_value = None  # no active workflow
-    state.conversation.agent_state.return_value = MagicMock(name="IDLE")
-    state.conversation.active_tool.return_value = ""
-    state.conversation.elapsed_s = 0.0
-    state.conversation.notification.return_value = None
-    state.conversation.workflow_override.return_value = None
-    state.conversation.frame.return_value = 0
-    state.conversation.compaction_active.return_value = False
-
-    from rich.console import Console
-
-    comp = StatusComponent(state)
-    console = Console(highlight=False, markup=False, no_color=True, width=120)
-    with console.capture() as cap:
-        console.print(comp.render())
-    rendered_str = cap.get()
-
-    assert "claude-opus" in rendered_str
+def test_status_line_uses_session_model_when_no_phase_override() -> None:
+    assert "openai/opus" in _status_text(_run("running", "", "plan"))
 
 
 @pytest.mark.unit
-def test_status_component_uses_session_model_when_workflow_complete() -> None:
-    """When status=='complete', current_phase_model is ignored."""
-    from unittest.mock import MagicMock
-    from agenthicc.tui.workspace.components import StatusComponent
+def test_status_line_reverts_to_session_model_after_workflow_ends() -> None:
+    assert "openai/opus" in _status_text(None)
 
-    state = MagicMock()
-    state.conversation.model_name.return_value = "openai/claude-opus"
-    state.conversation.session_id.return_value = "sess-1"
-    state.conversation.turn_count.return_value = 1
-    state.conversation.cost_usd.return_value = 0.0
-    state.conversation.tokens_in.return_value = 100
-    state.conversation.tokens_out.return_value = 50
-    state.active_mode.return_value = MagicMock(badge="⏵⏵")
 
-    wf = WorkflowRun(
-        run_id="r1",
-        workflow_name="code_plan",
-        intent="do stuff",
-        current_phase=None,
-        status="complete",
-        current_phase_model="deepseek-v4-flash",
-    )
-    state.workflow_run.return_value = wf
-    state.conversation.agent_state.return_value = MagicMock(name="IDLE")
-    state.conversation.active_tool.return_value = ""
-    state.conversation.elapsed_s = 0.0
-    state.conversation.notification.return_value = None
-    state.conversation.workflow_override.return_value = None
-    state.conversation.frame.return_value = 0
-    state.conversation.compaction_active.return_value = False
-
-    from rich.console import Console
-
-    comp = StatusComponent(state)
-    console = Console(highlight=False, markup=False, no_color=True, width=120)
-    with console.capture() as cap:
-        console.print(comp.render())
-    rendered_str = cap.get()
-
-    # Workflow complete — session model shown, not phase model
-    assert "claude-opus" in rendered_str
-    assert "deepseek-v4-flash" not in rendered_str
+@pytest.mark.unit
+def test_status_line_uses_session_model_when_workflow_complete() -> None:
+    text = _status_text(_run("complete", "deepseek-v4-flash", None))
+    assert "openai/opus" in text
+    assert "deepseek-v4-flash" not in text

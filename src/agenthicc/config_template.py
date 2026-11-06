@@ -241,6 +241,11 @@ def build_commented_config_template() -> str:
             _browser_section(lines, "cloakbrowser", value.cloakbrowser)
             _browser_section(lines, "playwright", value.playwright)
             _mcp_server(lines)
+        elif name == "ui":
+            _section(lines, "ui")
+            _dataclass_fields(lines, value, skip=frozenset({"statusline_command"}))
+            _section(lines, "ui.statusline")
+            _comment(lines, 'command = ""  # replaces the status line\'s segments 3-7 (TUX-02)')
         else:
             _section(lines, name)
             _dataclass_fields(lines, value)

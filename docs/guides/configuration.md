@@ -581,7 +581,12 @@ resume_transcript_max_event_bytes = 16384
 the colour theme and glyph set (TUX-01): `theme` (`"auto"`, `"dark"`,
 `"light"`, `"high-contrast"`, `"ansi"` or a custom theme name) and `glyphs`
 (`"auto"`, `"unicode"` or `"ascii"`); see
-[themes and glyphs](tui.md#themes-and-glyphs). Key bindings
+[themes and glyphs](tui.md#themes-and-glyphs). The prompt's frame and the
+status line (TUX-02) are set by `composer_frame` (`"box"`, the default, or
+`"rules"`) and by `[ui.statusline] command`, a command whose output replaces
+part of the status line; a project file may set the command only once it is
+trusted (`agenthicc trust add <file>`). See
+[a user status line](tui.md#a-user-status-line). Key bindings
 live in their own file, `~/.agenthicc/keybindings.toml`
 ([key bindings](tui.md#key-bindings)).
 

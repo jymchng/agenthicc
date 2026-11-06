@@ -1,49 +1,88 @@
-"""StatusComponent, ComposerComponent, FooterComponent (PRD-60 §4-6).
+"""The live region's components: StatusLine, ComposerComponent, ComposerFrame (TUX-02).
 
-The status bar and footer describe each row as a markup string; the workspace
-renders a markup row once per distinct string and width and reuses it until
-the string changes (AGX-11), so an animation frame re-renders only the row it
-changes. The composer builds its rows as segments directly: it folds each
-logical line at the terminal width, caches the fold per line, and shows at most
-``max_rows`` rows around the cursor.
+The live region below the transcript is the composer in its frame, one status
+line and at most one hint row::
+
+    ╭─ fix flaky scheduler test ─────────────────────────────── Safe ─╮
+    │ ❯ ask, or type / for commands, @ for files                      │
+    ╰─────────────────────────────────────────────────────────────────╯
+     ● Idle · opus-4.8 · ctx 12% ▰▱▱▱▱ · 2 sessions need you ←   /help
+
+- :class:`StatusLine` lays out segments in a fixed priority order and drops
+  the lowest ones (never cutting a word) when the line is too narrow. Its
+  segments are rebuilt only when a signal they read changes; a spinner frame
+  re-renders the state segment alone.
+- :class:`ComposerFrame` draws the composer in a rounded box (or between two
+  rules) whose top border carries the session title and the mode badge, and
+  owns the contextual hint row.
+- :class:`ComposerComponent` folds the prompt at the frame's inner width.
+
+Status and frame rows are markup strings; the workspace renders each distinct
+string once per width and theme and reuses it (AGX-11). Every colour is a
+theme token and every non-ASCII character a theme glyph (TUX-01).
 """
 
 from __future__ import annotations
 
 import functools
 import os
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from rich.cells import cell_len
+from rich.markup import escape
 from rich.segment import Segment
 from rich.style import Style
 
 from agenthicc.tui.preferences import ui_settings as _ui
+from agenthicc.tui.theme import Theme, current_theme, glyphs, palette, style
 from agenthicc.tui.workspace.formatters import (
     compact_token_count,
-    cost_label,
-    identity_rows,
+    context_band,
+    context_percent,
+    cost_text,
+    meter_cells,
+    METER_CELLS,
     pool_status_counts,
-    usage_quality_label,
+    short_model,
+    spoken_model,
 )
 
 if TYPE_CHECKING:
     from rich.console import Console, ConsoleOptions, RenderableType
     from rich.text import Text
-    from agenthicc.tui.conversation_store import AppState
+
     from agenthicc.runners.startup import StartupCoordinator
+    from agenthicc.tui.conversation_store import AppState
     from agenthicc.tui.workspace.live_region import Line
 
-# Flower icons that cycle during agent runs
-_FLOWERS = ("✿", "❀", "❁", "❃", "✾", "❋", "✽", "❊")
-_THINKING = "Thinking"
-# Spinner frames shown while compaction LLM call is in flight (PRD-119)
-_COMPACT_SPINNER = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+__all__ = [
+    "PLACEHOLDER",
+    "ComposerComponent",
+    "ComposerFrame",
+    "StatusLine",
+    "status_sentence",
+]
 
-# Static stand-ins for animation when [ui] reduced_motion or screen_reader is
-# set (AGX-13).
-_STILL = "●"
+#: The empty composer's muted placeholder, then shorter forms for narrow frames.
+PLACEHOLDER = (
+    "ask, or type / for commands, @ for files",
+    "ask, or type / for commands",
+    "ask",
+)
+#: The frame title before the session has one.
+UNTITLED = "new session"
+
+# Below these widths the layout degrades (TUX-02 §2.5).
+_RULES_BELOW = 60
+_STATE_ONLY_BELOW = 40
+#: Priority of the lowest segment still shown below ``_RULES_BELOW`` columns.
+_NARROW_PRIORITY = 3
+#: Segments from this priority on are dropped before anything is shortened.
+_DROP_FIRST = 4
+
+_MODE_TOKENS = {"safe": "mode_safe", "plan": "mode_plan", "yolo": "mode_yolo"}
 
 
 def _get_cols() -> int:
@@ -64,10 +103,8 @@ def _cached_elapsed(conv: object, *, total_activity: bool = True) -> float:
     """Read a cached duration without deriving time during rendering.
 
     ``activity_elapsed_s`` spans consecutive internal LLM turns until the
-    outer TUI activity returns to IDLE. Waiting overlays intentionally use the
-    per-turn display clock so their content remains stable while the user is
-    answering a prompt. The fallback keeps lightweight ConversationStore-
-    shaped test doubles compatible.
+    outer TUI activity returns to IDLE. Waiting overlays use the per-turn
+    display clock so their content stays stable while the user answers.
     """
     names = (
         ("activity_elapsed_s", "display_elapsed_s") if total_activity else ("display_elapsed_s",)
@@ -75,7 +112,7 @@ def _cached_elapsed(conv: object, *, total_activity: bool = True) -> float:
     for name in names:
         value = getattr(conv, name, None)
         value = value() if callable(value) else value
-        if isinstance(value, (int, float)):
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
             return float(value)
     return 0.0
 
@@ -88,413 +125,517 @@ def _fit(markup: str, cols: int) -> str:
     return markup
 
 
-def _signal_text(conv: object, name: str, default: str) -> str:
-    signal = getattr(conv, name, None)
-    value = signal() if callable(signal) else signal
+def _vlen(markup: str) -> int:
+    from agenthicc.tui.rendering import visible_len
+
+    return visible_len(markup)
+
+
+def _signal(owner: object, name: str) -> object:
+    value = getattr(owner, name, None)
+    return value() if callable(value) else value
+
+
+def _signal_text(conv: object, name: str, default: str = "") -> str:
+    value = _signal(conv, name)
     return value if isinstance(value, str) else default
 
 
-def _signal_int(conv: object, name: str, default: int) -> int:
-    signal = getattr(conv, name, None)
-    value = signal() if callable(signal) else signal
+def _signal_int(conv: object, name: str, default: int = 0) -> int:
+    value = _signal(conv, name)
     return value if isinstance(value, int) and not isinstance(value, bool) else default
 
 
-def _signal_float(conv: object, name: str, default: float) -> float:
-    signal = getattr(conv, name, None)
-    value = signal() if callable(signal) else signal
+def _signal_float(conv: object, name: str, default: float = 0.0) -> float:
+    value = _signal(conv, name)
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         return float(value)
     return default
 
 
-def _usage_text(inp: int, out: int, status: str, *, screen_reader: bool) -> str:
-    if status not in {"complete", "partial"}:
-        return "usage unavailable"
-    if screen_reader:
-        text = f"{inp:,} input tokens, {out:,} output tokens"
-        return f"{text}, usage partial" if status == "partial" else text
-    text = f"↑ {compact_token_count(inp)} ↓ {compact_token_count(out)}"
-    return f"{text} ?" if status == "partial" else text
+def _signal_bool(owner: object, name: str) -> bool:
+    return _signal(owner, name) is True
 
 
-def _reader_usage_lines(inp: int, out: int) -> list[str]:
-    """Keep exact directional counts available when the combined row will not fit."""
-    return [f"Input tokens: {inp:,}", f"Output tokens: {out:,}"]
-
-
-def _fit_model(model: str, cols: int) -> str:
-    """Keep provider identity and a recognizable model suffix when shortened."""
-    from rich.markup import escape
-    from rich.cells import cell_len
-
-    from agenthicc.tui.rendering import visible_len
-
-    provider, separator, name = model.partition("/")
-    if not separator:
-        return _fit(escape(model), cols)
-    prefix = f"{provider} | "
-    if cell_len(prefix) >= cols:
-        return _fit(escape(model), cols)
-    candidate = prefix + name
-    if cell_len(candidate) <= cols:
-        return escape(candidate)
-    suffix_width = cols - cell_len(prefix) - 1
-    suffix: list[str] = []
-    used = 0
-    for character in reversed(name):
-        width = cell_len(character)
-        if used + width > suffix_width:
-            break
-        suffix.append(character)
-        used += width
-    shortened = prefix + "…" + "".join(reversed(suffix))
-    if visible_len(escape(shortened)) <= cols:
-        return escape(shortened)
-    return _fit(escape(model), cols)
-
-
-def _metadata_line(
-    turns: int,
-    cost: str,
-    usage_quality: str,
-    cols: int,
-    *,
-    screen_reader: bool,
-) -> str:
-    """Fit turn and accounting metadata while retaining an explicit quality label."""
-    from rich.markup import escape
-
-    from agenthicc.tui.rendering import visible_len
-
-    separator = ", " if screen_reader else " │ "
-    fields: list[tuple[str, str]] = [
-        ("turns", f"[dim]{turns} turn{'s' if turns != 1 else ''}[/dim]"),
-        ("cost", f"[dim]{escape(cost)}[/dim]"),
-    ]
-    if usage_quality:
-        fields.append(("quality", f"[yellow]{escape(usage_quality)}[/yellow]"))
-
-    def render() -> str:
-        return separator.join(field for _, field in fields)
-
-    while len(fields) > 1 and visible_len(render()) > cols:
-        removable = next(
-            (index for index, (name, _) in enumerate(fields) if name == "turns"),
-            next((index for index, (name, _) in enumerate(fields) if name == "cost"), -1),
-        )
-        if removable < 0:
-            break
-        fields.pop(removable)
-    if visible_len(render()) > cols:
-        fields = [item for item in fields if item[0] == "quality"]
-    return _fit(render(), cols)
-
-
-def _identity_markup_rows(conv: object, cols: int, *, screen_reader: bool) -> list[str]:
-    from rich.markup import escape
-
-    rows = identity_rows(
-        _signal_text(conv, "session_id", ""),
-        _signal_text(conv, "current_directory", ""),
-        cols,
+def _tint(token: str, text: str, *, bold: bool = False) -> str:
+    """*text* (markup) in the colour of *token*; plain when the token is empty."""
+    value = getattr(palette(), token)
+    attributes = " ".join(
+        part for part in ("bold" if bold else "", value) if part not in ("", "none")
     )
-    return [escape(row) if screen_reader else f"[dim]{escape(row)}[/dim]" for row in rows]
+    return f"[{attributes}]{text}[/]" if attributes else text
 
 
-def _thinking_markup(frame: int) -> str:
-    word = _THINKING
-    n = len(word)
-    cycle = 2 * (n - 1)
-    pos = (frame % cycle) if cycle > 0 else 0
-    if pos >= n:
-        pos = cycle - pos
-    return "".join(f"[bold]{ch}[/bold]" if i == pos else ch for i, ch in enumerate(word))
+def _mode_token(name: str) -> str:
+    return _MODE_TOKENS.get(name.lower(), "accent")
 
 
-def _waiting_label(state: "AppState") -> str | None:
-    """Return a stable label while an approval/question modal is pending."""
-    pending_signal = getattr(state, "pending_approval", None)
-    if not callable(pending_signal):
-        return None
-    pending = pending_signal()
-    if pending is None:
-        return None
-    kind = getattr(pending, "kind", None)
-    if not isinstance(kind, str):
-        kind = ""
-    return {
-        "questions": "Waiting for your answer",
-        "plan_review": "Waiting for plan approval",
-    }.get(kind, "Waiting for approval")
+def _reader(app_state: object) -> bool:
+    ui = _ui(app_state)
+    return ui is not None and ui.screen_reader
 
 
-# ── StatusComponent ───────────────────────────────────────────────────────────
+def _animated(app_state: object) -> bool:
+    ui = _ui(app_state)
+    return ui is None or ui.animated
 
 
-class StatusComponent:
-    """Render responsive status, model, identity, and usage rows."""
+# ── StatusLine ────────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True, slots=True)
+class _Form:
+    markup: str
+    width: int
+
+
+def _form(markup: str) -> _Form:
+    return _Form(markup, _vlen(markup))
+
+
+@dataclass(frozen=True, slots=True)
+class _Part:
+    """One status segment: its priority and its forms, longest first."""
+
+    priority: int
+    forms: tuple[_Form, ...]
+    #: The user command's output: cropped, rather than dropped, to fit.
+    croppable: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class _Inputs:
+    """Everything the static segments (2–7) read: their cache key."""
+
+    reader: bool
+    needs_you: int
+    hub_key: str
+    background_running: int
+    dnd: bool
+    context_tokens: int
+    context_window: int
+    model: str
+    workers: tuple[int, int] | None
+    workflow: tuple[int, int, str] | None
+    workflow_override: str
+    startup: str
+    terminal_count: int
+    usage_status: str
+    tokens: tuple[int, int]
+    cost: str
+    branch: str
+    dirty: bool
+    user_line: str
+    theme: Theme
+
+
+def _hub_key(app_state: AppState) -> str:
+    from agenthicc.tui.keymap import KeymapError, display_key
+
+    try:
+        keys = app_state.keymap().action("agents.open_hub").keys
+    except (KeymapError, AttributeError, TypeError):
+        return ""
+    if not isinstance(keys, tuple) or not all(isinstance(key, str) for key in keys):
+        return ""
+    if "left_on_empty" in keys:
+        return glyphs().left
+    return display_key(keys[0]) if keys else ""
+
+
+@functools.lru_cache(maxsize=64)
+def _static_parts(inputs: _Inputs) -> tuple[_Part, ...]:
+    """Segments 2–7 for *inputs* (rebuilt only when one of them changes)."""
+    from agenthicc.tui.attention_labels import sessions_need_you
+
+    g = inputs.theme.glyphs
+    reader = inputs.reader
+    parts: list[_Part] = []
+
+    # 2. Background sessions that need the user (AGX-10).
+    if inputs.needs_you:
+        n = inputs.needs_you
+        if reader:
+            parts.append(_Part(2, (_form(sessions_need_you(n)),)))
+        else:
+            key = f" {escape(inputs.hub_key)}" if inputs.hub_key else ""
+            parts.append(
+                _Part(
+                    2,
+                    tuple(
+                        _form(_tint("warning", f"{g.diamond} {label}{key}", bold=True))
+                        for label in (
+                            sessions_need_you(n),
+                            sessions_need_you(n, "short"),
+                            sessions_need_you(n, "bare"),
+                        )
+                    ),
+                )
+            )
+
+    if inputs.user_line:
+        # 3–7 replaced by the user's status-line command (TUX-02 §2.3).
+        from rich.text import Text
+
+        parts.append(_Part(3, (_form(Text.from_ansi(inputs.user_line).markup),), croppable=True))
+    else:
+        parts.extend(_builtin_parts(inputs))
+    return tuple(sorted(parts, key=lambda part: part.priority))
+
+
+def _builtin_parts(inputs: _Inputs) -> list[_Part]:
+    from agenthicc.tui.attention_labels import sessions_running
+
+    g = inputs.theme.glyphs
+    reader = inputs.reader
+    parts: list[_Part] = []
+
+    # 3. Context meter.
+    percent = context_percent(inputs.context_tokens, inputs.context_window)
+    if percent is not None:
+        if reader:
+            parts.append(_Part(3, (_form(f"context {percent}%"),)))
+        else:
+            cells = meter_cells(percent)
+            bar = g.meter_full * cells + g.meter_empty * (METER_CELLS - cells)
+            band = context_band(percent)
+            text = _tint("muted", "ctx") + " " + _tint(band, f"{percent}%")
+            parts.append(_Part(3, (_form(f"{text} {_tint(band, bar)}"), _form(text))))
+
+    # 4. Model.
+    if inputs.model:
+        parts.append(_Part(4, (_form(_tint("muted", escape(inputs.model))),)))
+
+    # 5. Workers, workflow phase, background sessions, startup, terminals.
+    if inputs.workers is not None:
+        done, total = inputs.workers
+        label = f"{done} of {total} workers" if reader else f"{done}/{total} workers"
+        parts.append(_Part(5, (_form(label if reader else _tint("agent", label)),)))
+    if inputs.workflow is not None:
+        index, total, phase = inputs.workflow
+        full = f"{index}/{total} {escape(phase)}" if phase else f"{index}/{total}"
+        if reader:
+            full = f"phase {index} of {total} {escape(phase)}".rstrip()
+        parts.append(
+            _Part(5, (_form(_tint("info", full)), _form(_tint("info", f"{index}/{total}"))))
+        )
+    if inputs.workflow_override:
+        parts.append(
+            _Part(5, (_form(_tint("info", f"workflow {escape(inputs.workflow_override)}")),))
+        )
+    if inputs.terminal_count:
+        word = "terminal" if inputs.terminal_count == 1 else "terminals"
+        parts.append(_Part(5, (_form(_tint("muted", f"{inputs.terminal_count} {word} running")),)))
+    if inputs.background_running:
+        n = inputs.background_running
+        parts.append(
+            _Part(
+                5,
+                tuple(
+                    _form(label if reader else _tint("info", f"{g.bullet} {label}"))
+                    for label in (sessions_running(n), sessions_running(n, "short"))
+                ),
+            )
+        )
+    if inputs.dnd:
+        parts.append(
+            _Part(5, (_form(_tint("muted", "do not disturb")), _form(_tint("muted", "dnd"))))
+        )
+    if inputs.startup:
+        parts.append(_Part(5, (_form(_tint("muted", escape(inputs.startup))),)))
+
+    # 6. Tokens and cost, only as reported.
+    if inputs.usage_status in {"complete", "partial"} and any(inputs.tokens):
+        tokens_in, tokens_out = inputs.tokens
+        approx = "about " if reader else g.approx
+        partial = approx if inputs.usage_status == "partial" else ""
+        if reader:
+            label = f"{partial}{tokens_in:,} tokens in, {tokens_out:,} out"
+        else:
+            label = (
+                f"{partial}{g.up}{compact_token_count(tokens_in)} "
+                f"{g.down}{compact_token_count(tokens_out)}"
+            )
+        parts.append(_Part(6, (_form(_tint("muted", label)),)))
+    if inputs.cost:
+        parts.append(_Part(6, (_form(_tint("muted", escape(inputs.cost))),)))
+
+    # 7. Git branch and dirty mark.
+    if inputs.branch:
+        mark = "*" if inputs.dirty else ""
+        label = (
+            f"branch {inputs.branch}{' modified' if mark else ''}"
+            if reader
+            else f"{inputs.branch}{mark}"
+        )
+        parts.append(_Part(7, (_form(_tint("muted", escape(label))),)))
+    return parts
+
+
+def _layout(
+    state: Sequence[_Form],
+    parts: Sequence[_Part],
+    right: _Form | None,
+    sep_width: int,
+    cols: int,
+    room: int,
+) -> tuple[int, list[tuple[int, int]], bool, int]:
+    """Choose what fits *room* cells of a *cols*-wide terminal.
+
+    Returns the state form, the ``(part, form)`` pairs shown, whether the
+    right-hand hint shows, and the cells left over.
+    """
+    if cols < _STATE_ONLY_BELOW:
+        visible = []
+    elif cols < _RULES_BELOW:
+        visible = [i for i, part in enumerate(parts) if part.priority <= _NARROW_PRIORITY]
+    else:
+        visible = list(range(len(parts)))
+    show_right = right is not None and cols >= _RULES_BELOW
+    chosen = dict.fromkeys(visible, 0)
+    state_form = 0
+
+    def width() -> int:
+        total = state[state_form].width
+        total += sum(sep_width + parts[i].forms[chosen[i]].width for i in visible)
+        if show_right and right is not None:
+            total += 2 + right.width
+        return total
+
+    while width() > room:
+        if visible and parts[visible[-1]].priority >= _DROP_FIRST:
+            chosen.pop(visible.pop())
+            continue
+        if show_right:
+            show_right = False
+            continue
+        shortened = next(
+            (i for i in reversed(visible) if chosen[i] + 1 < len(parts[i].forms)), None
+        )
+        if shortened is not None:
+            chosen[shortened] += 1
+            continue
+        if state_form + 1 < len(state):
+            state_form += 1
+            continue
+        if visible:
+            chosen.pop(visible.pop())
+            continue
+        break
+    return state_form, [(i, chosen[i]) for i in visible], show_right, room - width()
+
+
+class StatusLine:
+    """One prioritised status row (TUX-02 §2.1)."""
 
     def __init__(self, app_state: AppState, startup: StartupCoordinator | None = None) -> None:
         self._state = app_state
         self._startup = startup
 
-    def _startup_line(self, cols: int) -> str | None:
-        """Describe non-ready startup work without exposing exception details."""
-        if self._startup is None:
-            return None
-        reports = self._startup.snapshot()
-        pending = [report for report in reports if report.state.value != "ready"]
-        if not pending:
-            return None
-        labels = ", ".join(f"{report.name} {report.state.value}" for report in pending[:3])
-        if len(pending) > 3:
-            labels += f", +{len(pending) - 3} more"
-        return _fit(f"[dim]Startup: {labels}[/dim]", cols)
+    def height(self, cols: int) -> int:
+        """The rows the status line occupies: always one."""
+        return 1
 
     def render(self) -> RenderableType:
-        """Return the status bar as Rich text (one ``Text`` per row)."""
-        return _markup_renderable(self.markup_lines(_get_cols()))
+        from rich.text import Text
 
-    def markup_lines(self, cols: int) -> list[str]:
-        """Return the status bar's rows as markup, each fitted to *cols*."""
-        from rich.markup import escape as _e
+        return Text.from_markup(self.markup(_get_cols()), emoji=False)
 
-        conv = self._state.conversation
-        _terminal_wait_signal = getattr(conv, "terminal_waiting", None)
-        terminal_waiting = (
-            _terminal_wait_signal() is True if callable(_terminal_wait_signal) else False
-        )
-        if terminal_waiting:
-            from rich.markup import escape
+    # ── state (segment 1, the only animated one) ─────────────────────────────
 
-            ui = _ui(self._state)
-            reader = ui is not None and ui.screen_reader
-            elapsed_signal = getattr(conv, "terminal_wait_elapsed_s", None)
-            elapsed_value = elapsed_signal() if callable(elapsed_signal) else 0.0
-            if not isinstance(elapsed_value, (int, float)) or isinstance(elapsed_value, bool):
-                elapsed_value = 0.0
-            count_signal = getattr(conv, "terminal_running_count", None)
-            running_count = count_signal() if callable(count_signal) else 0
-            if not isinstance(running_count, int) or isinstance(running_count, bool):
-                running_count = 0
-            label = _signal_text(conv, "terminal_wait_label", "terminal") or "terminal"
+    def _state_forms(self, reader: bool) -> tuple[_Form, ...]:
+        app = self._state
+        conv = app.conversation
+        g = glyphs()
+        frame = _signal_int(conv, "frame")
+        spinner = g.spinner[frame % len(g.spinner)] if _animated(app) else g.bullet
 
-            separator = ", " if reader else "[dim] │[/dim] "
-            state_label = "Waiting for background terminal"
-            if not reader and cols < 48:
-                state_label = "Waiting terminal"
-            wait_line = f"[cyan]{state_label}[/cyan]"
+        def forms(
+            token: str, lead: str, words: Sequence[str], elapsed: str = ""
+        ) -> tuple[_Form, ...]:
+            out: list[_Form] = []
+            for text in words:
+                tail = f" {elapsed}" if elapsed else ""
+                if reader:
+                    out.append(_form(escape(f"{text}{tail}")))
+                    continue
+                body = _tint(token, escape(text)) + (_tint("muted", tail) if tail else "")
+                out.append(_form(f"{_tint(token, lead)} {body}" if lead else body))
+            return tuple(out)
 
-            def append_wait(value: str) -> None:
-                nonlocal wait_line
-                candidate = f"{wait_line}{separator}{value}"
-                if _vlen(candidate) <= cols:
-                    wait_line = candidate
-
-            append_wait(_fmt_elapsed(float(elapsed_value)))
-            if running_count > 0:
-                terminals = "terminal" if running_count == 1 else "terminals"
-                count_label = (
-                    f"{running_count} background {terminals} running"
-                    if reader
-                    else f"{running_count} running"
-                )
-                append_wait(count_label)
-            append_wait("Esc to interrupt" if reader else "Esc")
-            append_wait("/ps to view; /stop to stop all" if reader else "/ps | /stop")
-            wait_line = _fit(wait_line, cols)
-
-            model = _signal_text(conv, "model_name", "")
-            if not model:
-                model = ""
-            terminal_prefix = f"Terminal: {label}" if reader else f"└ {label}"
-            terminal_line = f"[dim]{escape(terminal_prefix)}[/dim]"
-            if model:
-                model_label = _fit_model(model, cols)
-                model_part = f"[dim] │ {model_label}[/dim]"
-                if _vlen(terminal_line + model_part) <= cols:
-                    terminal_line += model_part
-            terminal_line = _fit(terminal_line, cols)
-
-            identity = _identity_markup_rows(conv, cols, screen_reader=reader)
-            turns = _signal_int(conv, "turn_count", 0)
-            cost_value = _signal_float(conv, "cost_usd", 0.0)
-            inp = _signal_int(conv, "tokens_in", 0)
-            out = _signal_int(conv, "tokens_out", 0)
-            usage_status = _signal_text(conv, "usage_status", "unavailable")
-            cost_status = _signal_text(conv, "cost_status", "unavailable")
-            quality = usage_quality_label(usage_status, screen_reader=reader)
-            meta = _metadata_line(
-                turns,
-                cost_label(cost_value, cost_status, screen_reader=reader),
-                quality,
-                cols,
-                screen_reader=reader,
+        if _signal_bool(conv, "terminal_waiting"):
+            label = _signal_text(conv, "terminal_wait_label") or "terminal"
+            elapsed = _fmt_elapsed(_signal_float(conv, "terminal_wait_elapsed_s"))
+            return forms(
+                "info",
+                spinner,
+                (f"Waiting for terminal: {label}", "Waiting for terminal", "Waiting"),
+                elapsed,
             )
-            usage = _usage_text(inp, out, usage_status, screen_reader=reader)
-            if reader:
-                return [wait_line, terminal_line, *identity, meta, _fit(usage, cols)]
-            usage_part = f"[dim] │[/dim] {usage}"
-            if _vlen(wait_line + usage_part) <= cols:
-                wait_line += usage_part
-            return [wait_line, terminal_line, *identity, meta]
-        waiting_label = _waiting_label(self._state)
-        waiting = waiting_label is not None
-        loading_signal = getattr(conv, "transcript_loading", None)
-        transcript_loading = loading_signal() is True if callable(loading_signal) else False
+        if _signal(app, "pending_approval") is not None:
+            return forms("warning", g.diamond, ("Waiting for you", "Waiting"))
+        if _signal_bool(conv, "transcript_loading"):
+            # The frame clock does not run while idle: a still bullet, no spinner.
+            return forms("info", g.bullet, ("Loading transcript", "Loading"))
+        # Shown from 0s while work runs, so the row never shifts on the first tick.
+        elapsed = _fmt_elapsed(_cached_elapsed(conv))
+        if _signal_bool(conv, "compaction_active"):
+            return forms("warning", spinner, ("Compacting",), elapsed)
+        agent_state = _signal(conv, "agent_state")
+        name = str(getattr(agent_state, "name", "IDLE")).lower()
+        if name == "running":
+            tool = _signal_text(conv, "active_tool").strip()
+            words = [f"Running {tool}", f"Running {tool.split()[0]}"] if tool else []
+            return forms("info", spinner, (*dict.fromkeys(words), "Running"), elapsed)
+        if name == "thinking":
+            return forms("info", spinner, ("Thinking",), elapsed)
+        if name == "recovering":
+            return forms("danger", spinner, ("Recovering",), elapsed)
+        if name == "error":
+            return forms("danger", g.fail, ("Error",))
+        return forms("success", g.bullet, ("Idle",))
 
-        _frame = conv.frame()
-        ui = _ui(self._state)
-        animated = ui is None or ui.animated
-        active = not waiting and (conv.is_running() or conv.compaction_active())
-        # Flower animates only while the agent is active; frozen at index 0 when idle.
-        if not animated:
-            flower = _STILL if active else ""
-        else:
-            flower = _FLOWERS[_frame % len(_FLOWERS)] if active else _FLOWERS[0]
-        agent_st = conv.agent_state()
-        state_name = agent_st.name.lower()
+    # ── segments 2–7 ─────────────────────────────────────────────────────────
 
-        if transcript_loading:
-            state_text = "Loading transcript…"
-        elif waiting:
-            state_text = waiting_label or "Waiting for approval"
-        elif conv.is_running():
-            thinking = _thinking_markup(_frame) if animated else _THINKING
-            state_text = "↻ " + thinking if state_name == "recovering" else thinking
-        else:
-            state_text = agent_st.name.title()
+    def _inputs(self, reader: bool) -> _Inputs:
+        app = self._state
+        conv = app.conversation
+        pool = _signal(conv, "subagent_pool_state")
+        workers: tuple[int, int] | None = None
+        if pool is not None:
+            from agenthicc.subagents.pool import SubagentPoolState
 
-        colors = {
-            "idle": "white",
-            "thinking": "yellow",
-            "running": "cyan",
-            "recovering": "red",
-            "error": "red",
-            "complete": "green",
-        }
-        color = "yellow" if transcript_loading else colors.get(state_name, "dim")
+            if isinstance(pool, SubagentPoolState):
+                counts = pool_status_counts(pool)
+                if counts.running + counts.queued + counts.needs_input > 0:
+                    workers = (counts.done, pool.total)
+        run = _signal(app, "workflow_run")
+        workflow: tuple[int, int, str] | None = None
+        model = _signal_text(conv, "model_name")
+        if run is not None:
+            from agenthicc.workflows.plugin import WorkflowRun
 
-        # ── line 1: state + elapsed + activity + pool progress + usage ──────────
-        reader = ui is not None and ui.screen_reader
-        sep = ", " if reader else " [dim]|[/dim] "
-        lead = "" if reader or not flower else f"{flower} "
-        line1 = f"{lead}[{color}]{state_text}[/{color}]"
-        elapsed = _cached_elapsed(conv, total_activity=not waiting)
-
-        def append_status(segment: str) -> bool:
-            nonlocal line1
-            candidate = f"{line1}{sep}{segment}"
-            if _vlen(candidate) > cols:
-                return False
-            line1 = candidate
-            return True
-
-        if elapsed > 0:
-            elapsed_label = (
-                f"{_fmt_elapsed(elapsed)}" if reader else f"[dim]{_fmt_elapsed(elapsed)}[/dim]"
-            )
-            append_status(elapsed_label)
-
-        activity = _signal_text(conv, "active_tool", "").strip()
-        if activity:
-            activity_label = f"Tool: {activity}" if reader else f"⚒ {activity}"
-            escaped_activity = _e(activity_label)
-            activity_segment = escaped_activity if reader else f"[dim]{escaped_activity}[/dim]"
-            if not append_status(activity_segment):
-                room = cols - _vlen(line1) - _vlen(sep)
-                if room >= 5:
-                    shortened = _fit(escaped_activity, room)
-                    segment = shortened if reader else f"[dim]{shortened}[/dim]"
-                    append_status(segment)
-
-        _pool = conv.subagent_pool_state()
-        if _pool is not None:
-            pool_counts = pool_status_counts(_pool)
-            if pool_counts.running + pool_counts.queued + pool_counts.needs_input > 0:
-                pool_label = (
-                    f"{pool_counts.done} of {_pool.total} workers"
-                    if reader
-                    else f"[magenta]{pool_counts.done}/{_pool.total} workers[/magenta]"
+            if isinstance(run, WorkflowRun) and run.status == "running":
+                workflow = (
+                    run.current_phase_index + 1,
+                    run.total_phases,
+                    run.current_phase or "",
                 )
-                append_status(pool_label)
+                if run.current_phase_model:
+                    model = run.current_phase_model
+        from agenthicc.config import ExecutionSettings
 
-        inp = _signal_int(conv, "tokens_in", 0)
-        out = _signal_int(conv, "tokens_out", 0)
         usage_status = _signal_text(conv, "usage_status", "unavailable")
-        # Unavailable usage is static metadata, not part of the animated status
-        # row. Keep its explicit label on the secondary row without rewriting it
-        # on every spinner frame.
-        usage_visible = False
-        if usage_status != "unavailable":
-            usage = _usage_text(inp, out, usage_status, screen_reader=reader)
-            usage_segment = (
-                _e(usage)
-                if reader
-                else f"[yellow]{_e(usage)}[/yellow]"
-                if usage_status != "complete"
-                else f"[cyan]↑ {compact_token_count(inp)}[/cyan] [green]↓ {compact_token_count(out)}[/green]"
-            )
-            usage_visible = append_status(usage_segment)
-        line1 = _fit(line1, cols)
-
-        model = _signal_text(conv, "model_name", "")
-        if not model:
-            model = ""
-
-        # ── line 2: model identity or compaction state ─────────────────────────
-        _wf = self._state.workflow_run()
-        if _wf is not None and _wf.status == "running" and _wf.current_phase_model:
-            model = _wf.current_phase_model
-        if conv.compaction_active():
-            _sp = _COMPACT_SPINNER[_frame % len(_COMPACT_SPINNER)] if animated else _STILL
-            line2 = _fit(f"[yellow]{_sp} Compacting…[/yellow]", cols)
-        elif model:
-            line2 = _fit(f"[dim]{_fit_model(model, cols)}[/dim]", cols)
-        else:
-            line2 = ""
-
-        # ── line 3+: full session/directory identity, then accounting metadata ─
-        turns = _signal_int(conv, "turn_count", 0)
-        cost = _signal_float(conv, "cost_usd", 0.0)
-        cost_status = _signal_text(conv, "cost_status", "unavailable")
-        cost_text = cost_label(cost, cost_status, screen_reader=reader)
-        quality = usage_quality_label(usage_status, screen_reader=reader)
-        line3 = _metadata_line(
-            turns,
-            cost_text,
-            quality,
-            cols,
-            screen_reader=reader,
+        return _Inputs(
+            reader=reader,
+            needs_you=_signal_int(conv, "background_needs_you"),
+            hub_key=_hub_key(app),
+            background_running=_signal_int(conv, "background_running"),
+            dnd=_signal_bool(conv, "background_dnd"),
+            context_tokens=_signal_int(conv, "context_tokens"),
+            context_window=_signal_int(conv, "context_window"),
+            model=short_model(model, ExecutionSettings.provider) if model else "",
+            workers=workers,
+            workflow=workflow,
+            workflow_override=_signal_text(conv, "workflow_override"),
+            startup=self._startup_text(),
+            terminal_count=(
+                _signal_int(conv, "terminal_running_count")
+                if _signal_bool(conv, "terminal_waiting")
+                else 0
+            ),
+            usage_status=usage_status,
+            tokens=(_signal_int(conv, "tokens_in"), _signal_int(conv, "tokens_out")),
+            cost=cost_text(
+                _signal_float(conv, "cost_usd"), _signal_text(conv, "cost_status", "unavailable")
+            ),
+            branch=_signal_text(conv, "git_branch"),
+            dirty=_signal_bool(conv, "git_dirty"),
+            user_line=_signal_text(conv, "statusline_text"),
+            theme=current_theme(),
         )
 
-        lines = [line1]
-        if line2:
-            lines.append(line2)
-        lines.extend(_identity_markup_rows(conv, cols, screen_reader=reader))
-        if reader and not usage_visible and usage_status in {"complete", "partial"}:
-            lines.extend(_reader_usage_lines(inp, out))
-        if line2 or (quality and not usage_visible):
-            lines.append(line3)
-        startup_line = self._startup_line(cols)
-        if startup_line is not None:
-            lines.append(startup_line)
-        return lines
+    def _startup_text(self) -> str:
+        """Startup work that is not ready yet, without exception details."""
+        if self._startup is None:
+            return ""
+        pending = [report for report in self._startup.snapshot() if report.state.value != "ready"]
+        if not pending:
+            return ""
+        text = ", ".join(f"{report.name} {report.state.value}" for report in pending[:2])
+        return text + (f", +{len(pending) - 2} more" if len(pending) > 2 else "")
 
-    def height(self, cols: int) -> int:
-        """Return the total terminal rows this component occupies.
+    def _right(self, reader: bool) -> _Form | None:
+        if reader:
+            return None
+        from agenthicc.tui.keymap import Hint, KeymapError
 
-        Counts the blank separator line the workspace draws above the bar plus
-        every row :meth:`markup_lines` produces — invariant I-10.
-        """
-        return 1 + len(self.markup_lines(cols))
+        try:
+            hint = self._state.keymap().hint("composer.shortcuts")
+        except (KeymapError, AttributeError, TypeError):
+            hint = None
+        if isinstance(hint, Hint):
+            return _form(f"{escape(hint.keys)} {_tint('muted', escape(hint.label))}")
+        return _form(_tint("muted", "/help"))
+
+    # ── the row ───────────────────────────────────────────────────────────────
+
+    def markup(self, cols: int) -> str:
+        """The status line as markup, at most *cols* cells wide."""
+        reader = _reader(self._state)
+        state = self._state_forms(reader)
+        parts = _static_parts(self._inputs(reader))
+        separator = ", " if reader else f" {_tint('muted', glyphs().sep)} "
+        sep_width = _vlen(separator)
+        right = self._right(reader)
+        lead = "" if reader else " "
+        width = max(1, cols - len(lead))
+        state_form, chosen, show_right, room = _layout(state, parts, right, sep_width, cols, width)
+        pieces = [state[state_form].markup]
+        pieces += [parts[i].forms[form].markup for i, form in chosen]
+        placed = {i for i, _ in chosen}
+        croppable = next(
+            (i for i, part in enumerate(parts) if part.croppable and i not in placed), None
+        )
+        if croppable is not None and room - sep_width >= 8 and cols >= _STATE_ONLY_BELOW:
+            pieces.append(_fit(parts[croppable].forms[0].markup, room - sep_width))
+            room -= sep_width + min(parts[croppable].forms[0].width, room - sep_width)
+        line = lead + separator.join(pieces)
+        if show_right and right is not None:
+            line += " " * max(2, room + 2) + right.markup
+        return _fit(line, cols)
+
+    def sentence(self) -> str:
+        """The status as a screen reader hears it: ``Idle. Opus 4.8. Context 12 percent.``"""
+        return status_sentence(self._state)
+
+
+def status_sentence(app_state: AppState) -> str:
+    """The state, attention, model and context as sentences (AGX-13 announcer)."""
+    from agenthicc.config import ExecutionSettings
+    from agenthicc.tui.attention_labels import sessions_need_you
+
+    conv = app_state.conversation
+    status = StatusLine(app_state)._state_forms(reader=True)[-1]
+    from rich.text import Text
+
+    sentences = [Text.from_markup(status.markup).plain]
+    needs = _signal_int(conv, "background_needs_you")
+    if needs:
+        sentences.append(sessions_need_you(needs).capitalize())
+    model = _signal_text(conv, "model_name")
+    if model:
+        sentences.append(spoken_model(short_model(model, ExecutionSettings.provider)))
+    percent = context_percent(
+        _signal_int(conv, "context_tokens"), _signal_int(conv, "context_window")
+    )
+    if percent is not None:
+        sentences.append(f"Context {percent} percent")
+    return " ".join(f"{sentence}." for sentence in sentences)
 
 
 # ── ComposerComponent ─────────────────────────────────────────────────────────
 
-_PROMPT_STYLE = Style(bold=True, color="yellow")
-_CURSOR_STYLE = Style(bold=True)
 _HIDDEN_STYLE = Style(dim=True)
 
 
@@ -523,21 +664,21 @@ def _fold(text: str, width: int, single_cells: bool = False) -> tuple[str, ...]:
 
 
 @functools.lru_cache(maxsize=4096)
-def _line_rows(text: str, cursor: int | None, width: int) -> tuple[tuple[str, int | None], ...]:
+def _line_rows(
+    text: str, cursor: int | None, width: int, cursor_glyph: str
+) -> tuple[tuple[str, int | None], ...]:
     """Fold one logical line, marking the row and column that hold the cursor.
 
     The cursor glyph is part of the folded text, as it occupies a cell. Only
     an edited line or the cursor's line misses this cache on a keystroke.
     """
-    from agenthicc.tui.input.renderer import CURSOR_CHAR
-
     if cursor is None:
         return tuple((row, None) for row in _fold(text, width))
-    display = text[:cursor] + CURSOR_CHAR + text[cursor:]
+    display = text[:cursor] + cursor_glyph + text[cursor:]
     rows: list[tuple[str, int | None]] = []
     offset = 0
-    # The cursor glyph is one cell wide, so an ASCII line stays single-cell.
-    for row in _fold(display, width, text.isascii()):
+    single = text.isascii() and cell_len(cursor_glyph) == len(cursor_glyph)
+    for row in _fold(display, width, single):
         column = cursor - offset if offset <= cursor < offset + len(row) else None
         rows.append((row, column))
         offset += len(row)
@@ -547,26 +688,28 @@ def _line_rows(text: str, cursor: int | None, width: int) -> tuple[tuple[str, in
 class _Row:
     """One display row of the composer."""
 
-    __slots__ = ("prefix", "text", "cursor")
+    __slots__ = ("prefix", "text", "cursor", "placeholder")
 
-    def __init__(self, prefix: str, text: str, cursor: int | None) -> None:
+    def __init__(self, prefix: str, text: str, cursor: int | None, placeholder: str = "") -> None:
         self.prefix = prefix
         self.text = text
         self.cursor = cursor
+        self.placeholder = placeholder
 
     def segments(self) -> Line:
-        from agenthicc.tui.input.renderer import CURSOR_CHAR, PROMPT_CHAR
-
+        g = glyphs()
         prefix = Segment(
-            self.prefix, _PROMPT_STYLE if self.prefix.startswith(PROMPT_CHAR) else None
+            self.prefix, style("accent", bold=True) if self.prefix.startswith(g.prompt) else None
         )
+        tail = (Segment(self.placeholder, style("muted")),) if self.placeholder else ()
         if self.cursor is None:
-            return (prefix, Segment(self.text))
+            return (prefix, Segment(self.text), *tail)
         return (
             prefix,
             Segment(self.text[: self.cursor]),
-            Segment(CURSOR_CHAR, _CURSOR_STYLE),
-            Segment(self.text[self.cursor + len(CURSOR_CHAR) :]),
+            Segment(g.cursor, Style(bold=True)),
+            Segment(self.text[self.cursor + len(g.cursor) :]),
+            *tail,
         )
 
 
@@ -574,13 +717,18 @@ def _hidden_row(arrow: str, count: int) -> Line:
     return (Segment(f"  {arrow} {count} more line{'s' if count != 1 else ''}", _HIDDEN_STYLE),)
 
 
+def _placeholder(width: int) -> str:
+    """The longest placeholder form that fits *width* cells, or ``""``."""
+    return next((text for text in PLACEHOLDER if cell_len(text) <= width), "")
+
+
 class _ComposerView:
     """The composer as a Rich renderable, laid out at the width it is given."""
 
-    def __init__(self, composer: "ComposerComponent") -> None:
+    def __init__(self, composer: ComposerComponent) -> None:
         self._composer = composer
 
-    def __rich_console__(self, console: "Console", options: "ConsoleOptions") -> Iterator[Segment]:
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> Iterator[Segment]:
         for line in self._composer.lines(options.max_width):
             yield from line
             yield Segment.line()
@@ -589,10 +737,11 @@ class _ComposerView:
 class ComposerComponent:
     """Renders ``❯ text▌`` from InputState signals.
 
-    Each logical line is folded at the terminal width (continuation rows are
+    Each logical line is folded at the given width (continuation rows are
     indented under the prompt). When the prompt needs more than ``max_rows``
     rows, only the rows around the cursor are drawn, with ``↑ N more lines`` /
-    ``↓ N more lines`` in place of the rest (AGX-11).
+    ``↓ N more lines`` in place of the rest (AGX-11). An empty prompt shows a
+    muted placeholder after the cursor (TUX-02).
     """
 
     def __init__(self, app_state: AppState, *, max_rows: int = 12) -> None:
@@ -609,8 +758,7 @@ class ComposerComponent:
 
     def _rows(self, cols: int) -> tuple[list[_Row], int]:
         """Return every display row and the index of the row with the cursor."""
-        from agenthicc.tui.input.renderer import PROMPT_CHAR
-
+        g = glyphs()
         width = max(1, cols - 2)
         inp = self._state.input
         buf = inp.buf()
@@ -620,16 +768,20 @@ class ComposerComponent:
             if not (buf and label and label in "".join(buf)):
                 # Callers that set only a paste label show the label.
                 buf, cursor = list(label), len(label)
+        elif not buf:
+            hint = "" if _reader(self._state) else _placeholder(width - cell_len(g.cursor))
+            return [_Row(f"{g.prompt} ", "", 0, hint)], 0
         rows: list[_Row] = []
         cursor_row = 0
         start = 0
         for index, line in enumerate("".join(buf).split("\n")):
             end = start + len(line)
             column = cursor - start if start <= cursor <= end else None
-            for fold_index, (text, row_cursor) in enumerate(_line_rows(line, column, width)):
+            folded = _line_rows(line, column, width, g.cursor)
+            for fold_index, (text, row_cursor) in enumerate(folded):
                 if row_cursor is not None:
                     cursor_row = len(rows)
-                prefix = f"{PROMPT_CHAR} " if index == 0 and fold_index == 0 else "  "
+                prefix = f"{g.prompt} " if index == 0 and fold_index == 0 else "  "
                 rows.append(_Row(prefix, text, row_cursor))
             start = end + 1
         return rows, cursor_row
@@ -650,214 +802,208 @@ class ComposerComponent:
             visible = self.max_rows - (top > 0) - (top + visible < total)
         top = max(0, min(min(max(top, cursor_row - visible + 1), cursor_row), total - visible))
         self._top = top
+        g = glyphs()
         lines: list[Line] = []
         if top > 0:
-            lines.append(_hidden_row("↑", top))
+            lines.append(_hidden_row(g.up, top))
         lines.extend(row.segments() for row in rows[top : top + visible])
         if top + visible < total:
-            lines.append(_hidden_row("↓", total - top - visible))
+            lines.append(_hidden_row(g.down, total - top - visible))
         return tuple(lines)
 
 
-# ── FooterComponent ───────────────────────────────────────────────────────────
+# ── ComposerFrame ─────────────────────────────────────────────────────────────
 
 
-class FooterComponent:
-    """Render mode, attention, and input-hint rows with optional notices."""
+class ComposerFrame:
+    """The composer's frame, its title and mode badge, and its hint row (TUX-02)."""
 
-    def __init__(self, app_state: AppState) -> None:
+    def __init__(self, app_state: AppState, composer: ComposerComponent) -> None:
         self._state = app_state
+        self.composer = composer
 
-    def render(self) -> RenderableType:
-        """Return the footer as Rich text (one ``Text`` per row)."""
-        from rich.console import Group
-        from rich.text import Text
+    def form(self, cols: int) -> str:
+        """``box``, ``rules`` or ``none`` (screen reader) at *cols* columns."""
+        ui = _ui(self._state)
+        if ui is not None and ui.screen_reader:
+            return "none"
+        if cols < _RULES_BELOW or (ui is not None and ui.composer_frame == "rules"):
+            return "rules"
+        return "box"
 
-        return Group(
-            *(Text.from_markup(row, emoji=False) for row in self.markup_lines(_get_cols()))
-        )
-
-    def _attention_badges(self, needs_you: int, running: int, dnd: bool, cols: int) -> str:
-        """The background-session badges, as many words as *cols* allows (TUIR-05)."""
-        if not (needs_you or running or dnd):
-            return ""
-        from agenthicc.tui.attention_labels import (
-            BadgeForm,
-            sessions_need_you,
-            sessions_running,
-        )
-        from agenthicc.tui.keymap import KeymapError, display_key
-        from agenthicc.tui.rendering import visible_len
-
-        hub_key = ""
-        try:
-            action = self._state.keymap().action("agents.open_hub")
-            if action.keys:
-                hub_key = display_key(action.keys[0])
-        except KeymapError:
-            hub_key = ""
-
-        def badges(needs: BadgeForm, active: BadgeForm, *, with_key: bool) -> str:
-            parts: list[str] = []
-            if needs_you:
-                key = f" [dim]({hub_key})[/dim]" if with_key and hub_key else ""
-                parts.append(
-                    f"[bold yellow]◆ {sessions_need_you(needs_you, needs)}[/bold yellow]{key}"
-                )
-            if running:
-                parts.append(f"[cyan]● {sessions_running(running, active)}[/cyan]")
-            if dnd:
-                parts.append("[dim]◉ DND[/dim]")
-            return "  [dim]|[/dim]  ".join(parts)
-
-        # The needs-you badge keeps its words longest: it is the one to act on.
-        candidates = (
-            badges("full", "full", with_key=True),
-            badges("full", "full", with_key=False),
-            badges("full", "short", with_key=False),
-            badges("short", "short", with_key=False),
-        )
-        for candidate in candidates:
-            if visible_len(f"  {candidate}") <= cols:
-                return candidate
-        return badges("bare", "bare", with_key=False)
-
-    def markup_lines(self, cols: int) -> list[str]:
-        """Return the footer's rows as markup, each fitted to *cols*."""
-        from agenthicc.tui.runtime.mode_manager import build_mode_str
-        from rich.markup import escape as _e
-
-        conv = self._state.conversation
-
-        # Row 1: mode string — derived from AppState.active_mode (PRD-75).
-        # When a /workflow override is active, append ⬡ workflow-name indicator.
-        mode = self._state.active_mode()
-        _wf_ovr_raw = conv.workflow_override()
-        _wf_ovr = _wf_ovr_raw if isinstance(_wf_ovr_raw, str) else None
-        _wf_suffix = f"  [cyan dim]⬡ {_e(_wf_ovr)}[/cyan dim]" if _wf_ovr else ""
-        attention_suffix = self._attention_badges(
-            _signal_int(conv, "background_needs_you", 0),
-            _signal_int(conv, "background_running", 0),
-            conv.background_dnd() is True,
-            cols,
-        )
-        # AGX-09: the primary agent, once another than the default is chosen.
-        agent = self._state.agent()
-        agent_prefix = (
-            f"[bold]{_e(agent)}[/bold] [dim]|[/dim] "
-            if isinstance(agent, str) and agent and agent != "default"
-            else ""
-        )
-        mode_row = f"  {agent_prefix}{build_mode_str(mode)}{_wf_suffix}"
-        rows = [_fit(mode_row, cols)]
-        if attention_suffix:
-            rows.append(_fit(f"  {attention_suffix}", cols))
-
-        # Row 2+: notification (may be multi-line) > paste hint > normal hints.
-        # Multi-line notifications (from stacked notify_transient() calls or
-        # explicit \n in the message) each get their own rendered row.
-        raw_notif = conv.notification()
-        notif = raw_notif if isinstance(raw_notif, str) else None
-        if not notif:
-            raw_loop_status = conv.loop_status()
-            notif = raw_loop_status if isinstance(raw_loop_status, str) else None
-        if not notif:
-            raw_attention = conv.background_toast()
-            notif = raw_attention if isinstance(raw_attention, str) else None
-        if notif:
-            rows.extend(_notification_rows(notif, cols))
-        else:
-            # Hints are the composer's applicable key bindings (AGX-13).
-            conditions: set[str] = set()
-            if conv.is_running():
-                conditions.add("running")
-            if self._state.input.paste_condensed():
-                conditions.update(("paste", "paste_at_cursor"))
-            pool_state = conv.subagent_pool_state()
-            if pool_state is not None:
-                conditions.add("subagents")
-                if pool_state.active:
-                    conditions.add("subagents_running")
-            keymap = self._state.keymap()
-            ui = _ui(self._state)
-            hints = tuple(
-                (hint.keys, hint.label) for hint in keymap.hints("composer", frozenset(conditions))
-            )
-            if conv.agents_hint():
-                hints = (*hints, ("←", "agents"))
-            rows.append(_hint_row(hints, cols, ui is not None and ui.screen_reader))
-
-        # PRD-81: optional workflow progress row
-        _wf = self._state.workflow_run()
-        if _wf is not None and _wf.status == "running":
-            _n = _wf.current_phase_index + 1
-            _tot = _wf.total_phases
-            _badge = self._state.active_mode().badge
-            _phase = (
-                f"  {_n}/{_tot}  {_e(_wf.current_phase)}"
-                if _wf.current_phase is not None
-                else f"  {_n}/{_tot}"
-            )
-            rows.append(_fit(f"  [dim]{_e(_badge)} {_e(_wf.workflow_name)}{_phase}[/dim]", cols))
-        return rows
+    def inner_width(self, cols: int) -> int:
+        return max(1, cols - 4) if self.form(cols) == "box" else cols
 
     def height(self, cols: int) -> int:
-        return len(self.markup_lines(cols))
+        borders = 0 if self.form(cols) == "none" else 2
+        return borders + self.composer.height(self.inner_width(cols))
+
+    def _title(self) -> str:
+        title = _signal_text(self._state.conversation, "session_title")
+        return title or UNTITLED
+
+    def _badge(self) -> tuple[str, int]:
+        mode = self._state.active_mode()
+        name = str(mode.name)
+        agent = _signal(self._state, "agent")
+        agent_text = (
+            f"{escape(agent)} {glyphs().sep} "
+            if isinstance(agent, str) and agent not in ("", "default")
+            else ""
+        )
+        markup = agent_text + _tint(_mode_token(name), escape(name), bold=True)
+        return markup, _vlen(markup)
+
+    def top(self, cols: int, form: str | None = None) -> str:
+        """The top border: ``╭─ title ──── Safe ─╮`` (or a rule with both)."""
+        form = form or self.form(cols)
+        g = glyphs()
+        tl, tr, _bl, _br, h, _v = g.box
+        left_corner, right_corner = (tl, tr) if form == "box" else (h, h)
+        badge, badge_width = self._badge()
+        # "╭─ " + title + " " + fill + " " + badge + " ─╮"
+        fixed = cell_len(left_corner) + 3 + 1 + badge_width + 2 + cell_len(right_corner)
+        room = cols - fixed - 1  # at least one fill cell
+        title = self._title()
+        if room < cell_len(g.ellipsis) + 1:
+            title = ""
+        elif cell_len(title) > room:
+            title = _cut(title, room - cell_len(g.ellipsis)) + g.ellipsis
+        if room + badge_width + 2 < 0:
+            badge, badge_width = "", 0
+        head = f"{left_corner}{h} "
+        title_part = f"{_tint('muted', escape(title))} " if title else ""
+        used = cell_len(head) + (cell_len(title) + 1 if title else 0)
+        tail_width = (badge_width + 2 if badge else 0) + cell_len(h) + cell_len(right_corner)
+        fill = max(0, cols - used - tail_width)
+        badge_part = f" {badge} " if badge else ""
+        line = (
+            _tint("subtle", head)
+            + title_part
+            + _tint("subtle", h * fill)
+            + badge_part
+            + _tint("subtle", f"{h}{right_corner}")
+        )
+        return _fit(line, cols)
+
+    def bottom(self, cols: int, form: str | None = None) -> str:
+        form = form or self.form(cols)
+        g = glyphs()
+        _tl, _tr, bl, br, h, _v = g.box
+        if form == "box":
+            return _tint("subtle", bl + h * max(0, cols - 2) + br)
+        return _tint("subtle", h * cols)
+
+    def body(self, cols: int, form: str | None = None) -> list[Line]:
+        """The composer rows, inside the box's side borders when boxed."""
+        form = form or self.form(cols)
+        if form != "box":
+            return list(self.composer.lines(cols))
+        inner = self.inner_width(cols)
+        edge = style("subtle")
+        v = glyphs().box[5]
+        rows: list[Line] = []
+        for line in self.composer.lines(inner):
+            used = sum(cell_len(segment.text) for segment in line)
+            rows.append(
+                (
+                    Segment(f"{v} ", edge),
+                    *line,
+                    Segment(" " * max(0, inner - used)),
+                    Segment(f" {v}", edge),
+                )
+            )
+        return rows
+
+    def hint_row(self, cols: int) -> str | None:
+        """The contextual hints (a turn running, a condensed paste), or ``None`` idle."""
+        app = self._state
+        conv = app.conversation
+        reader = _reader(app)
+        if _signal_bool(conv, "terminal_waiting"):
+            hints: tuple[tuple[str, str], ...] = (
+                ("Esc", "interrupt"),
+                ("/ps", "view"),
+                ("/stop", "stop all"),
+            )
+            return _hint_row(hints, cols, reader, current_theme())
+        conditions: set[str] = set()
+        if _signal_bool(conv, "is_running"):
+            conditions.add("running")
+        if app.input.paste_condensed() is True:
+            conditions.update(("paste", "paste_at_cursor"))
+        pool = _signal(conv, "subagent_pool_state")
+        if pool is not None:
+            conditions.add("subagents")
+            from agenthicc.subagents.pool import SubagentPoolState
+
+            if isinstance(pool, SubagentPoolState) and pool.active:
+                conditions.add("subagents_running")
+        keymap = app.keymap()
+        found = tuple(
+            (hint.keys, hint.label)
+            for hint in keymap.hints("composer", frozenset(conditions))
+            if keymap.action(hint.action).when
+        )
+        return _hint_row(found, cols, reader, current_theme()) if found else None
 
 
-# ── helpers ───────────────────────────────────────────────────────────────────
+def _cut(text: str, width: int) -> str:
+    out: list[str] = []
+    used = 0
+    for character in text:
+        size = cell_len(character)
+        if used + size > width:
+            break
+        out.append(character)
+        used += size
+    return "".join(out).rstrip()
 
 
-def _vlen(markup: str) -> int:
-    from agenthicc.tui.rendering import visible_len
-
-    return visible_len(markup)
+# ── rows shared by the workspace ──────────────────────────────────────────────
 
 
 @functools.lru_cache(maxsize=256)
-def _hint_row(hints: tuple[tuple[str, str], ...], cols: int, plain: bool = False) -> str:
+def _hint_row(hints: tuple[tuple[str, str], ...], cols: int, plain: bool, theme: Theme) -> str:
     """Render ``(keys, label)`` hints in priority order, dropping the last to fit."""
-    from rich.markup import escape
-
-    segs = [f"[bold]{escape(keys)}[/bold] [dim]{escape(label)}[/dim]" for keys, label in hints]
-    sep = "[dim],[/dim] " if plain else "  [dim]│[/dim]  "
-    while len(segs) > 1 and _vlen(sep.join(segs)) > cols:
+    segs = [f"[bold]{escape(keys)}[/bold] {_tint('muted', escape(label))}" for keys, label in hints]
+    sep = ", " if plain else f" {_tint('muted', theme.glyphs.sep)} "
+    lead = "" if plain else " "
+    while len(segs) > 1 and _vlen(lead + sep.join(segs)) > cols:
         segs.pop()
-    return _fit(sep.join(segs), cols)
+    return _fit(lead + sep.join(segs), cols)
+
+
+def notice_rows(app_state: AppState, cols: int) -> tuple[str, ...]:
+    """A notification, the ``/loop`` status or an attention toast, wrapped whole."""
+    conv = app_state.conversation
+    for name in ("notification", "loop_status", "background_toast"):
+        text = _signal(conv, name)
+        if isinstance(text, str) and text:
+            return _notification_rows(text, cols, current_theme())
+    return ()
 
 
 @functools.lru_cache(maxsize=256)
-def _notification_rows(message: str, cols: int) -> tuple[str, ...]:
-    """Return a wrapped notification as dim markup rows, one per terminal row."""
-    from rich.markup import escape
-
-    return tuple(f"[dim]{escape(row.plain)}[/dim]" for row in _wrap_notification(message, cols))
+def _notification_rows(message: str, cols: int, theme: Theme) -> tuple[str, ...]:
+    """Return a wrapped notification as muted rows, one per terminal row."""
+    return tuple(_tint("muted", escape(row.plain)) for row in _wrap_notification(message, cols))
 
 
-def _markup_renderable(rows: list[str]) -> RenderableType:
-    from rich.console import Group
-    from rich.text import Text
-
-    texts = [Text.from_markup(row, emoji=False) for row in rows]
-    return texts[0] if len(texts) == 1 else Group(*texts)
-
-
-def _wrap_notification(message: str, cols: int) -> list["Text"]:
+def _wrap_notification(message: str, cols: int) -> list[Text]:
     """Wrap a notification without discarding any of its text.
 
     Notifications can contain workflow run IDs, which are long unbroken
-    strings. Passing them through :func:`_fit` loses the suffix and makes the
-    recovery command unusable. Rich's ``Text.wrap(..., overflow="fold")``
-    preserves every character, wrapping at spaces where possible and folding
-    long IDs when a single token is wider than the terminal.
+    strings; cutting them would make the recovery command unusable. Rich's
+    ``Text.wrap(..., overflow="fold")`` keeps every character, wrapping at
+    spaces where possible and folding a token wider than the terminal.
     """
-
     from rich.console import Console
     from rich.text import Text
 
     width = max(1, cols)
     return list(
-        Text(message, style="dim").wrap(
+        Text(message).wrap(
             Console(width=width, color_system=None, force_terminal=False),
             width=width,
             overflow="fold",

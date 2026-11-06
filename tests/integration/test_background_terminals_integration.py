@@ -15,7 +15,6 @@ from agenthicc.config import AgenthiccConfig
 from agenthicc.background.terminals import TerminalManager
 from agenthicc.tui.cbreak_reader import Key
 from agenthicc.tui.conversation_store import AppState
-from agenthicc.tui.workspace.components import StatusComponent
 from agenthicc.tui.workspace.overlays.terminals import TerminalListOverlay
 
 pytestmark = pytest.mark.integration
@@ -117,35 +116,31 @@ async def test_terminal_overlay_can_select_and_stop_a_live_handle(tmp_path: Path
     await manager.close()
 
 
-def test_wait_status_is_width_safe_and_contains_control_hints(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import agenthicc.tui.workspace.components as components
+def test_wait_status_is_width_safe_and_contains_control_hints() -> None:
+    from agenthicc.tui.rendering import visible_len
+    from agenthicc.tui.workspace.live_region import lines_text
+    from agenthicc.tui.workspace.workspace import Workspace
 
-    monkeypatch.setattr(components, "_get_cols", lambda: 200)
     state = AppState.create()
     state.conversation.model_name.set("test/model")
     state.conversation.session_id.set("session")
+    state.conversation.begin_turn("agent", "turn-1")
     state.conversation.set_terminal_wait(
         terminal_id="term-1234",
         label="uv run pytest tests/unit -q",
         elapsed_s=371.0,
         running_count=2,
     )
-    output = StringIO()
-    Console(file=output, force_terminal=False, markup=False, width=200).print(
-        StatusComponent(state).render()
-    )
-    text = output.getvalue()
-    assert "Waiting for background terminal" in text
-    assert "6m 11s" in text
-    assert "Esc" in text
-    assert "2 running" in text
-    assert "/ps | /stop" in text
+    console = Console(file=StringIO(), width=200, height=40, color_system=None)
+    rows = lines_text(Workspace(state, console)._build_lines())
+    status, hints = rows[-2], rows[-1]
+    assert "Waiting for terminal: uv run pytest tests/unit -q 6m 11s" in status
+    assert "2 terminals running" in status
+    assert hints.strip() == "Esc interrupt · /ps view · /stop stop all"
+    text = "\n".join(rows)
+    assert "usage unavailable" not in text and "cost unknown" not in text
 
-    assert "usage unavailable" in text
-    assert "cost unknown" in text
-    assert "└ uv run pytest tests/unit -q" in text
-    assert "session" in text
-    assert str(Path.cwd()) in text
-    assert StatusComponent(state).height(200) == 6
+    for width in (40, 60, 80):
+        line = Workspace(state, Console(file=StringIO(), width=width))
+        assert visible_len(line.status.markup(width)) <= width
+        assert "Waiting" in line.status.markup(width)

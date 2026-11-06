@@ -79,7 +79,7 @@ def test_build_handles_overflow_failure_and_plain_composer() -> None:
     workspace = Workspace(state, _console())
     workspace.overlays._overlay = None
     rows = lines_text(workspace._build_lines())
-    assert len(rows) >= 5
+    assert len(rows) == 4  # the framed composer and the status line (TUX-02)
     assert not any("more tool" in row for row in rows)
 
 

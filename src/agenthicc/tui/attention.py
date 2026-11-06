@@ -60,7 +60,6 @@ class AgentAttentionRouter:
         self._notices: list[_AttentionNotice] = []
         self._coalesce_deadline: float | None = None
         self._toast_deadline: float | None = None
-        self._hint_deadline: float | None = None
         self._notification_tasks: set[asyncio.Task[None]] = set()
 
     async def run(self) -> None:
@@ -83,8 +82,6 @@ class AgentAttentionRouter:
         try:
             previous = await _load_attention_snapshot(self._service)
             self._publish_counts(previous)
-            conversation.agents_hint.set(True)
-            self._hint_deadline = self._monotonic() + 10.0
             while True:
                 now = self._monotonic()
                 timeout = self._next_timeout(now)
@@ -117,7 +114,6 @@ class AgentAttentionRouter:
                 now = self._monotonic()
                 self._flush_if_ready(now)
                 self._expire_toast(now)
-                self._expire_hint(now)
         finally:
             for unsubscribe in unsubscribers:
                 unsubscribe()
@@ -128,11 +124,7 @@ class AgentAttentionRouter:
 
     def _next_timeout(self, now: float) -> float | None:
         conversation = self._app_state.conversation
-        deadlines = [
-            deadline
-            for deadline in (self._toast_deadline, self._hint_deadline)
-            if deadline is not None
-        ]
+        deadlines = [self._toast_deadline] if self._toast_deadline is not None else []
         if (
             not conversation.background_dnd()
             and not self._app_state.modal_open()
@@ -227,9 +219,6 @@ class AgentAttentionRouter:
                         oldest.project_root,
                         item_id=oldest.item_id,
                     )
-        if needs_notified or new_items:
-            self._app_state.conversation.agents_hint.set(True)
-            self._hint_deadline = self._monotonic() + 10.0
 
     def _queue_notice(
         self,
@@ -339,12 +328,10 @@ class AgentAttentionRouter:
         self._notices.clear()
         self._coalesce_deadline = None
         self._toast_deadline = None
-        self._hint_deadline = None
         conversation = self._app_state.conversation
         conversation.background_toast.set(None)
         conversation.background_toast_kind.set(None)
         conversation.agents_toast_target.set(None)
-        conversation.agents_hint.set(False)
 
     def _expire_toast(self, now: float) -> None:
         if self._toast_deadline is None or now < self._toast_deadline:
@@ -354,12 +341,6 @@ class AgentAttentionRouter:
         conversation.background_toast.set(None)
         conversation.background_toast_kind.set(None)
         conversation.agents_toast_target.set(None)
-
-    def _expire_hint(self, now: float) -> None:
-        if self._hint_deadline is None or now < self._hint_deadline:
-            return
-        self._hint_deadline = None
-        self._app_state.conversation.agents_hint.set(False)
 
 
 def _emit_terminal_notification(console: Console, summary: str) -> None:

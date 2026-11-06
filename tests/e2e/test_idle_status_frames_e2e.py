@@ -32,7 +32,7 @@ async def test_idle_ticks_do_not_append_duplicate_status_frames() -> None:
     finally:
         workspace.stop()
 
-    assert console.export_text().count("✿ Idle") == 1
+    assert console.export_text().count("● Idle") == 1
 
 
 @pytest.mark.asyncio
@@ -71,5 +71,5 @@ async def test_replayed_transcript_idle_boundary_does_not_start_idle_redraw_loop
     with_idle_ticks = await run_replay(7)
 
     assert "Session had an in-progress 'code_plan' workflow." in baseline
-    assert with_idle_ticks.count("✿ Idle") == baseline.count("✿ Idle")
+    assert with_idle_ticks.count("● Idle") == baseline.count("● Idle")
     assert with_idle_ticks.count("Loading transcript") == baseline.count("Loading transcript")

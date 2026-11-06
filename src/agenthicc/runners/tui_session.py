@@ -1143,6 +1143,8 @@ async def _build_session_context_impl(
     app_state = AppState.create()
     app_state.conversation.model_name.set(model_label)
     app_state.conversation.session_id.set(session_id)
+    # TUX-02: the status line's context meter divides by this window.
+    app_state.conversation.context_window.set(cfg.execution.effective_context_window())
     app_state.conversation.current_directory.set(str(Path.cwd()))
     app_state.ui.set(cfg.ui)
 
@@ -2790,7 +2792,6 @@ class TUISession:
         from agenthicc.tui.workspace.agents_hub.sources import HubSources
 
         ctx = self._ctx
-        ctx.app_state.conversation.agents_hint.set(False)
         overlays = self._workspace.overlays
         current = overlays.widget
         if isinstance(current, AgentsHubOverlay):
@@ -3315,6 +3316,7 @@ class TUISession:
             open_subagents=self.open_subagents,
             select_agent=self.select_agent,
             open_agent_picker=self.open_agent_picker,
+            app_state=ctx.app_state,
         )
         return bool(self._cmd_dispatcher.dispatch(text, context))
 
