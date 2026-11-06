@@ -13,12 +13,12 @@ from __future__ import annotations
 import asyncio
 import copy
 import inspect
-import json
 import logging
 import os
 import re
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, TypeVar, cast
 
@@ -27,6 +27,17 @@ from agenthicc.runners.agent_turn_context import AgentTurnContext
 from agenthicc.runners.prompt_contract import PromptBlock
 from agenthicc.runners.recovery_projection import ToolRecoveryProjector
 from agenthicc.tools.base import tool_name
+from agenthicc.tui.tool_summary import (
+    OutputProjection,
+    ToolPresentation,
+    ToolSummary,
+    bounded_args,
+    error_code_of,
+    exit_code_of,
+    output_projection,
+    presentation_from_metadata,
+    summarize_call,
+)
 from agenthicc.tools.hooks import (
     AfterToolHookDecision,
     ErrorToolHookDecision,
@@ -658,196 +669,47 @@ def _effective_agent_tool_names(
     )
 
 
-# ── formatting helper (module-level, unchanged) ───────────────────────────────
-
-
-def _fmt_args(args: dict[str, object]) -> str:
-    from rich.markup import escape as _e
-
-    items = list(args.items())
-    if not items:
-        return ""
-    if len(items) == 1:
-        return f"[dim]({_e(repr(items[0][1])[:60])})[/dim]"
-
-    def format_item(key: str, value: object) -> str:
-        # Module and path arguments are identifiers users need to verify. A
-        # silent 25-character cut makes a valid module look invalid in the TUI
-        # even though the complete value is sent to the tool executor.
-        limit = 80 if key in {"module", "path", "symbol"} else 25
-        if key.casefold() in {
-            "value",
-            "password",
-            "passwd",
-            "secret",
-            "token",
-            "api_key",
-            "authorization",
-            "cookie",
-        }:
-            rendered = "<redacted>"
-        else:
-            rendered = repr(value)
-        if len(rendered) > limit:
-            rendered = rendered[: limit - 1] + "…"
-        return f"{_e(key)}={_e(rendered)}"
-
-    return "[dim](" + ", ".join(format_item(k, v) for k, v in items[:3]) + ")[/dim]"
-
-
-_EXPLORATION_SENSITIVE_KEYS = frozenset(
-    {
-        "api_key",
-        "authorization",
-        "cookie",
-        "password",
-        "passwd",
-        "secret",
-        "token",
-        "value",
-    }
-)
-_EXPLORATION_SENSITIVE_MARKERS = (
-    "api_key=",
-    "authorization:",
-    "bearer ",
-    "cookie=",
-    "password=",
-    "passwd=",
-    "secret=",
-    "token=",
-)
-
-
-def _exploration_value(key: str, value: object, *, limit: int = 80) -> str:
-    """Return one bounded, non-secret value for an exploration label."""
-    if key.casefold() in _EXPLORATION_SENSITIVE_KEYS:
-        return "<redacted>"
-    if isinstance(value, str):
-        rendered = value
-    elif isinstance(value, (int, float, bool)):
-        rendered = str(value)
-    elif value is None:
-        rendered = "None"
-    elif isinstance(value, list):
-        rendered = ", ".join(_exploration_value(key, item) for item in value[:3])
-        if len(value) > 3:
-            rendered += ", …"
-    else:
-        return ""
-    if any(marker in rendered.casefold() for marker in _EXPLORATION_SENSITIVE_MARKERS):
-        return "<redacted>"
-    return rendered[:limit] + ("…" if len(rendered) > limit else "")
-
-
-def _exploration_extra_arguments(args: Mapping[str, object], used_keys: set[str]) -> str:
-    """Format unconsumed tool arguments for a safe exploration label."""
-    details: list[str] = []
-    for key, value in args.items():
-        if key in used_keys:
-            continue
-        safe_value = _exploration_value(key, value, limit=40)
-        if safe_value:
-            details.append(f"{key}={safe_value}")
-    rendered = ", ".join(details)
-    return rendered[:79] + "…" if len(rendered) > 80 else rendered
-
-
-def _exploration_with_arguments(
-    target: str, args: Mapping[str, object], used_keys: set[str]
-) -> str:
-    """Append safe, bounded arguments that are not part of *target*."""
-    details = _exploration_extra_arguments(args, used_keys)
-    if not details:
-        return target
-    combined = f"{target} ({details})" if target else details
-    return combined[:79] + "…" if len(combined) > 80 else combined
-
-
-def _exploration_target(name: str, args: Mapping[str, object]) -> str:
-    """Build a safe, bounded target label for an exploratory tool call."""
-    search_names = {
-        "grep_files",
-        "search_agenthicc_docs",
-        "search_agenthicc_source",
-        "search_files",
-        "git_grep",
-    }
-    if name in search_names:
-        query_key = "pattern" if "pattern" in args else "query"
-        query = _exploration_value(query_key, args.get(query_key, ""))
-        location_key = next(
-            (key for key in ("path", "module", "section", "ref") if key in args),
-            "",
-        )
-        location = _exploration_value(location_key, args.get(location_key, ""))
-        if query and location and location != ".":
-            target = f"{query} in {location}"
-        else:
-            target = query or location
-        return _exploration_with_arguments(target, args, {query_key, location_key})
-
-    for key in ("path", "paths", "target", "ref", "section", "module"):
-        if key in args:
-            return _exploration_with_arguments(_exploration_value(key, args[key]), args, {key})
-    return _exploration_with_arguments("", args, set())
-
-
 def _exploration_presentation(name: str, args: Mapping[str, object]) -> dict[str, object]:
-    """Return bounded presentation metadata persisted on a tool event."""
-    presentation: dict[str, object] = {"exploratory": True}
+    """Presentation metadata persisted on an exploratory tool event (PRD-161).
 
-    # ``batch_read`` needs structured presentation metadata. Turning the
-    # complete path list into one string would lose the count when the target
-    # is abbreviated (and would make the TUI guess whether an ellipsis meant
-    # omitted files). Keep only the first two safe paths and persist the
-    # remainder explicitly. The executor still receives and returns the full
-    # argument/result; this is only a bounded display projection.
+    The row's label is the event's ``summary`` (TUX-06); this only marks the
+    call as exploratory and, for ``batch_read``, records how many files it
+    read so the collapsed ``Explored 9 files`` row can count them.
+    """
+    presentation: dict[str, object] = {"exploratory": True}
     if name == "batch_read":
         raw_paths = args.get("paths")
         if isinstance(raw_paths, list):
-            paths = [
-                safe_path
-                for path in raw_paths
-                if isinstance(path, str)
-                for safe_path in [_exploration_value("path", path)]
-                if safe_path
-            ]
-            if paths:
-                presentation["files"] = paths[:2]
-                more_files = len(paths) - 2
-                if more_files > 0:
-                    presentation["more_files"] = more_files
-                extra_arguments = _exploration_extra_arguments(args, {"paths"})
-                if extra_arguments:
-                    presentation["arguments"] = extra_arguments
-                return presentation
-
-    target = _exploration_target(name, args)
-    if target:
-        presentation["target"] = target
+            count = sum(1 for path in raw_paths if isinstance(path, str) and path)
+            if count:
+                presentation["file_count"] = count
     return presentation
 
 
-def _tool_output_preview(result: object) -> tuple[list[str], int]:
-    """Return a bounded preview and omitted-line count for a tool result."""
-    if isinstance(result, dict):
-        for key in ("content", "output", "stdout", "result", "error"):
-            value = result.get(key)
-            if isinstance(value, str):
-                text = value
-                break
-        else:
-            text = json.dumps(result, ensure_ascii=False, indent=2, default=str)
-    elif isinstance(result, str):
-        text = result
-    else:
-        text = json.dumps(result, ensure_ascii=False, indent=2, default=str)
+@dataclass(frozen=True, slots=True)
+class _ToolCapture:
+    """What the transcript keeps of one finished call (TUX-06): data, no markup."""
 
-    lines = text.splitlines()
-    if not lines and text:
-        lines = [text]
-    return lines[:4], max(0, len(lines) - 4)
+    output: OutputProjection
+    summary: ToolSummary
+    exit_code: int | None = None
+    error_code: str | None = None
+
+
+def _capture_tool_result(
+    name: str,
+    args: Mapping[str, object],
+    result: object,
+    root: Path,
+    presentation: ToolPresentation | None,
+) -> _ToolCapture:
+    """Project a tool result into its bounded, structured transcript capture."""
+    return _ToolCapture(
+        output_projection(result),
+        summarize_call(name, args, result, root=root, presentation=presentation),
+        exit_code_of(result),
+        error_code_of(result),
+    )
 
 
 def _workspace_result_projection(result: object) -> dict[str, object]:
@@ -879,13 +741,19 @@ class _ToolOutputCaptureHook(LifecycleHook):
 
     def __init__(
         self,
-        outputs: dict[str, tuple[list[str], int]],
+        outputs: dict[str, _ToolCapture],
         command_outcomes: list[dict[str, object]] | None = None,
         command_states: dict[str, str] | None = None,
         command_ready: dict[str, bool] | None = None,
         workspace_access: dict[str, dict[str, object]] | None = None,
+        presentations: Mapping[str, ToolPresentation] | None = None,
+        root: Path | None = None,
     ) -> None:
         self._outputs = outputs
+        self._presentations: Mapping[str, ToolPresentation] = (
+            presentations if presentations is not None else {}
+        )
+        self._root = root or Path(os.getcwd())
         self._command_outcomes = command_outcomes
         self._command_states = command_states
         self._command_ready = command_ready
@@ -896,7 +764,13 @@ class _ToolOutputCaptureHook(LifecycleHook):
         result: object,
         ctx: ToolCallContext,
     ) -> AfterToolHookDecision:
-        self._outputs[ctx.tool_use_id] = _tool_output_preview(result)
+        self._outputs[ctx.tool_use_id] = _capture_tool_result(
+            ctx.tool_name,
+            ctx.tool_input,
+            result,
+            self._root,
+            self._presentations.get(ctx.tool_name),
+        )
         if self._workspace_access is not None:
             metadata = ctx.get_metadata("workspace_access")
             if isinstance(metadata, dict):
@@ -928,7 +802,16 @@ class _ToolOutputCaptureHook(LifecycleHook):
         exc: Exception,
         ctx: ToolCallContext,
     ) -> ErrorToolHookDecision:
-        self._outputs[ctx.tool_use_id] = ([f"{type(exc).__name__}: {exc}"], 0)
+        self._outputs[ctx.tool_use_id] = _ToolCapture(
+            OutputProjection((f"{type(exc).__name__}: {exc}",), 1, 1),
+            summarize_call(
+                ctx.tool_name,
+                ctx.tool_input,
+                None,
+                root=self._root,
+                presentation=self._presentations.get(ctx.tool_name),
+            ),
+        )
         return ErrorToolHookDecision.reraise()
 
 
@@ -1065,7 +948,9 @@ class AgentTurnRunner:
         # Tool tracking — populated by signal handlers.
         self._tool_args: dict[str, dict[str, object]] = {}
         self._tool_names: dict[str, str] = {}
-        self._tool_outputs: dict[str, tuple[list[str], int]] = {}
+        self._tool_outputs: dict[str, _ToolCapture] = {}
+        # Plugin tools' own transcript summaries (``summarized_by``), by name.
+        self._tool_presentations: dict[str, ToolPresentation] = {}
         self._exploratory_tools: set[str] = set()
         self._tool_states: dict[str, str] = {}
         self._tool_ready: dict[str, bool] = {}
@@ -1261,6 +1146,8 @@ class AgentTurnRunner:
                 {
                     "turn_id": self._agent_id,
                     "agent_name": f"assistant ({self._model_short})",
+                    "agent": self._ctx.active_agent or "default",
+                    "model": self._model_short,
                 },
             )
 
@@ -1327,10 +1214,15 @@ class AgentTurnRunner:
         except Exception:  # noqa: BLE001
             pass
 
+    def _workspace_root(self) -> Path:
+        """The root tool summaries make paths relative to."""
+        access = self._ctx.workspace_access
+        return access.scope.primary_root if access is not None else Path(os.getcwd())
+
     async def _handle_tool_complete(self, sig: ToolCallComplete) -> None:
-        tid: str = getattr(sig, "tool_use_id", "")
-        success: bool = bool(getattr(sig, "success", True))
-        ms: float | None = getattr(sig, "duration_ms", None)
+        tid: str = sig.tool_use_id
+        success: bool = bool(sig.success)
+        ms: float = sig.duration_ms
         name = self._tool_names.pop(tid, tid)
         args = self._tool_args.pop(tid, {})
         state = self._tool_states.pop(tid, None)
@@ -1362,23 +1254,44 @@ class AgentTurnRunner:
 
         if conv:
             conv.clear_tool(success=success)
-            output_lines, output_more = self._tool_outputs.pop(tid, ([], 0))
-            if not success and not output_lines and getattr(sig, "error", None):
+            capture = self._tool_outputs.pop(tid, None)
+            if capture is None:
+                capture = _ToolCapture(
+                    OutputProjection((), 0, 0),
+                    summarize_call(
+                        name,
+                        args,
+                        None,
+                        root=self._workspace_root(),
+                        presentation=self._tool_presentations.get(name),
+                    ),
+                )
+            output_lines = list(capture.output.lines)
+            output_head, output_total = capture.output.head, capture.output.total
+            if not success and not output_lines and sig.error:
                 output_lines = [str(sig.error)]
+                output_head = output_total = 1
             # Skip the generic tool_complete line when a file-diff was already
             # rendered — the diff is more informative and the duplicate line
             # ("⎿ write_file(...)  ✓  4ms") is visual noise below the diff.
             if not showed_diff:
+                # Data only: the renderer formats it with the active theme
+                # (TUX-06), so the event log never holds presentation markup.
                 payload: dict[str, object] = {
                     "tool_use_id": tid,
                     "name": name,
                     "success": success,
                     "state": state,
                     "ready": ready,
-                    "args_str": _fmt_args(args),
-                    "dur_str": f"  [dim]{ms:.0f}ms[/dim]" if ms else "",
+                    "summary": capture.summary.target,
+                    "summary_detail": capture.summary.detail,
+                    "args": bounded_args(args),
+                    "duration_ms": round(ms),
                     "output_lines": output_lines,
-                    "output_more": output_more,
+                    "output_head": output_head,
+                    "output_total": output_total,
+                    "exit_code": capture.exit_code,
+                    "error_code": capture.error_code,
                 }
                 workspace_access = self._workspace_access.pop(tid, None)
                 if workspace_access is not None:
@@ -1421,16 +1334,11 @@ class AgentTurnRunner:
         )
         agent_text = prefix + ctx.text if prefix else ctx.text
         if injected and ctx.conv_store:
-            chips = [
-                {
-                    "raw": r.mention.raw,
-                    "kind": r.mention.kind.value,  # "file" | "directory" | "url" | "glob" | "unresolved"
-                    "ok": getattr(r, "ok", True),
-                }
-                for r in injected
-            ]
-            if chips:
-                ctx.conv_store.append_event("mention_chips", {"chips": chips})
+            # A mention that could not be resolved is an input notice under the
+            # user message, never a failed tool row (TUX-06 §2.7).
+            ctx.conv_store.append_event(
+                "mention_chips", {"chips": [item.chip() for item in injected]}
+            )
         return agent_text
 
     # ── step 6: skills ────────────────────────────────────────────────────────
@@ -1602,8 +1510,18 @@ class AgentTurnRunner:
                 self._tool_states,
                 self._tool_ready,
                 self._workspace_access,
+                self._tool_presentations,
+                self._workspace_root(),
             )
         ]
+        self._tool_presentations.clear()
+        self._tool_presentations.update(
+            {
+                tool_name(tool): presentation
+                for tool in visible_tools
+                if (presentation := presentation_from_metadata(tool)) is not None
+            }
+        )
         self._exploratory_tools = {
             tool_name(tool) for tool in visible_tools if is_exploratory_tool(tool)
         }

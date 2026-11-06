@@ -1,4 +1,4 @@
-"""Unit coverage for exploratory tool metadata and TUI consolidation."""
+"""Unit coverage for exploratory tool metadata and TUI consolidation (PRD-161, TUX-06)."""
 
 from __future__ import annotations
 
@@ -28,47 +28,36 @@ from agenthicc.tools.capabilities import (
     tool_read,
 )
 from agenthicc.tui.conversation_store import ConversationEvent, ConversationStore
-from agenthicc.tui.workspace.appender import ScrollBufferAppender
+from agenthicc.tui.workspace.appender import ScrollBufferAppender, set_session_tool_detail
 
 pytestmark = pytest.mark.unit
 
 
 def _event(
     name: str,
+    summary: str = "",
     *,
     exploratory: bool = False,
-    target: str = "",
-    files: list[str] | None = None,
-    more_files: int = 0,
-    arguments: str = "",
     success: bool = True,
+    file_count: int = 0,
 ) -> ConversationEvent:
     payload: dict[str, object] = {
         "name": name,
         "success": success,
-        "args_str": "",
+        "summary": summary,
         "output_lines": [],
     }
     if exploratory:
         presentation: dict[str, object] = {"exploratory": True}
-        if target:
-            presentation["target"] = target
-        if files is not None:
-            presentation["files"] = files
-        if more_files:
-            presentation["more_files"] = more_files
-        if arguments:
-            presentation["arguments"] = arguments
+        if file_count:
+            presentation["file_count"] = file_count
         payload["presentation"] = presentation
-    return ConversationEvent(name, "tool_complete", payload)
+    return ConversationEvent(f"{name}-{summary}", "tool_complete", payload)
 
 
-def _appender() -> tuple[ScrollBufferAppender, MagicMock]:
+def _appender() -> tuple[ScrollBufferAppender, Console]:
     state = MagicMock()
-    state.conversation.live_tool_overflow.set = MagicMock()
-    console = MagicMock()
-    console.__enter__ = MagicMock(return_value=console)
-    console.__exit__ = MagicMock(return_value=False)
+    console = Console(file=StringIO(), record=True, width=100, color_system=None)
     return ScrollBufferAppender(state, console), console
 
 
@@ -78,12 +67,14 @@ def _flush(appender: ScrollBufferAppender, events: list[ConversationEvent]) -> N
     appender._flush_batch()
 
 
-def _printed_lines(console: MagicMock) -> list[str]:
-    return [
-        call.args[0]
-        for call in console.print.call_args_list
-        if call.args and isinstance(call.args[0], str)
-    ]
+def _rows(console: Console) -> list[str]:
+    return [row.rstrip() for row in console.export_text(clear=False).splitlines()]
+
+
+@pytest.fixture(autouse=True)
+def _reset_detail() -> object:
+    yield
+    set_session_tool_detail(None)
 
 
 def test_exploratory_metadata_is_separate_from_security_capabilities() -> None:
@@ -113,80 +104,21 @@ def test_malformed_presentation_metadata_fails_closed() -> None:
     assert is_exploratory_tool(malformed) is False
 
 
-def test_exploration_target_is_bounded_and_redacted() -> None:
-    presentation = _exploration_presentation(
-        "grep_files",
-        {
-            "pattern": "def _emit|event_sinks",
-            "path": "src/agenthicc/runners/_runner.py",
-            "token": "do-not-display",
-        },
-    )
-
-    assert presentation == {
-        "exploratory": True,
-        "target": ("def _emit|event_sinks in src/agenthicc/runners/_runner.py (token=<redacted>)"),
-    }
-    assert "do-not-display" not in str(presentation)
-
-    secret_target = _exploration_presentation(
-        "inspect_agenthicc_source", {"target": "authorization: Bearer secret-token"}
-    )
-    assert secret_target == {"exploratory": True, "target": "<redacted>"}
-
-    assert _exploration_presentation(
-        "inspect_agenthicc_source", {"target": "agenthicc.runners.agent_turn"}
-    ) == {
-        "exploratory": True,
-        "target": "agenthicc.runners.agent_turn",
-    }
-
-
-def test_batch_read_presentation_keeps_file_count_separate_from_target_text() -> None:
+def test_batch_read_presentation_counts_its_files() -> None:
     presentation = _exploration_presentation(
         "batch_read",
         {"paths": ["password_generator/batch.py", "password_generator/templates.py", "README.md"]},
     )
 
-    assert presentation == {
-        "exploratory": True,
-        "files": ["password_generator/batch.py", "password_generator/templates.py"],
-        "more_files": 1,
-    }
-
-
-@pytest.mark.parametrize(
-    ("name", "args", "target"),
-    [
-        ("read_file", {"path": "README.md", "encoding": "utf-16"}, "README.md (encoding=utf-16)"),
-        (
-            "list_directory",
-            {"path": ".", "pattern": "*.py", "recursive": True},
-            ". (pattern=*.py, recursive=True)",
-        ),
-        ("git_log", {"n": 10}, "n=10"),
-        ("git_branch", {"pattern": "feature/*"}, "pattern=feature/*"),
-        ("git_diff", {"staged": True}, "staged=True"),
-        (
-            "inspect_agenthicc_source",
-            {"target": "agenthicc.config", "include_source": False},
-            "agenthicc.config (include_source=False)",
-        ),
-    ],
-)
-def test_exploration_labels_preserve_non_target_arguments(
-    name: str, args: dict[str, object], target: str
-) -> None:
-    assert _exploration_presentation(name, args) == {
-        "exploratory": True,
-        "target": target,
-    }
+    assert presentation == {"exploratory": True, "file_count": 3}
+    assert _exploration_presentation("read_file", {"path": "x"}) == {"exploratory": True}
 
 
 def test_agent_turn_persists_exploratory_presentation_metadata() -> None:
     conv_store = MagicMock()
     ctx = MagicMock()
     ctx.conv_store = conv_store
+    ctx.workspace_access = None
     runner = AgentTurnRunner(ctx)
     runner._exploratory_tools = {"read_file"}
     runner._tool_names["call-1"] = "read_file"
@@ -206,55 +138,34 @@ def test_agent_turn_persists_exploratory_presentation_metadata() -> None:
     )
 
     payload = conv_store.append_event.call_args.args[1]
-    assert payload["presentation"] == {
-        "exploratory": True,
-        "target": "src/agenthicc/config.py",
-    }
+    assert payload["presentation"] == {"exploratory": True}
+    assert payload["summary"] == "src/agenthicc/config.py"
 
 
-def test_explored_block_groups_calls_and_flushes_before_mutation() -> None:
+def test_explored_calls_collapse_to_one_row_and_flush_before_a_mutation() -> None:
     appender, console = _appender()
     _flush(
         appender,
         [
-            _event("read_file", exploratory=True, target="command.py"),
-            _event("search_files", exploratory=True, target="def _emit in _runner.py"),
-            _event("write_file"),
+            _event("read_file", "command.py", exploratory=True),
+            _event("search_files", '"def _emit" in src/', exploratory=True),
+            _event("write_file", "out.py"),
         ],
     )
 
-    lines = _printed_lines(console)
-    assert sum("Explored" in line for line in lines) == 1
-    assert any("Read command.py" in line for line in lines)
-    assert any("[dim]└[/dim]" in line and "Read command.py" in line for line in lines)
-    assert any("Search def _emit in _runner.py" in line for line in lines)
-    assert any("Update" in line for line in lines)
-    assert not any("[green]●[/green] [bold]Read" in line for line in lines)
+    assert _rows(console) == [
+        '● Explored 1 file, 1 search  command.py, "def _emit" in src/',
+        "● Write out.py",
+    ]
 
 
-def test_explored_block_has_a_blank_separator_before_the_next_tool() -> None:
+def test_explored_row_and_the_next_tool_have_no_blank_between() -> None:
     appender, console = _appender()
     _flush(
-        appender,
-        [
-            _event("read_file", exploratory=True, target="Makefile"),
-            _event("run_tests"),
-        ],
+        appender, [_event("read_file", "Makefile", exploratory=True), _event("run_tests", "unit")]
     )
 
-    calls = console.print.call_args_list
-    read_index = next(
-        index
-        for index, call in enumerate(calls)
-        if call.args and "Read Makefile" in str(call.args[0])
-    )
-    next_tool_index = next(
-        index
-        for index, call in enumerate(calls)
-        if call.args and "[bold]Test[/bold]" in str(call.args[0])
-    )
-    assert calls[read_index + 1].args == ()
-    assert read_index < read_index + 1 < next_tool_index
+    assert _rows(console) == ["● Explored 1 file  Makefile", "● Test unit"]
 
 
 def test_exploration_failure_is_not_hidden_and_starts_a_new_group() -> None:
@@ -262,109 +173,52 @@ def test_exploration_failure_is_not_hidden_and_starts_a_new_group() -> None:
     _flush(
         appender,
         [
-            _event("read_file", exploratory=True, target="before.py"),
-            _event("read_file", exploratory=True, target="broken.py", success=False),
-            _event("read_file", exploratory=True, target="after.py"),
+            _event("read_file", "before.py", exploratory=True),
+            _event("read_file", "broken.py", exploratory=True, success=False),
+            _event("read_file", "after.py", exploratory=True),
         ],
     )
+    appender.flush()
 
-    lines = _printed_lines(console)
-    assert sum("Explored" in line for line in lines) == 2
-    assert any("[red]Failed[/red]" in line for line in lines)
+    rows = _rows(console)
+    assert rows[0] == "● Explored 1 file  before.py"
+    assert rows[1].startswith("✗ Read broken.py") and rows[1].endswith("failed")
+    assert rows[-1] == "● Explored 1 file  after.py"
 
 
-def test_exploration_group_is_bounded() -> None:
+def test_verbose_lists_the_calls_and_bounds_the_list() -> None:
     appender, console = _appender()
-    events = [
-        _event("read_file", exploratory=True, target=f"file-{index}.py") for index in range(15)
-    ]
+    set_session_tool_detail("verbose")
+    events = [_event("read_file", f"file-{index}.py", exploratory=True) for index in range(15)]
     _flush(appender, events + [ConversationEvent("text", "text", {"text": "done"})])
 
-    lines = _printed_lines(console)
-    assert sum("file-" in line for line in lines) == 12
-    assert any("3 more exploratory calls" in line for line in lines)
+    rows = _rows(console)
+    assert rows[0].startswith("● Explored 15 files  file-0.py, file-1.py")
+    assert sum(row.startswith("  └ Read file-") for row in rows) == 12
+    assert "  └ …and 3 more calls" in rows
 
 
-def test_batched_reads_use_list_prefix_and_report_omitted_files() -> None:
+def test_batched_reads_count_every_file() -> None:
+    appender, console = _appender()
+    _flush(appender, [_event("batch_read", "5 files", exploratory=True, file_count=5)])
+    appender.flush()
+
+    assert _rows(console) == ["● Explored 5 files  5 files"]
+
+
+def test_other_exploratory_tools_are_counted_as_lookups() -> None:
     appender, console = _appender()
     _flush(
         appender,
         [
-            _event(
-                "batch_read",
-                exploratory=True,
-                files=["password_generator/batch.py", "password_generator/templates.py"],
-                more_files=3,
-            )
+            _event("list_directory", "./", exploratory=True),
+            _event("git_status", "status", exploratory=True),
+            _event("git_log", "log", exploratory=True),
         ],
     )
+    appender.flush()
 
-    lines = _printed_lines(console)
-    assert any(
-        "[dim]└[/dim] Read password_generator/batch.py, "
-        "password_generator/templates.py, and 3 more files." in line
-        for line in lines
-    )
-
-
-def test_batched_reads_display_remaining_arguments() -> None:
-    appender, console = _appender()
-    presentation = _exploration_presentation(
-        "batch_read",
-        {"paths": ["one.py", "two.py", "three.py"], "encoding": "latin-1"},
-    )
-    assert presentation["arguments"] == "encoding=latin-1"
-    _flush(
-        appender,
-        [
-            _event(
-                "batch_read",
-                exploratory=True,
-                files=["one.py", "two.py"],
-                more_files=1,
-                arguments="encoding=latin-1",
-            )
-        ],
-    )
-
-    lines = _printed_lines(console)
-    assert any("(encoding=latin-1)" in line for line in lines)
-
-
-def test_explored_rows_show_arguments_for_search_and_log() -> None:
-    appender, console = _appender()
-    _flush(
-        appender,
-        [
-            _event(
-                "search_files",
-                exploratory=True,
-                target="needle in src (recursive=False)",
-            ),
-            _event("git_log", exploratory=True, target="n=5"),
-        ],
-    )
-
-    lines = _printed_lines(console)
-    assert any("Search needle in src (recursive=False)" in line for line in lines)
-    assert any("Log n=5" in line for line in lines)
-
-
-def test_all_explored_tools_use_the_list_tree_prefix() -> None:
-    appender, console = _appender()
-    _flush(
-        appender,
-        [
-            _event("list_directory", exploratory=True, target="."),
-            _event("read_file", exploratory=True, target="README.md"),
-            _event("search_files", exploratory=True, target="needle"),
-        ],
-    )
-
-    lines = _printed_lines(console)
-    assert lines.count("  [dim]└[/dim] List .") == 1
-    assert lines.count("  [dim]└[/dim] Read README.md") == 1
-    assert lines.count("  [dim]└[/dim] Search needle") == 1
+    assert _rows(console) == ["● Explored 1 listing, 2 lookups  ./, status, log"]
 
 
 def test_conversation_store_keeps_each_exploration_event_granular() -> None:
@@ -381,14 +235,12 @@ def test_conversation_store_keeps_each_exploration_event_granular() -> None:
     assert store.tool_group_count() == 3
 
 
-def test_grouping_can_be_disabled_for_legacy_rendering() -> None:
+def test_grouping_can_be_disabled() -> None:
     appender, console = _appender()
     appender._group_exploratory_calls = False
-    _flush(appender, [_event("read_file", exploratory=True, target="README.md")])
+    _flush(appender, [_event("read_file", "README.md", exploratory=True)])
 
-    lines = _printed_lines(console)
-    assert not any("Explored" in line for line in lines)
-    assert any("[green]●[/green] [bold]Read" in line for line in lines)
+    assert _rows(console) == ["● Read README.md"]
 
 
 def test_grouping_flag_defaults_on_and_parses_off(tmp_path) -> None:
@@ -428,14 +280,13 @@ def test_typed_tool_opt_in_survives_adapter() -> None:
 
 def test_replay_uses_the_same_derived_grouping() -> None:
     history = [
-        _event("read_file", exploratory=True, target="one.py"),
-        _event("search_files", exploratory=True, target="needle in src"),
+        _event("read_file", "one.py", exploratory=True),
+        _event("search_files", '"needle" in src/', exploratory=True),
         ConversationEvent("answer", "text", {"text": "done"}),
     ]
 
     live_appender, live_console = _appender()
     _flush(live_appender, history)
-    live_lines = _printed_lines(live_console)
 
     replay_events = [
         ConversationEvent(event.event_id, event.kind, dict(event.payload), event.timestamp)
@@ -445,14 +296,14 @@ def test_replay_uses_the_same_derived_grouping() -> None:
     replay_appender.replay(replay_events)
     replay_appender._flush_batch()
 
-    assert _printed_lines(replay_console) == live_lines
+    assert _rows(replay_console) == _rows(live_console)
 
 
 def test_chunked_replay_can_continue_one_explored_group() -> None:
     appender, console = _appender()
-    first = [_event("read_file", exploratory=True, target="one.py")]
+    first = [_event("read_file", "one.py", exploratory=True)]
     second = [
-        _event("search_files", exploratory=True, target="needle"),
+        _event("search_files", "needle", exploratory=True),
         ConversationEvent("answer", "text", {"text": "done"}),
     ]
 
@@ -460,19 +311,4 @@ def test_chunked_replay_can_continue_one_explored_group() -> None:
     appender.replay(second, continue_group=True)
     appender._flush_batch()
 
-    lines = _printed_lines(console)
-    assert sum("Explored" in line for line in lines) == 1
-    assert any("Read one.py" in line for line in lines)
-    assert any("Search needle" in line for line in lines)
-
-
-def test_real_console_rendering_has_plain_explored_label() -> None:
-    state = MagicMock()
-    output = StringIO()
-    console = Console(file=output, force_terminal=False, color_system=None)
-    appender = ScrollBufferAppender(state, console, group_exploratory_calls=True)
-    _flush(appender, [_event("read_file", exploratory=True, target="README.md")])
-
-    assert "● Explored" in output.getvalue()
-    assert "└ Read README.md" in output.getvalue()
-    assert "Read README.md" in output.getvalue()
+    assert _rows(console)[0] == "● Explored 1 file, 1 search  one.py, needle"

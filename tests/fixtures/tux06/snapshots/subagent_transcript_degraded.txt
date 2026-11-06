@@ -1,0 +1,8 @@
+── compact ──
+  ! Subagent transcripts are partial: 2 writes failed
+
+── normal ──
+  ! Subagent transcripts are partial: 2 writes failed
+
+── verbose ──
+  ! Subagent transcripts are partial: 2 writes failed

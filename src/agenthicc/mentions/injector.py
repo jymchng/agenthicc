@@ -49,6 +49,30 @@ class InjectedContent:
     def ok(self) -> bool:
         return self.error is None
 
+    def chip(self) -> dict[str, object]:
+        """The transcript chip for this mention (TUX-06 §2.7).
+
+        A mention that could not be resolved is recorded as an ``unresolved``
+        chip with a short reason; the transcript shows it as a warning under
+        the user message, not as a failed tool call.
+        """
+        if self.ok:
+            return {"raw": self.mention.raw, "kind": self.mention.kind.value, "ok": True}
+        return {
+            "raw": self.mention.raw,
+            "kind": "unresolved",
+            "ok": False,
+            "reason": _MENTION_FAILURE_REASONS.get(self.error or "", "could not be read"),
+        }
+
+
+#: Short, human reasons for the error codes a mention can fail with.
+_MENTION_FAILURE_REASONS: dict[str, str] = {
+    "not_found": "not found",
+    "outside_workspace": "is outside the workspace",
+    "too_large": "is too large",
+}
+
 
 # ---------------------------------------------------------------------------
 # Binary detection helpers

@@ -1,0 +1,16 @@
+── compact ──
+  ⎿ Plan updated
+    Added a goal to the end · position 3 of 3
+    ↳ Current goal continues
+
+
+── normal ──
+  ⎿ Plan updated
+    Added a goal to the end · position 3 of 3
+    ↳ Current goal continues
+
+
+── verbose ──
+  ⎿ Plan updated
+    Added a goal to the end · position 3 of 3
+    ↳ Current goal continues

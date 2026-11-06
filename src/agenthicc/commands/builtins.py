@@ -373,6 +373,31 @@ def _cmd_theme(ctx: CommandContext) -> bool:
     return True
 
 
+def _cmd_details(ctx: CommandContext) -> bool:
+    """``/details`` cycles the tool detail level; ``/details LEVEL`` sets it (TUX-06).
+
+    The level lasts for the session and applies to the next tool call: rows
+    already printed stay as they are, so the scrollback remains append-only.
+    """
+    from agenthicc.tui.workspace.appender import (
+        TOOL_DETAIL_LEVELS,
+        session_tool_detail,
+        set_session_tool_detail,
+    )
+
+    requested = ctx.args.strip().lower()
+    if requested and requested not in TOOL_DETAIL_LEVELS:
+        ctx.console.print(f"/details takes one of: {', '.join(TOOL_DETAIL_LEVELS)}", markup=False)
+        return True
+    if not requested:
+        current = session_tool_detail() or ctx.config.ui.tool_detail
+        index = TOOL_DETAIL_LEVELS.index(current) if current in TOOL_DETAIL_LEVELS else 0
+        requested = TOOL_DETAIL_LEVELS[(index + 1) % len(TOOL_DETAIL_LEVELS)]
+    set_session_tool_detail(requested)
+    ctx.console.print(f"Tool detail: {requested}", markup=False)
+    return True
+
+
 def _cmd_subagents(ctx: CommandContext) -> bool:
     """The turn's subagents and the session's earlier ones (AGX-08 §5.2)."""
 
@@ -1578,6 +1603,13 @@ BUILTIN_COMMANDS: list[Command] = [
         argument_hint="[name] [--save]",
         busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
         handler=_cmd_theme,
+    ),
+    Command(
+        name="/details",
+        description="Cycle tool detail: compact, normal, verbose",
+        argument_hint="[compact|normal|verbose]",
+        busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
+        handler=_cmd_details,
     ),
     Command(
         name="/config",

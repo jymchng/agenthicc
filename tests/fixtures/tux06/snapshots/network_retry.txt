@@ -1,0 +1,13 @@
+── compact ──
+⟳ Network issue retry 2/5 in 1.0s
+  Timeout · HTTP 503
+
+
+── normal ──
+⟳ Network issue retry 2/5 in 1.0s
+  Timeout · HTTP 503
+
+
+── verbose ──
+⟳ Network issue retry 2/5 in 1.0s
+  Timeout · HTTP 503

@@ -282,6 +282,9 @@ class Workspace:
             # Let the Live block render the loading state before the first
             # historical event is queued.
             await asyncio.sleep(0)
+            if events:
+                # Original timestamps inside ``replayed from …`` / ``now`` (TUX-06).
+                self.scroll.replay_boundary(since=events[0].timestamp, events=len(events))
             for start in range(0, len(events), chunk_size):
                 self.scroll.replay(
                     events[start : start + chunk_size],
@@ -291,6 +294,8 @@ class Workspace:
                 # The appender flushes on the next loop turn before the next
                 # bounded chunk is queued.
                 await asyncio.sleep(0)
+            if events:
+                self.scroll.replay_boundary()
         finally:
             conv.transcript_loading.set(False)
             # Flush the final appender callback and redraw the normal status
