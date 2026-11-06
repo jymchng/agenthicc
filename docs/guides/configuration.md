@@ -581,7 +581,11 @@ resume_transcript_max_event_bytes = 16384
 the colour theme and glyph set (TUX-01): `theme` (`"auto"`, `"dark"`,
 `"light"`, `"high-contrast"`, `"ansi"` or a custom theme name) and `glyphs`
 (`"auto"`, `"unicode"` or `"ascii"`); see
-[themes and glyphs](tui.md#themes-and-glyphs). Key bindings
+[themes and glyphs](tui.md#themes-and-glyphs). `tool_detail` (TUX-06) sets how
+much of each tool call the transcript shows: `"compact"` (the default, one row
+per call; failures show their last lines), `"normal"` (plus a four-line preview
+of reads and commands) or `"verbose"` (the whole bounded output); `/details`
+changes it for the session, see [tool rows](tui.md#tool-rows). Key bindings
 live in their own file, `~/.agenthicc/keybindings.toml`
 ([key bindings](tui.md#key-bindings)).
 

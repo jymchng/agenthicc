@@ -99,7 +99,7 @@ async def test_legacy_replayer_preserves_ids_and_is_idempotent(
         encoding="utf-8",
     )
     monkeypatch.setattr(
-        "agenthicc.tui.runtime.replay.get_session_log_path", lambda _session_id: path
+        "agenthicc.tui.runtime.session_log.get_session_log_path", lambda _session_id: path
     )
     store = ConversationStore()
     observed = []
@@ -109,5 +109,11 @@ async def test_legacy_replayer_preserves_ids_and_is_idempotent(
     await replayer.run()
     await replayer.run()
 
-    assert len(observed) == 1
-    assert observed[0].event_id == "historical-recovery"
+    # The history is bracketed by TUX-06 separators; nothing repeats.
+    assert [event.kind for event in observed] == [
+        "replay_separator",
+        "tool_recovery",
+        "replay_separator",
+    ]
+    assert observed[1].event_id == "historical-recovery"
+    assert observed[1].timestamp == 1.0

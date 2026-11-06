@@ -203,17 +203,23 @@ async def test_replay_keeps_the_original_times_inside_separators(sessions, monke
         console = Console(file=StringIO(), record=True, width=120, color_system=None)
         appender = ScrollBufferAppender(state, console)
         appender.mount()
+        seen = []
+        state.conversation.on_event(seen.append)
         await ConversationReplayer("s-old", state.conversation, object()).run()
         await asyncio.sleep(0)
         appender.flush()
         rows = [row.rstrip() for row in console.export_text().splitlines()]
+        now = time.strftime("%H:%M")
     finally:
         os.environ.pop("TZ", None)
         time.tzset()
 
+    # Every replayed event keeps the time it was recorded, not the replay's.
+    stored = [json.loads(line)["timestamp"] for line in _FIXTURE.read_text().splitlines()]
+    replayed = [event for event in seen if event.kind != "replay_separator"]
+    assert [event.timestamp for event in replayed] == stored
     assert rows[0].startswith("── replayed from 1 Jan 05:04 · 15 events ──")
     assert rows[-1].startswith("── now ──")
-    now = time.strftime("%H:%M")
     if now != "05:04":
         assert not [row for row in rows if now in row]
     assert '● Read memory: "topic_brief"' in rows

@@ -406,6 +406,19 @@ def test_the_configured_level_applies_without_details() -> None:
     assert console.export_text().splitlines() == ["● $ ls", "  │ a", "  │ b", "  └ b"]
 
 
+def test_status_shows_the_time_zone_the_headers_leave_out() -> None:
+    from agenthicc.commands.builtins import _cmd_status
+    from agenthicc.commands.command import CommandContext
+
+    console = Console(file=StringIO(), record=True, width=80, color_system=None)
+    _cmd_status(
+        CommandContext(
+            text="/status", args="", model="m", console=console, config=AgenthiccConfig()
+        )
+    )
+    assert "Time zone: UTC +0000" in console.export_text()
+
+
 def test_tool_detail_is_validated_and_parsed_from_config(tmp_path: Path) -> None:
     config = tmp_path / "agenthicc.toml"
     config.write_text('[ui]\ntool_detail = "Verbose"\n', encoding="utf-8")

@@ -897,8 +897,12 @@ def _cmd_skills(ctx: CommandContext) -> bool:
 
 
 def _cmd_status(ctx: CommandContext) -> bool:
+    import time
+
     ctx.console.print(f"  [dim]Session:[/dim] {ctx.session_id or '(new)'}")
     ctx.console.print(f"  [dim]Model:[/dim] {ctx.model or '(unknown)'}")
+    # Transcript times are local ``HH:MM``; the zone is shown here (TUX-06 §2.5).
+    ctx.console.print(f"  [dim]Time zone:[/dim] {time.strftime('%Z %z')}")
     return True
 
 

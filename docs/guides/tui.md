@@ -8,15 +8,26 @@ The startup welcome panel keeps its `What's new` heading even when the remote
 changelog cannot be reached. In that case it displays `No list`; on success it
 renders the entries from `https://agenthicc.dev/changelog.json`.
 
-Completed LLM responses end with a blank line in the scroll buffer, keeping
-the response visually separated from the next tool, user message, or system
-event. The default assistant heading reads `Assistant Turn`; other agent labels
-remain intact. Turn headings include the local timezone abbreviation and numeric
-UTC offset and are followed by one blank row before the next block, except when
-`mention_chips` follows: resolved read rows stay directly beneath the heading,
-with one blank row after the mention group. The completed `⎋ Compacted` notice
-is indented beneath its related activity; the in-progress
-`⎋ Compacting` notice remains level 1.
+The scroll buffer reads as a conversation, not a log (TUX-06):
+
+- **Your message.** It is a `user_bg` band with the `accent` `❯` and a hanging
+  indent. A message longer than 12 lines shows its first four lines and
+  `[+N more lines]`; the event keeps the whole text.
+- **Mentions.** They show as chips directly under the message
+  (`@src/app.py  @docs/`). A mention that cannot be resolved (missing, outside
+  the workspace, too large) is a `warning` chip with its reason,
+  `! @docs/missing.md not found`. It is never a failed tool row, and the model
+  still receives the unresolved-mention note.
+- **Turn headers.** An assistant turn has no header while the agent is the
+  default and the model has not changed; its text simply follows your message.
+  A header such as `◆ reviewer · sonnet-4.6 · 14:02` marks a change of agent
+  or model, or a return after more than 30 minutes. Times are local `HH:MM`;
+  the time zone is shown only by `/status` and the transcript details.
+- **Rhythm.** One blank row comes before each new block. Consecutive tool rows
+  have none between them.
+
+The completed `⎋ Compacted` notice is indented beneath its related activity;
+the in-progress `⎋ Compacting` notice remains level 1.
 
 ## Runtime components
 
@@ -109,15 +120,11 @@ terminals that do not interpret Rich's erase controls from accumulating
 identical `✿ Idle` panels while preserving active animation and ordinary state
 redraws.
 
-Tool results use the same operation-style block: `● Read(...)`, `● Run(...)`,
-`● Search(...)`, and similar headers are followed by a status summary and a
-bounded numbered output preview. File edits use the richer `● Update(...)`
-block with its unified diff. Each contiguous change block shows at most six
-changed rows; longer blocks retain their first and last three rows and show a
-single `...` omission row so large edits do not flood the scroll buffer.
-When a tool group is collapsed, its `...and N more tool calls` line is flushed
-to the scroll buffer at the next conversation boundary and immediately when
-the agent is interrupted; it is never left only in the live status footer.
+Tool calls are one row each; see [Tool rows](#tool-rows). When a tool group
+is collapsed (more than `[tools] max_live_tool_calls` successful calls in a
+row), its `└ …and N more tool calls` row is flushed to the scroll buffer at the
+next conversation boundary and immediately when the agent is interrupted; it is
+never left only in the live status footer. A failed call always prints.
 Subagent pool headings, worker-completion rows, and pool summaries are level-1
 scrollback rows alongside tool headings; only the worker previews below a pool
 heading are indented as child rows. A pool that does not fully succeed is
@@ -129,6 +136,67 @@ the SDK exception representation into the transcript. The scroll buffer shows
 the retry number and delay, a short category such as `Request timed out` or
 `Provider temporarily unavailable`, and a bounded provider message when one is
 available. Full chained exception details remain at debug log level.
+
+### Tool rows
+
+Each tool call is one row: the operation, a human summary of its target, and
+quiet detail (TUX-06). Success is quiet: there is no `Completed` and no output,
+and the duration appears, right-aligned, only from one second.
+
+```text
+● Read src/agenthicc/tui/workspace/appender.py:480-560
+● $ uv run pytest tests/unit -q                                   2.4s
+  └ 1,284 passed, 3 skipped
+✗ $ npm test  in objective-create-a/                     exit 1 · 8.1s
+  │ FAIL src/App.test.tsx
+  │   ● renders learn react link
+  │     Unable to find an element with the text: /learn react/i
+  └ 41 more lines · ctrl+t to expand
+● Edit src/app/main.py  +12 −3
+```
+
+- **Summaries.** A command shows the command itself (`$ npm test`); a leading
+  `cd … &&` becomes the quiet `in objective-create-a/`, and a multi-line script
+  shows its first line and `+N lines`. Paths are relative to the workspace and
+  shortened in the middle (`src/…/appender.py`) so the file name always shows.
+  Searches read `"TODO" in src/ → 14 matches`, listings
+  `src/agenthicc/ → 23 entries`, git calls `status → 3 changed`, memory reads
+  `memory: "deploy notes"` (never raw JSON), and fetches the host and path.
+  MCP tools read `server · tool` and their first string argument.
+- **Commands** add one result row: a recognised test summary (pytest,
+  jest, vitest, cargo, go test) or the last line of the output.
+- **Failures** expand: the `danger` `✗`, the exit code or error code, the
+  last 8 lines of the output (where errors are) and the expand hint.
+- **Running and waiting** keep their words: `running`, `ready`, `waiting`,
+  `timed out`, `cancelled`.
+- **Edits** show `● Edit path  +12 −3` and the diff, at most 20 rows. Each
+  contiguous change block shows at most six changed rows; longer blocks keep
+  their first and last three rows around one `...` omission row.
+- **Exploration groups** ([exploratory calls](exploratory-tool-calls.md))
+  collapse to one row, `● Explored 9 files, 3 searches`, with the targets as
+  muted detail.
+
+The detail level sets how much more is shown:
+
+```toml
+[ui]
+tool_detail = "compact"   # compact | normal | verbose
+```
+
+`normal` adds a four-line preview of successful reads and commands, and
+`verbose` prints the whole bounded output (the first 8 and last 32 lines of a
+call, with the gap marked) and the exploration group's individual calls.
+`/details` cycles the level for the session, and `/details verbose` sets it.
+The change applies to the next tool call; rows already printed are never
+re-rendered, so the scroll buffer stays an append-only log. Opening the last
+tool's full output with Ctrl+T belongs to the transcript view (TUX-09).
+
+Tool events carry data, not markup: the summary, a bounded and redacted
+projection of the arguments, the duration in milliseconds, the bounded output
+and the exit and error codes. Every colour is applied when the row is drawn, so
+a theme change restyles history too. Session logs written before TUX-06 are
+migrated once, as they are read. A plugin tool can supply its own summary;
+see [tool summaries](plugins.md#transcript-summaries).
 
 ## Modes
 
@@ -370,7 +438,10 @@ the hard page limits still apply. See the
 hard maxima.
 
 The same renderers are used for old and live turns, tool completions, errors,
-and assistant responses. This is presentation-only replay: the events are not
+and assistant responses. Each event is drawn with its own stored time, never the
+time of the resume, and the history is framed by
+`── replayed from 2 Nov 05:04 · 827 events ──` and `── now ──`. `/replay
+SESSION_ID` shows another session the same way. This is presentation-only replay: the events are not
 appended to `ConversationStore` and therefore are not written to
 `conversation.jsonl` a second time. Accepted user messages for input-history
 navigation are projected from the same bounded page; the resumed input editor
