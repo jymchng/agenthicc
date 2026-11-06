@@ -79,9 +79,16 @@ class Palette:
     mode_plan: str
     mode_yolo: str
 
+    def get(self, token: str) -> str:
+        """The style string of *token* (``KeyError`` for an unknown token)."""
+        values: dict[str, str] = vars(self)
+        if token not in values:
+            raise KeyError(f"unknown theme token {token!r}")
+        return values[token]
+
     def on(self, token: str) -> str:
         """The token as a background style (``"on #1c1f24"``), or ``"none"``."""
-        value = getattr(self, token)
+        value = self.get(token)
         return "none" if value in ("", "none", "default") else f"on {value}"
 
 
@@ -319,9 +326,7 @@ def glyphs() -> Glyphs:
 
 def style(token: str, *, bold: bool = False, background: str | None = None) -> Style:
     """The *token* of the active palette as a :class:`Style` (unknown → error)."""
-    if token not in TOKENS:
-        raise KeyError(f"unknown theme token {token!r}")
-    value = getattr(_current.palette, token)
+    value = _current.palette.get(token)
     base = Style.parse(value) if value not in ("", "default") else Style.null()
     if bold:
         base = base + Style(bold=True)
