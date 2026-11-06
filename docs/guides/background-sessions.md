@@ -218,7 +218,7 @@ agent has waited.
 
 `[background] question_timeout_s` sets a deadline (seconds; `0`, the
 default, means none). When it passes, the agent continues with its safest
-assumption, and the question stays listed as `◇ answer late` while the
+assumption, and the question stays listed as `◆ answer late` (not bold) while the
 session runs. Answering it sends your answers to the agent as its next
 message, beginning "Late answers to your earlier questions…". `x` dismisses
 it. `[tools] question_timeout_s` governs only the foreground Questions
@@ -384,8 +384,9 @@ One vocabulary is used by the hub, `agenthicc agents list` and these docs:
 | `cancelled` | `⊘` | cancelled | Recently finished |
 | `archived` | `▫` | archived | History |
 
-The list fills the terminal and scrolls; the selection is marked by `▸` and
-stays on the same agent when an update moves it to another group. A `•` marks
+The list fills the terminal and scrolls; the selection is marked by an accent
+bar (`▌`) on the selected-row background and stays on the same agent when an
+update moves it to another group. A `●` marks
 an agent whose state or report changed since you last opened it (remembered in
 `~/.agenthicc/state/agents-hub.json`). `s` cycles the order within the Running
 tab's groups (attention, recent activity, created, title), `g` groups it by

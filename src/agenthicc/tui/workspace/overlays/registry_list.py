@@ -9,6 +9,7 @@ import time
 from typing import TYPE_CHECKING, Callable
 
 from agenthicc.tui.cbreak_reader import Key
+from agenthicc.tui.theme import glyphs, palette, style
 from agenthicc.tui.workspace.overlay import Overlay
 
 if TYPE_CHECKING:
@@ -73,10 +74,10 @@ class _RegistryListOverlay(Overlay):
         if self._detail is not None:
             return self._render_detail(self._detail)
 
-        separator = Text("─" * 72, style="dim")
+        separator = Text(glyphs().rule * 72, style=palette().subtle)
         lines: list[RenderableType] = [
             separator,
-            Text(f"  {self._title}  ({len(self._rows)})", style="bold cyan"),
+            Text(f"  {self._title}  ({len(self._rows)})", style=style("accent", bold=True)),
         ]
         if not self._rows:
             lines.append(Text("  (none found)", style="dim"))
@@ -85,13 +86,16 @@ class _RegistryListOverlay(Overlay):
             for offset, row in enumerate(visible):
                 index = self._scroll + offset
                 selected = index == self._selected
-                line = Text("  ▶ " if selected else "    ", style="reverse" if selected else "")
-                line.append(f"{row.label:<{self._LABEL_WIDTH}}", style="bold cyan")
+                # The selected row: an accent bar on the selected-row background.
+                line = Text("  ")
+                line.append(glyphs().bar if selected else " ", style=palette().accent)
+                line.append(" ")
+                line.append(f"{row.label:<{self._LABEL_WIDTH}}", style=style("accent", bold=True))
                 line.append(row.metadata, style="dim")
                 line.append("  ")
                 line.append(_shorten(row.description or "—", 52))
                 if selected:
-                    line.stylize("reverse")
+                    line.stylize(palette().on("accent_bg"))
                 lines.append(line)
         lines.extend(
             [
@@ -142,10 +146,10 @@ class _RegistryListOverlay(Overlay):
         from rich.console import Group
         from rich.text import Text
 
-        separator = Text("─" * 72, style="dim")
+        separator = Text(glyphs().rule * 72, style=palette().subtle)
         lines: list[RenderableType] = [
             separator,
-            Text(f"  {row.label}", style="bold cyan"),
+            Text(f"  {row.label}", style=style("accent", bold=True)),
             Text(""),
             Text(row.description or "—"),
             Text(""),
@@ -183,10 +187,10 @@ class RegistryMessageOverlay(Overlay):
         from rich.console import Group
         from rich.text import Text
 
-        separator = Text("─" * 72, style="dim")
+        separator = Text(glyphs().rule * 72, style=palette().subtle)
         lines: list[RenderableType] = [
             separator,
-            Text(f"  {self._title}", style="bold cyan"),
+            Text(f"  {self._title}", style=style("accent", bold=True)),
             Text(""),
         ]
         lines.extend(Text(line) for line in self._message.splitlines() or [""])
@@ -426,16 +430,17 @@ class WorkflowRunsOverlay(Overlay):
         from rich.table import Table
         from rich.text import Text
 
-        separator = Text("─" * 84, style="dim")
+        p, g = palette(), glyphs()
+        separator = Text(g.rule * 84, style=p.subtle)
         page = self._selected // self._PAGE_SIZE + 1
         table = Table(
             title=f"Paused Workflow Runs (page {page}/{self.page_count}; {len(self._records)})",
             expand=True,
         )
         table.add_column("", width=2)
-        table.add_column("Workflow", style="bold cyan", no_wrap=True)
+        table.add_column("Workflow", style=style("accent", bold=True), no_wrap=True)
         table.add_column("Phase", no_wrap=True)
-        table.add_column("Status", style="yellow", no_wrap=True)
+        table.add_column("Status", style=p.warning, no_wrap=True)
         table.add_column("Saved", no_wrap=True)
         table.add_column("Run ID", no_wrap=True)
 
@@ -449,7 +454,7 @@ class WorkflowRunsOverlay(Overlay):
             saved = self._format_time(record)
             run_id = record.run_id
             table.add_row(
-                "▸" if index == self._selected else "",
+                Text(g.bar, style=p.accent) if index == self._selected else "",
                 record.workflow_name or "—",
                 record.current_phase or "saved state",
                 status,
@@ -474,7 +479,7 @@ class WorkflowRunsOverlay(Overlay):
                 f"[bold]Intent[/bold] {_shorten(selected.intent or '—', 180)}\n"
                 "Press Enter to resume this run and return to the conversation."
             )
-        detail = Panel(detail_text, title="Selected Run", border_style="cyan")
+        detail = Panel(detail_text, title="Selected Run", border_style=p.subtle)
         footer = Text(
             "↑↓/j/k select   PgUp/PgDn page   Home/End   Enter resume   Esc close",
             style="dim",

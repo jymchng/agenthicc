@@ -14,6 +14,7 @@ from agenthicc.schedules import (
     format_timestamp,
 )
 from agenthicc.tui.cbreak_reader import Key
+from agenthicc.tui.theme import glyphs, palette
 from agenthicc.tui.workspace.overlay import Overlay
 
 if TYPE_CHECKING:
@@ -97,6 +98,7 @@ class ScheduleJobsOverlay(Overlay):
         from rich.text import Text
 
         self._refresh()
+        p = palette()
         service_running = ScheduleServiceLease.is_running(self.store) is True
         page = self._selected // self._PAGE_SIZE + 1
         table = Table(
@@ -114,7 +116,7 @@ class ScheduleJobsOverlay(Overlay):
         for index in range(start, min(len(self._records), start + self._PAGE_SIZE)):
             item = self._records[index]
             table.add_row(
-                "▶" if index == self._selected else "",
+                Text(glyphs().bar, style=p.accent) if index == self._selected else "",
                 item.schedule_id[:14],
                 item.workflow_name,
                 self._status(item),
@@ -144,7 +146,10 @@ class ScheduleJobsOverlay(Overlay):
                     f"{item.state.value}:{item.session_id[:8] or '—'}" for item in history
                 )
         if self._confirm_delete and selected is not None:
-            detail += "\n\n[bold yellow]Delete this schedule? Press Enter/y to confirm, Esc/n to cancel.[/bold yellow]"
+            detail += (
+                f"\n\n[bold][{p.danger}]Delete this schedule? "
+                "Press Enter/y to confirm, Esc/n to cancel.[/][/bold]"
+            )
         if self._message:
             detail += f"\n\n[dim]{self._message}[/dim]"
         hint = (
@@ -153,7 +158,7 @@ class ScheduleJobsOverlay(Overlay):
         )
         return Group(
             table,
-            Panel(detail, title="Schedule Details", border_style="cyan"),
+            Panel(detail, title="Schedule Details", border_style=p.subtle),
             Text(hint, style="dim"),
         )
 

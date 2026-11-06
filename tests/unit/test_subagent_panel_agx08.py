@@ -23,6 +23,7 @@ from agenthicc.subagents.transcripts import (
 )
 from agenthicc.tools.approval import ApprovalRequest, ApprovalRequester
 from agenthicc.tui.cbreak_reader import Key
+from agenthicc.tui.theme import BUILTIN_THEMES, current_theme, use_theme
 from agenthicc.tui.conversation_store import AppState
 from agenthicc.tui.workspace.subagent_panel import panel_lines, summary_line, tokens
 from agenthicc.tui.workspace.overlays.subagents import (
@@ -210,9 +211,15 @@ def test_the_panel_lists_each_workers_status_activity_time_and_tokens() -> None:
     ]
     assert rows[0].startswith("  Subagents · 1 needs input · 1 running · 1/3 done")
     assert rows[0].rstrip().endswith("Ctrl+O focus")
-    assert summary_line(state, 100) == (
-        "  [bold magenta]Subagents[/bold magenta] · 1 needs input · 1 running · 1/3 done"
-    )
+    before = current_theme()
+    use_theme(BUILTIN_THEMES["dark"])
+    try:
+        # The panel's name is in the theme's agent colour (dark: #bb9af7).
+        assert summary_line(state, 100) == (
+            "  [bold][#bb9af7]Subagents[/][/bold] · 1 needs input · 1 running · 1/3 done"
+        )
+    finally:
+        use_theme(before)
     assert "● Explorer 1" in rows[1] and "read src/store.py" in rows[1]
     assert "0:42" in rows[1] and "3.1k" in rows[1]
     assert "◆ Explorer 2" in rows[2] and "Needs approval: bash pytest" in rows[2]

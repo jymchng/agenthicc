@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from agenthicc.tui.keymap import CONTEXTS, KeymapLoad
+from agenthicc.tui.theme import glyphs, palette
 
 if TYPE_CHECKING:
     from rich.console import Console
@@ -19,11 +20,12 @@ def render_bindings(console: Console, loaded: KeymapLoad) -> None:
 
     console.print(f"Key bindings file: {loaded.path}", markup=False, highlight=False)
     if loaded.errors:
+        danger = palette().danger
         console.print(
-            "[red]The file is not applied — the defaults are in effect:[/red]", highlight=False
+            f"[{danger}]The file is not applied — the defaults are in effect:[/]", highlight=False
         )
         for error in loaded.errors:
-            console.print(f"  [red]•[/red] {escape(error)}", highlight=False)
+            console.print(f"  [{danger}]{glyphs().bullet}[/] {escape(error)}", highlight=False)
     keymap = loaded.keymap
     for context in CONTEXTS:
         actions = [action for action in keymap.actions if action.context == context]

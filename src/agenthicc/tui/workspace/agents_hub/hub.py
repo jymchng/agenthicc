@@ -51,6 +51,7 @@ from agenthicc.background.store import BackgroundStore
 from agenthicc.background.supervisor import BackgroundSupervisor
 from agenthicc.tui.cbreak_reader import Key, MouseEvent, key_name
 from agenthicc.tui.keymap import Dispatcher, Hint, Keymap
+from agenthicc.tui.theme import glyphs, palette, style
 from agenthicc.tui.workspace.agents_hub.detail import (
     TRANSCRIPT_EVENTS,
     DetailData,
@@ -1930,10 +1931,11 @@ class AgentsHub:
         from rich.text import Text
 
         target = self._composer_target
+        p = palette()
         lines: list[RenderableType] = [
             Text(
                 f" Send input · {target.title or target.session_id if target else ''}",
-                style="bold cyan",
+                style=style("accent", bold=True),
                 no_wrap=True,
                 overflow="ellipsis",
             )
@@ -1941,11 +1943,11 @@ class AgentsHub:
         if self._composer is not None:
             lines.extend(self._composer.render())
         elif self._composer_building:
-            lines.append(Text(" Loading target-scoped input context…", style="yellow"))
+            lines.append(Text(" Loading target-scoped input context…", style=p.info))
         if self._composer_submitting:
-            lines.append(Text(" Submitting to the agent…", style="yellow"))
+            lines.append(Text(" Submitting to the agent…", style=p.info))
         elif self._composer_receipt:
-            lines.append(Text(" " + self._composer_receipt, style="green"))
+            lines.append(Text(" " + self._composer_receipt, style=p.success))
         lines.append(
             Text(
                 " Enter send · Ctrl+J newline · /stop stops the agent · Esc back",
@@ -3809,7 +3811,7 @@ class AgentsHub:
                 left_line = left[index] if index < len(left) else Text("")
                 left_line.truncate(list_width, overflow="crop", pad=True)
                 line.append_text(left_line)
-                line.append("│", style="dim")
+                line.append(glyphs().pipe, style=palette().subtle)
                 if index < len(right):
                     line.append_text(right[index])
                 body.append(line)
@@ -3829,7 +3831,7 @@ class AgentsHub:
     def _library_view_body(self, width: int, height: int) -> list[Text]:
         from rich.text import Text
 
-        output = [Text(self._library_view_title, style="bold cyan")]
+        output = [Text(self._library_view_title, style=style("accent", bold=True))]
         for raw in self._library_view_lines or []:
             wrapped = Text(raw).wrap(self.console, max(1, width - 2), overflow="fold")
             output.extend(wrapped or [Text("")])
@@ -3854,7 +3856,7 @@ class AgentsHub:
         elif cursor_line >= start + visible:
             start = cursor_line - visible + 1
         self._library_editor_scroll = max(0, start)
-        output: list[Text] = [Text(prompt.label, style="bold cyan")]
+        output: list[Text] = [Text(prompt.label, style=style("accent", bold=True))]
         for row, raw in enumerate(content[start : start + visible], start=start):
             line = Text(no_wrap=True, overflow="crop")
             if row == cursor_line:
@@ -3937,7 +3939,7 @@ class AgentsHub:
                 room = max(8, width - len(label) - len(hint) - 4)
                 shown, cursor = prompt.editor.view(room)
                 line = Text(no_wrap=True, overflow="crop")
-                line.append(label, style="bold cyan")
+                line.append(label, style=style("accent", bold=True))
                 line.append(shown[:cursor])
                 line.append(shown[cursor : cursor + 1] or " ", style="reverse")
                 line.append(shown[cursor + 1 :])
@@ -3946,7 +3948,7 @@ class AgentsHub:
                 lines.append(line)
         notice = self._status_notice()
         if notice:
-            lines.append(Text(fit(" " + notice, width), style="yellow"))
+            lines.append(Text(fit(" " + notice, width), style=palette().warning))
         return lines
 
     def _status_notice(self) -> str:
@@ -3980,19 +3982,20 @@ class AgentsHub:
             editing = prompt is not None and prompt.kind == "search"
             text = prompt.editor.text if editing and prompt is not None else self._search.text
             line = Text(no_wrap=True, overflow="crop")
-            line.append(" / ", style="bold cyan")
+            line.append(" / ", style=style("accent", bold=True))
             line.append(text)
             if editing:
                 line.append(" ", style="reverse")
             matches = sum(1 for row in self._rows if row.selectable)
             line.append(f"   {matches} match{'es' if matches != 1 else ''}", style="dim")
             if self._search.errors:
-                line.append("   " + "; ".join(self._search.errors), style="red")
+                line.append("   " + "; ".join(self._search.errors), style=palette().danger)
             line.truncate(width, overflow="crop")
             lines.append(line)
         status = self._loading_line()
         if status:
-            lines.append(Text(fit(" " + status, width), style="yellow"))
+            look = palette().danger if self._load_error else palette().info
+            lines.append(Text(fit(" " + status, width), style=look))
         if not self._rows:
             lines.append(Text(fit(" " + self._empty_message(), width), style="dim"))
             return lines[:height]
@@ -4161,7 +4164,7 @@ class AgentsHub:
         from agenthicc.tui.workspace.agents_hub.render import fit
         from agenthicc.worktrees.environment import resolve_worktree_path
 
-        lines = [Text(fit(" Worker environment action", width), style="bold cyan")]
+        lines = [Text(fit(" Worker environment action", width), style=style("accent", bold=True))]
         if self._environment_action_mode == "preview" and self._environment_actions:
             action = self._environment_actions[self._environment_action_index]
             root = self._environment_workspace_root
@@ -4194,7 +4197,7 @@ class AgentsHub:
                 Text(fit(" Select an action and press Enter to review it", width), style="dim")
             )
             for index, action in enumerate(self._environment_actions):
-                marker = "▸" if index == self._environment_action_index else " "
+                marker = glyphs().bar if index == self._environment_action_index else " "
                 lines.append(Text(fit(f" {marker} {action.command_id}   {action.command}", width)))
         return lines[:height]
 
@@ -4205,12 +4208,13 @@ class AgentsHub:
 
         source = self._diff_lines or ()
         self._detail_height = height
-        lines = [Text(fit(" Diff (Esc closes)", width), style="bold cyan")]
+        p = palette()
+        lines = [Text(fit(" Diff (Esc closes)", width), style=style("accent", bold=True))]
         for raw in source[self._diff_scroll : self._diff_scroll + height - 1]:
-            style = "green" if raw.startswith("+") else "red" if raw.startswith("-") else ""
+            look = p.diff_add if raw.startswith("+") else p.diff_del if raw.startswith("-") else ""
             if raw.startswith(("+++", "---", "@@", "diff ")):
-                style = "cyan"
-            lines.append(Text(fit(raw, width), style=style))
+                look = p.muted
+            lines.append(Text(fit(raw, width), style=look))
         return lines
 
     def listing(self) -> list[str]:
