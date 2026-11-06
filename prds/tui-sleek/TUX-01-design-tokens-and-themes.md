@@ -12,6 +12,16 @@ tags: [tui, design-system, theme, accessibility, color]
 
 ## Implementation status
 
+**Core (tux-core).**
+- **Module.** `tui/theme.py` holds the tokens, the five themes, the glyph sets and the active-theme API.
+- **Settings and commands.** `[ui] theme` and `[ui] glyphs`, `/theme` with a live preview, saving the choice, custom themes, and `NO_COLOR`.
+- **Other changes.** The diff tokens, plus `test_theme.py` and the token lint `test_theme_tokens.py`.
+
+**Amendments from operator feedback (2026-11-06):**
+- **Glyph detection.** `glyphs = "auto"` decides from the console's output encoding, as Rich does, and no longer from `TERM`/`LANG`. A Unicode terminal reporting `TERM=linux` had been given ASCII glyphs (`+---+`, `###..`).
+- **The background query.** It sends OSC 11 followed by DA1 and reads with echo off until the DA1 answer arrives (at most 500 ms). The 50 ms version restored echo before a slow reply over SSH arrived, and the terminal printed it as `^[]11;rgb:1414/1717/2929^[\` above the welcome screen. If DA1 never answers, echo stays off until raw mode takes over, and an exit hook restores the original terminal settings. `read_key` swallows late OSC and DA1 replies.
+- **Spinner glyphs.** The spinner is agenthicc's original flower (`✿ ❀ ❁ ❃ ✾ ❋ ✽ ❊`); all of them are present in DejaVu Sans Mono (checked by the font test). The ASCII set keeps `| / - \`.
+
 **Goal 7, wave 1 (branch `tux-w1-tokens`).** These files were migrated and
 removed from `_PENDING` in `tests/unit/test_theme_tokens.py`. Later TUX waves
 do not rewrite them:

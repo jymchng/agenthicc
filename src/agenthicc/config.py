@@ -1723,11 +1723,13 @@ class UISettings:
     ``high-contrast``, ``ansi``, or a custom theme in ``.agenthicc/themes/``
     (TUX-01). ``NO_COLOR`` overrides it."""
     glyphs: str = "auto"
-    """``auto``, ``unicode`` or ``ascii``; ``auto`` picks ASCII on a non-UTF-8
-    locale or the Linux console (TUX-01)."""
-    composer_frame: str = "box"
-    """``box`` draws the prompt in a rounded box; ``rules`` draws a rule above
-    and below it instead (TUX-02). Narrow terminals always use rules."""
+    """``auto``, ``unicode`` or ``ascii``; ``auto`` picks ASCII only when the
+    terminal output encoding is not UTF (TUX-01)."""
+    composer_frame: str = "rules"
+    """``rules`` (the default) draws a rule above and below the prompt, as
+    Claude Code does, with the session title and mode at the end of the top
+    rule; ``box`` draws a rounded box instead (TUX-02). Narrow terminals always
+    use rules."""
     statusline_command: str = ""
     """``[ui.statusline] command``: a shell command whose first line of output
     replaces the status line's context, model, worker, usage and branch
@@ -2791,7 +2793,7 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
         reduced_motion=_as_bool(ui_data.get("reduced_motion"), False),
         theme=_as_str(ui_data.get("theme"), "auto").strip(),
         glyphs=_as_str(ui_data.get("glyphs"), "auto").strip().lower(),
-        composer_frame=_as_str(ui_data.get("composer_frame"), "box").strip().lower(),
+        composer_frame=_as_str(ui_data.get("composer_frame"), "rules").strip().lower(),
         statusline_command=_as_str(_section(ui_data.get("statusline")).get("command"), "").strip(),
     )
 

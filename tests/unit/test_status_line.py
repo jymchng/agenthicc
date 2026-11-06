@@ -95,9 +95,10 @@ def test_idle_live_region_is_three_composer_rows_and_one_status_line() -> None:
     assert workspace.frame.hint_row(120) is None
     rows = lines_text(workspace._build_lines())
     assert len(rows) == 4
-    assert rows[0].startswith("╭─ new session ") and rows[0].endswith(" Safe ─╮")
-    assert rows[1].startswith("│ ❯ ") and rows[1].endswith(" │")
-    assert rows[2].startswith("╰") and rows[2].endswith("╯")
+    # Claude Code's input panel: a rule ending "title · mode ─", the prompt, a rule.
+    assert rows[0].startswith("──") and rows[0].endswith(" new session · Safe ─")
+    assert rows[1].startswith("❯ ")
+    assert set(rows[2]) == {"─"}
     assert rows[3].strip().startswith("● Idle")
 
 
@@ -258,29 +259,27 @@ def test_the_meter_bar_fills_by_fifths() -> None:
 
 _SNAPSHOTS: dict[int, list[str]] = {
     40: [
-        "── fix flaky scheduler test ──── Safe ──",
+        "────── fix flaky scheduler test · Safe ─",
         "❯ ▌ask, or type / for commands",
-        "────────────────────────────────────────",
+        "─" * 40,
         " ● Idle · ◆ 2 sess. ← · ctx 12%",
     ],
     50: [
-        "── fix flaky scheduler test ────────────── Safe ──",
+        "──────────────── fix flaky scheduler test · Safe ─",
         "❯ ▌ask, or type / for commands, @ for files",
-        "──────────────────────────────────────────────────",
+        "─" * 50,
         " ● Idle · ◆ 2 sessions need you ← · ctx 12% ▰▱▱▱▱",
     ],
     80: [
-        "╭─ fix flaky scheduler test ──────────────────────────────────────────── Safe ─╮",
-        "│ ❯ ▌ask, or type / for commands, @ for files                                  │",
-        "╰──────────────────────────────────────────────────────────────────────────────╯",
+        "─" * 46 + " fix flaky scheduler test · Safe ─",
+        "❯ ▌ask, or type / for commands, @ for files",
+        "─" * 80,
         " ● Idle · ◆ 2 sessions need you ← · ctx 12% ▰▱▱▱▱ · opus-4.8               /help",
     ],
     120: [
-        "╭─ fix flaky scheduler test " + "─" * 84 + " Safe ─╮",
-        "│ ❯ ▌ask, or type / for commands, @ for files                                  "
-        "                                        │",
-        "╰──────────────────────────────────────────────────────────────────────────────"
-        "────────────────────────────────────────╯",
+        "─" * 86 + " fix flaky scheduler test · Safe ─",
+        "❯ ▌ask, or type / for commands, @ for files",
+        "─" * 120,
         " ● Idle · ◆ 2 sessions need you ← · ctx 12% ▰▱▱▱▱ · opus-4.8 · ↑12.4k ↓3.1k · "
         "$0.42 · main*                        /help",
     ],
@@ -309,15 +308,19 @@ def test_below_forty_columns_only_the_state_shows() -> None:
 def test_a_long_title_is_cut_with_an_ellipsis() -> None:
     state = _snapshot_state()
     rows = _rows(state, 30)
-    assert rows[0] == "── fix flaky schedu… ─ Safe ──"
+    assert rows[0] == "─── fix flaky schedu… · Safe ─"
 
 
-def test_rules_frame_is_configurable_at_any_width() -> None:
-    state = _state(ui=UISettings(composer_frame="rules"))
+def test_the_box_frame_is_configurable() -> None:
+    state = _state(ui=UISettings(composer_frame="box"))
     rows = _rows(state, 120)
-    assert rows[0].startswith("── new session ") and rows[0].endswith(" Safe ──")
-    assert rows[1].startswith("❯ ")
-    assert set(rows[2]) == {"─"}
+    assert rows[0].startswith("╭─ new session ") and rows[0].endswith(" Safe ─╮")
+    assert rows[1].startswith("│ ❯ ") and rows[1].endswith(" │")
+    assert rows[2].startswith("╰") and rows[2].endswith("╯")
+
+
+def test_rules_are_the_default_frame() -> None:
+    assert UISettings().composer_frame == "rules"
 
 
 def test_mode_badge_uses_its_mode_token() -> None:
@@ -603,7 +606,7 @@ def test_a_resumed_transcript_restores_the_title() -> None:
         [ConversationEvent("e1", "user_message", {"text": "port the parser"})]
     )
     assert state.conversation.session_title() == "port the parser"
-    assert _rows(state)[0].startswith("╭─ port the parser ")
+    assert _rows(state)[0].endswith(" port the parser · Safe ─")
 
 
 # ── performance (AGX-11) ──────────────────────────────────────────────────────
@@ -644,3 +647,37 @@ def test_git_branch_is_read_from_head(tmp_path: Path) -> None:
     (gitdir / "HEAD").write_text("0123456789abcdef\n", encoding="utf-8")
     (worktree / ".git").write_text(f"gitdir: {gitdir}\n", encoding="utf-8")
     assert read_git_branch(worktree) == "0123456"
+
+
+# ── the flower and the bold letter (kept by request) ─────────────────────────
+
+
+def _thinking_markup(state: AppState, frame: int) -> str:
+    state.conversation.agent_state.set(AgentState.THINKING)
+    state.conversation.frame.set(frame)
+    return StatusLine(state).markup(120)
+
+
+def test_thinking_turns_the_flower_and_sweeps_one_bold_letter() -> None:
+    state = _state()
+    first = _thinking_markup(state, 0)
+    second = _thinking_markup(state, 1)
+    assert "✿" in first and "❀" in second
+    assert "[bold]T[/bold]hinking" in first
+    assert "T[bold]h[/bold]inking" in second
+    assert _plain(StatusLine(state).markup(120)).lstrip().startswith("❀ Thinking")
+
+
+def test_the_bold_letter_bounces_back_at_the_end_of_the_word() -> None:
+    state = _state()
+    # "Thinking" has 8 letters: frames 0–7 go right, 8–13 come back.
+    assert "Thinkin[bold]g[/bold]" in _thinking_markup(state, 7)
+    assert "Thinki[bold]n[/bold]g" in _thinking_markup(state, 8)
+    assert "[bold]T[/bold]hinking" in _thinking_markup(state, 14)
+
+
+def test_reduced_motion_keeps_the_word_and_drops_the_animation() -> None:
+    state = _state(ui=UISettings(reduced_motion=True))
+    markup = _thinking_markup(state, 3)
+    assert "[bold]" not in markup.split("Thinking")[0][-12:]
+    assert "Thinking" in _plain(markup) and "✿" not in markup

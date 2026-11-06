@@ -51,24 +51,28 @@ terminal
     └── one notice or one contextual hint row, or nothing
 ```
 
-Idle, the live block is four rows (TUX-02): the composer in a rounded box
-whose top border carries the session title and the mode badge, and one
-status line.
+Idle, the live block is four rows (TUX-02). The composer sits between two
+rules, as in Claude Code: the session title and the mode badge sit at the end
+of the top rule, and one status line follows.
 
 ```text
-╭─ fix flaky scheduler test ──────────────────────────────── Safe ─╮
-│ ❯ ▌ask, or type / for commands, @ for files                      │
-╰──────────────────────────────────────────────────────────────────╯
- ● Idle · ◆ 2 sessions need you ← · ctx 12% ▰▱▱▱▱ · opus-4.8   /help
+────────────────────────────────────── fix flaky scheduler test · Safe ─
+❯ ▌ask, or type / for commands, @ for files
+────────────────────────────────────────────────────────────────────────
+ ● Idle · ◆ 2 sessions need you ← · ctx 12% ▰▱▱▱▱ · opus-4.8      /help
 ```
+
+While the agent works, the state segment turns agenthicc's flower
+(`✿ ❀ ❁ ❃ …`), and a bold letter sweeps back and forth across `Thinking`.
+`reduced_motion` keeps the words and stops both animations.
 
 - **The title** is the session's first prompt (its first line, cut to 80
   characters as a background session's intent is), or `new session` before
   there is one. A resumed transcript restores it.
 - **The mode badge** is the permission mode in its `mode_*` theme token,
   after the primary agent when another than `default` is chosen.
-  `[ui] composer_frame = "rules"` draws a rule above and below the prompt
-  instead of the box.
+  `[ui] composer_frame = "box"` draws the prompt in a rounded box instead
+  of between rules.
 - **The status line** shows segments in a fixed priority order and drops the
   lowest ones when the line is too narrow; a segment is never cut mid-word:
 
@@ -333,15 +337,20 @@ glyphs = "auto"   # auto | unicode | ascii
 ```
 
 - **`auto`.** At start-up the TUI asks the terminal for its background
-  colour (OSC 11). It waits at most 50 ms, and only on an interactive
-  terminal. If there is no answer it uses `COLORFGBG`, and then `dark`.
+  colour (OSC 11), followed by a device-attributes query (DA1) that every
+  terminal answers. The query runs only on an interactive terminal, with
+  echo off. It reads until the DA1 answer arrives, at most 500 ms, so a slow
+  reply over SSH is never printed as `^[]11;rgb:…`. Without an answer it
+  uses `COLORFGBG`, and then `dark`.
 - **`ansi`.** Uses only the 16 terminal palette colours, so it follows your
   terminal's own scheme.
 - **`high-contrast`.** Meets WCAG AAA (7:1) for body text.
 - **`NO_COLOR`.** When set, it wins: every colour is removed, and bold, dim and
   reverse remain.
-- **`glyphs = "auto"`.** Picks `ascii` on a non-UTF-8 locale or the Linux
-  console, and `screen_reader = true` always uses `ascii`. The `unicode` set
+- **`glyphs = "auto"`.** Picks `ascii` only when the terminal output
+  encoding is not UTF, the same test Rich uses for its box characters.
+  `TERM` is not consulted, because many Unicode terminals report `linux`.
+  `screen_reader = true` always uses `ascii`. The `unicode` set
   uses only characters found in DejaVu Sans Mono, Noto Sans Mono, Menlo,
   Consolas and Cascadia Mono, and never emoji.
 

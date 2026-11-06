@@ -149,21 +149,26 @@ def test_background_detection_ignores_garbage() -> None:
 
 
 @pytest.mark.parametrize(
-    ("setting", "env", "reader", "ascii_expected"),
+    ("setting", "encoding", "reader", "ascii_expected"),
     [
-        ("auto", {"LANG": "en_US.UTF-8"}, False, False),
-        ("auto", {"LANG": "C"}, False, True),
-        ("auto", {"TERM": "linux", "LANG": "en_US.UTF-8"}, False, True),
-        ("unicode", {"LANG": "C"}, False, False),
-        ("ascii", {"LANG": "en_US.UTF-8"}, False, True),
-        ("unicode", {"LANG": "en_US.UTF-8"}, True, True),
+        ("auto", "utf-8", False, False),
+        ("auto", "UTF8", False, False),
+        ("auto", "ascii", False, True),
+        ("auto", "latin-1", False, True),
+        ("unicode", "ascii", False, False),
+        ("ascii", "utf-8", False, True),
+        ("unicode", "utf-8", True, True),
     ],
 )
-def test_glyph_selection(
-    setting: str, env: dict[str, str], reader: bool, ascii_expected: bool
-) -> None:
-    theme, _ = resolve_theme("dark", setting, env=env, screen_reader=reader)
+def test_glyph_selection(setting: str, encoding: str, reader: bool, ascii_expected: bool) -> None:
+    theme, _ = resolve_theme("dark", setting, env={}, screen_reader=reader, encoding=encoding)
     assert (theme.glyphs is ASCII_GLYPHS) is ascii_expected
+
+
+def test_term_linux_with_utf8_output_keeps_unicode_glyphs() -> None:
+    """Many Unicode terminals report TERM=linux; only the encoding decides."""
+    theme, _ = resolve_theme("dark", "auto", env={"TERM": "linux", "LANG": "C"}, encoding="utf-8")
+    assert theme.glyphs is UNICODE_GLYPHS
 
 
 def test_a_custom_theme_extends_a_builtin(tmp_path: Path) -> None:
@@ -371,3 +376,73 @@ def test_diff_rendering_follows_the_active_theme() -> None:
     assert "48;2;21;58;21" in dark  # dark diff_add_bg #153a15
     assert "48;2;230;244;231" in light  # light diff_add_bg #e6f4e7
     assert dark != light
+
+
+def test_the_background_query_waits_for_the_da1_sentinel_and_echoes_nothing() -> None:
+    """A slow terminal's OSC 11 reply must never be printed as ``^[]11;rgb:…``."""
+    import os
+    import pty
+    import threading
+    import time
+
+    from agenthicc.tui.cbreak_reader import query_background_color
+
+    controller, follower = pty.openpty()
+    written: list[bytes] = []
+
+    def terminal() -> None:
+        # Answer the queries late (well past the old 50 ms window), in order.
+        data = os.read(controller, 64)
+        written.append(data)
+        time.sleep(0.15)
+        os.write(controller, b"\x1b]11;rgb:1414/1717/2929\x1b\\\x1b[?62;22c")
+
+    thread = threading.Thread(target=terminal)
+    thread.start()
+    try:
+        import sys
+
+        saved = sys.stdout
+        sys.stdout = os.fdopen(os.dup(follower), "w")
+        try:
+            color = query_background_color(follower, 1.0)
+        finally:
+            sys.stdout.close()
+            sys.stdout = saved
+        thread.join(2)
+        assert color == (20, 23, 41)
+        assert written and b"\x1b]11;?" in written[0] and b"\x1b[c" in written[0]
+        # Nothing was echoed back to the terminal side.
+        os.set_blocking(controller, False)
+        try:
+            echoed = os.read(controller, 256)
+        except BlockingIOError:
+            echoed = b""
+        assert b"11;rgb" not in echoed
+    finally:
+        os.close(controller)
+        os.close(follower)
+
+
+def test_terminal_replies_are_parsed_in_any_chunking() -> None:
+    from agenthicc.tui.cbreak_reader import parse_terminal_replies
+
+    assert parse_terminal_replies(b"\x1b]11;rgb:ffff/ffff/ffff\x07") == ((255, 255, 255), False)
+    assert parse_terminal_replies(b"\x1b[?1;2c") == (None, True)
+    both = b"\x1b]11;rgb:0/0/0\x1b\\\x1b[?62;22c"
+    assert parse_terminal_replies(both) == ((0, 0, 0), True)
+    assert parse_terminal_replies(b"\x1b]10;rgb:ffff/ffff/ffff\x07\x1b[?6c") == (None, True)
+
+
+def test_a_late_da1_answer_is_not_a_key() -> None:
+    import os
+
+    from agenthicc.tui.cbreak_reader import Key, read_key
+
+    read_fd, write_fd = os.pipe()
+    try:
+        os.write(write_fd, b"\x1b[?62;22cz")
+        assert read_key(read_fd) == (Key.CHAR, "z")
+    finally:
+        os.close(read_fd)
+        os.close(write_fd)

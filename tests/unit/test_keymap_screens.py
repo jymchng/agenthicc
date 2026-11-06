@@ -256,4 +256,4 @@ def test_reduced_motion_keeps_the_layout_without_animation() -> None:
     assert workspace.status.markup(100) == first
     assert first.lstrip().startswith("[") and "●" in first.split("Thinking")[0]
     rows = ["".join(segment.text for segment in line) for line in workspace._build_lines()]
-    assert rows[0].startswith("╭") and rows[2].startswith("╰")  # the frame stays
+    assert rows[0].endswith(" Safe ─") and set(rows[2]) == {"─"}  # the frame stays

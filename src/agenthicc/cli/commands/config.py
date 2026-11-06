@@ -42,11 +42,16 @@ def config_show(ctx: CLIContext) -> None:
         for k, v in section.items():
             print(f"{k} = {v!r}")
     import os
+    import sys
 
     from agenthicc.tui.theme import ASCII_GLYPHS, resolve_theme
 
     theme, notices = resolve_theme(
-        cfg.ui.theme, cfg.ui.glyphs, env=os.environ, screen_reader=cfg.ui.screen_reader
+        cfg.ui.theme,
+        cfg.ui.glyphs,
+        env=os.environ,
+        screen_reader=cfg.ui.screen_reader,
+        encoding=sys.stdout.encoding or "utf-8",
     )
     glyph_set = "ascii" if theme.glyphs is ASCII_GLYPHS else "unicode"
     print(f"\n# Effective theme: {theme.name} ({glyph_set} glyphs)")

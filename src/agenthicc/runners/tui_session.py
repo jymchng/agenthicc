@@ -790,8 +790,9 @@ def _discover_workflow_registry_sync() -> WorkflowRegistry:
 def _apply_startup_theme(console: Console, cfg: AgenthiccConfig) -> None:
     """Choose the session's theme and glyphs before anything is drawn (TUX-01).
 
-    ``auto`` asks the terminal for its background (OSC 11, at most 50 ms, only
-    on an interactive terminal). A theme that cannot be loaded falls back to
+    ``auto`` asks the terminal for its background (OSC 11 followed by a DA1
+    sentinel, only on an interactive terminal; it returns as soon as the
+    terminal answers DA1, at most 500 ms). A theme that cannot be loaded falls back to
     ``auto`` and says so once.
     """
     from rich.markup import escape
@@ -804,7 +805,7 @@ def _apply_startup_theme(console: Console, cfg: AgenthiccConfig) -> None:
     if ui.theme == "auto" and "NO_COLOR" not in os.environ and console.is_terminal:
         backend = get_backend()
         if backend.is_interactive():
-            background = backend.query_background(0.05)
+            background = backend.query_background(0.5)
     theme, notices = resolve_theme(
         ui.theme,
         ui.glyphs,
@@ -812,6 +813,7 @@ def _apply_startup_theme(console: Console, cfg: AgenthiccConfig) -> None:
         screen_reader=ui.screen_reader,
         background=background,
         cwd=Path.cwd(),
+        encoding=console.encoding,
     )
     use_theme(theme)
     for notice in notices:

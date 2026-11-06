@@ -425,6 +425,19 @@ def _layout(
     return state_form, [(i, chosen[i]) for i in visible], show_right, room - width()
 
 
+def _sweep(word: str, frame: int) -> str:
+    """*word* as markup with one bold letter that moves back and forth per frame."""
+    n = len(word)
+    cycle = 2 * (n - 1)
+    pos = frame % cycle if cycle > 0 else 0
+    if pos >= n:
+        pos = cycle - pos
+    return "".join(
+        f"[bold]{escape(ch)}[/bold]" if index == pos else escape(ch)
+        for index, ch in enumerate(word)
+    )
+
+
 class StatusLine:
     """One prioritised status row (TUX-02 §2.1)."""
 
@@ -451,7 +464,12 @@ class StatusLine:
         spinner = g.spinner[frame % len(g.spinner)] if _animated(app) else g.bullet
 
         def forms(
-            token: str, lead: str, words: Sequence[str], elapsed: str = ""
+            token: str,
+            lead: str,
+            words: Sequence[str],
+            elapsed: str = "",
+            *,
+            sweep: bool = False,
         ) -> tuple[_Form, ...]:
             out: list[_Form] = []
             for text in words:
@@ -459,7 +477,8 @@ class StatusLine:
                 if reader:
                     out.append(_form(escape(f"{text}{tail}")))
                     continue
-                body = _tint(token, escape(text)) + (_tint("muted", tail) if tail else "")
+                word = _sweep(text, frame) if sweep and _animated(app) else escape(text)
+                body = _tint(token, word) + (_tint("muted", tail) if tail else "")
                 out.append(_form(f"{_tint(token, lead)} {body}" if lead else body))
             return tuple(out)
 
@@ -488,7 +507,8 @@ class StatusLine:
             words = [f"Running {tool}", f"Running {tool.split()[0]}"] if tool else []
             return forms("info", spinner, (*dict.fromkeys(words), "Running"), elapsed)
         if name == "thinking":
-            return forms("info", spinner, ("Thinking",), elapsed)
+            # The turning flower and one bold letter sweeping across the word.
+            return forms("warning", spinner, ("Thinking",), elapsed, sweep=True)
         if name == "recovering":
             return forms("danger", spinner, ("Recovering",), elapsed)
         if name == "error":
@@ -855,8 +875,10 @@ class ComposerFrame:
         return markup, _vlen(markup)
 
     def top(self, cols: int, form: str | None = None) -> str:
-        """The top border: ``╭─ title ──── Safe ─╮`` (or a rule with both)."""
+        """The top border: a rule ending ``title · Safe ─``, or ``╭─ title ── Safe ─╮``."""
         form = form or self.form(cols)
+        if form == "rules":
+            return self._rule_top(cols)
         g = glyphs()
         tl, tr, _bl, _br, h, _v = g.box
         left_corner, right_corner = (tl, tr) if form == "box" else (h, h)
@@ -884,6 +906,32 @@ class ComposerFrame:
             + badge_part
             + _tint("subtle", f"{h}{right_corner}")
         )
+        return _fit(line, cols)
+
+    def _rule_top(self, cols: int) -> str:
+        """Claude Code's input rule: ``──────── title · Safe ─``, right-aligned."""
+        g = glyphs()
+        h = g.box[4]
+        badge, badge_width = self._badge()
+        sep = f" {g.sep} "
+        # fill (at least 3) + " " + title + sep + badge + " " + h
+        room = cols - 3 - 1 - cell_len(sep) - badge_width - 1 - cell_len(h)
+        title = self._title()
+        if room < cell_len(g.ellipsis) + 1:
+            title = ""
+        elif cell_len(title) > room:
+            title = _cut(title, room - cell_len(g.ellipsis)) + g.ellipsis
+        if title:
+            label = f"{_tint('muted', escape(title))}{_tint('muted', sep)}{badge}"
+            label_width = cell_len(title) + cell_len(sep) + badge_width
+        elif cols - 3 - badge_width - 2 - cell_len(h) >= 0:
+            label, label_width = badge, badge_width
+        else:
+            label, label_width = "", 0
+        if not label:
+            return _tint("subtle", h * cols)
+        fill = max(0, cols - label_width - 2 - cell_len(h))
+        line = _tint("subtle", h * fill) + f" {label} " + _tint("subtle", h)
         return _fit(line, cols)
 
     def bottom(self, cols: int, form: str | None = None) -> str:

@@ -10,6 +10,13 @@ tags: [tui, motion, feedback, notifications, terminal, polish]
 
 # TUX-10: Motion, feedback and terminal integration
 
+> **Amendment (operator, 2026-11-06).** Keep the original flower and the bold
+> letter sweeping across `Thinking`. §2.1 below is amended accordingly:
+> - The one spinner *is* the flower (`Glyphs.spinner`), not braille.
+> - `Thinking` keeps the sweep.
+> - The other verbs (`Reading …`, `Running …`) render plainly.
+> - Nothing in §5 deletes the flower or the sweep.
+
 ## 1. Problem
 
 These are the smaller things that make a tool feel finished.

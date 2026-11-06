@@ -21,6 +21,11 @@ Implemented on branch `tux-tux02`.
 
 ### Amendments to the design above
 
+- **Composer frame (operator request, 2026-11-06).**
+  - Rules are now the default, matching Claude Code's input panel: a full-width rule ending in `title · Safe ─`, the prompt with no side borders, and a rule below.
+  - The rounded box is still available with `[ui] composer_frame = "box"`.
+- **State segment (operator request).** It keeps agenthicc's original turning flower. While thinking, one bold letter sweeps back and forth across `Thinking`. This replaces the braille spinner.
+
 1. **Right-hand hint.**
    - It shows `? shortcuts` only once the keymap has a `composer.shortcuts` action. That binding is TUX-10's (`?` on an empty prompt).
    - Until then it shows `/help`, so the status line never advertises a key that does nothing.

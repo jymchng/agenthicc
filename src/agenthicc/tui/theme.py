@@ -137,7 +137,8 @@ UNICODE_GLYPHS = Glyphs(
     warn="!",
     info="·",
     diamond="◆",
-    spinner=("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"),
+    # The flower agenthicc has always turned while it works (kept by request).
+    spinner=("✿", "❀", "❁", "❃", "✾", "❋", "✽", "❊"),
     rule="─",
     ellipsis="…",
     up="↑",
@@ -469,15 +470,18 @@ def background_is_light(rgb: tuple[int, int, int] | None, env: Mapping[str, str]
     return None
 
 
-def _use_ascii(glyph_setting: str, env: Mapping[str, str], screen_reader: bool) -> bool:
+def _use_ascii(glyph_setting: str, encoding: str, screen_reader: bool) -> bool:
+    """ASCII glyphs for a screen reader, on request, or when output is not UTF.
+
+    *encoding* is the encoding text is written in (Rich's ``console.encoding``),
+    the same test Rich uses for its own box characters.  ``TERM`` says nothing
+    reliable about the font: many Unicode-capable terminals report ``linux``.
+    """
     if glyph_setting == "ascii" or screen_reader:
         return True
     if glyph_setting == "unicode":
         return False
-    if env.get("TERM", "") == "linux":
-        return True
-    encoding = (env.get("LC_ALL") or env.get("LC_CTYPE") or env.get("LANG") or "").upper()
-    return bool(encoding) and "UTF-8" not in encoding and "UTF8" not in encoding
+    return not encoding.lower().replace("-", "").startswith("utf")
 
 
 def resolve_theme(
@@ -488,12 +492,15 @@ def resolve_theme(
     screen_reader: bool = False,
     background: tuple[int, int, int] | None = None,
     cwd: Path | None = None,
+    encoding: str = "utf-8",
 ) -> tuple[Theme, tuple[str, ...]]:
     """The theme to start with, plus notices for anything that fell back.
 
     ``NO_COLOR`` (any value) wins over every setting.  ``auto`` uses the
     terminal background (*background*, from OSC 11) or ``COLORFGBG``, else
     ``dark``.  A broken custom theme falls back to ``auto`` with a notice.
+    *encoding* is the output encoding; ``glyphs = "auto"`` uses ASCII when it
+    is not a UTF encoding.
     """
     notices: list[str] = []
     theme: Theme | None = None
@@ -512,5 +519,7 @@ def resolve_theme(
         if theme is None:
             light = background_is_light(background, env)
             theme = BUILTIN_THEMES["light" if light else "dark"]
-    glyph_set = ASCII_GLYPHS if _use_ascii(glyph_setting, env, screen_reader) else UNICODE_GLYPHS
+    glyph_set = (
+        ASCII_GLYPHS if _use_ascii(glyph_setting, encoding, screen_reader) else UNICODE_GLYPHS
+    )
     return theme.with_glyphs(glyph_set), tuple(notices)

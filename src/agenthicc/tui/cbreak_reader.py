@@ -21,6 +21,7 @@ Decoding (AGX-13) is a set of pure functions over bytes —
 from __future__ import annotations
 
 import os
+import re
 import select
 from contextlib import contextmanager
 from enum import Enum
@@ -496,14 +497,38 @@ def _read_osc_body(fd: int, timeout: float, cancel_fd: int | None) -> bytes:
     return body
 
 
-def query_background_color(fd: int, timeout: float = 0.05) -> tuple[int, int, int] | None:
+#: DA1 (primary device attributes): every terminal answers it, and in order,
+#: so its answer marks the end of the replies to any query sent before it.
+DA1_QUERY = "\x1b[c"
+_OSC_COLOR_REPLY = re.compile(rb"\x1b\](\d+;rgb:[0-9A-Fa-f/]+)(?:\x07|\x1b\\)")
+_DA1_REPLY = re.compile(rb"\x1b\[\?[0-9;]*c")
+
+
+def parse_terminal_replies(data: bytes) -> tuple[tuple[int, int, int] | None, bool]:
+    """The OSC 11 colour and whether the DA1 sentinel answer is in *data*."""
+    color: tuple[int, int, int] | None = None
+    for match in _OSC_COLOR_REPLY.finditer(data):
+        if match.group(1).startswith(b"11;"):
+            color = parse_osc_color(match.group(1))
+    return color, _DA1_REPLY.search(data) is not None
+
+
+def query_background_color(fd: int, timeout: float = 0.5) -> tuple[int, int, int] | None:
     """Ask the terminal on *fd* for its background colour; ``None`` if it cannot say.
 
-    Briefly enters non-canonical, no-echo mode, writes OSC 11 and waits at most
-    *timeout* seconds for the answer.  A late answer is swallowed by
-    :func:`read_key`, never shown as typed text.
+    Writes OSC 11 followed by DA1 with echo off and reads until the DA1 answer
+    arrives (at most *timeout* seconds). Terminals answer in order, so the
+    colour report, if the terminal sends one, has arrived by then, and no
+    late reply can be echoed onto the screen as ``^[]11;rgb:…``.
+
+    If DA1 does not answer in time, echo stays off so a reply still in flight
+    is not printed. :func:`raw_mode` takes over the terminal next and
+    :func:`read_key` swallows the late replies. An exit hook restores the
+    original settings if raw mode never starts.
     """
+    import atexit
     import sys
+    import time
 
     try:
         import termios
@@ -513,26 +538,40 @@ def query_background_color(fd: int, timeout: float = 0.05) -> tuple[int, int, in
         old = termios.tcgetattr(fd)
     except Exception:  # noqa: BLE001 - not a terminal
         return None
-    new = list(old)
-    new[3] &= ~(termios.ICANON | termios.ECHO)
+    quiet = list(old)
+    quiet[3] &= ~(termios.ICANON | termios.ECHO)
+    color: tuple[int, int, int] | None = None
+    answered = False
     try:
-        termios.tcsetattr(fd, termios.TCSANOW, new)
-        sys.stdout.write(OSC_QUERY_BACKGROUND)
+        termios.tcsetattr(fd, termios.TCSANOW, quiet)
+        sys.stdout.write(OSC_QUERY_BACKGROUND + DA1_QUERY)
         sys.stdout.flush()
-        if not _wait_readable(fd, timeout, None):
-            return None
-        if os.read(fd, 1) != b"\x1b" or not _wait_readable(fd, timeout, None):
-            return None
-        if os.read(fd, 1) != b"]":
-            return None
-        return parse_osc_color(_read_osc_body(fd, timeout, None))
+        received = b""
+        deadline = time.monotonic() + timeout
+        while not answered:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not _wait_readable(fd, remaining, None):
+                break
+            received += os.read(fd, 1024)
+            color, answered = parse_terminal_replies(received)
     except OSError:
-        return None
-    finally:
+        answered = False
+    if answered:
         try:
             termios.tcsetattr(fd, termios.TCSANOW, old)
         except Exception:  # noqa: BLE001
             pass
+        return color
+
+    # No sentinel: keep echo off (a reply may still arrive), restore on exit.
+    def _restore() -> None:
+        try:
+            termios.tcsetattr(fd, termios.TCSANOW, old)
+        except Exception:  # noqa: BLE001
+            pass
+
+    atexit.register(_restore)
+    return color
 
 
 def _wait_readable(fd: int, timeout: float | None, cancel_fd: int | None) -> bool:
@@ -613,6 +652,9 @@ def read_key(fd: int, *, cancel_fd: int | None = None) -> tuple[Key, str]:
         if seq.startswith(b"?") and seq.endswith(b"$y"):
             # DECRPM: the terminal's answer to a mode query, not a keystroke.
             _record_mode_report(seq[1:-2])
+            return read_key(fd, cancel_fd=cancel_fd)
+        if seq.startswith(b"?") and seq.endswith(b"c"):
+            # DA1: a late answer to the background query's sentinel (TUX-01).
             return read_key(fd, cancel_fd=cancel_fd)
 
         # Bracketed paste: \x1b[200~ starts the payload; read until \x1b[201~.
