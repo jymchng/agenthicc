@@ -47,7 +47,7 @@ async def test_usage_runs_now_during_active_run_without_queue_or_user_event() ->
 
     output = ctx.console.export_text()
     assert "Usage: input=123 output=45 total=168 cost=$0.6789 state=running" in output
-    assert session._msg_queue == []
+    assert session._msg_queue.texts() == []
     assert all(
         event.kind != "user_message"
         for turn in ctx.app_state.conversation.turns()
@@ -70,7 +70,7 @@ async def test_config_overlay_opens_immediately_during_active_run() -> None:
     await session.handle_send(SendMessageCommand(text="/config"))
 
     assert isinstance(workspace.overlays.widget, ConfigMenuOverlay)
-    assert session._msg_queue == []
+    assert session._msg_queue.texts() == []
     await _stop(active)
 
 
@@ -104,7 +104,7 @@ async def test_commands_and_skills_open_list_overlays_during_active_run(tmp_path
 
     await session.handle_send(SendMessageCommand(text="/skills"))
     assert isinstance(workspace.overlays.widget, SkillListOverlay)
-    assert session._msg_queue == []
+    assert session._msg_queue.texts() == []
     await _stop(active)
 
 
@@ -130,7 +130,7 @@ async def test_tools_and_workflows_open_list_overlays_during_active_run() -> Non
 
     await session.handle_send(SendMessageCommand(text="/workflows"))
     assert isinstance(workspace.overlays.widget, WorkflowListOverlay)
-    assert session._msg_queue == []
+    assert session._msg_queue.texts() == []
     await _stop(active)
 
 
@@ -193,8 +193,9 @@ async def test_read_only_and_control_commands_are_immediate_but_messages_queue()
     await session.handle_send(SendMessageCommand(text="follow-up"))
 
     assert invoked == ["local"]
-    assert session._msg_queue == ["/defer", "follow-up"]
-    assert "Queued #2: follow-up" in (ctx.app_state.conversation.notification() or "")
+    assert session._msg_queue.texts() == ["/defer", "follow-up"]
+    # The queue shows as rows above the composer, not as a notification.
+    assert not (ctx.app_state.conversation.notification() or "").startswith("⌛")
     await _stop(active)
 
 
@@ -220,7 +221,7 @@ async def test_cancel_alias_uses_the_same_task_owner_as_interrupt() -> None:
     await asyncio.sleep(0)
 
     assert active.cancelled()
-    assert session._msg_queue == []
+    assert session._msg_queue.texts() == []
 
 
 @pytest.mark.asyncio
@@ -229,11 +230,11 @@ async def test_queued_command_is_revalidated_when_registry_changes() -> None:
     active = asyncio.create_task(_live_task())
     session._agent_task = active
     await session.handle_send(SendMessageCommand(text="/will-be-removed"))
-    assert session._msg_queue == ["/will-be-removed"]
+    assert session._msg_queue.texts() == ["/will-be-removed"]
 
     session._agent_task = None
     session.advance()
 
-    assert session._msg_queue == []
+    assert session._msg_queue.texts() == []
     assert "no longer exists" in (ctx.app_state.conversation.notification() or "")
     await _stop(active)

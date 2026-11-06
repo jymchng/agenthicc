@@ -208,8 +208,32 @@ class SlashCommandTrigger(TriggerHandlerBase):
             return TriggerResult(buffer=buf + [self.char] + list(fragment))
         return TriggerResult(buffer=buf + list(item.value))
 
-    def on_cancel(self, fragment: str, buf: list[str]) -> list[str]:
-        return buf + [self.char] + list(fragment)
+    def on_enter(
+        self,
+        item: MatchItem | None,
+        fragment: str,
+        buf: list[str],
+    ) -> TriggerResult:
+        """One Enter runs a command that needs no argument (TUX-04 §2.5).
+
+        A command with a required argument, or with argument completions,
+        is completed with a trailing space and the picker stays open on its
+        arguments. A chosen argument completion runs the full command.
+        """
+        if item is None:
+            return TriggerResult(buffer=buf + [self.char] + list(fragment), submit=True)
+        if " " not in item.value and self.needs_argument(item):
+            return TriggerResult(buffer=buf + list(item.value + " "), keep_open=True)
+        return TriggerResult(buffer=buf + list(item.value), submit=True)
+
+    def needs_argument(self, item: MatchItem) -> bool:
+        """Whether Enter on *item* must ask for an argument instead of running it."""
+        if self._registry is None:
+            return False
+        command = self._registry.get(item.value)
+        if command is None:
+            return False
+        return self.has_argument_completions(item) or _requires_argument(command.argument_hint)
 
     def can_activate(self, buf: list[str]) -> bool:
         return not buf or buf[-1] == "\n"
@@ -262,6 +286,16 @@ class SlashCommandTrigger(TriggerHandlerBase):
         for chunk in chunks[1:]:
             lines.append(f"{continuation_prefix}{chunk}")
         return lines
+
+
+def _requires_argument(argument_hint: str) -> bool:
+    """Whether a hint's first form names a required ``<argument>``.
+
+    ``"<name> | resume [run-id]"`` needs one; ``"[provider] [model]"`` and
+    ``""`` do not.
+    """
+    first = argument_hint.split("|", 1)[0]
+    return any(token.startswith("<") for token in first.split())
 
 
 def _is_skill_command(cmd: Command) -> bool:

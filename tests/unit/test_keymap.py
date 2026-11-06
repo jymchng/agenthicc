@@ -31,7 +31,7 @@ pytestmark = pytest.mark.unit
         ("Ctrl+Y", "ctrl+y"),
         ("alt+X", "alt+shift+x"),
         ("Shift+Tab", "shift+tab"),
-        ("ctrl+enter", "ctrl+j"),
+        ("ctrl+enter", "ctrl+enter"),
         ("esc", "escape"),
         ("PgDn", "pagedown"),
         ("F5", "f5"),
@@ -156,7 +156,7 @@ def _write(path: Path, text: str) -> Path:
 def test_no_file_means_the_defaults(tmp_path: Path) -> None:
     loaded = load_keybindings(DEFAULT_ACTIONS, tmp_path / "keybindings.toml")
     assert loaded.errors == ()
-    assert loaded.keymap.action("composer.newline").keys == ("ctrl+j",)
+    assert loaded.keymap.action("composer.newline").keys == ("ctrl+j", "shift+enter")
 
 
 def test_a_file_rebinds_adds_and_removes_keys(tmp_path: Path) -> None:
@@ -170,6 +170,34 @@ def test_a_file_rebinds_adds_and_removes_keys(tmp_path: Path) -> None:
     assert loaded.keymap.action("composer.clear").keys == ()
     assert loaded.keymap.sources["composer.newline"] == str(path)
     assert loaded.keymap.resolve("composer", "ctrl+u") is None
+
+
+def test_a_file_keeps_a_key_a_new_default_took_and_says_so_once(tmp_path: Path) -> None:
+    """TUX-04 §5: a binding written before Ctrl+K killed to the end keeps Ctrl+K."""
+    from rich.console import Console
+
+    from agenthicc.tui.conversation_store import AppState
+    from agenthicc.tui.keymap_service import KeymapService
+    from agenthicc.tui.keymap_table import render_bindings
+
+    path = _write(tmp_path / "keybindings.toml", '[composer]\n"composer.clear" = "ctrl+k"\n')
+    loaded = load_keybindings(DEFAULT_ACTIONS, path)
+    assert loaded.errors == ()
+    assert loaded.keymap.resolve("composer", "ctrl+k") is loaded.keymap.action("composer.clear")
+    assert loaded.keymap.action("composer.kill_to_end").keys == ()
+    assert loaded.notices == (
+        "Ctrl+K: your binding for composer.clear replaces the default composer.kill_to_end",
+    )
+    console = Console(record=True, width=200)
+    render_bindings(console, loaded)
+    assert "replaces the default composer.kill_to_end" in console.export_text()
+
+    state = AppState.create()
+    service = KeymapService(state, path)
+    assert "replaces the default composer.kill_to_end" in str(state.conversation.notification())
+    state.conversation.notification.set(None)
+    service.reload()  # the file did not change: no second report
+    assert state.conversation.notification() is None
 
 
 @pytest.mark.parametrize(

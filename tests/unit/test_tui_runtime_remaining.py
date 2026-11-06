@@ -88,14 +88,12 @@ async def test_unified_input_trigger_overlay_and_interactive_loop(
         state, bus, triggers, overlay_host=OverlayHost(state), cwd=Path(".")
     )
     session._buf.set(list("/he"))
-    assert session._find_trigger_tail() == ("/", [], "he")
-    session._find_trigger_tail = lambda: None  # type: ignore[method-assign]
-    await session._open_trigger_overlay("/")
+    assert session._find_trigger_anchor() == 0
+    session._open_picker(0)
     assert session._overlay is not None and session._overlay.active
     await session._dispatch(Key.ESC, "")
     assert not session._overlay.active
     session._buf.clear()
-    del session._find_trigger_tail
     await session._dispatch(Key.CHAR, "/")
     await session._dispatch(Key.CHAR, "x")
     await session._dispatch(Key.ENTER, "")
@@ -144,7 +142,7 @@ def test_trigger_handlers_and_picker_navigation(tmp_path: Path) -> None:
     assert mention.get_matches("missing/", TriggerContext(tmp_path)) == []
     assert mention.get_matches("docs/R", TriggerContext(tmp_path))
     assert mention.on_select(None, "x", []).buffer == list("@x")
-    assert mention.on_cancel("x", ["text"])[-2:] == ["@", "x"]
+    assert mention.on_enter(None, "x", []).submit  # Enter with no match sends
 
     nested = tmp_path / "workspace" / "edited"
     nested.mkdir(parents=True)
@@ -183,22 +181,26 @@ def test_trigger_handlers_and_picker_navigation(tmp_path: Path) -> None:
 
             return TriggerResult(buf + list(item.value if item else fragment))
 
-        def on_cancel(self, fragment: str, buf: list[str]) -> list[str]:
-            return buf + list(fragment)
+    from agenthicc.tui.input.buffer import InputBuffer
+    from agenthicc.tui.keymap import Keymap
+    from agenthicc.tui.actions import DEFAULT_ACTIONS
+    from agenthicc.tui.workspace.overlays.trigger_picker import PickerOutcome
 
-    manager = TriggerManager()
-    manager.register(Handler())
-    completed: list[object] = []
-    picker = TriggerPickerOverlay(["/", "a"], manager, tmp_path, completed.append)
+    buffer = InputBuffer(["/", "a"])
+    picker = TriggerPickerOverlay(
+        buffer, 0, Handler(), cwd=tmp_path, keymap=Keymap.build(DEFAULT_ACTIONS)
+    )
     picker.render()
-    picker.handle_key(Key.DOWN, "")
-    picker.handle_key(Key.UP, "")
-    picker.handle_key(Key.TAB, "")
-    picker.handle_key(Key.CHAR, "x")
-    picker.handle_key(Key.BACKSPACE, "")
-    picker.handle_key(Key.ENTER, "")
-    picker.handle_key(Key.ESC, "")
-    assert completed
+    assert picker.choose(Key.DOWN, "") is PickerOutcome.STAY
+    assert picker.selected == 1
+    assert picker.choose(Key.CTRL_P, "") is PickerOutcome.STAY
+    assert picker.selected == 0
+    assert picker.choose(Key.PAGE_DOWN, "") is PickerOutcome.STAY
+    assert picker.choose(Key.CHAR, "x") is None  # the prompt edits it
+    assert picker.choose(Key.ESC, "") is PickerOutcome.CLOSE
+    assert picker.choose(Key.TAB, "") is PickerOutcome.CLOSE
+    assert buffer.text == "two"  # the handler's result replaces the trigger span
+    assert picker.choose(Key.ENTER, "") is PickerOutcome.CLOSE
 
 
 def test_posix_backend_non_tty_and_prompt_output(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -80,35 +80,37 @@ def test_workflow_completion_tracks_registry_replacement() -> None:
     assert values == ["/workflow docs", "/workflow reset", "/workflow resume"]
 
 
-def test_picker_space_enters_workflow_name_completion() -> None:
+async def test_picker_space_enters_workflow_name_completion() -> None:
+    from agenthicc.tui.conversation_store import AppState
+    from agenthicc.tui.input.unified_session import UnifiedInputSession
+    from agenthicc.tui.runtime.commands import CommandBus
+    from agenthicc.tui.workspace.overlay import OverlayHost
+
     manager = TriggerManager()
-    trigger = _trigger()
-    manager.register(trigger)
-    completed: list[TriggerResult | None] = []
-    overlay = TriggerPickerOverlay(
-        initial_buf=list("/workflow"),
-        registry=manager,
-        cwd=Path("."),
-        on_complete=completed.append,
+    manager.register(_trigger())
+    state = AppState.create()
+    session = UnifiedInputSession(
+        state, CommandBus(), manager, overlay_host=OverlayHost(state), cwd=Path(".")
     )
+    for char in "/workflow ":
+        await session._dispatch(Key.CHAR, char)
 
-    overlay.handle_key(Key.CHAR, " ")
-
-    assert completed == []
-    assert overlay._trigger is not None
-    assert overlay._trigger.fragment == "workflow "
-    assert [match.value for match in overlay._matches] == [
+    overlay = session.picker
+    assert isinstance(overlay, TriggerPickerOverlay)
+    assert overlay.fragment == "workflow "
+    assert [match.value for match in overlay.matches] == [
         "/workflow code_review",
         "/workflow docs",
         "/workflow reset",
         "/workflow resume",
     ]
 
-    overlay.handle_key(Key.CHAR, "c")
-    assert [match.value for match in overlay._matches] == ["/workflow code_review"]
+    await session._dispatch(Key.CHAR, "c")
+    assert [match.value for match in overlay.matches] == ["/workflow code_review"]
 
-    overlay.handle_key(Key.TAB, "")
-    assert completed == [TriggerResult(buffer=list("/workflow code_review"))]
+    await session._dispatch(Key.TAB, "")
+    assert session.picker is None
+    assert session._buf.text == "/workflow code_review"
 
 
 def test_workflow_argument_completion_requires_a_live_registry() -> None:

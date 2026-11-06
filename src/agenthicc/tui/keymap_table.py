@@ -24,6 +24,8 @@ def render_bindings(console: Console, loaded: KeymapLoad) -> None:
         )
         for error in loaded.errors:
             console.print(f"  [red]•[/red] {escape(error)}", highlight=False)
+    for notice in loaded.notices:
+        console.print(f"  • {escape(notice)}", highlight=False)
     keymap = loaded.keymap
     for context in CONTEXTS:
         actions = [action for action in keymap.actions if action.context == context]

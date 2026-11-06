@@ -178,8 +178,4 @@ class AtMentionTrigger(TriggerHandlerBase):
         prefix = "".join(buf)
         return _is_valid_mention_position(prefix + "@", len(prefix))
 
-    def on_cancel(self, fragment: str, buf: list[str]) -> list[str]:
-        """Restore the literal ``@fragment`` text into *buf* on ESC."""
-        return buf + ["@"] + list(fragment)
-
     # get_hint → inherited from TriggerHandlerBase (returns None)

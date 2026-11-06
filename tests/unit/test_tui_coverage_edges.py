@@ -17,17 +17,18 @@ from agenthicc.tui.diff_renderer import (
     render_file_diff,
 )
 from agenthicc.tui.input.buffer import InputBuffer
+from agenthicc.tui.input.unified_session import UnifiedInputSession
 from agenthicc.tui.input.capabilities import (
     _CONSUMED,
     _EXIT,
     BackspaceCapability,
     Capability,
     CapabilityResult,
-    ClearCapability,
     CondensedPasteEscapeCapability,
     CtrlCCapability,
     CtrlDCapability,
     CursorCapability,
+    EditingCapability,
     HistoryCapability,
     InsertCapability,
     InterruptCapability,
@@ -140,6 +141,8 @@ class _FakeSession:
         self.running = False
         self._action: str | None = None
         self._action_rebindable = False
+        self._clear_after_acceptance = False
+        self._picker: object | None = None
 
     def conditions(self) -> frozenset[str]:
         flags = {"running"} if self.running else set()
@@ -147,6 +150,8 @@ class _FakeSession:
             flags.add("paste")
             if self._buf.cursor == self._paste.end:
                 flags.add("paste_at_cursor")
+        elif not self._buf.text:
+            flags.add("empty")
         return frozenset(flags)
 
     async def _dispatch(self, command: object) -> None:
@@ -162,14 +167,19 @@ class _FakeSession:
         self._ctrl_c_count += 1
         return _EXIT if self._ctrl_c_count > 1 else None
 
-    def _find_trigger_tail(self) -> None:
+    def _prepare_submission(self) -> None:
+        UnifiedInputSession._prepare_submission(self)  # type: ignore[arg-type]
+
+    async def _submit_buffer(self, *, commit_history: bool, interject: bool = False) -> None:
+        await UnifiedInputSession._submit_buffer(  # type: ignore[arg-type]
+            self, commit_history=commit_history, interject=interject
+        )
+
+    def _find_trigger_anchor(self) -> int | None:
         return None
 
-    async def _open_trigger_overlay(self, value: str) -> None:
-        self.opened.append(value)
-
-    async def _open_trigger_overlay_with_initial(self, value: list[str]) -> None:
-        self.opened.append("".join(value))
+    def _open_picker(self, anchor: int) -> None:
+        self.opened.append("".join(self._buf.buf[anchor:]))
 
 
 async def _press(
@@ -186,7 +196,7 @@ async def _press(
 async def test_input_capabilities_cover_idle_streaming_and_editing_paths() -> None:
     session = _FakeSession()
     assert await _press(OverlayCapability(), Key.CHAR, "x", session) is False
-    overlay = SimpleNamespace(active=True, handle_key=lambda key, ch: None)
+    overlay = SimpleNamespace(active=True, widget=None, handle_key=lambda key, ch: None)
     session._overlay = overlay
     assert await _press(OverlayCapability(), Key.CHAR, "x", session) is _CONSUMED
     session._overlay = None
@@ -194,7 +204,8 @@ async def test_input_capabilities_cover_idle_streaming_and_editing_paths() -> No
     assert await _press(CtrlCCapability(), Key.CTRL_C, "", session) is _CONSUMED
     assert await _press(CtrlCCapability(), Key.CTRL_C, "", session) is _EXIT
     session._buf.insert("x")
-    assert await _press(CtrlDCapability(), Key.CTRL_D, "", session) is _CONSUMED
+    # Ctrl+D on a non-empty prompt deletes forward (TUX-04), it does not exit.
+    assert await _press(CtrlDCapability(), Key.CTRL_D, "", session) is False
     session._buf.clear()
     assert await _press(CtrlDCapability(), Key.CTRL_D, "", session) is _EXIT
     assert await _press(CtrlDCapability(), Key.CHAR, "", session) is False
@@ -213,7 +224,7 @@ async def test_input_capabilities_cover_idle_streaming_and_editing_paths() -> No
     await _press(CursorCapability(), Key.HOME, "", session)
     await _press(CursorCapability(), Key.END, "", session)
     await _press(BackspaceCapability(), Key.BACKSPACE, "", session)
-    await _press(ClearCapability(), Key.CTRL_U, "", session)
+    await _press(EditingCapability(), Key.CTRL_U, "", session)
     session._buf.set(list("line1\nline2"), cursor=8)
     await _press(CursorCapability(), Key.LEFT, "", session)
     await _press(HistoryCapability(), Key.UP, "", session)
@@ -231,9 +242,9 @@ async def test_input_capabilities_cover_idle_streaming_and_editing_paths() -> No
     session._paste.apply(session._buf, "a\nb\nc\nd", 10)
     await _press(BackspaceCapability(), Key.BACKSPACE, "", session)
     session._buf.set(list("@frag"))
-    session._find_trigger_tail = lambda: ("@", [], "frag")  # type: ignore[method-assign]
-    session._registry = SimpleNamespace(get=lambda _char: SimpleNamespace())
+    session._find_trigger_anchor = lambda: 0  # type: ignore[method-assign]
     await _press(BackspaceCapability(), Key.BACKSPACE, "", session)
+    assert session.opened[-1] == "@fra"
     assert await _press(BackspaceCapability(), Key.CHAR, "", session) is False
 
 
@@ -485,9 +496,9 @@ async def test_trigger_capability_passes_or_opens_registered_trigger() -> None:
 
     session = _FakeSession()
     session._buf.set(list("@frag"))
-    session._find_trigger_tail = lambda: ("@", [], "frag")  # type: ignore[method-assign]
-    session._registry = SimpleNamespace(get=lambda _char: SimpleNamespace())
+    session._find_trigger_anchor = lambda: 0  # type: ignore[method-assign]
     assert await _press(InsertCapability(), Key.CHAR, "x", session) is _CONSUMED
+    assert session.opened == ["@fragx"]
 
 
 @pytest.mark.asyncio
@@ -511,10 +522,9 @@ async def test_registered_trigger_is_literal_when_cursor_is_not_at_buffer_end(
 ) -> None:
     """Home/Left followed by a trigger must not discard the typed character.
 
-    TriggerPickerOverlay represents the active trigger as the editable suffix
-    of the input.  When the user is editing an earlier position, the suffix
-    to the right must remain ordinary input, so the trigger is inserted as a
-    literal instead of being sent to an overlay that cannot preserve it.
+    The picker opens only at the end of the prompt (TUX-04 §2.2): typed while
+    editing an earlier position, a trigger is ordinary text, so the rest of
+    the line never becomes a command or a mention.
     """
     from agenthicc.commands import UnifiedCommandRegistry
     from agenthicc.tui.input.unified_session import UnifiedInputSession
@@ -611,8 +621,8 @@ async def test_slash_still_opens_picker_at_a_valid_end_position(tmp_path: Path) 
 
     assert overlays.active
     assert overlays.widget is not None
-    assert overlays.widget._trigger is not None
-    assert overlays.widget._trigger.char == "/"
+    assert session.picker is overlays.widget
+    assert session.picker.handler.char == "/"
 
 
 @pytest.mark.asyncio
@@ -638,7 +648,7 @@ async def test_unified_input_session_dispatch_and_noninteractive_lifecycle(
     assert "\n" in session._buf.text
     session._ctrl_c_sequence()
     session._ctrl_c_sequence()
-    assert session._find_trigger_tail() is None
+    assert session._find_trigger_anchor() is None
     session._prepare_submission()
     assert session._buf.text == ""
     backend = SimpleNamespace(is_interactive=lambda: False)
@@ -671,10 +681,9 @@ async def test_unified_dispatch_preserves_second_at_in_trigger_picker(tmp_path: 
     assert overlays.active
     await session._dispatch(Key.AT, "")
 
-    picker = overlays.widget
-    assert picker is not None
-    assert picker._trigger is not None
-    assert picker._trigger.fragment == "@"
+    picker = session.picker
+    assert picker is not None and picker is overlays.widget
+    assert picker.fragment == "@"
 
 
 @pytest.mark.asyncio

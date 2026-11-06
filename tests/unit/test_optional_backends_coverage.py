@@ -108,9 +108,10 @@ def test_windows_decoder_and_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert win._decode_key_event(win._VK_TAB, "", win._SHIFT_PRESSED) == (Key.SHIFT_TAB, "")
     assert win._decode_key_event(win._VK_TAB, "", 0) == (Key.TAB, "")
+    # TUX-04: the console reports Enter's modifiers, so Ctrl+Enter is its own key.
     assert win._decode_key_event(win._VK_RETURN, "", win._LEFT_CTRL_PRESSED) == (
-        Key.CTRL_ENTER,
-        "",
+        Key.MODIFIED,
+        "ctrl+enter",
     )
     for vk, (expected, _name) in win._VK_KEYS.items():
         assert win._decode_key_event(vk, "", 0) == (expected, "")

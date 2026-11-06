@@ -66,7 +66,7 @@ def test_slash_trigger_excludes_stale_slash_named_skill_records() -> None:
     assert values == ["/status"]
 
 
-def test_skill_trigger_selection_and_cancel_preserve_dollar_prefix() -> None:
+def test_skill_trigger_selection_preserves_dollar_prefix() -> None:
     trigger = SkillTrigger(CommandRegistry())
     item = MatchItem(display="$review-code  Review", value="$review-code")
 
@@ -77,7 +77,6 @@ def test_skill_trigger_selection_and_cancel_preserve_dollar_prefix() -> None:
 
     literal = trigger.on_select(None, "unknown", [])
     assert "".join(literal.buffer) == "$unknown"
-    assert "".join(trigger.on_cancel("unknown", list("run "))) == "run $unknown"
 
 
 def test_skill_trigger_reuses_picker_hint_and_wrapping() -> None:

@@ -1,6 +1,6 @@
 """Unit tests for the slash-command trigger (PRD-40).
 
-Covers SlashCommandTrigger (get_matches, on_select, on_cancel, get_hint) and
+Covers SlashCommandTrigger (get_matches, on_select, on_enter, get_hint) and
 CommandRegistry (register, dedup, groups, unregister, matches, len) including
 the build_default_registry factory.
 """
@@ -161,25 +161,50 @@ def test_on_select_none_preserves_existing_buf():
     assert "".join(result.buffer) == "hello /foo"
 
 
-# ── SlashCommandTrigger.on_cancel ────────────────────────────────────────────
+# ── SlashCommandTrigger.on_enter (TUX-04 §2.5) ──────────────────────────────
 
 
-def test_on_cancel_restores_slash_fragment():
-    t = SlashCommandTrigger(CommandRegistry())
-    buf = t.on_cancel("mod", [])
-    assert "".join(buf) == "/mod"
+def _enter_registry():
+    from agenthicc.commands import Command, UnifiedCommandRegistry
+
+    registry = UnifiedCommandRegistry()
+    registry.register(Command("/status", "Show status"))
+    registry.register(Command("/help", "Help", argument_hint="[/command]"))
+    registry.register(Command("/open", "Open a thing", argument_hint="<name> | list"))
+    registry.register(
+        Command("/env", "Pick an environment", completions_factory=lambda _p: ["dev", "prod"])
+    )
+    return registry
 
 
-def test_on_cancel_empty_fragment():
-    t = SlashCommandTrigger(CommandRegistry())
-    buf = t.on_cancel("", [])
-    assert "".join(buf) == "/"
+@pytest.mark.parametrize("name", ["/status", "/help"])
+def test_on_enter_runs_a_command_without_a_required_argument(name: str):
+    t = SlashCommandTrigger(_enter_registry())
+    result = t.on_enter(MatchItem(display=name, value=name), name[1:2], list("x\n"))
+    assert "".join(result.buffer) == f"x\n{name}"
+    assert result.submit is True and result.keep_open is False
 
 
-def test_on_cancel_preserves_existing_buf():
-    t = SlashCommandTrigger(CommandRegistry())
-    buf = t.on_cancel("cancel", list("please "))
-    assert "".join(buf) == "please /cancel"
+@pytest.mark.parametrize("name", ["/open", "/env"])
+def test_on_enter_completes_a_command_that_needs_an_argument(name: str):
+    t = SlashCommandTrigger(_enter_registry())
+    result = t.on_enter(MatchItem(display=name, value=name), "", [])
+    assert "".join(result.buffer) == f"{name} "
+    assert result.keep_open is True and result.submit is False
+
+
+def test_on_enter_runs_a_chosen_argument_completion():
+    t = SlashCommandTrigger(_enter_registry())
+    result = t.on_enter(MatchItem(display="/env dev", value="/env dev"), "env d", [])
+    assert "".join(result.buffer) == "/env dev"
+    assert result.submit is True
+
+
+def test_on_enter_without_a_match_sends_the_literal_text():
+    t = SlashCommandTrigger(_enter_registry())
+    result = t.on_enter(None, "unknown", list("please "))
+    assert "".join(result.buffer) == "please /unknown"
+    assert result.submit is True
 
 
 # ── SlashCommandTrigger.get_hint ─────────────────────────────────────────────

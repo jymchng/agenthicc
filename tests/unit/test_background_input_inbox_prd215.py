@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import os
 from pathlib import Path
 
@@ -1377,7 +1376,10 @@ async def test_target_trigger_submission_retains_draft_when_owner_rejects() -> N
     from agenthicc.tui.conversation_store import AppState
     from agenthicc.tui.input.unified_session import UnifiedInputSession
     from agenthicc.tui.runtime.commands import CommandBus, SendMessageCommand
-    from agenthicc.tui.trigger import TriggerManager, TriggerResult
+    from agenthicc.commands.builtins import build_builtin_registry
+    from agenthicc.tui.cbreak_reader import Key
+    from agenthicc.tui.trigger import TriggerManager
+    from agenthicc.tui.triggers.slash_command import SlashCommandTrigger
     from agenthicc.tui.workspace.overlay import OverlayHost
     from agenthicc.background.agents_service import ManagerOperationResult
 
@@ -1395,20 +1397,21 @@ async def test_target_trigger_submission_retains_draft_when_owner_rejects() -> N
         )
 
     bus.register(SendMessageCommand, reject)
+    triggers = TriggerManager()
+    triggers.register(SlashCommandTrigger(build_builtin_registry()))
     editor = UnifiedInputSession(
         app_state=state,
         command_bus=bus,
-        trigger_registry=TriggerManager(),
+        trigger_registry=triggers,
         overlay_host=OverlayHost(state),
         history=history,
         clear_after_acceptance=True,
     )
-    await editor._open_trigger_overlay_with_initial(["/", "status"])
-    overlay = editor._overlay
-    assert overlay is not None and overlay.widget is not None
-    overlay.widget._complete(TriggerResult(buffer=list("/status"), submit=True))
-    await asyncio.sleep(0)
-    await asyncio.sleep(0)
+    for char in "/status":
+        await editor._dispatch(Key.CHAR, char)
+    assert editor.picker is not None
+    # One Enter runs the highlighted command (TUX-04 §2.5); the owner refuses.
+    await editor._dispatch(Key.ENTER, "")
 
     assert "".join(state.input.buf()) == "/status"
     assert history == []

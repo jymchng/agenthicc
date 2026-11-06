@@ -8,6 +8,7 @@ elsewhere it deletes one character at a time while keeping the paste condensed.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from agenthicc.tui.input.buffer import InputBuffer
@@ -79,6 +80,46 @@ class PasteState:
     def expand(self) -> None:
         """Ctrl+V — show full paste content."""
         self.condensed = False
+
+    def memento(self) -> Callable[[], None]:
+        """Capture the condensed range for an undo group; return its restore."""
+        condensed, label, start, end = self.condensed, self.label, self.start, self.end
+        uses_lines = self._label_uses_lines
+
+        def restore() -> None:
+            self.condensed, self.label, self.start, self.end = condensed, label, start, end
+            self._label_uses_lines = uses_lines
+
+        return restore
+
+    def note_deleted(self, start: int, end: int) -> None:
+        """Keep the condensed range in place after ``buf[start:end]`` was deleted.
+
+        Text deleted entirely before the paste shifts it left; text after it
+        leaves it alone. A deletion that reaches into the hidden range shows
+        what is left of the paste as ordinary text.
+        """
+        if not self.condensed or start >= end:
+            return
+        if end <= self.start:
+            self.start -= end - start
+            self.end -= end - start
+        elif start >= self.end:
+            return
+        else:
+            self.condensed = False
+            self.label = ""
+
+    def note_inserted(self, start: int, end: int) -> None:
+        """Keep the condensed range in place after text was inserted at *start*."""
+        if not self.condensed:
+            return
+        amount = end - start
+        if start <= self.start:
+            self.start += amount
+            self.end += amount
+        elif start < self.end:
+            self.end += amount
 
     def delete_condensed(self, buf: InputBuffer) -> None:
         """Delete the hidden paste block while it is still condensed."""

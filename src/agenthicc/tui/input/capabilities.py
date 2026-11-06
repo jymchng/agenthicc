@@ -63,7 +63,10 @@ class Capability(Protocol):
 class OverlayCapability:
     """Routes keystrokes to the active overlay.  Always first in any mode.
 
-    When an overlay is active it consumes every key — nothing else runs.
+    An overlay consumes every key — except the ``/``/``@`` picker, which
+    claims only navigation and choice (TUX-04 §2.2): every other key passes on
+    to the editing capabilities and the picker follows the edited prompt.
+    The Ctrl+R search shows a match without touching the prompt.
     """
 
     async def handle(
@@ -72,10 +75,20 @@ class OverlayCapability:
         ch: str,
         session: UnifiedInputSession,
     ) -> CapabilityResult:
-        if session._overlay and session._overlay.active:
-            session._overlay.handle_key(key, ch)
+        host = session._overlay
+        if host is None or not host.active:
+            return _PASS
+        from agenthicc.tui.input.history_search import HistorySearchOverlay
+        from agenthicc.tui.workspace.overlays.trigger_picker import TriggerPickerOverlay
+
+        widget = host.widget
+        if isinstance(widget, TriggerPickerOverlay):
+            return _CONSUMED if await session._picker_key(widget, key, ch) else _PASS
+        if isinstance(widget, HistorySearchOverlay):
+            session._search_key(widget, key, ch)
             return _CONSUMED
-        return _PASS
+        host.handle_key(key, ch)
+        return _CONSUMED
 
 
 # ── Condensed-paste escape ───────────────────────────────────────────────────
@@ -132,7 +145,7 @@ class CtrlCCapability:
 
 
 class CtrlDCapability:
-    """Ctrl+D — submit non-empty buffer or exit."""
+    """Ctrl+D on an empty prompt exits (on a non-empty one it deletes forward)."""
 
     async def handle(
         self,
@@ -140,12 +153,8 @@ class CtrlDCapability:
         ch: str,
         session: UnifiedInputSession,
     ) -> CapabilityResult:
-        if session._action != "composer.eof":
+        if session._action != "composer.eof" or session._buf.text:
             return _PASS
-        text = session._buf.text
-        if text:
-            await session._submit(text)
-            return _CONSUMED
         return _EXIT
 
 
@@ -184,16 +193,16 @@ class InterruptCapability:
 class TriggerCapability:
     """Handles all registered trigger chars (@, /, #, !) via TriggerManager.resolve().
 
-    Uses resolve() which normalises Key.AT → "@" in one place.  This capability
-    works identically in IDLE and STREAMING — fixing the bug where @ was silently
-    dropped in streaming because Key.AT never matched `case Key.CHAR if ch:`.
+    The trigger character is typed into the prompt like any other; when it
+    can start a trigger there, the picker opens on it (TUX-04 §2.2). Uses
+    resolve(), which normalises Key.AT → "@" in one place, so this works
+    identically in IDLE and STREAMING.
 
-    The picker currently models a trigger as the suffix of the buffer and is
-    therefore only opened while the insertion cursor is at the end.  A trigger
-    typed while editing an earlier position is ordinary text: opening a picker
-    there would lose the character because the overlay cannot represent the
-    untouched suffix correctly.  This also makes Home/Left followed by ``/``
-    behave like every other literal character.
+    The picker opens only while the cursor is at the end of the prompt: a
+    trigger typed while editing an earlier position is ordinary text (Home
+    then ``/`` must not turn the rest of the line into a command). With a
+    picker already open, a trigger character is fragment text (``@@user``,
+    ``@src/``).
     """
 
     async def handle(
@@ -208,13 +217,14 @@ class TriggerCapability:
         tch = registry.resolve(key, ch)
         if tch is None:
             return _PASS
-        handler = registry.get(tch)
-        can = handler.can_activate(session._buf.buf[: session._buf.cursor]) if handler else False
-        if can and session._buf.cursor == len(session._buf):
-            await session._open_trigger_overlay(tch)
-        else:
-            session._paste.insert(session._buf, tch)
-            session._push()
+        buffer = session._buf
+        session._paste.insert(buffer, tch)
+        session._push()
+        if session._picker is None and buffer.cursor == len(buffer):
+            anchor = buffer.cursor - 1
+            handler = registry.get(tch)
+            if handler is not None and handler.can_activate(buffer.buf[:anchor]):
+                session._open_picker(anchor)
         return _CONSUMED
 
 
@@ -251,7 +261,8 @@ class SubmitCapability:
     """Handles Enter.
 
     commit_history=True  → idle mode: commit to HistoryNavigator before sending.
-    commit_history=False → streaming mode: dispatch without history commit.
+    commit_history=False → streaming mode: dispatch without history commit
+    (the message is queued for after the turn).
     """
 
     def __init__(self, commit_history: bool = False) -> None:
@@ -265,46 +276,12 @@ class SubmitCapability:
     ) -> CapabilityResult:
         if session._action != "composer.submit":
             return _PASS
-        from agenthicc.tui.runtime.commands import SendMessageCommand
-
-        raw_text = session._buf.text
-        has_text = bool(raw_text.strip())
-        text = raw_text if session._preserve_submission_text else raw_text.strip()
-        try:
-            clear_after_acceptance = object.__getattribute__(session, "_clear_after_acceptance")
-        except AttributeError:
-            clear_after_acceptance = False
-        if clear_after_acceptance and has_text:
-            result = await session._bus.dispatch_async(SendMessageCommand(text=text))
-            try:
-                accepted = object.__getattribute__(result, "ok")
-            except AttributeError:
-                accepted = True
-            if accepted is False:
-                return _CONSUMED
-            session._buf.clear()
-            session._paste.condensed = False
-            session._ctrl_c_count = 0
-            session._push()
-            if self._commit_history:
-                session._hist.commit(text)
-            return _CONSUMED
-        session._buf.clear()
-        session._paste.condensed = False
-        session._ctrl_c_count = 0
-        session._push()
-        if has_text:
-            if self._commit_history:
-                session._hist.commit(text)
-            await session._bus.dispatch_async(SendMessageCommand(text=text))
+        await session._submit_buffer(commit_history=self._commit_history)
         return _CONSUMED
 
 
-# ── Newline ───────────────────────────────────────────────────────────────────
-
-
-class NewlineCapability:
-    """Ctrl+Enter / Ctrl+J — inserts a literal newline for multi-line input."""
+class InterjectCapability:
+    """Ctrl+Enter / Alt+Enter during a turn: deliver at its next tool boundary (TUX-04 §2.6)."""
 
     async def handle(
         self,
@@ -312,7 +289,25 @@ class NewlineCapability:
         ch: str,
         session: UnifiedInputSession,
     ) -> CapabilityResult:
-        if session._action != "composer.newline":
+        if session._action != "composer.interject":
+            return _PASS
+        await session._submit_buffer(commit_history=False, interject=True)
+        return _CONSUMED
+
+
+# ── Newline ───────────────────────────────────────────────────────────────────
+
+
+class NewlineCapability:
+    """Shift+Enter / Ctrl+J (and Ctrl+Enter / Alt+Enter while idle) — a line break."""
+
+    async def handle(
+        self,
+        key: Key,
+        ch: str,
+        session: UnifiedInputSession,
+    ) -> CapabilityResult:
+        if session._action not in ("composer.newline", "composer.newline_alt"):
             return _PASS
         session._paste.insert(session._buf, "\n")
         session._push()
@@ -325,9 +320,9 @@ class NewlineCapability:
 class BackspaceCapability:
     """Backspace — deletes the character before the cursor.
 
-    When the cursor is at the end of the buffer and the last token is a
-    committed trigger token (e.g. @docs/index.md), re-enters the trigger
-    overlay so the user can refine the selection.
+    When the cursor is at the end of the buffer and the deletion leaves it
+    after a committed trigger token (e.g. ``@docs/index.m``), the picker opens
+    again so the user can refine the selection.
     """
 
     async def handle(
@@ -338,38 +333,36 @@ class BackspaceCapability:
     ) -> CapabilityResult:
         if session._action != "composer.delete_back":
             return _PASS
+        buffer = session._buf
         if session._paste.condensed:
-            if session._buf.cursor == session._paste.end:
+            if buffer.cursor == session._paste.end:
                 # The rendered cursor is immediately after the paste's ``]``.
                 # Treat that boundary as an intentional whole-paste delete;
                 # suffix text to the right remains intact.
-                session._paste.delete_condensed(session._buf)
+                session._paste.delete_condensed(buffer)
             else:
-                session._paste.backspace(session._buf)
-        elif session._buf.cursor == len(session._buf):
-            tail = session._find_trigger_tail()
-            if tail:
-                tch, tpre, tfrag = tail
-                handler = session._registry.get(tch) if session._registry else None
-                if handler:
-                    session._buf.set(tpre)
-                    await session._open_trigger_overlay_with_initial(
-                        list(tpre) + [tch] + list(tfrag)
-                    )
-                    return _CONSUMED
-            session._buf.delete_before()
+                session._paste.backspace(buffer)
         else:
-            session._buf.delete_before()
+            buffer.delete_before()
+            if session._picker is None and buffer.cursor == len(buffer):
+                anchor = session._find_trigger_anchor()
+                if anchor is not None:
+                    session._open_picker(anchor)
         _note_emptied(session)
         session._push()
         return _CONSUMED
 
 
-# ── Clear ─────────────────────────────────────────────────────────────────────
+# ── Readline editing (TUX-04 §2.1) ────────────────────────────────────────────
 
 
-class ClearCapability:
-    """Ctrl+U — clears the entire buffer."""
+class EditingCapability:
+    """Kills, yank, delete forward, undo and redo (TUX-04 §2.1).
+
+    Kills go into the buffer's kill ring; a condensed paste keeps its place
+    when text before it is deleted and shows in full when a deletion reaches
+    into it.
+    """
 
     async def handle(
         self,
@@ -377,12 +370,100 @@ class ClearCapability:
         ch: str,
         session: UnifiedInputSession,
     ) -> CapabilityResult:
-        if session._action != "composer.clear":
-            return _PASS
-        session._buf.clear()
-        session._paste.condensed = False
+        buffer = session._buf
+        paste = session._paste
+        removed: tuple[int, int] | None = None
+        match session._action:
+            case "composer.clear":
+                removed = buffer.kill_to_start()
+                if not buffer.text:
+                    paste.condensed = False
+            case "composer.kill_to_end":
+                removed = buffer.kill_to_end()
+            case "composer.delete_word_back":
+                removed = buffer.delete_word_before()
+            case "composer.delete_word_forward":
+                removed = buffer.delete_word_after()
+            case "composer.delete_forward":
+                cursor = buffer.cursor
+                if paste.condensed and cursor == paste.start and paste.end > paste.start:
+                    paste.delete_condensed(buffer)
+                elif buffer.delete_after():
+                    removed = (cursor, cursor + 1)
+            case "composer.yank":
+                inserted = buffer.yank()
+                if inserted is not None:
+                    paste.note_inserted(*inserted)
+            case "composer.undo":
+                buffer.undo()
+            case "composer.redo":
+                buffer.redo()
+            case _:
+                return _PASS
+        if removed is not None:
+            paste.note_deleted(*removed)
         _note_emptied(session)
         session._push()
+        return _CONSUMED
+
+
+class HistorySearchCapability:
+    """Ctrl+R — reverse incremental history search (TUX-04 §2.3)."""
+
+    async def handle(
+        self,
+        key: Key,
+        ch: str,
+        session: UnifiedInputSession,
+    ) -> CapabilityResult:
+        if session._action != "composer.history_search":
+            return _PASS
+        session._open_history_search()
+        return _CONSUMED
+
+
+class ExternalEditorCapability:
+    """Ctrl+X Ctrl+E (or Ctrl+X alone) — edit the prompt in $EDITOR (TUX-04 §2.4)."""
+
+    async def handle(
+        self,
+        key: Key,
+        ch: str,
+        session: UnifiedInputSession,
+    ) -> CapabilityResult:
+        if session._action != "composer.external_editor":
+            return _PASS
+        session._start_chord()
+        return _CONSUMED
+
+
+class RedrawCapability:
+    """Ctrl+L — redraw the live region."""
+
+    async def handle(
+        self,
+        key: Key,
+        ch: str,
+        session: UnifiedInputSession,
+    ) -> CapabilityResult:
+        if session._action != "composer.redraw":
+            return _PASS
+        session.terminal_hooks.repaint()
+        return _CONSUMED
+
+
+class QueueFocusCapability:
+    """↑ on an empty prompt during a turn — select a queued message (TUX-04 §2.6)."""
+
+    async def handle(
+        self,
+        key: Key,
+        ch: str,
+        session: UnifiedInputSession,
+    ) -> CapabilityResult:
+        if session._action != "composer.queue_focus":
+            return _PASS
+        session._focus_queue()
         return _CONSUMED
 
 
@@ -407,10 +488,23 @@ class CursorCapability:
                 session._paste.move_home(session._buf)
             case "composer.end":
                 session._paste.move_end(session._buf)
+            case "composer.word_left":
+                session._buf.word_left()
+                _out_of_paste(session, forward=False)
+            case "composer.word_right":
+                session._buf.word_right()
+                _out_of_paste(session, forward=True)
             case _:
                 return _PASS
         session._push()
         return _CONSUMED
+
+
+def _out_of_paste(session: UnifiedInputSession, *, forward: bool) -> None:
+    """Keep a word move out of a condensed paste's hidden text."""
+    paste = session._paste
+    if paste.condensed and paste.start < session._buf.cursor < paste.end:
+        session._buf.cursor = paste.end if forward else paste.start
 
 
 # ── History ───────────────────────────────────────────────────────────────────
@@ -608,8 +702,8 @@ class MouseCapability:
 class InsertCapability:
     """Fallback — inserts regular Key.CHAR characters.  Must always be LAST.
 
-    Also handles re-entering a trigger overlay when the user types into an
-    existing committed trigger token (e.g. continuing to type after @docs).
+    Typing at the end of a committed trigger token (continuing after
+    ``@docs``) opens its picker again.
     """
 
     async def handle(
@@ -622,20 +716,13 @@ class InsertCapability:
             # A character the user bound to an action is not typed; the fixed
             # trigger characters ("/", "@") still are.
             return _PASS
-        # Re-enter trigger overlay when typing into an existing trigger token.
-        if not ch.isspace() and session._buf.cursor == len(session._buf):
-            tail = session._find_trigger_tail()
-            if tail:
-                tch, tpre, tfrag = tail
-                handler = session._registry.get(tch) if session._registry else None
-                if handler:
-                    session._buf.set(tpre)
-                    await session._open_trigger_overlay_with_initial(
-                        list(tpre) + [tch] + list(tfrag) + [ch]
-                    )
-                    return _CONSUMED
-        session._paste.insert(session._buf, ch)
+        buffer = session._buf
+        session._paste.insert(buffer, ch)
         session._push()
+        if session._picker is None and not ch.isspace() and buffer.cursor == len(buffer):
+            anchor = session._find_trigger_anchor()
+            if anchor is not None:
+                session._open_picker(anchor)
         return _CONSUMED
 
 
@@ -652,9 +739,12 @@ IDLE_CAPABILITIES: list[Capability] = [
     SubmitCapability(commit_history=True),
     NewlineCapability(),
     BackspaceCapability(),
-    ClearCapability(),
+    EditingCapability(),
     CursorCapability(),
     HistoryCapability(),
+    HistorySearchCapability(),
+    ExternalEditorCapability(),
+    RedrawCapability(),
     ModeCycleCapability(),
     AgentsHubCapability(),
     SubagentsCapability(),
@@ -663,7 +753,7 @@ IDLE_CAPABILITIES: list[Capability] = [
     InsertCapability(),  # fallback — must be last
 ]
 
-#: Reduced set: queue messages, interrupt agent, paste, editing, cursor movement.
+#: During a turn: queue or interject messages, interrupt, and the same editing.
 STREAMING_CAPABILITIES: list[Capability] = [
     OverlayCapability(),
     CondensedPasteEscapeCapability(),
@@ -671,10 +761,15 @@ STREAMING_CAPABILITIES: list[Capability] = [
     PasteCapability(),
     TriggerCapability(),  # @, / etc. — same as idle
     SubmitCapability(commit_history=False),
+    InterjectCapability(),
     NewlineCapability(),
     BackspaceCapability(),
-    ClearCapability(),
+    EditingCapability(),
     CursorCapability(),  # Cursor movement remains available while queued input is edited.
+    QueueFocusCapability(),
+    HistorySearchCapability(),
+    ExternalEditorCapability(),
+    RedrawCapability(),
     ModeCycleCapability(),  # Shift+Tab — mode switch takes effect on next tool call
     AgentsHubCapability(),  # the hub opens over a running turn too
     SubagentsCapability(),  # workers run while their turn does

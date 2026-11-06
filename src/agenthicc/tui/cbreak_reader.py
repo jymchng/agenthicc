@@ -24,6 +24,7 @@ import os
 import select
 from contextlib import contextmanager
 from enum import Enum
+from collections.abc import Mapping
 from typing import Generator
 
 
@@ -38,7 +39,8 @@ class Key(str, Enum):
     HOME = "HOME"
     END = "END"
     ENTER = "ENTER"
-    CTRL_ENTER = "CTRL_ENTER"  # insert newline (multi-line input)
+    CTRL_ENTER = "CTRL_ENTER"  # Ctrl+J (0x0A): insert newline (multi-line input)
+    SHIFT_ENTER = "SHIFT_ENTER"  # CSI 13;2u (kitty keyboard protocol / CSI-u)
     CTRL_V = "CTRL_V"  # expand condensed paste
     PASTE = "PASTE"  # bracketed paste event; ch carries pasted text
     TAB = "TAB"
@@ -299,9 +301,8 @@ def decode_csi(sequence: bytes) -> tuple[Key, str]:
         return (Key.FOCUS_OUT, "")
     if final == b"Z" and not body:
         return (Key.SHIFT_TAB, "")
-    if sequence in (b"13;5u", b"13;1u", b"13u"):
-        # Kitty keypad Ctrl+Enter in disambiguate mode submits like Enter.
-        return (Key.ENTER, "")
+    if final == b"u":
+        return decode_csi_u(body)
     fields = body.split(b";") if body else []
     if not all(field.isdigit() for field in fields):
         return (Key.UNKNOWN, "")
@@ -318,6 +319,65 @@ def decode_csi(sequence: bytes) -> tuple[Key, str]:
         if tilde is not None:
             return _named(tilde[0], tilde[1], modifier)
     return (Key.UNKNOWN, "")
+
+
+# CSI-u codepoints of keys that are not text (kitty keyboard protocol).
+_CSI_U_KEYS: dict[int, tuple[Key, str]] = {
+    9: (Key.TAB, "tab"),
+    13: (Key.ENTER, "enter"),
+    27: (Key.ESC, "escape"),
+    127: (Key.BACKSPACE, "backspace"),
+    8: (Key.BACKSPACE, "backspace"),
+    57414: (Key.ENTER, "enter"),  # keypad Enter
+}
+# Modifier bits of the CSI-u parameter that do not change the key (Caps/Num Lock).
+_LOCK_BITS = 64 | 128
+
+
+def decode_csi_u(body: bytes) -> tuple[Key, str]:
+    """Decode a CSI-u key (``CSI code ; modifiers u``), as kitty's protocol sends it.
+
+    With ``CSI > 1 u`` (disambiguate) enabled, kitty, foot, WezTerm and
+    Ghostty send Esc and every modified key this way. Each decodes to the key
+    a legacy terminal would report for it, so bindings do not depend on the
+    protocol: Ctrl+A is ``Key.CTRL_A``, Alt+B is ``Key.ALT`` ``"b"``, and only
+    keys a legacy terminal cannot send get new names (Shift+Enter is
+    ``Key.SHIFT_ENTER``; Ctrl+Enter is ``"ctrl+enter"``).
+    """
+    fields = body.split(b";")
+    try:
+        code = int(fields[0].split(b":")[0]) if fields[0] else 0
+        modifier = int(fields[1].split(b":")[0]) if len(fields) > 1 and fields[1] else 1
+    except ValueError:
+        return (Key.UNKNOWN, "")
+    bits = max(0, modifier - 1) & ~_LOCK_BITS
+    shift, alt, ctrl = bool(bits & 1), bool(bits & 2), bool(bits & 4)
+    special = _CSI_U_KEYS.get(code)
+    if special is not None:
+        key, name = special
+        if not bits:
+            return (key, "")
+        if bits == 1 and key is Key.ENTER:
+            return (Key.SHIFT_ENTER, "")
+        if bits == 1 and key is Key.TAB:
+            return (Key.SHIFT_TAB, "")
+        return (Key.MODIFIED, _modifiers(bits + 1) + name)
+    if code < 0x20 or code > 0x10FFFF or 0xE000 <= code <= 0xF8FF or code >= 0xF0000:
+        return (Key.UNKNOWN, "")  # functional keys in the private-use area
+    ch = chr(code)
+    if not ch.isprintable():
+        return (Key.UNKNOWN, "")
+    if ctrl and not alt and not shift and ch.isalpha() and ch.isascii():
+        return decode_control(ord(ch.lower()) & 0x1F)
+    if ch == " " and ctrl and not alt and not shift:
+        return (Key.MODIFIED, "ctrl+space")
+    if bits & ~1 == 0:  # unmodified, or Shift only: plain text
+        text = ch.upper() if shift else ch
+        return (Key.AT, "") if text == "@" else (Key.CHAR, text)
+    if alt and not ctrl:
+        return (Key.ALT, ch.upper() if shift else ch)
+    name = "space" if ch == " " else ch.lower() if ch.isalpha() else ch
+    return (Key.MODIFIED, _modifiers(bits + 1) + name)
 
 
 def decode_ss3(final: bytes) -> tuple[Key, str]:
@@ -351,6 +411,7 @@ _KEY_NAMES: dict[Key, str] = {
     Key.END: "end",
     Key.ENTER: "enter",
     Key.CTRL_ENTER: "ctrl+j",
+    Key.SHIFT_ENTER: "shift+enter",
     Key.TAB: "tab",
     Key.SHIFT_TAB: "shift+tab",
     Key.ESC: "escape",
@@ -432,6 +493,33 @@ FOCUS_REPORTING_ON = "\x1b[?1004h"
 FOCUS_REPORTING_OFF = "\x1b[?1004l"
 MOUSE_REPORTING_ON = "\x1b[?1000h\x1b[?1006h"
 MOUSE_REPORTING_OFF = "\x1b[?1006l\x1b[?1000l"
+
+
+#: Kitty keyboard protocol, "disambiguate escape codes" (flag 1): Shift+Enter,
+#: Ctrl+Enter and friends become distinct keys. Pushed on entering raw mode and
+#: popped on leaving it, so the terminal's previous mode is restored (TUX-04).
+KITTY_KEYBOARD_PUSH = "\x1b[>1u"
+KITTY_KEYBOARD_POP = "\x1b[<u"
+
+#: ``TERM`` values of terminals that implement the kitty keyboard protocol.
+_KITTY_TERMS = frozenset({"xterm-kitty", "xterm-ghostty", "foot", "foot-extra", "wezterm"})
+#: ``TERM_PROGRAM`` values of those terminals.
+_KITTY_PROGRAMS = frozenset({"WezTerm", "ghostty", "kitty"})
+
+
+def kitty_keyboard_supported(env: Mapping[str, str]) -> bool:
+    """Whether the terminal described by *env* speaks the kitty keyboard protocol.
+
+    A multiplexer (``TMUX``, ``STY``) sits between us and the terminal and
+    would not pass the mode through, so it rules the protocol out.
+    """
+    if env.get("TMUX") or env.get("STY"):
+        return False
+    return (
+        env.get("TERM", "") in _KITTY_TERMS
+        or env.get("TERM_PROGRAM", "") in _KITTY_PROGRAMS
+        or bool(env.get("KITTY_WINDOW_ID"))
+    )
 
 
 def set_reporting(*, focus: bool | None = None, mouse: bool | None = None) -> None:

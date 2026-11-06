@@ -137,6 +137,8 @@ def _workspace() -> Workspace:
     state.conversation.workflow_override.return_value = None
     state.conversation.subagent_pool_state.return_value = None
     state.conversation.live_tool_overflow.return_value = 0
+    state.conversation.queue.items.return_value = ()  # nothing queued (TUX-04)
+    state.conversation.queue.focus.return_value = None
     state.workflow_run.return_value = None
     ws = Workspace(state, console)
     ws.overlays._overlay = None  # no active overlay
