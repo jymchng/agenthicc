@@ -1,0 +1,8 @@
+── compact ──
+❯ Fix the failing tests in @src/app.py please
+
+── normal ──
+❯ Fix the failing tests in @src/app.py please
+
+── verbose ──
+❯ Fix the failing tests in @src/app.py please

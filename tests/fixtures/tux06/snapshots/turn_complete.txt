@@ -1,0 +1,8 @@
+── compact ──
+✾ Turn · 53s
+
+── normal ──
+✾ Turn · 53s
+
+── verbose ──
+✾ Turn · 53s

@@ -2521,16 +2521,7 @@ class TUISession:
             if injected:
                 ctx.app_state.conversation.append_event(
                     "mention_chips",
-                    {
-                        "chips": [
-                            {
-                                "raw": item.mention.raw,
-                                "kind": item.mention.kind.value,
-                                "ok": vars(item).get("ok", True),
-                            }
-                            for item in injected
-                        ]
-                    },
+                    {"chips": [item.chip() for item in injected]},
                 )
             return prefix + text if prefix else text
 

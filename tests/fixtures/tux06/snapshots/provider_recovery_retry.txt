@@ -1,0 +1,13 @@
+── compact ──
+⚠ Provider request rejected retry 1/3 in 2.0s
+  HTTP 400
+
+
+── normal ──
+⚠ Provider request rejected retry 1/3 in 2.0s
+  HTTP 400
+
+
+── verbose ──
+⚠ Provider request rejected retry 1/3 in 2.0s
+  HTTP 400

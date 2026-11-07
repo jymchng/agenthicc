@@ -1704,6 +1704,7 @@ class BehaviourSettings:
 _MOUSE_MODES = ("auto", "on", "off")
 _GLYPH_MODES = ("auto", "unicode", "ascii")
 _COMPOSER_FRAMES = ("box", "rules")
+_TOOL_DETAIL_LEVELS = ("compact", "normal", "verbose")
 
 
 @dataclass(frozen=True)
@@ -1736,6 +1737,11 @@ class UISettings:
     segments (TUX-02). It receives the session state as JSON on stdin, runs at
     most once a second with a 500 ms timeout, and is ignored in an untrusted
     project configuration."""
+    tool_detail: str = "compact"
+    """How much of each tool call the transcript shows (TUX-06): ``compact``
+    (one row; failures show their last lines), ``normal`` (plus a four-line
+    preview of reads and commands) or ``verbose`` (the whole bounded output).
+    ``/details`` changes it for the session."""
 
     def __post_init__(self) -> None:
         if self.mouse not in _MOUSE_MODES:
@@ -1746,6 +1752,8 @@ class UISettings:
             raise ValueError(f"ui.glyphs must be one of: {', '.join(_GLYPH_MODES)}")
         if not self.theme.strip():
             raise ValueError("ui.theme must not be empty")
+        if self.tool_detail not in _TOOL_DETAIL_LEVELS:
+            raise ValueError(f"ui.tool_detail must be one of: {', '.join(_TOOL_DETAIL_LEVELS)}")
 
     @property
     def animated(self) -> bool:
@@ -2795,6 +2803,7 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
         glyphs=_as_str(ui_data.get("glyphs"), "auto").strip().lower(),
         composer_frame=_as_str(ui_data.get("composer_frame"), "rules").strip().lower(),
         statusline_command=_as_str(_section(ui_data.get("statusline")).get("command"), "").strip(),
+        tool_detail=_as_str(ui_data.get("tool_detail"), "compact").strip().lower(),
     )
 
     subagent_data = _section(data.get("subagents"))

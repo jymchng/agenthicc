@@ -42,8 +42,7 @@ from agenthicc.tui.input.capabilities import (
 from agenthicc.tui.input.history import HistoryNavigator
 from agenthicc.tui.input.paste import PasteState
 from agenthicc.tui.reactive import ReactiveProperty, _Observable
-from agenthicc.tui.runtime.replay import ConversationReplayer, load_for_replay
-from agenthicc.tui.runtime import replay as replay_module
+from agenthicc.tui.runtime.replay import ConversationReplayer
 from agenthicc.tui.runtime.session_log import SessionEventLog, register_session
 from agenthicc.tui.welcome import render_welcome
 
@@ -744,9 +743,6 @@ def test_session_log_and_replay_round_trip(tmp_path: Path, monkeypatch: pytest.M
         "agenthicc.tui.runtime.session_log._SESSION_INDEX", tmp_path / "sessions" / "index.json"
     )
     monkeypatch.setattr(
-        replay_module, "get_session_log_path", lambda _sid: root / "conversation.jsonl"
-    )
-    monkeypatch.setattr(
         "agenthicc.tui.runtime.session_log.get_session_log_path",
         lambda _sid: root / "conversation.jsonl",
     )
@@ -757,8 +753,10 @@ def test_session_log_and_replay_round_trip(tmp_path: Path, monkeypatch: pytest.M
     log.append(ConversationEvent("e1", "turn_start", {"turn_id": "t1"}, 1.0))
     log.append(ConversationEvent("e2", "text", {"text": "hello"}, 2.0))
     log.close()
-    pairs = load_for_replay(session_id)
-    assert pairs == [("turn_start", {"turn_id": "t1"}), ("text", {"text": "hello"})]
+    pairs = [
+        ("turn_start", {"turn_id": "t1", "agent": "default", "model": ""}, 1.0),
+        ("text", {"text": "hello"}, 2.0),
+    ]
 
     class Signal:
         def __init__(self) -> None:
@@ -770,10 +768,16 @@ def test_session_log_and_replay_round_trip(tmp_path: Path, monkeypatch: pytest.M
     class Store:
         def __init__(self) -> None:
             self.notification = Signal()
-            self.events: list[tuple[str, dict[str, object]]] = []
+            self.events: list[tuple[str, dict[str, object], float | None]] = []
 
-        def append_event(self, kind: str, payload: dict[str, object]) -> None:
-            self.events.append((kind, payload))
+        def append_event(
+            self,
+            kind: str,
+            payload: dict[str, object],
+            event_id: str | None = None,
+            timestamp: float | None = None,
+        ) -> None:
+            self.events.append((kind, payload, timestamp))
 
     async def run_replay() -> Store:
         store = Store()
@@ -781,9 +785,15 @@ def test_session_log_and_replay_round_trip(tmp_path: Path, monkeypatch: pytest.M
         return store
 
     store = asyncio.run(run_replay())
-    assert store.events == pairs
+    start, *replayed, end = store.events
+    assert replayed == pairs  # original timestamps, migrated payloads
+    assert start[:2] == ("replay_separator", {"edge": "start", "since": 1.0, "events": 2})
+    assert end[:2] == ("replay_separator", {"edge": "end"})
     assert "Replay complete" in str(store.notification.value)
-    monkeypatch.setattr(replay_module, "get_session_log_path", lambda _sid: tmp_path / "missing")
+    monkeypatch.setattr(
+        "agenthicc.tui.runtime.session_log.get_session_log_path",
+        lambda _sid: tmp_path / "missing",
+    )
     empty = Store()
     asyncio.run(ConversationReplayer("missing", empty, object()).run())
     assert "No conversation log" in str(empty.notification.value)
@@ -805,7 +815,7 @@ def test_scroll_buffer_appender_renders_event_families(capsys: pytest.CaptureFix
         ConversationEvent("1", "turn_start", {"agent_name": "assistant"}, 1),
         ConversationEvent("2", "user_message", {"text": "hello"}, 2),
         ConversationEvent(
-            "3", "tool_complete", {"name": "read_file", "args_str": "(x)", "output_lines": ["a"]}, 3
+            "3", "tool_complete", {"name": "read_file", "summary": "x", "output_lines": ["a"]}, 3
         ),
         ConversationEvent(
             "4",
@@ -860,5 +870,7 @@ def test_scroll_buffer_appender_renders_event_families(capsys: pytest.CaptureFix
     appender._flush_group_summary()
     appender.print_idle_header()
     appender.unmount()
-    assert "Completed" in console.export_text()
+    rendered = console.export_text()
+    assert "Read x" in rendered and "Completed" not in rendered
+    assert "! @dir could not be read" in rendered
     assert "ERROR" in capsys.readouterr().out

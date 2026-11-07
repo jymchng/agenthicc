@@ -1,0 +1,10 @@
+── compact ──
+MCP server github is unavailable.
+
+
+── normal ──
+MCP server github is unavailable.
+
+
+── verbose ──
+MCP server github is unavailable.

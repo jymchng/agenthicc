@@ -1,0 +1,10 @@
+── compact ──
+  ⎿ Phase control rejected delete build (active)
+
+
+── normal ──
+  ⎿ Phase control rejected delete build (active)
+
+
+── verbose ──
+  ⎿ Phase control rejected delete build (active)

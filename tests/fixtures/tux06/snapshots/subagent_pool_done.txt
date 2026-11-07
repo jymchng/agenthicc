@@ -1,0 +1,10 @@
+── compact ──
+◈ Subagents Failed · 1/2 done · 1 unsuccessful (failed or stopped)
+
+
+── normal ──
+◈ Subagents Failed · 1/2 done · 1 unsuccessful (failed or stopped)
+
+
+── verbose ──
+◈ Subagents Failed · 1/2 done · 1 unsuccessful (failed or stopped)

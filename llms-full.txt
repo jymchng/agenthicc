@@ -921,6 +921,65 @@ def is_exploratory_tool(tool: object) -> bool: ...
 grouping in the TUI. It is independent of `ToolCapability` and never changes
 permission, approval, workflow filtering, or tool execution semantics.
 
+### Tool summaries — `agenthicc.tui.tool_summary`
+
+```python
+class ToolFamily(StrEnum):  # COMMAND, READ, WRITE, SEARCH, LIST, GIT, MEMORY, WEB, MCP, OTHER
+@dataclass(frozen=True, slots=True)
+class ToolSummary:
+    target: str
+    detail: str = ""
+@dataclass(frozen=True, slots=True)
+class SummaryInput:
+    name: str
+    args: Mapping[str, object]
+    result: object           # None when the tool raised
+    root: Path               # workspace root for relative paths
+Summarizer = Callable[[SummaryInput], ToolSummary | str]
+@dataclass(frozen=True, slots=True)
+class ToolPresentation:
+    operation: str
+    family: ToolFamily = ToolFamily.OTHER
+    summarize: Summarizer | None = None
+@dataclass(frozen=True, slots=True)
+class OutputProjection:
+    lines: tuple[str, ...]   # lines[:head] first lines, lines[head:] last lines
+    head: int
+    total: int
+
+def register_tool_summary(name: str, *, operation: str, family: ToolFamily = ..., summarize: Summarizer | None = None) -> None: ...
+def summarized_by(summarize: Summarizer, *, operation: str = "", family: ToolFamily = ...) -> Callable[[F], F]: ...
+def tool_presentation(name: str, override: ToolPresentation | None = None) -> ToolPresentation: ...
+def summarize_call(name: str, args: Mapping[str, object], result: object, *, root: Path | None = None, presentation: ToolPresentation | None = None) -> ToolSummary: ...
+def bounded_args(args: Mapping[str, object]) -> dict[str, ArgValue]: ...   # <= 8 keys, values <= 512 chars, redacted
+def output_projection(result: object) -> OutputProjection: ...             # first 8 + last 32 lines
+def command_summary(command: str, cwd: str = "") -> ToolSummary: ...
+def test_summary(lines: Sequence[str]) -> str | None: ...
+def middle_truncate(text: str, limit: int, *, path: bool = False, ellipsis: str = "…") -> str: ...
+def relative_path(path: str, root: Path) -> str: ...
+```
+
+The transcript's projection of a tool call (TUX-06). Each built-in tool is
+registered with its operation word and family (`run_bash` → `$`, `read_file`
+→ `Read`, `patch_file` → `Edit`, `grep_files` → `Search`, `git_*` → `Git`,
+`memory_read` → `Read memory: "key"`, `fetch_page` → host and path); an MCP
+tool `mcp:server:tool` is `server · tool`; anything else is its title-cased
+name and its first string argument. A plugin tool stacks
+`@summarized_by(fn, operation="Jira")` above `@tool()` (stored under the
+lauren-ai metadata key `SUMMARY_KEY = "summarize"`,
+`presentation_from_metadata(tool)` reads it); a summarizer that raises falls
+back to the first string argument. `summarize_call` never raises.
+
+`tool_complete` payload (data, never markup): `tool_use_id`, `name`,
+`success`, `state`, `ready`, `summary`, `summary_detail`, `args`
+(`bounded_args`), `duration_ms`, `output_lines`, `output_head`,
+`output_total`, `exit_code`, `error_code`, plus optional `workspace_access`
+and `presentation`. The appender formats it with `agenthicc.tui.theme` tokens
+at render time. `tui.runtime.session_log.migrate_event_payload(kind, payload)`
+is the one-way loader migration for logs written before TUX-06 (Rich markup
+`args_str`/`dur_str` and `output_more` become the fields above; a
+`turn_start` `agent_name = "assistant (model)"` gains `agent` and `model`).
+
 ### bash_executable — `agenthicc.tools.exec.outcome`
 
 ```python
@@ -1806,11 +1865,32 @@ follows a resize or a frame in which more than half the rows changed. It repaint
 while it is live (the scroll buffer, or stdout/stderr), and brackets each write
 with synchronized-output mode 2026 when the terminal reported support.
 `frame_stats()` returns counts and render/write percentiles, shown by `/perf`.
-The default assistant turn header reads `Assistant Turn`; custom agent labels
-remain intact. Headers include the local timezone abbreviation and numeric UTC
-offset and have one blank row before the next block, except when `mention_chips`
-follows: resolved read rows stay directly beneath the heading, with one blank row
-after the mention group. Level-1 subagent rows align with tool headings while
+Transcript (TUX-06): a user message is a `user_bg` band with a hanging indent
+(more than 12 lines show four and `[+N more lines]`); `mention_chips` follow it
+directly, resolved ones on one row and an unresolved one as a `warning` chip
+with its `reason` (never a failed tool row). An assistant turn prints no header
+for the default agent on an unchanged model; a change of agent (`turn_start`
+`agent`) or `model`, or a gap of more than 30 minutes, prints
+`◆ agent · model · HH:MM` (local time, no zone; `/status` shows the zone). One
+blank row precedes each block; consecutive tool rows have none. Each
+`tool_complete` is one row (see `agenthicc.tui.tool_summary` below):
+success is quiet (duration only from 1 s), commands add one result row (a
+pytest/jest/vitest/cargo/go test summary or the last line), failures show the
+exit or error code, the last 8 output lines and `ctrl+t to expand`, and
+running/waiting states keep their words. `file_modified` prints
+`● Edit path  +A −D` and at most 20 diff rows (`render_file_diff(...,
+max_rows=)`). Exploratory groups print one `● Explored N files, M searches`
+row. `[ui] tool_detail` (`compact` | `normal` | `verbose`) adds a four-line
+preview of reads and commands (`normal`) or the whole bounded output
+(`verbose`); `/details [level]` cycles or sets it for the session
+(`appender.set_session_tool_detail`, `session_tool_detail`,
+`TOOL_DETAIL_LEVELS`) and never re-renders printed rows. Replay draws every
+event with its stored timestamp (`ConversationStore.append_event(...,
+timestamp=)`) between `── replayed from 2 Nov 05:04 · N events ──` and
+`── now ──` separators: `ScrollBufferAppender.replay_boundary(since=, events=)`
+on resume, and `replay_separator` events from `/replay`'s
+`ConversationReplayer`, which loads through `SessionEventLog.load(...,
+rendered=False)`. Level-1 subagent rows align with tool headings while
 worker previews are indented children; completed `⎋ Compacted` notices are also
 indented. A pool that does not fully succeed is labeled `Subagents Failed`; its
 completion row is followed by one blank row before subsequent scrollback. The
@@ -2068,7 +2148,8 @@ problems returned in `KeymapLoad.errors`. A file binding a key that a
 `agenthicc.tui.actions`; `tui.keymap_service.KeymapService` keeps
 `AppState.keymap` current as the file changes, and `/keybindings` shows the
 effective bindings. `AppState.ui` holds `config.UISettings` (`[ui]`:
-`mouse`, `screen_reader`, `reduced_motion`, `theme`, `glyphs`).
+`mouse`, `screen_reader`, `reduced_motion`, `theme`, `glyphs`,
+`tool_detail`).
 
 Themes (TUX-01): `agenthicc.tui.theme` owns every colour and chrome glyph.
 - **Types.** `Palette` is a frozen set of semantic tokens (`TOKENS`: `text`,

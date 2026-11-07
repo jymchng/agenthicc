@@ -1,0 +1,31 @@
+── compact ──
+● $ uv run pytest -q  in agenthicc/                                         2.4s
+  └ 3 passed
+✗ $ uv run pytest -q  in agenthicc/                                exit 1 · 2.4s
+  │ FAIL src/App.test.tsx
+  │   Unable to find the text
+  └ ctrl+t to expand
+
+── normal ──
+● $ uv run pytest -q  in agenthicc/                                         2.4s
+  │ collected 3 items
+  │
+  │ ...
+  │ 3 passed in 0.10s
+  └ 3 passed
+✗ $ uv run pytest -q  in agenthicc/                                exit 1 · 2.4s
+  │ FAIL src/App.test.tsx
+  │   Unable to find the text
+  └ ctrl+t to expand
+
+── verbose ──
+● $ uv run pytest -q  in agenthicc/                                         2.4s
+  │ collected 3 items
+  │
+  │ ...
+  │ 3 passed in 0.10s
+  └ 3 passed
+✗ $ uv run pytest -q  in agenthicc/                                exit 1 · 2.4s
+  │ FAIL src/App.test.tsx
+  │   Unable to find the text
+  └ ctrl+t to expand

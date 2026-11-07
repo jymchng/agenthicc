@@ -713,7 +713,9 @@ class ConversationStore:
         kind: str,
         payload: dict[str, object],
         event_id: str | None = None,
+        timestamp: float | None = None,
     ) -> ConversationEvent:
+        """Record one event; *timestamp* keeps a replayed event's original time."""
         if event_id:
             existing = self._events_by_id.get(event_id)
             if existing is not None:
@@ -723,6 +725,8 @@ class ConversationStore:
             kind=kind,
             payload=payload,
         )
+        if timestamp is not None:
+            ev.timestamp = timestamp
         if self._current_turn is not None:
             self._current_turn.events.append(ev)
         self._events_by_id[ev.event_id] = ev

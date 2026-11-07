@@ -1,6 +1,6 @@
 ---
 title: "TUX-06: Transcript density and tool rows"
-status: Proposed
+status: Implemented
 version: 1.0.0
 date: 2026-11-05
 scope: "how the scrollback shows turns, user messages, tool calls, commands, output, memory reads and missing mentions: one-line tool rows, human-readable commands, quiet success, structured (markup-free) tool payloads, a detail toggle, compact headers and faithful replay timestamps"
@@ -10,6 +10,85 @@ tags: [tui, transcript, scrollback, tools, density]
 ---
 
 # TUX-06: Transcript density and tool rows
+
+## Implementation status
+
+Implemented on branch `tux-tux06`. Every acceptance criterion in §4 has a test:
+
+| § 4 | Criterion | Test |
+|---|---|---|
+| 1 | Density | `tests/unit/test_tux06_tool_rows.py::test_the_agt_tools_replay_prints_at_most_forty_percent_of_the_old_rows`. The pre-change renderer printed 86 rows for `tests/fixtures/tux06/agt_tools_session.jsonl` at 120 columns; TUX-06 prints 27 (31 %). |
+| 2 | No markup in events | `tests/e2e/test_tux06_transcript_e2e.py::test_a_new_session_writes_tool_events_without_markup` (a scripted `MockTransport` turn, the JSONL scanned for style tags and the exact field set) |
+| 3 | Commands | `test_tux06_tool_rows.py::test_a_cd_chain_shows_its_last_command_and_the_directory`, `tests/unit/test_tool_summary.py` |
+| 4 | Failure | `test_tux06_tool_rows.py::test_a_failed_command_shows_its_last_eight_lines_exit_code_and_hint` |
+| 5 | Memory reads | `test_tux06_tool_rows.py::test_a_memory_read_is_one_human_row_without_json` |
+| 6 | Replay times | `test_tux06_transcript_e2e.py::test_replay_keeps_the_original_times_inside_separators` (the 2026-01-01 fixture; every replayed event keeps its stored timestamp and no row shows the current time), `tests/unit/test_resume_transcript.py` (resume brackets) |
+| 7 | Missing mention | `test_tux06_tool_rows.py::test_a_missing_mention_is_a_warning_chip_not_a_failed_tool`, `test_tux06_transcript_e2e.py::test_a_missing_mention_is_recorded_as_an_unresolved_chip` |
+| 8 | Detail levels | `test_tux06_tool_rows.py::test_details_cycles_the_level_and_only_the_next_call_changes` |
+| 9 | Coverage | `tests/unit/test_renderer_coverage.py`: every registered kind has a case and a snapshot in `compact`, `normal` and `verbose` (`tests/fixtures/tux06/snapshots/`, 80 columns) |
+
+Where the code lives:
+
+- **`tui/tool_summary.py`** (new, pure): the per-tool operation, family and
+  summarizer registry (`register_tool_summary`, `summarized_by` for plugins),
+  `summarize_call`, `bounded_args`, `output_projection`, `test_summary`,
+  `middle_truncate`. It replaces the appender's `_TOOL_OP`/`_TOOL_DISPLAY_OP`
+  maps and `agent_turn.py`'s `_fmt_args` and exploration-target helpers, which
+  are deleted.
+- **`runners/agent_turn.py`** writes the structured `tool_complete` payload and
+  `turn_start`'s `agent` and `model`.
+- **`tui/workspace/appender.py`** renders tool rows, headers, the user band,
+  chips, the `Explored` row and the replay separators; `[ui] tool_detail`
+  (`config.py`) and `/details` (`commands/builtins.py`) set the level.
+- **`tui/runtime/session_log.py`** `migrate_event_payload` is the one-way
+  loader migration; `agents_hub/detail.py` reads `summary` through it instead
+  of stripping markup.
+- **`tui/runtime/replay.py`** and `tui/workspace/workspace.py` keep stored
+  timestamps (`ConversationStore.append_event(..., timestamp=)`) and add the
+  separators.
+
+### Amendments to the design
+
+1. **Payload fields (§2.1).** Two fields were added: `summary_detail` (the quiet
+   detail, such as `in objective-create-a/` or `→ 14 matches`) and
+   `output_head`. `output_lines` keeps the first 8 and the last 32 lines of the
+   output, and `output_head` says where the head ends, so a failure can show its
+   *last* lines (§2.3). `state` and `ready` are unchanged.
+2. **AC 2's `rg`.** `rg '"args_str"|"dur_str"' src/` matches only
+   `migrate_event_payload` in `tui/runtime/session_log.py`: the one-way migration
+   §2.1 asks for has to read the old keys. Nothing writes them. In `tests/` they
+   appear only in the migration tests and the legacy fixture.
+3. **Operation words (§2.2).** Commands use `$`; `patch_file`, `modify_file`
+   and `apply_diff` are `Edit`, and `write_file` is `Write`. Git calls are
+   `Git status → 3 changed`. A memory read is `Read memory: "deploy notes"`
+   with `found` or `not found`; `semantic_search` shows `(N entries)`.
+4. **Pastes (§2.5).** A submitted message no longer knows where the composer's
+   paste placeholder was. The band therefore condenses by length: a message of
+   more than 12 lines shows its first four lines and `[+N more lines]`.
+5. **Headers (§2.5).** The default agent's header label is `assistant`. Its
+   first turn prints no header; a later model change does. The time zone moved
+   to `/status` (`Time zone: CET +0100`); the transcript view's detail pane is
+   TUX-09.
+6. **Exploration groups (§2.3).** The row also counts listings and other
+   lookups (`● Explored 4 files, 1 search, 1 listing`). "On expand" means the
+   `verbose` level, until TUX-09's Ctrl+T.
+7. **Ctrl+T (§2.4).** The `ctrl+t to expand` footer is printed as specified;
+   the key itself is bound by TUX-09's transcript view.
+8. **Tool groups.** A failed call always prints, even past
+   `[tools] max_live_tool_calls`; only successful calls are folded into
+   `└ …and N more tool calls`.
+9. **Replay (§2.6).** `/replay` emits `replay_separator` events through the
+   conversation store, with stable event ids, so a second replay of the same
+   session adds nothing. Resume, which never writes to the store, uses
+   `ScrollBufferAppender.replay_boundary`. `/replay` now loads through
+   `SessionEventLog.load(rendered=False)` like resume. The pair-based
+   `load_for_replay` is deleted, and records without an `event_id` or
+   `timestamp` are skipped by both paths.
+10. **Out of scope, unchanged.** The error and notice renderers (`error`,
+    `turn_complete`/`system`, `tool_recovery`, `mcp_server_failure`,
+    `network_retry`, `provider_recovery_retry`) and the agent-turn error path
+    belong to TUX-08. The subagent, goal and phase notices keep their glyphs.
+    `appender.py` therefore stays in `test_theme_tokens.py`'s `_PENDING` set.
 
 ## 1. Problem
 

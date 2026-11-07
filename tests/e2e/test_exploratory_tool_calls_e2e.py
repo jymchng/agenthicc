@@ -27,33 +27,35 @@ def test_source_discovery_journey_groups_exploration_and_preserves_events() -> N
         {
             "name": "read_file",
             "success": True,
-            "presentation": {"exploratory": True, "target": "command.py"},
+            "summary": "command.py",
+            "presentation": {"exploratory": True},
         },
     )
     state.conversation.append_event(
         "tool_complete",
         {
-            "name": "search_files",
+            "name": "grep_files",
             "success": True,
-            "presentation": {"exploratory": True, "target": "def _emit in _runner.py"},
+            "summary": '"def _emit" in _runner.py',
+            "presentation": {"exploratory": True},
         },
     )
     state.conversation.append_event(
         "tool_complete",
-        {"name": "write_file", "success": True},
+        {"name": "write_file", "success": True, "summary": "notes.md"},
     )
     state.conversation.append_event("text", {"text": "Inspection complete."})
     appender._flush_batch()
     appender.unmount()
 
-    rendered = output.getvalue()
-    assert "● Explored" in rendered
-    assert "└ Read command.py" in rendered
-    assert "Read command.py" in rendered
-    assert "Search def _emit in _runner.py" in rendered
-    assert "Search def _emit in _runner.py\n\n" in rendered
-    assert "Update" in rendered
-    assert "Inspection complete." in rendered
+    # TUX-06: the group is one row; the next tool row follows without a blank.
+    rows = [row.rstrip() for row in output.getvalue().splitlines()]
+    assert rows[:4] == [
+        '● Explored 1 file, 1 search  command.py, "def _emit" in _runner.py',
+        "● Write notes.md",
+        "",
+        "Inspection complete.",
+    ]
 
     turns = state.conversation.turns()
     assert len(turns) == 1
@@ -84,7 +86,8 @@ def test_resume_journey_reconstructs_the_same_explored_block() -> None:
                     {
                         "name": "read_file",
                         "success": True,
-                        "presentation": {"exploratory": True, "target": "one.py"},
+                        "summary": "one.py",
+                        "presentation": {"exploratory": True},
                     },
                     1.0,
                 ),
@@ -94,19 +97,18 @@ def test_resume_journey_reconstructs_the_same_explored_block() -> None:
                     {
                         "name": "search_files",
                         "success": True,
-                        "presentation": {"exploratory": True, "target": "needle in src"},
+                        "summary": '"needle" in src/',
+                        "presentation": {"exploratory": True},
                     },
                     2.0,
                 ),
             ]
         )
-        appender._flush_batch()
+        # Resume ends with ``flush()``, which closes the open group.
+        appender.flush()
         return output.getvalue()
 
     first = render()
     second = render()
     assert first == second
-    assert first.count("● Explored") == 1
-    assert "└ Read one.py" in first
-    assert "Read one.py" in first
-    assert "Search needle in src" in first
+    assert first.splitlines() == ['● Explored 1 file, 1 search  one.py, "needle" in src/']

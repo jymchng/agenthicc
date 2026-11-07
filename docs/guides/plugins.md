@@ -60,6 +60,36 @@ available, the shared HTTP client, and bounded outputs. Project tool files are
 executable Python: they load only once trusted, and trusting a file does not
 sandbox it. See the [security guide](security.md).
 
+### Transcript summaries
+
+The TUI shows each tool call as one row: an operation and a human summary of
+the call's target ([tool rows](tui.md#tool-rows)). A plugin tool without a
+summary is shown by its title-cased name and its first string argument. Stack
+`summarized_by` with `@tool()` to choose both, like the capability decorators:
+
+```python
+from lauren_ai._tools import tool
+from agenthicc.tools.capabilities import tool_network_read
+from agenthicc.tui.tool_summary import ToolSummary, summarized_by
+
+@summarized_by(
+    lambda call: ToolSummary(f"ticket {call.args['id']}", "jira.example.com"),
+    operation="Jira",
+)
+@tool_network_read
+@tool()
+async def jira_issue(id: str) -> dict[str, object]:
+    """Fetch one Jira issue. Args: id: Issue key."""
+    ...
+```
+
+The summarizer receives a `SummaryInput` (`name`, `args`, `result`, and the
+workspace `root` for relative paths) and returns a string or a `ToolSummary`
+(the target and a quiet detail). The row is `● Jira ticket OPS-7  jira.example.com`.
+A summarizer that raises falls back to the first string argument, so it can
+never break a turn. Summaries are stored as plain text in the session log:
+never put a secret in one.
+
 ## Agents
 
 Agent plugins live below `agents/`. Subclass `AgentPlugin`, set a non-empty

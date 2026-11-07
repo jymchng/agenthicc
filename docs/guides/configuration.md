@@ -586,7 +586,12 @@ status line (TUX-02) are set by `composer_frame` (`"rules"`, the default,
 which looks like Claude Code's input panel, or `"box"`) and by `[ui.statusline] command`, a command whose output replaces
 part of the status line; a project file may set the command only once it is
 trusted (`agenthicc trust add <file>`). See
-[a user status line](tui.md#a-user-status-line). Key bindings
+[a user status line](tui.md#a-user-status-line).
+`tool_detail` (TUX-06) sets how
+much of each tool call the transcript shows: `"compact"` (the default, one row
+per call; failures show their last lines), `"normal"` (plus a four-line preview
+of reads and commands) or `"verbose"` (the whole bounded output); `/details`
+changes it for the session, see [tool rows](tui.md#tool-rows). Key bindings
 live in their own file, `~/.agenthicc/keybindings.toml`
 ([key bindings](tui.md#key-bindings)).
 

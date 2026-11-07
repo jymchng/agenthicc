@@ -35,8 +35,8 @@ async def test_file_modified_event_renders_a_bounded_addition_preview() -> None:
         appender.unmount()
 
     output = console.export_text()
-    assert "● Update(README.md)" in output
-    assert "Added 10 lines" in output
+    # TUX-06: one header row with the counts, then the bounded diff.
+    assert output.splitlines()[0] == "● Write README.md  +10 −0"
     assert "added 1" in output
     assert "added 10" in output
     assert "added 5" not in output

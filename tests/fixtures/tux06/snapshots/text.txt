@@ -1,0 +1,10 @@
+── compact ──
+I'll run the tests first.
+
+
+── normal ──
+I'll run the tests first.
+
+
+── verbose ──
+I'll run the tests first.

@@ -1,0 +1,14 @@
+── compact ──
+◈ Subagents · 2 workers started
+  └ Reviewer 1  Review PRDs
+  +1 more · Ctrl+O details
+
+── normal ──
+◈ Subagents · 2 workers started
+  └ Reviewer 1  Review PRDs
+  +1 more · Ctrl+O details
+
+── verbose ──
+◈ Subagents · 2 workers started
+  └ Reviewer 1  Review PRDs
+  +1 more · Ctrl+O details

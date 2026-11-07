@@ -144,11 +144,11 @@ def test_removed_duplicates_appear_nowhere() -> None:
 def test_run_bash_is_the_one_shell_tool() -> None:
     from agenthicc.subagents.types import DEFAULT_REGISTRY
     from agenthicc.tools.workspace_access import WorkspaceAccessPolicy
-    from agenthicc.tui.workspace.appender import _TOOL_DISPLAY_OP, _TOOL_OP
+    from agenthicc.tui.tool_summary import _REGISTRY
 
     assert "shell" not in {_name(tool) for tool in AGENT_TOOLS}
     assert "shell" not in WorkspaceAccessPolicy._PATH_FIELDS
-    assert "shell" not in _TOOL_OP and "shell" not in _TOOL_DISPLAY_OP
+    assert "shell" not in _REGISTRY
     for name in DEFAULT_REGISTRY.names():
         spec = DEFAULT_REGISTRY.get(name)
         assert spec is not None and "shell" not in spec.allowed_tools

@@ -1,0 +1,23 @@
+── compact ──
+● Edit src/app.py  +1 −1
+  1   a = 1
+  2 - b = 2
+  2 + b = 3
+● Create src/new.py  +1
+  1 + x = 1
+
+── normal ──
+● Edit src/app.py  +1 −1
+  1   a = 1
+  2 - b = 2
+  2 + b = 3
+● Create src/new.py  +1
+  1 + x = 1
+
+── verbose ──
+● Edit src/app.py  +1 −1
+  1   a = 1
+  2 - b = 2
+  2 + b = 3
+● Create src/new.py  +1
+  1 + x = 1
