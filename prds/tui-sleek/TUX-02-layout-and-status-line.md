@@ -21,11 +21,19 @@ Implemented on branch `tux-tux02`.
 
 ### Amendments to the design above
 
+- **Operator requests (2026-11-07, second round).**
+  - **The workflow segment follows `WorkflowRunHandle`.** It updates on every phase and lifecycle change (`on_change`, installed by the session), so runners that never set `AppState.workflow_run` (goal_flow, plugins) also show their workflow and phase.
+  - **The cursor.** It is Claude Code's reverse-video block over the character under it, and takes no cell of its own except at the end of a line. On an empty prompt it sits on the placeholder's first letter.
+  - **The chevron and rules** use the yellow `frame` token.
+  - **Running tool calls and background terminals** each get a live row between the transcript and the composer, with a blinking `●` and their elapsed time (`tui/workspace/running_rows.py`). While such a row exists, the frame clock keeps ticking.
+
 - **Workflow segment (operator request, 2026-11-07).** The running workflow and its phase move from segment 5 to priority 2 (`◆ auto → Finalize goals 3/5`). When the line is narrow the segment shortens to the phase, then to the workflow, and is not dropped first. It is also shown under a user status-line command, and while paused.
 
 - **Composer frame (operator request, 2026-11-06).**
   - Rules are now the default, matching Claude Code's input panel: a full-width rule ending in `title · Safe ─`, the prompt with no side borders, and a rule below.
   - The rounded box is still available with `[ui] composer_frame = "box"`.
+  - The frame — rules, corners and side edges — draws in the new `frame` token (amendment, 2026-11-07): yellow, the same border colour as the welcome panel, `#8a6d00` in the light theme so it stays readable on white. Titles, badges and the hint row keep their own tokens.
+  - The `❯` chevron is `frame` too, in bold — in the composer, in the `/` and `@` pickers that repeat the prompt, and in the `PromptOverlay` line (operator request, 2026-11-07). It was `accent`, so the panel's outline and its chevron now share one colour. The user-message band in the transcript keeps `accent`.
 - **State segment (operator request).** It keeps agenthicc's original turning flower. While thinking, one bold letter sweeps back and forth across `Thinking`. This replaces the braille spinner.
 
 1. **Right-hand hint.**
@@ -117,7 +125,7 @@ The live region is:
 - **The composer**, framed by a rounded box in the `subtle` token, or by two rules when `[ui] composer_frame = "rules"`.
   - The top border carries the **session title** on the left. It is AGX-05's generated title, or "new session" until there is one.
   - The **mode badge** sits on the right, in its `mode_*` token.
-  - The empty composer shows a muted placeholder: "ask, or type / for commands, @ for files". TUX-03 rotates in suggestions.
+  - The empty composer shows a muted, dimmed placeholder: "ask, or type / for commands, @ for files". TUX-03 rotates in suggestions.
 - **One status line**, with segments in a fixed priority order. When the line is too narrow, segments drop from the lowest priority; they are never truncated mid-word:
 
   | Priority | Segment | Shown when |

@@ -1992,7 +1992,7 @@ Folds each logical line of the prompt at the width (continuation rows indented
 under `❯`), caching the fold per line, and shows at most `max_rows` rows around
 the cursor with `↑ N more lines` / `↓ N more lines` for the rest. `render()`
 returns a renderable laid out at the width it is given (the agents screen
-embeds it). An empty prompt shows the muted placeholder
+embeds it). An empty prompt shows the muted, dimmed placeholder
 `ask, or type / for commands, @ for files` after the cursor (shorter forms when
 narrow; none for a screen reader).
 
@@ -2153,9 +2153,9 @@ effective bindings. `AppState.ui` holds `config.UISettings` (`[ui]`:
 
 Themes (TUX-01): `agenthicc.tui.theme` owns every colour and chrome glyph.
 - **Types.** `Palette` is a frozen set of semantic tokens (`TOKENS`: `text`,
-  `muted`, `subtle`, `accent`, `accent_bg`, `user_bg`, `success`, `warning`,
-  `danger`, `info`, `agent`, `diff_*`, `mode_safe|plan|yolo`). Each token is a
-  Rich style string. `Palette.on(token)` gives the background form.
+  `muted`, `subtle`, `frame`, `accent`, `accent_bg`, `user_bg`, `success`,
+  `warning`, `danger`, `info`, `agent`, `diff_*`, `mode_safe|plan|yolo`). Each
+  token is a Rich style string. `Palette.on(token)` gives the background form.
   `Glyphs` has `UNICODE_GLYPHS` and an all-ASCII `ASCII_GLYPHS`. `Theme`
   combines a name, a palette, a `syntax_theme` and glyphs.
 - **Built-in themes.** `BUILTIN_THEMES` holds `dark`, `light`,

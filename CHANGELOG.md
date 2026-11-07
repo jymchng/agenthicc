@@ -161,6 +161,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   replay, full-history copies fall from 2,245 to 35 and validation scans from
   2,935 to 1,771, with byte-identical provider requests and journal records.
 
+### Changed — the composer frame is yellow (TUX-01/TUX-02)
+
+- New theme token `frame` draws the composer's frame: both rules, or the rounded
+  box's corners and side edges. It is yellow, matching the welcome panel's
+  border (`#8a6d00` in the light theme, where yellow would be unreadable on
+  white; `#ffe066` in high-contrast). The title, mode badge and hint row keep
+  their own tokens, and every other rule and border stays `subtle`.
+- The `>` chevron of the prompt is `frame` too, in bold — in the composer and in
+  the `/` and `@` pickers that repeat the prompt above their matches. It was
+  `accent` before, so the panel's outline and its chevron now share one colour
+  instead of two.
+
+### Changed — the empty composer's placeholder is dimmed (TUX-02)
+
+- The hint after the caret, `ask, or type / for commands, @ for files` (and its
+  narrower forms), now renders in the `muted` token **plus** the `dim`
+  attribute instead of `muted` alone, so an empty prompt reads as a hint rather
+  than as content. Because `dim` is an attribute and not a colour, it still
+  distinguishes the placeholder under `--theme no-color`; every colour remains a
+  theme token (TUX-01).
+
 ### Changed — background questions have a five-minute deadline by default
 
 - `[background] question_timeout_s` now defaults to `300` seconds instead of

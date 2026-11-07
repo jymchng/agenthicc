@@ -65,7 +65,7 @@ __all__ = [
     "status_sentence",
 ]
 
-#: The empty composer's muted placeholder, then shorter forms for narrow frames.
+#: The empty composer's muted, dimmed placeholder, then shorter forms for narrow frames.
 PLACEHOLDER = (
     "ask, or type / for commands, @ for files",
     "ask, or type / for commands",
@@ -681,6 +681,12 @@ def status_sentence(app_state: AppState) -> str:
 # ── ComposerComponent ─────────────────────────────────────────────────────────
 
 _HIDDEN_STYLE = Style(dim=True)
+#: The block cursor (Claude Code's): reverse video, an attribute, not a colour.
+_BLOCK = Style(reverse=True)
+#: Added to the ``muted`` token for the empty composer's placeholder (TUX-02).
+#: Dim is an attribute, not a colour, so the hint stays visibly secondary even
+#: under ``no-color`` while every colour still comes from a theme token (TUX-01).
+_DIM = Style(dim=True)
 
 
 @functools.lru_cache(maxsize=4096)
@@ -708,20 +714,20 @@ def _fold(text: str, width: int, single_cells: bool = False) -> tuple[str, ...]:
 
 
 @functools.lru_cache(maxsize=4096)
-def _line_rows(
-    text: str, cursor: int | None, width: int, cursor_glyph: str
-) -> tuple[tuple[str, int | None], ...]:
+def _line_rows(text: str, cursor: int | None, width: int) -> tuple[tuple[str, int | None], ...]:
     """Fold one logical line, marking the row and column that hold the cursor.
 
-    The cursor glyph is part of the folded text, as it occupies a cell. Only
-    an edited line or the cursor's line misses this cache on a keystroke.
+    The cursor is a block over the character it stands on, as in Claude Code;
+    at the end of the line it needs a cell of its own, so a space is added
+    there. Only an edited line or the cursor's line misses this cache on a
+    keystroke.
     """
     if cursor is None:
         return tuple((row, None) for row in _fold(text, width))
-    display = text[:cursor] + cursor_glyph + text[cursor:]
+    display = text if cursor < len(text) else text + " "
     rows: list[tuple[str, int | None]] = []
     offset = 0
-    single = text.isascii() and cell_len(cursor_glyph) == len(cursor_glyph)
+    single = text.isascii()
     for row in _fold(display, width, single):
         column = cursor - offset if offset <= cursor < offset + len(row) else None
         rows.append((row, column))
@@ -742,19 +748,33 @@ class _Row:
 
     def segments(self) -> Line:
         g = glyphs()
+        # The chevron wears the frame's colour, so the composer reads as one panel.
         prefix = Segment(
-            self.prefix, style("accent", bold=True) if self.prefix.startswith(g.prompt) else None
+            self.prefix, style("frame", bold=True) if self.prefix.startswith(g.prompt) else None
         )
-        tail = (Segment(self.placeholder, style("muted")),) if self.placeholder else ()
+        hint = style("muted") + _DIM
         if self.cursor is None:
+            tail = (Segment(self.placeholder, hint),) if self.placeholder else ()
             return (prefix, Segment(self.text), *tail)
-        return (
-            prefix,
-            Segment(self.text[: self.cursor]),
-            Segment(g.cursor, Style(bold=True)),
-            Segment(self.text[self.cursor + len(g.cursor) :]),
-            *tail,
-        )
+        c = self.cursor
+        if c < len(self.text):
+            # Claude Code's block cursor: the character under it in reverse.
+            after = self.text[c + 1 :]
+            return (
+                prefix,
+                Segment(self.text[:c]),
+                Segment(self.text[c], _BLOCK),
+                *((Segment(after),) if after else ()),
+            )
+        if self.placeholder:
+            # An empty prompt: the block sits on the placeholder's first letter.
+            return (
+                prefix,
+                Segment(self.text),
+                Segment(self.placeholder[0], style("muted") + _BLOCK),
+                Segment(self.placeholder[1:], hint),
+            )
+        return (prefix, Segment(self.text), Segment(" ", _BLOCK))
 
 
 def _hidden_row(arrow: str, count: int) -> Line:
@@ -785,7 +805,7 @@ class ComposerComponent:
     indented under the prompt). When the prompt needs more than ``max_rows``
     rows, only the rows around the cursor are drawn, with ``↑ N more lines`` /
     ``↓ N more lines`` in place of the rest (AGX-11). An empty prompt shows a
-    muted placeholder after the cursor (TUX-02).
+    muted, dimmed placeholder after the cursor (TUX-02).
     """
 
     def __init__(self, app_state: AppState, *, max_rows: int = 12) -> None:
@@ -813,7 +833,7 @@ class ComposerComponent:
                 # Callers that set only a paste label show the label.
                 buf, cursor = list(label), len(label)
         elif not buf:
-            hint = "" if _reader(self._state) else _placeholder(width - cell_len(g.cursor))
+            hint = "" if _reader(self._state) else _placeholder(width)
             return [_Row(f"{g.prompt} ", "", 0, hint)], 0
         rows: list[_Row] = []
         cursor_row = 0
@@ -821,7 +841,7 @@ class ComposerComponent:
         for index, line in enumerate("".join(buf).split("\n")):
             end = start + len(line)
             column = cursor - start if start <= cursor <= end else None
-            folded = _line_rows(line, column, width, g.cursor)
+            folded = _line_rows(line, column, width)
             for fold_index, (text, row_cursor) in enumerate(folded):
                 if row_cursor is not None:
                     cursor_row = len(rows)
@@ -924,11 +944,11 @@ class ComposerFrame:
         fill = max(0, cols - used - tail_width)
         badge_part = f" {badge} " if badge else ""
         line = (
-            _tint("subtle", head)
+            _tint("frame", head)
             + title_part
-            + _tint("subtle", h * fill)
+            + _tint("frame", h * fill)
             + badge_part
-            + _tint("subtle", f"{h}{right_corner}")
+            + _tint("frame", f"{h}{right_corner}")
         )
         return _fit(line, cols)
 
@@ -953,9 +973,9 @@ class ComposerFrame:
         else:
             label, label_width = "", 0
         if not label:
-            return _tint("subtle", h * cols)
+            return _tint("frame", h * cols)
         fill = max(0, cols - label_width - 2 - cell_len(h))
-        line = _tint("subtle", h * fill) + f" {label} " + _tint("subtle", h)
+        line = _tint("frame", h * fill) + f" {label} " + _tint("frame", h)
         return _fit(line, cols)
 
     def bottom(self, cols: int, form: str | None = None) -> str:
@@ -963,8 +983,8 @@ class ComposerFrame:
         g = glyphs()
         _tl, _tr, bl, br, h, _v = g.box
         if form == "box":
-            return _tint("subtle", bl + h * max(0, cols - 2) + br)
-        return _tint("subtle", h * cols)
+            return _tint("frame", bl + h * max(0, cols - 2) + br)
+        return _tint("frame", h * cols)
 
     def body(self, cols: int, form: str | None = None) -> list[Line]:
         """The composer rows, inside the box's side borders when boxed."""
@@ -972,7 +992,7 @@ class ComposerFrame:
         if form != "box":
             return list(self.composer.lines(cols))
         inner = self.inner_width(cols)
-        edge = style("subtle")
+        edge = style("frame")
         v = glyphs().box[5]
         rows: list[Line] = []
         for line in self.composer.lines(inner):

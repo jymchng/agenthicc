@@ -83,19 +83,35 @@ class TestCloseTurnElapsed:
 class TestCompletionRecapRenderers:
     """``✾ Worked for 37s`` per turn; the request's total only when it adds to it."""
 
-    @staticmethod
-    def _render(*events: tuple[str, dict[str, object]]) -> str:
+    #: 2026-01-01 10:20 local time, so every row ends ``| 10:20 AM``.
+    _TS = __import__("time").mktime((2026, 1, 1, 10, 20, 0, 0, 0, -1))
+
+    @classmethod
+    def _render(cls, *events: tuple[str, dict[str, object]]) -> str:
         from agenthicc.tui.conversation_store import AppState, ConversationEvent
         from agenthicc.tui.workspace.appender import ScrollBufferAppender
 
         console = Console(record=True, markup=False, no_color=True, width=100)
         appender = ScrollBufferAppender(AppState.create(), console)
         for index, (kind, payload) in enumerate(events):
-            appender._render_one(ConversationEvent(f"e{index}", kind, payload))
+            appender._render_one(ConversationEvent(f"e{index}", kind, payload, cls._TS))
         return console.export_text()
 
+    def test_the_clock_is_twelve_hour_with_am_and_pm(self) -> None:
+        import time
+
+        from agenthicc.tui.workspace.appender import clock_time
+
+        assert clock_time(self._TS) == "10:20 AM"
+        assert clock_time(time.mktime((2026, 1, 1, 0, 5, 0, 0, 0, -1))) == "12:05 AM"
+        assert clock_time(time.mktime((2026, 1, 1, 12, 0, 0, 0, 0, -1))) == "12:00 PM"
+        assert clock_time(time.mktime((2026, 1, 1, 22, 15, 0, 0, 0, -1))) == "10:15 PM"
+
     def test_a_turn_reads_worked_for_with_a_compact_duration(self) -> None:
-        assert self._render(("turn_complete", {"elapsed_s": 65.0})) == "✾ Worked for 1m 5s\n"
+        assert (
+            self._render(("turn_complete", {"elapsed_s": 65.0}))
+            == "✾ Worked for 1m 5s | 10:20 AM\n"
+        )
 
     def test_turn_row_is_omitted_below_one_second(self) -> None:
         assert self._render(("turn_complete", {"elapsed_s": 0.5})) == ""
@@ -107,7 +123,7 @@ class TestCompletionRecapRenderers:
         output = self._render(
             ("turn_complete", {"elapsed_s": 24.0}), ("activity_complete", {"elapsed_s": 24.4})
         )
-        assert output == "✾ Worked for 24s\n"
+        assert output == "✾ Worked for 24s | 10:20 AM\n"
         assert "Total" not in output and "Done" not in output
 
     def test_several_turns_end_with_the_requests_total(self) -> None:
@@ -116,13 +132,15 @@ class TestCompletionRecapRenderers:
             ("turn_complete", {"elapsed_s": 29.0}),
             ("activity_complete", {"elapsed_s": 54.0}),
         )
-        assert output == ("✾ Worked for 18s\n✾ Worked for 29s\n✾ Done in 54s across 2 turns\n")
+        assert output == (
+            "✾ Worked for 18s | 10:20 AM\n✾ Worked for 29s | 10:20 AM\n✾ Done in 54s across 2 turns | 10:20 AM\n"
+        )
 
     def test_a_total_longer_than_its_one_turn_is_shown(self) -> None:
         output = self._render(
             ("turn_complete", {"elapsed_s": 10.0}), ("activity_complete", {"elapsed_s": 40.0})
         )
-        assert output == "✾ Worked for 10s\n✾ Done in 40s\n"
+        assert output == "✾ Worked for 10s | 10:20 AM\n✾ Done in 40s | 10:20 AM\n"
 
     def test_subsecond_activity_total_is_omitted(self) -> None:
         assert self._render(("activity_complete", {"elapsed_s": 0.5})) == ""
@@ -135,7 +153,7 @@ class TestCompletionRecapRenderers:
             ("turn_complete", {"elapsed_s": 7.0}),
             ("activity_complete", {"elapsed_s": 7.0}),
         )
-        assert output.count("across") == 1 and output.endswith("✾ Worked for 7s\n")
+        assert output.count("across") == 1 and output.endswith("✾ Worked for 7s | 10:20 AM\n")
 
     def test_error_timing_rows_do_not_claim_success(self) -> None:
         output = self._render(
@@ -144,7 +162,7 @@ class TestCompletionRecapRenderers:
             ("activity_complete", {"elapsed_s": 3.0}),
         )
         assert "boom" in output
-        assert "✾ Worked for 2s" in output
+        assert "✾ Worked for 2s | 10:20 AM" in output
         assert "Completed" not in output
         assert "since last IDLE" not in output
 
@@ -155,6 +173,6 @@ class TestCompletionRecapRenderers:
             ("activity_complete", {"elapsed_s": 2.0}),
             ("error", {"message": "MCP server 'asyncmove' failed to start"}),
         )
-        suffix = output.split("✾ Done in 2s across 2 turns", 1)[1]
+        suffix = output.split("✾ Done in 2s across 2 turns | 10:20 AM", 1)[1]
         assert suffix.startswith("\n\n") and not suffix.startswith("\n\n\n")
         assert "MCP server 'asyncmove' failed to start" in suffix

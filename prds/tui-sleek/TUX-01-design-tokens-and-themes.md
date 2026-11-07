@@ -109,7 +109,8 @@ From TUX-00: F1, F2 and F4.
      | `text` | body text | default fg | default fg |
      | `muted` | secondary text, metadata | `#8a8f98` | `#5c6370` |
      | `subtle` | rules, borders, ghosts | `#3a3f47` | `#d0d4da` |
-     | `accent` | focus, selection, the prompt chevron, links | `#7aa2f7` | `#2f5bd3` |
+     | `frame` | the composer's frame — its rules or box — and the prompt chevron inside it (amendment below) | `yellow` | `#8a6d00` |
+     | `accent` | focus, selection, links | `#7aa2f7` | `#2f5bd3` |
      | `accent_bg` | selected-row background | `#1f2a44` | `#e3ebff` |
      | `user_bg` | the user-message band | `#1c1f24` | `#f1f3f5` |
      | `success` | a confirmed good result | `#9ece6a` | `#2e7d32` |

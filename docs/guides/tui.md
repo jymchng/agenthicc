@@ -68,14 +68,30 @@ of the top rule, and one status line follows.
 
 ```text
 ────────────────────────────────────── fix flaky scheduler test · Safe ─
-❯ ▌ask, or type / for commands, @ for files
+❯ ask, or type / for commands, @ for files
 ────────────────────────────────────────────────────────────────────────
  ● Idle · ◆ 2 sessions need you ← · ctx 12% ▰▱▱▱▱ · opus-4.8      /help
 ```
 
-While the agent works, the state segment turns agenthicc's flower
-(`✿ ❀ ❁ ❃ …`), and a bold letter sweeps back and forth across `Thinking`.
-`reduced_motion` keeps the words and stops both animations.
+- **The chevron and rules** use the yellow `frame` theme token, agenthicc's
+  brand colour (a darker yellow in the light theme).
+- **The cursor** is Claude Code's block cursor: the character under it is
+  drawn in reverse video, and a reversed space marks the end of a line. On an
+  empty prompt it sits on the first letter of the dimmed placeholder.
+- **The state segment.** While the agent works, it turns agenthicc's flower
+  (`✿ ❀ ❁ ❃ …`), and a bold letter sweeps back and forth across `Thinking`.
+  `reduced_motion` keeps the words and stops both animations.
+- **Running calls.** Tool calls that are still running, and background
+  terminals, show between the transcript and the composer. Each has a
+  blinking `●` and how long it has run; the dot blinks half a second on and
+  half a second off, and holds still under `reduced_motion` or the screen
+  reader. When a call completes, its row leaves the live region and its
+  permanent row is printed to the transcript.
+
+  ```text
+  ● $ uv run pytest tests/unit -q                                  8m 10s
+  ● $ npm run dev                                  background · 3m 2s
+  ```
 
 - **The title** is the session's first prompt (its first line, cut to 80
   characters as a background session's intent is), or `new session` before
@@ -93,7 +109,7 @@ While the agent works, the state segment turns agenthicc's flower
   | 2 | `◆ N sessions need you ←` (AGX-10) | a background session needs you |
   | 3 | `ctx 42% ▰▰▱▱▱`, green below 60 %, amber below 85 %, red above | after the first response that reported usage |
   | 4 | the model, short (`opus-4.8`; the provider when it is not the default) | always |
-  | 2 | the running workflow and its phase: `◆ auto → Finalize goals 3/5` (shortened to the phase, then the workflow, never dropped first; `paused` when paused) | a workflow is running |
+  | 2 | the running workflow and its phase, from the workflow's own run handle for every runner (built-in or plugin): `◆ goal_flow → Decide goals 2/5` (shortened to the phase, then the workflow, never dropped first; `paused` when paused) | a workflow is running |
   | 5 | subagent workers `1/3 workers`, a `/workflow` selection, running background sessions, startup work still loading | when active |
   | 6 | tokens `↑12k ↓3k` (`≈` when partial) and cost `$0.42` (`~` when estimated) | only when the provider reported them |
   | 7 | the git branch, `*` when the tree has changes | in a repository |
@@ -242,7 +258,7 @@ Code, every tool call is followed by one blank line.
 
 ● Edit src/app/main.py  +12 −3
 
-✾ Worked for 1m 15s
+✾ Worked for 1m 15s | 10:20 AM
 ```
 
 - **Narrow rows.** A command or text target is cut at its end
@@ -463,15 +479,18 @@ Ctrl+letters, Alt combinations and unknown sequences arrived as Esc.
 ### Themes and glyphs
 
 Every colour on screen comes from a semantic token of the active theme
-(`agenthicc.tui.theme`): `text`, `muted`, `subtle`, `accent`, `accent_bg`,
-`user_bg`, `success`, `warning`, `danger`, `info`, `agent`, the diff tokens and
-the three mode badges. No other module names a colour, and
+(`agenthicc.tui.theme`): `text`, `muted`, `subtle`, `frame`, `accent`,
+`accent_bg`, `user_bg`, `success`, `warning`, `danger`, `info`, `agent`, the
+diff tokens and the three mode badges. No other module names a colour, and
 `tests/unit/test_theme_tokens.py` enforces that (TUX-01).
 
 Tokens carry meaning, not hue: failures are `danger`; anything waiting for you
 is `warning`; running work and progress are `info`; finished work is
-`success`; subagent identity is `agent`; metadata is `muted`; rules and
-borders are `subtle`. The Safe, Plan and Yolo badges (`✓ Safe`, `◆ Plan`,
+`success`; subagent identity is `agent`; metadata is `muted`; the composer's
+frame — its box or its two rules — is `frame`, the yellow of the welcome panel
+(the light theme darkens it to stay readable on white), and so is the `❯` of the
+prompt it frames; every other rule and border is `subtle`. The Safe, Plan and
+Yolo badges (`✓ Safe`, `◆ Plan`,
 `❯❯ Yolo`; `+`, `*` and `>>` with ASCII glyphs) use `mode_safe`, `mode_plan`
 and `mode_yolo`. In list views the selected row is marked by an `accent` bar
 (`▌`). In the agents hub (and its answer form), the subagent panel, `/history`,
@@ -653,7 +672,8 @@ start point without publishing a timer redraw every 50 ms. The older per-turn
 active-work clock remains available for turn-level telemetry and waiting-modal
 behavior. When the activity returns to IDLE, the scroll buffer emits a compact
 completion recap after the final turn. Each turn of a second or more reads
-`✾ Worked for 1m 5s`. The request's total, `✾ Done in 2m 5s across 3 turns`,
+`✾ Worked for 1m 5s | 10:20 AM`, ending with the local time it finished.
+The request's total, `✾ Done in 2m 5s across 3 turns | 10:22 AM`,
 follows only when it adds something: after several turns, or when it is
 longer than the one turn. The total spans the outer user activity across
 internal turns and workflow phases; it is not model-only time or the sum of

@@ -151,6 +151,33 @@ class TestPromptOverlay:
         ov.on_mount()  # remount should clear
         assert ov._prompt_text == ""
 
+    def test_the_chevron_wears_the_frame_token(self):
+        """The overlay's prompt matches the composer's: `frame`, bold."""
+        from rich.text import Text
+
+        from agenthicc.tui.input.renderer import CURSOR_CHAR, PROMPT_CHAR
+        from agenthicc.tui.theme import BUILTIN_THEMES, current_theme, palette, use_theme
+
+        before = current_theme()
+        try:
+            use_theme(BUILTIN_THEMES["dark"])
+            ov = _ConcretePrompt()
+            ov.on_mount()
+            ov._handle_prompt_key(Key.CHAR, "h")
+            markup = ov._render_prompt_line()
+            assert markup.startswith(f"[bold {palette().frame}]{PROMPT_CHAR}[/")
+            text = Text.from_markup(markup)
+            assert text.spans[0].style == f"bold {palette().frame}"  # yellow, not bare bold
+
+            # `frame` is `none` under no-color: the chevron stays bold, not markup-invalid.
+            use_theme(BUILTIN_THEMES["no-color"])
+            markup = _ConcretePrompt()._render_prompt_line()
+            assert markup.startswith(f"[bold]{PROMPT_CHAR}[/bold] ")
+            assert Text.from_markup(markup).spans[0].style == "bold"
+            assert CURSOR_CHAR in markup
+        finally:
+            use_theme(before)
+
 
 # ── PlanApprovalOverlay — SELECTING state ────────────────────────────────────
 

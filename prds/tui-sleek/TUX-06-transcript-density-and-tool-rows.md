@@ -14,6 +14,7 @@ tags: [tui, transcript, scrollback, tools, density]
 ## Implementation status
 
 **Operator amendments (2026-11-07):**
+- **Timing rows** end with the local time: `✾ Worked for 15m 15s | 10:20 AM` (operator request).
 - **Spacing.** Every tool call is followed by one blank line, as in Claude Code. This replaces the no-blank rule between consecutive tool rows in §2.3. The density criterion now counts content rows: blank spacing is not density.
 - **Replay separator.** There is no closing `── now ──` rule. The live conversation follows the opening `replayed from` rule, and an old `edge: "end"` record draws nothing.
 - **Timing rows.** `✾ Turn · 24s` plus `Total · 24s` became `✾ Worked for 24s`. The total, `✾ Done in 1m 12s across 3 turns`, is printed only after several turns or when it exceeds the single turn.

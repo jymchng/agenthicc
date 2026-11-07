@@ -61,6 +61,7 @@ class Palette:
     text: str
     muted: str
     subtle: str
+    frame: str
     accent: str
     accent_bg: str
     user_bg: str
@@ -202,6 +203,8 @@ _DARK = Palette(
     text="none",
     muted="#8a8f98",
     subtle="#636a75",
+    #: The composer frame matches the welcome panel's yellow border.
+    frame="yellow",
     accent="#7aa2f7",
     accent_bg="#1f2a44",
     user_bg="#1c1f24",
@@ -225,6 +228,8 @@ _LIGHT = Palette(
     text="none",
     muted="#5c6370",
     subtle="#8c939d",
+    #: Yellow on white is unreadable; the light theme keeps the hue, darkened.
+    frame="#8a6d00",
     accent="#2f5bd3",
     accent_bg="#e3ebff",
     user_bg="#f1f3f5",
@@ -248,6 +253,7 @@ _HIGH_CONTRAST = Palette(
     text="none",
     muted="#d0d0d0",
     subtle="#9a9a9a",
+    frame="#ffe066",
     accent="#7fbfff",
     accent_bg="#00305f",
     user_bg="#202020",
@@ -272,6 +278,7 @@ _ANSI = Palette(
     text="none",
     muted="bright_black",
     subtle="bright_black",
+    frame="yellow",
     accent="blue",
     accent_bg="none",
     user_bg="none",

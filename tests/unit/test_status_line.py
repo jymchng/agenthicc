@@ -125,9 +125,13 @@ def test_the_empty_composer_shows_a_muted_placeholder() -> None:
     state = _state()
     workspace = _workspace(state)
     (line,) = workspace.composer.lines(116)
-    placeholder = line[-1]
-    assert placeholder.text == "ask, or type / for commands, @ for files"
+    block, placeholder = line[-2], line[-1]
+    # Claude Code's block cursor sits on the placeholder's first letter.
+    assert block.text == "a" and block.style is not None and block.style.reverse
+    assert placeholder.text == "sk, or type / for commands, @ for files"
     assert placeholder.style is not None and placeholder.style.color is not None
+    # Muted *and* dimmed: the hint must read as a hint, never as prompt content.
+    assert placeholder.style.dim is True
     state.input.update(list("hi"), 2)
     assert "ask," not in "".join(lines_text(workspace.composer.lines(116)))
 
@@ -260,25 +264,25 @@ def test_the_meter_bar_fills_by_fifths() -> None:
 _SNAPSHOTS: dict[int, list[str]] = {
     40: [
         "────── fix flaky scheduler test · Safe ─",
-        "❯ ▌ask, or type / for commands",
+        "❯ ask, or type / for commands",
         "─" * 40,
         " ● Idle · ◆ 2 sess. ← · ctx 12%",
     ],
     50: [
         "──────────────── fix flaky scheduler test · Safe ─",
-        "❯ ▌ask, or type / for commands, @ for files",
+        "❯ ask, or type / for commands, @ for files",
         "─" * 50,
         " ● Idle · ◆ 2 sessions need you ← · ctx 12% ▰▱▱▱▱",
     ],
     80: [
         "─" * 46 + " fix flaky scheduler test · Safe ─",
-        "❯ ▌ask, or type / for commands, @ for files",
+        "❯ ask, or type / for commands, @ for files",
         "─" * 80,
         " ● Idle · ◆ 2 sessions need you ← · ctx 12% ▰▱▱▱▱ · opus-4.8               /help",
     ],
     120: [
         "─" * 86 + " fix flaky scheduler test · Safe ─",
-        "❯ ▌ask, or type / for commands, @ for files",
+        "❯ ask, or type / for commands, @ for files",
         "─" * 120,
         " ● Idle · ◆ 2 sessions need you ← · ctx 12% ▰▱▱▱▱ · opus-4.8 · ↑12.4k ↓3.1k · "
         "$0.42 · main*                        /help",
@@ -330,6 +334,47 @@ def test_mode_badge_uses_its_mode_token() -> None:
     state.active_mode.set(build_safe_mode())
     top = ComposerFrame(state, _workspace(state).composer).top(120)
     assert palette().mode_safe in top
+
+
+def test_the_composer_frame_draws_in_the_frame_token() -> None:
+    """Rules, corners and side edges are `frame`, so the composer matches the welcome panel."""
+    from agenthicc.tui.theme import style
+
+    state = _state(ui=UISettings(composer_frame="box"))
+    frame = ComposerFrame(state, _workspace(state).composer)
+    token = palette().frame
+    assert token not in ("", "none")
+    assert f"[{token}]" in frame.top(120)
+    assert f"[{token}]" in frame.bottom(120)
+    edge = style("frame")
+    for line in frame.body(120):
+        assert line[0].style == edge and line[-1].style == edge
+    # The narrow form draws two rules instead of a box, in the same token.
+    assert f"[{token}]" in frame.top(44)
+    assert f"[{token}]" in frame.bottom(44)
+
+
+def test_the_composer_chevron_draws_in_the_frame_token() -> None:
+    """The chevron wears the frame's colour, so the panel reads as one piece."""
+    from agenthicc.tui.theme import glyphs, style
+
+    state = _state()
+    state.input.update(list("hello"), 5)
+    chevron, *_ = _workspace(state).composer.lines(60)[0]
+    assert chevron.text == f"{glyphs().prompt} "
+    assert chevron.style == style("frame", bold=True)
+    assert chevron.style is not None and chevron.style.color is not None
+    assert chevron.style.bold is True
+
+
+def test_the_pickers_prompt_draws_in_the_frame_token() -> None:
+    """``/`` and ``@`` pickers repeat the composer's prompt; it must match."""
+    from agenthicc.tui.input.renderer import build_prompt
+    from agenthicc.tui.theme import glyphs, style
+
+    prompt = build_prompt(list("hi"), 1)
+    spans = {prompt.plain[span.start : span.end]: span.style for span in prompt.spans}
+    assert spans[glyphs().prompt] == style("frame", bold=True)
 
 
 def test_ascii_glyphs_draw_nothing_above_ascii() -> None:
@@ -681,3 +726,25 @@ def test_reduced_motion_keeps_the_word_and_drops_the_animation() -> None:
     markup = _thinking_markup(state, 3)
     assert "[bold]" not in markup.split("Thinking")[0][-12:]
     assert "Thinking" in _plain(markup) and "✿" not in markup
+
+
+def test_the_cursor_is_a_reverse_video_block_like_claude_codes() -> None:
+    state = _state()
+    workspace = _workspace(state)
+    state.input.update(list("hello"), 2)
+    (line,) = workspace.composer.lines(80)
+    blocks = [segment for segment in line if segment.style is not None and segment.style.reverse]
+    assert [segment.text for segment in blocks] == ["l"]  # on the character, no extra cell
+    assert "".join(segment.text for segment in line) == "❯ hello"
+    state.input.update(list("hello"), 5)
+    (line,) = workspace.composer.lines(80)
+    assert line[-1].text == " " and line[-1].style is not None and line[-1].style.reverse
+    assert "▌" not in "".join(segment.text for segment in line)
+
+
+def test_the_chevron_uses_the_yellow_frame_token() -> None:
+    from agenthicc.tui.theme import style
+
+    state = _state()
+    (line,) = _workspace(state).composer.lines(80)
+    assert line[0].text.startswith("❯") and line[0].style == style("frame", bold=True)

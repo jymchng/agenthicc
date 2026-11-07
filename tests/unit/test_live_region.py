@@ -261,11 +261,19 @@ async def test_a_spinner_frame_rewrites_only_the_status_row() -> None:
         await settle_frames(workspace)
 
         written = output.getvalue()
-        # Only the spinner glyph changes: it is patched in place (TUX-02),
-        # with no erase and none of the line's other segments.
-        assert 0 < len(written.encode()) <= 80
+        status = next(row for row in lines_text(workspace._live.lines) if "Thinking" in row)
+        # Only the state segment changes: the turning flower and the bold letter
+        # sweeping across "Thinking" (TUX-02). It is patched in place — the
+        # cursor steps up to the status row and forward over the one unchanged
+        # cell before it — so nothing is erased and nothing right of the
+        # animated word is rewritten.
+        assert written.startswith("\x1b[1A\r\x1b[1C")
         assert "\x1b[2K" not in written
-        assert "sonnet" not in written and "Thinking" not in written
+        assert status.lstrip()[:1] in written  # the flower itself is drawn
+        for untouched in ("0s", "sonnet", "/help"):
+            assert untouched in status
+            assert untouched not in written
+        assert len(written.encode()) < len(status)  # far short of the whole row
     finally:
         workspace.stop()
 
@@ -279,7 +287,7 @@ async def test_typing_echoes_without_waiting_for_the_frame_interval() -> None:
         state.input.buf.set(list("hi"))
         state.input.cursor.set(2)
         await asyncio.sleep(0)
-        assert any("hi▌" in row for row in lines_text(workspace._live.lines))  # type: ignore[union-attr]
+        assert any("❯ hi" in row for row in lines_text(workspace._live.lines))  # type: ignore[union-attr]
     finally:
         workspace.stop()
 

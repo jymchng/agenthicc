@@ -16,6 +16,7 @@ import inspect
 import logging
 import os
 import re
+import time
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
@@ -37,7 +38,9 @@ from agenthicc.tui.tool_summary import (
     output_projection,
     presentation_from_metadata,
     summarize_call,
+    tool_presentation,
 )
+from agenthicc.tui.conversation_store import RunningTool
 from agenthicc.tools.hooks import (
     AfterToolHookDecision,
     ErrorToolHookDecision,
@@ -1191,6 +1194,7 @@ class AgentTurnRunner:
             self._tool_ready.pop(tid, None)
             if self._ctx.conv_store:
                 self._ctx.conv_store.set_tool(name)
+                self._ctx.conv_store.start_running_tool(self._running_tool(tid, name, args))
             if name in self._FILE_EDIT_TOOLS and args.get("path"):
                 await self._snapshot_file(tid, args["path"])
 
@@ -1205,6 +1209,19 @@ class AgentTurnRunner:
             if self._recovery_projector is None:
                 return
             self._recovery_projector.project_repaired(sig)
+
+    def _running_tool(self, tid: str, name: str, args: dict[str, object]) -> RunningTool:
+        """The live row of a call that has started: its operation and target."""
+        presentation = tool_presentation(name, self._tool_presentations.get(name))
+        summary = summarize_call(
+            name, args, None, root=self._workspace_root(), presentation=presentation
+        )
+        return RunningTool(
+            key=tid or name,
+            operation=presentation.operation,
+            target=summary.target,
+            started_at=time.time(),
+        )
 
     async def _snapshot_file(self, tid: str, rel_path: str) -> None:
         full = os.path.join(os.getcwd(), rel_path) if not os.path.isabs(rel_path) else rel_path
@@ -1221,6 +1238,8 @@ class AgentTurnRunner:
 
     async def _handle_tool_complete(self, sig: ToolCallComplete) -> None:
         tid: str = sig.tool_use_id
+        if self._ctx.conv_store:
+            self._ctx.conv_store.finish_running_tool(tid)
         success: bool = bool(sig.success)
         ms: float = sig.duration_ms
         name = self._tool_names.pop(tid, tid)

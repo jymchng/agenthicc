@@ -75,11 +75,12 @@ Two surfaces report time and usage, and they use different formats.
 something:
 
 ```text
-✾ Worked for 1m 5s
-✾ Done in 2m 5s across 2 turns
+✾ Worked for 1m 5s | 10:20 AM
+✾ Done in 2m 5s across 2 turns | 10:21 AM
 ```
 
-`Worked for` is the elapsed time of one turn. `Done in` spans the outer user
+`Worked for` is the elapsed time of one turn; each row ends with the local
+time it finished. `Done in` spans the outer user
 activity from its start until IDLE, including internal turns and workflow
 phases; it is printed only after several turns, or when it is longer than the
 one turn. Durations use whole seconds with compact `s`, `m`, and `h` units.

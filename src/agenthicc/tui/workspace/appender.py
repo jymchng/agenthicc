@@ -1024,30 +1024,39 @@ def _render_error(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
         )
 
 
-def _timing_row(glyph: str, text: str) -> Text:
-    """``✾ Worked for 37s``: the flower in the accent colour, the words muted."""
+def clock_time(timestamp: float) -> str:
+    """``10:20 AM``: the local 12-hour time of *timestamp* (no leading zero)."""
+    moment = time.localtime(timestamp)
+    hour = moment.tm_hour % 12 or 12
+    return f"{hour}:{moment.tm_min:02d} {'AM' if moment.tm_hour < 12 else 'PM'}"
+
+
+def _timing_row(glyph: str, text: str, timestamp: float) -> Text:
+    """``✾ Worked for 37s | 10:20 AM``: the flower accented, the words muted."""
     from rich.text import Text
 
     p = palette()
-    return Text.assemble((f"{glyph} ", p.accent), (text, p.muted))
+    return Text.assemble(
+        (f"{glyph} ", p.accent), (text, p.muted), (f" | {clock_time(timestamp)}", p.muted)
+    )
 
 
 @register_renderer("turn_complete")
 def _render_turn_complete(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
-    """``✾ Worked for 37s`` under the turn's last output."""
+    """``✾ Worked for 37s | 10:20 AM`` under the turn's last output."""
     elapsed = _number(ev.payload, "elapsed_s")
     self._activity_turns += 1
     self._last_turn_s = elapsed
     if elapsed >= 1.0:
         self._console.print(
-            _timing_row(glyphs().flower, f"Worked for {compact_duration(elapsed)}"),
+            _timing_row(glyphs().flower, f"Worked for {compact_duration(elapsed)}", ev.timestamp),
             highlight=False,
         )
 
 
 @register_renderer("activity_complete")
 def _render_activity_complete(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
-    """``✾ Done in 1m 12s across 3 turns``, only when it adds to the turn row.
+    """``✾ Done in 1m 12s across 3 turns | 10:20 AM``, when it adds to the turn row.
 
     One turn whose time matches the request's total already said it all; a
     second, identical ``Total`` row was noise.
@@ -1064,7 +1073,7 @@ def _render_activity_complete(self: ScrollBufferAppender, ev: ConversationEvent)
     text = f"Done in {compact_duration(elapsed)}"
     if turns > 1:
         text += f" across {turns} turns"
-    self._console.print(_timing_row(glyph, text), highlight=False)
+    self._console.print(_timing_row(glyph, text, ev.timestamp), highlight=False)
     self._gap_pending = True
 
 

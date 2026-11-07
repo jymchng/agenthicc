@@ -1660,6 +1660,72 @@ class SessionSwitch:
 class TUISession:
     """All TUI session behaviour — methods correspond to the former nested closures."""
 
+    #: The active workflow run; set through ``_workflow_handle`` (see below).
+    _workflow_handle_value: WorkflowRunHandle | None = None
+
+    @property
+    def _workflow_handle(self) -> WorkflowRunHandle | None:
+        return self._workflow_handle_value
+
+    @_workflow_handle.setter
+    def _workflow_handle(self, handle: WorkflowRunHandle | None) -> None:
+        """Track *handle* and let its phase changes drive the status line.
+
+        Every runner reports its phase through the handle; only some also
+        publish ``AppState.workflow_run``. Listening here shows the running
+        workflow and phase for all of them (operator request; TUX-02).
+        """
+        self._workflow_handle_value = handle
+        if handle is not None:
+            handle.on_change = self._publish_workflow_progress
+
+    def _publish_workflow_progress(self, handle: WorkflowRunHandle) -> None:
+        """Mirror *handle*'s workflow, phase and lifecycle into presentation state."""
+        import dataclasses as _dc
+
+        from agenthicc.workflows.plugin import WorkflowRun
+
+        app_state = self._ctx.app_state
+        lifecycle = handle.lifecycle
+        status = {
+            "running": "running",
+            "resuming": "running",
+            "pausing": "running",
+            "paused": "paused",
+            "complete": "complete",
+            "discarded": "complete",
+            "failed": "failed",
+        }.get(lifecycle, "running")
+        phase = handle.current_phase
+        names = handle.topology_phase_names or (
+            tuple(handle.workflow.phase_names()) if handle.workflow is not None else ()
+        )
+        total = max(len(names), handle.phase_index + 1)
+        current = app_state.workflow_run()
+        if isinstance(current, WorkflowRun) and current.run_id == handle.run_id:
+            updated = _dc.replace(
+                current,
+                workflow_name=handle.workflow_name,
+                current_phase=phase if phase is not None else current.current_phase,
+                current_phase_index=handle.phase_index,
+                total_phases=total,
+                status=status,
+            )
+        else:
+            if phase is None:
+                return
+            updated = WorkflowRun(
+                run_id=handle.run_id,
+                workflow_name=handle.workflow_name,
+                intent=handle.original_intent,
+                current_phase=phase,
+                current_phase_index=handle.phase_index,
+                total_phases=total,
+                status=status,
+            )
+        if updated != current:
+            app_state.workflow_run.set(updated)
+
     def __init__(
         self,
         ctx: SessionContext,
@@ -1698,7 +1764,7 @@ class TUISession:
         self._workflow_override: str | None = ctx.initial_workflow  # PRD-114: /workflow command
         if self._workflow_override is not None:
             self._set_workflow_override(self._workflow_override)
-        self._workflow_handle: WorkflowRunHandle | None = None
+        self._workflow_handle = None
         # Commands that run in the background (for example /compact).
         self._tasks = SupervisedTasks("tui session")
         from agenthicc.runners.workflow_recovery import WorkflowRecoveryCoordinator
@@ -2555,6 +2621,34 @@ class TUISession:
 
         app_state.pending_approval.subscribe(_on_approval_change)
 
+    def _project_background_terminals(self, terminal_manager: TerminalManager) -> None:
+        """Running background terminals become live rows with a blinking dot.
+
+        A terminal that a running tool call owns is already shown by that
+        call's own row, so only the ones running on their own are listed.
+        """
+        from agenthicc.tui.conversation_store import RunningTool
+        from agenthicc.tui.tool_summary import command_summary
+
+        conversation = self._ctx.app_state.conversation
+        owned = {item.key for item in conversation.running_tools()}
+        rows: list[RunningTool] = []
+        for record in reversed(terminal_manager.list_records()):
+            if not record.active or (record.tool_call_id and record.tool_call_id in owned):
+                continue
+            target = record.label or command_summary(record.command).target
+            rows.append(
+                RunningTool(
+                    key=f"terminal:{record.terminal_id}",
+                    operation="$",
+                    target=target,
+                    started_at=record.started_at or record.created_at,
+                    background=True,
+                )
+            )
+        if tuple(rows) != conversation.background_tools():
+            conversation.background_tools.set(tuple(rows))
+
     def _sync_terminal_status(self) -> None:
         """Project the current terminal wait into the reactive status bar."""
 
@@ -2563,6 +2657,7 @@ class TUISession:
             return
         snapshot = terminal_manager.wait_snapshot()
         conversation = self._ctx.app_state.conversation
+        self._project_background_terminals(terminal_manager)
         if snapshot is None:
             conversation.clear_terminal_wait()
             redraw = getattr(self._workspace, "_redraw", None)

@@ -1,8 +1,8 @@
 ── compact ──
-✾ Worked for 53s
+✾ Worked for 53s | 5:04 AM
 
 ── normal ──
-✾ Worked for 53s
+✾ Worked for 53s | 5:04 AM
 
 ── verbose ──
-✾ Worked for 53s
+✾ Worked for 53s | 5:04 AM

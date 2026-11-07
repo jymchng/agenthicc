@@ -11,7 +11,7 @@ from rich.console import Console
 from agenthicc.tools.approval import ApprovalRequest, ApprovalService
 from agenthicc.tui.conversation_store import AppState
 from agenthicc.tui.workspace import Workspace
-from tests.tui_frames import settle_frames
+from tests.tui_frames import settle_startup
 from agenthicc.tui.workspace.live_region import Line
 from agenthicc.tui.workspace.overlay import Overlay
 from agenthicc.tui.workspace.overlays.approval import ApprovalOverlay
@@ -79,7 +79,9 @@ async def test_waiting_ticks_do_not_append_duplicate_prompt_surfaces(
         await asyncio.sleep(0)
         await asyncio.sleep(0)
         workspace.overlays.show(_overlay(kind, request, service, workspace.overlays.hide))
-        await settle_frames(workspace)
+        # Startup's own frames (the first paint, the git branch mark) are not
+        # the waiting ticks this test watches.
+        await settle_startup(workspace)
 
         live = workspace._live
         assert live is not None

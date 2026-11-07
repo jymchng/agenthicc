@@ -23,7 +23,7 @@ _INDENT = "  "
 
 
 def build_prompt(buf: list[str], cursor: int) -> Text:
-    """Return the prompt: chevron, text and the cursor glyph at *cursor*.
+    """Return the prompt: chevron, text and a block cursor at *cursor*.
 
     Lines of a multi-line prompt after the first are indented to the text.
     """
@@ -32,7 +32,7 @@ def build_prompt(buf: list[str], cursor: int) -> Text:
     from agenthicc.tui.theme import glyphs, style
 
     g = glyphs()
-    chevron = style("accent", bold=True)
+    chevron = style("frame", bold=True)
     lines = "".join(buf).split("\n")
     prompt = Text()
     offset = 0
@@ -46,9 +46,11 @@ def build_prompt(buf: list[str], cursor: int) -> Text:
             prompt.append(_INDENT)
         column = cursor - offset
         if 0 <= column <= len(line):
+            # Claude Code's block cursor: the character under it in reverse,
+            # or a reversed space at the end of the line.
             prompt.append(line[:column])
-            prompt.append(g.cursor, "bold")
-            prompt.append(line[column:])
+            prompt.append(line[column] if column < len(line) else " ", "reverse")
+            prompt.append(line[column + 1 :])
             cursor = -1  # drawn once, on the first line that holds it
         else:
             prompt.append(line)

@@ -46,6 +46,7 @@ from agenthicc.tui.workspace.frames import FrameScheduler, FrameStats
 from agenthicc.tui.workspace.live_region import Line, LiveRegion
 from agenthicc.tui.workspace.overlay import OverlayHost
 from agenthicc.tui.workspace.queue_rows import queue_rows
+from agenthicc.tui.workspace.running_rows import running_rows
 
 if TYPE_CHECKING:
     from rich.console import Console, RenderableType
@@ -164,6 +165,8 @@ class Workspace:
         for sig in (
             conv.agent_state,
             conv.active_tool,
+            conv.running_tools,  # running calls' live rows
+            conv.background_tools,
             conv.model_name,
             conv.display_elapsed_s,
             conv.tokens_in,
@@ -388,6 +391,12 @@ class Workspace:
         cols = max(1, self._console.width)
         overlay = self.overlays.widget
         lines: list[Line] = self._overflow_rows(cols)
+        # Calls still running, under the transcript, with a blinking dot.
+        for row in running_rows(self._state, cols):
+            if row:
+                lines += self._markup(row, cols)
+            else:
+                lines.append(())
 
         # The framed composer, or an overlay in its place.
         if overlay is not None and overlay.owns_bottom_rows is True:

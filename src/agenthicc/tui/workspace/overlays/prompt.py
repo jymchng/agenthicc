@@ -38,13 +38,17 @@ class PromptOverlay(Overlay):
     def _render_prompt_line(self) -> str:
         """Return a Rich markup string for the prompt row: ❯ text▌."""
         from agenthicc.tui.input.renderer import PROMPT_CHAR, CURSOR_CHAR
+        from agenthicc.tui.theme import palette
         from rich.markup import escape as _e
 
         buf = self._buf.buf
         cursor = self._buf.cursor
         before = _e("".join(buf[:cursor]))
         after = _e("".join(buf[cursor:]))
-        return f"[bold yellow]{PROMPT_CHAR}[/bold yellow] {before}[bold]{CURSOR_CHAR}[/bold]{after}"
+        chevron = palette().frame
+        # ``frame`` is ``none`` under the no-color theme; "bold none" is not markup.
+        tag = f"bold {chevron}" if chevron not in ("", "none", "default") else "bold"
+        return f"[{tag}]{PROMPT_CHAR}[/{tag}] {before}[bold]{CURSOR_CHAR}[/bold]{after}"
 
     def _handle_prompt_key(self, key: Key, ch: str) -> bool:
         """Delegate one keystroke to the buffer.  Returns True if consumed."""

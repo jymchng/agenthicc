@@ -113,6 +113,25 @@ class _NotificationEntry:
     handle: _asyncio.TimerHandle | None = field(default=None)
 
 
+# ── Running tools (operator request) ─────────────────────────────────────────
+
+
+@dataclass(frozen=True, slots=True)
+class RunningTool:
+    """A tool call or background terminal that is still running.
+
+    The live region draws one row per entry, under the transcript, with a
+    blinking ``●`` until the call completes and its permanent row is printed.
+    """
+
+    key: str
+    """The tool-use id, or ``terminal:<id>`` for a background terminal."""
+    operation: str
+    target: str
+    started_at: float
+    background: bool = False
+
+
 # ── Queued messages (TUX-04 §2.6) ─────────────────────────────────────────────
 
 
@@ -217,6 +236,10 @@ class ConversationStore:
         self.turns: Signal[list[ConversationTurn]] = Signal([], name="turns")
         self.agent_state: Signal[AgentState] = Signal(AgentState.IDLE, name="agent_state")
         self.active_tool: Signal[str] = Signal("", name="active_tool")
+        #: Tool calls of the running turn that have not completed, oldest first.
+        self.running_tools: Signal[tuple[RunningTool, ...]] = Signal((), name="running_tools")
+        #: Background terminals still running (projected from the terminal manager).
+        self.background_tools: Signal[tuple[RunningTool, ...]] = Signal((), name="background_tools")
         self.frame: Signal[int] = Signal(0, name="frame")
         """Shared animation counter for active status surfaces (PRD-120/164).
 
@@ -504,7 +527,13 @@ class ConversationStore:
         # idle tick would cause Workspace to refresh the Live block at 20 Hz;
         # terminals or captured clients that do not interpret Rich's erase
         # controls would then display duplicate idle panels (PRD-164).
-        if self.is_running() or self.compaction_active():
+        if (
+            self.is_running()
+            or self.compaction_active()
+            or self.running_tools()
+            or self.background_tools()
+        ):
+            # Running-tool rows blink their dot, so they keep the clock going.
             self.frame.set(self.frame() + 1)
 
     def set_terminal_wait(
@@ -653,6 +682,7 @@ class ConversationStore:
         else:
             self.agent_state.set(AgentState.IDLE)
         self.active_tool.set("")
+        self.running_tools.set(())
         self._start_time = 0.0
         self.display_elapsed_s.set(0.0)
         self._display_paused = False
@@ -673,6 +703,17 @@ class ConversationStore:
     def set_tool(self, name: str) -> None:
         self.active_tool.set(name)
         self.agent_state.set(AgentState.RUNNING)
+
+    def start_running_tool(self, tool: RunningTool) -> None:
+        """Show *tool* as running until :meth:`finish_running_tool` (by its key)."""
+        others = tuple(item for item in self.running_tools() if item.key != tool.key)
+        self.running_tools.set((*others, tool))
+
+    def finish_running_tool(self, key: str) -> None:
+        current = self.running_tools()
+        remaining = tuple(item for item in current if item.key != key)
+        if len(remaining) != len(current):
+            self.running_tools.set(remaining)
 
     def clear_tool(self, success: bool = True) -> None:
         self.active_tool.set("")
