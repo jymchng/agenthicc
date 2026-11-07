@@ -22,7 +22,6 @@ _EXEMPT = {_SRC / "tui" / "theme.py"}
 #: The series is complete when this set is empty.
 _PENDING: frozenset[str] = frozenset(
     {
-        "commands/builtins.py",
         "tui/input/renderer.py",
         "tui/keymap_table.py",
         "tui/runtime/mode_manager.py",

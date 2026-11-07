@@ -21,9 +21,14 @@ from agenthicc.reactive import Signal, Computed
 if TYPE_CHECKING:
     import asyncio as _asyncio
     from agenthicc.tools.approval import ApprovalRequest
+    from agenthicc.tui.workspace.notice import Notice, Severity
     from agenthicc.tui.runtime.mode_manager import RuntimeMode
     from agenthicc.workflows.plugin import WorkflowRun
     from agenthicc.subagents.pool import SubagentPoolState
+
+
+#: How long a transient status-line notice stays (TUX-02, TUX-08).
+TRANSIENT_NOTICE_S: float = 4.0
 
 
 # ── Agent state ───────────────────────────────────────────────────────────────
@@ -148,6 +153,13 @@ class ConversationStore:
         self.current_directory: Signal[str] = Signal(os.getcwd(), name="current_directory")
         self.model_name: Signal[str] = Signal("", name="model_name")
         self.notification: Signal[str | None] = Signal(None, name="notification")
+        self.transient_notice: Signal[Notice | None] = Signal(None, name="transient_notice")
+        """A confirmation or FYI for the status line's right segment (TUX-08).
+
+        Set by :meth:`notify` and cleared after :data:`TRANSIENT_NOTICE_S`;
+        it never reaches the scrollback or the session log.
+        """
+        self._transient_notice_handle: _asyncio.TimerHandle | None = None
         self.loop_status: Signal[str | None] = Signal(None, name="loop_status")
         """Persistent footer projection for an active session ``/loop``."""
         self.workflow_override: Signal[str | None] = Signal(None, name="workflow_override")
@@ -429,6 +441,44 @@ class ConversationStore:
         self.terminal_running_count.set(0)
 
     # ── turn lifecycle ────────────────────────────────────────────────────────
+
+    def notify(
+        self,
+        severity: Severity,
+        text: str,
+        *,
+        duration: float | None = None,
+    ) -> Notice:
+        """Show *text* on the status line for *duration* seconds (TUX-08).
+
+        A transient notice is for confirmations and FYIs ("Copied",
+        "Mode → Plan"): it replaces the previous one, never enters the
+        scrollback and is never persisted. With no running event loop
+        (headless, tests) it stays until the next :meth:`notify`.
+        """
+        import asyncio
+
+        from agenthicc.tui.workspace.notice import Notice
+
+        notice = Notice(severity, text)
+        if self._transient_notice_handle is not None:
+            self._transient_notice_handle.cancel()
+            self._transient_notice_handle = None
+        self.transient_notice.set(notice)
+
+        def _clear() -> None:
+            self._transient_notice_handle = None
+            if self.transient_notice() is notice:
+                self.transient_notice.set(None)
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return notice
+        self._transient_notice_handle = loop.call_later(
+            TRANSIENT_NOTICE_S if duration is None else duration, _clear
+        )
+        return notice
 
     def notify_transient(self, message: str, duration: float = 2.0) -> None:
         """Append a transient notification line that auto-dismisses after *duration* seconds.

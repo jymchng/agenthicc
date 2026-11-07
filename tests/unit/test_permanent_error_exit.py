@@ -177,9 +177,12 @@ async def test_stream_reraises_permanent_error() -> None:
     conv_store.append_event.assert_called_once()
     call_args = conv_store.append_event.call_args
     assert call_args[0][0] == "error"
-    assert "400" in str(call_args[0][1]["message"]) or "TransportError" in str(
-        call_args[0][1]["message"]
-    )
+    payload = call_args[0][1]
+    # TUX-08: the kind and agenthicc's copy replace the exception text.
+    assert payload["http_status"] == 400
+    assert payload["kind"] == "internal"
+    assert payload["message"] == "The turn failed unexpectedly (Exception)."
+    assert "model not found" not in repr(payload)
 
     # close_turn() must still be called (finally block ran)
     conv_store.close_turn.assert_called_once()

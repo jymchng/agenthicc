@@ -152,7 +152,7 @@ class TestGroupCount:
             "  ⎿ Read(src/one.py)",
             "  ⎿ Read(src/two.py)",
             "",
-            "Next block",
+            " · Next block",
             "",
         ]
 
@@ -178,7 +178,7 @@ class TestGroupCount:
         assert console.export_text().splitlines() == [
             f"● Assistant Turn  {expected}",
             "",
-            "Next block",
+            " · Next block",
             "",
         ]
 

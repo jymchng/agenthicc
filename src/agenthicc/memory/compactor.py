@@ -261,7 +261,7 @@ async def compact_memory_with_result(
     if conv_store is not None:
         try:
             conv_store.compaction_active.set(True)
-            conv_store.append_event("system", {"text": "⎋ Compacting conversation…"})
+            conv_store.append_event("system", {"text": "Compacting conversation…"})
             conv_store.append_event(
                 "compaction_status",
                 {"status": "started", "before_tokens": before_tokens},
@@ -900,23 +900,21 @@ def _emit_outcome(conv_store: ConversationStore | None, outcome: CompactionOutco
         "": "",
     }
     if outcome.status == "compacted_summary":
-        label = f"⎋ Compacted → ~{outcome.after_tokens:,} tokens"
+        label = f"Compacted → ~{outcome.after_tokens:,} tokens"
     elif outcome.status == "compacted_local_fallback":
         if outcome.fallback_result == "compacted_tool_output":
-            label = "⎋ Compaction fallback: excerpted generated tool output; omissions are marked"
+            label = "Compaction fallback: excerpted generated tool output; omissions are marked"
         else:
-            label = "⎋ Compaction fallback: retained recent complete exchanges"
+            label = "Compaction fallback: retained recent complete exchanges"
     elif outcome.status == "skipped_summary_unavailable":
         label = (
-            "⎋ Compaction summary unavailable "
+            "Compaction summary unavailable "
             f"({outcome.summary_result}; {outcome.summary_attempts} attempts); conversation unchanged"
         )
     elif outcome.status == "skipped_concurrent_update":
-        label = (
-            "⎋ Compaction skipped: conversation changed while it was running; newer history kept"
-        )
+        label = "Compaction skipped: conversation changed while it was running; newer history kept"
     elif outcome.status == "blocked_durability_error":
-        label = "⎋ Compaction blocked: durable memory could not be committed"
+        label = "Compaction blocked: durable memory could not be committed"
     else:
         reason = reasons.get(outcome.recovery_reason, "context could not be reduced safely")
         cause = (
@@ -924,7 +922,7 @@ def _emit_outcome(conv_store: ConversationStore | None, outcome: CompactionOutco
             if outcome.summary_result not in {"not_attempted", "summarized"}
             else ""
         )
-        label = f"⎋ Compaction blocked: {reason}{cause}"
+        label = f"Compaction blocked: {reason}{cause}"
 
     if outcome.status == "compacted_local_fallback" and outcome.summary_result not in {
         "not_attempted",

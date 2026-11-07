@@ -520,7 +520,15 @@ def _fmt_exc(exc: BaseException) -> str:
 
     Never returns a bare ``str(exc)`` — the exception class name is always
     included so users can identify the failure type (e.g. ``ReadTimeout``).
+    A failed agent turn's exception is reported by its own copy instead
+    ("No API key for anthropic."), so provider text never reaches the
+    transcript or a checkpoint (TUX-08).
     """
+    from agenthicc.runners.failure_kinds import reported_failure
+
+    reported = reported_failure(exc)
+    if reported is not None:
+        return str(reported.get("message", ""))
     name = type(exc).__name__
     msg = str(exc).strip()
     return f"{name}: {msg}" if msg else name
@@ -3315,6 +3323,7 @@ class TUISession:
             open_subagents=self.open_subagents,
             select_agent=self.select_agent,
             open_agent_picker=self.open_agent_picker,
+            transient_notify=ctx.app_state.conversation.notify,
         )
         return bool(self._cmd_dispatcher.dispatch(text, context))
 
@@ -4171,7 +4180,7 @@ class TUISession:
         mem = ctx.session_memory
 
         if mem is None or not mem._messages:
-            conv.notify_transient("⎋ Nothing to compact")
+            conv.notify_transient("Nothing to compact")
             return
 
         transport = getattr(ctx.agent_runner, "_transport", None)
@@ -4196,9 +4205,9 @@ class TUISession:
         )
         if outcome.applied:
             conv.notify_transient(
-                "⎋ Compacted"
+                "Compacted"
                 if outcome.status == "compacted_summary"
-                else "⎋ Compaction fallback: retained recent complete exchanges"
+                else "Compaction fallback: retained recent complete exchanges"
             )
         elif outcome.status == "blocked_durability_error":
             conv.notify_transient(
@@ -4206,7 +4215,7 @@ class TUISession:
             )
         elif outcome.status == "skipped_concurrent_update":
             conv.notify_transient(
-                "⎋ Compaction skipped because the conversation changed; newer history was kept"
+                "Compaction skipped because the conversation changed; newer history was kept"
             )
         else:
             conv.notify_transient(
@@ -5361,6 +5370,31 @@ class TUISession:
                 self._workflow_handle = None
             self.advance()
 
+    # ── diagnostics (TUX-08 §2.3) ─────────────────────────────────────────────
+
+    def _install_diagnostics_log(self) -> None:
+        """Send stray stderr and warnings to the session log, unless ``--debug``.
+
+        The first stray write shows one transient notice pointing at /logs.
+        """
+        if self._ctx.app_state.cli_flags.debug:
+            return
+        from agenthicc.tui.diagnostics import (
+            DIAGNOSTICS_NOTICE,
+            DiagnosticsLog,
+            diagnostics_log_path,
+            install_stderr_sink,
+        )
+
+        conversation = self._ctx.app_state.conversation
+        loop = asyncio.get_running_loop()
+
+        def first_write() -> None:
+            # A library may write from any thread; the notice is set on the loop.
+            loop.call_soon_threadsafe(conversation.notify, "info", DIAGNOSTICS_NOTICE)
+
+        install_stderr_sink(DiagnosticsLog(diagnostics_log_path(self._ctx.session_id), first_write))
+
     # ── main loop ─────────────────────────────────────────────────────────────
 
     async def run(self) -> None:
@@ -5386,9 +5420,13 @@ class TUISession:
         startup = ctx.startup
         if startup is not None:
             startup.begin("first_frame")
+        self._install_diagnostics_log()
         try:
             self._workspace.start()
         except Exception as exc:
+            from agenthicc.tui.diagnostics import uninstall_stderr_sink
+
+            uninstall_stderr_sink()
             if startup is not None:
                 from agenthicc.runners.startup import ReadinessState
 
@@ -5566,7 +5604,13 @@ class TUISession:
                 *owned,
                 return_exceptions=True,
             )
-            self._workspace.stop()
+            try:
+                self._workspace.stop()
+            finally:
+                # After the live region has given sys.stderr back.
+                from agenthicc.tui.diagnostics import uninstall_stderr_sink
+
+                uninstall_stderr_sink()
             agents_service, self._agents_service = self._agents_service, None
             if agents_service is not None:
                 await agents_service.close()

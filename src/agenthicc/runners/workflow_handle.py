@@ -604,7 +604,12 @@ class WorkflowRunHandle:
     @staticmethod
     def _safe_failure_message(error: object) -> str:
         """Return a bounded, single-line diagnostic safe for persistence/UI."""
-        text = re.sub(r"\s+", " ", str(error)).strip()
+        from agenthicc.runners.failure_kinds import reported_failure
+
+        # A failed agent turn's exception carries agenthicc's own copy for its
+        # failure kind; the provider's text never reaches a checkpoint (TUX-08).
+        reported = reported_failure(error) if isinstance(error, BaseException) else None
+        text = re.sub(r"\s+", " ", str(reported["message"] if reported else error)).strip()
         # Do not retain common credential-bearing fields if an exception
         # includes a provider request dump. The full exception remains a log
         # concern, never a checkpoint concern.

@@ -152,6 +152,15 @@ def _add_global_flags(parser: argparse.ArgumentParser) -> None:
         ),
     )
     parser.add_argument(
+        "--debug",
+        action="store_true",
+        default=False,
+        help=(
+            "Show stray stderr output and Python warnings on the screen instead of "
+            "writing them to the session's diagnostics log (~/.agenthicc/logs)."
+        ),
+    )
+    parser.add_argument(
         "--dangerously-skip-permissions",
         dest="dangerously_skip_permissions",
         action="store_true",
@@ -250,6 +259,7 @@ def _build_ctx(
     goal_priority = vars(ns).get("goal_priority", "normal")
     flags = CLIFlags(
         dangerously_skip_permissions=getattr(ns, "dangerously_skip_permissions", False),
+        debug=bool(vars(ns).get("debug", False)),
     )
     return CLIContext(
         resume_id=getattr(ns, "resume", None),

@@ -24,6 +24,14 @@ from typing import TYPE_CHECKING, Literal, TypeVar, cast
 
 from agenthicc.memory.tool_history import repair_non_adjacent_tool_history
 from agenthicc.runners.agent_turn_context import AgentTurnContext
+from agenthicc.runners.failure_kinds import (
+    FAILURE_ATTRIBUTE,
+    FailureCopy,
+    classify_turn_failure,
+    failure_copy,
+    failure_host,
+    failure_payload,
+)
 from agenthicc.runners.prompt_contract import PromptBlock
 from agenthicc.runners.recovery_projection import ToolRecoveryProjector
 from agenthicc.tools.base import tool_name
@@ -1052,6 +1060,10 @@ class AgentTurnRunner:
 
     _FILE_EDIT_TOOLS = frozenset({"write_file", "patch_file", "append_file"})
 
+    #: Transport retries the current turn scheduled, for the failure copy
+    #: ("retried 3 times", TUX-08); reset per turn by the retry boundary.
+    _transport_retries: int = 0
+
     def __init__(self, ctx: AgentTurnContext) -> None:
         self._ctx = ctx
 
@@ -1224,12 +1236,42 @@ class AgentTurnRunner:
             self._model_id = getattr(cfg, "model", "unknown") if cfg else "unknown"
         self._model_short = self._model_id.split("/")[-1]
 
+    def _transport_config(self) -> object | None:
+        """The runner transport's resolved configuration (provider, timeout)."""
+        return _provider_attribute(_provider_attribute(self._ctx.runner, "_transport"), "_config")
+
     def _provider_label(self) -> str:
         """Return the configured provider label for usage diagnostics."""
-        transport = getattr(self._ctx.runner, "_transport", None)
-        config = getattr(transport, "_config", None)
-        provider = getattr(config, "provider", None)
+        provider = _provider_attribute(self._transport_config(), "provider")
         return provider if isinstance(provider, str) and provider else "unknown"
+
+    def _failure_copy(self, exc: BaseException, metadata: Mapping[str, str | int]) -> FailureCopy:
+        """The TUX-08 kind and copy for a turn failure, from agenthicc's own values."""
+        provider = str(metadata.get("provider", "unknown"))
+        if provider == "unknown":
+            configured = _provider_attribute(self._ctx.exec_cfg, "provider")
+            provider = _safe_provider_identifier(configured) or ""
+        from agenthicc.runners.retry import _retry_after_seconds
+        from agenthicc.tui.diagnostics import diagnostics_log_path
+
+        timeout = _provider_attribute(self._transport_config(), "timeout")
+        session_id = self._ctx.conversation_id
+        return failure_copy(
+            classify_turn_failure(exc, provider),
+            provider=provider,
+            model=_safe_provider_identifier(self._model_id) or "",
+            profile=str(metadata.get("profile", "")),
+            exception_type=str(metadata.get("exception_type", "")),
+            retries=self._transport_retries,
+            retry_after_s=_retry_after_seconds(exc) or None,
+            timeout_s=(
+                float(timeout)
+                if isinstance(timeout, (int, float)) and not isinstance(timeout, bool)
+                else None
+            ),
+            host=failure_host(exc),
+            log_path=diagnostics_log_path(session_id) if session_id else None,
+        )
 
     # ── step 2: kernel event ──────────────────────────────────────────────────
 
@@ -3128,28 +3170,18 @@ class AgentTurnRunner:
                     model=self._model_id,
                     turn_id=self._intent_id,
                 )
+                # TUX-08: a fixed kind and agenthicc-written copy replace the
+                # exception; the redacted metadata stays alongside it.
+                failure = failure_payload(self._failure_copy(exc, metadata))
                 if missing_session_diagnostic is not None:
-                    ctx.conv_store.append_event(
-                        "error",
-                        {
-                            "message": "Provider session identity is missing",
-                            "detail": missing_session_diagnostic,
-                            **metadata,
-                        },
-                        event_id=error_event_id,
-                    )
-                else:
-                    status = metadata.get("http_status")
-                    message = (
-                        f"Provider request failed (HTTP {status})"
-                        if isinstance(status, int)
-                        else f"Agent turn failed ({metadata['exception_type']})"
-                    )
-                    ctx.conv_store.append_event(
-                        "error",
-                        {"message": message, **metadata},
-                        event_id=error_event_id,
-                    )
+                    failure["message"] = "Provider session identity is missing"
+                if error_event_id is not None:
+                    # Headless JSON and other owners report the same kind/copy.
+                    exc.__dict__[FAILURE_ATTRIBUTE] = failure
+                payload: dict[str, object] = {**metadata, **failure}
+                if missing_session_diagnostic is not None:
+                    payload["detail"] = missing_session_diagnostic
+                ctx.conv_store.append_event("error", payload, event_id=error_event_id)
             # Every exception that survives the provider-step retry policy must
             # cross the agent-turn boundary.  Workflow owners need the original
             # exception to finalize one durable pause for the already-attached
@@ -3227,6 +3259,7 @@ class AgentTurnRunner:
         from agenthicc.runners.retry import RetryConfig, run_with_transport_retry
 
         ctx = self._ctx
+        self._transport_retries = 0
         exec_cfg = _execution(ctx.exec_cfg)
         # agenthicc owns this boundary because lauren-ai releases without
         # provider-step retries still need to recover transient stream errors.
@@ -3285,6 +3318,8 @@ class AgentTurnRunner:
     ) -> None:
         """Observability + user notification for a scheduled transport retry."""
         ctx = self._ctx
+        # Counted for the final failure's copy ("retried 3 times", TUX-08).
+        self._transport_retries = attempt
         if ctx.conv_store is not None:
             ctx.conv_store.append_event(
                 "network_retry",

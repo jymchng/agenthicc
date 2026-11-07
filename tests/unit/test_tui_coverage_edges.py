@@ -852,4 +852,4 @@ def test_scroll_buffer_appender_renders_event_families(capsys: pytest.CaptureFix
     appender.print_idle_header()
     appender.unmount()
     assert "Completed" in console.export_text()
-    assert "ERROR" in capsys.readouterr().out
+    assert " ✗ boom" in capsys.readouterr().out

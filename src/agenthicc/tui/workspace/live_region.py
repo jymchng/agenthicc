@@ -226,7 +226,16 @@ class LiveRegion(RenderHook):
         if not isinstance(sys.stdout, FileProxy):
             self._restore_stdout = sys.stdout
             sys.stdout = cast("TextIO", FileProxy(self.console, sys.stdout))
-        if not isinstance(sys.stderr, FileProxy):
+        # TUX-08: stray stderr goes to the session's diagnostics log, never
+        # between frames; without a sink (--debug) it is printed as before.
+        from agenthicc.tui.diagnostics import stderr_sink
+
+        sink = stderr_sink()
+        if sink is not None:
+            if sys.stderr is not sink:
+                self._restore_stderr = sys.stderr
+                sys.stderr = cast("TextIO", sink)
+        elif not isinstance(sys.stderr, FileProxy):
             self._restore_stderr = sys.stderr
             sys.stderr = cast("TextIO", FileProxy(self.console, sys.stderr))
 

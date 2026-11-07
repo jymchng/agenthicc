@@ -212,7 +212,7 @@ class TestCompletionRecapRenderers:
         )
 
         output = console.export_text()
-        assert "ERROR boom" in output
+        assert " ✗ boom" in output
         assert "✾ Turn · 2s" in output
         assert "  Total · 3s" in output
         assert "Completed" not in output
@@ -241,7 +241,7 @@ class TestCompletionRecapRenderers:
 
         rendered = console.export_text()
         suffix = rendered.split("  Total · 2s", 1)[1]
-        assert suffix.startswith("\n\nERROR MCP server 'asyncmove' failed to start")
+        assert suffix.startswith("\n\n ✗ MCP server 'asyncmove' failed to start")
         assert not suffix.startswith("\n\n\n")
 
     def test_missing_turn_elapsed_does_not_render_a_row(self) -> None:

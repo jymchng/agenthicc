@@ -95,12 +95,12 @@ class TestScrollBufferRenderers:
         return buf.getvalue()
 
     def test_system_renderer_prints_text(self) -> None:
-        out = self._render_event("system", {"text": "⎋ Compacting conversation…"})
-        assert out.splitlines()[0].startswith("⎋ Compacting")
+        out = self._render_event("system", {"text": "Compacting conversation…"})
+        assert out.splitlines()[0] == " · Compacting conversation…"
 
-    def test_system_renderer_indents_completed_compaction_notice(self) -> None:
-        out = self._render_event("system", {"text": "⎋ Compacted → ~215 tokens"})
-        assert out.splitlines()[0].startswith("  ⎋ Compacted")
+    def test_system_renderer_renders_completed_compaction_as_an_info_notice(self) -> None:
+        out = self._render_event("system", {"text": "Compacted → ~215 tokens"})
+        assert out.splitlines()[0] == " · Compacted → ~215 tokens"
 
     def test_system_renderer_empty_payload_is_silent(self) -> None:
         out = self._render_event("system", {})

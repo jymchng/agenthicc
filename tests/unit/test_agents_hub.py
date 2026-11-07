@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import subprocess
 import threading
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -592,7 +593,10 @@ async def test_help_overlay_lists_the_keys_from_the_keymap(seeded: AgentsHub) ->
     seeded.handle_key(Key.CHAR, "?")
     text = _text(seeded, height=80)
     assert "Approve the exact pending request" in text
-    assert "(needs_approval)" in text
+    # TUX-08 §4.7: conditions read as phrases, never as internal flag names.
+    assert "(when an agent needs approval)" in text
+    assert re.search(r"\b[a-z]+_[a-z_]+\b", text) is None, text
+    assert re.search(r"\(([^)]*, )?not ", text) is None, text
     seeded.handle_key(Key.CHAR, "x")
     assert not seeded.help_visible
 

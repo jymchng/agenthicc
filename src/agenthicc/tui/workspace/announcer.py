@@ -2,15 +2,17 @@
 
 With ``[ui] screen_reader = true`` the live block does not animate, and every
 change a sighted user would notice in it — the agent starting or finishing,
-a tool running, a prompt waiting for approval, a notification, a mode switch —
-is also printed once, as a sentence, in the scroll buffer, where a screen
-reader reads it in order. Announcements are presentation only: they are not
-written to the session's event log.
+a tool running, a prompt waiting for approval, a notification, a status-line
+notice ("Done: Copied", TUX-08), a mode switch — is also printed once, as a
+sentence, in the scroll buffer, where a screen reader reads it in order.
+Announcements are presentation only: they are not written to the session's
+event log.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from agenthicc.tui.conversation_store import AgentState
@@ -45,6 +47,7 @@ class Announcer:
             (conv.active_tool, self._on_agent_state),
             (self._state.pending_approval, self._on_approval),
             (conv.notification, self._on_notification),
+            (conv.transient_notice, self._on_transient_notice),
             (self._state.active_mode, self._on_mode),
         ):
             self._unsubscribe.append(signal.subscribe(handler))
@@ -86,6 +89,11 @@ class Announcer:
     def _on_notification(self) -> None:
         text = self._state.conversation.notification()
         self._say("notification", text if isinstance(text, str) else "")
+
+    def _on_transient_notice(self) -> None:
+        # The severity is spoken as a word ("Error:"), never left to a glyph.
+        notice = self._state.conversation.transient_notice()
+        self._say("notice", replace(notice, words=True).plain() if notice is not None else "")
 
     def _on_mode(self) -> None:
         self._say("mode", f"{self._state.active_mode().name} mode.")

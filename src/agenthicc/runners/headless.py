@@ -16,6 +16,7 @@ from agenthicc.runners.session_lease import (
     SessionOwnerLease,
     SessionStorageError,
 )
+from agenthicc.runners.failure_kinds import failure_reason, reported_failure
 from agenthicc.runners.workflow_handle import classify_workflow_failure
 
 if TYPE_CHECKING:
@@ -23,6 +24,7 @@ if TYPE_CHECKING:
 
     from agenthicc.cli.context import CLIContext
     from agenthicc.kernel.events import Event
+    from agenthicc.tui.conversation_store import ConversationEvent
     from agenthicc.tools.approval import ApprovalRequest, ApprovalResponse
     from agenthicc.runners.run_coordinator import ResumePlan
     from agenthicc.runners.session_context import SessionContext
@@ -62,6 +64,8 @@ class WorkflowExecutionResult:
     error: str | None = None
     phase_metadata: dict[str, object] = field(default_factory=dict)
     failure_category: str = ""
+    #: The failed turn's ``kind``/``message``/``action`` (TUX-08), if one failed.
+    failure: dict[str, object] | None = None
 
     def to_dict(self) -> dict[str, object]:
         """Return the stable JSON representation used by CLI and stdin modes."""
@@ -78,7 +82,21 @@ class WorkflowExecutionResult:
             result["phase_metadata"] = self.phase_metadata
         if self.failure_category:
             result["failure_category"] = self.failure_category
+        if self.failure is not None:
+            result["error_kind"] = self.failure.get("kind")
         return result
+
+    def error_record(self) -> dict[str, object] | None:
+        """The ``{"type": "error", "kind": …}`` line for a failed turn (TUX-08)."""
+        if self.failure is None:
+            return None
+        return {
+            "type": "error",
+            **self.failure,
+            "session_id": self.session_id,
+            "workflow": self.workflow_name,
+            "run_id": self.run_id,
+        }
 
 
 def _optional_request_field(value: object, name: str, default: object = None) -> object:
@@ -371,6 +389,21 @@ async def execute_workflow(
             completed_phases.append(event)
 
     remove_phase_sink = session.processor.add_sink(_record_completed_phase)
+    # TUX-08: a failed turn publishes a classified error event; headless
+    # reports the last one as {"type": "error", "kind": …}.
+    turn_failures: list[dict[str, object]] = []
+
+    def _record_turn_failure(event: ConversationEvent) -> None:
+        if event.kind == "error" and isinstance(event.payload.get("kind"), str):
+            turn_failures.append(
+                {
+                    key: event.payload[key]
+                    for key in ("kind", "message", "action")
+                    if key in event.payload
+                }
+            )
+
+    remove_failure_subscription = session.app_state.conversation.on_event(_record_turn_failure)
     try:
         # Establish a durable identity before any plugin setup.  A generic
         # bootstrap context is deliberately diagnostic-only until the runner
@@ -557,12 +590,15 @@ async def execute_workflow(
                     workflow_handle.save_checkpoint(reason="complete")
     except (asyncio.CancelledError, KeyboardInterrupt):
         remove_phase_sink()
+        remove_failure_subscription()
         if workflow_handle is not None:
             workflow_handle.finalize_failure("cancelled", kind="user_cancelled")
             workflow_handle.release_claim()
         raise
     except Exception as exc:  # noqa: BLE001
-        error = f"{type(exc).__name__}: {exc}"
+        # A failed agent turn reports a fixed kind and agenthicc's own copy;
+        # the provider's exception text never reaches the JSON (TUX-08).
+        error = failure_reason(exc)
         from agenthicc.memory.compactor import CompactionRecoveryRequired
 
         if isinstance(exc, _WorkflowResumeTransitionError):
@@ -575,8 +611,10 @@ async def execute_workflow(
             if isinstance(exc, CompactionRecoveryRequired):
                 failure_category = exc.failure_category
             if workflow_handle is not None:
+                # A failed turn's exception keeps its status and provider
+                # metadata for the checkpoint, which persists only its copy.
                 checkpoint = workflow_handle.finalize_failure(
-                    error,
+                    exc if reported_failure(exc) is not None else error,
                     kind=_workflow_failure_kind(exc),
                 )
                 workflow_run = session.app_state.workflow_run()
@@ -605,6 +643,7 @@ async def execute_workflow(
         raise
     finally:
         remove_phase_sink()
+        remove_failure_subscription()
     workflow_run = session.app_state.workflow_run()
     status = (workflow_run.status if workflow_run is not None else "") or "failed"
     if error is None and status == "failed":
@@ -662,6 +701,7 @@ async def execute_workflow(
         error=error,
         phase_metadata=phase_metadata,
         failure_category=failure_category,
+        failure=turn_failures[-1] if turn_failures and status in {"failed", "paused"} else None,
     )
     handle_phase = (workflow_handle.current_phase if workflow_handle is not None else None) or ""
     handle_failure_kind = workflow_handle.failure_kind if workflow_handle is not None else None
@@ -900,8 +940,12 @@ async def _run_headless_workflow_stream(ctx: "CLIContext") -> None:
                         run_id="",
                         status="failed",
                         phases=(),
-                        error=f"{type(exc).__name__}: {exc}",
+                        error=failure_reason(exc),
+                        failure=reported_failure(exc),
                     )
+            record = result.error_record()
+            if record is not None:
+                print(json.dumps(record), flush=True)
             print(json.dumps(result.to_dict()), flush=True)
             completed_turns += 1
     finally:
