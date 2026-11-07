@@ -45,6 +45,7 @@ from agenthicc.tui.workspace.components import (
 from agenthicc.tui.workspace.frames import FrameScheduler, FrameStats
 from agenthicc.tui.workspace.live_region import Line, LiveRegion
 from agenthicc.tui.workspace.overlay import OverlayHost
+from agenthicc.tui.workspace.queue_rows import queue_rows
 
 if TYPE_CHECKING:
     from rich.console import Console, RenderableType
@@ -157,6 +158,9 @@ class Workspace:
         ):
             self._unsubs.append(input_signal.subscribe(self._redraw_input))
         conv = self._state.conversation
+        # TUX-04 §2.6: the queued-message rows follow the queue and its focus.
+        self._unsubs.append(conv.queue.items.subscribe(self._redraw_input))
+        self._unsubs.append(conv.queue.focus.subscribe(self._redraw_input))
         for sig in (
             conv.agent_state,
             conv.active_tool,
@@ -414,6 +418,10 @@ class Workspace:
             lines += notices
             return lines
 
+        # TUX-04 §2.6: queued messages, one row each, above the prompt.
+        for row in queue_rows(self._state, cols):
+            lines += self._markup(row, cols)
+
         form = self.frame.form(cols)
         if form != "none":
             lines += self._markup(self.frame.top(cols, form), cols)
@@ -548,6 +556,10 @@ class Workspace:
         if self._state.pending_approval() is not None:
             return
         self._redraw()
+
+    def repaint(self) -> None:
+        """Repaint every row of the live region from scratch (Ctrl+L, TUX-04)."""
+        self._repaint_for_theme()
 
     def _repaint_for_theme(self) -> None:
         """Drop cached rows and repaint the whole block (a theme changed)."""

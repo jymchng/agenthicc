@@ -10,6 +10,11 @@ from typing import Generator
 from agenthicc.tui.cbreak_reader import Key, raw_mode as _raw_mode, read_key as _read_key
 from agenthicc.tui.cbreak_reader import query_background_color as _query_background
 from agenthicc.tui.cbreak_reader import set_reporting as _set_reporting
+from agenthicc.tui.cbreak_reader import (
+    KITTY_KEYBOARD_POP,
+    KITTY_KEYBOARD_PUSH,
+    kitty_keyboard_supported,
+)
 
 __all__ = ["PosixBackend"]
 
@@ -55,6 +60,10 @@ class PosixBackend:
         # executor task can start, so restore() cannot race its initialization.
         self._ensure_cancel_pipe()
         with _raw_mode(fd):
+            kitty = kitty_keyboard_supported(os.environ)
+            if kitty:
+                # TUX-04: Shift+Enter and Ctrl+Enter arrive as distinct keys.
+                self._write(KITTY_KEYBOARD_PUSH)
             try:
                 yield
             finally:
@@ -62,6 +71,8 @@ class PosixBackend:
                     focus=False if self._focus_reporting else None,
                     mouse=False if self._mouse_reporting else None,
                 )
+                if kitty:
+                    self._write(KITTY_KEYBOARD_POP)
                 self.restore()
 
     def query_background(self, timeout: float) -> tuple[int, int, int] | None:
@@ -110,6 +121,14 @@ class PosixBackend:
         self.close()
 
     # ── internals ─────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _write(codes: str) -> None:
+        try:
+            sys.stdout.write(codes)
+            sys.stdout.flush()
+        except (OSError, ValueError):
+            pass  # stdout closed during shutdown
 
     def _resolve_fd(self) -> int | None:
         if self._fd is not None:

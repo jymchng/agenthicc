@@ -35,6 +35,7 @@ def _state() -> MagicMock:
     conv.workflow_override.return_value = None
     conv.compaction_active.return_value = False
     conv.subagent_pool_state.return_value = None
+    conv.queue.items.return_value = ()  # TUX-04: nothing queued
     state.overlay.return_value = None
     state.pending_approval.return_value = None
     state.workflow_run.return_value = None

@@ -6,7 +6,12 @@ about its state; the composer reports:
 
 - ``running`` — a turn is in progress (input is queued);
 - ``paste`` — a large paste is shown condensed;
-- ``paste_at_cursor`` — the cursor is right after that condensed paste.
+- ``paste_at_cursor`` — the cursor is right after that condensed paste;
+- ``empty`` — the prompt is empty;
+- ``queued`` — messages are queued for after the running turn (TUX-04).
+
+The ``picker``, ``search`` and ``queue`` contexts are the composer's ``/``/``@``
+pickers, its Ctrl+R history search and its queued-message rows (TUX-04).
 
 The agents hub (AGX-05–07) reports, for its selected row and tab:
 
@@ -29,6 +34,8 @@ worker has a transcript), ``running_worker`` (it has not finished) and
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from agenthicc.tui.keymap import Action
 
 __all__ = [
@@ -39,6 +46,9 @@ __all__ = [
     "COMPOSER_ACTIONS",
     "DEFAULT_ACTIONS",
     "GLOBAL_ACTIONS",
+    "PICKER_ACTIONS",
+    "QUEUE_ACTIONS",
+    "SEARCH_ACTIONS",
     "SUBAGENTS_ACTIONS",
     "TRANSCRIPT_ACTIONS",
 ]
@@ -46,25 +56,47 @@ __all__ = [
 _RUNNING = frozenset({"running"})
 _PASTE = frozenset({"paste"})
 _PASTE_AT_CURSOR = frozenset({"paste_at_cursor"})
+_EMPTY = frozenset({"empty"})
 
 GLOBAL_ACTIONS: tuple[Action, ...] = ()
 
-COMPOSER_ACTIONS: tuple[Action, ...] = (
+_COMPOSER_ACTIONS: tuple[Action, ...] = (
     Action(
         "composer.submit",
         "composer",
         ("enter",),
         "submit",
         hint_priority=90,
-        description="Send the prompt; while a turn runs it is queued",
+        description="Send the prompt; while a turn runs it is queued for after the turn",
     ),
     Action(
         "composer.newline",
         "composer",
-        ("ctrl+j",),
+        # The footer shows the first key: Ctrl+J works in every terminal,
+        # Shift+Enter only where the terminal reports it (TUX-04 §2.1).
+        ("ctrl+j", "shift+enter"),
         "newline",
         hint_priority=80,
         description="Insert a line break",
+    ),
+    Action(
+        "composer.newline_alt",
+        "composer",
+        ("alt+enter", "ctrl+enter"),
+        "newline",
+        unless=_RUNNING,
+        description="Insert a line break (while a turn runs these keys interject)",
+    ),
+    Action(
+        "composer.interject",
+        "composer",
+        # Alt+Enter first: most terminals send Ctrl+Enter as a plain Enter.
+        ("alt+enter", "ctrl+enter"),
+        "interject",
+        # Below Esc pause (70), which must stay in an 80-column footer.
+        hint_priority=65,
+        when=_RUNNING,
+        description="Send the prompt into the running turn at its next tool boundary",
     ),
     Action(
         "composer.commands",
@@ -133,9 +165,10 @@ COMPOSER_ACTIONS: tuple[Action, ...] = (
         "composer.eof",
         "composer",
         ("ctrl+d",),
-        "submit or exit",
+        "exit",
+        when=_EMPTY,
         unless=_RUNNING,
-        description="Send a non-empty prompt, or exit on an empty one",
+        description="Exit on an empty prompt",
     ),
     Action(
         "composer.delete_back",
@@ -144,11 +177,93 @@ COMPOSER_ACTIONS: tuple[Action, ...] = (
         "delete",
         description="Delete the character (or condensed paste) before the cursor",
     ),
-    Action("composer.clear", "composer", ("ctrl+u",), "clear", description="Clear the prompt"),
+    Action(
+        "composer.delete_forward",
+        "composer",
+        ("delete", "ctrl+d"),
+        "delete forward",
+        unless=_EMPTY,
+        description="Delete the character under the cursor",
+    ),
+    Action(
+        "composer.clear",
+        "composer",
+        ("ctrl+u",),
+        "kill to start",
+        description="Delete to the line start (into the kill ring); clear all when already there",
+    ),
+    Action(
+        "composer.kill_to_end",
+        "composer",
+        ("ctrl+k",),
+        "kill to end",
+        description="Delete to the line end (into the kill ring)",
+    ),
+    Action(
+        "composer.delete_word_back",
+        "composer",
+        ("ctrl+w", "alt+backspace"),
+        "delete word",
+        description="Delete the word before the cursor (into the kill ring)",
+    ),
+    Action(
+        "composer.delete_word_forward",
+        "composer",
+        ("alt+d",),
+        "delete next word",
+        description="Delete the word after the cursor (into the kill ring)",
+    ),
+    Action(
+        "composer.yank",
+        "composer",
+        ("ctrl+y",),
+        "yank",
+        description="Insert the last deleted (killed) text",
+    ),
     Action("composer.left", "composer", ("left",), "left", description="Move the cursor left"),
     Action("composer.right", "composer", ("right",), "right", description="Move the cursor right"),
-    Action("composer.home", "composer", ("home",), "home", description="Move to the line start"),
-    Action("composer.end", "composer", ("end",), "end", description="Move to the line end"),
+    Action(
+        "composer.word_left",
+        "composer",
+        ("alt+b", "ctrl+left"),
+        "word left",
+        description="Move to the previous word",
+    ),
+    Action(
+        "composer.word_right",
+        "composer",
+        ("alt+f", "ctrl+right"),
+        "word right",
+        description="Move to the next word",
+    ),
+    Action(
+        "composer.home",
+        "composer",
+        ("home", "ctrl+a"),
+        "home",
+        description="Move to the line start; pressed again, to the start of the prompt",
+    ),
+    Action(
+        "composer.end",
+        "composer",
+        ("end", "ctrl+e"),
+        "end",
+        description="Move to the line end; pressed again, to the end of the prompt",
+    ),
+    Action(
+        "composer.undo",
+        "composer",
+        ("ctrl+z",),
+        "undo",
+        description="Undo the last edit (typing in one run is one edit)",
+    ),
+    Action(
+        "composer.redo",
+        "composer",
+        ("ctrl+shift+z", "alt+z"),
+        "redo",
+        description="Redo the last undone edit",
+    ),
     Action(
         "composer.history_previous",
         "composer",
@@ -164,6 +279,35 @@ COMPOSER_ACTIONS: tuple[Action, ...] = (
         "next",
         unless=_RUNNING,
         description="Move down a line, or recall the next prompt",
+    ),
+    Action(
+        "composer.history_search",
+        "composer",
+        ("ctrl+r",),
+        "search history",
+        description="Search earlier prompts (Ctrl+R again for an older match)",
+    ),
+    Action(
+        "composer.external_editor",
+        "composer",
+        ("ctrl+x",),
+        "editor",
+        description="Edit the prompt in $VISUAL or $EDITOR (Ctrl+X Ctrl+E, or Ctrl+X alone)",
+    ),
+    Action(
+        "composer.redraw",
+        "composer",
+        ("ctrl+l",),
+        "redraw",
+        description="Redraw the live region",
+    ),
+    Action(
+        "composer.queue_focus",
+        "composer",
+        ("up",),
+        "edit queue",
+        when=frozenset({"running", "empty", "queued"}),
+        description="Move into the queued messages to edit or remove one",
     ),
     Action(
         "composer.mode_cycle",
@@ -204,6 +348,154 @@ COMPOSER_ACTIONS: tuple[Action, ...] = (
         hint_priority=45,
         description="Move to the subagent panel",
         when=frozenset({"subagents"}),
+    ),
+)
+
+#: Actions (or keys) added by TUX-04: a user binding of one of their keys,
+#: written before they existed, keeps its key (the checker reports it).
+_YIELDING = frozenset(
+    {
+        "composer.newline",
+        "composer.newline_alt",
+        "composer.interject",
+        "composer.delete_forward",
+        "composer.kill_to_end",
+        "composer.delete_word_back",
+        "composer.delete_word_forward",
+        "composer.yank",
+        "composer.word_left",
+        "composer.word_right",
+        "composer.home",
+        "composer.end",
+        "composer.undo",
+        "composer.redo",
+        "composer.history_search",
+        "composer.external_editor",
+        "composer.redraw",
+        "composer.queue_focus",
+    }
+)
+COMPOSER_ACTIONS: tuple[Action, ...] = tuple(
+    replace(action, yields=True) if action.name in _YIELDING else action
+    for action in _COMPOSER_ACTIONS
+)
+
+#: The ``/``, ``$`` and ``@`` pickers (TUX-04 §2.2): only navigation and
+#: choice; every other key edits the prompt and the picker follows it.
+PICKER_ACTIONS: tuple[Action, ...] = (
+    Action("picker.up", "picker", ("up", "ctrl+p"), "up", description="Select the previous match"),
+    Action(
+        "picker.down",
+        "picker",
+        ("down", "ctrl+n"),
+        "select",
+        hint_priority=90,
+        description="Select the next match",
+        paired="picker.up",
+    ),
+    Action("picker.page_up", "picker", ("pageup",), "page up", description="Move up a page"),
+    Action(
+        "picker.page_down", "picker", ("pagedown",), "page down", description="Move down a page"
+    ),
+    Action(
+        "picker.complete",
+        "picker",
+        ("tab",),
+        "complete",
+        hint_priority=80,
+        description="Complete the selected match without running it",
+    ),
+    Action(
+        "picker.choose",
+        "picker",
+        ("enter",),
+        "choose",
+        hint_priority=85,
+        description=(
+            "Run a command that needs no argument, or complete it and list its arguments; "
+            "insert a mention"
+        ),
+    ),
+    Action(
+        "picker.close",
+        "picker",
+        ("escape",),
+        "close",
+        hint_priority=10,
+        description="Close the picker and keep the text",
+    ),
+)
+
+#: Ctrl+R reverse history search (TUX-04 §2.3).
+SEARCH_ACTIONS: tuple[Action, ...] = (
+    Action(
+        "search.older",
+        "search",
+        ("ctrl+r",),
+        "older",
+        hint_priority=90,
+        description="Show the next older match",
+    ),
+    Action(
+        "search.newer",
+        "search",
+        ("ctrl+s",),
+        "newer",
+        description="Show the next newer match",
+    ),
+    Action(
+        "search.accept",
+        "search",
+        ("enter", "right"),
+        "use",
+        hint_priority=80,
+        description="Put the match into the prompt to edit (it is not sent)",
+    ),
+    Action(
+        "search.cancel",
+        "search",
+        ("escape", "ctrl+g"),
+        "cancel",
+        hint_priority=70,
+        description="Close the search and restore the draft",
+    ),
+)
+
+#: The queued messages above the prompt, after ↑ on an empty prompt (TUX-04 §2.6).
+QUEUE_ACTIONS: tuple[Action, ...] = (
+    Action("queue.up", "queue", ("up",), "up", description="Select the previous queued message"),
+    Action(
+        "queue.down",
+        "queue",
+        ("down",),
+        "select",
+        hint_priority=90,
+        description="Select the next queued message; past the last, return to the prompt",
+        paired="queue.up",
+    ),
+    Action(
+        "queue.edit",
+        "queue",
+        ("enter",),
+        "edit",
+        hint_priority=85,
+        description="Move the message back into the prompt to edit it",
+    ),
+    Action(
+        "queue.remove",
+        "queue",
+        ("delete", "backspace"),
+        "remove",
+        hint_priority=80,
+        description="Remove the message from the queue",
+    ),
+    Action(
+        "queue.back",
+        "queue",
+        ("escape",),
+        "back",
+        hint_priority=70,
+        description="Return to the prompt",
     ),
 )
 
@@ -739,6 +1031,9 @@ TRANSCRIPT_ACTIONS: tuple[Action, ...] = (
 DEFAULT_ACTIONS: tuple[Action, ...] = (
     *GLOBAL_ACTIONS,
     *COMPOSER_ACTIONS,
+    *PICKER_ACTIONS,
+    *SEARCH_ACTIONS,
+    *QUEUE_ACTIONS,
     *AGENTS_ACTIONS,
     *AGENTS_LIST_ACTIONS,
     *AGENTS_PEEK_ACTIONS,

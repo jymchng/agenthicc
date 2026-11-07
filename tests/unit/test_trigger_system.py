@@ -36,8 +36,9 @@ class EchoTrigger:
     def on_select(self, item, fragment, buf):
         return TriggerResult(buffer=buf + list("!" + (item.value if item else "")))
 
-    def on_cancel(self, fragment, buf):
-        return buf + ["!"] + list(fragment)
+    def on_enter(self, item, fragment, buf):
+        result = self.on_select(item, fragment, buf)
+        return TriggerResult(buffer=result.buffer, submit=item is None)
 
     def get_hint(self, item):
         return f"echo: {item.value}" if item else None
@@ -69,7 +70,7 @@ def test_registry_rejects_multi_char_trigger():
 
         def get_matches(self, fragment, ctx): ...
         def on_select(self, item, fragment, buf): ...
-        def on_cancel(self, fragment, buf): ...
+        def on_enter(self, item, fragment, buf): ...
         def get_hint(self, item): ...
 
     with pytest.raises(ValueError):
@@ -82,7 +83,7 @@ def test_registry_rejects_empty_char():
 
         def get_matches(self, fragment, ctx): ...
         def on_select(self, item, fragment, buf): ...
-        def on_cancel(self, fragment, buf): ...
+        def on_enter(self, item, fragment, buf): ...
         def get_hint(self, item): ...
 
     with pytest.raises(ValueError):
@@ -101,7 +102,7 @@ def test_registry_overwrite_same_char():
         def on_select(self, item, fragment, buf):
             return buf
 
-        def on_cancel(self, fragment, buf):
+        def on_enter(self, item, fragment, buf):
             return buf
 
         def get_hint(self, item):
@@ -116,7 +117,7 @@ def test_registry_overwrite_same_char():
         def on_select(self, item, fragment, buf):
             return buf
 
-        def on_cancel(self, fragment, buf):
+        def on_enter(self, item, fragment, buf):
             return buf
 
         def get_hint(self, item):
@@ -147,7 +148,7 @@ def test_registry_len():
         def on_select(self, item, fragment, buf):
             return buf
 
-        def on_cancel(self, fragment, buf):
+        def on_enter(self, item, fragment, buf):
             return buf
 
         def get_hint(self, item):
@@ -217,7 +218,7 @@ def test_handler_protocol_satisfied():
     assert hasattr(t, "label")
     assert hasattr(t, "get_matches")
     assert hasattr(t, "on_select")
-    assert hasattr(t, "on_cancel")
+    assert hasattr(t, "on_enter")
     assert hasattr(t, "get_hint")
 
 
@@ -257,16 +258,18 @@ def test_echo_trigger_on_select_no_item():
     assert "".join(result.buffer) == "hi !"
 
 
-def test_echo_trigger_on_cancel_restores_literal():
+def test_echo_trigger_on_enter_inserts_a_match():
     t = EchoTrigger()
-    buf = t.on_cancel("part", [])
-    assert "".join(buf) == "!part"
+    result = t.on_enter(MatchItem(display="part", value="part"), "part", [])
+    assert "".join(result.buffer) == "!part"
+    assert result.submit is False
 
 
-def test_echo_trigger_on_cancel_empty_fragment():
+def test_echo_trigger_on_enter_without_a_match_submits():
     t = EchoTrigger()
-    buf = t.on_cancel("", [])
-    assert "".join(buf) == "!"
+    result = t.on_enter(None, "", [])
+    assert "".join(result.buffer) == "!"
+    assert result.submit is True
 
 
 def test_echo_trigger_get_hint_with_item():
@@ -296,7 +299,7 @@ def test_registry_multiple_chars():
         def on_select(self, item, fragment, buf):
             return buf
 
-        def on_cancel(self, fragment, buf):
+        def on_enter(self, item, fragment, buf):
             return buf
 
         def get_hint(self, item):

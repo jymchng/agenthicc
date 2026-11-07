@@ -47,6 +47,20 @@ _KEYS: dict[str, tuple[Key, str]] = {
     "tab": (Key.TAB, ""),
     "shift+tab": (Key.SHIFT_TAB, ""),
     "alt+enter": (Key.MODIFIED, "alt+enter"),
+    "shift+enter": (Key.SHIFT_ENTER, ""),
+    "ctrl+enter": (Key.MODIFIED, "ctrl+enter"),
+    "delete": (Key.DELETE, ""),
+    "ctrl+k": (Key.CTRL_K, ""),
+    "ctrl+w": (Key.CTRL_W, ""),
+    "alt+d": (Key.ALT, "d"),
+    "ctrl+y": (Key.CTRL_Y, ""),
+    "alt+b": (Key.ALT, "b"),
+    "alt+f": (Key.ALT, "f"),
+    "ctrl+z": (Key.CTRL_Z, ""),
+    "ctrl+shift+z": (Key.MODIFIED, "ctrl+shift+z"),
+    "ctrl+r": (Key.CTRL_R, ""),
+    "ctrl+x": (Key.CTRL_X, ""),
+    "ctrl+l": (Key.CTRL_L, ""),
     "ctrl+g": (Key.CTRL_G, ""),
     "ctrl+o": (Key.CTRL_O, ""),
 }
@@ -66,6 +80,10 @@ def _session(state: AppState, action: Action) -> UnifiedInputSession:
         session._buf.set(list("pasted"))
         session._paste.condensed = True
         session._paste.end = session._buf.cursor
+    if "empty" in action.unless:
+        session._buf.set(list("text"))
+    if "queued" in action.when:
+        state.conversation.queue.append("queued message")
     return session
 
 
@@ -102,6 +120,9 @@ async def test_typing_a_bound_key_runs_its_action() -> None:
     await session._dispatch(Key.CTRL_ENTER, "")
     await session._dispatch(Key.CHAR, "c")
     assert "".join(state.input.buf()) == "ab\nc"
+    # Ctrl+U kills to the line start; pressed there, it clears the prompt.
+    await session._dispatch(Key.CTRL_U, "")
+    assert "".join(state.input.buf()) == "ab\n"
     await session._dispatch(Key.CTRL_U, "")
     assert state.input.buf() == []
 
@@ -125,7 +146,10 @@ async def test_rebinding_applies_without_restart(tmp_path: Path) -> None:
         watch.cancel()
         await asyncio.gather(watch, return_exceptions=True)
 
-    assert "Key bindings reloaded" in str(state.conversation.notification())
+    # Alt+Enter was a default key of composer.newline_alt: the file wins.
+    notification = str(state.conversation.notification())
+    assert "Key bindings reloaded" in notification
+    assert "replaces the default composer.newline_alt" in notification
     state.conversation.notification.set(None)
     hint = state.keymap().hint("composer.newline")
     assert hint is not None and hint.keys == "Alt+Enter"

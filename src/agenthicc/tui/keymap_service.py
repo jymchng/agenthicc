@@ -26,6 +26,12 @@ class KeymapService:
         self._state = app_state
         self.current: KeymapLoad = load_keybindings(DEFAULT_ACTIONS, path)
         app_state.keymap.set(self.current.keymap)
+        if self.current.notices:
+            # A file older than a default key keeps its binding; say so once
+            # (TUX-04 §5). A reload reports it again only if the file changes.
+            app_state.conversation.notify_transient(
+                f"Key bindings: {self.current.notices[0]} — see /keybindings", duration=8.0
+            )
 
     @property
     def path(self) -> Path:
@@ -41,6 +47,10 @@ class KeymapService:
         if loaded.errors:
             self._state.conversation.notify_transient(
                 f"Key bindings not applied: {loaded.errors[0]} — see /keybindings", duration=8.0
+            )
+        elif loaded.notices:
+            self._state.conversation.notify_transient(
+                f"Key bindings reloaded; {loaded.notices[0]} — see /keybindings", duration=8.0
             )
         else:
             self._state.conversation.notify_transient("Key bindings reloaded", duration=3.0)

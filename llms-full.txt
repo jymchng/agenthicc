@@ -1943,6 +1943,67 @@ session.conditions())`); capabilities act on the action name, not the key.
 `request_exit()` ends the input loop from outside (the agents hub's session
 switch uses it).
 
+TUX-04 (composer ergonomics):
+
+```python
+@dataclass(frozen=True)
+class TerminalHooks:              # agenthicc.tui.input.unified_session
+    suspend: Callable[[], None] = ...; resume: Callable[[], None] = ...
+    repaint: Callable[[], None] = ...; runtime_dir: Path | None = None
+    handoff: Callable[[Callable[[], Awaitable[None]]], Awaitable[None]] | None = None
+
+class UnifiedInputSession:
+    def __init__(self, ..., terminal_hooks: TerminalHooks | None = None) -> None: ...
+    terminal_hooks: TerminalHooks
+    picker: TriggerPickerOverlay | None        # the open / $ @ picker
+    def open_external_editor(self) -> None: ...
+
+class SubmitReceipt: ok: bool                  # a target-bound composer's submit answer
+class Acceptance(Protocol): ok: bool           # anything with ``ok`` (runtime-checkable)
+CHORD_TIMEOUT_S = 0.3                          # Ctrl+X waits this long for Ctrl+E
+```
+
+- **Editing.** `tui.input.buffer.InputBuffer` adds `word_left`, `word_right`,
+  `delete_word_before`, `delete_word_after`, `kill_to_end`, `kill_to_start`,
+  `yank`, `delete_after`, `replace_range`, `undo`, `redo`, `forget_undo` and
+  `kill_ring`; words are Unicode letters, digits and `_` (`is_word_char`).
+  Undo groups: consecutive typed characters are one group; `UNDO_LIMIT = 200`.
+  `snapshot_hook` lets the session's `PasteState.memento()` restore a
+  condensed paste with the text. The keys are `composer.*` actions in
+  `tui.actions.COMPOSER_ACTIONS`; new composer conditions are `empty` and
+  `queued`.
+- **Pickers.** `tui.workspace.overlays.trigger_picker.TriggerPickerOverlay(buffer,
+  anchor, handler, *, cwd, keymap, busy=False, paste_state=None)` reads the
+  session's buffer: the trigger is the text from `anchor` to the cursor.
+  `refresh()` re-derives it (`False` when the trigger is gone); `choose(key,
+  ch)` handles the `picker` context (`PICKER_ACTIONS`) and returns a
+  `PickerOutcome` (`STAY`, `CLOSE`, `SUBMIT`) or `None` for a key the prompt
+  edits. `TriggerHandler` gains `on_enter(item, fragment, buf)`;
+  `TriggerHandlerBase.on_enter` inserts a match and submits without one;
+  `SlashCommandTrigger.on_enter` runs a command with no required argument and
+  completes one that needs an argument (`TriggerResult.keep_open=True`).
+  `on_cancel` is gone (Esc keeps the prompt as it is).
+- **History search.** `tui.input.history.HistorySearch(history)` (query,
+  `matches`, `current`, `older()`, `newer()`) and
+  `tui.input.history_search.HistorySearchOverlay` (the `search` context,
+  `SEARCH_ACTIONS`; `choose()` returns a `SearchOutcome`).
+- **Queue.** `tui.conversation_store.MessageQueue` (`ConversationStore.queue`)
+  holds `QueuedMessage(id, text, interject)` in the `items` signal and the
+  selected id in `focus`; `append(text, interject=)`, `insert`, `pop`,
+  `remove(id)`, `claim_interjection()`, `clear()`, `texts()`.
+  `tui.workspace.queue_rows.queue_rows(state, cols)` draws one row per entry
+  (`MAX_ROWS = 3`) above the prompt; the `queue` context
+  (`QUEUE_ACTIONS`) edits it. `SendMessageCommand.interject` marks
+  Ctrl+Enter / Alt+Enter while busy; `TUISession._next_queued_message` claims
+  only interjections at a tool boundary.
+- **Terminal.** `Key.SHIFT_ENTER`; `cbreak_reader.decode_csi_u(body)` maps
+  every CSI-u key to its legacy key (Ctrl+Enter is `"ctrl+enter"`);
+  `KITTY_KEYBOARD_PUSH` / `KITTY_KEYBOARD_POP` and
+  `kitty_keyboard_supported(env)`: the POSIX backend pushes the mode on
+  entering raw mode and pops it on leaving. `Workspace.repaint()` serves Ctrl+L.
+- **Rendering.** `tui.input.renderer.build_prompt(buf, cursor)` returns a Rich
+  `Text` in theme tokens.
+
 The composer's `agents.open_hub` action (Ctrl+G, or ← on an empty prompt)
 posts `tui.runtime.commands.OpenAgentsHubCommand(tab="", run_id="")` on the
 `CommandBus`; `/agents`, `/inbox` and `/workers` reach the same place through
@@ -1963,7 +2024,7 @@ class Action:
     name: str; context: str; keys: tuple[str, ...]; label: str
     hint_priority: int = 0; description: str = ""
     when: frozenset[str] = frozenset(); unless: frozenset[str] = frozenset()
-    rebindable: bool = True; paired: str = ""
+    rebindable: bool = True; paired: str = ""; yields: bool = False
 
 @dataclass(frozen=True)
 class Hint:
@@ -1981,8 +2042,9 @@ def load_keybindings(actions, path: Path | None = None) -> KeymapLoad: ...
 ```
 
 One registry of named actions per context (`CONTEXTS`: `global`, `composer`,
-`agents`, `agents.list`, `agents.peek`, `agents.detail`, `transcript`,
-`subagents`, `overlay`) drives dispatch, footer hints and help (AGX-13).
+`picker`, `search`, `queue`, `agents`, `agents.list`, `agents.peek`,
+`agents.detail`, `transcript`, `subagents`, `overlay`) drives dispatch, footer
+hints and help (AGX-13).
 `PARENTS` makes a context inherit another's actions after its own
 (`agents.list` and `agents.detail` inherit `agents`, `agents.peek` inherits
 `agents.list`); a key bound in a context shadows the same key inherited from a
@@ -2000,7 +2062,9 @@ ch)` gives a keystroke's canonical name. `Dispatcher` follows a leader key
 across two presses. `load_keybindings` reads `~/.agenthicc/keybindings.toml`
 (or `AGENTHICC_KEYBINDINGS`), one table per context (`[agents.list]` is the
 `agents.list` context): an invalid file is ignored as a whole and its
-problems returned in `KeymapLoad.errors`. The default actions are in
+problems returned in `KeymapLoad.errors`. A file binding a key that a
+`yields` default action holds keeps it: the default gives the key up and
+`KeymapLoad.notices` says so (TUX-04). The default actions are in
 `agenthicc.tui.actions`; `tui.keymap_service.KeymapService` keeps
 `AppState.keymap` current as the file changes, and `/keybindings` shows the
 effective bindings. `AppState.ui` holds `config.UISettings` (`[ui]`:
@@ -2085,7 +2149,8 @@ pickers, and a `UnifiedInputSession` with the main composer's capabilities.
   with no running loop it dispatches synchronously.
 - `on_submit(text)` returns whether to clear the prompt.
 - `ComposerContext(cwd, cfg, commands, workflows, keymap, history,
-  session_id, mode_name)` scopes the pickers;
+  session_id, mode_name, terminal_hooks)` scopes the pickers; its
+  `terminal_hooks.handoff` lends the host's terminal to Ctrl+X Ctrl+E;
   `load_composer_context(cwd, launch=...)` builds one for a directory
   (blocking).
 - `ANSWER_EXCLUDED()` lists the capabilities an answer leaves out: Ctrl+C,

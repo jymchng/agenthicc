@@ -27,6 +27,9 @@ class Command:
 class SendMessageCommand(Command):
     text: str = ""
     source: str = "user"
+    #: Ctrl+Enter / Alt+Enter while a turn runs: deliver the message at the
+    #: turn's next tool boundary instead of after it (TUX-04 §2.6).
+    interject: bool = False
 
 
 @dataclass(frozen=True)

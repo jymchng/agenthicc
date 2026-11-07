@@ -23,7 +23,6 @@ _EXEMPT = {_SRC / "tui" / "theme.py"}
 _PENDING: frozenset[str] = frozenset(
     {
         "commands/builtins.py",
-        "tui/input/renderer.py",
         "tui/welcome.py",
         "tui/workspace/appender.py",
         "tui/workspace/overlays/approval.py",

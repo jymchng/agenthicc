@@ -113,6 +113,95 @@ class _NotificationEntry:
     handle: _asyncio.TimerHandle | None = field(default=None)
 
 
+# ── Queued messages (TUX-04 §2.6) ─────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class QueuedMessage:
+    """One message typed while a turn runs."""
+
+    id: int
+    text: str
+    #: Sent with Ctrl+Enter / Alt+Enter: delivered at the next tool boundary
+    #: of the running turn instead of after it.
+    interject: bool = False
+
+
+class MessageQueue:
+    """Messages waiting for the running turn, in order (TUX-04 §2.6).
+
+    The session owns the order (it queues, claims and drains); the composer
+    edits and removes entries while the user has focused the queue; the live
+    region draws one row per entry from :attr:`items`. ``focus`` is the id of
+    the entry the user has selected, or ``None`` while the prompt has focus.
+    """
+
+    def __init__(self) -> None:
+        self.items: Signal[tuple[QueuedMessage, ...]] = Signal((), name="queued_messages")
+        self.focus: Signal[int | None] = Signal(None, name="queue_focus")
+        self._next_id = 1
+
+    def _new(self, text: str, interject: bool) -> QueuedMessage:
+        message = QueuedMessage(self._next_id, text, interject)
+        self._next_id += 1
+        return message
+
+    def _set(self, items: tuple[QueuedMessage, ...]) -> None:
+        self.items.set(items)
+        focus = self.focus()
+        if focus is not None and all(item.id != focus for item in items):
+            # The focused entry left the queue (claimed, sent or removed):
+            # select the first that is left, or give focus back to the prompt.
+            self.focus.set(items[0].id if items else None)
+
+    def __len__(self) -> int:
+        return len(self.items())
+
+    def __bool__(self) -> bool:
+        return bool(self.items())
+
+    def texts(self) -> list[str]:
+        return [item.text for item in self.items()]
+
+    def append(self, text: str, *, interject: bool = False) -> QueuedMessage:
+        message = self._new(text, interject)
+        self._set((*self.items(), message))
+        return message
+
+    def insert(self, index: int, text: str) -> None:
+        """Put *text* back at *index* (a message whose release failed)."""
+        items = list(self.items())
+        items.insert(index, self._new(text, False))
+        self._set(tuple(items))
+
+    def pop(self, index: int = 0) -> str:
+        items = list(self.items())
+        message = items.pop(index)
+        self._set(tuple(items))
+        return message.text
+
+    def remove(self, message_id: int) -> QueuedMessage | None:
+        """Remove the entry with *message_id*; return it, or ``None``."""
+        items = self.items()
+        for item in items:
+            if item.id == message_id:
+                self._set(tuple(entry for entry in items if entry.id != message_id))
+                return item
+        return None
+
+    def claim_interjection(self) -> str | None:
+        """Take the first interjection whose text is not a command."""
+        for item in self.items():
+            text = item.text.strip()
+            if item.interject and text and not text.startswith(("/", "$")):
+                self.remove(item.id)
+                return text
+        return None
+
+    def clear(self) -> None:
+        self._set(())
+
+
 # ── Store ─────────────────────────────────────────────────────────────────────
 
 
@@ -200,6 +289,8 @@ class ConversationStore:
         self.agents_target: Signal[str | None] = Signal(None, name="agents_target")
         self.agents_item_target: Signal[str | None] = Signal(None, name="agents_item_target")
         self.agents_toast_target: Signal[str | None] = Signal(None, name="agents_toast_target")
+        #: Messages typed during a turn, shown above the composer (TUX-04 §2.6).
+        self.queue = MessageQueue()
         # Internal: per-line notification stack.
         # notify_transient() appends; each dismiss closure removes only its own
         # entry by identity, leaving other lines untouched.

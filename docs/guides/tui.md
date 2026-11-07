@@ -235,8 +235,8 @@ explicit switch and reports the canonical choices for an unknown name.
 `UnifiedInputSession` enters raw mode once and dispatches each key through the
 active capability list. IDLE supports triggers, history, cursor movement,
 paste, mode cycling, and submission. STREAMING reduces the capability set so
-the user can queue input or interrupt an active turn while retaining cursor
-movement and basic editing.
+the user can queue or interject input, edit the queue, or interrupt an active
+turn while keeping every editing key.
 
 ### Key bindings
 
@@ -252,24 +252,92 @@ idle.
 
 | Key | Action | When |
 |---|---|---|
-| Enter | `composer.submit` — send (queued while a turn runs) | always |
-| Ctrl+J | `composer.newline` | always |
+| Enter | `composer.submit` — send; while a turn runs, queue it for after the turn | always |
+| Ctrl+J, Shift+Enter | `composer.newline` | always |
+| Alt+Enter, Ctrl+Enter | `composer.newline_alt` — a line break | idle |
+| Alt+Enter, Ctrl+Enter | `composer.interject` — deliver at the turn's next tool boundary | a turn is running |
 | `/`, `@` | command picker, mention picker (fixed) | always |
 | Ctrl+V / Esc | expand / delete a condensed paste | a paste is condensed (Esc: cursor right after it) |
 | Esc | `composer.interrupt` — pause the turn | a turn is running |
 | Ctrl+C | `composer.cancel` / `composer.quit` | running / idle (press twice) |
-| Ctrl+D | `composer.eof` — send, or exit on an empty prompt | idle |
-| Ctrl+U, ←→, Home/End, ↑↓, Backspace | clear, cursor, history, delete | ↑↓ idle only |
+| Ctrl+D | `composer.eof` — exit | idle, empty prompt |
+| Delete, Ctrl+D | `composer.delete_forward` — delete the character under the cursor | non-empty prompt |
+| Ctrl+A / Ctrl+E, Home / End | line start / end; pressed again, start / end of the whole prompt | always |
+| Alt+B, Ctrl+← / Alt+F, Ctrl+→ | `composer.word_left` / `composer.word_right` | always |
+| Ctrl+W, Alt+Backspace | `composer.delete_word_back` (into the kill ring) | always |
+| Alt+D | `composer.delete_word_forward` (into the kill ring) | always |
+| Ctrl+K | `composer.kill_to_end` — to the line end (into the kill ring) | always |
+| Ctrl+U | `composer.clear` — to the line start; at the start, everything | always |
+| Ctrl+Y | `composer.yank` — insert the last kill | always |
+| Ctrl+Z / Ctrl+Shift+Z, Alt+Z | `composer.undo` / `composer.redo`, by edit group | always |
+| Ctrl+R | `composer.history_search` — reverse history search | always |
+| Ctrl+X Ctrl+E (or Ctrl+X alone) | `composer.external_editor` — edit in `$VISUAL`/`$EDITOR` | always |
+| Ctrl+L | `composer.redraw` — repaint the live region | always |
+| ←→, ↑↓, Backspace | cursor, history, delete | ↑↓ history idle only |
+| ↑ | `composer.queue_focus` — select a queued message | running, empty prompt, a message is queued |
 | Shift+Tab | `composer.mode_cycle` | always |
 | Ctrl+G, ← | `agents.open_hub` — open the agents hub over the conversation | ← only on an empty prompt |
 | Ctrl+O | `subagents.focus` — move to the subagent panel | while the panel is shown |
+
+Word motion is Unicode-aware: letters, digits and `_` form words, and path
+separators stop, so Ctrl+W on `src/agenthicc/tui` deletes `tui`. Consecutive
+kills join in the kill ring as in readline; consecutive typing is one undo
+group (at most 200 groups are kept). Ctrl+Z replaces nothing: raw mode already
+disables job-control suspend.
+
+Shift+Enter and Ctrl+Enter are distinct keys only where the terminal reports
+them. In kitty, WezTerm, Ghostty and foot (outside tmux/screen) the session
+pushes the kitty keyboard protocol's "disambiguate" mode (`CSI > 1 u`) on
+entering raw mode and pops it (`CSI < u`) on leaving — including around the
+external editor — so `CSI 13;2u` arrives as Shift+Enter. Every CSI-u key decodes
+to the key a legacy terminal sends for it (Ctrl+A stays Ctrl+A). The Windows
+console reports Enter's modifiers directly. Elsewhere use Ctrl+J or Alt+Enter:
+most terminals send Shift+Enter and Ctrl+Enter as a plain Enter, which sends
+(or queues) the prompt. The footer therefore shows `Ctrl+J newline` and, while
+a turn runs and the footer is wide enough, `Alt+Enter interject`.
+
+**Pickers.** The `/`, `$` and `@` pickers have no text of their own: the
+trigger is the text from the trigger character to the cursor. A picker handles
+only navigation and choice (the `picker` context: ↑/↓, Ctrl+P/N, PageUp/PageDown,
+Tab, Enter, Esc); every other key edits the prompt and the picker follows it.
+Ctrl+U, Ctrl+W, Ctrl+A/E, ←/→, paste and undo therefore work with a picker
+open; when the cursor leaves the trigger, or the trigger character is
+deleted, the picker closes. In the `/` picker one Enter runs the highlighted
+command when it takes no required argument (`/help`); a command with a
+required `<argument>` or with argument completions (`/workflow`) is completed
+with a space and the picker lists its arguments. Tab only completes. In the
+`@` picker Enter inserts the path; a second Enter sends. Enter with no match
+sends the prompt as typed.
+
+**History search.** Ctrl+R shows a search row above the prompt
+(`(search) git rebas▌   3 of 41 · Ctrl+R older · Enter use · Esc cancel`). It
+matches earlier prompts by substring, case-insensitively, newest first, on any
+line of a multi-line entry. Ctrl+R again is older, Ctrl+S newer; Enter or →
+puts the match in the prompt to edit (it is not sent); Esc leaves the draft
+exactly as it was.
+
+**External editor.** Ctrl+X then Ctrl+E (or Ctrl+X alone, after 300 ms)
+writes the prompt to a private temporary file (mode 0600) in the session's
+directory under `~/.agenthicc/sessions/`, hands the terminal to `$VISUAL`,
+`$EDITOR` or `vi`, and loads the file back with the cursor at the end. A
+non-zero exit keeps the draft and says so.
+
+**Queued messages.** A message sent while a turn runs shows above the prompt,
+one muted row each (at most three, then `+N more`); an interjection is marked
+with an arrow and `at next tool`. ↑ on an empty prompt selects the newest row
+(the `queue` context): ↑/↓ move, Enter moves the message back into the prompt
+to edit, Delete or Backspace removes it, Esc returns to the prompt. Messages
+sent with Enter wait for the turn to end and then run in order; Ctrl+Enter or
+Alt+Enter sends an interjection that is added to the running turn at its next
+tool boundary. Commands (`/…`, `$…`) always wait for the turn to end.
 
 ← opens the hub only when the prompt is empty. If the prompt was just emptied
 by Backspace, Ctrl+U or history recall, the first ← says "Press ← again to open
 agents" instead, so a key held down to delete text does not open it by
 accident. In a rebinding, `left_on_empty` names that gesture.
 
-Every screen has a context: `composer`, `agents` (operations on an agent),
+Every screen has a context: `composer`, `picker`, `search` and `queue` (the
+composer's pickers, Ctrl+R search and queued rows), `agents` (operations on an agent),
 `agents.list`, `agents.peek` and `agents.detail` (the hub's list, peek panel
 and detail view), `transcript`, `subagents` and `overlay`; `global` actions
 apply everywhere. `agents.list` and `agents.detail` inherit `agents`, and
@@ -301,6 +369,9 @@ leader_timeout_ms = 2000
 Edits apply at once in running sessions. An edit that names an unknown
 action, binds two actions that can apply together to one key, or does not
 parse is not applied: the defaults stay in effect and a notice says why.
+A file that already binds a key one of the TUX-04 editing actions now uses by
+default (Ctrl+K, Alt+Enter …) keeps its binding: the default action gives the
+key up, and a notice and `/keybindings` say so.
 `/keybindings` creates the file (every action listed, commented out) and shows
 the effective bindings and where each comes from; `agenthicc keybindings
 edit` opens the file in `$VISUAL`/`$EDITOR` from the shell.
@@ -546,7 +617,9 @@ range indicator shows when more question text is above or below the viewport.
 When entering an `Other` answer, the input is the main composer embedded in
 the overlay (`EmbeddedComposer`):
 
-- paste (including condensed large pastes), `Ctrl+J` newline, word movement
+- paste (including condensed large pastes), Shift+Enter/`Ctrl+J` newline,
+  the readline editing keys (word motion, kill and yank, undo/redo), Ctrl+R
+  history search, Ctrl+X Ctrl+E (the editor takes the session's terminal)
   and history all work;
 - `@` opens the mention picker, and mentions are resolved into the answer as
   they would be in a message;

@@ -9,7 +9,8 @@ either.
 An ``EmbeddedComposer`` owns a private ``AppState`` (and so a private
 ``InputState``), its own ``OverlayHost`` for its pickers, and a
 ``UnifiedInputSession`` with the same capabilities as the main composer:
-paste, newline, history, cursor and word movement, and the trigger pickers.
+paste, newline, history, cursor and word movement, the readline editing keys
+(kill, yank, undo), Ctrl+R search and the trigger pickers (TUX-04).
 Its host renders it with :meth:`render` (the picker, when open, then the
 prompt) and feeds it keys with :meth:`feed`. Keys are dispatched strictly in
 order, one at a time, so a fast typist's keys are never dropped or reordered.
@@ -35,7 +36,7 @@ if TYPE_CHECKING:
     from agenthicc.commands.registry import UnifiedCommandRegistry
     from agenthicc.config import AgenthiccConfig
     from agenthicc.tui.conversation_store import AppState
-    from agenthicc.tui.input.unified_session import UnifiedInputSession
+    from agenthicc.tui.input.unified_session import TerminalHooks, UnifiedInputSession
     from agenthicc.tui.keymap import Keymap
     from agenthicc.tui.workspace.overlay import OverlayHost
     from agenthicc.workflows.registry import WorkflowRegistry
@@ -57,6 +58,9 @@ class ComposerContext:
     history: list[str] = field(default_factory=list)
     session_id: str = ""
     mode_name: str = "Safe"
+    #: The host's terminal handoff and redraw, for Ctrl+X Ctrl+E and Ctrl+L
+    #: (TUX-04). Without them the external editor reports it is unavailable.
+    terminal_hooks: TerminalHooks | None = None
 
 
 class EmbeddedComposer:
@@ -73,7 +77,7 @@ class EmbeddedComposer:
     ) -> None:
         from agenthicc.tui.conversation_store import AppState
         from agenthicc.tui.input.capabilities import IDLE_CAPABILITIES, ModeCycleCapability
-        from agenthicc.tui.input.unified_session import UnifiedInputSession
+        from agenthicc.tui.input.unified_session import SubmitReceipt, UnifiedInputSession
         from agenthicc.tui.runtime.commands import CommandBus, SendMessageCommand
         from agenthicc.tui.runtime.mode_manager import ModeManager
         from agenthicc.tui.trigger import TriggerManager
@@ -99,10 +103,10 @@ class EmbeddedComposer:
         bus = CommandBus()
         self.accepted = False
 
-        async def submit(command: SendMessageCommand) -> _Receipt:
+        async def submit(command: SendMessageCommand) -> SubmitReceipt:
             accepted = await self._on_submit(command.text)
             self.accepted = self.accepted or accepted
-            return _Receipt(accepted)
+            return SubmitReceipt(accepted)
 
         bus.register(SendMessageCommand, submit)
         editor = UnifiedInputSession(
@@ -117,6 +121,7 @@ class EmbeddedComposer:
             busy=True,
             clear_after_acceptance=True,
             preserve_submission_text=True,
+            terminal_hooks=context.terminal_hooks,
         )
         # The asking session owns its mode; an answer never changes it.
         excluded: tuple[type[object], ...] = (ModeCycleCapability, *exclude)
@@ -293,10 +298,3 @@ def load_composer_context(
         session_id=session_id,
         mode_name=mode_name,
     )
-
-
-@dataclass(frozen=True)
-class _Receipt:
-    """What ``SubmitCapability`` reads to decide whether to clear the prompt."""
-
-    ok: bool

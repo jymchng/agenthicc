@@ -48,6 +48,9 @@ __all__ = [
 CONTEXTS = (
     "global",
     "composer",
+    "picker",
+    "search",
+    "queue",
     "agents",
     "agents.list",
     "agents.peek",
@@ -79,7 +82,6 @@ _ALIASES = {
     "pgdn": "pagedown",
     "pgdown": "pagedown",
     "page_down": "pagedown",
-    "ctrl+enter": "ctrl+j",
     "bs": "backspace",
     " ": "space",
 }
@@ -206,6 +208,9 @@ class Action:
     #: Another action whose first key is shown before this one's in its hint
     #: ("↑↓ select").
     paired: str = ""
+    #: Its default keys give way to a user binding of the same key (keys added
+    #: after users may already have bound them, TUX-04 §5).
+    yields: bool = False
 
     def applies(self, conditions: frozenset[str]) -> bool:
         return self.when <= conditions and not (self.unless & conditions)
@@ -466,6 +471,8 @@ class KeymapLoad:
     errors: tuple[str, ...] = ()
     #: The file's (inode, size, mtime) when it was read; zeros when absent.
     fingerprint: tuple[int, int, int] = (0, 0, 0)
+    #: Default keys the file took over for another action (the file wins).
+    notices: tuple[str, ...] = ()
 
 
 def _fingerprint(path: Path) -> tuple[int, int, int]:
@@ -546,9 +553,10 @@ def load_keybindings(actions: Iterable[Action], path: Path | None = None) -> Key
                 except KeymapError as exc:
                     errors.append(str(exc))
     if not errors:
+        adjusted, notices = _yield_default_keys(defaults, overrides)
         try:
             keymap = Keymap.build(
-                defaults,
+                adjusted,
                 overrides=overrides,
                 leader=leader,
                 leader_timeout_s=timeout_s,
@@ -557,8 +565,43 @@ def load_keybindings(actions: Iterable[Action], path: Path | None = None) -> Key
         except KeymapError as exc:
             errors.append(str(exc))
         else:
-            return KeymapLoad(keymap, path, (), fingerprint)
+            return KeymapLoad(keymap, path, (), fingerprint, notices)
     return KeymapLoad(default_keymap, path, tuple(errors), fingerprint)
+
+
+def _yield_default_keys(
+    defaults: tuple[Action, ...], overrides: Mapping[str, tuple[str, ...]]
+) -> tuple[tuple[Action, ...], tuple[str, ...]]:
+    """Let the file's bindings take keys from default actions they conflict with.
+
+    A bindings file written before a default gained a key keeps working: the
+    action the user bound keeps the key, the default action loses it, and a
+    notice says so (TUX-04 §5). Only an action marked ``yields`` gives keys
+    up; any other conflict stays an error.
+    """
+    by_name = {action.name: action for action in defaults}
+    bound = [replace(by_name[name], keys=keys) for name, keys in overrides.items()]
+    adjusted: list[Action] = []
+    notices: list[str] = []
+    for action in defaults:
+        if action.name in overrides or not action.yields:
+            adjusted.append(action)
+            continue
+        keys = list(action.keys)
+        for user in bound:
+            if user.context != action.context or user.excludes(action):
+                continue
+            for key in user.keys:
+                if key in keys:
+                    keys.remove(key)
+                    notices.append(
+                        f"{display_key(key)}: your binding for {user.name} replaces "
+                        f"the default {action.name}"
+                    )
+        adjusted.append(
+            action if len(keys) == len(action.keys) else replace(action, keys=tuple(keys))
+        )
+    return tuple(adjusted), tuple(notices)
 
 
 def _tables(name: str, value: Mapping[str, object]) -> list[tuple[str, dict[str, object]]]:

@@ -98,6 +98,8 @@ if TYPE_CHECKING:
     from agenthicc.skills.loader import SkillDef, SkillDiscoveryResult
     from agenthicc.subagents.pool import SubagentPool
     from agenthicc.tools.approval import ApprovalRequest, ApprovalRequester
+    from agenthicc.tui.conversation_store import MessageQueue
+    from agenthicc.tui.input.unified_session import TerminalHooks
     from agenthicc.tools.base import ToolLike
     from agenthicc.tools.cloakbrowser.session import BrowserSessionManager
     from agenthicc.tui.input.unified_session import UnifiedInputSession
@@ -1672,7 +1674,9 @@ class TUISession:
 
         # Mutable session state
         self._pending_skill_body: list[str] = []
-        self._msg_queue: list[str] = []
+        # Messages typed during a turn; the composer shows, edits and removes
+        # them through the same queue (TUX-04 §2.6).
+        self._msg_queue: MessageQueue = ctx.app_state.conversation.queue
         self._agent_task: asyncio.Task[object] | None = None
         self._deferred_startup_task: asyncio.Task[object] | None = None
         self._last_submitted_text: str = ""
@@ -2486,6 +2490,7 @@ class TUISession:
             history=self._answer_history,
             session_id=str(ctx.session_id),
             mode_name=ctx.app_state.active_mode().name,
+            terminal_hooks=self._embedded_terminal_hooks(),
         )
 
         def run_command(text: str) -> bool:
@@ -3332,6 +3337,19 @@ class TUISession:
             conversation.agents_toast_target.set(None)
         return enabled
 
+    def _embedded_terminal_hooks(self) -> TerminalHooks:
+        """Ctrl+X Ctrl+E and Ctrl+L in an answer composer use this session's terminal."""
+        from agenthicc.tui.input.unified_session import TerminalHooks
+
+        main = self._input_session.terminal_hooks
+        return TerminalHooks(
+            suspend=main.suspend,
+            resume=main.resume,
+            repaint=main.repaint,
+            runtime_dir=main.runtime_dir,
+            handoff=self._input_session.run_terminal_handoff,
+        )
+
     def _set_input_text(self, text: str) -> None:
         """Put a registry selection in the composer without submitting it."""
         self._input_session.set_text(text)
@@ -3398,35 +3416,20 @@ class TUISession:
 
         return classify_busy_command(text, self._ctx.cmd_registry)
 
-    def _notify_queued(self, text: str) -> None:
-        label = text[:40] + ("…" if len(text) > 40 else "")
-        position = len(self._msg_queue)
-        waiting = " — loading agent runtime…" if self._runtime_loading() else ""
-        self._ctx.app_state.conversation.notification.set(
-            f"⌛ Queued #{position}: {label}{waiting}"
-        )
-
     def _next_queued_message(self) -> str | None:
-        """Claim the next plain-text message at a completed tool boundary.
+        """Claim the next interjection at a completed tool boundary (TUX-04 §2.6).
 
-        The active agent loop owns the shared memory, so a queued message can
-        be appended safely only after its tool results have been committed and
-        before the loop's next model request. Slash commands and skills stay at
-        the head of the FIFO until the turn is idle, where ``advance()`` can
-        route them locally instead of sending their command spelling to the
-        model.
+        The active agent loop owns the shared memory, so an interjection
+        (Ctrl+Enter / Alt+Enter) can be appended safely only after its tool
+        results have been committed and before the loop's next model request.
+        Messages queued with Enter wait for the turn to end, where
+        ``advance()`` sends them in order; so do slash commands and skills,
+        which are routed locally instead of being sent to the model.
         """
-        if not self._msg_queue:
+        text = self._msg_queue.claim_interjection()
+        if text is None:
             return None
-        text = self._msg_queue[0].strip()
-        if not text or text.startswith(("/", "$")):
-            return None
-        self._msg_queue.pop(0)
         self._ctx.app_state.conversation.append_event("user_message", {"text": text})
-        if self._msg_queue:
-            self._notify_queued(self._msg_queue[0])
-        else:
-            self._ctx.app_state.conversation.notification.set(None)
         return text
 
     def _notify_busy_rejected(self, text: str, reason: str) -> None:
@@ -4947,8 +4950,19 @@ class TUISession:
             if decision.policy.value == "reject":
                 self._notify_busy_rejected(text, decision.reason)
                 return
-            self._msg_queue.append(text)
-            self._notify_queued(text)
+            # Shown above the composer until the turn ends, or until the next
+            # tool boundary for an interjection (TUX-04 §2.6).
+            self._msg_queue.append(
+                text, interject=cmd.interject and not text.startswith(("/", "$"))
+            )
+            if self._runtime_loading():
+                from agenthicc.tui.theme import glyphs
+
+                # The queue row shows the message; say why it is waiting.
+                self._ctx.app_state.conversation.notify_transient(
+                    f"Queued until loading agent runtime finishes{glyphs().ellipsis}",
+                    duration=4.0,
+                )
             return
 
         if (
@@ -5811,7 +5825,7 @@ async def _run_tui_session_impl(
 
     Returns where to go when the session ends (:class:`SessionSwitch`).
     """
-    from agenthicc.tui.input.unified_session import UnifiedInputSession
+    from agenthicc.tui.input.unified_session import TerminalHooks, UnifiedInputSession
     from agenthicc.tui.welcome import (
         fetch_changelog,
         load_cached_changelog,
@@ -5883,6 +5897,13 @@ async def _run_tui_session_impl(
             cfg=ctx.cfg,
             history=[] if ctx.resumed else None,
             on_ready=_input_ready,
+            terminal_hooks=TerminalHooks(
+                # TUX-04 §2.4: the editor gets the screen while it runs.
+                suspend=workspace.suspend_for_external_process,
+                resume=workspace.resume_after_external_process,
+                repaint=workspace.repaint,
+                runtime_dir=_SESSIONS_DIR / str(ctx.session_id),
+            ),
         )
         session = TUISession(ctx, workspace, input_session)
         ctx.startup.finish("tui_shell")
