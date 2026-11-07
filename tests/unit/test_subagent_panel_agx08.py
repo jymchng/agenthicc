@@ -465,8 +465,9 @@ def test_a_workers_approval_names_it_and_o_opens_its_transcript() -> None:
         open_requester=opened.append,  # type: ignore[arg-type]
     )
     text = _render(overlay)
-    assert "tester #1 (tester) wants to run bash" in text
-    assert "o open tester #1's transcript" in text
+    # TUX-07: the asking worker is the dialog's badge, with its transcript key.
+    assert "tester #1 · o open transcript" in text
+    assert "Use bash" in text
     overlay.handle_key(Key.CHAR, "o")
     assert opened == [requester] and responses == []
     overlay.handle_key(Key.ESC, "")

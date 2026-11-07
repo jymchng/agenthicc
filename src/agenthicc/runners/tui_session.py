@@ -111,6 +111,7 @@ if TYPE_CHECKING:
     )
     from agenthicc.tui.workspace import Workspace
     from agenthicc.tui.workspace.agents_hub import HubResult
+    from agenthicc.tui.workspace.dialog import DialogSettings
     from agenthicc.tui.workspace.overlay import Overlay
     from agenthicc.tui.workspace.overlays.questions import AnswerContext
     from agenthicc.tui.workspace.overlays.subagents import TranscriptTarget
@@ -2445,15 +2446,35 @@ class TUISession:
         if not isinstance(approval_svc, InteractiveApprovals):
             raise TypeError("the TUI needs an approval service its overlays can answer")
         hide = self._workspace.overlays.hide
+        answers = self._answer_context()
+        settings = self._dialog_settings(answers)
         if req.kind == "plan_review":
-            return PlanApprovalOverlay(req, approval_svc, hide)
+            return PlanApprovalOverlay(req, approval_svc, hide, settings=settings)
         if req.kind == "questions":
-            return QuestionsOverlay(req, approval_svc, hide, answers=self._answer_context())
+            return QuestionsOverlay(req, approval_svc, hide, answers=answers, settings=settings)
         return ApprovalOverlay(
             req,
             approval_svc,
             hide,
             open_requester=lambda requester: self._open_requester_transcript(requester, req),
+            settings=settings,
+        )
+
+    def _dialog_settings(self, answers: AnswerContext) -> DialogSettings:
+        """The session's keymap, screen-reader setting, mode and workspace for a dialog (TUX-07)."""
+        from agenthicc.tui.preferences import ui_settings
+        from agenthicc.tui.workspace.dialog import DialogSettings as Settings
+
+        app_state = self._ctx.app_state
+        ui = ui_settings(app_state)
+        workspace_access = self._ctx.workspace_access
+        return Settings(
+            keymap=app_state.keymap(),
+            plain=ui is not None and ui.screen_reader,
+            mode=app_state.active_mode().name,
+            composer=answers.composer,
+            workspace=workspace_access.scope if workspace_access is not None else None,
+            redraw=answers.redraw,
         )
 
     def _answer_context(self) -> AnswerContext:

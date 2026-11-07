@@ -1,6 +1,6 @@
 ---
 title: "TUX-07: One dialog component for approvals, plans and questions"
-status: Proposed
+status: Implemented with amendments (2026-11-07, branch tux-tux07)
 version: 1.0.0
 date: 2026-11-05
 scope: "a shared Dialog frame for every decision overlay (tool approval, workspace access, plan review, ask_user questions, confirmations, pagers): layout, width, wording, keys, and approval content that explains the action (command, diff, target, risk)"
@@ -9,6 +9,130 @@ tags: [tui, overlays, approvals, dialogs, ergonomics]
 ---
 
 # TUX-07: One dialog component for approvals, plans and questions
+
+## Implementation status (2026-11-07)
+
+Delivered on branch `tux-tux07`. Every acceptance criterion in §4 is met and
+tested; the confirmation dialogs and pagers of §2.3 are deferred (below).
+
+- **`Dialog`** (`tui/workspace/dialog.py`) is the frame of `ApprovalOverlay`,
+  `PlanApprovalOverlay` and `QuestionsOverlay`, which keep their names and
+  service contracts and expose it as `.dialog`. It has:
+  - the title on the top border and the badge on its right (the mode, or
+    `reviewer #2 · o open transcript`);
+  - a body that scrolls with `↑ N more` / `↓ N more` and shrinks to fit;
+  - the reason line, numbered options with the `accent` bar on `accent_bg`
+    (`danger` only for a selected destructive choice), and the key legend in
+    the bottom border.
+
+  The width is `clamp(cols − 4, 60, 120)` (never wider than the terminal),
+  centred above 124 columns. The height is at most the overlay viewport the
+  workspace publishes, or `rows − 6` before one. With `screen_reader` there
+  is no box.
+
+  `Dialog` is self-contained: it draws its own box from the viewport the
+  `OverlayHost` publishes and reads nothing from the surrounding layout, so
+  it slots between the composer's two rules (TUX-02) unchanged.
+- **Settings.** `TUISession._dialog_settings` gives every dialog a
+  `DialogSettings`: the session keymap, `[ui] screen_reader`, the mode badge,
+  the composer context, the workspace scope that approval diffs are read in,
+  and `redraw`. An in-dialog `EmbeddedComposer` dispatches each key in a task
+  after the overlay host has already repainted, so it calls `redraw` to show
+  the key.
+- **Keys** come from a new `dialog` keymap context (`DIALOG_ACTIONS` in
+  `tui/actions.py`): `↑↓`/`j k`, Enter, `1`–`9`, Esc, Tab, `Ctrl+T`, `[`/`]`
+  and PgUp/PgDn, `←`/`→` for questions, `o` for a worker, and the
+  `y`/`a`/`A`/`n` aliases.
+- **Approval content** (`overlays/approval_body.py`) covers execute, write
+  (diffs against the file read through the workspace scope; the bounded body
+  reuses `diff_renderer.render_file_diff`/`render_file_create`), delete, move
+  and copy, network, workspace scope and generic tools.
+  - `ApprovalRequest.reason` is new. `ApprovalGate` fills it from the mode and
+    capabilities (`approval_reason`), and `WorkspaceAccessPolicy` from the
+    boundary.
+  - A denial carries the user's text (`denial_payload`: `error` and
+    `user_instructions`), as does a denied scope approval.
+- **Plan review** has the four options, Tab notes, and Esc folds the dialog.
+- **Questions** have no countdown, and the deadline appears as the reason
+  line.
+- **Screen readers.** The announcer speaks `request_announcement(req)` on
+  open.
+- **Removed.** `PromptOverlay` (`overlays/prompt.py`) is deleted; every
+  in-dialog text field is an `EmbeddedComposer`. The four overlay files are
+  off the TUX-01 `_PENDING` list.
+
+Amendments:
+
+- **`Ctrl+T` shows the details inside the dialog.** It swaps the body for the
+  full arguments or diff, scrollable, until `Ctrl+T` or Esc. TUX-09 moves
+  this to its transcript view.
+- **The leader rule is narrowed.** `Keymap` used to reject any action bound
+  to the leader key. Now it rejects one only in a context where a two-step
+  binding can start (the context, its parents and children, or anywhere when
+  `global` has one). Otherwise `leader = "ctrl+t"`, as the bindings template
+  suggests, would invalidate the whole file because of `dialog.details`.
+- **Esc in plan review folds the dialog.** "Not now, keep reviewing" folds it
+  to one line, "The plan is waiting for your review · Enter reopen", and the
+  request stays pending. A dialog that simply closed could not be reopened.
+- **"Approve — add instructions" is replaced.** Tab on any option opens the
+  note composer.
+- **"Keep planning"** answers `allowed=False` with `KEEP_PLANNING_MESSAGE`, so
+  the agent refines the plan without treating it as a rejection.
+- **No Tab note on approvals.** An allowed call has no channel to the model,
+  so Tab is not bound in an approval (its dialog does not report the `note`
+  condition); option 4, "No, and tell the agent what to do instead", opens the
+  composer. `n` still denies at once, without text. Plan review keeps Tab on
+  every choice.
+- **Write bodies keep the transcript's diff look.** Each file starts with a
+  `path  +N -M` row, followed by the transcript's own diff renderer
+  (`render_file_diff`, with its `Update(path)` header and line numbers) or,
+  for a new file, `render_file_create` bounded at 40 lines. `Ctrl+T` shows
+  the raw unified diff (`--- a/` / `+++ b/`). `apply_diff` shows the diff it
+  was given.
+- **Session scope.** It reads "allow commands this session", never "`npm`
+  commands": the policy remembers capabilities, not programs.
+- **MCP and plugin tools.** The title is "Use <tool name in words>" over the
+  key/value table. The request does not carry the MCP server or the tool
+  description, so `server · tool` is not shown.
+- **Network.** The body names the `network_allow_list` entry that admits the
+  host, or says that none does. A host the list refuses is hard-blocked by
+  `HttpDestinationPolicy` and is never asked about.
+- **Question deadline.** The foreground `[tools] question_timeout_s` still
+  defaults to 300 s, so "Answer within 5 min." shows by default. Changing
+  that default is a policy change outside this PRD.
+- **Question navigation is unchanged.** `←`/`→` move between questions and
+  `[`/`]` scroll the question, as before.
+- **Confirmations and pagers are deferred.** The hub's agent delete and the
+  schedule-delete confirmation are inline states of larger overlays (the
+  hub, `SchedulesOverlay`), and the pagers (`/help`, `/release-notes`) are
+  their own overlays. None is self-contained, so all are left for a later
+  wave.
+- **Totals use ASCII minus.** `+N -M` uses `-`, because `−` is not in the
+  TUX-01 glyph set.
+- **Criterion 8 checks the glyph set itself.** The repository has no glyph
+  cmap test, so every dialog is rendered under the Unicode and the ASCII
+  glyph sets and each non-ASCII character must be one of that set's glyphs.
+- **Verification renders are text.** §6's screenshots were taken as plain
+  text renders (a command, a `patch_file` diff, a short plan, a question and
+  a worker's MCP call at 80 and 160 columns), not images.
+
+Tests:
+
+- `tests/unit/test_dialog.py` covers criteria 1–6, 8 and 9: the `min(cols,
+  66)` scan, the type checks, the width and centring, a 300-character command
+  at 80 and 120 columns, a real temporary-file `patch_file` diff, new-file,
+  delete, network and scope bodies, reasons, number keys and aliases on an
+  `InteractiveApprovals` fake, the composer, the glyph-set scan in Unicode and
+  ASCII, the screen-reader sentence, announcer and boxless render, and that
+  an in-dialog composer repaints the dialog after each key in a running loop.
+- `tests/unit/test_plan_approval_overlay.py` covers criterion 7 (a 3-line
+  plan in at most 12 rows; a 200-line plan in `rows − 6` that scrolls) and
+  the four options.
+- `tests/integration/test_approval_dialog_integration.py` covers criterion 6
+  ("use pnpm instead" reaches the tool result through the executor,
+  `ApprovalGate` and `ApprovalService`) and `2` remembering for the turn.
+- The questions, keymap, e2e redraw and resize suites are updated for the
+  new labels.
 
 ## 1. Problem
 

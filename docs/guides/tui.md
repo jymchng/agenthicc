@@ -56,7 +56,7 @@ per turn causes cursor races and duplicated status lines.
 
 Terminal resize signals are debounced into one repaint after the new geometry
 settles. That frame erases the block at its old height and paints every row
-again, in one write, so an active Plan Review remains a single overlay instead
+again, in one write, so an active plan review remains a single overlay instead
 of leaking duplicate frames into scrollback.
 
 ### Rendering
@@ -188,9 +188,10 @@ accident. In a rebinding, `left_on_empty` names that gesture.
 
 Every screen has a context: `composer`, `agents` (operations on an agent),
 `agents.list`, `agents.peek` and `agents.detail` (the hub's list, peek panel
-and detail view), `transcript`, `subagents` and `overlay`; `global` actions
-apply everywhere. `agents.list` and `agents.detail` inherit `agents`, and
-`agents.peek` inherits `agents.list`, so an agent operation such as
+and detail view), `transcript`, `subagents`, `overlay` and `dialog` (every
+decision dialog: approvals, plan review and questions, see
+[Decision dialogs](#decision-dialogs)); `global` actions apply everywhere.
+`agents.list` and `agents.detail` inherit `agents`, and `agents.peek` inherits `agents.list`, so an agent operation such as
 `agents.stop` works in all three. A key bound in a context shadows the same key
 inherited from a parent, which is how `y` approves in the hub without
 affecting anything else. The subagent panel (Ctrl+O) uses `subagents` and a
@@ -288,8 +289,10 @@ mouse = "auto"          # "auto": full-screen agents hub only; "on": also here; 
 With `screen_reader`, the status bar and footer use commas instead of
 box-drawing separators and words instead of arrows, the borders are dropped,
 nothing animates, and each change — the agent thinking, running a tool,
-finishing or failing, a prompt waiting for approval, a notification, a mode
-switch — is printed once as a plain sentence in the scroll buffer.
+finishing or failing, a dialog waiting for a decision, a notification, a mode
+switch — is printed once as a plain sentence in the scroll buffer. A dialog's
+sentence is its title, summary, reason and option count, for example "Run a
+command: npm test. Safe mode asks before running commands. 4 options."
 Announcements are not written to the session's event log. With
 `mouse = "on"`, the wheel moves the composer's cursor through a tall prompt;
 `"off"` never writes a mouse-reporting sequence. `NO_COLOR` is respected.
@@ -416,12 +419,15 @@ the previous terminal state on exit.
 
 ## Overlays and approvals
 
-The workspace can show help, command and skill listings, configuration,
-trigger-picker, plan-review, questions, and generic tool approval overlays.
+The workspace can show help, command and skill listings, configuration and
+trigger-picker overlays, and the decision dialogs for tool approvals, plan
+review and questions.
 `/commands` and `/skills` build their listings from the live command/skill
 registries and keep the results in the overlay rather than appending them to
 the conversation scroll buffer. Approval requests are stored in reactive state
-and route to the overlay registry in `TUISession`.
+and route to the overlay registry in `TUISession`, which gives each dialog
+the session's keymap, `screen_reader` setting, mode, composer context and
+workspace scope (`DialogSettings`).
 
 The `/ps` background-terminal overlay is a responsive paginated projection.
 `Workspace` measures the Live layout and gives the active overlay its
@@ -439,13 +445,77 @@ should update its state/callback and let the workspace redraw. New approval
 kinds need an overlay class, registry entry, and tests for approve/reject,
 cancel, and terminal resize behaviour.
 
+### Decision dialogs
+
+Tool approvals, workspace-access approvals, plan review and `ask_user`
+questions share one frame, `Dialog` (`tui/workspace/dialog.py`, TUX-07):
+
+```text
+ ╭─ Run a command ──────────────────────────────────────────────── Safe ─╮
+ │                                                                       │
+ │  in objective-create-a                                                │
+ │  $ npm ci && npm test                                                 │
+ │                                                                       │
+ │  Safe mode asks before running commands.                              │
+ │                                                                       │
+ │ ▌ 1  Yes                                                              │
+ │   2  Yes, and allow commands for the rest of this turn                │
+ │   3  Yes, and allow commands this session                             │
+ │   4  No, and tell the agent what to do instead                        │
+ │                                                                       │
+ ╰─ ↑↓ choose · Enter confirm · Esc no ──────────────────────────────────╯
+```
+
+- **Title and badge.** A verb phrase, never a tool's internal name; the badge
+  is the mode, or the subagent worker that asks (`o` opens its transcript).
+- **Body.** It explains the action: the whole command, syntax-highlighted and
+  wrapped (a `cd X &&` prefix or a `cwd` argument reads "in X"); for
+  `write_file`, `patch_file`, `apply_diff` and `batch_write`, a diff against
+  the current file read inside the workspace, with `+N -M` per file, and a
+  new file's first 40 lines marked "new file"; paths and sizes for delete,
+  move and copy; the method, host and path of a network call and the
+  `network_allow_list` entry that admits it (or that none does); the exact
+  targets, workspace root and mode of a workspace-access approval (never its
+  raw arguments); and a key/value table for MCP and plugin tools. A long
+  body scrolls with `↑ N more` / `↓ N more`, and `Ctrl+T` shows the full
+  arguments or diff, scrollable inside the dialog (`Ctrl+T` or Esc returns).
+  Nothing is redacted more or less than before.
+- **Reason.** One muted line from the mode, capability or workspace boundary
+  that asked ("Safe mode asks before running commands.").
+- **Options.** `1`–`9` choose and confirm, `↑↓` (or `j`/`k`) and Enter as
+  well; `y`, `a`, `A` and `n` remain aliases for an approval (`n` denies at
+  once). "No, and tell the agent what to do instead" opens the embedded
+  composer in the dialog; what you type is returned to the model with the
+  denial (the tool result's `error` and `user_instructions`).
+- **Esc is the safe exit.** It denies an approval; folds the plan review to
+  one line with the plan still pending (Enter reopens it); and steps back,
+  then cancels, in questions.
+- **Size.** The width is `clamp(cols − 4, 60, 120)`, centred above 124
+  columns; the height is at most the overlay area, and a short body shrinks
+  the dialog with no empty viewport.
+- **Screen readers.** With `[ui] screen_reader = true` the dialog draws no
+  box, and opening it announces one sentence, for example "Run a command: cd
+  objective-create-a && npm ci && npm test. Safe mode asks before running
+  commands. 4 options."
+
+Keys come from the `dialog` keymap context, so `~/.agenthicc/keybindings.toml`
+can rebind them (`[dialog] "dialog.details" = "ctrl+e"`), and `/shortcuts`
+lists them. A `leader` key only shadows a plain binding of the same key in
+the contexts that have two-step bindings, so a dialog keeps `Ctrl+T` when the
+composer uses it as the leader.
+
+**Plan review** shows the rendered plan in the body and offers "Approve and
+run in Safe mode", "Approve and run in Yolo mode", "Keep planning" and
+"Reject, with feedback" (a request without execution modes offers
+"Approve"). Tab adds a note to any choice through the embedded composer.
+
 ### Reading long `ask_user` questions
 
-The Questions overlay wraps long or multi-line question text to the current
-terminal width and keeps it in a fixed-height viewport. In SELECTING mode,
-press `[` to scroll up one question line and `]` to scroll down one line;
-`↑`/`↓` remain option navigation and `←`/`→` remain question navigation. A
-range indicator shows when more question text is above or below the viewport.
+The questions dialog is titled "The agent asks". With several questions the
+body shows `Question 1 of 3`, and `←`/`→` move between them. A long question
+scrolls in the body: `[` and `]` move one line, Page Up/Page Down a page.
+There is no countdown: when a timeout is configured the reason line reads
+"Answer within 5 min.".
 
 When entering an `Other` answer, the input is the main composer embedded in
 the overlay (`EmbeddedComposer`):
@@ -462,8 +532,8 @@ the overlay (`EmbeddedComposer`):
 - Esc closes an open picker first, then returns to the options, keeping what
   was typed.
 
-The pickers render inside the overlay, so the questions stay mounted.
-Page Up/Page Down scroll the question by one viewport while `[` and `]` remain
+The pickers render inside the dialog, so the questions stay mounted.
+Page Up/Page Down scroll the question by one page while `[` and `]` remain
 ordinary answer characters. Question text is
 rendered literally, so model text such as `[red]` is not interpreted as Rich
 markup. Scrolling and resizing change presentation state only; the answer

@@ -92,7 +92,27 @@ def test_definitions_are_validated() -> None:
     with pytest.raises(KeymapError, match="without a leader"):
         Keymap.build([_action("composer.a", ("<leader>a",))])
     with pytest.raises(KeymapError, match="leader key"):
-        Keymap.build([_action("composer.a", ("ctrl+x",))], leader="ctrl+x")
+        Keymap.build(
+            [_action("composer.a", ("ctrl+x",)), _action("composer.b", ("<leader>b",))],
+            leader="ctrl+x",
+        )
+
+
+def test_the_leader_key_stays_bound_where_no_two_step_binding_starts() -> None:
+    """A dialog's Ctrl+T works although the composer uses Ctrl+T as its leader (TUX-07)."""
+    keymap = Keymap.build(
+        [
+            _action("composer.a", ("<leader>a",)),
+            Action("dialog.details", "dialog", ("ctrl+t",), "details"),
+        ],
+        leader="ctrl+t",
+    )
+    assert keymap.resolve("dialog", "ctrl+t").name == "dialog.details"
+    with pytest.raises(KeymapError, match="leader key"):
+        Keymap.build(
+            [_action("composer.a", ("<leader>a",)), _action("composer.b", ("ctrl+t",))],
+            leader="ctrl+t",
+        )
 
 
 def test_the_defaults_have_no_conflicts() -> None:

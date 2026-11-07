@@ -607,6 +607,10 @@ class WorkspaceAccessPolicy:
             capabilities=capabilities,
             event=asyncio.Event(),
             workspace_access=access_requests,
+            reason=(
+                f"{'The target is' if len(access_requests) == 1 else 'These targets are'} "
+                f"outside the workspace; {self.mode_name} mode asks before leaving it."
+            ),
         )
         response = await self._await_scope_approval(req)
         if not response.allowed:
@@ -616,8 +620,12 @@ class WorkspaceAccessPolicy:
                     "outside_workspace",
                     "Plan mode cannot access outside the workspace",
                 )
+            instructions = response.message.strip()
             return self._denied(
-                resolved, "approval_denied", "outside_workspace approval was denied"
+                resolved,
+                "approval_denied",
+                "outside_workspace approval was denied"
+                + (f"; the user said what to do instead: {instructions}" if instructions else ""),
             )
 
         if self.mode is WorkspaceAccessMode.UNRESTRICTED:

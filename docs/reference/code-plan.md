@@ -239,8 +239,9 @@ stores the plan and moves the runner to `EXECUTE`. `exit_code_plan()` is an
 optional clean exit for questions or other intents that do not require a code
 plan.
 
-For interactive code-plan approval, the plan-review overlay presents two
-explicit choices: `Approve - Safe` and `Approve - YOLO`. The selected mode is
+For interactive code-plan approval, the plan-review dialog presents two
+explicit choices: `Approve and run in Safe mode` and `Approve and run in Yolo
+mode`, beside `Keep planning` and `Reject, with feedback` (TUX-07). The selected mode is
 stored with the finalized plan and passed to every execution turn; Safe keeps
 per-action approval gates enabled, while Yolo permits the approved executor to
 run without those prompts. The choice is also included in the phase metadata

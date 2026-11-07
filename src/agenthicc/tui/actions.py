@@ -38,6 +38,7 @@ __all__ = [
     "AGENTS_PEEK_ACTIONS",
     "COMPOSER_ACTIONS",
     "DEFAULT_ACTIONS",
+    "DIALOG_ACTIONS",
     "GLOBAL_ACTIONS",
     "SUBAGENTS_ACTIONS",
     "TRANSCRIPT_ACTIONS",
@@ -736,6 +737,136 @@ TRANSCRIPT_ACTIONS: tuple[Action, ...] = (
     ),
 )
 
+_APPROVAL = frozenset({"approval"})
+
+#: Every decision dialog: tool approvals, plan review and questions (TUX-07).
+#: A dialog reports ``approval`` (the y/a/A/n aliases apply), ``note`` (Tab
+#: adds a note to the choice), ``details`` (Ctrl+T shows the full arguments or
+#: diff), ``requester`` (a subagent worker asked) and ``questions`` (←/→ move
+#: between several questions).
+DIALOG_ACTIONS: tuple[Action, ...] = (
+    Action("dialog.up", "dialog", ("up", "k"), "up", description="Select the previous option"),
+    Action(
+        "dialog.down",
+        "dialog",
+        ("down", "j"),
+        "choose",
+        hint_priority=100,
+        description="Select the next option",
+        paired="dialog.up",
+    ),
+    Action(
+        "dialog.confirm",
+        "dialog",
+        ("enter",),
+        "confirm",
+        hint_priority=90,
+        description="Confirm the selected option",
+    ),
+    Action(
+        "dialog.choose",
+        "dialog",
+        ("1", "2", "3", "4", "5", "6", "7", "8", "9"),
+        "choose and confirm",
+        description="Choose the option with that number and confirm it",
+        rebindable=False,
+    ),
+    Action(
+        "dialog.cancel",
+        "dialog",
+        ("escape",),
+        "safe exit",
+        hint_priority=80,
+        description="Deny an approval, keep a plan pending, or step back from a question",
+    ),
+    Action(
+        "dialog.note",
+        "dialog",
+        ("tab",),
+        "add a note",
+        hint_priority=50,
+        when=frozenset({"note"}),
+        description="Add a note to the selected choice",
+    ),
+    Action(
+        "dialog.details",
+        "dialog",
+        ("ctrl+t",),
+        "full details",
+        hint_priority=40,
+        when=frozenset({"details"}),
+        description="Show the full arguments or diff",
+    ),
+    Action(
+        "dialog.scroll_up", "dialog", ("pageup", "["), "scroll up", description="Scroll the body up"
+    ),
+    Action(
+        "dialog.scroll_down",
+        "dialog",
+        ("pagedown", "]"),
+        "scroll down",
+        description="Scroll the body down",
+    ),
+    Action(
+        "dialog.previous_question",
+        "dialog",
+        ("left",),
+        "previous question",
+        when=frozenset({"questions"}),
+        description="Show the previous question",
+    ),
+    Action(
+        "dialog.next_question",
+        "dialog",
+        ("right",),
+        "question",
+        hint_priority=60,
+        when=frozenset({"questions"}),
+        description="Show the next question",
+        paired="dialog.previous_question",
+    ),
+    Action(
+        "dialog.open_requester",
+        "dialog",
+        ("o",),
+        "open transcript",
+        when=frozenset({"requester"}),
+        description="Open the asking worker's transcript",
+    ),
+    Action(
+        "dialog.allow_once",
+        "dialog",
+        ("y",),
+        "yes",
+        when=_APPROVAL,
+        description="Allow this call once",
+    ),
+    Action(
+        "dialog.allow_turn",
+        "dialog",
+        ("a",),
+        "yes for this turn",
+        when=_APPROVAL,
+        description="Allow calls like this for the rest of the turn",
+    ),
+    Action(
+        "dialog.allow_session",
+        "dialog",
+        ("A",),
+        "yes for this session",
+        when=_APPROVAL,
+        description="Allow calls like this for the rest of the session",
+    ),
+    Action(
+        "dialog.deny",
+        "dialog",
+        ("n",),
+        "no",
+        when=_APPROVAL,
+        description="Deny this call",
+    ),
+)
+
 DEFAULT_ACTIONS: tuple[Action, ...] = (
     *GLOBAL_ACTIONS,
     *COMPOSER_ACTIONS,
@@ -745,4 +876,5 @@ DEFAULT_ACTIONS: tuple[Action, ...] = (
     *AGENTS_DETAIL_ACTIONS,
     *SUBAGENTS_ACTIONS,
     *TRANSCRIPT_ACTIONS,
+    *DIALOG_ACTIONS,
 )

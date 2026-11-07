@@ -56,9 +56,9 @@ def _overlay(
 @pytest.mark.parametrize(
     ("kind", "header"),
     [
-        ("tool", "Tool Approval Required"),
-        ("plan_review", "Plan Review"),
-        ("questions", "Questions"),
+        ("tool", "Use tool"),
+        ("plan_review", "Approve the plan"),
+        ("questions", "The agent asks"),
     ],
 )
 async def test_waiting_ticks_do_not_append_duplicate_prompt_surfaces(

@@ -297,11 +297,11 @@ process, or filesystem access can bypass session tool policies. Missing modules
 can still cause ordinary import failures. Only execute trusted generated code or
 use separate OS-level isolation.
 
-`code_plan` plan approval presents explicit `Approve - Safe` and
-`Approve - YOLO` choices. The selected mode is carried into the execute phase
+`code_plan` plan approval presents explicit `Approve and run in Safe mode` and
+`Approve and run in Yolo mode` choices. The selected mode is carried into the execute phase
 and restored from phase metadata on resume; missing or invalid selections use
-the fail-closed `Safe` default. `create_workflow` design approval remains on
-the legacy plan-review option set.
+the fail-closed `Safe` default. `create_workflow` design approval offers
+`Approve`, `Keep planning` and `Reject, with feedback`.
 
 `goal_flow` exposes `append_goal(goal: str)` and
 `insert_goal(index: int, goal: str)` during implementation and verification.

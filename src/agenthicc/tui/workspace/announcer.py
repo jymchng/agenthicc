@@ -75,13 +75,10 @@ class Announcer:
         if pending is None:
             self._say("approval", "")
             return
-        if pending.kind == "questions":
-            sentence = "A question is waiting for your answer."
-        elif pending.kind == "plan_review":
-            sentence = "A plan is waiting for your approval."
-        else:
-            sentence = f"Approval needed: {pending.tool_name}."
-        self._say("approval", sentence)
+        # The dialog's own title, summary, reason and option count (TUX-07).
+        from agenthicc.tui.workspace.overlays.approval_body import request_announcement
+
+        self._say("approval", request_announcement(pending))
 
     def _on_notification(self) -> None:
         text = self._state.conversation.notification()
