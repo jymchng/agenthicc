@@ -155,17 +155,18 @@ def test_explored_calls_collapse_to_one_row_and_flush_before_a_mutation() -> Non
 
     assert _rows(console) == [
         '● Explored 1 file, 1 search  command.py, "def _emit" in src/',
+        "",
         "● Write out.py",
     ]
 
 
-def test_explored_row_and_the_next_tool_have_no_blank_between() -> None:
+def test_explored_row_and_the_next_tool_have_one_blank_between() -> None:
     appender, console = _appender()
     _flush(
         appender, [_event("read_file", "Makefile", exploratory=True), _event("run_tests", "unit")]
     )
 
-    assert _rows(console) == ["● Explored 1 file  Makefile", "● Test unit"]
+    assert _rows(console) == ["● Explored 1 file  Makefile", "", "● Test unit"]
 
 
 def test_exploration_failure_is_not_hidden_and_starts_a_new_group() -> None:
@@ -182,7 +183,8 @@ def test_exploration_failure_is_not_hidden_and_starts_a_new_group() -> None:
 
     rows = _rows(console)
     assert rows[0] == "● Explored 1 file  before.py"
-    assert rows[1].startswith("✗ Read broken.py") and rows[1].endswith("failed")
+    assert rows[1] == ""
+    assert rows[2].startswith("✗ Read broken.py") and rows[2].endswith("failed")
     assert rows[-1] == "● Explored 1 file  after.py"
 
 

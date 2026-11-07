@@ -106,7 +106,10 @@ def test_the_agt_tools_replay_prints_at_most_forty_percent_of_the_old_rows() -> 
     assert sum(event.kind == "tool_complete" for event in events) == 10
     assert sum(event.kind == "text" for event in events) == 2
     rows = _render(events).splitlines()
-    assert len(rows) <= 0.4 * _BASELINE_ROWS, "\n".join(rows)
+    # Blank spacing after each call (Claude Code style, operator request) is
+    # not density: the content rows must stay within 40 % of the old renderer.
+    content = [row for row in rows if row.strip()]
+    assert len(content) <= 0.4 * _BASELINE_ROWS, "\n".join(rows)
 
 
 def test_success_is_one_quiet_row_without_completed_or_output() -> None:
@@ -117,7 +120,7 @@ def test_success_is_one_quiet_row_without_completed_or_output() -> None:
     assert "Completed" not in text
 
 
-def test_consecutive_tool_rows_have_no_blank_line_and_text_gets_one() -> None:
+def test_every_tool_row_is_followed_by_one_blank_line() -> None:
     text = _render(
         [
             _tool("read_file", "a.py"),
@@ -125,8 +128,9 @@ def test_consecutive_tool_rows_have_no_blank_line_and_text_gets_one() -> None:
             _event("text", {"text": "Done."}),
         ]
     )
-    assert text.splitlines()[:4] == [
+    assert text.splitlines()[:5] == [
         "● Read a.py",
+        "",
         '● Search "x" in src/  → 3 matches',
         "",
         "Done.",
@@ -368,6 +372,7 @@ def test_details_cycles_the_level_and_only_the_next_call_changes() -> None:
     after = console.export_text(clear=False)
     assert after.startswith(before)  # earlier rows are never reprinted
     assert after[len(before) :].splitlines() == [
+        "",
         "● Read src/app.py",
         "  │ one",
         "  │ two",
@@ -550,14 +555,20 @@ def test_the_user_band_uses_the_user_bg_and_accent_tokens() -> None:
 # ── §2.6 replay separators ────────────────────────────────────────────────────
 
 
-def test_replay_separators_frame_history_with_its_own_time() -> None:
+def test_the_replay_separator_opens_history_with_its_own_time() -> None:
     appender, console = _appender(width=60)
     appender.replay_boundary(since=1_767_243_843.0, events=827)
-    appender.replay_boundary()
     rows = console.export_text().splitlines()
+    assert rows == [rows[0]]  # one opening rule; no closing "now" rule
     assert rows[0].startswith("── replayed from 1 Jan 05:04 · 827 events ──")
-    assert rows[1].startswith("── now ──")
-    assert all(len(row) == 60 for row in rows)
+    assert len(rows[0]) == 60
+
+
+def test_an_old_closing_record_draws_nothing() -> None:
+    """Logs from before the ``now`` rule was dropped hold ``edge: "end"`` records."""
+    appender, console = _appender(width=60)
+    appender._render_one(_event("replay_separator", {"edge": "end"}))
+    assert console.export_text() == ""
 
 
 # ── §2.1 migration of old payloads ────────────────────────────────────────────

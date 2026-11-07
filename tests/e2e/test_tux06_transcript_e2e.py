@@ -219,7 +219,7 @@ async def test_replay_keeps_the_original_times_inside_separators(sessions, monke
     replayed = [event for event in seen if event.kind != "replay_separator"]
     assert [event.timestamp for event in replayed] == stored
     assert rows[0].startswith("── replayed from 1 Jan 05:04 · 15 events ──")
-    assert rows[-1].startswith("── now ──")
+    assert not [row for row in rows if row.startswith("── now")]  # no closing rule
     if now != "05:04":
         assert not [row for row in rows if now in row]
     assert '● Read memory: "topic_brief"' in rows

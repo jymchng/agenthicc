@@ -93,7 +93,8 @@ While the agent works, the state segment turns agenthicc's flower
   | 2 | `◆ N sessions need you ←` (AGX-10) | a background session needs you |
   | 3 | `ctx 42% ▰▰▱▱▱`, green below 60 %, amber below 85 %, red above | after the first response that reported usage |
   | 4 | the model, short (`opus-4.8`; the provider when it is not the default) | always |
-  | 5 | subagent workers `1/3 workers`, the workflow phase `2/4 implement`, a `/workflow` selection, running background sessions, startup work still loading | when active |
+  | 2 | the running workflow and its phase: `◆ auto → Finalize goals 3/5` (shortened to the phase, then the workflow, never dropped first; `paused` when paused) | a workflow is running |
+  | 5 | subagent workers `1/3 workers`, a `/workflow` selection, running background sessions, startup work still loading | when active |
   | 6 | tokens `↑12k ↓3k` (`≈` when partial) and cost `$0.42` (`~` when estimated) | only when the provider reported them |
   | 7 | the git branch, `*` when the tree has changes | in a repository |
   | right | the shortcuts hint (`/help`) | 60 columns and more |
@@ -224,19 +225,29 @@ available. Full chained exception details remain at debug log level.
 
 Each tool call is one row: the operation, a human summary of its target, and
 quiet detail (TUX-06). Success is quiet: there is no `Completed` and no output,
-and the duration appears, right-aligned, only from one second.
+and the duration appears, right-aligned, only from one second. As in Claude
+Code, every tool call is followed by one blank line.
 
 ```text
 ● Read src/agenthicc/tui/workspace/appender.py:480-560
+
 ● $ uv run pytest tests/unit -q                                   2.4s
   └ 1,284 passed, 3 skipped
+
 ✗ $ npm test  in objective-create-a/                     exit 1 · 8.1s
   │ FAIL src/App.test.tsx
   │   ● renders learn react link
   │     Unable to find an element with the text: /learn react/i
   └ 41 more lines · ctrl+t to expand
+
 ● Edit src/app/main.py  +12 −3
+
+✾ Worked for 1m 15s
 ```
+
+- **Narrow rows.** A command or text target is cut at its end
+  (`$ git status && echo …`) and a path in its middle; the quiet detail is
+  shown whole, cut only when at least 16 cells fit, and otherwise dropped.
 
 - **Summaries.** A command shows the command itself (`$ npm test`); a leading
   `cd … &&` becomes the quiet `in objective-create-a/`, and a multi-line script
@@ -605,8 +616,8 @@ hard maxima.
 
 The same renderers are used for old and live turns, tool completions, errors,
 and assistant responses. Each event is drawn with its own stored time, never the
-time of the resume, and the history is framed by
-`── replayed from 2 Nov 05:04 · 827 events ──` and `── now ──`. `/replay
+time of the resume, and the history opens with
+`── replayed from 2 Nov 05:04 · 827 events ──`. `/replay
 SESSION_ID` shows another session the same way. This is presentation-only replay: the events are not
 appended to `ConversationStore` and therefore are not written to
 `conversation.jsonl` a second time. Accepted user messages for input-history
@@ -641,10 +652,12 @@ directly; while a prompt owns the terminal, the tick retains the activity
 start point without publishing a timer redraw every 50 ms. The older per-turn
 active-work clock remains available for turn-level telemetry and waiting-modal
 behavior. When the activity returns to IDLE, the scroll buffer emits a compact
-completion recap after the final turn. It shows each eligible per-turn duration
-(for example, `✾ Turn · 1m 5s`) and an indented `Total · 2m 5s` row for the
-enclosing activity. The total spans the outer user activity across internal turns
-and workflow phases; it is not model-only time or the sum of the visible turn rows.
+completion recap after the final turn. Each turn of a second or more reads
+`✾ Worked for 1m 5s`. The request's total, `✾ Done in 2m 5s across 3 turns`,
+follows only when it adds something: after several turns, or when it is
+longer than the one turn. The total spans the outer user activity across
+internal turns and workflow phases; it is not model-only time or the sum of
+the visible turn rows.
 Durations use whole-second `s`, `m`, and `h` units. One blank row separates the
 recap from subsequent scrollback or the persistent live status block.
 

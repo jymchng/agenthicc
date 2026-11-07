@@ -50,8 +50,9 @@ def test_source_discovery_journey_groups_exploration_and_preserves_events() -> N
 
     # TUX-06: the group is one row; the next tool row follows without a blank.
     rows = [row.rstrip() for row in output.getvalue().splitlines()]
-    assert rows[:4] == [
+    assert rows[:5] == [
         '● Explored 1 file, 1 search  command.py, "def _emit" in _runner.py',
+        "",
         "● Write notes.md",
         "",
         "Inspection complete.",

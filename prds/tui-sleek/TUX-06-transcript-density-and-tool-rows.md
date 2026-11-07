@@ -13,6 +13,12 @@ tags: [tui, transcript, scrollback, tools, density]
 
 ## Implementation status
 
+**Operator amendments (2026-11-07):**
+- **Spacing.** Every tool call is followed by one blank line, as in Claude Code. This replaces the no-blank rule between consecutive tool rows in §2.3. The density criterion now counts content rows: blank spacing is not density.
+- **Replay separator.** There is no closing `── now ──` rule. The live conversation follows the opening `replayed from` rule, and an old `edge: "end"` record draws nothing.
+- **Timing rows.** `✾ Turn · 24s` plus `Total · 24s` became `✾ Worked for 24s`. The total, `✾ Done in 1m 12s across 3 turns`, is printed only after several turns or when it exceeds the single turn.
+- **Narrow rows.** Command and text targets are cut at their end; paths are still cut in the middle. The quiet detail is shown whole, cut only when at least 16 cells fit, and otherwise dropped. A sliver of it rendered as `  i`.
+
 Implemented on branch `tux-tux06`. Every acceptance criterion in §4 has a test:
 
 | § 4 | Criterion | Test |

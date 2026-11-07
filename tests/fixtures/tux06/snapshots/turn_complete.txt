@@ -1,8 +1,8 @@
 ── compact ──
-✾ Turn · 53s
+✾ Worked for 53s
 
 ── normal ──
-✾ Turn · 53s
+✾ Worked for 53s
 
 ── verbose ──
-✾ Turn · 53s
+✾ Worked for 53s

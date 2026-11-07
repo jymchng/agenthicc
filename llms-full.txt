@@ -1886,8 +1886,8 @@ preview of reads and commands (`normal`) or the whole bounded output
 (`appender.set_session_tool_detail`, `session_tool_detail`,
 `TOOL_DETAIL_LEVELS`) and never re-renders printed rows. Replay draws every
 event with its stored timestamp (`ConversationStore.append_event(...,
-timestamp=)`) between `── replayed from 2 Nov 05:04 · N events ──` and
-`── now ──` separators: `ScrollBufferAppender.replay_boundary(since=, events=)`
+timestamp=)`) after a `── replayed from 2 Nov 05:04 · N events ──`
+separator: `ScrollBufferAppender.replay_boundary(since=, events=)`
 on resume, and `replay_separator` events from `/replay`'s
 `ConversationReplayer`, which loads through `SessionEventLog.load(...,
 rendered=False)`. Level-1 subagent rows align with tool headings while
@@ -4087,8 +4087,8 @@ AGI-02 adds two behaviours:
 `BackgroundApprovalService(store, session_id, *, question_timeout_s=None,
 auto_approve_capabilities=False)`:
 - `question_timeout_s=None` (the default) makes `ask_user` wait for the
-  operator; the worker passes `[background] question_timeout_s` when it is
-  non-zero.
+  operator; the worker passes `[background] question_timeout_s` (300 s by
+  default) when it is non-zero.
 - `auto_approve_capabilities` (used for `--dangerously-skip-permissions`)
   grants tool approvals at once, still denies workspace access outside the
   project, and still publishes questions to the inbox.

@@ -21,6 +21,8 @@ Implemented on branch `tux-tux02`.
 
 ### Amendments to the design above
 
+- **Workflow segment (operator request, 2026-11-07).** The running workflow and its phase move from segment 5 to priority 2 (`◆ auto → Finalize goals 3/5`). When the line is narrow the segment shortens to the phase, then to the workflow, and is not dropped first. It is also shown under a user status-line command, and while paused.
+
 - **Composer frame (operator request, 2026-11-06).**
   - Rules are now the default, matching Claude Code's input panel: a full-width rule ending in `title · Safe ─`, the prompt with no side borders, and a rule below.
   - The rounded box is still available with `[ui] composer_frame = "box"`.

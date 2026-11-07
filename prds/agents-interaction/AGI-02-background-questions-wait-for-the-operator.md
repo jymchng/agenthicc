@@ -43,6 +43,12 @@ Amendments:
 - **The label is `◇ answer late`.** "expired — answer anyway" did not fit the
   status column.
 - **Approvals are unchanged.** Approval waits were already unbounded.
+- **Amendment (post-merge): the default deadline is 300 s.** The first release
+  used `[background] question_timeout_s = 0` (wait forever). It now defaults to
+  `300`, matching the foreground overlay, so an unattended question cannot
+  park a turn indefinitely. An explicit `0` remains the unbounded wait. Tests
+  assert `BackgroundSettings().question_timeout_s == 300.0` and that an
+  explicit `0` still opts out.
 
 Tests: `tests/unit/test_background_questions_wait.py` (7). They cover:
 

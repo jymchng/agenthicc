@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from io import StringIO
-from unittest.mock import MagicMock
 
 import pytest
 from rich.console import Console
@@ -83,175 +81,80 @@ class TestCloseTurnElapsed:
 
 
 class TestCompletionRecapRenderers:
+    """``✾ Worked for 37s`` per turn; the request's total only when it adds to it."""
+
     @staticmethod
-    def _make_console() -> tuple[Console, StringIO, MagicMock]:
-        buf = StringIO()
-        console = Console(file=buf, highlight=False, markup=False, no_color=True)
-        stub = MagicMock()
-        stub._console = console
-        return console, buf, stub
+    def _render(*events: tuple[str, dict[str, object]]) -> str:
+        from agenthicc.tui.conversation_store import AppState, ConversationEvent
+        from agenthicc.tui.workspace.appender import ScrollBufferAppender
 
-    def test_turn_row_uses_compact_duration_without_trailing_blank(self) -> None:
-        from agenthicc.tui.conversation_store import ConversationEvent
-        from agenthicc.tui.workspace.appender import _render_turn_complete
+        console = Console(record=True, markup=False, no_color=True, width=100)
+        appender = ScrollBufferAppender(AppState.create(), console)
+        for index, (kind, payload) in enumerate(events):
+            appender._render_one(ConversationEvent(f"e{index}", kind, payload))
+        return console.export_text()
 
-        _, buf, stub = self._make_console()
-        _render_turn_complete(
-            stub,
-            ConversationEvent(
-                event_id="turn",
-                kind="turn_complete",
-                payload={"elapsed_s": 65.0},
-            ),
-        )
-
-        assert buf.getvalue() == "✾ Turn · 1m 5s\n"
+    def test_a_turn_reads_worked_for_with_a_compact_duration(self) -> None:
+        assert self._render(("turn_complete", {"elapsed_s": 65.0})) == "✾ Worked for 1m 5s\n"
 
     def test_turn_row_is_omitted_below_one_second(self) -> None:
-        from agenthicc.tui.conversation_store import ConversationEvent
-        from agenthicc.tui.workspace.appender import _render_turn_complete
+        assert self._render(("turn_complete", {"elapsed_s": 0.5})) == ""
 
-        _, buf, stub = self._make_console()
-        _render_turn_complete(
-            stub,
-            ConversationEvent(
-                event_id="turn",
-                kind="turn_complete",
-                payload={"elapsed_s": 0.5},
-            ),
+    def test_missing_turn_elapsed_does_not_render_a_row(self) -> None:
+        assert self._render(("turn_complete", {})) == ""
+
+    def test_one_turn_does_not_repeat_its_time_as_a_total(self) -> None:
+        output = self._render(
+            ("turn_complete", {"elapsed_s": 24.0}), ("activity_complete", {"elapsed_s": 24.4})
         )
+        assert output == "✾ Worked for 24s\n"
+        assert "Total" not in output and "Done" not in output
 
-        assert buf.getvalue() == ""
-
-    def test_activity_total_uses_compact_duration_and_one_separator(self) -> None:
-        from agenthicc.tui.conversation_store import ConversationEvent
-        from agenthicc.tui.workspace.appender import _render_activity_complete
-
-        _, buf, stub = self._make_console()
-        _render_activity_complete(
-            stub,
-            ConversationEvent(
-                event_id="activity",
-                kind="activity_complete",
-                payload={"elapsed_s": 65.0},
-            ),
+    def test_several_turns_end_with_the_requests_total(self) -> None:
+        output = self._render(
+            ("turn_complete", {"elapsed_s": 18.0}),
+            ("turn_complete", {"elapsed_s": 29.0}),
+            ("activity_complete", {"elapsed_s": 54.0}),
         )
+        assert output == ("✾ Worked for 18s\n✾ Worked for 29s\n✾ Done in 54s across 2 turns\n")
 
-        assert buf.getvalue() == "  Total · 1m 5s\n"
+    def test_a_total_longer_than_its_one_turn_is_shown(self) -> None:
+        output = self._render(
+            ("turn_complete", {"elapsed_s": 10.0}), ("activity_complete", {"elapsed_s": 40.0})
+        )
+        assert output == "✾ Worked for 10s\n✾ Done in 40s\n"
 
     def test_subsecond_activity_total_is_omitted(self) -> None:
-        from agenthicc.tui.conversation_store import ConversationEvent
-        from agenthicc.tui.workspace.appender import _render_activity_complete
+        assert self._render(("activity_complete", {"elapsed_s": 0.5})) == ""
 
-        _, buf, stub = self._make_console()
-        _render_activity_complete(
-            stub,
-            ConversationEvent(
-                event_id="activity",
-                kind="activity_complete",
-                payload={"elapsed_s": 0.5},
-            ),
+    def test_the_count_restarts_with_each_request(self) -> None:
+        output = self._render(
+            ("turn_complete", {"elapsed_s": 5.0}),
+            ("turn_complete", {"elapsed_s": 5.0}),
+            ("activity_complete", {"elapsed_s": 11.0}),
+            ("turn_complete", {"elapsed_s": 7.0}),
+            ("activity_complete", {"elapsed_s": 7.0}),
         )
-
-        assert buf.getvalue() == ""
-
-    def test_turns_and_total_render_as_one_group(self) -> None:
-        from agenthicc.tui.conversation_store import AppState, ConversationEvent
-        from agenthicc.tui.workspace.appender import ScrollBufferAppender
-
-        console = Console(record=True, markup=False, no_color=True)
-        appender = ScrollBufferAppender(AppState.create(), console)
-        events = (
-            ConversationEvent(
-                event_id="turn-1",
-                kind="turn_complete",
-                payload={"elapsed_s": 18.0},
-            ),
-            ConversationEvent(
-                event_id="turn-2",
-                kind="turn_complete",
-                payload={"elapsed_s": 29.0},
-            ),
-            ConversationEvent(
-                event_id="activity",
-                kind="activity_complete",
-                payload={"elapsed_s": 54.0},
-            ),
-        )
-        for event in events:
-            appender._render_one(event)
-
-        assert console.export_text() == ("✾ Turn · 18s\n✾ Turn · 29s\n  Total · 54s\n")
+        assert output.count("across") == 1 and output.endswith("✾ Worked for 7s\n")
 
     def test_error_timing_rows_do_not_claim_success(self) -> None:
-        from agenthicc.tui.conversation_store import AppState, ConversationEvent
-        from agenthicc.tui.workspace.appender import ScrollBufferAppender
-
-        console = Console(record=True, markup=False, no_color=True)
-        appender = ScrollBufferAppender(AppState.create(), console)
-        appender._render_one(
-            ConversationEvent(
-                event_id="error",
-                kind="error",
-                payload={"message": "boom"},
-            )
+        output = self._render(
+            ("error", {"message": "boom"}),
+            ("turn_complete", {"elapsed_s": 2.0}),
+            ("activity_complete", {"elapsed_s": 3.0}),
         )
-        appender._render_one(
-            ConversationEvent(
-                event_id="turn",
-                kind="turn_complete",
-                payload={"elapsed_s": 2.0},
-            )
-        )
-        appender._render_one(
-            ConversationEvent(
-                event_id="activity",
-                kind="activity_complete",
-                payload={"elapsed_s": 3.0},
-            )
-        )
-
-        output = console.export_text()
-        assert "ERROR boom" in output
-        assert "✾ Turn · 2s" in output
-        assert "  Total · 3s" in output
+        assert "boom" in output
+        assert "✾ Worked for 2s" in output
         assert "Completed" not in output
         assert "since last IDLE" not in output
 
     def test_activity_total_then_error_has_one_blank_line(self) -> None:
-        from agenthicc.tui.conversation_store import AppState, ConversationEvent
-        from agenthicc.tui.workspace.appender import ScrollBufferAppender
-
-        console = Console(record=True, markup=False, no_color=True)
-        appender = ScrollBufferAppender(AppState.create(), console)
-        appender._render_one(
-            ConversationEvent(
-                event_id="activity",
-                kind="activity_complete",
-                payload={"elapsed_s": 2.0},
-            )
+        output = self._render(
+            ("turn_complete", {"elapsed_s": 1.0}),
+            ("turn_complete", {"elapsed_s": 1.0}),
+            ("activity_complete", {"elapsed_s": 2.0}),
+            ("error", {"message": "MCP server 'asyncmove' failed to start"}),
         )
-        appender._render_one(
-            ConversationEvent(
-                event_id="error",
-                kind="error",
-                payload={"message": "MCP server 'asyncmove' failed to start"},
-            )
-        )
-
-        rendered = console.export_text()
-        suffix = rendered.split("  Total · 2s", 1)[1]
-        assert suffix.startswith("\n\nERROR MCP server 'asyncmove' failed to start")
-        assert not suffix.startswith("\n\n\n")
-
-    def test_missing_turn_elapsed_does_not_render_a_row(self) -> None:
-        from agenthicc.tui.conversation_store import ConversationEvent
-        from agenthicc.tui.workspace.appender import _render_turn_complete
-
-        _, buf, stub = self._make_console()
-        _render_turn_complete(
-            stub,
-            ConversationEvent(event_id="turn", kind="turn_complete", payload={}),
-        )
-
-        assert buf.getvalue() == ""
+        suffix = output.split("✾ Done in 2s across 2 turns", 1)[1]
+        assert suffix.startswith("\n\n") and not suffix.startswith("\n\n\n")
+        assert "MCP server 'asyncmove' failed to start" in suffix

@@ -133,10 +133,19 @@ class TestRows:
         _flush(appender, [_tool(name="frobnicate_widget", summary="w")])
         assert _rows(console) == ["● Frobnicate Widget w"]
 
-    def test_consecutive_rows_have_no_blank_and_text_follows_after_one(self) -> None:
+    def test_every_tool_row_is_followed_by_one_blank_line(self) -> None:
+        """Claude Code's spacing: a blank line after each tool call (operator request)."""
         appender, console = _make_appender()
         _flush(appender, [_tool(), _tool(), _ev("text", text="done."), _tool()])
-        assert _rows(console) == ["● Read a.py", "● Read a.py", "", "done.", "", "● Read a.py"]
+        assert _rows(console) == [
+            "● Read a.py",
+            "",
+            "● Read a.py",
+            "",
+            "done.",
+            "",
+            "● Read a.py",
+        ]
 
     def test_no_summary_at_limit(self) -> None:
         appender, console = _make_appender()
@@ -149,8 +158,9 @@ class TestRows:
         _flush(appender, [_tool() for _ in range(_LIMIT + 3)])
         _flush(appender, [_ev("text", text="done.")])
         rows = _rows(console)
-        assert rows[_LIMIT] == "  └ …and 3 more tool calls"
-        assert rows[_LIMIT + 1 : _LIMIT + 3] == ["", "done."]
+        summary = rows.index("  └ …and 3 more tool calls")
+        assert rows[summary - 1] == "● Read a.py"  # attached to the last shown call
+        assert rows[summary + 1 : summary + 3] == ["", "done."]
 
     def test_summary_appears_on_error(self) -> None:
         appender, console = _make_appender()

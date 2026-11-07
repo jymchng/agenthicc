@@ -64,8 +64,12 @@ async def _waiting(store: BackgroundStore, session_id: str) -> None:
     raise AssertionError("the question was never published")
 
 
-def test_the_background_setting_defaults_to_no_deadline() -> None:
-    assert BackgroundSettings().question_timeout_s == 0.0
+def test_the_background_setting_defaults_to_five_minutes() -> None:
+    # AGI-02 amendment: a background question now gets the same five-minute
+    # default as the foreground overlay; 0 still opts into waiting forever.
+    assert BackgroundSettings().question_timeout_s == 300.0
+    assert BackgroundSettings.from_mapping({}).question_timeout_s == 300.0
+    assert BackgroundSettings.from_mapping({"question_timeout_s": 0}).question_timeout_s == 0.0
     assert BackgroundSettings.from_mapping({"question_timeout_s": 60}).question_timeout_s == 60.0
 
 

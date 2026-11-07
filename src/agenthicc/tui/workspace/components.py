@@ -216,7 +216,8 @@ class _Inputs:
     context_window: int
     model: str
     workers: tuple[int, int] | None
-    workflow: tuple[int, int, str] | None
+    #: The running workflow: name, phase number, phase count, phase, status.
+    workflow: tuple[str, int, int, str, str] | None
     workflow_override: str
     startup: str
     terminal_count: int
@@ -273,6 +274,11 @@ def _static_parts(inputs: _Inputs) -> tuple[_Part, ...]:
                 )
             )
 
+    # 2. The running workflow and its phase (operator request): kept with the
+    # state and attention, shortened rather than dropped when the line is narrow.
+    if inputs.workflow is not None:
+        parts.append(_workflow_part(inputs.workflow, reader))
+
     if inputs.user_line:
         # 3–7 replaced by the user's status-line command (TUX-02 §2.3).
         from rich.text import Text
@@ -281,6 +287,30 @@ def _static_parts(inputs: _Inputs) -> tuple[_Part, ...]:
     else:
         parts.extend(_builtin_parts(inputs))
     return tuple(sorted(parts, key=lambda part: part.priority))
+
+
+def _workflow_part(workflow: tuple[str, int, int, str, str], reader: bool) -> _Part:
+    """``workflow auto › Finalize goals 3/5`` and shorter forms (priority 2)."""
+    name, index, total, phase, status = workflow
+    step = f"{index}/{total}" if total else ""
+    paused = " paused" if status == "paused" else ""
+    phase_text = phase.replace("_", " ")
+    phase_text = phase_text[:1].upper() + phase_text[1:]
+    if reader:
+        sentence = f"workflow {name}, phase {index} of {total}"
+        sentence += f", {phase_text}" if phase_text else ""
+        return _Part(2, (_form(escape(sentence + paused)),))
+    g = glyphs()
+    head = _tint("info", f"{g.diamond} ") + _tint("info", escape(name), bold=True)
+    tail = _tint("muted", f" {step}") if step else ""
+    forms: list[str] = []
+    if phase_text:
+        forms.append(f"{head} {_tint('info', g.right)} {_tint('info', escape(phase_text))}{tail}")
+        forms.append(f"{_tint('info', escape(phase_text))}{tail}")
+    forms.append(f"{head}{tail}")
+    if paused:
+        forms = [form + _tint("warning", paused) for form in forms]
+    return _Part(2, tuple(_form(form) for form in forms))
 
 
 def _builtin_parts(inputs: _Inputs) -> list[_Part]:
@@ -311,14 +341,6 @@ def _builtin_parts(inputs: _Inputs) -> list[_Part]:
         done, total = inputs.workers
         label = f"{done} of {total} workers" if reader else f"{done}/{total} workers"
         parts.append(_Part(5, (_form(label if reader else _tint("agent", label)),)))
-    if inputs.workflow is not None:
-        index, total, phase = inputs.workflow
-        full = f"{index}/{total} {escape(phase)}" if phase else f"{index}/{total}"
-        if reader:
-            full = f"phase {index} of {total} {escape(phase)}".rstrip()
-        parts.append(
-            _Part(5, (_form(_tint("info", full)), _form(_tint("info", f"{index}/{total}"))))
-        )
     if inputs.workflow_override:
         parts.append(
             _Part(5, (_form(_tint("info", f"workflow {escape(inputs.workflow_override)}")),))
@@ -530,16 +552,18 @@ class StatusLine:
                 if counts.running + counts.queued + counts.needs_input > 0:
                     workers = (counts.done, pool.total)
         run = _signal(app, "workflow_run")
-        workflow: tuple[int, int, str] | None = None
+        workflow: tuple[str, int, int, str, str] | None = None
         model = _signal_text(conv, "model_name")
         if run is not None:
             from agenthicc.workflows.plugin import WorkflowRun
 
-            if isinstance(run, WorkflowRun) and run.status == "running":
+            if isinstance(run, WorkflowRun) and run.status in ("running", "paused"):
                 workflow = (
+                    run.workflow_name,
                     run.current_phase_index + 1,
                     run.total_phases,
                     run.current_phase or "",
+                    run.status,
                 )
                 if run.current_phase_model:
                     model = run.current_phase_model

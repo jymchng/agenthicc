@@ -299,7 +299,8 @@ def test_workflow_phase_is_a_status_segment() -> None:
         model_id="anthropic/claude-sonnet-4-5",
     )
     line = _plain(components.StatusLine(state).markup(160))
-    assert "2/3 execute" in line
+    # The workflow's name and phase (operator request), kept with the state.
+    assert "◆ flow → Execute 2/3" in line
     assert "sonnet-4.5" in line  # the phase's model
 
 

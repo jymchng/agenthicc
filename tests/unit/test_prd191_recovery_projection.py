@@ -109,11 +109,7 @@ async def test_legacy_replayer_preserves_ids_and_is_idempotent(
     await replayer.run()
     await replayer.run()
 
-    # The history is bracketed by TUX-06 separators; nothing repeats.
-    assert [event.kind for event in observed] == [
-        "replay_separator",
-        "tool_recovery",
-        "replay_separator",
-    ]
+    # The history opens with a TUX-06 separator (no closing rule); nothing repeats.
+    assert [event.kind for event in observed] == ["replay_separator", "tool_recovery"]
     assert observed[1].event_id == "historical-recovery"
     assert observed[1].timestamp == 1.0

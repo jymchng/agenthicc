@@ -785,10 +785,9 @@ def test_session_log_and_replay_round_trip(tmp_path: Path, monkeypatch: pytest.M
         return store
 
     store = asyncio.run(run_replay())
-    start, *replayed, end = store.events
-    assert replayed == pairs  # original timestamps, migrated payloads
+    start, *replayed = store.events
+    assert replayed == pairs  # original timestamps, migrated payloads; no closing rule
     assert start[:2] == ("replay_separator", {"edge": "start", "since": 1.0, "events": 2})
-    assert end[:2] == ("replay_separator", {"edge": "end"})
     assert "Replay complete" in str(store.notification.value)
     monkeypatch.setattr(
         "agenthicc.tui.runtime.session_log.get_session_log_path",

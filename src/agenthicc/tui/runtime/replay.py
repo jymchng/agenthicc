@@ -30,8 +30,7 @@ class ConversationReplayer:
     identity and **original timestamp**, so subscribers
     (``ScrollBufferAppender``) render it with the time it happened, not the
     time of the replay.  A ``replay_separator`` event opens the replayed
-    history (``── replayed from 2 Nov 05:04 · 827 events ──``) and another
-    closes it (``── now ──``).
+    history (``── replayed from 2 Nov 05:04 · 827 events ──``).
     """
 
     def __init__(
@@ -69,11 +68,6 @@ class ConversationReplayer:
             # Yield to the event loop so ScrollBufferAppender can flush each
             # render before the next event arrives, keeping the output ordered.
             await asyncio.sleep(0)
-        self._conv_store.append_event(
-            REPLAY_SEPARATOR,
-            {"edge": "end"},
-            event_id=f"replay-end:{self._session_id}",
-        )
 
         self._conv_store.notification.set(
             f"⏮ Replay complete ({len(events)} events) — "

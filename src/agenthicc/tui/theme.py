@@ -125,6 +125,8 @@ class Glyphs:
     sep: str
     approx: str
     """Marks an approximate value, such as partially reported token usage."""
+    flower: str = "*"
+    """The mark of agenthicc's timing rows (``✾ Worked for 37s``)."""
 
 
 UNICODE_GLYPHS = Glyphs(
@@ -152,6 +154,7 @@ UNICODE_GLYPHS = Glyphs(
     meter_empty="▱",
     sep="·",
     approx="≈",
+    flower="✾",
 )
 
 ASCII_GLYPHS = Glyphs(

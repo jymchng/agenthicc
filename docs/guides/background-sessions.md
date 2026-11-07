@@ -96,8 +96,8 @@ When the cancelled foreground task belongs to a running workflow, its
 cancellation handler currently records a workflow failure with reason
 `cancelled` and closes the foreground turn. The scroll appender can therefore
 show `ERROR cancelled` even though the background worker has been launched.
-The subsequent indented `Total · …` recap row is emitted when the foreground
-activity ends. Its duration describes the entire outer activity, not necessarily
+The subsequent `✾ Done in …` recap row is emitted when the foreground
+activity ends (when it adds to the turn's own `✾ Worked for …` row). Its duration describes the entire outer activity, not necessarily
 additional work after cancellation. A plain non-workflow turn can take this path
 without emitting the same workflow failure.
 
@@ -211,13 +211,14 @@ rejected or expired by an operator.
 
 ### Questions wait for you
 
-A background agent is unattended, so its `ask_user` questions have no
-deadline by default. A waiting question stays in Needs you until you answer
-it, expire it (`x`), or stop the session. The row's age shows how long the
-agent has waited.
+A background agent is unattended, so its `ask_user` questions have a bounded
+wait. By default it is 300 seconds (five minutes), the same as the foreground
+overlay. The question stays in Needs you until you answer it; if the deadline
+passes first, the agent continues with its safest assumption (below).
 
-`[background] question_timeout_s` sets a deadline (seconds; `0`, the
-default, means none). When it passes, the agent continues with its safest
+`[background] question_timeout_s` sets that deadline in seconds. The default is
+`300`; `0` means wait until you answer it, expire it (`x`), or stop the session.
+When the deadline passes, the agent continues with its safest
 assumption, and the question stays listed as `◆ answer late` (not bold) while the
 session runs. Answering it sends your answers to the agent as its next
 message, beginning "Late answers to your earlier questions…". `x` dismisses

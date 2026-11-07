@@ -1,8 +1,8 @@
 ── compact ──
-  Total · 54s
+✾ Done in 54s
 
 ── normal ──
-  Total · 54s
+✾ Done in 54s
 
 ── verbose ──
-  Total · 54s
+✾ Done in 54s

@@ -42,11 +42,7 @@ async def test_interrupted_exchange_is_rendered_once_after_resume(
     await replayer.run()
     await replayer.run()
 
-    # TUX-06 brackets the replayed history with separators; a second replay
-    # of the same session adds nothing, separators included.
-    assert [event.kind for event in observed] == [
-        "replay_separator",
-        "tool_recovery",
-        "replay_separator",
-    ]
+    # TUX-06 opens the replayed history with a separator (no closing rule); a
+    # second replay of the same session adds nothing, the separator included.
+    assert [event.kind for event in observed] == ["replay_separator", "tool_recovery"]
     assert observed[1].payload["exchange_id"] == "exchange-1"

@@ -161,6 +161,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   replay, full-history copies fall from 2,245 to 35 and validation scans from
   2,935 to 1,771, with byte-identical provider requests and journal records.
 
+### Changed — background questions have a five-minute deadline by default
+
+- `[background] question_timeout_s` now defaults to `300` seconds instead of
+  `0`. A hub/background agent's `ask_user` no longer waits indefinitely: after
+  five minutes the agent continues with its safest stated assumption and the
+  question stays in **Needs you** as `◆ answer late`, where a late answer still
+  reaches it as the session's next message. Set
+  `[background] question_timeout_s = 0` to restore the old unbounded wait. The
+  foreground `[tools] question_timeout_s` is unchanged and still governs only
+  the Questions overlay.
+
 ### Changed — required quality gates (PRD-250 WS-1)
 
 - One CI workflow, `.github/workflows/ci.yml`, runs every gate — lint and

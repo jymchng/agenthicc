@@ -71,30 +71,29 @@ conversation boundary or on interrupt.
 
 Two surfaces report time and usage, and they use different formats.
 
-**Scroll buffer** — at activity completion, a compact recap reports each
-per-turn duration and the enclosing user-activity duration:
+**Scroll buffer** — after each turn, and at the end of a request when it adds
+something:
 
 ```text
-✾ Turn · 1m 5s
-  Total · 2m 5s
+✾ Worked for 1m 5s
+✾ Done in 2m 5s across 2 turns
 ```
 
-`Turn` is elapsed time for one turn. `Total` spans the outer user activity from
-its start until IDLE, including internal turns and workflow phases; it is not
-model-only time or a sum of the visible turn rows. Durations use whole seconds
-with compact `s`, `m`, and `h` units. Recap rows under one second are omitted.
+`Worked for` is the elapsed time of one turn. `Done in` spans the outer user
+activity from its start until IDLE, including internal turns and workflow
+phases; it is printed only after several turns, or when it is longer than the
+one turn. Durations use whole seconds with compact `s`, `m`, and `h` units.
+Rows under one second are omitted.
 
-**Status bar** — a permanently visible two-line block
-(`StatusComponent`, `src/agenthicc/tui/workspace/components.py:111`):
+**Status line** — one row under the composer (`StatusLine`,
+`src/agenthicc/tui/workspace/components.py`):
 
 ```text
-{flower} {state_animation} │ Runtime: mm:ss │ {active_tool}
-{model_name} │ Tokens: Nk │ $N.NNNN
+ ❁ Thinking 12s · ◆ auto → Finalize goals 3/5 · ctx 19% ▰▱▱▱▱ · opus-4.8 · ↑12k ↓3k · $0.42
 ```
 
-So the token and cost figures live on status-bar line 2 as
-`model │ Tokens: Nk │ $N.NNNN` — a single total, not an in/out split. For the
-detailed breakdown use the `/usage` command instead.
+Tokens and cost appear only when the provider reported them; `/usage` gives the
+detailed breakdown and `/status` the session's identity and files.
 
 While a prompt owns the terminal the animation frame is intentionally quiet, so
 a still frame is not a hang. Use `/status` to check the session.

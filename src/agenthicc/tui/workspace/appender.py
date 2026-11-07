@@ -347,6 +347,8 @@ def _goal_mutation_lines(payload: Mapping[str, object]) -> tuple[str, str, str]:
 
 #: Event kinds that render as tool rows: consecutive ones print no blank between.
 _TOOL_KINDS: Final = frozenset({"tool_complete", "file_modified"})
+#: A tool row's quiet detail is cut only when at least this many cells fit.
+_MIN_DETAIL_CELLS: Final = 16
 #: Kinds whose renderer places its own blank line and pending turn header.
 _SELF_SPACED_KINDS: Final = _TOOL_KINDS | {"mention_chips", "turn_start"}
 #: Presentation-only kinds whose timestamp is "now", not the conversation's.
@@ -388,6 +390,10 @@ class ScrollBufferAppender:
         # continuation (a tool row after a tool row, chips after the user).
         self._gap_pending: bool = False
         self._last_block: str = ""
+        #: Turns finished since the last ``activity_complete`` and the last one's
+        #: time, so the request's total is printed only when it adds something.
+        self._activity_turns: int = 0
+        self._last_turn_s: float = 0.0
         # The agent and model of the previous turn, for the header rule.
         self._turn_identity: tuple[str, str] | None = None
         self._last_event_ts: float | None = None
@@ -444,17 +450,14 @@ class ScrollBufferAppender:
             event.rendered = False
             self._queue_event(event)
 
-    def replay_boundary(self, *, since: float | None = None, events: int = 0) -> None:
-        """Mark where replayed history starts (*since* given) or ends (TUX-06 §2.6).
+    def replay_boundary(self, *, since: float, events: int) -> None:
+        """Mark where replayed history starts (TUX-06 §2.6).
 
-        ``── replayed from 2 Nov 05:04 · 827 events ──`` opens the history and
-        ``── now ──`` closes it; like :meth:`replay`, presentation only.
+        ``── replayed from 2 Nov 05:04 · 827 events ──`` opens the history; the
+        live conversation simply follows it. Presentation only, like
+        :meth:`replay`.
         """
-        payload: dict[str, object] = (
-            {"edge": "start", "since": since, "events": events}
-            if since is not None
-            else {"edge": "end"}
-        )
+        payload: dict[str, object] = {"edge": "start", "since": since, "events": events}
         self._queue_event(ConversationEvent(event_id="", kind="replay_separator", payload=payload))
 
     def announce(self, text: str) -> None:
@@ -515,9 +518,12 @@ class ScrollBufferAppender:
             self._last_event_ts = ev.timestamp
 
     def _open_block(self, kind: str) -> None:
-        """Print the owed blank line before a new block, unless it continues one."""
-        continuing = kind in _TOOL_KINDS and self._last_block == "tool"
-        if self._gap_pending and not continuing:
+        """Print the owed blank line before a new block.
+
+        Every block, each tool call included, is followed by one blank line,
+        as in Claude Code's transcript (operator request; amends TUX-06 §2.3).
+        """
+        if self._gap_pending:
             self._console.print()
         self._gap_pending = False
         self._last_block = "tool" if kind in _TOOL_KINDS else kind
@@ -557,20 +563,26 @@ class ScrollBufferAppender:
         width = max(20, self._console.width)
         meta_width = meta.cell_len + 2 if meta is not None and meta.cell_len else 0
         fixed = cell_len(f"{marker} {operation} ") + meta_width
-        # The target keeps priority; quiet detail is cut first, then dropped.
+        # The target keeps priority. The quiet detail ("in objective-create-a/")
+        # is shown whole, cut only when a readable part fits, else dropped: a
+        # sliver of it reads as noise ("  i").
+        ellipsis = glyphs().ellipsis
         target_room = min(cell_len(target), max(12, width - fixed - 10))
         detail_room = width - fixed - target_room - 2
         detail_text = ""
-        if detail and detail_room >= 6:
-            ellipsis = glyphs().ellipsis
-            detail_text = "  " + (
-                detail
-                if cell_len(detail) <= detail_room
-                else detail[: detail_room - len(ellipsis)] + ellipsis
-            )
+        if detail and cell_len(detail) <= detail_room:
+            detail_text = f"  {detail}"
+        elif detail and detail_room >= _MIN_DETAIL_CELLS:
+            detail_text = f"  {detail[: detail_room - len(ellipsis)].rstrip()}{ellipsis}"
         room = width - fixed - cell_len(detail_text)
         if cell_len(target) > room:
-            target = middle_truncate(target, max(1, room), path=path, ellipsis=glyphs().ellipsis)
+            if path:
+                # A path keeps its filename: ``src/…/appender.py``.
+                target = middle_truncate(target, max(1, room), path=True, ellipsis=ellipsis)
+            else:
+                # A command or text reads from its start, cut at the end.
+                keep = max(0, room - cell_len(ellipsis))
+                target = target[:keep].rstrip() + ellipsis
         row = Text.assemble(
             (marker, marker_style),
             " ",
@@ -1012,29 +1024,48 @@ def _render_error(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
         )
 
 
+def _timing_row(glyph: str, text: str) -> Text:
+    """``✾ Worked for 37s``: the flower in the accent colour, the words muted."""
+    from rich.text import Text
+
+    p = palette()
+    return Text.assemble((f"{glyph} ", p.accent), (text, p.muted))
+
+
 @register_renderer("turn_complete")
 def _render_turn_complete(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
+    """``✾ Worked for 37s`` under the turn's last output."""
     elapsed = _number(ev.payload, "elapsed_s")
+    self._activity_turns += 1
+    self._last_turn_s = elapsed
     if elapsed >= 1.0:
         self._console.print(
-            f"[dim]✾ Turn · {compact_duration(elapsed)}[/dim]",
-            markup=True,
+            _timing_row(glyphs().flower, f"Worked for {compact_duration(elapsed)}"),
             highlight=False,
         )
 
 
 @register_renderer("activity_complete")
 def _render_activity_complete(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
-    """Render the total wall-clock duration for the completed user intent."""
+    """``✾ Done in 1m 12s across 3 turns``, only when it adds to the turn row.
 
+    One turn whose time matches the request's total already said it all; a
+    second, identical ``Total`` row was noise.
+    """
     elapsed = _number(ev.payload, "elapsed_s")
-    if elapsed >= 1.0:
-        self._console.print(
-            f"[dim]  Total {glyphs().sep} {compact_duration(elapsed)}[/dim]",
-            markup=True,
-            highlight=False,
-        )
+    turns, last = self._activity_turns, self._last_turn_s
+    self._activity_turns, self._last_turn_s = 0, 0.0
+    if elapsed < 1.0:
+        return
+    if turns <= 1 and abs(elapsed - last) < 1.0:
         self._gap_pending = True
+        return
+    glyph = glyphs().flower
+    text = f"Done in {compact_duration(elapsed)}"
+    if turns > 1:
+        text += f" across {turns} turns"
+    self._console.print(_timing_row(glyph, text), highlight=False)
+    self._gap_pending = True
 
 
 @register_renderer("mention_chips")
@@ -1079,19 +1110,22 @@ def _render_mention_chips(self: ScrollBufferAppender, ev: ConversationEvent) -> 
 
 @register_renderer("replay_separator")
 def _render_replay_separator(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
-    """``── replayed from 2 Nov 05:04 · 827 events ──`` … ``── now ──``."""
+    """``── replayed from 2 Nov 05:04 · 827 events ──`` above replayed history.
+
+    Logs written before the closing ``now`` rule was dropped hold an
+    ``edge: "end"`` record; it draws nothing.
+    """
     from rich.text import Text
 
+    if ev.payload.get("edge") != "start":
+        return
     p, g = palette(), glyphs()
-    if ev.payload.get("edge") == "start":
-        since = _number(ev.payload, "since", ev.timestamp)
-        moment = time.localtime(since)
-        label = f"replayed from {moment.tm_mday} {time.strftime('%b %H:%M', moment)}"
-        count = _nonnegative_int(ev.payload, "events")
-        if count:
-            label += f" {g.sep} {_plural(count, 'event')}"
-    else:
-        label = "now"
+    since = _number(ev.payload, "since", ev.timestamp)
+    moment = time.localtime(since)
+    label = f"replayed from {moment.tm_mday} {time.strftime('%b %H:%M', moment)}"
+    count = _nonnegative_int(ev.payload, "events")
+    if count:
+        label += f" {g.sep} {_plural(count, 'event')}"
     width = max(20, self._console.width)
     rule = f"{g.rule * 2} {label} "
     rule += g.rule * max(2, width - len(rule))

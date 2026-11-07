@@ -270,10 +270,10 @@ async def test_workspace_replay_shows_loading_spinner_and_yields_between_chunks(
     state = AppState.create()
     workspace = Workspace(state, Console(record=True, force_terminal=False))
     observations: list[tuple[bool, int, bool, int]] = []
-    boundaries: list[tuple[float | None, int]] = []
+    boundaries: list[tuple[float, int]] = []
 
     class RecordingScroll:
-        def replay_boundary(self, *, since: float | None = None, events: int = 0) -> None:
+        def replay_boundary(self, *, since: float, events: int) -> None:
             boundaries.append((since, events))
 
         def replay(self, events, *, continue_group: bool = False) -> None:
@@ -295,7 +295,7 @@ async def test_workspace_replay_shows_loading_spinner_and_yields_between_chunks(
     await workspace.replay_transcript(events)
 
     # TUX-06: ``replayed from <first event's time> · 130 events`` … ``now``.
-    assert boundaries == [(1_000.0, 130), (None, 0)]
+    assert boundaries == [(1_000.0, 130)]  # no closing "now" rule
 
     assert [entry[2] for entry in observations] == [False, True, True]
     assert all(entry[0] is True for entry in observations)

@@ -27,6 +27,13 @@ NOTIFICATION_EVENT_TYPES = frozenset(
 )
 _SECRET_ENV_NAME = re.compile(r"^AGENTHICC_WEBHOOK_[A-Za-z0-9_]{1,240}$")
 
+#: Default deadline for a background ``ask_user``.  It matches the foreground
+#: ``[tools] question_timeout_s`` default so an unattended session cannot park
+#: a turn forever, while still giving a human five minutes to answer.  An
+#: explicit ``[background] question_timeout_s = 0`` keeps the old unbounded
+#: wait (until answered, expired by the operator, or the session stops).
+DEFAULT_BACKGROUND_QUESTION_TIMEOUT_S = 300.0
+
 
 @dataclass(frozen=True)
 class WebhookDestinationSettings:
@@ -330,9 +337,10 @@ class BackgroundSettings:
     cancel_grace_s: float = 5.0
     stale_after_s: float = 30.0
     wall_timeout_s: float = 0.0
-    #: How long a background ask_user waits for the operator; 0 waits until it
-    #: is answered, expired by the operator, or the session stops (AGI-02).
-    question_timeout_s: float = 0.0
+    #: How long a background ask_user waits for the operator.  The default is
+    #: five minutes; 0 waits until it is answered, expired by the operator, or
+    #: the session stops (AGI-02).
+    question_timeout_s: float = DEFAULT_BACKGROUND_QUESTION_TIMEOUT_S
     max_activity_bytes: int = 64_000
     trash_retention_days: int = 30
     terminals_enabled: bool = True
@@ -433,7 +441,9 @@ class BackgroundSettings:
             cancel_grace_s=nonnegative_float("cancel_grace_s", 5.0),
             stale_after_s=nonnegative_float("stale_after_s", 30.0),
             wall_timeout_s=nonnegative_float("wall_timeout_s", 0.0),
-            question_timeout_s=nonnegative_float("question_timeout_s", 0.0),
+            question_timeout_s=nonnegative_float(
+                "question_timeout_s", DEFAULT_BACKGROUND_QUESTION_TIMEOUT_S
+            ),
             max_activity_bytes=positive_int("max_activity_bytes", 64_000),
             trash_retention_days=positive_int("trash_retention_days", 30, allow_zero=True),
             terminals_enabled=terminals_enabled,
