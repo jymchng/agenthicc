@@ -15,7 +15,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, NoReturn, cast
+from typing import TYPE_CHECKING, Literal, NoReturn, TextIO, cast
 
 from agenthicc.supervised_tasks import SupervisedTasks
 
@@ -5375,7 +5375,9 @@ class TUISession:
     def _install_diagnostics_log(self) -> None:
         """Send stray stderr and warnings to the session log, unless ``--debug``.
 
-        The first stray write shows one transient notice pointing at /logs.
+        Called right after the first frame (which loads no diagnostics code),
+        before any post-frame task runs. The first stray write shows one
+        transient notice pointing at /logs.
         """
         if self._ctx.app_state.cli_flags.debug:
             return
@@ -5393,7 +5395,11 @@ class TUISession:
             # A library may write from any thread; the notice is set on the loop.
             loop.call_soon_threadsafe(conversation.notify, "info", DIAGNOSTICS_NOTICE)
 
-        install_stderr_sink(DiagnosticsLog(diagnostics_log_path(self._ctx.session_id), first_write))
+        sink = DiagnosticsLog(diagnostics_log_path(self._ctx.session_id), first_write)
+        install_stderr_sink(sink)
+        # A text stream with a real file descriptor, so a child given
+        # sys.stderr writes into the log too.
+        self._workspace.redirect_stderr(cast("TextIO", sink))
 
     # ── main loop ─────────────────────────────────────────────────────────────
 
@@ -5420,13 +5426,9 @@ class TUISession:
         startup = ctx.startup
         if startup is not None:
             startup.begin("first_frame")
-        self._install_diagnostics_log()
         try:
             self._workspace.start()
         except Exception as exc:
-            from agenthicc.tui.diagnostics import uninstall_stderr_sink
-
-            uninstall_stderr_sink()
             if startup is not None:
                 from agenthicc.runners.startup import ReadinessState
 
@@ -5439,6 +5441,7 @@ class TUISession:
         if startup is not None:
             startup.finish("first_frame")
             startup.record_first_frame_modules(len(sys.modules))
+        self._install_diagnostics_log()
         self._wire_approval_overlay()
         # AGX-13: the user's key bindings, hot-reloaded while the session runs.
         # They load right after the first frame (whose hints use the defaults)

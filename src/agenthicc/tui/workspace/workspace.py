@@ -20,7 +20,7 @@ import sys
 import time
 from collections import OrderedDict
 from collections.abc import Callable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TextIO
 
 from agenthicc.tui.preferences import ui_settings as _ui
 from agenthicc.tui.workspace.appender import ScrollBufferAppender
@@ -84,6 +84,7 @@ class Workspace:
         )
 
         self._live: LiveRegion | None = None
+        self._stderr: TextIO | None = None
         self.frames = FrameScheduler(self._flush_redraw, interval_s=frame_interval_s)
         self._markup_rows: OrderedDict[tuple[str, int], tuple[Line, ...]] = OrderedDict()
         self._unsubs: list[Callable[[], None]] = []
@@ -109,6 +110,7 @@ class Workspace:
             self._console,
             transient=True,
             synchronized_output=lambda: capabilities.synchronized_output,
+            stderr=self._stderr,
         )
         self._live.start()
         self._flush_redraw()
@@ -187,6 +189,16 @@ class Workspace:
         except (AttributeError, OSError):
             pass
 
+    def redirect_stderr(self, stream: TextIO | None) -> None:
+        """Send stray stderr to *stream* while the block is live (TUX-08 §2.3).
+
+        The session passes its diagnostics log; ``None`` (``--debug``) prints
+        stderr above the block. The choice survives an external-editor handoff.
+        """
+        self._stderr = stream
+        if self._live is not None:
+            self._live.redirect_stderr(stream)
+
     def suspend_for_external_process(self) -> None:
         """Leave the terminal available while a foreground editor runs."""
         if self._live is None:
@@ -206,6 +218,7 @@ class Workspace:
             self._console,
             transient=True,
             synchronized_output=lambda: capabilities.synchronized_output,
+            stderr=self._stderr,
         )
         self._live.start()
         self._flush_redraw()

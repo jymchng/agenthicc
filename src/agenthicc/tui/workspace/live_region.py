@@ -72,8 +72,12 @@ class LiveRegion(RenderHook):
         transient: bool = True,
         synchronized_output: Callable[[], bool] = lambda: False,
         full_redraw_ratio: float = 0.5,
+        stderr: TextIO | None = None,
     ) -> None:
         self.console = console
+        #: Where stray stderr goes while live (TUX-08's diagnostics log);
+        #: ``None`` prints it above the block, as ``--debug`` does.
+        self._stderr = stderr
         self.transient = transient
         self._synchronized_output = synchronized_output
         self._full_redraw_ratio = full_redraw_ratio
@@ -226,18 +230,30 @@ class LiveRegion(RenderHook):
         if not isinstance(sys.stdout, FileProxy):
             self._restore_stdout = sys.stdout
             sys.stdout = cast("TextIO", FileProxy(self.console, sys.stdout))
-        # TUX-08: stray stderr goes to the session's diagnostics log, never
-        # between frames; without a sink (--debug) it is printed as before.
-        from agenthicc.tui.diagnostics import stderr_sink
+        self._redirect_stderr()
 
-        sink = stderr_sink()
-        if sink is not None:
-            if sys.stderr is not sink:
-                self._restore_stderr = sys.stderr
-                sys.stderr = cast("TextIO", sink)
+    def _redirect_stderr(self) -> None:
+        # TUX-08: stray stderr goes to the session's diagnostics log, never
+        # between frames; without one (--debug) it is printed above the block.
+        target = self._stderr
+        if target is not None:
+            if sys.stderr is not target:
+                if self._restore_stderr is None:
+                    self._restore_stderr = sys.stderr
+                sys.stderr = target
         elif not isinstance(sys.stderr, FileProxy):
-            self._restore_stderr = sys.stderr
+            if self._restore_stderr is None:
+                self._restore_stderr = sys.stderr
             sys.stderr = cast("TextIO", FileProxy(self.console, sys.stderr))
+
+    def redirect_stderr(self, stream: TextIO | None) -> None:
+        """Send stray stderr to *stream* while live; ``None`` prints it above the block."""
+        self._stderr = stream
+        if not (self._started and self.console.is_terminal):
+            return
+        if stream is None and self._restore_stderr is not None:
+            sys.stderr = self._restore_stderr
+        self._redirect_stderr()
 
     def _disable_redirect_io(self) -> None:
         if self._restore_stdout is not None:

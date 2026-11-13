@@ -6,9 +6,11 @@ While the TUI is live, anything a library writes to ``sys.stderr`` — and every
 stray write of a session calls a callback once, which shows the transient
 notice "Diagnostics were written to the log · /logs".
 
-:class:`~agenthicc.tui.workspace.live_region.LiveRegion` asks
-:func:`stderr_sink` for the stream to install as ``sys.stderr``; ``--debug``
-simply never installs one, so stderr reaches the screen as before.
+The session installs the log right after the first frame, so this module
+costs the first frame nothing, and hands it to
+:meth:`~agenthicc.tui.workspace.workspace.Workspace.redirect_stderr`, which
+makes it ``sys.stderr`` while the live block is up. ``--debug`` installs no
+log, so stderr reaches the screen as before.
 """
 
 from __future__ import annotations
@@ -118,12 +120,16 @@ _previous_showwarning: _ShowWarning | None = None
 
 
 def stderr_sink() -> DiagnosticsLog | None:
-    """The stream a live region installs as ``sys.stderr``, or ``None`` (``--debug``)."""
+    """The session's installed diagnostics log, or ``None`` (``--debug``)."""
     return _sink
 
 
 def install_stderr_sink(sink: DiagnosticsLog) -> None:
-    """Send stray stderr (through the live region) and every warning to *sink*."""
+    """Make *sink* the session's diagnostics log and send every warning to it.
+
+    Stray ``sys.stderr`` reaches it through the workspace's live block
+    (:meth:`~agenthicc.tui.workspace.workspace.Workspace.redirect_stderr`).
+    """
     global _sink, _previous_showwarning
     if _sink is None:
         _previous_showwarning = warnings.showwarning

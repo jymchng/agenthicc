@@ -44,17 +44,20 @@ def _home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     uninstall_stderr_sink()
 
 
-def _session(app_state: AppState, session_id: str = "sess-1") -> TUISession:
-    """The real ``_install_diagnostics_log`` on a session with only what it reads."""
-    session = object.__new__(TUISession)
-    session._ctx = SimpleNamespace(app_state=app_state, session_id=session_id)  # type: ignore[assignment]
-    return session
-
-
 def _workspace(state: AppState) -> tuple[Workspace, StringIO]:
     output = StringIO()
     console = Console(file=output, force_terminal=True, width=100, height=30)
     return Workspace(state, console), output
+
+
+def _session(
+    app_state: AppState, workspace: Workspace | None = None, session_id: str = "sess-1"
+) -> TUISession:
+    """The real ``_install_diagnostics_log`` on a session with only what it reads."""
+    session = object.__new__(TUISession)
+    session._ctx = SimpleNamespace(app_state=app_state, session_id=session_id)  # type: ignore[assignment]
+    session._workspace = workspace or _workspace(app_state)[0]
+    return session
 
 
 def _a_tool_that_prints_to_stderr(text: str) -> str:
@@ -67,12 +70,18 @@ async def test_stray_stderr_reaches_the_log_and_one_notice_not_the_screen() -> N
     state = AppState.create()
     events: list[object] = []
     state.conversation.on_event(events.append)
-    _session(state)._install_diagnostics_log()
     workspace, output = _workspace(state)
     original = sys.stderr
+    # The session's order: the first frame, then the diagnostics log.
     workspace.start()
+    _session(state, workspace)._install_diagnostics_log()
     try:
         await settle_frames(workspace)
+        assert sys.stderr is stderr_sink()
+        # An external editor hands the terminal over and back; the log stays.
+        workspace.suspend_for_external_process()
+        assert sys.stderr is original
+        workspace.resume_after_external_process()
         assert sys.stderr is stderr_sink()
 
         assert await asyncio.to_thread(_a_tool_that_prints_to_stderr, "boom") == "ok"
@@ -112,10 +121,10 @@ async def test_warnings_go_to_the_log() -> None:
 async def test_debug_keeps_stderr_on_the_screen() -> None:
     state = AppState.create()
     state.cli_flags = SimpleNamespace(debug=True)  # type: ignore[assignment]
-    _session(state)._install_diagnostics_log()
-    assert stderr_sink() is None
     workspace, output = _workspace(state)
     workspace.start()
+    _session(state, workspace)._install_diagnostics_log()
+    assert stderr_sink() is None
     try:
         await settle_frames(workspace)
         print("developer output", file=sys.stderr)

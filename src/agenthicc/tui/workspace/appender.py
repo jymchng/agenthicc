@@ -17,11 +17,9 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Iterable, Mapping
-from dataclasses import replace
 from typing import TYPE_CHECKING, Callable
 
 from agenthicc.tui.conversation_store import ConversationEvent
-from agenthicc.tui.workspace.notice import Notice, Severity, severity_of
 from agenthicc.tui.workspace.formatters import (
     compact_duration,
     compact_token_count,
@@ -51,6 +49,7 @@ def register_renderer(kind: str) -> Callable[[_EventRenderer], _EventRenderer]:
 if TYPE_CHECKING:
     from rich.console import Console
     from agenthicc.tui.conversation_store import AppState
+    from agenthicc.tui.workspace.notice import Severity
 
 
 _TOOL_OP: dict[str, str] = {
@@ -779,13 +778,25 @@ def _render_file_modified(self: ScrollBufferAppender, ev: ConversationEvent) -> 
         )
 
 
-def _print_notice(self: ScrollBufferAppender, notice: Notice) -> None:
-    """Print one persistent notice; screen readers get the severity as a word."""
+def _print_notice(
+    self: ScrollBufferAppender,
+    severity: Severity,
+    title: str,
+    body: str = "",
+    *,
+    actions: tuple[str, ...] = (),
+    literal: bool = False,
+) -> None:
+    """Print one persistent :class:`Notice`; screen readers get the severity as a word.
+
+    The notice module loads with the first notice, never for the first frame.
+    """
     from agenthicc.tui.preferences import ui_settings
+    from agenthicc.tui.workspace.notice import Notice
 
     ui = ui_settings(self._state)
-    if ui is not None and ui.screen_reader and not notice.literal:
-        notice = replace(notice, words=True)
+    words = ui is not None and ui.screen_reader and not literal
+    notice = Notice(severity, title, body, actions, literal=literal, words=words)
     self._console.print(notice, highlight=False)
 
 
@@ -804,7 +815,7 @@ def _render_error(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
     hint = action.get("hint") if isinstance(action, Mapping) else None
     detail = _text(ev.payload, "detail")[:500]
     body = [line for line in (hint if isinstance(hint, str) else "", detail) if line]
-    _print_notice(self, Notice("error", message, "\n".join(body)))
+    _print_notice(self, "error", message, "\n".join(body))
 
 
 @register_renderer("turn_complete")
@@ -870,7 +881,9 @@ def _render_system(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
     """A self-describing notice (compaction, model change); ``info`` unless it says."""
     text = _text(ev.payload, "text")
     if text:
-        _print_notice(self, Notice(severity_of(ev.payload.get("severity")), text))
+        from agenthicc.tui.workspace.notice import severity_of
+
+        _print_notice(self, severity_of(ev.payload.get("severity")), text)
         self._console.print()
 
 
@@ -879,7 +892,7 @@ def _render_announcement(self: ScrollBufferAppender, ev: ConversationEvent) -> N
     """A screen-reader announcement: the event's exact text (BEAU-4 §4.3)."""
     text = str(ev.payload.get("text", ""))
     if text:
-        _print_notice(self, Notice("info", text, literal=True))
+        _print_notice(self, "info", text, literal=True)
 
 
 @register_renderer("tool_recovery")
@@ -890,7 +903,7 @@ def _render_tool_recovery(self: ScrollBufferAppender, ev: ConversationEvent) -> 
         "text",
         "Tool execution was interrupted; incomplete tool results were recorded so the session can continue safely.",
     )
-    _print_notice(self, Notice("info", text))
+    _print_notice(self, "info", text)
     self._console.print()
 
 
@@ -899,7 +912,7 @@ def _render_mcp_server_failure(self: ScrollBufferAppender, ev: ConversationEvent
     """Render one generation-scoped, redacted MCP startup outcome."""
     text = _text(ev.payload, "text", "MCP server is unavailable; continuing without its tools.")
     severity: Severity = "error" if bool(ev.payload.get("required", False)) else "warning"
-    _print_notice(self, Notice(severity, text, actions=("/mcp",)))
+    _print_notice(self, severity, text, actions=("/mcp",))
     self._console.print()
 
 
@@ -933,7 +946,7 @@ def _render_network_retry(self: ScrollBufferAppender, ev: ConversationEvent) -> 
     if detail and detail.casefold() != reason.casefold():
         body.append(detail)
     heading = _retry_heading(ev.payload, "Network issue")
-    _print_notice(self, Notice("warning", heading, "\n".join(body)))
+    _print_notice(self, "warning", heading, "\n".join(body))
     self._console.print()
 
 
@@ -945,7 +958,7 @@ def _render_provider_recovery_retry(self: ScrollBufferAppender, ev: Conversation
     if detail:
         body.append(detail)
     heading = _retry_heading(ev.payload, "Provider request rejected")
-    _print_notice(self, Notice("warning", heading, "\n".join(body)))
+    _print_notice(self, "warning", heading, "\n".join(body))
     self._console.print()
 
 

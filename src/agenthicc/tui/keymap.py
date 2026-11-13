@@ -28,8 +28,6 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-from agenthicc.tui.keymap_phrases import describe_conditions
-
 __all__ = [
     "CONTEXTS",
     "Action",
@@ -403,6 +401,8 @@ class Keymap:
 
     def help(self, context: str) -> list[HelpEntry]:
         """Return every action of *context* (and ``global``) for the help overlay."""
+        from agenthicc.tui.keymap_phrases import describe_conditions
+
         entries: list[HelpEntry] = []
         for action in self._in(context):
             # TUX-08: help reads in phrases ("in Library"), never flag names.
