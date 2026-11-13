@@ -101,8 +101,9 @@ a still frame is not a hang. Use `/status` to check the session.
 
 ## Background sessions
 
-Move long-running work to the background with `/bg` (or `/background`); the
-agents hub then opens with that agent selected. Open the hub at any time with
+Move long-running work to the background with `/bg` (or `/background`, or
+`/detach`); the agents hub then opens with that agent selected. While a tool
+is running, the move waits for that tool to finish, so its result is kept. Open the hub at any time with
 `/agents`, Ctrl+G, or ← on an empty prompt; `/inbox` opens its Needs you tab
 and `/workers` its Running tab. Enter on an agent opens its detail view and
 Enter there attaches to it; when that session ends you return to the one you

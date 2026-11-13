@@ -3853,7 +3853,6 @@ class SubagentSettings:
     max_workers: int = 32
     max_tool_calls: int = 256
     max_iterations: int = 128
-    max_tokens: int = 200_000
     max_total_time_s: float = 600.0
     on_budget_exceeded: Literal["abort", "drain"] = "drain"
     stop_grace_s: float = 5.0
@@ -3869,8 +3868,11 @@ class SubagentSettings:
     def limits_for_depth(self, depth: int) -> tuple[int, int, str, str]: ...
 ```
 
-`max_tool_calls`, `max_iterations`, `max_tokens` and `max_total_time_s` are
-*operator ceilings*: armed for every pool by default. `max_budget` caps what a
+`max_tool_calls`, `max_iterations` and `max_total_time_s` are *operator
+ceilings*: armed for every pool by default. There is no token ceiling:
+subagents may use as many tokens as their tasks need, and each worker reply may
+be as long as `[execution] max_output_tokens` allows (`subagents.max_tokens`
+and `max_budget.tokens` are refused at load). `max_budget` caps what a
 per-call `spawn_subagents(budget=...)` declaration may request.
 
 ### SubagentBudgetCeiling
@@ -3878,7 +3880,6 @@ per-call `spawn_subagents(budget=...)` declaration may request.
 ```python
 @dataclass(frozen=True)
 class SubagentBudgetCeiling:
-    tokens: int | None = None
     cost_usd: float | None = None
     wall_clock_s: float | None = None
 ```
@@ -4174,6 +4175,16 @@ mode, queries whose words are all at least three characters use quoted trigram
 against the stored lowercase text. `invalidate_index()` makes the next read
 re-check the log; `close()` closes the index connection; `cancel_rebuild()` stops
 a rebuild in progress, which raises `IndexRebuildCancelled` and rolls back.
+Several agenthicc processes share one registry. Every change to the log or the
+index, including a reader's catch-up, is made under the cross-process
+`registry.lock` (an `flock`, reentrant within one store), so instances queue
+for one another instead of timing out in SQLite with `database is locked`.
+`compact(*, force=False) -> bool` rewrites `events.jsonl` as one `created`
+event per session, deleted ones included, with sequence numbers continuing,
+and atomically replaces the file. Other processes see the new inode and rebuild
+from the small file. It runs by itself after an append once the log exceeds
+`COMPACT_THRESHOLD_BYTES` (64 MiB) and `COMPACT_GROWTH_FACTOR` (4) times its
+compacted size.
 A registry from before the index is
 migrated once by importing its `projection-v1.json` snapshot and replaying the
 log after it; the snapshot is then deleted. An append whose index update finds
@@ -4787,7 +4798,7 @@ Executes one SubagentTask using an isolated AgentRunnerBase instance.
 
 ```python
 class SubagentPool:
-    def __init__(self, tasks, parent_runner, parent_model, all_tools, max_concurrent=4, …, transcript_root: Path | None = None, max_workers: int = 32, max_tool_calls: int = 256, max_iterations: int = 128, max_tokens: int = 200_000, max_total_time_s: float = 600.0, on_budget_exceeded: WorkerStopMode = "drain", stop_grace_s: float = 5.0) -> None: ...
+    def __init__(self, tasks, parent_runner, parent_model, all_tools, max_concurrent=4, …, transcript_root: Path | None = None, max_workers: int = 32, max_tool_calls: int = 256, max_iterations: int = 128, max_total_time_s: float = 600.0, on_budget_exceeded: WorkerStopMode = "drain", stop_grace_s: float = 5.0) -> None: ...
     async def run(self) -> AggregatedResult: ...
     @property
     def state(self) -> SubagentPoolState: ...
@@ -4994,7 +5005,6 @@ class PoolUsage:
 
 @dataclass(frozen=True, slots=True)
 class PoolBudget:
-    tokens: int | None = None
     cost_usd: float | None = None
     wall_clock_s: float | None = None
 
@@ -5010,7 +5020,7 @@ def pool_usage(ledger: UsageLedger | None, pool_id: str) -> PoolUsage: ...
 def worker_usage(ledger: UsageLedger | None, pool_id: str, task_id: str) -> PoolUsage: ...
 def parse_budget(value: object) -> PoolBudget: ...  # raises BudgetError naming the field
 def resolve_budget(declared: PoolBudget, *, ceiling: PoolBudget,
-                   operator_tokens: int, operator_wall_clock_s: float) -> EffectiveBudget: ...
+                   operator_wall_clock_s: float) -> EffectiveBudget: ...
 def model_has_known_price(model: str) -> bool: ...
 def budget_report(usage: PoolUsage, budget: EffectiveBudget | None, *,
                   crossed_reason: str = "", stop_mode: str = "") -> dict[str, object]: ...
@@ -5039,7 +5049,9 @@ Completed ledger spend for one pool or worker.
 
 ### PoolBudget
 
-Per-pool limits; `None` leaves a unit unlimited at that layer.
+Per-pool limits (`cost_usd`, `wall_clock_s`); `None` leaves a unit unlimited
+at that layer. There is no token unit: subagents have no token limit, and a
+`tokens` budget key is refused (`BudgetError`).
 
 ### EffectiveBudget
 

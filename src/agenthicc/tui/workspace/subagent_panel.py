@@ -112,9 +112,6 @@ def summary_line(
         parts.append(f"limit {state.limit}")
     # A declared budget (SUBAGENT-06) is shown as usage against it; a pool that
     # declared none renders exactly as before.
-    if state.budget_tokens is not None:
-        used = compact_token_count(state.tokens) if state.tokens > 0 else "0"
-        parts.append(f"{used}/{compact_token_count(state.budget_tokens)} tok")
     if state.budget_cost_usd is not None:
         parts.append(f"${state.cost_usd:.2f}/${state.budget_cost_usd:.2f}")
 

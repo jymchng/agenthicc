@@ -50,8 +50,9 @@ def test_a_running_call_and_a_background_terminal_each_get_a_row() -> None:
     )
     rows = _plain(running_rows(state, 72))
     assert rows[0] == "" and rows[-1] == ""  # set apart from transcript and composer
-    assert rows[1].startswith("● $ uv run pytest -q") and rows[1].endswith("8m 10s")
-    assert rows[2].startswith("● $ npm run dev") and rows[2].endswith("background · 3m 2s")
+    # The elapsed time follows the call in parentheses (operator request).
+    assert rows[1] == "● $ uv run pytest -q (8m 10s)"
+    assert rows[2] == "● $ npm run dev (background · 3m 2s)"
     assert all(len(row) <= 72 for row in rows)
 
 
@@ -80,7 +81,7 @@ def test_a_long_command_is_cut_at_its_end_and_extra_rows_are_counted() -> None:
     for index in range(MAX_ROWS + 2):
         state.conversation.start_running_tool(_tool(f"t{index}", "x" * 200, 5))
     rows = _plain(running_rows(state, 60))
-    assert rows[1].startswith("● $ xxx") and "…" in rows[1] and rows[1].endswith("5s")
+    assert rows[1].startswith("● $ xxx") and rows[1].endswith("… (5s)")
     assert rows[-2] == "  +2 more running"
     assert all(len(row) <= 60 for row in rows)
 

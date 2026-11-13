@@ -267,7 +267,6 @@ def build_commented_config_template() -> str:
     _field(lines, "max_workers", 32, "maximum worker count in one pool")
     _field(lines, "max_tool_calls", 256, "maximum tool calls across one pool")
     _field(lines, "max_iterations", 128, "maximum worker iterations across one pool")
-    _field(lines, "max_tokens", 200_000, "maximum tokens across one pool")
     _field(lines, "max_total_time_s", 600.0, "wall-clock budget for one pool")
     _field(lines, "on_budget_exceeded", "drain", "abort or let active workers finish")
     _field(lines, "stop_grace_s", 5.0, "worker cleanup grace period")

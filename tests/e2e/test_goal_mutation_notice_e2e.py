@@ -37,8 +37,8 @@ async def test_goal_plan_update_is_readable_and_not_a_restart() -> None:
 
     rendered = output.getvalue()
     assert "Plan updated" in rendered
-    assert "Inserted a goal · position 8 of 13" in rendered
-    assert "↳ Current goal continues" in rendered
+    assert "goal 8 of 13, inserted" in rendered
+    assert "└ the current goal continues" in rendered
     assert "at 7 (13 total)" not in rendered
     assert "; continuing the current goal" not in rendered
     assert "not-displayable" not in rendered

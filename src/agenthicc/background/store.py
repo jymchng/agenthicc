@@ -9,6 +9,7 @@ import sqlite3
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Iterator, List, Mapping
@@ -31,6 +32,13 @@ from .model import (
 if TYPE_CHECKING:
     from .notifications import BackgroundNotificationCoordinator
     from .settings import BackgroundNotificationSettings
+
+
+#: ``events.jsonl`` is compacted once it grows past this many bytes.
+COMPACT_THRESHOLD_BYTES = 64 * 1024 * 1024
+#: ... and only when that is this many times the size of a compacted log, so a
+#: registry of many large sessions is not rewritten on every append.
+COMPACT_GROWTH_FACTOR = 4
 
 
 class SessionNotFound(KeyError):
@@ -187,6 +195,12 @@ class BackgroundStore:
         # Manager refresh and stale-worker maintenance share one store across
         # executor threads; they share its index connection under this lock.
         self._index_lock = threading.RLock()
+        # ``registry.lock`` is an ``flock``: a second acquisition from this
+        # process would wait on itself. Holding it is therefore counted per
+        # store, so a writer that already holds it can sync the index.
+        self._registry_guard = threading.RLock()
+        self._registry_depth = 0
+        self._registry_flock: InterProcessLock | None = None
         # The log fingerprint this process last saw fully applied. A read whose
         # log still matches it touches neither the log nor the index meta.
         self._applied: tuple[int, int, int] | None = None
@@ -235,9 +249,28 @@ class BackgroundStore:
         with self._index_lock:
             self._applied = None
 
-    def _lock(self) -> InterProcessLock:
-        """Exclusive cross-process lock; raises ``InterProcessLockError`` if unavailable."""
-        return InterProcessLock(self.lock_path)
+    @contextmanager
+    def _lock(self) -> Iterator[None]:
+        """The exclusive cross-process registry lock, reentrant within this store.
+
+        Every change to the log or the index is made under it, so instances
+        queue behind one another instead of timing out in SQLite (raises
+        ``InterProcessLockError`` if the lock cannot be taken at all).
+        """
+        with self._registry_guard:
+            if self._registry_depth == 0:
+                flock = InterProcessLock(self.lock_path)
+                flock.__enter__()
+                self._registry_flock = flock
+            self._registry_depth += 1
+            try:
+                yield
+            finally:
+                self._registry_depth -= 1
+                if self._registry_depth == 0:
+                    held, self._registry_flock = self._registry_flock, None
+                    if held is not None:
+                        held.__exit__(None, None, None)
 
     def _iter_events(self) -> Iterator[dict[str, object]]:
         """Yield authoritative lifecycle events without retaining the log."""
@@ -436,7 +469,14 @@ class BackgroundStore:
     # ── index synchronisation ───────────────────────────────────────────────
 
     def _sync(self) -> None:
-        """Bring the index up to the complete records in ``events.jsonl``."""
+        """Bring the index up to the complete records in ``events.jsonl``.
+
+        A read whose index already covers the log only reads. Catching up
+        writes the index, so it first takes ``registry.lock``: another
+        instance applying the same events, or compacting the log, is waited
+        for there, never inside a SQLite transaction that would time out with
+        ``database is locked``.
+        """
 
         with self._index_lock:
             fingerprint = self._events_fingerprint()
@@ -445,7 +485,19 @@ class BackgroundStore:
             try:
                 state = self._index.state()
             except sqlite3.OperationalError:
-                raise  # busy or locked: another process is writing the index
+                state = None  # mid-write elsewhere: catch up under the lock
+            except sqlite3.DatabaseError:
+                self._index.discard()
+                state = None
+            if state is not None and fingerprint == (state.inode, state.offset, state.mtime_ns):
+                self._remember(fingerprint, state.sequence, partial=False)
+                return
+        with self._lock(), self._index_lock:
+            # Another instance may have applied it, or compacted the log,
+            # while this one waited for the lock.
+            fingerprint = self._events_fingerprint()
+            try:
+                state = self._index.state()
             except sqlite3.DatabaseError:
                 self._index.discard()
                 state = None
@@ -719,6 +771,14 @@ class BackgroundStore:
                 self._sync()
         except sqlite3.OperationalError:
             self._applied = None
+        applied = self._applied
+        if applied is not None and applied[1] > COMPACT_THRESHOLD_BYTES:
+            # Still under the registry lock: no other writer can append while
+            # the log is rewritten. A failure leaves the log as it was.
+            try:
+                self.compact()
+            except OSError:
+                pass
 
     def _index_own_append(
         self, event: dict[str, object], synced: tuple[int, int, int], length: int
@@ -754,6 +814,75 @@ class BackgroundStore:
         self._remember(fingerprint, sequence, partial=False)
         return True
 
+    def compact(self, *, force: bool = False) -> bool:
+        """Rewrite ``events.jsonl`` as one ``created`` event per session.
+
+        Every record, deleted ones included (their ``deleted`` status is the
+        tombstone), is written with its current state and sequence numbers
+        continue, so nothing a reader can observe changes. The new file
+        replaces the old one atomically. Other processes see a new inode and
+        rebuild their index from the small file. Without *force* the log is
+        compacted only when it is larger than :data:`COMPACT_THRESHOLD_BYTES`
+        and :data:`COMPACT_GROWTH_FACTOR` times its compacted size. Returns
+        whether the log was rewritten.
+
+        The log grew without bound (19.6 GB on one operator's machine): every
+        index catch-up or rebuild then held the registry for minutes, and
+        another instance's ``/bg`` failed with ``database is locked``.
+        """
+        with self._lock():
+            self._sync()
+            try:
+                size = self.events_path.stat().st_size
+            except OSError:
+                return False
+            if not force and size <= COMPACT_THRESHOLD_BYTES:
+                return False
+            with self._index_lock:
+                sessions = self._index.sessions(
+                    SessionFilter(include_archived=True, include_deleted=True)
+                )
+                sequence = self._applied_sequence
+            now = time.time()
+            lines = [
+                (
+                    json.dumps(
+                        {
+                            "seq": sequence + index,
+                            "event_type": "created",
+                            "timestamp": now,
+                            "payload": session.to_dict(),
+                            "compacted": True,
+                        },
+                        separators=(",", ":"),
+                    )
+                    + "\n"
+                ).encode("utf-8")
+                for index, session in enumerate(sessions, start=1)
+            ]
+            compacted_size = sum(len(line) for line in lines)
+            if not force and size < COMPACT_GROWTH_FACTOR * compacted_size:
+                return False
+            temporary = self.events_path.with_name(f".{self.events_path.name}.compact")
+            fd = os.open(temporary, os.O_CREAT | os.O_TRUNC | os.O_WRONLY, 0o600)
+            try:
+                for line in lines:
+                    os.write(fd, line)
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+            os.replace(temporary, self.events_path)
+            directory = os.open(self.root, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+            # The new inode forces this process to rebuild from the small file.
+            with self._index_lock:
+                self._applied = None
+            self._sync()
+            return True
+
     def _truncate_partial_tail(self) -> None:
         """Cut an incomplete final record and record the log's new mtime."""
 
@@ -787,8 +916,8 @@ class BackgroundStore:
         self._remember(fingerprint, truncated.sequence, partial=False)
 
     def _lookup(self, session_id: str) -> BackgroundSession | None:
+        self._sync()
         with self._index_lock:
-            self._sync()
             return self._index.get(session_id)
 
     def get(self, session_id: str, *, include_deleted: bool = False) -> BackgroundSession:
@@ -807,8 +936,8 @@ class BackgroundStore:
         query: str = "",
         status: SessionStatus | None = None,
     ) -> list[BackgroundSession]:
+        self._sync()
         with self._index_lock:
-            self._sync()
             return self._index.sessions(
                 SessionFilter(
                     include_archived=include_archived,
@@ -827,15 +956,15 @@ class BackgroundStore:
         they read a few rows instead of decoding the whole registry.
         """
 
+        self._sync()
         with self._index_lock:
-            self._sync()
             return self._index.sessions(SessionFilter(statuses=ACTIVE_STATUSES))
 
     def with_idempotency_key(self, key: str) -> List[BackgroundSession]:
         """Return sessions (archived included) submitted with *key*."""
 
+        self._sync()
         with self._index_lock:
-            self._sync()
             return self._index.sessions(SessionFilter(idempotency_key=key))
 
     def status_counts(
@@ -848,8 +977,8 @@ class BackgroundStore:
     ) -> dict[SessionStatus, int]:
         """Return the number of matching sessions per status (an index lookup)."""
 
+        self._sync()
         with self._index_lock:
-            self._sync()
             return self._index.status_counts(
                 SessionFilter(
                     include_archived=include_archived,
@@ -873,8 +1002,8 @@ class BackgroundStore:
             raise ValueError("offset must not be negative")
         if limit < 1:
             raise ValueError("limit must be at least 1")
+        self._sync()
         with self._index_lock:
-            self._sync()
             rows, total = self._index.page(query_filter, limit=limit, offset=offset, order=order)
             sessions = tuple(rows)
             applied = self._applied or self._events_fingerprint()
@@ -897,29 +1026,29 @@ class BackgroundStore:
     ) -> List[BackgroundSession]:
         """Return every matching session (or the first *limit*) in *order*."""
 
+        self._sync()
         with self._index_lock:
-            self._sync()
             return self._index.sessions(query_filter, order=order, limit=limit)
 
     def known_ids(self, session_ids: tuple[str, ...]) -> frozenset[str]:
         """Which of *session_ids* are background sessions (one index lookup)."""
 
+        self._sync()
         with self._index_lock:
-            self._sync()
             return self._index.known(session_ids)
 
     def count(self, query_filter: SessionFilter = _EVERY_SESSION) -> int:
         """Return the number of matching sessions (an index lookup)."""
 
+        self._sync()
         with self._index_lock:
-            self._sync()
             return self._index.count(query_filter)
 
     def change_token(self) -> tuple[int, int, int, int]:
         """Return the current index generation/change token."""
 
+        self._sync()
         with self._index_lock:
-            self._sync()
             fingerprint = self._applied or self._events_fingerprint()
             return (fingerprint[0], fingerprint[1], fingerprint[2], self._applied_sequence)
 

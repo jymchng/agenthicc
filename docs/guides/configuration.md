@@ -279,7 +279,7 @@ max_active_pools = 16       # process-wide active-pool ceiling
 max_workers = 32            # maximum workers admitted by one pool
 max_tool_calls = 256        # aggregate tool-call budget per pool
 max_iterations = 128        # aggregate model-iteration budget per pool
-max_tokens = 200000         # aggregate token budget per pool
+                            # (no token budget: subagents have no token limit)
 max_total_time_s = 600.0    # pool wall-clock budget
 on_budget_exceeded = "drain" # abort | drain
 stop_grace_s = 5.0          # cleanup grace for cancelled workers

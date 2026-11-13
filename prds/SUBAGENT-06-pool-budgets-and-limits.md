@@ -512,6 +512,14 @@ operator ceiling, and the report says so.
 
 ## 7. Rollout, migration and security
 
+> **Amended 2026-11-07 (operator decision): subagents have no token limit.**
+> The `tokens` budget unit, `subagents.max_tokens` and
+> `subagents.max_budget.tokens` are removed; a configuration or a
+> `spawn_subagents(budget=...)` that sets them is refused and names the key.
+> Tokens are still counted and reported. Workers also write replies as long as
+> `[execution] max_output_tokens`, not lauren-ai's 4,096-token default. The
+> text below describes the earlier design and the remaining ceilings.
+
 **Defaults.** *(Amended 2026-11-03 by SUBAGENT-10 D-2.)* No per-call budget is
 declared by default and `subagents.max_budget` ships unset, so no per-call
 clamp is applied and no declared-budget text appears in the digest. That is

@@ -8,12 +8,16 @@ cost, and a pool with any record of unknown cost reports its cost as
 unavailable rather than as zero.
 
 A declared budget is an optional ``budget:`` mapping on ``spawn_subagents`` —
-``tokens``, ``cost_usd`` and ``wall_clock_s``, any subset. It may lower the
-operator's limits and never raise them: a declaration above the
-``subagents.max_budget`` ceiling is clamped down to it and the clamp is
-reported, and a declared ``tokens`` or ``wall_clock_s`` replaces the operator
-ceiling of the same unit only when it is lower. Crossing an effective limit is
-answered by SUBAGENT-08's stop policy, exactly as an operator ceiling is.
+``cost_usd`` and ``wall_clock_s``, either or both. It may lower the operator's
+limits and never raise them: a declaration above the ``subagents.max_budget``
+ceiling is clamped down to it and the clamp is reported, and a declared
+``wall_clock_s`` replaces the operator ceiling only when it is lower. Crossing
+an effective limit is answered by SUBAGENT-08's stop policy, exactly as an
+operator ceiling is.
+
+Subagents have no token limit (operator decision, 2026-11-07): a worker may
+use as many tokens as its task needs. Tokens are still counted and reported;
+``tokens`` is no longer a budget key.
 """
 
 from __future__ import annotations
@@ -44,7 +48,7 @@ __all__ = [
 CostStatus = Literal["authoritative", "estimated", "unavailable"]
 LimitSource = Literal["declared", "operator", "settings_ceiling"]
 
-_BUDGET_KEYS = frozenset({"tokens", "cost_usd", "wall_clock_s"})
+_BUDGET_KEYS = frozenset({"cost_usd", "wall_clock_s"})
 
 
 class BudgetError(ValueError):
@@ -157,22 +161,21 @@ def model_has_known_price(model: str) -> bool:
 
 @dataclass(frozen=True, slots=True)
 class PoolBudget:
-    """Limits for one pool; ``None`` means the unit is not limited here."""
+    """Limits for one pool; ``None`` means the unit is not limited here.
 
-    tokens: int | None = None
+    There is deliberately no token unit: subagents are never stopped for the
+    tokens they use.
+    """
+
     cost_usd: float | None = None
     wall_clock_s: float | None = None
 
     @property
     def declared(self) -> bool:
-        return any(value is not None for value in (self.tokens, self.cost_usd, self.wall_clock_s))
+        return any(value is not None for value in (self.cost_usd, self.wall_clock_s))
 
     def to_dict(self) -> dict[str, object]:
-        return {
-            "tokens": self.tokens,
-            "cost_usd": self.cost_usd,
-            "wall_clock_s": self.wall_clock_s,
-        }
+        return {"cost_usd": self.cost_usd, "wall_clock_s": self.wall_clock_s}
 
 
 def _positive_number(field: str, value: object) -> float:
@@ -189,23 +192,17 @@ def parse_budget(value: object) -> PoolBudget:
     if value is None:
         return PoolBudget()
     if not isinstance(value, Mapping):
-        raise BudgetError("budget", "must be an object with tokens, cost_usd or wall_clock_s")
+        raise BudgetError("budget", "must be an object with cost_usd or wall_clock_s")
+    if "tokens" in value:
+        raise BudgetError("tokens", "is not a budget key: subagents have no token limit")
     unknown = sorted(str(key) for key in value if key not in _BUDGET_KEYS)
     if unknown:
-        raise BudgetError(unknown[0], "is not a budget key (use tokens, cost_usd, wall_clock_s)")
-    tokens_value = value.get("tokens")
-    tokens: int | None = None
-    if tokens_value is not None:
-        if isinstance(tokens_value, bool) or not isinstance(tokens_value, int):
-            raise BudgetError("tokens", "must be an integer")
-        if tokens_value < 1:
-            raise BudgetError("tokens", "must be greater than zero")
-        tokens = tokens_value
+        raise BudgetError(unknown[0], "is not a budget key (use cost_usd, wall_clock_s)")
     cost_value = value.get("cost_usd")
     cost = _positive_number("cost_usd", cost_value) if cost_value is not None else None
     wall_value = value.get("wall_clock_s")
     wall = _positive_number("wall_clock_s", wall_value) if wall_value is not None else None
-    return PoolBudget(tokens=tokens, cost_usd=cost, wall_clock_s=wall)
+    return PoolBudget(cost_usd=cost, wall_clock_s=wall)
 
 
 @dataclass(frozen=True, slots=True)
@@ -230,15 +227,14 @@ def resolve_budget(
     declared: PoolBudget,
     *,
     ceiling: PoolBudget,
-    operator_tokens: int,
     operator_wall_clock_s: float,
 ) -> EffectiveBudget:
     """Combine a declaration with the settings ceiling and the operator limits.
 
     A declaration above ``ceiling`` is lowered to it and reported in
-    ``clamped``. A declared ``tokens`` or ``wall_clock_s`` takes effect only
-    when it is lower than the operator ceiling of the same unit; cost has no
-    operator ceiling, so a declared cost is the only cost limit.
+    ``clamped``. A declared ``wall_clock_s`` takes effect only when it is
+    lower than the operator ceiling; cost has no operator ceiling, so a
+    declared cost is the only cost limit. Tokens are never limited.
     """
     clamped: dict[str, float] = {}
 
@@ -248,21 +244,10 @@ def resolve_budget(
         clamped[name] = value
         return cap
 
-    tokens = clamp(
-        "tokens",
-        declared.tokens,
-        ceiling.tokens,
-    )
     cost = clamp("cost_usd", declared.cost_usd, ceiling.cost_usd)
     wall = clamp("wall_clock_s", declared.wall_clock_s, ceiling.wall_clock_s)
 
     sources: dict[str, LimitSource] = {}
-    if tokens is not None and tokens < operator_tokens:
-        effective_tokens = int(tokens)
-        sources["tokens"] = "settings_ceiling" if "tokens" in clamped else "declared"
-    else:
-        effective_tokens = operator_tokens
-        sources["tokens"] = "operator"
     if wall is not None and wall < operator_wall_clock_s:
         effective_wall = float(wall)
         sources["wall_clock_s"] = "settings_ceiling" if "wall_clock_s" in clamped else "declared"
@@ -272,7 +257,7 @@ def resolve_budget(
     if cost is not None:
         sources["cost_usd"] = "settings_ceiling" if "cost_usd" in clamped else "declared"
     return EffectiveBudget(
-        limits=PoolBudget(tokens=effective_tokens, cost_usd=cost, wall_clock_s=effective_wall),
+        limits=PoolBudget(cost_usd=cost, wall_clock_s=effective_wall),
         declared=declared,
         sources=sources,
         clamped=clamped,
@@ -281,7 +266,6 @@ def resolve_budget(
 
 #: Which budget unit each stop reason crossed; the rest are operator-only units.
 _REASON_UNITS: Mapping[str, str] = {
-    "max_tokens_exceeded": "tokens",
     "max_total_time_s_exceeded": "wall_clock_s",
     "max_cost_usd_exceeded": "cost_usd",
     "max_tool_calls_exceeded": "tool_calls",
@@ -318,8 +302,6 @@ def budget_report(
 
 
 def _limit_text(unit: str, value: float) -> str:
-    if unit == "tokens":
-        return f"tokens {int(value):,}"
     if unit == "cost_usd":
         return f"cost ${value:.4f}"
     return f"wall clock {value:g}s"
@@ -352,7 +334,6 @@ def budget_digest(
     if budget is not None:
         limits = []
         for unit, value in (
-            ("tokens", budget.limits.tokens),
             ("cost_usd", budget.limits.cost_usd),
             ("wall_clock_s", budget.limits.wall_clock_s),
         ):

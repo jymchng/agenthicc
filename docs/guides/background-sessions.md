@@ -32,6 +32,13 @@ The path through the runtime is:
    busy policy, so the command can be handled while an agent turn is running
    instead of waiting in the ordinary message queue. The integration bridge
    intercepts the command before it is treated as a new user request.
+   **While a tool call is running, the handoff waits for it to finish.** The
+   composer shows `Moving to the background when $ make test finishes`. The
+   handoff then happens at the next tool boundary, once the call's result is
+   committed to the conversation, so the worker continues from a complete tool
+   exchange instead of an interrupted one. If the turn ends first, the handoff
+   happens when it ends. Repeating the command does not queue a second
+   handoff. With no tool running, the handoff is immediate.
 2. **The handoff chooses the work to continue.** It uses the most recently
    accepted user text as the worker intent—not the literal `/detach` command.
    It also carries the active or configured workflow name. If there is no
@@ -43,7 +50,8 @@ The path through the runtime is:
    the session; it does not copy the transcript or create a second workflow
    run.
 4. **Foreground execution is asked to stop.** If the TUI owns an active agent
-   task, `/detach` calls `task.cancel()`. This is an asynchronous cancellation
+   task, `/detach` calls `task.cancel()`; a running tool call has already
+   finished by this point (step 1). This is an asynchronous cancellation
    request, not proof that the task has already finished unwinding.
 5. **Ownership is handed over and the worker is launched.** The prepared path
    releases the foreground session-owner lease, then starts the supervisor.
@@ -958,6 +966,7 @@ Its subcommands are `list`, `status`, `cancel`, `resume`, `retry`, `priority`,
 | Killing the parent session left child processes alive | Detached terminals are owned by the session's terminal manager | Cancelling a detached parent asks the terminal registry to stop its exact child groups. Inspect with `/ps` and stop with `/stop <terminal-id>` |
 | Background state disappeared after a restart | The store holds only the rebuildable lifecycle index | The index is rebuilt from durable owners (kernel events, conversation events, workflow phase state), so a lost index is recoverable |
 | Archiving lost the audit trail | Archive moves the listing entry | Workflow phase state, approvals, and memory keep their own owners; the index was never the audit trail |
+| `Unable to background session: OperationalError: database is locked` with several agenthicc instances running | Before the fix, the registry log grew without bound (19.6 GB on one machine). One instance's index catch-up then held SQLite's write lock past the others' 30-second wait | Fixed: every index write waits on the cross-process `registry.lock` instead of failing in SQLite, and the log compacts itself once it exceeds 64 MiB. The first append after upgrading compacts an existing large log |
 
 ### A job is a control-plane record, not a runtime
 
@@ -969,6 +978,14 @@ wedged" is usually one of three distinct things: a lease problem, a control
 request that was never answered, or a turn that is genuinely running.
 
 ### Manage the index, not the state
+
+The registry log `events.jsonl` is compacted automatically. Once it is larger
+than 64 MiB and four times the size of a compacted copy, the next append
+rewrites it as one record per session (deleted sessions included) and atomically
+replaces the file. No session's state changes; only the history of heartbeats
+and superseded updates is dropped. Every instance that shares the registry waits
+on `registry.lock` while another one changes the log or the index, so a running
+`agenthicc` never makes another one fail with `database is locked`.
 
 `purge` and `delete` remove listing entries. If you need the history for
 forensics, export or inspect before purging — the lifecycle index is explicitly

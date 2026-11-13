@@ -638,19 +638,17 @@ def test_the_in_session_hub_lists_the_turns_subagents() -> None:
 
 
 def test_a_declared_budget_is_shown_as_usage_against_it() -> None:
-    """SUBAGENT-06 criterion 9: tokens and cost against declared limits."""
+    """SUBAGENT-06 criterion 9: cost against a declared limit; tokens are unlimited."""
     workers = (
         _worker("task-1", "running", tokens=1_200),
         _worker("task-2", "done", tokens=800),
     )
-    budgeted = SubagentPoolState(
-        "pool", 2, workers, budget_tokens=10_000, budget_cost_usd=0.5, cost_usd=0.12
-    )
+    budgeted = SubagentPoolState("pool", 2, workers, budget_cost_usd=0.5, cost_usd=0.12)
 
     summary = _plain(summary_line(budgeted, 120))
 
     assert budgeted.tokens == 2_000
-    assert "2.0k/10.0k tok" in summary
+    assert " tok" not in summary  # subagents have no token limit to show against
     assert "$0.12/$0.50" in summary
 
 
@@ -668,9 +666,7 @@ def test_budget_usage_is_the_first_thing_dropped_at_narrow_widths() -> None:
         _worker("task-1", "failed"),
         _worker("task-2", "running", tokens=1_200),
     )
-    budgeted = SubagentPoolState(
-        "pool", 2, workers, budget_tokens=10_000, budget_cost_usd=0.5, cost_usd=0.12
-    )
+    budgeted = SubagentPoolState("pool", 2, workers, budget_cost_usd=0.5, cost_usd=0.12)
 
     narrow = _plain(summary_line(budgeted, 34))
 

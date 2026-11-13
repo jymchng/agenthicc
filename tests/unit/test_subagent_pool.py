@@ -1774,8 +1774,8 @@ async def test_each_worker_reports_its_own_spend_and_the_pool_reports_the_total(
     assert by_task["expensive"].total_tokens == 5_900
     assert result.usage.total_tokens == 6_010
     assert result.usage.calls == 2
-    # Criterion 24: the governor's real-time count is exactly the ledger's total.
-    assert pool._token_count == result.usage.total_tokens
+    # Tokens are counted (from the ledger) but never limited: no token budget.
+    assert not hasattr(pool, "_max_tokens")
 
 
 @pytest.mark.asyncio
@@ -1803,7 +1803,6 @@ async def test_a_declared_cost_limit_is_metered_and_crossing_it_stops_the_pool()
     budget = resolve_budget(
         PoolBudget(cost_usd=0.001),
         ceiling=PoolBudget(),
-        operator_tokens=200_000,
         operator_wall_clock_s=600.0,
     )
     published: list[float] = []
@@ -1849,7 +1848,7 @@ async def test_a_pool_without_a_cost_limit_publishes_no_cost() -> None:
 
     state = app.conversation.subagent_pool_state()
     assert state is not None
-    assert state.budget_cost_usd is None and state.budget_tokens is None
+    assert state.budget_cost_usd is None
     assert state.cost_usd == 0.0
     assert result.budget is None
     assert result.usage.cost_status == "estimated"
@@ -2098,7 +2097,7 @@ def test_stuck_workers_counts_long_running_workers_but_not_waiting_ones() -> Non
             ),
         ),
         started_at=now - 200,
-        budget_tokens=1_000,
+        budget_cost_usd=1.0,
     )
 
     assert state.stuck_workers(now) == 1

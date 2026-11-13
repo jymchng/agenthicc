@@ -14,7 +14,6 @@ import pytest
 from rich.console import Console
 
 from agenthicc.tui.conversation_store import ConversationEvent, ConversationStore
-from agenthicc.tui.theme import palette
 from agenthicc.tui.workspace.appender import ScrollBufferAppender
 
 pytestmark = pytest.mark.unit
@@ -284,7 +283,7 @@ class TestNotices:
         assert "r" * 400 not in "\n".join(lines)
 
     def test_goal_insert_notice_uses_human_position_and_separate_continuation(self):
-        appender, console = _markup_appender()
+        appender, console = _make_appender()
 
         _flush(
             appender,
@@ -300,36 +299,36 @@ class TestNotices:
             ],
         )
 
-        lines = _str_calls(console)
-        assert lines[0] == f"  [dim]⎿[/dim] [{palette().accent}]Plan updated[/]"
-        assert "Inserted a goal · position 8 of 13" in lines[1]
-        assert "↳ Current goal continues" in lines[2]
-        assert all("at 7" not in line for line in lines)
-        assert all("(13 total)" not in line for line in lines)
-        assert all("; continuing" not in line for line in lines)
-        assert all("secret-goal-id" not in line for line in lines)
-        assert all("do not render this goal" not in line for line in lines)
-        assert console.print.call_args_list[-1].args == ()
+        rows = _rows(console)
+        # One headline row and one continuation row; no tofu-prone ⎿ glyph.
+        assert rows[:2] == [
+            "◆ Plan updated · goal 8 of 13, inserted",
+            "  └ the current goal continues",
+        ]
+        text = "\n".join(rows)
+        assert "⎿" not in text and "at 7" not in text and "(13 total)" not in text
+        assert "secret-goal-id" not in text and "do not render this goal" not in text
+        assert appender._gap_pending is True  # one blank line before the next block
 
     @pytest.mark.parametrize(
         ("operation", "index", "count", "expected"),
         [
-            ("append", 12, 13, "Added a goal to the end · position 13 of 13"),
-            ("insert", 0, 1, "Inserted a goal · position 1 of 1"),
-            ("future-operation", 2, 4, "Added a goal · position 3 of 4"),
+            ("append", 12, 13, "◆ Plan updated · goal 13 of 13, added at the end"),
+            ("insert", 0, 1, "◆ Plan updated · goal 1 of 1, inserted"),
+            ("future-operation", 2, 4, "◆ Plan updated · goal 3 of 4, added"),
         ],
     )
     def test_goal_mutation_notice_has_safe_operation_copy(self, operation, index, count, expected):
-        appender, console = _markup_appender()
+        appender, console = _make_appender()
 
         _flush(
             appender,
             [_ev("goal_list_mutated", operation=operation, index=index, goal_count=count)],
         )
 
-        lines = _str_calls(console)
-        assert expected in lines[1]
-        assert "Current goal continues" in lines[2]
+        rows = _rows(console)
+        assert rows[0] == expected
+        assert rows[1] == "  └ the current goal continues"
 
     @pytest.mark.parametrize(
         "payload",
@@ -343,16 +342,15 @@ class TestNotices:
         ],
     )
     def test_goal_mutation_notice_handles_incoherent_metadata_without_raw_values(self, payload):
-        appender, console = _markup_appender()
+        appender, console = _make_appender()
 
         _flush(appender, [_ev("goal_list_mutated", **payload)])
 
-        lines = _str_calls(console)
-        assert lines[0] == f"  [dim]⎿[/dim] [{palette().accent}]Plan updated[/]"
-        assert "Current goal continues" in lines[2]
-        assert all("10_000_001" not in line for line in lines)
-        assert all("at " not in line for line in lines)
-        assert console.print.call_args_list[-1].args == ()
+        rows = _rows(console)
+        assert rows[0].startswith("◆ Plan updated · goal ")
+        assert rows[1] == "  └ the current goal continues"
+        assert all("10000001" not in row and "10_000_001" not in row for row in rows)
+        assert all(" of " not in row for row in rows)  # no incoherent position
 
 
 # ── ConversationStore signal ──────────────────────────────────────────────────

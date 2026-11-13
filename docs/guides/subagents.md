@@ -156,7 +156,7 @@ spawn_subagents(
     timeout_s: float = 3600.0,
     model: str | None = None,  # operator-gated
     effort: str | None = None,  # operator-gated
-    budget: Budget | None = None,  # tokens / cost_usd / wall_clock_s
+    budget: Budget | None = None,  # cost_usd / wall_clock_s (no token limit)
     background: bool = False,  # return "running" at once; see Background pools
 ) -> dict[str, object]
 ```
@@ -449,13 +449,17 @@ at once. The number of task entries is separately bounded by
 `subagents.max_workers` (32 by default). Results are collected in the original
 task order even if workers finish in a different order.
 
-The pool also enforces aggregate budgets across all workers:
+The pool also enforces aggregate budgets across all workers. There is no token
+budget: a subagent may use as many tokens as its task needs, and each worker
+may write as much in one reply as the main agent (`[execution]
+max_output_tokens`, not lauren-ai's 4,096-token default). Tokens are still
+counted and reported. A configuration that sets `subagents.max_tokens` or
+`subagents.max_budget.tokens` is refused at load and names the key.
 
 | Setting | Default | Counts |
 |---|---:|---|
 | `subagents.max_tool_calls` | 256 | Tool calls started by workers |
-| `subagents.max_iterations` | 128 | Provider model calls started by workers |
-| `subagents.max_tokens` | 200,000 | Input plus output tokens reported by worker model calls |
+| `subagents.max_iterations` | 128 | Provider model calls made by workers (each completed call counts) |
 | `subagents.max_total_time_s` | 600 seconds | Elapsed wall-clock time before the pool budget action triggers |
 
 Each count may reach its configured limit; the pool crosses the budget when the
@@ -480,7 +484,6 @@ max_workers = 32
 max_concurrent = 4
 max_tool_calls = 256
 max_iterations = 128
-max_tokens = 200000
 max_total_time_s = 600.0
 on_budget_exceeded = "drain" # abort | drain
 stop_grace_s = 5.0
@@ -511,20 +514,21 @@ prompt or result text.
 The model may declare a tighter budget for one call:
 
 ```json
-{"tasks": [...], "budget": {"tokens": 50000, "cost_usd": 0.25, "wall_clock_s": 120}}
+{"tasks": [...], "budget": {"cost_usd": 0.25, "wall_clock_s": 120}}
 ```
 
-Any subset of `tokens`, `cost_usd` and `wall_clock_s` may be given. A
-declaration can only lower limits:
+Either or both of `cost_usd` and `wall_clock_s` may be given; `tokens` is
+refused, because subagents have no token limit. A declaration can only lower
+limits:
 
-- A declared `tokens` or `wall_clock_s` replaces `subagents.max_tokens` or
-  `subagents.max_total_time_s` only when it is lower; a larger value leaves
-  the operator ceiling in force and reports its source as `operator`.
+- A declared `wall_clock_s` replaces `subagents.max_total_time_s` only when it
+  is lower; a larger value leaves the operator ceiling in force and reports its
+  source as `operator`.
 - `subagents.max_budget` caps what a call may declare. A larger declaration is
   clamped down to it and reported in `clamped_from`.
-- A malformed budget — an unknown key, a non-integer or non-positive `tokens`,
-  a non-finite or non-positive number — is refused before any worker starts,
-  naming the field (`budget_field`).
+- A malformed budget — an unknown key, `tokens`, or a non-finite or
+  non-positive number — is refused before any worker starts, naming the field
+  (`budget_field`).
 - `cost_usd` is refused when the session has no usage ledger, or when a worker
   would run on a model with no known price. lauren-ai prices unlisted models
   at a flat fallback rate, and a limit metered against a guess is not a limit.
@@ -533,11 +537,11 @@ Crossing an effective limit — declared or operator — is answered by the same
 stop policy as any operator ceiling (`on_budget_exceeded`). When a budget was
 declared or a limit was crossed, the `results` text ends with one line that
 states usage against the limits and names a crossed limit and its source, for
-example `CROSSED max_tokens_exceeded (declared limit)`. A pool that declared
+example `CROSSED max_cost_usd_exceeded (declared limit)`. A pool that declared
 nothing and crossed nothing keeps exactly the text it always had.
 
-The panel's summary line shows usage against a declared budget — for example
-`2.0k/10.0k tok · $0.12/$0.50` — and omits it otherwise. It is the first part
+The panel's summary line shows cost against a declared cost budget — for
+example `$0.12/$0.50` — and omits it otherwise. It is the first part
 dropped at narrow widths.
 
 `timeout_s` is a finite, positive per-worker wall-clock deadline for this
@@ -748,7 +752,7 @@ collect the results:
 | Journal status | Notice says |
 |---|---|
 | `completed` | `completed (2/2 succeeded, 0 failed)` |
-| `stopped` | `was stopped by the pool budget: max_tokens_exceeded (1/2 succeeded, 1 failed)` |
+| `stopped` | `was stopped by the pool budget: max_tool_calls_exceeded (1/2 succeeded, 1 failed)` |
 | `cancelled` | `was cancelled when the session closed (…)` |
 | `interrupted` | `was interrupted when the session stopped (…)` |
 

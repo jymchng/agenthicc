@@ -1238,18 +1238,14 @@ class SubagentBudgetCeiling:
 
     Unset fields leave that unit unlimited by this ceiling. A larger
     declaration is clamped down to the ceiling and the clamp is reported; the
-    operator ceilings (``max_tokens``, ``max_total_time_s``) still apply.
+    operator ceiling ``max_total_time_s`` still applies. There is no token
+    ceiling: subagents have no token limit.
     """
 
-    tokens: int | None = None
     cost_usd: float | None = None
     wall_clock_s: float | None = None
 
     def __post_init__(self) -> None:
-        if self.tokens is not None and (
-            isinstance(self.tokens, bool) or not isinstance(self.tokens, int) or self.tokens < 1
-        ):
-            raise ValueError("subagents.max_budget.tokens must be a positive integer")
         for name, value in (("cost_usd", self.cost_usd), ("wall_clock_s", self.wall_clock_s)):
             if value is None:
                 continue
@@ -1281,7 +1277,6 @@ class SubagentSettings:
     max_workers: int = 32
     max_tool_calls: int = 256
     max_iterations: int = 128
-    max_tokens: int = 200_000
     max_total_time_s: float = 600.0
     on_budget_exceeded: Literal["abort", "drain"] = "drain"
     stop_grace_s: float = 5.0
@@ -1335,7 +1330,6 @@ class SubagentSettings:
             ("max_workers", self.max_workers),
             ("max_tool_calls", self.max_tool_calls),
             ("max_iterations", self.max_iterations),
-            ("max_tokens", self.max_tokens),
         ):
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
                 raise ValueError(f"subagents.{name} must be a positive integer")
@@ -2118,7 +2112,6 @@ class AgenthiccConfig:
                 "max_budget": {
                     key: value
                     for key, value in (
-                        ("tokens", self.subagents.max_budget.tokens),
                         ("cost_usd", self.subagents.max_budget.cost_usd),
                         ("wall_clock_s", self.subagents.max_budget.wall_clock_s),
                     )
@@ -2894,6 +2887,9 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
             tiers[type_name] = SubagentDepthTier(**fields)
         depth_tiers[depth] = tiers
 
+    if "max_tokens" in subagent_data:
+        raise ValueError("subagents.max_tokens was removed: subagents have no token limit")
+
     def _subagent_int(name: str, default: int) -> int:
         raw = subagent_data.get(name, default)
         if isinstance(raw, bool) or not isinstance(raw, int) or raw < 1:
@@ -2912,8 +2908,10 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
     raw_max_budget = subagent_data.get("max_budget", {})
     if not isinstance(raw_max_budget, Mapping):
         raise ValueError("subagents.max_budget must be a table")
+    if "tokens" in raw_max_budget:
+        raise ValueError("subagents.max_budget.tokens was removed: subagents have no token limit")
     unknown_budget_keys = sorted(
-        str(key) for key in raw_max_budget if key not in {"tokens", "cost_usd", "wall_clock_s"}
+        str(key) for key in raw_max_budget if key not in {"cost_usd", "wall_clock_s"}
     )
     if unknown_budget_keys:
         raise ValueError(f"subagents.max_budget.{unknown_budget_keys[0]} is not a budget setting")
@@ -2927,7 +2925,6 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
     if isinstance(collect_wait_max_s, bool) or not isinstance(collect_wait_max_s, (int, float)):
         raise ValueError("subagents.collect_wait_max_s must be a number")
     max_budget = SubagentBudgetCeiling(
-        tokens=raw_max_budget.get("tokens"),
         cost_usd=raw_max_budget.get("cost_usd"),
         wall_clock_s=raw_max_budget.get("wall_clock_s"),
     )
@@ -2947,7 +2944,6 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
         max_workers=_subagent_int("max_workers", 32),
         max_tool_calls=_subagent_int("max_tool_calls", 256),
         max_iterations=_subagent_int("max_iterations", 128),
-        max_tokens=_subagent_int("max_tokens", 200_000),
         max_total_time_s=float(max_total_time_s),
         on_budget_exceeded=cast(Literal["abort", "drain"], on_budget_exceeded),
         stop_grace_s=float(stop_grace_s),

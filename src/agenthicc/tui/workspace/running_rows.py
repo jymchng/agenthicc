@@ -3,8 +3,8 @@
 Each running call shows under the transcript, the way Claude Code shows its
 in-progress tool, with a blinking ``●`` and how long it has run::
 
-    ● $ uv run pytest tests/unit -q                                  8m 10s
-    ● $ npm run dev                                  background · 3m 2s
+    ● $ uv run pytest tests/unit -q (8m 10s)
+    ● $ npm run dev (background · 3m 2s)
 
 When the call completes, its row leaves the live region and the permanent,
 quiet row is printed to the transcript (TUX-06). The dot blinks on the frame
@@ -33,6 +33,7 @@ def _dot_on(frame: int, animated: bool) -> bool:
 
 
 def _row(item: RunningTool, cols: int, now: float, dot_on: bool) -> str:
+    """``● $ python3 - <<'EOF' (23s)``: the elapsed time right after the call."""
     from rich.cells import cell_len
     from rich.markup import escape
 
@@ -41,19 +42,19 @@ def _row(item: RunningTool, cols: int, now: float, dot_on: bool) -> str:
 
     p, g = palette(), glyphs()
     elapsed = compact_duration(max(0.0, now - item.started_at))
-    meta = f"background {g.sep} {elapsed}" if item.background else elapsed
+    meta = f"({'background ' + g.sep + ' ' if item.background else ''}{elapsed})"
     dot_style = f"bold {p.info}" if dot_on else p.subtle
     head = f"{g.bullet} {item.operation} "
-    room = cols - cell_len(head) - cell_len(meta) - 2
+    # The elapsed time always shows whole; the target gives way.
+    room = cols - cell_len(head) - cell_len(meta) - 1
     target = item.target
     if cell_len(target) > max(0, room):
         keep = max(0, room - cell_len(g.ellipsis))
         target = target[:keep].rstrip() + g.ellipsis if keep else ""
-    used = cell_len(head) + cell_len(target)
-    gap = " " * max(2, cols - used - cell_len(meta))
+    space = " " if target else ""
     return (
         f"[{dot_style}]{g.bullet}[/] [bold]{escape(item.operation)}[/bold] "
-        f"{escape(target)}{gap}[{p.muted}]{escape(meta)}[/]"
+        f"{escape(target)}{space}[{p.muted}]{escape(meta)}[/]"
     )
 
 

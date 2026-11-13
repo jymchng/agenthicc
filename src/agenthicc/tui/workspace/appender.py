@@ -329,20 +329,16 @@ def _goal_mutation_lines(payload: Mapping[str, object]) -> tuple[str, str, str]:
             position = candidate_index + 1
             total = candidate_count
 
-    if operation_name == "insert":
-        detail = "Inserted a goal"
-    elif operation_name == "append":
-        detail = "Added a goal to the end"
-    else:
-        detail = "Added a goal"
-
+    verb = {"insert": "inserted", "append": "added at the end"}.get(operation_name, "added")
     if position is not None and total is not None:
-        detail += f" · position {position} of {total}"
+        detail = f"goal {position} of {total}, {verb}"
     elif bounded_count:
         assert count is not None
-        detail += f" · plan now has {count} goal{'s' if count != 1 else ''}"
+        detail = f"goal {verb} · the plan has {count} goal{'s' if count != 1 else ''}"
+    else:
+        detail = f"goal {verb}"
 
-    return ("Plan updated", detail, "↳ Current goal continues")
+    return ("Plan updated", detail, "the current goal continues")
 
 
 #: Event kinds that render as tool rows: consecutive ones print no blank between.
@@ -1258,27 +1254,25 @@ def _render_provider_recovery_retry(self: ScrollBufferAppender, ev: Conversation
 
 @register_renderer("goal_list_mutated")
 def _render_goal_list_mutated(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
-    """Render one polished notice after a durable goal append or insertion."""
-    from rich.markup import escape as _e
+    """One notice after a durable goal append or insertion::
 
-    p = palette()
+    ◆ Plan updated · goal 16 of 16, added at the end
+      └ the current goal continues
+    """
+    from rich.text import Text
+
+    p, g = palette(), glyphs()
     heading, detail, continuation = _goal_mutation_lines(ev.payload)
     self._console.print(
-        f"  [dim]⎿[/dim] [{p.accent}]{_e(heading)}[/]",
-        markup=True,
+        Text.assemble(
+            (f"{g.diamond} ", f"bold {p.accent}"),
+            (heading, "bold"),
+            (f" {g.sep} {detail}", p.muted),
+        ),
         highlight=False,
     )
-    self._console.print(
-        f"    [dim]{_e(detail)}[/dim]",
-        markup=True,
-        highlight=False,
-    )
-    self._console.print(
-        f"    [dim]{_e(continuation)}[/dim]",
-        markup=True,
-        highlight=False,
-    )
-    self._console.print()
+    self._console.print(Text(f"  {g.elbow} {continuation}", style=p.muted), highlight=False)
+    self._gap_pending = True
 
 
 def _phase_control_label(operation: str) -> str:

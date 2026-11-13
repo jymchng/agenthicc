@@ -83,14 +83,14 @@ of the top rule, and one status line follows.
   `reduced_motion` keeps the words and stops both animations.
 - **Running calls.** Tool calls that are still running, and background
   terminals, show between the transcript and the composer. Each has a
-  blinking `●` and how long it has run; the dot blinks half a second on and
+  blinking `●` and, in parentheses after it, how long it has run; the dot blinks half a second on and
   half a second off, and holds still under `reduced_motion` or the screen
   reader. When a call completes, its row leaves the live region and its
   permanent row is printed to the transcript.
 
   ```text
-  ● $ uv run pytest tests/unit -q                                  8m 10s
-  ● $ npm run dev                                  background · 3m 2s
+  ● $ uv run pytest tests/unit -q (8m 10s)
+  ● $ npm run dev (background · 3m 2s)
   ```
 
 - **The title** is the session's first prompt (its first line, cut to 80

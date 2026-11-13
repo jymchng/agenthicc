@@ -68,16 +68,17 @@ def test_session_helpers_project_terminal_usage_and_event_publication(
 
     redraws: list[bool] = []
     workspace._redraw = lambda: redraws.append(True)
-    ctx.terminal_manager = SimpleNamespace(wait_snapshot=lambda: None)
+    ctx.terminal_manager = SimpleNamespace(wait_snapshot=lambda: None, list_records=lambda: [])
     session._sync_terminal_status()
     assert redraws
     ctx.terminal_manager = SimpleNamespace(
+        list_records=lambda: [],
         wait_snapshot=lambda: {
             "terminal_id": "term-1",
             "label": "test",
             "elapsed_s": "bad",
             "running_count": 2,
-        }
+        },
     )
     session._sync_terminal_status()
     assert ctx.app_state.conversation.terminal_waiting() is True

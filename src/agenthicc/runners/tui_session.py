@@ -1662,6 +1662,8 @@ class TUISession:
 
     #: The active workflow run; set through ``_workflow_handle`` (see below).
     _workflow_handle_value: WorkflowRunHandle | None = None
+    #: ``/bg`` arrived while a tool ran: hand off at the next tool boundary.
+    _handoff_pending: bool = False
 
     @property
     def _workflow_handle(self) -> WorkflowRunHandle | None:
@@ -3335,11 +3337,7 @@ class TUISession:
         """Dispatch a registered command or skill trigger."""
         command_name = text.strip().split(None, 1)[0] if text.strip() else ""
         if command_name in _BACKGROUND_HANDOFF_COMMANDS:
-            # The background service owns the lifecycle; the session only
-            # hands its conversation over (PRD-141).
-            from agenthicc.background import integration
-
-            return integration._handoff(self)
+            return self._request_background_handoff()
 
         from agenthicc.commands import CommandContext
         from agenthicc.plugins.registry import build_registry
@@ -3502,6 +3500,36 @@ class TUISession:
 
         return classify_busy_command(text, self._ctx.cmd_registry)
 
+    def _request_background_handoff(self) -> bool:
+        """``/bg``, ``/background``, ``/detach``: hand the session over.
+
+        While a tool call runs, the handoff waits for it to finish: it happens
+        at the next tool boundary, once the call's result is committed to the
+        conversation, so the background worker continues from a complete
+        exchange instead of an interrupted one (operator request). Otherwise
+        the background service takes over at once (PRD-141).
+        """
+        conversation = self._ctx.app_state.conversation
+        task = self._agent_task
+        running = conversation.running_tools()
+        if running and task is not None and not task.done():
+            if not self._handoff_pending:
+                self._handoff_pending = True
+                tool = running[-1]
+                conversation.notification.set(
+                    f"Moving to the background when {tool.operation} {tool.target} finishes"
+                )
+            return True
+        return self._run_background_handoff()
+
+    def _run_background_handoff(self) -> bool:
+        from agenthicc.background import integration
+
+        if self._handoff_pending:
+            self._handoff_pending = False
+            self._ctx.app_state.conversation.notification.set(None)
+        return integration._handoff(self)
+
     def _next_queued_message(self) -> str | None:
         """Claim the next interjection at a completed tool boundary (TUX-04 §2.6).
 
@@ -3512,6 +3540,12 @@ class TUISession:
         ``advance()`` sends them in order; so do slash commands and skills,
         which are routed locally instead of being sent to the model.
         """
+        if self._handoff_pending:
+            # The tool results are committed synchronously after this call
+            # returns, before the loop next awaits; a handoff scheduled now
+            # cancels the turn only once the exchange is complete.
+            asyncio.get_running_loop().call_soon(self._run_background_handoff)
+            return None
         text = self._msg_queue.claim_interjection()
         if text is None:
             return None
@@ -4479,6 +4513,10 @@ class TUISession:
 
     def advance(self) -> None:
         """Drain _msg_queue: dispatch slash commands, start next agent task."""
+        if self._handoff_pending:
+            # The turn ended before another tool boundary: hand off now.
+            self._run_background_handoff()
+            return
         notice_kept = False
         while self._msg_queue:
             msg = self._msg_queue.pop(0).strip()
