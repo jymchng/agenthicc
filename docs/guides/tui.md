@@ -8,15 +8,26 @@ The startup welcome panel keeps its `What's new` heading even when the remote
 changelog cannot be reached. In that case it displays `No list`; on success it
 renders the entries from `https://agenthicc.dev/changelog.json`.
 
-Completed LLM responses end with a blank line in the scroll buffer, keeping
-the response visually separated from the next tool, user message, or system
-event. The default assistant heading reads `Assistant Turn`; other agent labels
-remain intact. Turn headings include the local timezone abbreviation and numeric
-UTC offset and are followed by one blank row before the next block, except when
-`mention_chips` follows: resolved read rows stay directly beneath the heading,
-with one blank row after the mention group. The completed `⎋ Compacted` notice
-is indented beneath its related activity; the in-progress
-`⎋ Compacting` notice remains level 1.
+The scroll buffer reads as a conversation, not a log (TUX-06):
+
+- **Your message.** It is a `user_bg` band with the `accent` `❯` and a hanging
+  indent. A message longer than 12 lines shows its first four lines and
+  `[+N more lines]`; the event keeps the whole text.
+- **Mentions.** They show as chips directly under the message
+  (`@src/app.py  @docs/`). A mention that cannot be resolved (missing, outside
+  the workspace, too large) is a `warning` chip with its reason,
+  `! @docs/missing.md not found`. It is never a failed tool row, and the model
+  still receives the unresolved-mention note.
+- **Turn headers.** An assistant turn has no header while the agent is the
+  default and the model has not changed; its text simply follows your message.
+  A header such as `◆ reviewer · sonnet-4.6 · 14:02` marks a change of agent
+  or model, or a return after more than 30 minutes. Times are local `HH:MM`;
+  the time zone is shown only by `/status` and the transcript details.
+- **Rhythm.** One blank row comes before each new block. Consecutive tool rows
+  have none between them.
+
+The completed `⎋ Compacted` notice is indented beneath its related activity;
+the in-progress `⎋ Compacting` notice remains level 1.
 
 ## Runtime components
 
@@ -27,7 +38,8 @@ is indented beneath its related activity; the in-progress
 | Live region | `tui/workspace/live_region.py` | Writes the live block by line diff; repaints around scroll-buffer output |
 | Frame scheduler | `tui/workspace/frames.py` | Merges redraw requests into capped frames; frame statistics |
 | Scroll buffer | `tui/workspace/appender.py` | Prints conversation and tool events above the live block |
-| Live components | `tui/workspace/components.py` | Status, composer, footer |
+| Live components | `tui/workspace/components.py` | Status line, composer and its frame |
+| Status-line inputs | `tui/statusline.py` | Git branch, the user status-line command, `/status` |
 | Overlay host | `tui/workspace/overlay.py` | Shows one active overlay and redraws the workspace |
 | Input session | `tui/input/unified_session.py` | One raw-mode lifetime and capability pipeline |
 | Terminal backend | `tui/terminal/` | POSIX/Windows raw mode and key reads |
@@ -43,12 +55,108 @@ terminal
 │   ├── tool results and collapsed tool groups
 │   └── workflow/system/retry notifications
 └── permanent live block
-    ├── blank separator
-    ├── status component
-    ├── composer or active overlay
-    ├── border
-    └── footer
+    ├── overflow bridge (while a tool group is collapsed)
+    ├── composer frame: title, prompt, mode badge (or an overlay in its place)
+    ├── subagent panel (while a pool has rows)
+    ├── status line
+    └── one notice or one contextual hint row, or nothing
 ```
+
+Idle, the live block is four rows (TUX-02). The composer sits between two
+rules, as in Claude Code: the session title and the mode badge sit at the end
+of the top rule, and one status line follows.
+
+```text
+────────────────────────────────────── fix flaky scheduler test · Safe ─
+❯ ask, or type / for commands, @ for files
+────────────────────────────────────────────────────────────────────────
+ ● Idle · ◆ 2 sessions need you ← · ctx 12% ▰▱▱▱▱ · opus-4.8      /help
+```
+
+- **The chevron and rules** use the yellow `frame` theme token, agenthicc's
+  brand colour (a darker yellow in the light theme).
+- **The cursor** is Claude Code's block cursor: the character under it is
+  drawn in reverse video, and a reversed space marks the end of a line. On an
+  empty prompt it sits on the first letter of the dimmed placeholder.
+- **The state segment.** While the agent works, it turns agenthicc's flower
+  (`✿ ❀ ❁ ❃ …`), and a bold letter sweeps back and forth across `Thinking`.
+  `reduced_motion` keeps the words and stops both animations.
+- **Running calls.** Tool calls that are still running, and background
+  terminals, show between the transcript and the composer. Each has a
+  blinking `●` and, in parentheses after it, how long it has run; the dot blinks half a second on and
+  half a second off, and holds still under `reduced_motion` or the screen
+  reader. When a call completes, its row leaves the live region and its
+  permanent row is printed to the transcript.
+
+  ```text
+  ● $ uv run pytest tests/unit -q (8m 10s)
+  ● $ npm run dev (background · 3m 2s)
+  ```
+
+- **The title** is the session's first prompt (its first line, cut to 80
+  characters as a background session's intent is), or `new session` before
+  there is one. A resumed transcript restores it.
+- **The mode badge** is the permission mode in its `mode_*` theme token,
+  after the primary agent when another than `default` is chosen.
+  `[ui] composer_frame = "box"` draws the prompt in a rounded box instead
+  of between rules.
+- **The status line** shows segments in a fixed priority order and drops the
+  lowest ones when the line is too narrow; a segment is never cut mid-word:
+
+  | Priority | Segment | Shown when |
+  |---|---|---|
+  | 1 | `● Idle`, a spinner with `Thinking` / `Running <tool>` and the elapsed time, or `◆ Waiting for you` | always |
+  | 2 | `◆ N sessions need you ←` (AGX-10) | a background session needs you |
+  | 3 | `ctx 42% ▰▰▱▱▱`, green below 60 %, amber below 85 %, red above | after the first response that reported usage |
+  | 4 | the model, short (`opus-4.8`; the provider when it is not the default) | always |
+  | 2 | the running workflow and its phase, from the workflow's own run handle for every runner (built-in or plugin): `◆ goal_flow → Decide goals 2/5` (shortened to the phase, then the workflow, never dropped first; `paused` when paused) | a workflow is running |
+  | 5 | subagent workers `1/3 workers`, a `/workflow` selection, running background sessions, startup work still loading | when active |
+  | 6 | tokens `↑12k ↓3k` (`≈` when partial) and cost `$0.42` (`~` when estimated) | only when the provider reported them |
+  | 7 | the git branch, `*` when the tree has changes | in a repository |
+  | right | the shortcuts hint (`/help`) | 60 columns and more |
+
+  The context meter divides the input tokens the provider reported for the
+  latest main-agent call (cache reads and writes included) by the model's
+  context window (`ExecutionSettings.effective_context_window()`). Below 60
+  columns the frame becomes two rules and the status line keeps only the
+  state, attention and context segments; below 40 columns only the state.
+- **The hint row** appears only for contextual keys: while a turn runs
+  (`Esc pause · Ctrl+C cancel`, plus the subagent keys while a pool is shown),
+  with a condensed paste, or during a background-terminal wait. Idle, there is
+  none: the always-available keys are in `/help`. A notification, the `/loop`
+  status or an attention toast takes the hint row's place, wrapped whole.
+- **Absent values are not shown.** "cost unknown" and "usage unavailable" never
+  appear on the status line, and the session ID and working directory are not
+  in the live block: `/status` prints them, together with the model, provider,
+  mode, turns, tokens, cost (or why there is none), context use and the paths
+  of the session log and memory journal.
+- **Overlays.** The agents hub owns the bottom rows: while it is open the
+  composer frame and its hint row are hidden, so the hub's hint row is the only
+  one. Closing it restores the composer exactly (draft, cursor and paste). Any
+  other overlay is drawn between the frame's two rules.
+
+### A user status line
+
+`[ui.statusline] command` replaces segments 3–7 with the first line a command
+prints:
+
+```toml
+[ui.statusline]
+command = "~/.agenthicc/statusline.sh"
+```
+
+The command runs in the working directory with the same scrubbed environment
+and resource limits as the agent's `[tools.exec]` children, at most once a
+second and only after the state changed, with a 500 ms timeout. It reads a JSON
+object on stdin with `session_id`, `title`, `cwd`, `git_branch`, `model`,
+`provider`, `mode`, `state`, `context_used_pct`, `tokens_in`, `tokens_out`,
+`cost_usd`, `agents_need_you` and `workers_running`; a value that is not known
+is `null`. Every control sequence except SGR colour is removed from its output,
+which is fitted to the space left. A command that fails or is too slow brings
+the built-in segments back and is named once in a notice. A project's
+`.agenthicc/agenthicc.toml` may set the command only once the file is trusted
+(`agenthicc trust add .agenthicc/agenthicc.toml`); an untrusted project's
+command is ignored.
 
 `Workspace.start()` is called once, before the processor and input loop begin;
 `Workspace.stop()` is called once during teardown. Starting/stopping the block
@@ -69,15 +177,18 @@ Redraws cost what changed, not what is on screen (AGX-11):
   event-loop iteration. The spinner advances at 10 Hz, and only while a turn or
   compaction is running; an idle TUI draws no frames.
 - **Rows.** Each frame is a list of rows rendered at exactly the terminal width,
-  so the terminal never wraps one. Status and footer rows are built as markup
-  and rendered once per distinct row and width, so a spinner frame renders one
-  row and an unchanged footer parses no markup.
+  so the terminal never wraps one. Status-line and frame rows are built as
+  markup and rendered once per distinct row, width and theme, so an unchanged
+  row parses no markup. The status line's segments 2–7 are rebuilt only when a
+  signal they read changes; a spinner frame recomputes the state segment alone.
 - **Composer.** Each logical line of the prompt is folded at the width and the
   fold is cached per line, so a keystroke in a 200-line prompt re-folds one line.
   At most `[behaviour] composer_max_rows` rows (12) are shown around the cursor;
   `↑ N more lines` / `↓ N more lines` stand for the rest.
 - **Writes.** The live region keeps the rows it last wrote and rewrites only the
-  rows that differ — a spinner frame is one row, about 50 bytes. A resize, a
+  rows that differ. Within a changed row, segments shared with the old row at
+  its start and end are not written again, so a spinner frame overwrites the
+  one spinner cell, well under 80 bytes. A resize, a
   width change or a frame that changes more than half of the rows is a full
   redraw. Output printed while the block is live (the scroll buffer, or anything
   written to stdout/stderr) is printed above it and the block repainted below.
@@ -106,18 +217,14 @@ thinking, tool execution, recovery, or compaction. Idle, complete, and error
 states do not publish frame ticks, and the workspace defensively ignores
 compatibility frame writes in those static states. This prevents captured
 terminals that do not interpret Rich's erase controls from accumulating
-identical `✿ Idle` panels while preserving active animation and ordinary state
+identical `● Idle` status lines while preserving active animation and ordinary state
 redraws.
 
-Tool results use the same operation-style block: `● Read(...)`, `● Run(...)`,
-`● Search(...)`, and similar headers are followed by a status summary and a
-bounded numbered output preview. File edits use the richer `● Update(...)`
-block with its unified diff. Each contiguous change block shows at most six
-changed rows; longer blocks retain their first and last three rows and show a
-single `...` omission row so large edits do not flood the scroll buffer.
-When a tool group is collapsed, its `...and N more tool calls` line is flushed
-to the scroll buffer at the next conversation boundary and immediately when
-the agent is interrupted; it is never left only in the live status footer.
+Tool calls are one row each; see [Tool rows](#tool-rows). When a tool group
+is collapsed (more than `[tools] max_live_tool_calls` successful calls in a
+row), its `└ …and N more tool calls` row is flushed to the scroll buffer at the
+next conversation boundary and immediately when the agent is interrupted; it is
+never left only in the live status footer. A failed call always prints.
 Subagent pool headings, worker-completion rows, and pool summaries are level-1
 scrollback rows alongside tool headings; only the worker previews below a pool
 heading are indented as child rows. A pool that does not fully succeed is
@@ -129,6 +236,77 @@ the SDK exception representation into the transcript. The scroll buffer shows
 the retry number and delay, a short category such as `Request timed out` or
 `Provider temporarily unavailable`, and a bounded provider message when one is
 available. Full chained exception details remain at debug log level.
+
+### Tool rows
+
+Each tool call is one row: the operation, a human summary of its target, and
+quiet detail (TUX-06). Success is quiet: there is no `Completed` and no output,
+and the duration appears, right-aligned, only from one second. As in Claude
+Code, every tool call is followed by one blank line.
+
+```text
+● Read src/agenthicc/tui/workspace/appender.py:480-560
+
+● $ uv run pytest tests/unit -q                                   2.4s
+  └ 1,284 passed, 3 skipped
+
+✗ $ npm test  in objective-create-a/                     exit 1 · 8.1s
+  │ FAIL src/App.test.tsx
+  │   ● renders learn react link
+  │     Unable to find an element with the text: /learn react/i
+  └ 41 more lines · ctrl+t to expand
+
+● Edit src/app/main.py  +12 −3
+
+✾ Worked for 1m 15s | 10:20 AM
+```
+
+- **Narrow rows.** A command or text target is cut at its end
+  (`$ git status && echo …`) and a path in its middle; the quiet detail is
+  shown whole, cut only when at least 16 cells fit, and otherwise dropped.
+
+- **Summaries.** A command shows the command itself (`$ npm test`); a leading
+  `cd … &&` becomes the quiet `in objective-create-a/`, and a multi-line script
+  shows its first line and `+N lines`. Paths are relative to the workspace and
+  shortened in the middle (`src/…/appender.py`) so the file name always shows.
+  Searches read `"TODO" in src/ → 14 matches`, listings
+  `src/agenthicc/ → 23 entries`, git calls `status → 3 changed`, memory reads
+  `memory: "deploy notes"` (never raw JSON), and fetches the host and path.
+  MCP tools read `server · tool` and their first string argument.
+- **Commands** add one result row: a recognised test summary (pytest,
+  jest, vitest, cargo, go test) or the last line of the output.
+- **Failures** expand: the `danger` `✗`, the exit code or error code, the
+  last 8 lines of the output (where errors are) and the expand hint.
+- **Running and waiting** keep their words: `running`, `ready`, `waiting`,
+  `timed out`, `cancelled`.
+- **Edits** show `● Edit path  +12 −3` and the diff, at most 20 rows. Each
+  contiguous change block shows at most six changed rows; longer blocks keep
+  their first and last three rows around one `...` omission row.
+- **Exploration groups** ([exploratory calls](exploratory-tool-calls.md))
+  collapse to one row, `● Explored 9 files, 3 searches`, with the targets as
+  muted detail.
+
+The detail level sets how much more is shown:
+
+```toml
+[ui]
+tool_detail = "compact"   # compact | normal | verbose
+```
+
+`normal` adds a four-line preview of successful reads and commands, and
+`verbose` prints the whole bounded output (the first 8 and last 32 lines of a
+call, with the gap marked) and the exploration group's individual calls.
+`/details` cycles the level for the session, and `/details verbose` sets it.
+The change applies to the next tool call; rows already printed are never
+re-rendered, so the scroll buffer stays an append-only log. Opening the last
+tool's full output with Ctrl+T belongs to the transcript view (TUX-09).
+
+Tool events carry data, not markup: the summary, a bounded and redacted
+projection of the arguments, the duration in milliseconds, the bounded output
+and the exit and error codes. Every colour is applied when the row is drawn, so
+a theme change restyles history too. Session logs written before TUX-06 are
+migrated once, as they are read. A plugin tool can supply its own summary;
+see [tool summaries](plugins.md#transcript-summaries).
 
 ## Modes
 
@@ -152,15 +330,15 @@ explicit switch and reports the canonical choices for an unknown name.
 `UnifiedInputSession` enters raw mode once and dispatches each key through the
 active capability list. IDLE supports triggers, history, cursor movement,
 paste, mode cycling, and submission. STREAMING reduces the capability set so
-the user can queue input or interrupt an active turn while retaining cursor
-movement and basic editing.
+the user can queue or interject input, edit the queue, or interrupt an active
+turn while keeping every editing key.
 
 ### Key bindings
 
 Keys are not hard-coded (AGX-13). Each key resolves, once per keystroke, to a
 named action in the composer's context — `composer.submit`, `composer.newline`,
-`composer.interrupt` … — and the footer's hints are the applicable actions'
-labels from the same registry (`agenthicc.tui.actions`), so the footer can no
+`composer.interrupt` … — and the hint row shows the applicable contextual
+actions' labels from the same registry (`agenthicc.tui.actions`), so it can no
 longer advertise a key that does nothing. An action can depend on the
 composer's conditions (`running`, `paste`, `paste_at_cursor`): Esc deletes a
 condensed paste when the cursor is right after it and pauses a running turn
@@ -169,24 +347,92 @@ idle.
 
 | Key | Action | When |
 |---|---|---|
-| Enter | `composer.submit` — send (queued while a turn runs) | always |
-| Ctrl+J | `composer.newline` | always |
+| Enter | `composer.submit` — send; while a turn runs, queue it for after the turn | always |
+| Ctrl+J, Shift+Enter | `composer.newline` | always |
+| Alt+Enter, Ctrl+Enter | `composer.newline_alt` — a line break | idle |
+| Alt+Enter, Ctrl+Enter | `composer.interject` — deliver at the turn's next tool boundary | a turn is running |
 | `/`, `@` | command picker, mention picker (fixed) | always |
 | Ctrl+V / Esc | expand / delete a condensed paste | a paste is condensed (Esc: cursor right after it) |
 | Esc | `composer.interrupt` — pause the turn | a turn is running |
 | Ctrl+C | `composer.cancel` / `composer.quit` | running / idle (press twice) |
-| Ctrl+D | `composer.eof` — send, or exit on an empty prompt | idle |
-| Ctrl+U, ←→, Home/End, ↑↓, Backspace | clear, cursor, history, delete | ↑↓ idle only |
+| Ctrl+D | `composer.eof` — exit | idle, empty prompt |
+| Delete, Ctrl+D | `composer.delete_forward` — delete the character under the cursor | non-empty prompt |
+| Ctrl+A / Ctrl+E, Home / End | line start / end; pressed again, start / end of the whole prompt | always |
+| Alt+B, Ctrl+← / Alt+F, Ctrl+→ | `composer.word_left` / `composer.word_right` | always |
+| Ctrl+W, Alt+Backspace | `composer.delete_word_back` (into the kill ring) | always |
+| Alt+D | `composer.delete_word_forward` (into the kill ring) | always |
+| Ctrl+K | `composer.kill_to_end` — to the line end (into the kill ring) | always |
+| Ctrl+U | `composer.clear` — to the line start; at the start, everything | always |
+| Ctrl+Y | `composer.yank` — insert the last kill | always |
+| Ctrl+Z / Ctrl+Shift+Z, Alt+Z | `composer.undo` / `composer.redo`, by edit group | always |
+| Ctrl+R | `composer.history_search` — reverse history search | always |
+| Ctrl+X Ctrl+E (or Ctrl+X alone) | `composer.external_editor` — edit in `$VISUAL`/`$EDITOR` | always |
+| Ctrl+L | `composer.redraw` — repaint the live region | always |
+| ←→, ↑↓, Backspace | cursor, history, delete | ↑↓ history idle only |
+| ↑ | `composer.queue_focus` — select a queued message | running, empty prompt, a message is queued |
 | Shift+Tab | `composer.mode_cycle` | always |
 | Ctrl+G, ← | `agents.open_hub` — open the agents hub over the conversation | ← only on an empty prompt |
 | Ctrl+O | `subagents.focus` — move to the subagent panel | while the panel is shown |
+
+Word motion is Unicode-aware: letters, digits and `_` form words, and path
+separators stop, so Ctrl+W on `src/agenthicc/tui` deletes `tui`. Consecutive
+kills join in the kill ring as in readline; consecutive typing is one undo
+group (at most 200 groups are kept). Ctrl+Z replaces nothing: raw mode already
+disables job-control suspend.
+
+Shift+Enter and Ctrl+Enter are distinct keys only where the terminal reports
+them. In kitty, WezTerm, Ghostty and foot (outside tmux/screen) the session
+pushes the kitty keyboard protocol's "disambiguate" mode (`CSI > 1 u`) on
+entering raw mode and pops it (`CSI < u`) on leaving — including around the
+external editor — so `CSI 13;2u` arrives as Shift+Enter. Every CSI-u key decodes
+to the key a legacy terminal sends for it (Ctrl+A stays Ctrl+A). The Windows
+console reports Enter's modifiers directly. Elsewhere use Ctrl+J or Alt+Enter:
+most terminals send Shift+Enter and Ctrl+Enter as a plain Enter, which sends
+(or queues) the prompt. The footer therefore shows `Ctrl+J newline` and, while
+a turn runs and the footer is wide enough, `Alt+Enter interject`.
+
+**Pickers.** The `/`, `$` and `@` pickers have no text of their own: the
+trigger is the text from the trigger character to the cursor. A picker handles
+only navigation and choice (the `picker` context: ↑/↓, Ctrl+P/N, PageUp/PageDown,
+Tab, Enter, Esc); every other key edits the prompt and the picker follows it.
+Ctrl+U, Ctrl+W, Ctrl+A/E, ←/→, paste and undo therefore work with a picker
+open; when the cursor leaves the trigger, or the trigger character is
+deleted, the picker closes. In the `/` picker one Enter runs the highlighted
+command when it takes no required argument (`/help`); a command with a
+required `<argument>` or with argument completions (`/workflow`) is completed
+with a space and the picker lists its arguments. Tab only completes. In the
+`@` picker Enter inserts the path; a second Enter sends. Enter with no match
+sends the prompt as typed.
+
+**History search.** Ctrl+R shows a search row above the prompt
+(`(search) git rebas▌   3 of 41 · Ctrl+R older · Enter use · Esc cancel`). It
+matches earlier prompts by substring, case-insensitively, newest first, on any
+line of a multi-line entry. Ctrl+R again is older, Ctrl+S newer; Enter or →
+puts the match in the prompt to edit (it is not sent); Esc leaves the draft
+exactly as it was.
+
+**External editor.** Ctrl+X then Ctrl+E (or Ctrl+X alone, after 300 ms)
+writes the prompt to a private temporary file (mode 0600) in the session's
+directory under `~/.agenthicc/sessions/`, hands the terminal to `$VISUAL`,
+`$EDITOR` or `vi`, and loads the file back with the cursor at the end. A
+non-zero exit keeps the draft and says so.
+
+**Queued messages.** A message sent while a turn runs shows above the prompt,
+one muted row each (at most three, then `+N more`); an interjection is marked
+with an arrow and `at next tool`. ↑ on an empty prompt selects the newest row
+(the `queue` context): ↑/↓ move, Enter moves the message back into the prompt
+to edit, Delete or Backspace removes it, Esc returns to the prompt. Messages
+sent with Enter wait for the turn to end and then run in order; Ctrl+Enter or
+Alt+Enter sends an interjection that is added to the running turn at its next
+tool boundary. Commands (`/…`, `$…`) always wait for the turn to end.
 
 ← opens the hub only when the prompt is empty. If the prompt was just emptied
 by Backspace, Ctrl+U or history recall, the first ← says "Press ← again to open
 agents" instead, so a key held down to delete text does not open it by
 accident. In a rebinding, `left_on_empty` names that gesture.
 
-Every screen has a context: `composer`, `agents` (operations on an agent),
+Every screen has a context: `composer`, `picker`, `search` and `queue` (the
+composer's pickers, Ctrl+R search and queued rows), `agents` (operations on an agent),
 `agents.list`, `agents.peek` and `agents.detail` (the hub's list, peek panel
 and detail view), `transcript`, `subagents` and `overlay`; `global` actions
 apply everywhere. `agents.list` and `agents.detail` inherit `agents`, and
@@ -217,7 +463,10 @@ leader_timeout_ms = 2000
 
 Edits apply at once in running sessions. An edit that names an unknown
 action, binds two actions that can apply together to one key, or does not
-parse is not applied: the defaults stay in effect and the footer says why.
+parse is not applied: the defaults stay in effect and a notice says why.
+A file that already binds a key one of the TUX-04 editing actions now uses by
+default (Ctrl+K, Alt+Enter …) keeps its binding: the default action gives the
+key up, and a notice and `/keybindings` say so.
 `/keybindings` creates the file (every action listed, commented out) and shows
 the effective bindings and where each comes from; `agenthicc keybindings
 edit` opens the file in `$VISUAL`/`$EDITOR` from the shell.
@@ -230,10 +479,25 @@ Ctrl+letters, Alt combinations and unknown sequences arrived as Esc.
 ### Themes and glyphs
 
 Every colour on screen comes from a semantic token of the active theme
-(`agenthicc.tui.theme`): `text`, `muted`, `subtle`, `accent`, `accent_bg`,
-`user_bg`, `success`, `warning`, `danger`, `info`, `agent`, the diff tokens and
-the three mode badges. No other module names a colour, and
+(`agenthicc.tui.theme`): `text`, `muted`, `subtle`, `frame`, `accent`,
+`accent_bg`, `user_bg`, `success`, `warning`, `danger`, `info`, `agent`, the
+diff tokens and the three mode badges. No other module names a colour, and
 `tests/unit/test_theme_tokens.py` enforces that (TUX-01).
+
+Tokens carry meaning, not hue: failures are `danger`; anything waiting for you
+is `warning`; running work and progress are `info`; finished work is
+`success`; subagent identity is `agent`; metadata is `muted`; the composer's
+frame — its box or its two rules — is `frame`, the yellow of the welcome panel
+(the light theme darkens it to stay readable on white), and so is the `❯` of the
+prompt it frames; every other rule and border is `subtle`. The Safe, Plan and
+Yolo badges (`✓ Safe`, `◆ Plan`,
+`❯❯ Yolo`; `+`, `*` and `>>` with ASCII glyphs) use `mode_safe`, `mode_plan`
+and `mode_yolo`. In list views the selected row is marked by an `accent` bar
+(`▌`). In the agents hub (and its answer form), the subagent panel, `/history`,
+`/help` and the command, skill, tool and workflow lists, the selected row also
+sits on the `accent_bg` background; `/config` keeps reverse video for its
+focused row. Renderers read the theme each time they draw, so a
+`/theme` switch recolours them on the next frame.
 
 ```toml
 [ui]
@@ -242,15 +506,20 @@ glyphs = "auto"   # auto | unicode | ascii
 ```
 
 - **`auto`.** At start-up the TUI asks the terminal for its background
-  colour (OSC 11). It waits at most 50 ms, and only on an interactive
-  terminal. If there is no answer it uses `COLORFGBG`, and then `dark`.
+  colour (OSC 11), followed by a device-attributes query (DA1) that every
+  terminal answers. The query runs only on an interactive terminal, with
+  echo off. It reads until the DA1 answer arrives, at most 500 ms, so a slow
+  reply over SSH is never printed as `^[]11;rgb:…`. Without an answer it
+  uses `COLORFGBG`, and then `dark`.
 - **`ansi`.** Uses only the 16 terminal palette colours, so it follows your
   terminal's own scheme.
 - **`high-contrast`.** Meets WCAG AAA (7:1) for body text.
 - **`NO_COLOR`.** When set, it wins: every colour is removed, and bold, dim and
   reverse remain.
-- **`glyphs = "auto"`.** Picks `ascii` on a non-UTF-8 locale or the Linux
-  console, and `screen_reader = true` always uses `ascii`. The `unicode` set
+- **`glyphs = "auto"`.** Picks `ascii` only when the terminal output
+  encoding is not UTF, the same test Rich uses for its box characters.
+  `TERM` is not consulted, because many Unicode terminals report `linux`.
+  `screen_reader = true` always uses `ascii`. The `unicode` set
   uses only characters found in DejaVu Sans Mono, Noto Sans Mono, Menlo,
   Consolas and Cascadia Mono, and never emoji.
 
@@ -285,11 +554,13 @@ reduced_motion = false  # keep the layout, replace animation with a static ●
 mouse = "auto"          # "auto": full-screen agents hub only; "on": also here; "off": never
 ```
 
-With `screen_reader`, the status bar and footer use commas instead of
-box-drawing separators and words instead of arrows, the borders are dropped,
-nothing animates, and each change — the agent thinking, running a tool,
+With `screen_reader`, the status line uses commas instead of separators and
+words instead of arrows and meters, the composer has no frame, nothing
+animates, and each change — the agent thinking, running a tool,
 finishing or failing, a prompt waiting for approval, a notification, a mode
-switch — is printed once as a plain sentence in the scroll buffer.
+switch — is printed once as a plain sentence in the scroll buffer. Between
+turns the status line is announced too, only when it changes: "Idle. Opus 4.8.
+Context 12 percent."
 Announcements are not written to the session's event log. With
 `mouse = "on"`, the wheel moves the composer's cursor through a tall prompt;
 `"off"` never writes a mouse-reporting sequence. `NO_COLOR` is respected.
@@ -339,21 +610,14 @@ immediately; ordinary requests, skills, mutations, and workflow actions show
 their queue position and wait in FIFO order. The slash picker labels the same
 outcomes, so picker selection and manual typing cannot disagree. `/usage`
 shows the current local token/cost snapshot without sending a message to the
-agent. The live status and one-time idle header compact large token totals for
-scanning (for example, `↑ 230M ↓ 1.5M`); `/usage` remains the exact-value view
-and is not affected by display rounding. A partial usage snapshot adds a compact
-`?` to the token display and an explicit `usage partial` label on the metadata
-row. Unavailable usage is written as `usage unavailable` on the secondary
-metadata row, never as a known zero. Estimated cost uses `~$0.123` visually and
-is spoken as `estimated cost $0.123`; `cost unknown` stays separate from token
-quality. With `screen_reader`, input and output are announced as exact integer
-counts with direction and units, followed by the quality wording. Visual status
-and footer segments use `|` delimiters; screen-reader rows use commas and spoken
-labels instead. The status row prioritizes state, elapsed time, active tool, pool
-progress, then usage; the model may shorten to fit, while the full session ID and
-current directory occupy separate rows with cell-aware wrapping and no added
-labels. Cross-session attention counts appear on their own footer row immediately
-before the composer shortcuts. `/config` immediately opens the configuration
+agent. The status line compacts large token totals for scanning (for example,
+`↑230M ↓1.5M`, with `≈` in front when the usage is partial) and shows them only
+when the provider reported usage; `/usage` and `/status` remain the exact-value
+views and are not affected by display rounding. Unavailable usage and an
+unknown cost are absent from the status line, never shown as a known zero;
+`/status` says "not reported by <provider>". With `screen_reader`, token counts
+are spoken as exact integers ("about 230,044,280 tokens in, 1,506,692 out").
+`/config` immediately opens the configuration
 overlay, including during a response, while its edits remain local to the overlay
 until saved. `/cancel`/`/interrupt` share the Ctrl+C cancellation owner, and
 `/bg`/`/background` use the background-session control plane.
@@ -370,7 +634,10 @@ the hard page limits still apply. See the
 hard maxima.
 
 The same renderers are used for old and live turns, tool completions, errors,
-and assistant responses. This is presentation-only replay: the events are not
+and assistant responses. Each event is drawn with its own stored time, never the
+time of the resume, and the history opens with
+`── replayed from 2 Nov 05:04 · 827 events ──`. `/replay
+SESSION_ID` shows another session the same way. This is presentation-only replay: the events are not
 appended to `ConversationStore` and therefore are not written to
 `conversation.jsonl` a second time. Accepted user messages for input-history
 navigation are projected from the same bounded page; the resumed input editor
@@ -395,7 +662,8 @@ For repeatable large-log measurements without provider credentials, run
 use `--tool-event-every 1 --large-event-bytes 0` for an all-tool-event log.
 
 When a tool approval, plan review, or `ask_user()` question is pending, the
-status bar changes from the animated Thinking state to a stable waiting label.
+status line changes from the animated Thinking state to a stable
+`◆ Waiting for you`.
 The Thinking duration is the total wall-clock time for the outer user activity:
 it continues across internal LLM turns and workflow phases and ends only when
 the activity returns to IDLE. Resize redraws do not derive a new timestamp
@@ -403,10 +671,13 @@ directly; while a prompt owns the terminal, the tick retains the activity
 start point without publishing a timer redraw every 50 ms. The older per-turn
 active-work clock remains available for turn-level telemetry and waiting-modal
 behavior. When the activity returns to IDLE, the scroll buffer emits a compact
-completion recap after the final turn. It shows each eligible per-turn duration
-(for example, `✾ Turn · 1m 5s`) and an indented `Total · 2m 5s` row for the
-enclosing activity. The total spans the outer user activity across internal turns
-and workflow phases; it is not model-only time or the sum of the visible turn rows.
+completion recap after the final turn. Each turn of a second or more reads
+`✾ Worked for 1m 5s | 10:20 AM`, ending with the local time it finished.
+The request's total, `✾ Done in 2m 5s across 3 turns | 10:22 AM`,
+follows only when it adds something: after several turns, or when it is
+longer than the one turn. The total spans the outer user activity across
+internal turns and workflow phases; it is not model-only time or the sum of
+the visible turn rows.
 Durations use whole-second `s`, `m`, and `h` units. One blank row separates the
 recap from subsequent scrollback or the persistent live status block.
 
@@ -450,7 +721,9 @@ range indicator shows when more question text is above or below the viewport.
 When entering an `Other` answer, the input is the main composer embedded in
 the overlay (`EmbeddedComposer`):
 
-- paste (including condensed large pastes), `Ctrl+J` newline, word movement
+- paste (including condensed large pastes), Shift+Enter/`Ctrl+J` newline,
+  the readline editing keys (word motion, kill and yank, undo/redo), Ctrl+R
+  history search, Ctrl+X Ctrl+E (the editor takes the session's terminal)
   and history all work;
 - `@` opens the mention picker, and mentions are resolved into the answer as
   they would be in a message;

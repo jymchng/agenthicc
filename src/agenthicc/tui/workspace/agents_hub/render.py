@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from rich.cells import cell_len, set_cell_size
+from rich.style import Style
 from rich.text import Text
 
 from agenthicc.background.inbox import BackgroundInboxItem
@@ -40,6 +41,7 @@ from agenthicc.tui.workspace.agents_hub.model import (
     project_name,
 )
 from agenthicc.background.vocabulary import status_look
+from agenthicc.tui.theme import glyphs, palette, style
 
 if TYPE_CHECKING:
     from agenthicc.subagents.pool import WorkerState
@@ -111,16 +113,19 @@ class RowContext:
     plain: bool = False
 
 
-def _session_cells(
-    session: BackgroundSession, row: HubRow, context: RowContext
-) -> dict[str, tuple[str, str]]:
+#: Column name → (text, style) for one row; a style is a Rich style string or
+#: a resolved :class:`Style` (bold or dim over a theme token).
+_Cells = dict[str, tuple[str, str | Style]]
+
+
+def _session_cells(session: BackgroundSession, row: HubRow, context: RowContext) -> _Cells:
     """Column name → (text, style) for a background agent row."""
     look = status_look(
         session.status, queue_position=context.queue_positions.get(session.session_id)
     )
     title = session.title or session.intent or session.session_id
     if row.depth:
-        title = "  " * (row.depth - 1) + "└ " + title
+        title = "  " * (row.depth - 1) + glyphs().elbow + " " + title
     if row.hidden:
         title = f"{title} (+{row.hidden})"
     if session.status in (SessionStatus.FAILED, SessionStatus.CANCELLED) and session.error:
@@ -135,17 +140,17 @@ def _session_cells(
         "status": (f"{look.glyph} {look.label}", look.style),
         "title": (title, "bold" if session.status in _BOLD else ""),
         "activity": (" ".join(activity.split()), "dim"),
-        "project": (project_name(session.cwd), "cyan"),
+        "project": (project_name(session.cwd), palette().muted),
         "agent": (session.workflow_name or session.role or "direct", ""),
         "age": (age(context.now - (session.last_active or session.created_at)), "dim"),
-        "cost": (_cost(session), "green"),
+        "cost": (_cost(session), palette().success),
     }
 
 
 _BOLD = frozenset({SessionStatus.WAITING_APPROVAL, SessionStatus.WAITING_INPUT})
 
 
-def _inbox_cells(item: BackgroundInboxItem, context: RowContext) -> dict[str, tuple[str, str]]:
+def _inbox_cells(item: BackgroundInboxItem, context: RowContext) -> _Cells:
     session = context.sessions.get(item.session_id)
     label = "needs approval" if item.kind == "approval" else "needs input"
     expired = item.status == "expired"
@@ -159,57 +164,65 @@ def _inbox_cells(item: BackgroundInboxItem, context: RowContext) -> dict[str, tu
     activity = f"{tool}: {summary}" if summary and summary != tool else tool
     if expired:
         activity = f"timed out · {activity}"
+    # An expired question keeps the diamond but loses the bold: it no longer blocks.
     return {
-        "status": (f"{'◇' if expired else '◆'} {label}", "yellow" if expired else "bold yellow"),
+        "status": (
+            f"{glyphs().diamond} {label}",
+            palette().warning if expired else style("warning", bold=True),
+        ),
         "title": (
             session.title if session is not None else item.workspace or item.session_id,
             "bold",
         ),
         "activity": (" ".join(activity.split()), "dim"),
-        "project": (item.workspace or project_name(item.project_root), "cyan"),
+        "project": (item.workspace or project_name(item.project_root), palette().muted),
         "agent": ((session.workflow_name or "direct") if session is not None else "", ""),
         "age": (age(context.now - item.created_at), "dim"),
         "cost": ("", ""),
     }
 
 
-def _saved_cells(record: SavedSession, context: RowContext) -> dict[str, tuple[str, str]]:
+def _saved_cells(record: SavedSession, context: RowContext) -> _Cells:
     return {
-        "status": ("○ saved", "dim"),
+        "status": (f"{glyphs().info} saved", "dim"),
         "title": (record.title or f"session {record.session_id[:8]}", ""),
         "activity": (record.model, "dim"),
-        "project": (project_name(record.cwd), "cyan"),
+        "project": (project_name(record.cwd), palette().muted),
         "agent": ("foreground", "dim"),
         "age": (age(context.now - record.last_used) if record.last_used else "", "dim"),
         "cost": ("", ""),
     }
 
 
-def _scheduled_cells(entry: ScheduledEntry, context: RowContext) -> dict[str, tuple[str, str]]:
+def _scheduled_cells(entry: ScheduledEntry, context: RowContext) -> _Cells:
     remaining = entry.next_run_at - context.now
     when = "due" if remaining <= 0 else f"in {age(remaining)}"
     return {
-        "status": ("◷ scheduled", "magenta"),
+        "status": (f"{glyphs().right} scheduled", palette().info),
         "title": (entry.name, ""),
         "activity": (when, "dim"),
-        "project": (entry.project, "cyan"),
+        "project": (entry.project, palette().muted),
         "agent": ("schedule", "dim"),
         "age": (when if remaining > 0 else "due", "dim"),
         "cost": ("", ""),
     }
 
 
-_DEFINITION_LOOKS = {
-    "active": ("●", "bold"),
-    "shadowed": ("◌", "dim"),
-    "invalid": ("⚠", "bold yellow"),
-    "untrusted": ("⊘", "dim red"),
-}
+def _definition_look(state: str) -> tuple[str, str | Style]:
+    """Glyph and style of a library definition's state, from the active theme."""
+    g = glyphs()
+    if state == "shadowed":
+        return g.info, "dim"
+    if state == "invalid":
+        return g.warn, style("warning", bold=True)
+    if state == "untrusted":
+        return g.fail, style("danger") + Style(dim=True)
+    return g.bullet, "bold"
 
 
-def _definition_cells(entry: LibraryEntry) -> dict[str, tuple[str, str]]:
-    glyph, style = _DEFINITION_LOOKS.get(entry.state, ("●", "bold"))
-    star = " ★" if entry.default else ""
+def _definition_cells(entry: LibraryEntry) -> _Cells:
+    glyph, look = _definition_look(entry.state)
+    star = " *" if entry.default else ""
     if entry.state == "active":
         summary = f"{entry.model or '(session model)'} · {entry.tools}" if entry.tools else ""
         title = entry.description or entry.name
@@ -217,23 +230,23 @@ def _definition_cells(entry: LibraryEntry) -> dict[str, tuple[str, str]]:
         summary = ""
         title = entry.note or entry.state
     return {
-        "status": (f"{glyph} {entry.name}{star}", style),
-        "title": (title, "yellow" if entry.state == "invalid" else ""),
+        "status": (f"{glyph} {entry.name}{star}", look),
+        "title": (title, palette().warning if entry.state == "invalid" else ""),
         "activity": (summary, "dim"),
-        "project": (entry.source, "cyan"),
+        "project": (entry.source, palette().muted),
         "agent": (entry.mode, ""),
         "age": ("", ""),
         "cost": ("", ""),
     }
 
 
-def _subagent_cells(worker: WorkerState, context: RowContext) -> dict[str, tuple[str, str]]:
+def _subagent_cells(worker: WorkerState, context: RowContext) -> _Cells:
     """Column name → (text, style) for a subagent worker of the session (AGX-08)."""
     from agenthicc.tui.workspace.subagent_panel import elapsed, status_glyph
 
-    glyph, style, word = status_glyph(worker.status)
+    glyph, look, word = status_glyph(worker.status)
     return {
-        "status": (f"{glyph} {word}", style),
+        "status": (f"{glyph} {word}", look),
         "title": (worker.label, "bold" if worker.status == "waiting" else ""),
         "activity": (" ".join(worker.activity.split()), "dim"),
         "project": ("", ""),
@@ -243,7 +256,7 @@ def _subagent_cells(worker: WorkerState, context: RowContext) -> dict[str, tuple
     }
 
 
-def _cells(row: HubRow, context: RowContext) -> dict[str, tuple[str, str]]:
+def _cells(row: HubRow, context: RowContext) -> _Cells:
     if row.worker is not None:
         return _subagent_cells(row.worker, context)
     if row.session is not None:
@@ -275,22 +288,23 @@ def row_line(
     if row.kind is RowKind.NOTE:
         return Text(fit(f"   {row.text}", width), style="dim italic")
     cells = _cells(row, context)
+    p, g = palette(), glyphs()
     line = Text(no_wrap=True, overflow="crop")
-    gutter = ("▸" if selected else " ") + ("✓" if marked else "•" if unseen else " ")
-    line.append(gutter[:GUTTER], style="bold cyan" if selected else "yellow")
+    gutter = (g.bar if selected else " ") + (g.ok if marked else g.bullet if unseen else " ")
+    line.append(gutter[:GUTTER], style=style("accent", bold=True) if selected else p.warning)
     for index, name in enumerate(columns.columns):
         if index:
             line.append(" " * SEPARATOR)
-        text, style = cells.get(name, ("", ""))
+        text, look = cells.get(name, ("", ""))
         cell_width = columns.widths[index]
         shown = fit(text, cell_width) if name != "age" else text[:cell_width].rjust(cell_width)
         start = len(line.plain)
-        line.append(shown, style=style)
+        line.append(shown, style=look)
         if name in ("title", "activity") and context.words:
             for span_start, span_end in highlight_spans(shown, list(context.words)):
                 line.stylize("reverse", start + span_start, start + span_end)
     if selected:
-        line.stylize("on grey19", 0, len(line.plain))
+        line.stylize(p.on("accent_bg"), 0, len(line.plain))
     return line
 
 
@@ -356,22 +370,23 @@ def tab_bar(
 ) -> Text:
     """`` Agents   Running 4 · Needs you 2 · History 214 · Library 9   ? help``."""
     line = Text(no_wrap=True, overflow="crop")
-    line.append(" Agents", style="bold cyan")
+    p = palette()
+    line.append(" Agents", style=style("accent", bold=True))
     line.append("   ")
     for index, candidate in enumerate(Tab):
         if index:
             line.append(", " if plain else " · ", style="dim")
         label = tab_label(candidate, counts)
-        style = "dim"
+        look: str | Style = "dim"
         if candidate is tab:
-            style = "bold underline"
+            look = "bold underline"
             if plain:
                 label = f"[{label}]"
         if candidate is Tab.NEEDS_YOU and counts.get(candidate, 0):
-            style = "bold yellow" + (" underline" if candidate is tab else "")
-        line.append(label, style=style)
+            look = style("warning", bold=True) + Style(underline=candidate is tab)
+        line.append(label, style=look)
     if paused:
-        line.append("   updates paused", style="yellow")
+        line.append("   updates paused", style=p.warning)
     if help_hint is not None:
         right = f"{help_hint.keys} {help_hint.label}"
         gap = width - cell_len(line.plain) - cell_len(right) - 1
@@ -415,7 +430,8 @@ def footer_line(
 
 def help_lines(title: str, entries: Sequence[HelpEntry], width: int) -> list[Text]:
     """Every key of the current screen, from the key map (AGX-13 §5.1)."""
-    lines = [Text(fit(f" {title} — keys", width), style="bold cyan")]
+    p = palette()
+    lines = [Text(fit(f" {title} — keys", width), style=style("accent", bold=True))]
     keys_width = min(22, max((cell_len(entry.keys) for entry in entries), default=4))
     for entry in entries:
         line = Text(no_wrap=True, overflow="crop")
@@ -424,7 +440,7 @@ def help_lines(title: str, entries: Sequence[HelpEntry], width: int) -> list[Tex
         if entry.conditions:
             line.append(f"  ({entry.conditions})", style="dim")
         if entry.source != "default":
-            line.append("  · your binding", style="cyan")
+            line.append("  · your binding", style=p.accent)
         line.truncate(width, overflow="crop")
         lines.append(line)
     lines.append(Text(" Any key closes this help.", style="dim"))
@@ -498,10 +514,10 @@ def _section(title: str, width: int, key: str = "", *, plain: bool = False) -> T
         return Text(f" {title}:", style="bold")
     label = f" {title} "
     tail = f" {key} " if key else ""
-    rule = "─" * max(0, width - cell_len(label) - cell_len(tail))
+    rule = glyphs().rule * max(0, width - cell_len(label) - cell_len(tail))
     line = Text(no_wrap=True, overflow="crop")
     line.append(label, style="bold")
-    line.append(rule, style="dim")
+    line.append(rule, style=palette().subtle)
     line.append(tail, style="dim")
     return line
 
@@ -517,14 +533,20 @@ def _usage(session: BackgroundSession) -> str:
 
 
 def _transcript_line(line: TranscriptLine, width: int) -> Text:
+    p = palette()
     text = Text(no_wrap=True, overflow="crop")
     if line.status:
-        style = {"✓": "green", "✗": "red", "◆": "yellow", "●": "cyan"}.get(line.status, "")
-        text.append(f"   {line.status} ", style=style)
+        # The transcript's status glyphs are data from the detail loader.
+        status_style = {"✓": p.success, "✗": p.danger, "◆": p.warning, "●": p.info}
+        text.append(f"   {line.status} ", style=status_style.get(line.status, ""))
     else:
         text.append("     ")
-    role_style = {"you": "bold cyan", "assistant": "bold", "error": "bold red"}.get(line.role, "")
-    text.append(fit(line.role, 10), style=role_style)
+    role_style: dict[str, str | Style] = {
+        "you": style("accent", bold=True),
+        "assistant": "bold",
+        "error": style("danger", bold=True),
+    }
+    text.append(fit(line.role, 10), style=role_style.get(line.role, ""))
     text.append(" " + line.text)
     text.truncate(width, overflow="crop")
     return text
@@ -735,7 +757,9 @@ def detail_lines(
     # Error
     if session.error and session.status in (SessionStatus.FAILED, SessionStatus.CANCELLED):
         lines.append(_section("Error", width, plain=plain))
-        lines.append(Text(fit("   " + " ".join(session.error.split()), width), style="red"))
+        lines.append(
+            Text(fit("   " + " ".join(session.error.split()), width), style=palette().danger)
+        )
         lines.append(Text(""))
 
     # Details

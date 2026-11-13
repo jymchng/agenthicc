@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 import uuid
 from collections.abc import Callable, Collection, Iterator
@@ -16,6 +17,7 @@ if TYPE_CHECKING:
     from agenthicc.tui.conversation_store import AppState
 
 from agenthicc.tui.conversation_store import ConversationEvent
+from agenthicc.tui.tool_summary import ToolSummary, bounded_args, summarize_call
 from agenthicc.runners.process_lease import InterProcessLock, atomic_replace
 
 _SESSIONS_DIR = Path.home() / ".agenthicc" / "sessions"
@@ -805,12 +807,129 @@ def _decode_event(raw: str | bytes, *, rendered: bool) -> ConversationEvent | No
         return ConversationEvent(
             event_id=event_id,
             kind=kind,
-            payload=cast(dict[str, object], payload),
+            payload=migrate_event_payload(kind, cast(dict[str, object], payload)),
             timestamp=float(timestamp),
             rendered=rendered,
         )
     except Exception:  # noqa: BLE001
         return None
+
+
+# ── One-way payload migration (TUX-06) ────────────────────────────────────────
+
+_MARKUP_TAG = re.compile(r"\[/?[a-z][a-z0-9 _#.-]*\]")
+_LEGACY_DURATION = re.compile(r"(\d+(?:\.\d+)?)\s*ms")
+_LEGACY_TURN_AGENT = re.compile(r"^assistant \((?P<model>[^()]*)\)$")
+
+
+def _legacy_summary(markup: str) -> str:
+    """The plain target inside a legacy ``[dim](…)[/dim]`` argument string."""
+    # Rich escapes a literal ``[`` as ``\\[``; keep those, drop real tags.
+    text = _MARKUP_TAG.sub("", markup.replace("\\[", "\x00")).replace("\x00", "[").strip()
+    if text.startswith("(") and text.endswith(")"):
+        text = text[1:-1]
+    return text
+
+
+_LEGACY_KWARG = re.compile(r"(?:^|, )([A-Za-z_][A-Za-z0-9_]*)=")
+#: The parameter a legacy single-argument repr belonged to.
+_LEGACY_FIRST_PARAMETER: dict[str, str] = {
+    "run_bash": "command",
+    "run_python": "code",
+    "read_file": "path",
+    "write_file": "path",
+    "patch_file": "path",
+    "apply_diff": "path",
+    "append_file": "path",
+    "delete_file": "path",
+    "list_directory": "path",
+    "grep_files": "pattern",
+    "search_files": "pattern",
+    "git_show": "ref",
+    "memory_read": "key",
+    "memory_write": "key",
+    "semantic_search": "query",
+    "fetch_page": "url",
+    "web_search": "query",
+}
+
+
+def _unquote(value: str) -> str:
+    value = value.strip()
+    if len(value) >= 2 and value[0] in "'\"" and value[-1] == value[0]:
+        return value[1:-1]
+    return value[1:] if value[:1] in "'\"" else value.rstrip("…")
+
+
+def _legacy_args(name: str, text: str) -> dict[str, object]:
+    """Best-effort arguments back from a legacy ``k='v', …`` or ``'v'`` string."""
+    if not text:
+        return {}
+    marks = list(_LEGACY_KWARG.finditer(text))
+    if marks and marks[0].start() == 0:
+        args: dict[str, object] = {}
+        for index, mark in enumerate(marks):
+            end = marks[index + 1].start() if index + 1 < len(marks) else len(text)
+            raw = text[mark.end() : end]
+            value = _unquote(raw)
+            args[mark.group(1)] = int(value) if value.isdigit() else value
+        return args
+    parameter = _LEGACY_FIRST_PARAMETER.get(name)
+    return {parameter: _unquote(text)} if parameter else {}
+
+
+def migrate_event_payload(kind: str, payload: dict[str, object]) -> dict[str, object]:
+    """Bring a payload written by an older release to the current shape.
+
+    Applied once, on read; nothing writes the old shape any more:
+
+    - ``tool_complete`` stored Rich markup in ``args_str``/``dur_str`` and a
+      four-line head with ``output_more``.  The markup becomes the plain
+      ``summary``, the duration ``duration_ms``, and the head
+      ``output_lines``/``output_head``/``output_total``.
+    - ``turn_start`` named the turn ``assistant (model)``; it gains the
+      ``agent`` and ``model`` fields the transcript header compares.
+    """
+    if kind == "tool_complete" and ("args_str" in payload or "dur_str" in payload):
+        migrated = dict(payload)
+        legacy_args = migrated.pop("args_str", "")
+        legacy_duration = migrated.pop("dur_str", "")
+        legacy_more = migrated.pop("output_more", 0)
+        lines = migrated.get("output_lines")
+        line_count = len(lines) if isinstance(lines, list) else 0
+        more = legacy_more if isinstance(legacy_more, int) and legacy_more > 0 else 0
+        duration = _LEGACY_DURATION.search(str(legacy_duration))
+        name = str(migrated.get("name", ""))
+        target = _legacy_summary(str(legacy_args))
+        args = _legacy_args(name, target)
+        summary = (
+            summarize_call(name, args, None, root=Path.cwd())
+            if args
+            else ToolSummary(" ".join(target.split()))
+        )
+        migrated.setdefault("summary", summary.target)
+        migrated.setdefault("summary_detail", summary.detail)
+        migrated.setdefault("args", bounded_args(args))
+        migrated.setdefault("duration_ms", round(float(duration.group(1))) if duration else None)
+        migrated.setdefault("output_head", line_count)
+        migrated.setdefault("output_total", line_count + more)
+        migrated.setdefault("exit_code", None)
+        migrated.setdefault("error_code", None)
+        return migrated
+    if kind == "turn_start" and "agent" not in payload:
+        migrated = dict(payload)
+        agent_name = migrated.get("agent_name")
+        match = _LEGACY_TURN_AGENT.match(agent_name) if isinstance(agent_name, str) else None
+        if match is not None:
+            migrated["agent"] = "default"
+            migrated["model"] = match.group("model")
+        else:
+            migrated["agent"] = (
+                agent_name if isinstance(agent_name, str) and agent_name else "default"
+            )
+            migrated["model"] = ""
+        return migrated
+    return payload
 
 
 def _load_recent_turns(

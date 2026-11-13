@@ -344,7 +344,7 @@ class TestElapsedSProperty:
 
         from rich.console import Console
 
-        from agenthicc.tui.workspace.components import StatusComponent
+        from agenthicc.tui.workspace.components import StatusLine
 
         import agenthicc.tui.conversation_store as conversation_store_module
 
@@ -360,7 +360,7 @@ class TestElapsedSProperty:
         conv.tick()
         first = StringIO()
         Console(file=first, force_terminal=False, markup=False, width=120).print(
-            StatusComponent(app_state).render()
+            StatusLine(app_state).render()
         )
         assert "Thinking" in first.getvalue()
         assert "3s" in first.getvalue()
@@ -371,7 +371,7 @@ class TestElapsedSProperty:
         conv.begin_turn("agent", "phase-2")
         second = StringIO()
         Console(file=second, force_terminal=False, markup=False, width=120).print(
-            StatusComponent(app_state).render()
+            StatusLine(app_state).render()
         )
         assert "Thinking" in second.getvalue()
         assert "8s" in second.getvalue()
@@ -380,146 +380,76 @@ class TestElapsedSProperty:
         conv.end_activity()
         idle = StringIO()
         Console(file=idle, force_terminal=False, markup=False, width=120).print(
-            StatusComponent(app_state).render()
+            StatusLine(app_state).render()
         )
         assert "Thinking" not in idle.getvalue()
         assert "8s" not in idle.getvalue()
 
 
 class TestFrameDrivesAnimation:
-    """Verify StatusComponent reads frame() for all animated elements."""
+    """The status line's state segment is the only thing ``frame()`` animates."""
 
-    def _make_state(self, frame: int = 7) -> object:
-        from unittest.mock import MagicMock
-
-        state = MagicMock()
-        state.conversation.frame.return_value = frame
-        state.conversation.elapsed_s = 0.0
-        state.conversation.model_name.return_value = "test-model"
-        state.conversation.session_id.return_value = "s1"
-        state.conversation.turn_count.return_value = 0
-        state.conversation.cost_usd.return_value = 0.0
-        state.conversation.tokens_in.return_value = 0
-        state.conversation.tokens_out.return_value = 0
-        state.conversation.agent_state.return_value = MagicMock(name="IDLE")
-        state.conversation.agent_state().name = "IDLE"
-        state.conversation.is_running.return_value = False
-        state.conversation.compaction_active.return_value = False
-        state.conversation.notification.return_value = None
-        state.conversation.workflow_override.return_value = None
-        state.pending_approval.return_value = None
-        state.active_mode.return_value = MagicMock(badge="⏵⏵")
-        state.workflow_run.return_value = None
+    @staticmethod
+    def _state(frame: int) -> AppState:
+        state = AppState.create()
+        state.conversation.model_name.set("test-model")
+        state.conversation.frame.set(frame)
         return state
 
-    def test_flower_is_static_when_idle(self) -> None:
-        """Flower must not change when agent is idle and compaction is off."""
-        from rich.console import Console
-        from agenthicc.tui.workspace.components import StatusComponent, _FLOWERS
+    @staticmethod
+    def _plain(state: AppState) -> str:
+        from rich.text import Text
 
+        from agenthicc.tui.workspace.components import StatusLine
+
+        return Text.from_markup(StatusLine(state).markup(120)).plain
+
+    def test_state_is_static_when_idle(self) -> None:
+        results = {self._plain(self._state(i)) for i in range(12)}
+        assert len(results) == 1
+        assert next(iter(results)).startswith(" ● Idle")
+
+    def test_spinner_animates_when_running(self) -> None:
+        from agenthicc.tui.theme import glyphs
+
+        spinner = glyphs().spinner
         results: set[str] = set()
-        for i in range(len(_FLOWERS)):
-            state = self._make_state(frame=i)  # idle, compaction off
-            comp = StatusComponent(state)
-            console = Console(highlight=False, markup=False, no_color=True, width=120)
-            with console.capture() as cap:
-                console.print(comp.render())
-            results.add(cap.get()[0])
-
-        assert len(results) == 1, "Flower must be fixed when idle"
-        assert results == {_FLOWERS[0]}
-
-    def test_flower_animates_when_running(self) -> None:
-        """Flower must cycle through values when the agent is running."""
-        from rich.console import Console
-        from agenthicc.tui.workspace.components import StatusComponent, _FLOWERS
-        from unittest.mock import MagicMock
-
-        results: set[str] = set()
-        for i in range(len(_FLOWERS)):
-            state = self._make_state(frame=i)
-            state.conversation.is_running.return_value = True
-            state.conversation.agent_state.return_value = MagicMock(name="THINKING")
-            state.conversation.agent_state().name = "THINKING"
-            state.conversation.elapsed_s = float(i)
-            comp = StatusComponent(state)
-            console = Console(highlight=False, markup=False, no_color=True, width=120)
-            with console.capture() as cap:
-                console.print(comp.render())
-            results.add(cap.get()[0])
-
-        assert len(results) == len(_FLOWERS), "All flowers should appear when running"
+        for i in range(len(spinner)):
+            state = self._state(i)
+            state.conversation.agent_state.set(AgentState.THINKING)
+            results.add(self._plain(state)[1])
+        assert results == set(spinner)
 
     def test_compaction_spinner_changes_with_frame(self) -> None:
-        from rich.console import Console
-        from agenthicc.tui.workspace.components import StatusComponent, _COMPACT_SPINNER
-
         results: set[str] = set()
-        for i in range(len(_COMPACT_SPINNER)):
-            state = self._make_state(frame=i)
-            state.conversation.compaction_active.return_value = True
-            comp = StatusComponent(state)
-            console = Console(highlight=False, markup=False, no_color=True, width=120)
-            with console.capture() as cap:
-                console.print(comp.render())
-            rendered = cap.get()
-            # The spinner char appears at the start of the "Compacting…" line
-            for line in rendered.splitlines():
-                if "Compacting" in line:
-                    results.add(line[0])
-                    break
-
-        assert len(results) > 1, "Spinner must cycle across frame values"
+        for i in range(4):
+            state = self._state(i)
+            state.conversation.compaction_active.set(True)
+            line = self._plain(state)
+            assert "Compacting" in line
+            results.add(line[1])
+        assert len(results) == 4
 
     def test_transcript_loading_status_has_no_spinner(self) -> None:
-        from rich.console import Console
-        from agenthicc.tui.workspace.components import (
-            StatusComponent,
-            _COMPACT_SPINNER,
-        )
+        from agenthicc.tui.theme import glyphs
 
         for i in range(4):
-            state = self._make_state(frame=i)
-            state.conversation.transcript_loading.return_value = True
-            comp = StatusComponent(state)
-            console = Console(highlight=False, markup=False, no_color=True, width=120)
-            with console.capture() as cap:
-                console.print(comp.render())
-            rendered = cap.get()
-            line = next(line for line in rendered.splitlines() if "Loading transcript" in line)
-            assert not any(f"{spinner} Loading transcript" in line for spinner in _COMPACT_SPINNER)
+            state = self._state(i)
+            state.conversation.transcript_loading.set(True)
+            assert self._plain(state).startswith(f" {glyphs().bullet} Loading transcript")
 
-    @pytest.mark.parametrize(
-        ("kind", "label"),
-        [
-            ("tool", "Waiting for approval"),
-            ("plan_review", "Waiting for plan approval"),
-            ("questions", "Waiting for your answer"),
-            ("unknown", "Waiting for approval"),
-        ],
-    )
-    def test_waiting_prompt_freezes_status_animation(self, kind: str, label: str) -> None:
-        from rich.console import Console
-        from unittest.mock import MagicMock
-        from agenthicc.tui.workspace.components import (
-            StatusComponent,
-            _FLOWERS,
-        )
+    @pytest.mark.parametrize("kind", ["tool", "plan_review", "questions", "unknown"])
+    def test_waiting_prompt_freezes_status_animation(self, kind: str) -> None:
+        from types import SimpleNamespace
 
         rendered: set[str] = set()
-        for i in range(len(_FLOWERS)):
-            state = self._make_state(frame=i)
-            state.conversation.is_running.return_value = True
-            state.conversation.agent_state.return_value = MagicMock(name="THINKING")
-            state.conversation.agent_state().name = "THINKING"
-            state.pending_approval.return_value = MagicMock(kind=kind)
-            comp = StatusComponent(state)
-            console = Console(highlight=False, markup=False, no_color=True, width=120)
-            with console.capture() as cap:
-                console.print(comp.render())
-            rendered.add(cap.get())
+        for i in range(6):
+            state = self._state(i)
+            state.conversation.agent_state.set(AgentState.THINKING)
+            state.pending_approval.set(SimpleNamespace(kind=kind))  # type: ignore[arg-type]
+            rendered.add(self._plain(state))
 
         assert len(rendered) == 1
         output = next(iter(rendered))
-        assert label in output
+        assert "◆ Waiting for you" in output
         assert "Thinking" not in output

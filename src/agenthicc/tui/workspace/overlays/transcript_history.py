@@ -12,6 +12,7 @@ from agenthicc.tui.runtime.session_log import (
     load_older_transcript_page,
     load_transcript_entry,
 )
+from agenthicc.tui.theme import glyphs, palette, style
 from agenthicc.tui.workspace.overlay import Overlay
 
 if TYPE_CHECKING:
@@ -57,6 +58,7 @@ class TranscriptHistoryOverlay(Overlay):
         from rich.panel import Panel
         from rich.text import Text
 
+        p = palette()
         page = self._pages[self._page_index]
         if self._detail is not None:
             visible = self._detail[self._detail_scroll : self._detail_scroll + self._detail_rows()]
@@ -66,22 +68,24 @@ class TranscriptHistoryOverlay(Overlay):
                 f"{min(len(self._detail), self._detail_scroll + len(visible))}/{len(self._detail)}"
             )
             return Group(
-                Panel(body, title=info, border_style="cyan"),
+                Panel(body, title=info, border_style=p.subtle),
                 Text("↑↓/PgUp/PgDn scroll   Esc back to events   q close history", style="dim"),
             )
 
-        lines = [Text("Transcript History", style="bold cyan")]
+        lines = [Text("Transcript History", style=style("accent", bold=True))]
         if page.entries:
             for index, entry in enumerate(page.entries):
                 selected = index == self._selected
                 event = entry.event
                 timestamp = _timestamp(event.timestamp)
                 preview = _event_preview(event.payload)
-                line = Text("▶ " if selected else "  ", style="reverse" if selected else "")
+                # The selected row: an accent bar on the selected-row background.
+                line = Text(glyphs().bar if selected else " ", style=p.accent)
+                line.append(" ")
                 line.append(f"{timestamp}  {event.kind:<22} ", style="dim")
                 line.append(preview)
                 if selected:
-                    line.stylize("reverse")
+                    line.stylize(p.on("accent_bg"))
                 lines.append(line)
         else:
             lines.append(Text("(No events on this page)", style="dim"))
@@ -96,7 +100,7 @@ class TranscriptHistoryOverlay(Overlay):
             )
         )
         if self._notice:
-            lines.append(Text(self._notice, style="yellow"))
+            lines.append(Text(self._notice, style=p.warning))
         lines.extend(
             [
                 Text(""),

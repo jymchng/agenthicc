@@ -134,7 +134,8 @@ def test_router_coalesces_waiting_transition_and_defers_for_modal() -> None:
     router._flush_if_ready(102.0)
 
     assert app_state.conversation.background_toast() is None
-    assert router._next_timeout(102.0) == 8.0
+    # A modal defers the coalesced toast, and nothing else has a deadline.
+    assert router._next_timeout(102.0) is None
 
     app_state.modal_open.set(False)
     router._flush_if_ready(102.0)
@@ -164,7 +165,6 @@ def test_dnd_discards_attention_not_badge_counts() -> None:
 
     assert app_state.conversation.background_needs_you() == 1
     assert app_state.conversation.background_toast() is None
-    assert app_state.conversation.agents_hint() is False
     assert not router._notification_tasks
 
 
@@ -347,27 +347,6 @@ def test_terminal_notification_osc_filters_control_characters(
     )
 
     assert stream.getvalue() == "\x1b]9;ready]52;clipboard\x07"
-
-
-@pytest.mark.asyncio
-async def test_router_shows_a_temporary_agents_hint_on_start(tmp_path: Path) -> None:
-    store = BackgroundStore(tmp_path)
-    service = AgentsService(store, BackgroundSupervisor(store))
-    app_state = AppState.create()
-    router = AgentAttentionRouter(service, BackgroundSettings(), app_state)
-    task = asyncio.create_task(router.run())
-
-    try:
-        for _ in range(50):
-            if app_state.conversation.agents_hint():
-                break
-            await asyncio.sleep(0.01)
-        assert app_state.conversation.agents_hint()
-        assert router._hint_deadline is not None
-    finally:
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
-        await service.close()
 
 
 @pytest.mark.asyncio

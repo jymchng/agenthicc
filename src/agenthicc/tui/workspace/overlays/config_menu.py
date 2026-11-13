@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from rich.console import RenderableType
 
 from agenthicc.tui.cbreak_reader import Key
+from agenthicc.tui.theme import glyphs, palette, style
 from agenthicc.tui.workspace.overlay import Overlay
 
 
@@ -89,6 +90,9 @@ class ConfigMenuOverlay(Overlay):
         self._edit_buf = ""
         self._scroll = 0
         self._status = "↑↓ navigate   Enter edit/expand   s save   Esc close"
+        #: The theme token that colours the status line ("" for none); it is
+        #: resolved when the overlay renders, so a theme switch applies.
+        self._status_tone = ""
 
     def on_mount(self) -> None:
         pass
@@ -98,16 +102,24 @@ class ConfigMenuOverlay(Overlay):
 
     def render(self) -> "RenderableType":
         from rich.console import Group
+        from rich.style import Style
         from rich.text import Text
 
         rows = self._build_rows()
         visible = rows[self._scroll : self._scroll + self._MAX_VISIBLE]
-        sep = Text("─" * 60, style="dim")
+        sep = Text(glyphs().rule * 60, style=palette().subtle)
         lines = [sep]
         for row in visible:
             lines.append(Text.from_markup(row))
-        lines += [sep, Text.from_markup(f"  [dim]{self._status}[/dim]")]
+        tone = style(self._status_tone) if self._status_tone else Style()
+        status = Text("  ")
+        status.append(self._status, style=tone + Style(dim=True))
+        lines += [sep, status]
         return Group(*lines)
+
+    def _set_status(self, text: str, tone: str = "") -> None:
+        self._status = text
+        self._status_tone = tone
 
     def handle_key(self, key: Key, ch: str) -> bool:
         if self._state == _State.EDIT:
@@ -134,7 +146,7 @@ class ConfigMenuOverlay(Overlay):
             case Key.ESC:
                 self._state = _State.NAVIGATE
                 self._edit_buf = ""
-                self._status = "↑↓ navigate   Enter edit/expand   s save   Esc close"
+                self._set_status("↑↓ navigate   Enter edit/expand   s save   Esc close")
             case Key.ENTER:
                 self._commit_edit()
                 self._state = _State.NAVIGATE
@@ -153,10 +165,11 @@ class ConfigMenuOverlay(Overlay):
             ]
         from rich.markup import escape as _e
 
+        p, g = palette(), glyphs()
         rows: list[str] = []
         si_cur, fi_cur = self._cursor
         for si, section in enumerate(self._sections):
-            icon = "▼" if section.expanded else "▶"
+            icon = g.down if section.expanded else g.right
             focused = si == si_cur and fi_cur == -1
             row = (
                 f"  {'[reverse]' if focused else ''}[bold]{icon} {section.name}[/bold]"
@@ -166,11 +179,11 @@ class ConfigMenuOverlay(Overlay):
             if section.expanded:
                 for fi, field in enumerate(section.fields):
                     foc = si == si_cur and fi == fi_cur
-                    ind = "▶" if foc else " "
-                    chg = "[yellow]●[/yellow] " if field.changed else "  "
+                    ind = g.bar if foc else " "
+                    chg = f"[{p.warning}]{g.bullet}[/] " if field.changed else "  "
                     val = str(field.value)[:30]
                     if foc and self._state == _State.EDIT:
-                        val = self._edit_buf + "█"
+                        val = self._edit_buf + g.cursor
                     rows.append(
                         f"  {'[reverse]' if foc else ''}{ind} {chg}"
                         f"{_e(field.label):<24}{_e(val)}"
@@ -220,7 +233,7 @@ class ConfigMenuOverlay(Overlay):
         if field and field.editable:
             self._edit_buf = str(field.value)
             self._state = _State.EDIT
-            self._status = "Type new value  Enter confirm  Esc cancel"
+            self._set_status("Type new value  Enter confirm  Esc cancel")
 
     def _collapse(self) -> None:
         si, fi = self._cursor
@@ -238,13 +251,13 @@ class ConfigMenuOverlay(Overlay):
             new_val = field.field_type(self._edit_buf)
             object.__setattr__(field, "value", new_val)
             object.__setattr__(field, "changed", True)
-            self._status = f"[green]✓[/green] {field.label} updated (press s to save)"
+            self._set_status(f"{glyphs().ok} {field.label} updated (press s to save)", "success")
         except (ValueError, TypeError):
-            self._status = f"[red]Invalid value for {field.field_type.__name__}[/red]"
+            self._set_status(f"Invalid value for {field.field_type.__name__}", "danger")
 
     def _save(self) -> None:
         if self._cfg is None:
-            self._status = "[red]No config loaded[/red]"
+            self._set_status("No config loaded", "danger")
             return
         saved = 0
         for section in self._sections:
@@ -257,4 +270,4 @@ class ConfigMenuOverlay(Overlay):
                             saved += 1
                         except Exception:  # noqa: BLE001
                             pass
-        self._status = f"[green]✓ Saved {saved} field(s)[/green]"
+        self._set_status(f"{glyphs().ok} Saved {saved} field(s)", "success")

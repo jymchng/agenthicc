@@ -1,0 +1,11 @@
+── compact ──
+  @src/app.py
+  ! @docs/missing.md not found
+
+── normal ──
+  @src/app.py
+  ! @docs/missing.md not found
+
+── verbose ──
+  @src/app.py
+  ! @docs/missing.md not found

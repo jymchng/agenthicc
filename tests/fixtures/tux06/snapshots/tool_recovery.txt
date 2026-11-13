@@ -1,0 +1,10 @@
+── compact ──
+Tool execution was interrupted.
+
+
+── normal ──
+Tool execution was interrupted.
+
+
+── verbose ──
+Tool execution was interrupted.

@@ -432,7 +432,7 @@ async def test_peek_shows_progress_under_the_row(store: BackgroundStore, tmp_pat
         {"kind": "text", "payload": {"text": "I changed the retry window. Next I run the tests."}},
         {
             "kind": "tool_complete",
-            "payload": {"name": "bash", "args_str": "pytest -q", "success": True},
+            "payload": {"name": "bash", "summary": "pytest -q", "success": True},
         },
     )
     hub = await _open(store, tmp_path)

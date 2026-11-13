@@ -375,6 +375,31 @@ def _cmd_theme(ctx: CommandContext) -> bool:
     return True
 
 
+def _cmd_details(ctx: CommandContext) -> bool:
+    """``/details`` cycles the tool detail level; ``/details LEVEL`` sets it (TUX-06).
+
+    The level lasts for the session and applies to the next tool call: rows
+    already printed stay as they are, so the scrollback remains append-only.
+    """
+    from agenthicc.tui.workspace.appender import (
+        TOOL_DETAIL_LEVELS,
+        session_tool_detail,
+        set_session_tool_detail,
+    )
+
+    requested = ctx.args.strip().lower()
+    if requested and requested not in TOOL_DETAIL_LEVELS:
+        ctx.console.print(f"/details takes one of: {', '.join(TOOL_DETAIL_LEVELS)}", markup=False)
+        return True
+    if not requested:
+        current = session_tool_detail() or ctx.config.ui.tool_detail
+        index = TOOL_DETAIL_LEVELS.index(current) if current in TOOL_DETAIL_LEVELS else 0
+        requested = TOOL_DETAIL_LEVELS[(index + 1) % len(TOOL_DETAIL_LEVELS)]
+    set_session_tool_detail(requested)
+    ctx.console.print(f"Tool detail: {requested}", markup=False)
+    return True
+
+
 def _cmd_subagents(ctx: CommandContext) -> bool:
     """The turn's subagents and the session's earlier ones (AGX-08 §5.2)."""
 
@@ -881,8 +906,26 @@ def _cmd_skills(ctx: CommandContext) -> bool:
 
 
 def _cmd_status(ctx: CommandContext) -> bool:
-    ctx.console.print(f"  [dim]Session:[/dim] {ctx.session_id or '(new)'}")
-    ctx.console.print(f"  [dim]Model:[/dim] {ctx.model or '(unknown)'}")
+    """Print the session's identity, model, usage and files (TUX-02 §2.2).
+
+    The session ID, directory and usage left the status line; this is where
+    they are, and where an absent value (cost, tokens) is explained.
+    """
+    import time
+
+    from rich.markup import escape
+
+    if ctx.app_state is None:
+        rows = [("Session", ctx.session_id or "not saved yet"), ("Model", ctx.model or "unknown")]
+    else:
+        from agenthicc.tui.statusline import status_report
+
+        rows = status_report(ctx.app_state)
+    # Transcript times are local ``HH:MM``; the zone is shown here (TUX-06 §2.5).
+    rows = [*rows, ("Time zone", time.strftime("%Z %z"))]
+    width = max(len(label) for label, _ in rows) + 1
+    for label, value in rows:
+        ctx.console.print(f"  [dim]{label + ':':<{width}}[/dim] {escape(value)}")
     return True
 
 
@@ -1611,6 +1654,14 @@ BUILTIN_COMMANDS: list[Command] = [
         handler=_cmd_theme,
     ),
     Command(
+        name="/details",
+        group="Configuration",
+        description="Cycle tool detail: compact, normal, verbose",
+        argument_hint="[compact|normal|verbose]",
+        busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
+        handler=_cmd_details,
+    ),
+    Command(
         name="/config",
         group="Configuration",
         description="Open configuration editor",
@@ -1680,7 +1731,7 @@ BUILTIN_COMMANDS: list[Command] = [
     Command(
         name="/status",
         group="Session",
-        description="Show running agents and their tasks",
+        description="Show the session, model, mode, usage, context and log paths",
         busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
         handler=_cmd_status,
     ),

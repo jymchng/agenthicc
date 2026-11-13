@@ -645,16 +645,22 @@ def test_tui_routing_workflow_commands_and_skill_reload(
     assert ctx.cmd_registry.get("/coverage") is None
 
 
-def test_queued_plain_text_is_claimed_at_tool_boundary_but_commands_wait() -> None:
+def test_only_interjections_are_claimed_at_a_tool_boundary() -> None:
+    """TUX-04 §2.6: Enter queues for after the turn; Ctrl+Enter interjects."""
     session, _ctx, _workspace, _input = _make_session()
 
-    session._msg_queue = ["follow-up"]
-    assert session._next_queued_message() == "follow-up"
-    assert session._msg_queue == []
-
-    session._msg_queue = ["/workflow demo", "another follow-up"]
+    session._msg_queue.append("follow-up")
     assert session._next_queued_message() is None
-    assert session._msg_queue == ["/workflow demo", "another follow-up"]
+    assert session._msg_queue.texts() == ["follow-up"]
+
+    session._msg_queue.append("look at the tests too", interject=True)
+    assert session._next_queued_message() == "look at the tests too"
+    assert session._msg_queue.texts() == ["follow-up"]
+
+    session._msg_queue.clear()
+    session._msg_queue.append("/workflow demo", interject=True)
+    assert session._next_queued_message() is None
+    assert session._msg_queue.texts() == ["/workflow demo"]
 
 
 def test_tui_reload_tools_replaces_session_tools_and_workflow_config(
@@ -812,7 +818,7 @@ async def test_tui_queue_and_interrupt_paths() -> None:
     session._agent_task = asyncio.current_task()  # a live task for queue behavior
     session._msg_queue.clear()
     await session.handle_send(SendMessageCommand(text="queued"))
-    assert session._msg_queue == ["queued"]
+    assert session._msg_queue.texts() == ["queued"]
     ctx.app_state.conversation.notification.set(None)
 
     async def idle() -> None:
@@ -1122,7 +1128,7 @@ async def test_tui_agent_body_workflow_resume_and_replay_edges(
     session._ctx.app_state.conversation.append_event("turn_start", {"turn_id": "t"})
     await session.agent_task_body("done")
     session._agent_task = None
-    session._msg_queue = ["/unknown"]
+    session._msg_queue.append("/unknown")
     session.advance()
 
     async def raising(*args: object, **kwargs: object) -> None:

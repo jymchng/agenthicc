@@ -482,9 +482,8 @@ After a successful append or insert, the scroll appender renders the durable
 `goal_list_mutated` event as a presentation-only plan update:
 
 ```text
-  ⎿ Plan updated
-    Inserted a goal · position 8 of 13
-    ↳ Current goal continues
+◆ Plan updated · goal 8 of 13, inserted
+  └ the current goal continues
 ```
 
 The workflow API continues to use a zero-based `insert_goal(index=...)`

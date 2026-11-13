@@ -102,7 +102,7 @@ async def test_messages_wait_for_the_runtime_then_run_in_order() -> None:
     await session.handle_send(SendMessageCommand(text="second"))
 
     assert started == []
-    assert session._msg_queue == ["first", "second"]
+    assert session._msg_queue.texts() == ["first", "second"]
     notice = ctx.app_state.conversation.notification.get()
     assert notice is not None and "loading agent runtime" in notice
     assert session._loop_is_idle() is False
@@ -114,7 +114,7 @@ async def test_messages_wait_for_the_runtime_then_run_in_order() -> None:
         await asyncio.sleep(0)
 
     assert started[0] == "first"
-    assert session._msg_queue == ["second"]
+    assert session._msg_queue.texts() == ["second"]
     assert ctx.startup.report("agent_runtime").state is ReadinessState.READY
     assert session._runtime_loading() is False
 
@@ -126,7 +126,7 @@ async def test_read_only_commands_answer_while_the_runtime_loads() -> None:
 
     await session.handle_send(SendMessageCommand(text="/startup"))
 
-    assert session._msg_queue == []
+    assert session._msg_queue.texts() == []
     assert "agent_runtime: loading" in ctx.console.export_text()
     conversation.release.set()
     assert session._runtime_task is not None

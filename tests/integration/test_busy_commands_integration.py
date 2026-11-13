@@ -52,7 +52,7 @@ async def test_slow_agent_run_accepts_usage_immediately_then_releases_fifo_queue
     assert (
         "Usage: input=10 output=4 total=14 cost=$0.1200 state=running" in ctx.console.export_text()
     )
-    assert session._msg_queue == ["second request"]
+    assert session._msg_queue.texts() == ["second request"]
     assert calls == ["first request"]
 
     release.set()
@@ -62,4 +62,4 @@ async def test_slow_agent_run_accepts_usage_immediately_then_releases_fifo_queue
         await second_task
 
     assert calls == ["first request", "second request"]
-    assert session._msg_queue == []
+    assert session._msg_queue.texts() == []

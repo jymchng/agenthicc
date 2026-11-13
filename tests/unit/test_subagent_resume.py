@@ -382,7 +382,7 @@ class TestBackgroundPoolNotice:
     def test_budget_stop_names_the_reason_and_counts_and_asks_for_a_collect(self) -> None:
         notice = self._notice(
             status="stopped",
-            reason="max_tokens_exceeded",
+            reason="max_tool_calls_exceeded",
             total=3,
             succeeded=2,
             failed=1,
@@ -391,7 +391,7 @@ class TestBackgroundPoolNotice:
 
         assert notice == (
             "Background subagent pool pool-1 was stopped by the pool budget: "
-            "max_tokens_exceeded (2/3 succeeded, 1 failed). Its results are not "
+            "max_tool_calls_exceeded (2/3 succeeded, 1 failed). Its results are not "
             'included here: call collect_subagent_results(pool_id="pool-1") to read them.'
         )
 
@@ -543,7 +543,7 @@ class TestCollectSubagentResults:
                 succeeded=1,
                 failed=1,
                 text="partial",
-                budget_exceeded_reason="max_tokens_exceeded",
+                budget_exceeded_reason="max_tool_calls_exceeded",
             )
 
         task = asyncio.create_task(run())
@@ -557,7 +557,7 @@ class TestCollectSubagentResults:
         assert results[0] == results[1] == results[2]
         assert results[0]["status"] == "stopped"
         assert results[0]["ok"] is False
-        assert results[0]["budget_exceeded_reason"] == "max_tokens_exceeded"
+        assert results[0]["budget_exceeded_reason"] == "max_tool_calls_exceeded"
 
     async def test_after_a_restart_a_pool_is_read_from_the_journal(self, tmp_path) -> None:
         from agenthicc.subagents.communication import (

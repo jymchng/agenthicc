@@ -51,7 +51,7 @@ def test_plan_review_stays_single_and_stable_when_animation_is_paused() -> None:
 
 def test_waiting_render_is_stable_when_wall_clock_advances(monkeypatch: pytest.MonkeyPatch) -> None:
     import agenthicc.tui.conversation_store as conversation_store_module
-    from agenthicc.tui.workspace.components import StatusComponent
+    from agenthicc.tui.workspace.components import StatusLine
 
     now = 10.0
     monkeypatch.setattr(conversation_store_module.time, "monotonic", lambda: now)
@@ -61,12 +61,11 @@ def test_waiting_render_is_stable_when_wall_clock_advances(monkeypatch: pytest.M
     app_state.conversation.tick()
     app_state.pending_approval.set(SimpleNamespace(kind="plan_review"))  # type: ignore[arg-type]
 
-    status = StatusComponent(app_state)
+    status = StatusLine(app_state)
     console = Console(force_terminal=False, width=100)
     first = _render_text(console, status.render())
     now = 60.0
     second = _render_text(console, status.render())
 
     assert first == second
-    assert "Waiting for plan approval" in first
-    assert "2s" in first
+    assert "◆ Waiting for you" in first

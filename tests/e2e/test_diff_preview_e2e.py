@@ -36,8 +36,9 @@ async def test_conversation_stream_preserves_summary_and_collapses_large_replace
         appender.unmount()
 
     output = console.export_text()
-    assert "● Update(src/example.py)" in output
-    assert "Added 12 lines, removed 12 lines" in output
+    # TUX-06: one header row with the counts, then the bounded diff.
+    assert output.splitlines()[0] == "● Write src/example.py  +12 −12"
+    assert "Update(" not in output and "Added 12 lines" not in output
     assert output.count("...") == 1
     assert "18 more diff lines" in output
     assert "old 1" in output and "old 3" in output

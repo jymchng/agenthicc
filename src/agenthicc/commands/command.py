@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from agenthicc.schedules.manager import ScheduleManager
     from agenthicc.memory.tool_history import ToolHistoryRecoveryState
     from agenthicc.runners.model_switch import ModelChoice
+    from agenthicc.tui.conversation_store import AppState
 
 __all__ = [
     "COMMAND_GROUPS",
@@ -156,6 +157,8 @@ class CommandContext:
     switch_model: "Callable[[ModelChoice], str] | None" = None
     #: Saves a provider/model as the default in the user configuration (TUX-05).
     save_model: "Callable[[ModelChoice], str] | None" = None
+    #: The TUI's presentation state, for ``/status`` (TUX-02); TUI only.
+    app_state: "AppState | None" = None
 
 
 # A handler takes a CommandContext and returns True if it handled the command.

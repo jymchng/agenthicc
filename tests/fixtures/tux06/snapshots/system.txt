@@ -1,0 +1,10 @@
+── compact ──
+Compacted 12 messages
+
+
+── normal ──
+Compacted 12 messages
+
+
+── verbose ──
+Compacted 12 messages

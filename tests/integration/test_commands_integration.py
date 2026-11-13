@@ -25,15 +25,24 @@ def test_dispatch_status_calls_handler():
     """Dispatching /status returns True (handler exists and executes)."""
     reg = build_builtin_registry()
     disp = CommandDispatcher(reg)
-    ctx = MagicMock()
-    ctx.renderer = None
-    ctx.args = ""
-    ctx.session_id = ""
-    # /status handler imports SlashCommandHandler — mock the renderer so it doesn't crash
-    renderer = MagicMock()
-    ctx.renderer = renderer
+    ctx, console = _status_context()
     result = disp.dispatch("/status", ctx)
     assert result is True
+    assert "Session:" in console.export_text()
+
+
+def _status_context() -> tuple[object, object]:
+    """A real command context with a recording console (no session state)."""
+    from rich.console import Console
+
+    from agenthicc.commands.command import CommandContext
+    from agenthicc.config import AgenthiccConfig
+
+    console = Console(record=True, width=100)
+    ctx = CommandContext(
+        text="/status", args="", model="m", console=console, config=AgenthiccConfig()
+    )
+    return ctx, console
 
 
 # ---------------------------------------------------------------------------
@@ -291,9 +300,7 @@ def test_legacy_completion_registry_dispatches_canonical_builtin():
     from agenthicc.tui.input.completions import build_default_registry
 
     reg = build_default_registry()
-    ctx = MagicMock()
-    ctx.args = ""
-    ctx.session_id = ""
+    ctx, _console = _status_context()
 
     assert CommandDispatcher(reg).dispatch("/status", ctx) is True
 

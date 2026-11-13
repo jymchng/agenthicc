@@ -44,7 +44,6 @@ __all__ = [
 #: Stop reasons a notice may quote; anything else is reported generically.
 _KNOWN_STOP_REASONS = frozenset(
     {
-        "max_tokens_exceeded",
         "max_total_time_s_exceeded",
         "max_cost_usd_exceeded",
         "max_tool_calls_exceeded",

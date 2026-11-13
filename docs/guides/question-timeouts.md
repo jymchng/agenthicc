@@ -15,11 +15,12 @@ agenthicc --set tools.question_timeout_s=180
 ```
 
 Values must be finite and greater than zero. An unbounded value is deliberately
-not supported for the foreground overlay. Background sessions are different:
-nobody is watching them, so their questions wait for the operator unless
-`[background] question_timeout_s` sets a deadline (see
-[Background sessions](background-sessions.md#questions-wait-for-you)). This timeout is independent of provider, agent-turn, HTTP,
-browser, and plugin execution timeouts.
+not supported for the foreground overlay. Background sessions have their own
+deadline, `[background] question_timeout_s`, which also defaults to 300 seconds
+(see [Background sessions](background-sessions.md#questions-wait-for-you)). Set
+it to `0` when hub agents should wait for the operator indefinitely instead of
+continuing with an assumption. This timeout is independent of provider,
+agent-turn, HTTP, browser, and plugin execution timeouts.
 
 ## What happens at the deadline
 

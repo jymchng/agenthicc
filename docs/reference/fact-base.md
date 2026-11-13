@@ -309,7 +309,7 @@ because nothing read them.
 | `SecuritySettings` (2) | `allowed_paths`, `network_allow_list` | `config.py:1393` |
 | `PluginSettings` (1) | `strict_cli_shadow` | `config.py:1399` |
 | `BehaviourSettings` (6) | `resume_transcript_turns`, `resume_transcript_max_events`, `resume_transcript_max_bytes`, `resume_transcript_max_event_bytes`, `composer_max_rows`, `frame_interval_ms` | `config.py:1410` |
-| `UISettings` (5) | `mouse`, `screen_reader`, `reduced_motion`, `theme`, `glyphs` | `config.py` (`[ui]`) |
+| `UISettings` (6) | `mouse`, `screen_reader`, `reduced_motion`, `theme`, `glyphs`, `tool_detail` | `config.py` (`[ui]`) |
 | `CloakBrowserSettings` (15) | `enabled`, `transport`, `cdp_endpoint`, `allowed_domains`, `headless`, `navigation_timeout_s`, `action_timeout_s`, `max_pages`, `max_actions_per_turn`, `max_snapshot_chars`, `max_screenshot_bytes`, `allow_persistent_profiles`, `profile_root`, `license_key_env`, `allow_all_domains` | `config.py:1197` |
 | `PlaywrightSettings` (16) | `enabled`, `transport`, `browser_type`, `browser_channel`, `executable_path`, `allowed_domains`, `headless`, `navigation_timeout_s`, `action_timeout_s`, `max_pages`, `max_actions_per_turn`, `max_snapshot_chars`, `max_screenshot_bytes`, `allow_persistent_profiles`, `profile_root`, `allow_all_domains` | `config.py:1288` |
 | `SkillsSettings` (2) | `install_default_skills`, `default_skill_directory` | `config.py:1558` |

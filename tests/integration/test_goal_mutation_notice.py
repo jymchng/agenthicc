@@ -87,7 +87,7 @@ async def test_goal_flow_mutation_projects_its_committed_event_to_the_tui(
         assert checkpoint.context["fields"]["goal_list_revision"] == 1  # type: ignore[index]
         rendered = output.getvalue()
         assert rendered.count("Plan updated") == 1
-        assert "Added a goal to the end · position 3 of 3" in rendered
+        assert "goal 3 of 3, added at the end" in rendered
     finally:
         conversation.close()
 
@@ -120,8 +120,8 @@ async def test_committed_goal_mutation_event_reaches_tui_once() -> None:
     rendered = output.getvalue()
     assert event is duplicate
     assert rendered.count("Plan updated") == 1
-    assert "Inserted a goal · position 8 of 13" in rendered
-    assert "↳ Current goal continues" in rendered
+    assert "goal 8 of 13, inserted" in rendered
+    assert "└ the current goal continues" in rendered
     assert "opaque" not in rendered
 
 
@@ -149,4 +149,4 @@ def test_replayed_goal_mutation_has_deterministic_presentation() -> None:
     second = render()
     assert first == second
     assert first.count("Plan updated") == 1
-    assert "Added a goal to the end · position 13 of 13" in first
+    assert "goal 13 of 13, added at the end" in first

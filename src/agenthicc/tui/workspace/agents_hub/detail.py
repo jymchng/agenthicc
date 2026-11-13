@@ -110,7 +110,15 @@ def _payload_text(payload: dict[str, object], key: str) -> str:
 
 
 def transcript_line(kind: str, payload: dict[str, object]) -> TranscriptLine | None:
-    """One journal event as a transcript line, or ``None`` for bookkeeping events."""
+    """One journal event as a transcript line, or ``None`` for bookkeeping events.
+
+    Payloads are data (TUX-06): a tool's ``summary`` is plain text, and an
+    older journal is brought to the current shape by the session-log loader's
+    one-way migration first.
+    """
+    from agenthicc.tui.runtime.session_log import migrate_event_payload
+
+    payload = migrate_event_payload(kind, payload)
     if kind == "user_message":
         text = _first_line(_payload_text(payload, "text"))
         return TranscriptLine("you", text) if text else None
@@ -119,7 +127,7 @@ def transcript_line(kind: str, payload: dict[str, object]) -> TranscriptLine | N
         return TranscriptLine("assistant", text) if text else None
     if kind == "tool_complete":
         name = _payload_text(payload, "name") or "tool"
-        args = " ".join(_payload_text(payload, "args_str").split())
+        args = " ".join(_payload_text(payload, "summary").split())
         state = payload.get("state")
         success = payload.get("success", True) is not False
         if state == "waiting":

@@ -204,8 +204,8 @@ async def test_make_questions_tool_exposes_timeout_without_fabricating_answers()
 def test_question_timeout_configuration_defaults_and_loads_from_toml(tmp_path) -> None:
     assert ToolSettings().question_timeout_s == 300.0
     assert ApprovalService(AppState.create())._question_timeout_s == 300.0
-    # AGI-02: a background question waits for the operator unless
-    # [background] question_timeout_s sets a deadline.
+    # AGI-02: the service itself waits without a deadline unless the worker
+    # passes [background] question_timeout_s (300 s by default).
     assert (
         BackgroundApprovalService(
             BackgroundStore(tmp_path / "background"), "session"

@@ -19,3 +19,17 @@ async def settle_frames(workspace: Workspace, timeout: float = 2.0) -> None:
         if time.monotonic() > deadline:
             raise AssertionError("a frame stayed pending")
         await asyncio.sleep(0.002)
+
+
+async def settle_startup(workspace: Workspace, timeout: float = 2.0) -> None:
+    """Wait for the frames startup itself draws, then for the block to go quiet.
+
+    ``Workspace.start`` paints once, and then reads the git branch and its dirty
+    mark in a background task; both publish signals and each publication
+    requests a frame. A test that starts counting frames right after ``start``
+    would count those among the work it meant to watch, so it waits here first.
+    """
+    git_task = getattr(workspace, "_git_task", None)
+    if git_task is not None:
+        await git_task
+    await settle_frames(workspace, timeout)

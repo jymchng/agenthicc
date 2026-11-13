@@ -61,6 +61,7 @@ class Palette:
     text: str
     muted: str
     subtle: str
+    frame: str
     accent: str
     accent_bg: str
     user_bg: str
@@ -79,9 +80,16 @@ class Palette:
     mode_plan: str
     mode_yolo: str
 
+    def get(self, token: str) -> str:
+        """The style string of *token* (``KeyError`` for an unknown token)."""
+        values: dict[str, str] = vars(self)
+        if token not in values:
+            raise KeyError(f"unknown theme token {token!r}")
+        return values[token]
+
     def on(self, token: str) -> str:
         """The token as a background style (``"on #1c1f24"``), or ``"none"``."""
-        value = getattr(self, token)
+        value = self.get(token)
         return "none" if value in ("", "none", "default") else f"on {value}"
 
 
@@ -116,8 +124,12 @@ class Glyphs:
     meter_full: str
     meter_empty: str
     sep: str
+    approx: str
+    """Marks an approximate value, such as partially reported token usage."""
     folder: str
     """A directory row in the ``@`` picker (TUX-05)."""
+    flower: str = "*"
+    """The mark of agenthicc's timing rows (``✾ Worked for 37s``)."""
 
 
 UNICODE_GLYPHS = Glyphs(
@@ -130,7 +142,8 @@ UNICODE_GLYPHS = Glyphs(
     warn="!",
     info="·",
     diamond="◆",
-    spinner=("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"),
+    # The flower agenthicc has always turned while it works (kept by request).
+    spinner=("✿", "❀", "❁", "❃", "✾", "❋", "✽", "❊"),
     rule="─",
     ellipsis="…",
     up="↑",
@@ -143,7 +156,9 @@ UNICODE_GLYPHS = Glyphs(
     meter_full="▰",
     meter_empty="▱",
     sep="·",
+    approx="≈",
     folder="▸",
+    flower="✾",
 )
 
 ASCII_GLYPHS = Glyphs(
@@ -169,6 +184,7 @@ ASCII_GLYPHS = Glyphs(
     meter_full="#",
     meter_empty=".",
     sep="-",
+    approx="~",
     folder=">",
 )
 
@@ -191,6 +207,8 @@ _DARK = Palette(
     text="none",
     muted="#8a8f98",
     subtle="#636a75",
+    #: The composer frame matches the welcome panel's yellow border.
+    frame="yellow",
     accent="#7aa2f7",
     accent_bg="#1f2a44",
     user_bg="#1c1f24",
@@ -214,6 +232,8 @@ _LIGHT = Palette(
     text="none",
     muted="#5c6370",
     subtle="#8c939d",
+    #: Yellow on white is unreadable; the light theme keeps the hue, darkened.
+    frame="#8a6d00",
     accent="#2f5bd3",
     accent_bg="#e3ebff",
     user_bg="#f1f3f5",
@@ -237,6 +257,7 @@ _HIGH_CONTRAST = Palette(
     text="none",
     muted="#d0d0d0",
     subtle="#9a9a9a",
+    frame="#ffe066",
     accent="#7fbfff",
     accent_bg="#00305f",
     user_bg="#202020",
@@ -261,6 +282,7 @@ _ANSI = Palette(
     text="none",
     muted="bright_black",
     subtle="bright_black",
+    frame="yellow",
     accent="blue",
     accent_bg="none",
     user_bg="none",
@@ -323,9 +345,7 @@ def glyphs() -> Glyphs:
 
 def style(token: str, *, bold: bool = False, background: str | None = None) -> Style:
     """The *token* of the active palette as a :class:`Style` (unknown → error)."""
-    if token not in TOKENS:
-        raise KeyError(f"unknown theme token {token!r}")
-    value = getattr(_current.palette, token)
+    value = _current.palette.get(token)
     base = Style.parse(value) if value not in ("", "default") else Style.null()
     if bold:
         base = base + Style(bold=True)
@@ -464,15 +484,18 @@ def background_is_light(rgb: tuple[int, int, int] | None, env: Mapping[str, str]
     return None
 
 
-def _use_ascii(glyph_setting: str, env: Mapping[str, str], screen_reader: bool) -> bool:
+def _use_ascii(glyph_setting: str, encoding: str, screen_reader: bool) -> bool:
+    """ASCII glyphs for a screen reader, on request, or when output is not UTF.
+
+    *encoding* is the encoding text is written in (Rich's ``console.encoding``),
+    the same test Rich uses for its own box characters.  ``TERM`` says nothing
+    reliable about the font: many Unicode-capable terminals report ``linux``.
+    """
     if glyph_setting == "ascii" or screen_reader:
         return True
     if glyph_setting == "unicode":
         return False
-    if env.get("TERM", "") == "linux":
-        return True
-    encoding = (env.get("LC_ALL") or env.get("LC_CTYPE") or env.get("LANG") or "").upper()
-    return bool(encoding) and "UTF-8" not in encoding and "UTF8" not in encoding
+    return not encoding.lower().replace("-", "").startswith("utf")
 
 
 def resolve_theme(
@@ -483,12 +506,15 @@ def resolve_theme(
     screen_reader: bool = False,
     background: tuple[int, int, int] | None = None,
     cwd: Path | None = None,
+    encoding: str = "utf-8",
 ) -> tuple[Theme, tuple[str, ...]]:
     """The theme to start with, plus notices for anything that fell back.
 
     ``NO_COLOR`` (any value) wins over every setting.  ``auto`` uses the
     terminal background (*background*, from OSC 11) or ``COLORFGBG``, else
     ``dark``.  A broken custom theme falls back to ``auto`` with a notice.
+    *encoding* is the output encoding; ``glyphs = "auto"`` uses ASCII when it
+    is not a UTF encoding.
     """
     notices: list[str] = []
     theme: Theme | None = None
@@ -507,5 +533,7 @@ def resolve_theme(
         if theme is None:
             light = background_is_light(background, env)
             theme = BUILTIN_THEMES["light" if light else "dark"]
-    glyph_set = ASCII_GLYPHS if _use_ascii(glyph_setting, env, screen_reader) else UNICODE_GLYPHS
+    glyph_set = (
+        ASCII_GLYPHS if _use_ascii(glyph_setting, encoding, screen_reader) else UNICODE_GLYPHS
+    )
     return theme.with_glyphs(glyph_set), tuple(notices)

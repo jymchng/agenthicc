@@ -7,6 +7,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from agenthicc.tui.cbreak_reader import Key
+from agenthicc.tui.theme import glyphs, palette
 from agenthicc.tui.workspace.overlay import Overlay
 
 if TYPE_CHECKING:
@@ -124,7 +125,7 @@ class LoopJobsOverlay(Overlay):
                 "current" if record.session_id == self._session_id else record.session_id[:12]
             )
             table.add_row(
-                "▶" if index == self._selected else "",
+                Text(glyphs().bar, style=palette().accent) if index == self._selected else "",
                 record.loop_id[:12],
                 record.state.value,
                 format_loop_duration(record.interval_s),
@@ -147,12 +148,15 @@ class LoopJobsOverlay(Overlay):
                 f"[bold]Payload[/bold] {_redacted_preview(selected.payload, limit=220)}"
             )
         if self._confirm_delete and selected is not None:
-            detail += "\n\n[bold yellow]Delete this job permanently? Press Enter/y to confirm or Esc/n to cancel.[/bold yellow]"
+            detail += (
+                f"\n\n[bold][{palette().danger}]Delete this job permanently? "
+                "Press Enter/y to confirm or Esc/n to cancel.[/][/bold]"
+            )
         if self._message:
             detail += f"\n\n[dim]{self._message}[/dim]"
         return Group(
             table,
-            Panel(detail, title="Selected Loop", border_style="cyan"),
+            Panel(detail, title="Selected Loop", border_style=palette().subtle),
             Text(
                 "↑↓/j/k select   PgUp/PgDn page   Home/End   Enter run now   d delete   r refresh   Esc close",
                 style="dim",

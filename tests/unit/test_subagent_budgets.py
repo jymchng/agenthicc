@@ -87,7 +87,6 @@ def _pool(
     *,
     max_tool_calls: int = 1,
     max_iterations: int = 1,
-    max_tokens: int = 10,
     max_total_time_s: float = 1.0,
     on_budget_exceeded: WorkerStopMode = "drain",
     stop_grace_s: float = 0.1,
@@ -102,7 +101,6 @@ def _pool(
         max_workers=1,
         max_tool_calls=max_tool_calls,
         max_iterations=max_iterations,
-        max_tokens=max_tokens,
         max_total_time_s=max_total_time_s,
         on_budget_exceeded=on_budget_exceeded,
         stop_grace_s=stop_grace_s,
@@ -114,7 +112,6 @@ def _pool(
     [
         ("iterations", {"max_iterations": 1}, "max_iterations_exceeded"),
         ("tools", {"max_tool_calls": 1}, "max_tool_calls_exceeded"),
-        ("tokens", {"max_tokens": 10}, "max_tokens_exceeded"),
     ],
 )
 async def test_count_budget_crossings_apply_drain_policy(
@@ -252,7 +249,7 @@ async def test_budget_limited_pool_is_not_cached_as_success() -> None:
         succeeded=1,
         failed=0,
         text="partial pool output",
-        budget_exceeded_reason="max_tokens_exceeded",
+        budget_exceeded_reason="max_tool_calls_exceeded",
     )
 
     with patch(
@@ -264,7 +261,7 @@ async def test_budget_limited_pool_is_not_cached_as_success() -> None:
     fingerprint = _tasks_fingerprint([SubagentTask("t0", "explorer", "inspect")])
     assert result["ok"] is False
     assert result["status"] == "budget_exceeded"
-    assert result["budget_exceeded_reason"] == "max_tokens_exceeded"
+    assert result["budget_exceeded_reason"] == "max_tool_calls_exceeded"
     assert _find_cached_result(conversation, fingerprint) is None
 
 
@@ -277,7 +274,7 @@ async def test_budget_drained_pool_journals_a_stopped_record_with_its_results(
 
     from agenthicc.memory.journal import ConversationJournal
 
-    _prepare_worker(monkeypatch, "tokens")
+    _prepare_worker(monkeypatch, "tools")
     journal = ConversationJournal(Path(str(tmp_path)) / "journal.jsonl")
     pool = SubagentPool(
         [SubagentTask("worker-1", "researcher", "research")],
@@ -287,14 +284,14 @@ async def test_budget_drained_pool_journals_a_stopped_record_with_its_results(
         max_concurrent=1,
         registry=DEFAULT_REGISTRY,
         max_workers=1,
-        max_tokens=10,
+        max_tool_calls=1,
         on_budget_exceeded="drain",
         conversation_journal=journal,
     )
     try:
         result = await pool.run()
 
-        assert result.budget_exceeded_reason == "max_tokens_exceeded"
+        assert result.budget_exceeded_reason == "max_tool_calls_exceeded"
         lifecycle = next(
             record
             for record in journal.fold_subagent_pool_lifecycle()
@@ -302,7 +299,7 @@ async def test_budget_drained_pool_journals_a_stopped_record_with_its_results(
         )
         assert lifecycle["status"] == "stopped"
         assert lifecycle["kind"] == "subagent_pool_stopped"
-        assert lifecycle["reason"] == "max_tokens_exceeded"
+        assert lifecycle["reason"] == "max_tool_calls_exceeded"
         # The drain let the running worker finish; its result is kept.
         assert lifecycle["total"] == 1
         assert lifecycle["succeeded"] == 1
@@ -328,10 +325,7 @@ from agenthicc.subagents.budget import (  # noqa: E402
 @pytest.mark.parametrize(
     ("raw", "field"),
     [
-        ({"tokens": 0}, "tokens"),
-        ({"tokens": -5}, "tokens"),
-        ({"tokens": 1.5}, "tokens"),
-        ({"tokens": True}, "tokens"),
+        ({"tokens": 1_000}, "tokens"),
         ({"cost_usd": 0}, "cost_usd"),
         ({"cost_usd": float("inf")}, "cost_usd"),
         ({"cost_usd": float("nan")}, "cost_usd"),
@@ -348,82 +342,86 @@ def test_malformed_budget_is_refused_naming_the_field(raw: object, field: str) -
     assert str(caught.value).startswith(f"budget.{field}:")
 
 
+def test_a_token_budget_is_refused_because_subagents_have_no_token_limit() -> None:
+    with pytest.raises(BudgetError, match="subagents have no token limit"):
+        parse_budget({"tokens": 50_000})
+
+
+async def test_tokens_never_stop_a_pool(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A worker may use as many tokens as its task needs (operator decision)."""
+    _prepare_worker(monkeypatch, "tokens")
+    pool = _pool()
+    result = await pool.run()
+    assert result.budget_exceeded_reason in ("", None)
+    assert result.succeeded == 1
+
+
 def test_absent_and_partial_budgets_parse() -> None:
     assert parse_budget(None) == PoolBudget()
     assert not parse_budget(None).declared
-    partial = parse_budget({"tokens": 1_000, "cost_usd": None})
-    assert partial == PoolBudget(tokens=1_000)
+    partial = parse_budget({"wall_clock_s": 30, "cost_usd": None})
+    assert partial == PoolBudget(wall_clock_s=30.0)
     assert partial.declared
+    assert set(PoolBudget().to_dict()) == {"cost_usd", "wall_clock_s"}
 
 
 def test_declaration_lowers_operator_limits_and_never_raises_them() -> None:
     lowered = resolve_budget(
-        PoolBudget(tokens=1_000, wall_clock_s=30.0),
-        ceiling=PoolBudget(),
-        operator_tokens=200_000,
-        operator_wall_clock_s=600.0,
+        PoolBudget(wall_clock_s=30.0), ceiling=PoolBudget(), operator_wall_clock_s=600.0
     )
-    assert lowered.limits == PoolBudget(tokens=1_000, cost_usd=None, wall_clock_s=30.0)
-    assert lowered.sources == {"tokens": "declared", "wall_clock_s": "declared"}
+    assert lowered.limits == PoolBudget(cost_usd=None, wall_clock_s=30.0)
+    assert lowered.sources == {"wall_clock_s": "declared"}
 
     raised = resolve_budget(
-        PoolBudget(tokens=900_000, wall_clock_s=7_200.0),
-        ceiling=PoolBudget(),
-        operator_tokens=200_000,
-        operator_wall_clock_s=600.0,
+        PoolBudget(wall_clock_s=7_200.0), ceiling=PoolBudget(), operator_wall_clock_s=600.0
     )
-    assert raised.limits.tokens == 200_000 and raised.limits.wall_clock_s == 600.0
-    assert raised.sources == {"tokens": "operator", "wall_clock_s": "operator"}
+    assert raised.limits.wall_clock_s == 600.0
+    assert raised.sources == {"wall_clock_s": "operator"}
 
 
 def test_declaration_above_the_settings_ceiling_is_clamped_and_reported() -> None:
     effective = resolve_budget(
-        PoolBudget(tokens=50_000, cost_usd=5.0),
-        ceiling=PoolBudget(tokens=10_000, cost_usd=1.0),
-        operator_tokens=200_000,
+        PoolBudget(cost_usd=5.0, wall_clock_s=900.0),
+        ceiling=PoolBudget(cost_usd=1.0, wall_clock_s=60.0),
         operator_wall_clock_s=600.0,
     )
-    assert effective.limits.tokens == 10_000
     assert effective.limits.cost_usd == 1.0
-    assert effective.clamped == {"tokens": 50_000, "cost_usd": 5.0}
-    assert effective.sources["tokens"] == "settings_ceiling"
+    assert effective.limits.wall_clock_s == 60.0
+    assert effective.clamped == {"cost_usd": 5.0, "wall_clock_s": 900.0}
     assert effective.sources["cost_usd"] == "settings_ceiling"
-    assert effective.to_dict()["clamped_from"] == {"tokens": 50_000, "cost_usd": 5.0}
+    assert effective.sources["wall_clock_s"] == "settings_ceiling"
+    assert effective.to_dict()["clamped_from"] == {"cost_usd": 5.0, "wall_clock_s": 900.0}
 
 
 def test_report_names_the_crossed_limit_and_its_source() -> None:
     effective = resolve_budget(
-        PoolBudget(tokens=1_000),
-        ceiling=PoolBudget(),
-        operator_tokens=200_000,
-        operator_wall_clock_s=600.0,
+        PoolBudget(cost_usd=1.0), ceiling=PoolBudget(), operator_wall_clock_s=600.0
     )
     usage = PoolUsage(input_tokens=900, output_tokens=200, calls=3)
 
     report = budget_report(
-        usage, effective, crossed_reason="max_tokens_exceeded", stop_mode="drain"
+        usage, effective, crossed_reason="max_cost_usd_exceeded", stop_mode="drain"
     )
 
     assert report["crossed"] == {
-        "reason": "max_tokens_exceeded",
-        "unit": "tokens",
+        "reason": "max_cost_usd_exceeded",
+        "unit": "cost_usd",
         "source": "declared",
         "stop_mode": "drain",
     }
     assert report["usage"]["total_tokens"] == 1_100  # type: ignore[index]
     digest = budget_digest(
-        usage, effective, crossed_reason="max_tokens_exceeded", stop_mode="drain"
+        usage, effective, crossed_reason="max_cost_usd_exceeded", stop_mode="drain"
     )
     assert digest.startswith("[pool usage] 1,100 tokens (in 900 / out 200), cost unavailable")
-    assert "limits: tokens 1,000 (declared), wall clock 600s (operator)" in digest
-    assert "CROSSED max_tokens_exceeded (declared limit)" in digest
+    assert "limits: cost $1.0000 (declared), wall clock 600s (operator)" in digest
+    assert "tokens 1" not in digest.split("limits:")[1]  # tokens are never a limit
+    assert "CROSSED max_cost_usd_exceeded (declared limit)" in digest
     assert "stop policy (drain)" in digest
 
 
 def test_no_declaration_and_no_crossing_adds_no_digest() -> None:
-    effective = resolve_budget(
-        PoolBudget(), ceiling=PoolBudget(), operator_tokens=200_000, operator_wall_clock_s=600.0
-    )
+    effective = resolve_budget(PoolBudget(), ceiling=PoolBudget(), operator_wall_clock_s=600.0)
     assert budget_digest(PoolUsage(input_tokens=5), effective) == ""
     assert budget_digest(PoolUsage(input_tokens=5), None) == ""
     # An operator ceiling crossing is always reported, declared or not.

@@ -159,9 +159,9 @@ def test_every_command_bound_to_a_default_action_shows_its_key() -> None:
 
 
 def test_a_rebound_key_shows_the_users_key() -> None:
-    keymap = Keymap.build(DEFAULT_ACTIONS, overrides={"agents.open_hub": ("ctrl+y",)})
+    keymap = Keymap.build(DEFAULT_ACTIONS, overrides={"agents.open_hub": ("f6",)})
     rows = {row.value: row for row in _slash(keymap=lambda: keymap).get_matches("", CTX)}
-    assert rows["/agents"].keys == "ctrl+y"
+    assert rows["/agents"].keys == "f6"
 
 
 def test_a_command_rejected_while_busy_is_dimmed_with_the_reason() -> None:

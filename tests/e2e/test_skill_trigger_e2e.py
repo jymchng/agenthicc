@@ -61,10 +61,9 @@ def test_discovered_skill_flows_through_dollar_picker_and_dispatch(
         AppState.create(), CommandBus(), trigger_registry=triggers, cwd=tmp_path
     )
     input_session._buf.set(list("$review"))
-    tail = input_session._find_trigger_tail()
-    assert tail is not None
-    assert tail[0] == "$"
-    assert tail[2] == "review"
+    anchor = input_session._find_trigger_anchor()
+    assert anchor == 0
+    assert input_session._buf.buf[anchor] == "$"
 
     pending: list[str] = []
     context = CommandContext(

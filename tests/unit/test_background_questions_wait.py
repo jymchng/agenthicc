@@ -21,6 +21,7 @@ from agenthicc.background.input_inbox import BackgroundInputInbox
 from agenthicc.background.settings import BackgroundSettings
 from agenthicc.background.worker import BackgroundApprovalService
 from agenthicc.tui.cbreak_reader import Key
+from agenthicc.tui.theme import glyphs
 from agenthicc.tui.workspace.agents_hub import AgentsHub, Tab
 from agenthicc.tui.workspace.agents_hub.prefs import HubPrefs
 
@@ -63,8 +64,12 @@ async def _waiting(store: BackgroundStore, session_id: str) -> None:
     raise AssertionError("the question was never published")
 
 
-def test_the_background_setting_defaults_to_no_deadline() -> None:
-    assert BackgroundSettings().question_timeout_s == 0.0
+def test_the_background_setting_defaults_to_five_minutes() -> None:
+    # AGI-02 amendment: a background question now gets the same five-minute
+    # default as the foreground overlay; 0 still opts into waiting forever.
+    assert BackgroundSettings().question_timeout_s == 300.0
+    assert BackgroundSettings.from_mapping({}).question_timeout_s == 300.0
+    assert BackgroundSettings.from_mapping({"question_timeout_s": 0}).question_timeout_s == 0.0
     assert BackgroundSettings.from_mapping({"question_timeout_s": 60}).question_timeout_s == 60.0
 
 
@@ -136,7 +141,7 @@ async def test_an_expired_question_can_be_answered_late_as_a_message(tmp_path: P
     item_id = await _expired(store, session)
     hub = await _hub(store, tmp_path)
     try:
-        assert "◇ answer late" in _text(hub) and "timed out" in _text(hub)
+        assert f"{glyphs().diamond} answer late" in _text(hub) and "timed out" in _text(hub)
         for key in ((Key.CHAR, "i"), (Key.DOWN, ""), (Key.ENTER, "")):
             hub.handle_key(*key)
             await hub.settle()

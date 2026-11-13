@@ -1,0 +1,8 @@
+── compact ──
+Agent finished.
+
+── normal ──
+Agent finished.
+
+── verbose ──
+Agent finished.

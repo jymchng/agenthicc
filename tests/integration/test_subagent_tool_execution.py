@@ -1026,6 +1026,8 @@ async def test_redriven_turn_replays_a_budget_stopped_pool_with_its_results(
     from agenthicc.config import SubagentSettings
 
     transport = MockTransport()
+    # Two model calls against a one-iteration pool budget (tokens are unlimited).
+    transport.queue_tool_use("not_a_tool", {}, tool_use_id="probe", model="mock-model")
     transport.queue_response(_final("Compatible with the old API.", "final"))
     journal = ConversationJournal(tmp_path / "conversation-journal.jsonl")
     spawn = make_spawn_subagents_tool(
@@ -1033,7 +1035,7 @@ async def test_redriven_turn_replays_a_budget_stopped_pool_with_its_results(
         "mock-model",
         [],
         registry=_registry("not-a-parent-tool"),
-        subagent_settings=SubagentSettings(max_tokens=1),
+        subagent_settings=SubagentSettings(max_iterations=1),
         parent_run_id="parent-run-budget",
         conversation_journal=journal,
     )
@@ -1043,14 +1045,14 @@ async def test_redriven_turn_replays_a_budget_stopped_pool_with_its_results(
     replayed = await spawn(tasks=tasks, timeout_s=30)
 
     assert first["status"] == "budget_exceeded"
-    assert first["budget_exceeded_reason"] == "max_tokens_exceeded"
+    assert first["budget_exceeded_reason"] == "max_iterations_exceeded"
     assert replayed["status"] == "stopped"
     assert replayed["ok"] is False
-    assert replayed["budget_exceeded_reason"] == "max_tokens_exceeded"
+    assert replayed["budget_exceeded_reason"] == "max_iterations_exceeded"
     assert (replayed["total"], replayed["succeeded"], replayed["failed"]) == (1, 1, 0)
     assert "Compatible with the old API." in replayed["results"]
-    # The replay came from the journal: no second provider call was made.
-    assert len(transport.calls) == 1
+    # The replay came from the journal: no further provider call was made.
+    assert len(transport.calls) == 2
     journal.close()
 
 
@@ -1084,12 +1086,24 @@ async def test_malformed_budget_is_refused_before_any_provider_call() -> None:
     transport = MockTransport()
     spawn = _budget_spawn(transport)
 
-    result = await spawn(tasks=_TASKS, timeout_s=30, budget={"tokens": -1})  # type: ignore[operator]
+    result = await spawn(tasks=_TASKS, timeout_s=30, budget={"wall_clock_s": -1})  # type: ignore[operator]
 
     assert result["ok"] is False
     assert result["status"] == "refused"
+    assert result["budget_field"] == "wall_clock_s"
+    assert result["error"].startswith("budget.wall_clock_s:")
+    assert transport.calls == []
+
+
+async def test_a_token_budget_is_refused_because_subagents_have_no_token_limit() -> None:
+    transport = MockTransport()
+    spawn = _budget_spawn(transport)
+
+    result = await spawn(tasks=_TASKS, timeout_s=30, budget={"tokens": 5})  # type: ignore[operator]
+
+    assert result["status"] == "refused"
     assert result["budget_field"] == "tokens"
-    assert result["error"].startswith("budget.tokens:")
+    assert "subagents have no token limit" in result["error"]
     assert transport.calls == []
 
 
@@ -1107,26 +1121,8 @@ async def test_no_budget_keeps_the_digest_unchanged_and_still_reports_usage() ->
     assert "[pool usage]" not in result["results"]
     assert result["usage"]["total_tokens"] == 8  # _final reports 3 in / 5 out
     assert "crossed" not in result["budget"]
-    assert result["budget"]["sources"] == {"tokens": "operator", "wall_clock_s": "operator"}
-
-
-async def test_crossing_a_declared_token_limit_is_reported_with_its_source() -> None:
-    from agenthicc.runners.usage_ledger import UsageLedger
-
-    transport = MockTransport()
-    transport.queue_response(_final("Compatible.", "final"))
-    spawn = _budget_spawn(transport, ledger=UsageLedger("session"))
-
-    result = await spawn(tasks=_TASKS, timeout_s=30, budget={"tokens": 5})  # type: ignore[operator]
-
-    assert result["status"] == "budget_exceeded"
-    assert result["budget_exceeded_reason"] == "max_tokens_exceeded"
-    assert result["budget"]["crossed"]["source"] == "declared"
-    assert result["budget"]["limits"]["tokens"] == 5
-    assert "CROSSED max_tokens_exceeded (declared limit)" in result["results"]
-    assert "limits: tokens 5 (declared)" in result["results"]
-    # The drain let the running worker finish, so its answer is still delivered.
-    assert "Compatible." in result["results"]
+    assert result["budget"]["sources"] == {"wall_clock_s": "operator"}
+    assert "tokens" not in result["budget"]["limits"]  # counted, never limited
 
 
 async def test_a_declaration_above_the_settings_ceiling_is_clamped_and_reported() -> None:
@@ -1138,16 +1134,16 @@ async def test_a_declaration_above_the_settings_ceiling_is_clamped_and_reported(
     spawn = _budget_spawn(
         transport,
         ledger=UsageLedger("session"),
-        settings=SubagentSettings(max_budget=SubagentBudgetCeiling(tokens=1_000)),
+        settings=SubagentSettings(max_budget=SubagentBudgetCeiling(wall_clock_s=60.0)),
     )
 
-    result = await spawn(tasks=_TASKS, timeout_s=30, budget={"tokens": 50_000})  # type: ignore[operator]
+    result = await spawn(tasks=_TASKS, timeout_s=30, budget={"wall_clock_s": 900})  # type: ignore[operator]
 
     assert result["ok"] is True
-    assert result["budget"]["limits"]["tokens"] == 1_000
-    assert result["budget"]["clamped_from"] == {"tokens": 50_000}
-    assert result["budget"]["sources"]["tokens"] == "settings_ceiling"
-    assert "clamped to subagents.max_budget: tokens requested 50000" in result["results"]
+    assert result["budget"]["limits"]["wall_clock_s"] == 60.0
+    assert result["budget"]["clamped_from"] == {"wall_clock_s": 900.0}
+    assert result["budget"]["sources"]["wall_clock_s"] == "settings_ceiling"
+    assert "clamped to subagents.max_budget: wall_clock_s requested 900" in result["results"]
 
 
 async def test_a_cost_budget_is_refused_for_an_unpriced_model_or_without_a_ledger() -> None:
@@ -1195,7 +1191,7 @@ async def test_pool_completed_event_carries_usage_against_limits() -> None:
         processor=_Processor(),  # type: ignore[arg-type]
     )
 
-    await spawn(tasks=_TASKS, timeout_s=30, budget={"tokens": 1_000})  # type: ignore[operator]
+    await spawn(tasks=_TASKS, timeout_s=30, budget={"wall_clock_s": 120})  # type: ignore[operator]
 
     completed = next(
         event.payload  # type: ignore[attr-defined]
@@ -1203,8 +1199,8 @@ async def test_pool_completed_event_carries_usage_against_limits() -> None:
         if event.event_type == "SubagentPoolCompleted"  # type: ignore[attr-defined]
     )
     assert completed["budget"]["usage"]["total_tokens"] == 8
-    assert completed["budget"]["limits"]["tokens"] == 1_000
-    assert completed["budget"]["sources"]["tokens"] == "declared"
+    assert completed["budget"]["limits"]["wall_clock_s"] == 120.0
+    assert completed["budget"]["sources"]["wall_clock_s"] == "declared"
 
 
 async def test_backgrounding_without_a_supervisor_is_refused_and_stops_the_pool(

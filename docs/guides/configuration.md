@@ -279,7 +279,7 @@ max_active_pools = 16       # process-wide active-pool ceiling
 max_workers = 32            # maximum workers admitted by one pool
 max_tool_calls = 256        # aggregate tool-call budget per pool
 max_iterations = 128        # aggregate model-iteration budget per pool
-max_tokens = 200000         # aggregate token budget per pool
+                            # (no token budget: subagents have no token limit)
 max_total_time_s = 600.0    # pool wall-clock budget
 on_budget_exceeded = "drain" # abort | drain
 stop_grace_s = 5.0          # cleanup grace for cancelled workers
@@ -581,7 +581,17 @@ resume_transcript_max_event_bytes = 16384
 the colour theme and glyph set (TUX-01): `theme` (`"auto"`, `"dark"`,
 `"light"`, `"high-contrast"`, `"ansi"` or a custom theme name) and `glyphs`
 (`"auto"`, `"unicode"` or `"ascii"`); see
-[themes and glyphs](tui.md#themes-and-glyphs). Key bindings
+[themes and glyphs](tui.md#themes-and-glyphs). The prompt's frame and the
+status line (TUX-02) are set by `composer_frame` (`"rules"`, the default,
+which looks like Claude Code's input panel, or `"box"`) and by `[ui.statusline] command`, a command whose output replaces
+part of the status line; a project file may set the command only once it is
+trusted (`agenthicc trust add <file>`). See
+[a user status line](tui.md#a-user-status-line).
+`tool_detail` (TUX-06) sets how
+much of each tool call the transcript shows: `"compact"` (the default, one row
+per call; failures show their last lines), `"normal"` (plus a four-line preview
+of reads and commands) or `"verbose"` (the whole bounded output); `/details`
+changes it for the session, see [tool rows](tui.md#tool-rows). Key bindings
 live in their own file, `~/.agenthicc/keybindings.toml`
 ([key bindings](tui.md#key-bindings)).
 

@@ -5,18 +5,17 @@ Public API
 render_file_diff(path, old_lines, new_lines, *, context, language, operation)
     → Rich renderable (Group)
 
-Visual output
--------------
-● Update(src/path/to/file.py)
-└─ Added 1 line, removed 1 line
+Visual output (TUX-06)
+----------------------
+● Edit src/path/to/file.py  +1 −1
+  264     # context line
+  267 -   mode_line = _fit(f"  [dim]{build_mode_str(mode)}[/dim]", cols)
+  267 +   mode_line = _fit(f"  {build_mode_str(mode)}", cols)
+  268
+  ...     12 more diff lines
 
-264     # context line
-265     from agenthicc.tui.runtime.mode_manager import build_mode_str
-266     mode = self._state.active_mode()
-267 -   mode_line = _fit(f"  [dim]{build_mode_str(mode)}[/dim]", cols)
-267 +   mode_line = _fit(f"  {build_mode_str(mode)}", cols)
-268
-269     # next context line
+One header row, then at most ``max_rows`` table rows (20 in the transcript
+unless the tool detail level is ``verbose``).
 """
 
 from __future__ import annotations
@@ -145,44 +144,32 @@ def _word_spans(
 # ── header / summary ──────────────────────────────────────────────────────────
 
 
-def _header(path: str, operation: str) -> Text:
+def _header(path: str, operation: str, counts: Text) -> Text:
+    """``● Edit src/app/main.py  +12 −3``: the quiet one-row edit header."""
     p, g = palette(), glyphs()
-    return Text.assemble(
-        (f"{g.bullet} ", p.success),
-        (f"{operation}(", "bold"),
-        (path, f"{p.accent} underline"),
-        (")", "bold"),
+    header = Text.assemble(
+        (f"{g.bullet} ", p.muted),
+        (operation, f"bold {p.text}"),
+        " ",
+        (path, p.text),
     )
+    if counts.plain:
+        header.append("  ")
+        header.append_text(counts)
+    return header
 
 
-def _create_summary(n_lines: int) -> Text:
-    word = "line" if n_lines == 1 else "lines"
-    return Text.assemble(
-        (f"{glyphs().elbow}{glyphs().rule} ", "dim"),
-        (f"Created {n_lines} {word}", palette().success),
-    )
-
-
-def _summary(n_added: int, n_removed: int) -> Text:
-    p, g = palette(), glyphs()
-    parts: list[tuple[str, str]] = [(f"{g.elbow}{g.rule} ", "dim")]
-    if n_added:
-        word = "line" if n_added == 1 else "lines"
-        parts.append((f"Added {n_added} {word}", p.success))
-    if n_added and n_removed:
-        parts.append((", ", "dim"))
-    if n_removed:
-        word = "line" if n_removed == 1 else "lines"
-        parts.append((f"removed {n_removed} {word}", p.danger))
+def _counts(n_added: int, n_removed: int) -> Text:
+    p = palette()
     if not n_added and not n_removed:
-        parts.append(("no changes", "dim"))
-    return Text.assemble(*parts)
+        return Text("no changes", style=p.muted)
+    return Text.assemble((f"+{n_added}", p.diff_add), " ", (f"−{n_removed}", p.diff_del))
 
 
 # ── table rows ────────────────────────────────────────────────────────────────
 
 
-def _context_row(table: Table, lineno: int, hl: Text) -> None:
+def _context_row(table: _Rows, lineno: int, hl: Text) -> None:
     table.add_row(
         Text(str(lineno), style=palette().muted),
         Text(" "),
@@ -190,7 +177,7 @@ def _context_row(table: Table, lineno: int, hl: Text) -> None:
     )
 
 
-def _gap_row(table: Table) -> None:
+def _gap_row(table: _Rows) -> None:
     table.add_row(
         Text(glyphs().ellipsis, style="dim"),
         Text(" "),
@@ -199,7 +186,7 @@ def _gap_row(table: Table) -> None:
 
 
 def _del_row(
-    table: Table,
+    table: _Rows,
     lineno: int,
     raw: str,
     hl: Text,
@@ -221,7 +208,7 @@ def _del_row(
 
 
 def _add_row(
-    table: Table,
+    table: Table | _Rows,
     lineno: int,
     raw: str,
     hl: Text,
@@ -245,7 +232,25 @@ def _add_row(
 _ChangeRow = tuple[str, int, str, Text, str | None]
 
 
-def _omitted_row(table: Table, count: int) -> None:
+class _Rows:
+    """Collects table rows so the preview can be capped at ``max_rows``."""
+
+    def __init__(self) -> None:
+        self.rows: list[tuple[tuple[Text, Text, Text], str | None]] = []
+
+    def add_row(self, number: Text, marker: Text, code: Text, style: str | None = None) -> None:
+        self.rows.append(((number, marker, code), style))
+
+    def into(self, table: Table, max_rows: int | None) -> None:
+        shown = self.rows if max_rows is None else self.rows[:max_rows]
+        for cells, style in shown:
+            table.add_row(*cells, style=style)
+        hidden = len(self.rows) - len(shown)
+        if hidden > 0:
+            _omitted_row(table, hidden)
+
+
+def _omitted_row(table: Table | _Rows, count: int) -> None:
     """Add the marker used when a long changed block is abbreviated."""
     table.add_row(
         Text("...", style="dim"),
@@ -254,7 +259,7 @@ def _omitted_row(table: Table, count: int) -> None:
     )
 
 
-def _render_change_row(table: Table, row: _ChangeRow) -> None:
+def _render_change_row(table: _Rows, row: _ChangeRow) -> None:
     kind, lineno, raw, hl, pair_raw = row
     if kind == "delete":
         _del_row(table, lineno, raw, hl, pair_raw)
@@ -263,7 +268,7 @@ def _render_change_row(table: Table, row: _ChangeRow) -> None:
 
 
 def _render_change_block(
-    table: Table,
+    table: _Rows,
     changes: Sequence[Opcode],
     old_lines: list[str],
     new_lines: list[str],
@@ -440,6 +445,7 @@ def render_file_diff(
     context: int = 3,
     language: str = "python",
     operation: str = "Update",
+    max_rows: int | None = None,
 ) -> "RenderableType":
     """Render a GitHub-style diff between *old_lines* and *new_lines*.
 
@@ -454,7 +460,10 @@ def render_file_diff(
     language:
         Pygments language name for syntax highlighting.
     operation:
-        Verb shown in the header bullet (``"Update"``, ``"Create"``, …).
+        Verb shown in the header bullet (``"Edit"``, ``"Write"``, …).
+    max_rows:
+        Most table rows shown; the rest become one omission row.  ``None``
+        shows the whole bounded diff.
     """
     sm = difflib.SequenceMatcher(None, old_lines, new_lines, autojunk=False)
     opcodes = sm.get_opcodes()
@@ -497,10 +506,7 @@ def render_file_diff(
         old_hl = dict(enumerate(_highlight_block(old_lines, language)))
         new_hl = dict(enumerate(_highlight_block(new_lines, language)))
 
-    table = Table.grid(padding=(0, 1))
-    table.add_column(justify="right", no_wrap=True)  # line number
-    table.add_column(justify="center", no_wrap=True)  # +/-
-    table.add_column(no_wrap=False)  # code
+    table = _Rows()
 
     if not (n_added or n_removed):
         # Identical files — show everything with no markers.
@@ -537,15 +543,14 @@ def render_file_diff(
                     change_block.append((tag, i1, i2, j1, j2))
             flush_change_block(change_block)
 
+    grid = Table.grid(padding=(0, 1))
+    grid.add_column(justify="right", no_wrap=True)  # line number
+    grid.add_column(justify="center", no_wrap=True)  # +/-
+    grid.add_column(no_wrap=False)  # code
+    table.into(grid, max_rows)
     return Group(
-        _header(path, operation),
-        _summary(n_added, n_removed),
-        Text(""),
-        Padding(table, pad=(0, 0, 0, 2)),
-        # Keep the complete Update block separate from the next assistant
-        # response.  The empty item before the table separates the summary
-        # from the rows; this one separates the rows from following output.
-        Text(""),
+        _header(path, operation, _counts(n_added, n_removed)),
+        Padding(grid, pad=(0, 0, 0, 2)),
     )
 
 
@@ -560,12 +565,10 @@ def render_file_create(
 
     Visual output::
 
-        ● Create(src/path/to/file.py)
-        └─ Created 42 lines
-
-        1 + def hello():
-        2 +     return "world"
-        ⋯ +40 more lines
+        ● Create src/path/to/file.py  +42
+          1 + def hello():
+          2 +     return "world"
+          ...   40 more lines
     """
     n_total = len(new_lines)
     preview = new_lines[:max_lines]
@@ -578,21 +581,11 @@ def render_file_create(
 
     for idx, (raw, h) in enumerate(zip(preview, hl, strict=True)):
         _add_row(table, idx + 1, raw, h, None)  # pure add — no del pair
-
-    parts: list[RenderableType] = [
-        _header(path, "Create"),
-        _create_summary(n_total),
-        Text(""),
-        Padding(table, pad=(0, 0, 0, 2)),
-    ]
     if n_total > max_lines:
-        parts.append(
-            Padding(
-                Text.assemble(
-                    (f"{glyphs().ellipsis} ", "dim"),
-                    (f"+{n_total - max_lines} more lines", f"dim {palette().diff_add}"),
-                ),
-                pad=(0, 0, 0, 2),
-            )
+        table.add_row(
+            Text("...", style="dim"),
+            Text(" "),
+            Text(f"{n_total - max_lines} more lines", style="dim"),
         )
-    return Group(*parts)
+    counts = Text(f"+{n_total}", style=palette().diff_add)
+    return Group(_header(path, "Create", counts), Padding(table, pad=(0, 0, 0, 2)))

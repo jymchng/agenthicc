@@ -235,9 +235,11 @@ def _decode_key_event(
             return (Key.MODIFIED, _modifier_prefix(ctrl_state) + "tab")
         return (Key.SHIFT_TAB, "") if shift else (Key.TAB, "")
     if vk == _VK_RETURN:
-        if alt:
+        # The console reports Enter's modifiers, so Shift+Enter and Ctrl+Enter
+        # are distinct keys here, as under the kitty protocol (TUX-04).
+        if ctrl or alt:
             return (Key.MODIFIED, _modifier_prefix(ctrl_state) + "enter")
-        return (Key.CTRL_ENTER, "") if ctrl else (Key.ENTER, "")
+        return (Key.SHIFT_ENTER, "") if shift else (Key.ENTER, "")
     mapped = _VK_KEYS.get(vk)
     if mapped is not None:
         prefix = _modifier_prefix(ctrl_state)

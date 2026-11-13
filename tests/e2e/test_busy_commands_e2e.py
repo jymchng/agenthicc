@@ -34,7 +34,7 @@ async def test_input_submit_runs_usage_before_slow_active_task_finishes() -> Non
 
     output = ctx.console.export_text()
     assert "Usage: input=7 output=8 total=15 cost=$0.0050 state=running" in output
-    assert session._msg_queue == ["keep this queued"]
+    assert session._msg_queue.texts() == ["keep this queued"]
     assert all(
         event.kind != "user_message"
         for turn in ctx.app_state.conversation.turns()

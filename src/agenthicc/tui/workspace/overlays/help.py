@@ -9,6 +9,7 @@ if TYPE_CHECKING:
     from rich.console import RenderableType
 
 from agenthicc.tui.cbreak_reader import Key
+from agenthicc.tui.theme import glyphs, palette
 from agenthicc.tui.workspace.overlay import Overlay
 from agenthicc.commands.command import Command
 from agenthicc.commands.registry import UnifiedCommandRegistry
@@ -114,17 +115,18 @@ class HelpOverlay(Overlay):
         from rich.console import Group
         from rich.text import Text
 
+        p, g = palette(), glyphs()
         if not self._rows:
             return Group(
-                Text("─" * 60, style="dim"),
+                Text(g.rule * 60, style=p.subtle),
                 Text("  (no commands registered)", style="dim"),
-                Text("─" * 60, style="dim"),
+                Text(g.rule * 60, style=p.subtle),
             )
 
         # Determine which rows are visible based on scroll offset.
         selected_row = self._cmd_indices[self._cursor_pos] if self._cmd_indices else -1
         visible = self._rows[self._scroll : self._scroll + self._MAX_VISIBLE]
-        sep = Text("─" * 60, style="dim")
+        sep = Text(g.rule * 60, style=p.subtle)
         lines: list[RenderableType] = [sep]
 
         for local_i, row in enumerate(visible):
@@ -135,15 +137,16 @@ class HelpOverlay(Overlay):
             else:
                 # Command row.
                 selected = row_idx == selected_row
-                indicator = "▶" if selected else " "
                 name_col = f"{row.name:<24}"
                 desc_col = (
                     row.description[:36] + "…" if len(row.description) > 36 else row.description
                 )
+                # The selected row: an accent bar on the selected-row background.
                 markup = (
-                    f"  [bold cyan]{indicator} {name_col}[/bold cyan] {desc_col}"
+                    f"[{p.on('accent_bg')}]  [bold][{p.accent}]{g.bar} {name_col}[/][/bold]"
+                    f" {desc_col}[/]"
                     if selected
-                    else f"  [dim]{indicator}[/dim] [cyan]{name_col}[/cyan] {desc_col}"
+                    else f"    [{p.accent}]{name_col}[/] {desc_col}"
                 )
                 lines.append(Text.from_markup(markup))
 
@@ -163,11 +166,12 @@ class HelpOverlay(Overlay):
 
         aliases = ", ".join(cmd.aliases) if cmd.aliases else "(none)"
         arg_hint = cmd.argument_hint or "(none)"
-        sep = Text("─" * 60, style="dim")
+        p = palette()
+        sep = Text(glyphs().rule * 60, style=p.subtle)
 
         lines: list[RenderableType] = [
             sep,
-            Text.from_markup(f"  [bold cyan]{cmd.name}[/bold cyan]"),
+            Text.from_markup(f"  [bold][{p.accent}]{cmd.name}[/][/bold]"),
             Text(""),
             Text.from_markup(f"  {cmd.description}"),
             Text(""),

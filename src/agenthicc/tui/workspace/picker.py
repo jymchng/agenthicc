@@ -130,6 +130,8 @@ class Picker(Generic[T]):
         self.query = query
         self.selected = 0
         self.scroll = 0
+        #: Rows the last :meth:`render` showed (a page, for PageUp/PageDown).
+        self.visible = 0
         self.footer_keys = footer_keys
         self.empty = empty
 
@@ -190,6 +192,7 @@ class Picker(Generic[T]):
             lines.extend(block)
             previous_group = row.group
             last_shown = index
+        self.visible = last_shown - self.scroll + 1
         lines.append(
             self._footer(
                 width,

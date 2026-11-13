@@ -223,7 +223,7 @@ async def test_resumed_tui_replays_transcript_before_accepting_input(
     session._workspace = workspace
     session._input_session = input_session
     session._agent_task = None
-    session._msg_queue = []
+    session._msg_queue = ctx.app_state.conversation.queue
     session._tasks = SupervisedTasks("test tui session")
     session._wire_approval_overlay = lambda: None
     session._start_attention_routing = lambda: None
@@ -270,8 +270,12 @@ async def test_workspace_replay_shows_loading_spinner_and_yields_between_chunks(
     state = AppState.create()
     workspace = Workspace(state, Console(record=True, force_terminal=False))
     observations: list[tuple[bool, int, bool, int]] = []
+    boundaries: list[tuple[float, int]] = []
 
     class RecordingScroll:
+        def replay_boundary(self, *, since: float, events: int) -> None:
+            boundaries.append((since, events))
+
         def replay(self, events, *, continue_group: bool = False) -> None:
             observations.append(
                 (
@@ -283,9 +287,15 @@ async def test_workspace_replay_shows_loading_spinner_and_yields_between_chunks(
             )
 
     workspace.scroll = RecordingScroll()  # type: ignore[assignment]
-    events = [ConversationEvent(str(index), "text", {"text": "history"}) for index in range(130)]
+    events = [
+        ConversationEvent(str(index), "text", {"text": "history"}, 1_000.0 + index)
+        for index in range(130)
+    ]
 
     await workspace.replay_transcript(events)
+
+    # TUX-06: ``replayed from <first event's time> · 130 events`` … ``now``.
+    assert boundaries == [(1_000.0, 130)]  # no closing "now" rule
 
     assert [entry[2] for entry in observations] == [False, True, True]
     assert all(entry[0] is True for entry in observations)

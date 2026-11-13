@@ -1,0 +1,11 @@
+── compact ──
+ERROR Agent turn failed
+Provider returned HTTP 400
+
+── normal ──
+ERROR Agent turn failed
+Provider returned HTTP 400
+
+── verbose ──
+ERROR Agent turn failed
+Provider returned HTTP 400

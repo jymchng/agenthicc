@@ -7,13 +7,14 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from rich.console import Console
 
 from agenthicc.runners.session_conversation import SessionConversation
 from agenthicc.runners.workflow_checkpoint_store import WorkflowCheckpointStore
 from agenthicc.runners.workflow_handle import WorkflowRunHandle
 from agenthicc.runners.workflow_recovery import WorkflowRecoveryCoordinator
-from agenthicc.tui.workspace.components import FooterComponent
+from rich.text import Text
+
+from agenthicc.tui.workspace.components import StatusLine
 from agenthicc.workflows.plugin import PhaseSpec, WorkflowContext, WorkflowPlugin
 
 from tests.unit.test_tui_session_coverage import _make_session
@@ -125,9 +126,9 @@ async def test_latest_checkpoint_resume_rehydrates_selection_before_dispatch(
         assert session._workflow_handle is not None
         assert session._workflow_handle.run_id == "restart-run"
 
-        footer = Console(record=True, width=120)
-        footer.print(FooterComponent(ctx.app_state).render())
-        assert f"⬡ {RecoveredWorkflow.name}" in footer.export_text()
+        status = Text.from_markup(StatusLine(ctx.app_state).markup(200)).plain
+
+        assert f"workflow {RecoveredWorkflow.name}" in status
 
         await asyncio.wait_for(started.wait(), timeout=1)
         await asyncio.sleep(0)

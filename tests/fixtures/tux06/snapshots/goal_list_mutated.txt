@@ -1,0 +1,11 @@
+── compact ──
+◆ Plan updated · goal 3 of 3, added at the end
+  └ the current goal continues
+
+── normal ──
+◆ Plan updated · goal 3 of 3, added at the end
+  └ the current goal continues
+
+── verbose ──
+◆ Plan updated · goal 3 of 3, added at the end
+  └ the current goal continues

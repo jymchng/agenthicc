@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from agenthicc.tui.cbreak_reader import Key
+from agenthicc.tui.theme import glyphs, palette, style
 from agenthicc.tui.workspace.question_form import Question, QuestionForm
 
 if TYPE_CHECKING:
@@ -167,16 +168,22 @@ class AnswerView:
         from rich.console import Console
         from rich.text import Text
 
+        p, g = palette(), glyphs()
         form = self.form
         count = len(form.questions)
         answered = sum(state.answered for state in form.states)
         lines: list[RenderableType] = []
         header = Text(no_wrap=True, overflow="ellipsis")
-        header.append(f" Answer · {self.title or self.item.session_id}", style="bold cyan")
+        header.append(
+            f" Answer · {self.title or self.item.session_id}", style=style("accent", bold=True)
+        )
         if count > 1:
             header.append(f"   question {form.current + 1} of {count}", style="bold")
             header.append(
-                "   " + " ".join("●" if state.answered else "○" for state in form.states),
+                "   "
+                + " ".join(
+                    g.meter_full if state.answered else g.meter_empty for state in form.states
+                ),
                 style="dim",
             )
             header.append(f"  ({answered} answered)", style="dim")
@@ -203,7 +210,7 @@ class AnswerView:
             if self.composer is not None:
                 lines.extend(self.composer.render())
             else:
-                lines.append(Text("   Loading the agent's commands and mentions…", style="yellow"))
+                lines.append(Text("   Loading the agent's commands and mentions…", style=p.info))
             hint = " Enter confirm · Ctrl+J newline · @ mention · / command · Esc back"
         else:
             state = form.state
@@ -216,9 +223,18 @@ class AnswerView:
                 if index == len(form.options()) - 1 and form.typed():
                     preview = " ".join(state.label.split())
                     option = f'Other: "{preview[:40]}{"…" if len(preview) > 40 else ""}"'
-                marker = "▶" if cursor else ("✓" if chosen else " ")
-                style = "reverse" if cursor and not plain else ("" if chosen else "dim")
-                lines.append(Text(f"   {marker} {option}", style=style, no_wrap=True))
+                # The cursor row: an accent bar on the selected-row background (TUX-07).
+                row = Text("   ", no_wrap=True)
+                if cursor:
+                    row.append(g.bar, style=p.accent)
+                else:
+                    row.append(g.ok if chosen else " ")
+                row.append(f" {option}")
+                if cursor and not plain:
+                    row.stylize(p.on("accent_bg"))
+                elif not chosen:
+                    row.stylize("dim")
+                lines.append(row)
             hint = (
                 " ↑↓ option · ←→ question · Enter choose · Ctrl+S send · Esc close"
                 if form.complete

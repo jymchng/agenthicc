@@ -43,6 +43,20 @@ for _git_variable in (
     os.environ.pop(_git_variable, None)
 
 
+# ── terminal environment: the suite always runs on a capable terminal ──────
+
+# Rich reads TERM when a Console is built: ``dumb`` (and an unset TERM in some
+# images) marks the terminal as one that must receive no cursor controls, so
+# ``LiveRegion.interactive`` is False and a frame writes nothing at all. Tests
+# build consoles with ``force_terminal=True`` and then assert on the frames they
+# receive, so a hook, an IDE, a container or a CI image that exports TERM=dumb
+# would fail dozens of them with empty output rather than with a bug. The TUI
+# tests model a capable terminal; nothing here exercises the dumb one (that path
+# takes an explicit ``env=`` mapping, as in ``test_theme.py``).
+if os.environ.get("TERM", "").strip().lower() in {"", "dumb", "unknown"}:
+    os.environ["TERM"] = "xterm-256color"
+
+
 # ── coverage: never combine an empty data file ─────────────────────────────────
 
 

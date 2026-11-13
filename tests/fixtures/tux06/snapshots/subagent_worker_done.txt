@@ -1,0 +1,8 @@
+── compact ──
+✓ [1/2] Reviewer 1  12.4s  Found 4 gaps
+
+── normal ──
+✓ [1/2] Reviewer 1  12.4s  Found 4 gaps
+
+── verbose ──
+✓ [1/2] Reviewer 1  12.4s  Found 4 gaps

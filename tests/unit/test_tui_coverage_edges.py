@@ -17,17 +17,18 @@ from agenthicc.tui.diff_renderer import (
     render_file_diff,
 )
 from agenthicc.tui.input.buffer import InputBuffer
+from agenthicc.tui.input.unified_session import UnifiedInputSession
 from agenthicc.tui.input.capabilities import (
     _CONSUMED,
     _EXIT,
     BackspaceCapability,
     Capability,
     CapabilityResult,
-    ClearCapability,
     CondensedPasteEscapeCapability,
     CtrlCCapability,
     CtrlDCapability,
     CursorCapability,
+    EditingCapability,
     HistoryCapability,
     InsertCapability,
     InterruptCapability,
@@ -41,8 +42,7 @@ from agenthicc.tui.input.capabilities import (
 from agenthicc.tui.input.history import HistoryNavigator
 from agenthicc.tui.input.paste import PasteState
 from agenthicc.tui.reactive import ReactiveProperty, _Observable
-from agenthicc.tui.runtime.replay import ConversationReplayer, load_for_replay
-from agenthicc.tui.runtime import replay as replay_module
+from agenthicc.tui.runtime.replay import ConversationReplayer
 from agenthicc.tui.runtime.session_log import SessionEventLog, register_session
 from agenthicc.tui.welcome import render_welcome
 
@@ -140,6 +140,8 @@ class _FakeSession:
         self.running = False
         self._action: str | None = None
         self._action_rebindable = False
+        self._clear_after_acceptance = False
+        self._picker: object | None = None
 
     def conditions(self) -> frozenset[str]:
         flags = {"running"} if self.running else set()
@@ -147,6 +149,8 @@ class _FakeSession:
             flags.add("paste")
             if self._buf.cursor == self._paste.end:
                 flags.add("paste_at_cursor")
+        elif not self._buf.text:
+            flags.add("empty")
         return frozenset(flags)
 
     async def _dispatch(self, command: object) -> None:
@@ -162,14 +166,19 @@ class _FakeSession:
         self._ctrl_c_count += 1
         return _EXIT if self._ctrl_c_count > 1 else None
 
-    def _find_trigger_tail(self) -> None:
+    def _prepare_submission(self) -> None:
+        UnifiedInputSession._prepare_submission(self)  # type: ignore[arg-type]
+
+    async def _submit_buffer(self, *, commit_history: bool, interject: bool = False) -> None:
+        await UnifiedInputSession._submit_buffer(  # type: ignore[arg-type]
+            self, commit_history=commit_history, interject=interject
+        )
+
+    def _find_trigger_anchor(self) -> int | None:
         return None
 
-    async def _open_trigger_overlay(self, value: str) -> None:
-        self.opened.append(value)
-
-    async def _open_trigger_overlay_with_initial(self, value: list[str]) -> None:
-        self.opened.append("".join(value))
+    def _open_picker(self, anchor: int) -> None:
+        self.opened.append("".join(self._buf.buf[anchor:]))
 
 
 async def _press(
@@ -186,7 +195,7 @@ async def _press(
 async def test_input_capabilities_cover_idle_streaming_and_editing_paths() -> None:
     session = _FakeSession()
     assert await _press(OverlayCapability(), Key.CHAR, "x", session) is False
-    overlay = SimpleNamespace(active=True, handle_key=lambda key, ch: None)
+    overlay = SimpleNamespace(active=True, widget=None, handle_key=lambda key, ch: None)
     session._overlay = overlay
     assert await _press(OverlayCapability(), Key.CHAR, "x", session) is _CONSUMED
     session._overlay = None
@@ -194,7 +203,8 @@ async def test_input_capabilities_cover_idle_streaming_and_editing_paths() -> No
     assert await _press(CtrlCCapability(), Key.CTRL_C, "", session) is _CONSUMED
     assert await _press(CtrlCCapability(), Key.CTRL_C, "", session) is _EXIT
     session._buf.insert("x")
-    assert await _press(CtrlDCapability(), Key.CTRL_D, "", session) is _CONSUMED
+    # Ctrl+D on a non-empty prompt deletes forward (TUX-04), it does not exit.
+    assert await _press(CtrlDCapability(), Key.CTRL_D, "", session) is False
     session._buf.clear()
     assert await _press(CtrlDCapability(), Key.CTRL_D, "", session) is _EXIT
     assert await _press(CtrlDCapability(), Key.CHAR, "", session) is False
@@ -213,7 +223,7 @@ async def test_input_capabilities_cover_idle_streaming_and_editing_paths() -> No
     await _press(CursorCapability(), Key.HOME, "", session)
     await _press(CursorCapability(), Key.END, "", session)
     await _press(BackspaceCapability(), Key.BACKSPACE, "", session)
-    await _press(ClearCapability(), Key.CTRL_U, "", session)
+    await _press(EditingCapability(), Key.CTRL_U, "", session)
     session._buf.set(list("line1\nline2"), cursor=8)
     await _press(CursorCapability(), Key.LEFT, "", session)
     await _press(HistoryCapability(), Key.UP, "", session)
@@ -231,9 +241,9 @@ async def test_input_capabilities_cover_idle_streaming_and_editing_paths() -> No
     session._paste.apply(session._buf, "a\nb\nc\nd", 10)
     await _press(BackspaceCapability(), Key.BACKSPACE, "", session)
     session._buf.set(list("@frag"))
-    session._find_trigger_tail = lambda: ("@", [], "frag")  # type: ignore[method-assign]
-    session._registry = SimpleNamespace(get=lambda _char: SimpleNamespace())
+    session._find_trigger_anchor = lambda: 0  # type: ignore[method-assign]
     await _press(BackspaceCapability(), Key.BACKSPACE, "", session)
+    assert session.opened[-1] == "@fra"
     assert await _press(BackspaceCapability(), Key.CHAR, "", session) is False
 
 
@@ -485,9 +495,9 @@ async def test_trigger_capability_passes_or_opens_registered_trigger() -> None:
 
     session = _FakeSession()
     session._buf.set(list("@frag"))
-    session._find_trigger_tail = lambda: ("@", [], "frag")  # type: ignore[method-assign]
-    session._registry = SimpleNamespace(get=lambda _char: SimpleNamespace())
+    session._find_trigger_anchor = lambda: 0  # type: ignore[method-assign]
     assert await _press(InsertCapability(), Key.CHAR, "x", session) is _CONSUMED
+    assert session.opened == ["@fragx"]
 
 
 @pytest.mark.asyncio
@@ -511,10 +521,9 @@ async def test_registered_trigger_is_literal_when_cursor_is_not_at_buffer_end(
 ) -> None:
     """Home/Left followed by a trigger must not discard the typed character.
 
-    TriggerPickerOverlay represents the active trigger as the editable suffix
-    of the input.  When the user is editing an earlier position, the suffix
-    to the right must remain ordinary input, so the trigger is inserted as a
-    literal instead of being sent to an overlay that cannot preserve it.
+    The picker opens only at the end of the prompt (TUX-04 §2.2): typed while
+    editing an earlier position, a trigger is ordinary text, so the rest of
+    the line never becomes a command or a mention.
     """
     from agenthicc.commands import UnifiedCommandRegistry
     from agenthicc.tui.input.unified_session import UnifiedInputSession
@@ -611,8 +620,8 @@ async def test_slash_still_opens_picker_at_a_valid_end_position(tmp_path: Path) 
 
     assert overlays.active
     assert overlays.widget is not None
-    assert overlays.widget._trigger is not None
-    assert overlays.widget._trigger.char == "/"
+    assert session.picker is overlays.widget
+    assert session.picker.handler.char == "/"
 
 
 @pytest.mark.asyncio
@@ -638,7 +647,7 @@ async def test_unified_input_session_dispatch_and_noninteractive_lifecycle(
     assert "\n" in session._buf.text
     session._ctrl_c_sequence()
     session._ctrl_c_sequence()
-    assert session._find_trigger_tail() is None
+    assert session._find_trigger_anchor() is None
     session._prepare_submission()
     assert session._buf.text == ""
     backend = SimpleNamespace(is_interactive=lambda: False)
@@ -671,10 +680,9 @@ async def test_unified_dispatch_preserves_second_at_in_trigger_picker(tmp_path: 
     assert overlays.active
     await session._dispatch(Key.AT, "")
 
-    picker = overlays.widget
-    assert picker is not None
-    assert picker._trigger is not None
-    assert picker._trigger.fragment == "@"
+    picker = session.picker
+    assert picker is not None and picker is overlays.widget
+    assert picker.fragment == "@"
 
 
 @pytest.mark.asyncio
@@ -735,9 +743,6 @@ def test_session_log_and_replay_round_trip(tmp_path: Path, monkeypatch: pytest.M
         "agenthicc.tui.runtime.session_log._SESSION_INDEX", tmp_path / "sessions" / "index.json"
     )
     monkeypatch.setattr(
-        replay_module, "get_session_log_path", lambda _sid: root / "conversation.jsonl"
-    )
-    monkeypatch.setattr(
         "agenthicc.tui.runtime.session_log.get_session_log_path",
         lambda _sid: root / "conversation.jsonl",
     )
@@ -748,8 +753,10 @@ def test_session_log_and_replay_round_trip(tmp_path: Path, monkeypatch: pytest.M
     log.append(ConversationEvent("e1", "turn_start", {"turn_id": "t1"}, 1.0))
     log.append(ConversationEvent("e2", "text", {"text": "hello"}, 2.0))
     log.close()
-    pairs = load_for_replay(session_id)
-    assert pairs == [("turn_start", {"turn_id": "t1"}), ("text", {"text": "hello"})]
+    pairs = [
+        ("turn_start", {"turn_id": "t1", "agent": "default", "model": ""}, 1.0),
+        ("text", {"text": "hello"}, 2.0),
+    ]
 
     class Signal:
         def __init__(self) -> None:
@@ -761,10 +768,16 @@ def test_session_log_and_replay_round_trip(tmp_path: Path, monkeypatch: pytest.M
     class Store:
         def __init__(self) -> None:
             self.notification = Signal()
-            self.events: list[tuple[str, dict[str, object]]] = []
+            self.events: list[tuple[str, dict[str, object], float | None]] = []
 
-        def append_event(self, kind: str, payload: dict[str, object]) -> None:
-            self.events.append((kind, payload))
+        def append_event(
+            self,
+            kind: str,
+            payload: dict[str, object],
+            event_id: str | None = None,
+            timestamp: float | None = None,
+        ) -> None:
+            self.events.append((kind, payload, timestamp))
 
     async def run_replay() -> Store:
         store = Store()
@@ -772,9 +785,14 @@ def test_session_log_and_replay_round_trip(tmp_path: Path, monkeypatch: pytest.M
         return store
 
     store = asyncio.run(run_replay())
-    assert store.events == pairs
+    start, *replayed = store.events
+    assert replayed == pairs  # original timestamps, migrated payloads; no closing rule
+    assert start[:2] == ("replay_separator", {"edge": "start", "since": 1.0, "events": 2})
     assert "Replay complete" in str(store.notification.value)
-    monkeypatch.setattr(replay_module, "get_session_log_path", lambda _sid: tmp_path / "missing")
+    monkeypatch.setattr(
+        "agenthicc.tui.runtime.session_log.get_session_log_path",
+        lambda _sid: tmp_path / "missing",
+    )
     empty = Store()
     asyncio.run(ConversationReplayer("missing", empty, object()).run())
     assert "No conversation log" in str(empty.notification.value)
@@ -796,7 +814,7 @@ def test_scroll_buffer_appender_renders_event_families(capsys: pytest.CaptureFix
         ConversationEvent("1", "turn_start", {"agent_name": "assistant"}, 1),
         ConversationEvent("2", "user_message", {"text": "hello"}, 2),
         ConversationEvent(
-            "3", "tool_complete", {"name": "read_file", "args_str": "(x)", "output_lines": ["a"]}, 3
+            "3", "tool_complete", {"name": "read_file", "summary": "x", "output_lines": ["a"]}, 3
         ),
         ConversationEvent(
             "4",
@@ -851,5 +869,7 @@ def test_scroll_buffer_appender_renders_event_families(capsys: pytest.CaptureFix
     appender._flush_group_summary()
     appender.print_idle_header()
     appender.unmount()
-    assert "Completed" in console.export_text()
+    rendered = console.export_text()
+    assert "Read x" in rendered and "Completed" not in rendered
+    assert "! @dir could not be read" in rendered
     assert "ERROR" in capsys.readouterr().out

@@ -9,11 +9,12 @@ private fields.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from collections.abc import Callable
 from typing import Protocol
 
 from agenthicc.reactive import Signal
+from agenthicc.tui.theme import TOKENS, glyphs, palette
 
 log = logging.getLogger(__name__)
 
@@ -46,13 +47,23 @@ class _ModeState(Protocol):
     active_mode: Signal["RuntimeMode"]
 
 
+def _default_badge() -> str:
+    return glyphs().prompt * 2
+
+
 @dataclass(frozen=True)
 class RuntimeMode:
-    """A named execution context for the agent."""
+    """A named execution context for the agent.
+
+    *color* is a theme token (``mode_safe``, ``mode_plan``, ``mode_yolo``,
+    ``muted`` …), resolved against the active theme each time the badge is
+    drawn; a mode plugin's own Rich style is used as given.  *badge* comes
+    from the glyph set chosen when the mode is built.
+    """
 
     name: str
-    badge: str = "⏵⏵"
-    color: str = "white"  # Rich color for badge + name
+    badge: str = field(default_factory=_default_badge)
+    color: str = "text"
     description: str = ""
     system_prompt_suffix: str = ""
     blocked_capabilities: frozenset[str] = field(default_factory=frozenset)
@@ -205,8 +216,8 @@ def build_safe_mode(
     """Return the canonical Safe policy for any default-state boundary."""
     return RuntimeMode(
         name="Safe",
-        badge="⊘",
-        color="red",
+        badge=glyphs().ok,
+        color="mode_safe",
         description="Side-effecting actions require explicit approval; reads are allowed.",
         system_prompt_suffix=(
             "## SAFE MODE\n"
@@ -231,8 +242,8 @@ def builtin_mode(
     if name == "Plan":
         return RuntimeMode(
             name="Plan",
-            badge="◈",
-            color="yellow",
+            badge=glyphs().diamond,
+            color="mode_plan",
             description="Read-only planning; side-effecting actions are hard-blocked.",
             system_prompt_suffix=(
                 "## PLAN MODE\n"
@@ -247,8 +258,8 @@ def builtin_mode(
     if name == "Yolo":
         return RuntimeMode(
             name="Yolo",
-            badge="⏵⏵",
-            color="green",
+            badge=glyphs().prompt * 2,
+            color="mode_yolo",
             description="Full automatic mode; all tools are allowed without prompts.",
             default_workflow=default_workflow,
             workflows=workflows,
@@ -325,8 +336,8 @@ def build_default_registry(
     registry.register(
         RuntimeMode(
             name="Replay",
-            badge="⏮",
-            color="dim",
+            badge=glyphs().left,
+            color="muted",
             description="Internal replay state; all tool capabilities are blocked.",
             blocked_capabilities=all_capabilities,
         ),
@@ -393,7 +404,7 @@ def _load_legacy_plugins(
                 RuntimeMode(
                     name=legacy.name,
                     badge=getattr(legacy, "label", legacy.name),
-                    color=getattr(legacy, "colour", "white"),
+                    color=getattr(legacy, "colour", "text"),
                     description=getattr(legacy, "description", ""),
                     system_prompt_suffix=getattr(legacy, "system_patch", ""),
                     default_workflow=defaults.get(legacy.name),
@@ -568,6 +579,14 @@ def phase_mode(
     return manager.resolve(override)
 
 
+def mode_style(mode: RuntimeMode) -> str:
+    """The Rich style of *mode*'s badge: its theme token resolved now."""
+    if mode.color in TOKENS:
+        tokens: dict[str, str] = asdict(palette())
+        return tokens[mode.color]
+    return mode.color
+
+
 def build_mode_str(mode: RuntimeMode) -> str:
-    c = mode.color
-    return f"[{c}]{mode.badge} {mode.name}[/{c}][dim]  (shift+tab to cycle)[/dim]"
+    c = mode_style(mode)
+    return f"[{c}]{mode.badge} {mode.name}[/][dim]  (shift+tab to cycle)[/dim]"

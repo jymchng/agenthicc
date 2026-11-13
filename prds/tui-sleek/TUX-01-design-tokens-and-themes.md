@@ -10,6 +10,74 @@ tags: [tui, design-system, theme, accessibility, color]
 
 # TUX-01: Design tokens, themes and glyphs
 
+## Implementation status
+
+**Core (tux-core).**
+- **Module.** `tui/theme.py` holds the tokens, the five themes, the glyph sets and the active-theme API.
+- **Settings and commands.** `[ui] theme` and `[ui] glyphs`, `/theme` with a live preview, saving the choice, custom themes, and `NO_COLOR`.
+- **Other changes.** The diff tokens, plus `test_theme.py` and the token lint `test_theme_tokens.py`.
+
+**Amendments from operator feedback (2026-11-06):**
+- **Glyph detection.** `glyphs = "auto"` decides from the console's output encoding, as Rich does, and no longer from `TERM`/`LANG`. A Unicode terminal reporting `TERM=linux` had been given ASCII glyphs (`+---+`, `###..`).
+- **The background query.** It sends OSC 11 followed by DA1 and reads with echo off until the DA1 answer arrives (at most 500 ms). The 50 ms version restored echo before a slow reply over SSH arrived, and the terminal printed it as `^[]11;rgb:1414/1717/2929^[\` above the welcome screen. If DA1 never answers, echo stays off until raw mode takes over, and an exit hook restores the original terminal settings. `read_key` swallows late OSC and DA1 replies.
+- **Spinner glyphs.** The spinner is agenthicc's original flower (`✿ ❀ ❁ ❃ ✾ ❋ ✽ ❊`); all of them are present in DejaVu Sans Mono (checked by the font test). The ASCII set keeps `| / - \`.
+
+**Goal 7, wave 1 (branch `tux-w1-tokens`).** These files were migrated and
+removed from `_PENDING` in `tests/unit/test_theme_tokens.py`. Later TUX waves
+do not rewrite them:
+
+- the agents hub: `render.py`, `hub.py` and `answer.py`;
+- `subagent_panel.py`;
+- the overlays: `registry_list`, `subagents`, `terminals`, `schedules`,
+  `loops`, `help`, `config_menu` and `transcript_history`;
+- `runtime/mode_manager.py` and `keymap_table.py`.
+
+`tests/unit/test_theme_migration_tux01.py` switches themes between two renders
+and shows that hub rows, the subagent panel, the mode badge and the list
+selection all take their colours from the theme at render time. It also checks
+that the hub rows and worker rows are pure ASCII with the `ascii` glyph set.
+
+**Amendments to the design:**
+
+- **Mode badges.**
+  - `RuntimeMode.color` now names a theme token: `mode_safe`, `mode_plan` or
+    `mode_yolo`. Replay uses `muted`, and the default is `text`.
+  - `build_mode_str` resolves the token each time it draws, through the new
+    `mode_style`. A mode plugin's own Rich colour is used as it is.
+  - The badges come from the glyph set when the mode is built: Safe `✓`, Plan
+    `◆`, Yolo `❯❯` and Replay `←`. The old `⊘`, `◈`, `⏵⏵` and `⏮` are not in
+    the glyph set.
+- **Hub glyphs that were not in the glyph set.**
+  - An answer-late item keeps the diamond, `◆`, but not bold. It was `◇`.
+  - Saved `○` and shadowed `◌` become `·`; scheduled `◷` becomes `→`.
+  - Invalid `⚠` becomes `!`; untrusted `⊘` becomes a dim `danger` `✗`.
+  - The default agent's `★` becomes `*`, and the unseen marker `•` becomes `●`.
+  - The selection was `▸` on `grey19`. It is now an `accent` `▌` on `accent_bg`.
+- **Subagent and transcript glyphs.**
+  - A pending worker shows `·` (was `◌`); a stopped worker shows a dim `✗` (was `⊘`).
+  - A worker transcript's text events show `·` (was `”`), and its task line shows `→` (was `▸`).
+  - The answer form's progress dots are `▰`/`▱` (were `●`/`○`).
+- **Selection.**
+  - An `accent` bar and `accent_bg`, as in TUX-05 and TUX-07, replace reverse
+    video in: the hub list, the hub's answer form, the focused subagent panel,
+    the command, skill, tool and workflow lists, `/help` and `/history`.
+  - `/config` keeps reverse video. Its section rows have no slot for a bar, so
+    without reverse the focus would vanish under `NO_COLOR`. Its markers are
+    now the `bar` and `down`/`right` glyphs.
+  - The table overlays (terminals, schedules, loops and paused runs) only
+    replace their `▶`/`▸` marker with the `accent` bar.
+- **Colour meanings.**
+  - Delete confirmations in `/schedules` and `/loop` use `danger` (a
+    destructive choice); they were yellow.
+  - Project and source columns are metadata, so they use `muted`; they were cyan.
+  - Panel and table borders and rules use `subtle`.
+  - The hub's diff pager uses `diff_add` and `diff_del`, and `muted` for headers.
+- **Open item.** `background/vocabulary.py` is outside the scanned paths and
+  outside this wave. Its `StatusLook.style` still names colours (`"bold
+  yellow"` and others), so the hub's status column for background sessions is
+  not themed yet. Moving those styles to tokens belongs to whichever wave owns
+  `background/`.
+
 ## 1. Problem
 
 From TUX-00: F1, F2 and F4.
@@ -41,7 +109,8 @@ From TUX-00: F1, F2 and F4.
      | `text` | body text | default fg | default fg |
      | `muted` | secondary text, metadata | `#8a8f98` | `#5c6370` |
      | `subtle` | rules, borders, ghosts | `#3a3f47` | `#d0d4da` |
-     | `accent` | focus, selection, the prompt chevron, links | `#7aa2f7` | `#2f5bd3` |
+     | `frame` | the composer's frame — its rules or box — and the prompt chevron inside it (amendment below) | `yellow` | `#8a6d00` |
+     | `accent` | focus, selection, links | `#7aa2f7` | `#2f5bd3` |
      | `accent_bg` | selected-row background | `#1f2a44` | `#e3ebff` |
      | `user_bg` | the user-message band | `#1c1f24` | `#f1f3f5` |
      | `success` | a confirmed good result | `#9ece6a` | `#2e7d32` |

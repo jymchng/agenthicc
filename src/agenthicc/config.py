@@ -1238,18 +1238,14 @@ class SubagentBudgetCeiling:
 
     Unset fields leave that unit unlimited by this ceiling. A larger
     declaration is clamped down to the ceiling and the clamp is reported; the
-    operator ceilings (``max_tokens``, ``max_total_time_s``) still apply.
+    operator ceiling ``max_total_time_s`` still applies. There is no token
+    ceiling: subagents have no token limit.
     """
 
-    tokens: int | None = None
     cost_usd: float | None = None
     wall_clock_s: float | None = None
 
     def __post_init__(self) -> None:
-        if self.tokens is not None and (
-            isinstance(self.tokens, bool) or not isinstance(self.tokens, int) or self.tokens < 1
-        ):
-            raise ValueError("subagents.max_budget.tokens must be a positive integer")
         for name, value in (("cost_usd", self.cost_usd), ("wall_clock_s", self.wall_clock_s)):
             if value is None:
                 continue
@@ -1281,7 +1277,6 @@ class SubagentSettings:
     max_workers: int = 32
     max_tool_calls: int = 256
     max_iterations: int = 128
-    max_tokens: int = 200_000
     max_total_time_s: float = 600.0
     on_budget_exceeded: Literal["abort", "drain"] = "drain"
     stop_grace_s: float = 5.0
@@ -1335,7 +1330,6 @@ class SubagentSettings:
             ("max_workers", self.max_workers),
             ("max_tool_calls", self.max_tool_calls),
             ("max_iterations", self.max_iterations),
-            ("max_tokens", self.max_tokens),
         ):
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
                 raise ValueError(f"subagents.{name} must be a positive integer")
@@ -1703,6 +1697,8 @@ class BehaviourSettings:
 
 _MOUSE_MODES = ("auto", "on", "off")
 _GLYPH_MODES = ("auto", "unicode", "ascii")
+_COMPOSER_FRAMES = ("box", "rules")
+_TOOL_DETAIL_LEVELS = ("compact", "normal", "verbose")
 
 
 @dataclass(frozen=True)
@@ -1722,16 +1718,36 @@ class UISettings:
     ``high-contrast``, ``ansi``, or a custom theme in ``.agenthicc/themes/``
     (TUX-01). ``NO_COLOR`` overrides it."""
     glyphs: str = "auto"
-    """``auto``, ``unicode`` or ``ascii``; ``auto`` picks ASCII on a non-UTF-8
-    locale or the Linux console (TUX-01)."""
+    """``auto``, ``unicode`` or ``ascii``; ``auto`` picks ASCII only when the
+    terminal output encoding is not UTF (TUX-01)."""
+    composer_frame: str = "rules"
+    """``rules`` (the default) draws a rule above and below the prompt, as
+    Claude Code does, with the session title and mode at the end of the top
+    rule; ``box`` draws a rounded box instead (TUX-02). Narrow terminals always
+    use rules."""
+    statusline_command: str = ""
+    """``[ui.statusline] command``: a shell command whose first line of output
+    replaces the status line's context, model, worker, usage and branch
+    segments (TUX-02). It receives the session state as JSON on stdin, runs at
+    most once a second with a 500 ms timeout, and is ignored in an untrusted
+    project configuration."""
+    tool_detail: str = "compact"
+    """How much of each tool call the transcript shows (TUX-06): ``compact``
+    (one row; failures show their last lines), ``normal`` (plus a four-line
+    preview of reads and commands) or ``verbose`` (the whole bounded output).
+    ``/details`` changes it for the session."""
 
     def __post_init__(self) -> None:
         if self.mouse not in _MOUSE_MODES:
             raise ValueError(f"ui.mouse must be one of: {', '.join(_MOUSE_MODES)}")
+        if self.composer_frame not in _COMPOSER_FRAMES:
+            raise ValueError(f"ui.composer_frame must be one of: {', '.join(_COMPOSER_FRAMES)}")
         if self.glyphs not in _GLYPH_MODES:
             raise ValueError(f"ui.glyphs must be one of: {', '.join(_GLYPH_MODES)}")
         if not self.theme.strip():
             raise ValueError("ui.theme must not be empty")
+        if self.tool_detail not in _TOOL_DETAIL_LEVELS:
+            raise ValueError(f"ui.tool_detail must be one of: {', '.join(_TOOL_DETAIL_LEVELS)}")
 
     @property
     def animated(self) -> bool:
@@ -2096,7 +2112,6 @@ class AgenthiccConfig:
                 "max_budget": {
                     key: value
                     for key, value in (
-                        ("tokens", self.subagents.max_budget.tokens),
                         ("cost_usd", self.subagents.max_budget.cost_usd),
                         ("wall_clock_s", self.subagents.max_budget.wall_clock_s),
                     )
@@ -2779,6 +2794,9 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
         reduced_motion=_as_bool(ui_data.get("reduced_motion"), False),
         theme=_as_str(ui_data.get("theme"), "auto").strip(),
         glyphs=_as_str(ui_data.get("glyphs"), "auto").strip().lower(),
+        composer_frame=_as_str(ui_data.get("composer_frame"), "rules").strip().lower(),
+        statusline_command=_as_str(_section(ui_data.get("statusline")).get("command"), "").strip(),
+        tool_detail=_as_str(ui_data.get("tool_detail"), "compact").strip().lower(),
     )
 
     subagent_data = _section(data.get("subagents"))
@@ -2869,6 +2887,9 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
             tiers[type_name] = SubagentDepthTier(**fields)
         depth_tiers[depth] = tiers
 
+    if "max_tokens" in subagent_data:
+        raise ValueError("subagents.max_tokens was removed: subagents have no token limit")
+
     def _subagent_int(name: str, default: int) -> int:
         raw = subagent_data.get(name, default)
         if isinstance(raw, bool) or not isinstance(raw, int) or raw < 1:
@@ -2887,8 +2908,10 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
     raw_max_budget = subagent_data.get("max_budget", {})
     if not isinstance(raw_max_budget, Mapping):
         raise ValueError("subagents.max_budget must be a table")
+    if "tokens" in raw_max_budget:
+        raise ValueError("subagents.max_budget.tokens was removed: subagents have no token limit")
     unknown_budget_keys = sorted(
-        str(key) for key in raw_max_budget if key not in {"tokens", "cost_usd", "wall_clock_s"}
+        str(key) for key in raw_max_budget if key not in {"cost_usd", "wall_clock_s"}
     )
     if unknown_budget_keys:
         raise ValueError(f"subagents.max_budget.{unknown_budget_keys[0]} is not a budget setting")
@@ -2902,7 +2925,6 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
     if isinstance(collect_wait_max_s, bool) or not isinstance(collect_wait_max_s, (int, float)):
         raise ValueError("subagents.collect_wait_max_s must be a number")
     max_budget = SubagentBudgetCeiling(
-        tokens=raw_max_budget.get("tokens"),
         cost_usd=raw_max_budget.get("cost_usd"),
         wall_clock_s=raw_max_budget.get("wall_clock_s"),
     )
@@ -2922,7 +2944,6 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
         max_workers=_subagent_int("max_workers", 32),
         max_tool_calls=_subagent_int("max_tool_calls", 256),
         max_iterations=_subagent_int("max_iterations", 128),
-        max_tokens=_subagent_int("max_tokens", 200_000),
         max_total_time_s=float(max_total_time_s),
         on_budget_exceeded=cast(Literal["abort", "drain"], on_budget_exceeded),
         stop_grace_s=float(stop_grace_s),
@@ -2970,6 +2991,32 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
 
 # Keep _build_config as an alias for backward compatibility
 _build_config = _dict_to_config
+
+
+def _without_untrusted_commands(layer: dict[str, object], path: Path) -> dict[str, object]:
+    """Drop a project layer's ``[ui.statusline] command`` unless the file is trusted.
+
+    A repository's configuration must not run a command on the user's machine
+    by itself: like a project extension, the status-line command (TUX-02)
+    needs ``agenthicc trust add <file>`` for the file's current content.
+    """
+    ui = layer.get("ui")
+    statusline = ui.get("statusline") if isinstance(ui, dict) else None
+    if not isinstance(ui, dict) or not isinstance(statusline, dict):
+        return layer
+    if "command" not in statusline:
+        return layer
+    from agenthicc.plugins.trust import current_extension_trust
+
+    if current_extension_trust().permits(path, kind="statusline"):
+        return layer
+    return {
+        **layer,
+        "ui": {
+            **ui,
+            "statusline": {key: value for key, value in statusline.items() if key != "command"},
+        },
+    }
 
 
 def load_config(
@@ -3031,11 +3078,18 @@ def load_config(
     if effective_project is not None:
         project_file = Path(effective_project)
         if project_file.is_file():
-            merged = deep_merge(merged, _resolve_extends(project_file))
+            merged = deep_merge(
+                merged, _without_untrusted_commands(_resolve_extends(project_file), project_file)
+            )
     else:
         found_project_file = _find_config_file(PROJECT_CONFIG_CANDIDATES)
         if found_project_file is not None:
-            merged = deep_merge(merged, _load_toml_with_extends(found_project_file))
+            merged = deep_merge(
+                merged,
+                _without_untrusted_commands(
+                    _load_toml_with_extends(found_project_file), found_project_file
+                ),
+            )
 
     # 4. Environment variable overrides (AGENTHICC_*) — override both config files
     if env_overrides:
