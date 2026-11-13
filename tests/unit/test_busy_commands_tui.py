@@ -238,3 +238,50 @@ async def test_queued_command_is_revalidated_when_registry_changes() -> None:
     assert session._msg_queue.texts() == []
     assert "no longer exists" in (ctx.app_state.conversation.notification() or "")
     await _stop(active)
+
+
+def _running_workflow() -> object:
+    """A stand-in for the run handle that a running workflow holds."""
+    from types import SimpleNamespace
+
+    return SimpleNamespace(on_change=None, run_id="run-1", workflow_name="goal_flow")
+
+
+@pytest.mark.asyncio
+async def test_a_message_typed_during_a_workflow_joins_it_at_the_next_tool() -> None:
+    session, _ctx, _workspace, _input = _make_session()
+    ctx_commands = session._ctx.cmd_registry
+    ctx_commands.register(Command("/defer", "Deferred mutation", handler=lambda _ctx: True))
+    active = asyncio.create_task(_live_task())
+    session._agent_task = active
+    session._workflow_handle = _running_workflow()  # type: ignore[assignment]
+
+    await session.handle_send(SendMessageCommand(text="also update the changelog"))
+    await session.handle_send(SendMessageCommand(text="/defer"))
+    await session.handle_send(SendMessageCommand(text="$skill"))
+
+    items = session._ctx.app_state.conversation.queue.items()
+    assert [(item.text, item.interject) for item in items] == [
+        ("also update the changelog", True),
+        ("/defer", False),
+        ("$skill", False),
+    ]
+    # The claim at the tool boundary takes the message, never the commands.
+    assert session._next_queued_message() == "also update the changelog"
+    assert session._next_queued_message() is None
+    assert session._msg_queue.texts() == ["/defer", "$skill"]
+    await _stop(active)
+
+
+@pytest.mark.asyncio
+async def test_a_message_typed_during_a_plain_turn_still_waits_for_its_end() -> None:
+    session, _ctx, _workspace, _input = _make_session()
+    active = asyncio.create_task(_live_task())
+    session._agent_task = active
+
+    await session.handle_send(SendMessageCommand(text="after the turn"))
+
+    items = session._ctx.app_state.conversation.queue.items()
+    assert [(item.text, item.interject) for item in items] == [("after the turn", False)]
+    assert session._next_queued_message() is None
+    await _stop(active)

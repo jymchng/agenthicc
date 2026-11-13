@@ -90,6 +90,13 @@ Amendments to the design:
     `tui/theme.py` from TUX-01, which the integration branch removes
     (`refactor(tui): look palette tokens up without getattr`). TUX-04 adds no
     `getattr` or `hasattr` call.
+11. **Workflows take queued input (operator request).** §2.6's "plain Enter
+    queues it for after the turn" left a message stranded for hours while a
+    workflow such as `goal_flow` ran, because the whole run is one turn. While a
+    workflow handle is live, an ordinary message typed with Enter is queued as an
+    interjection (`at next tool`), exactly as Alt+Enter would; commands and
+    skills still wait for the run to end. Every workflow starts its turns with
+    the session's claim hook (`tests/unit/test_workflow_queued_input_contract.py`).
 
 
 ## 1. Problem

@@ -92,3 +92,62 @@ async def test_an_interjection_is_delivered_at_the_next_tool_boundary(running_pr
     assert "check the lockfile too" in second
     assert "then update the changelog" not in second
     assert session._msg_queue.texts() == ["then update the changelog"]
+
+
+async def test_an_enter_message_joins_a_running_workflow_at_the_next_tool_boundary(
+    running_processor,
+):
+    """A workflow's turn can last hours: Enter must not wait for all of it."""
+    from types import SimpleNamespace
+
+    session, ctx, _workspace, _input = _make_session()
+    ctx.command_bus.register(SendMessageCommand, session.handle_send)
+    session._workflow_handle = SimpleNamespace(  # type: ignore[assignment]
+        on_change=None, run_id="run-1", workflow_name="goal_flow"
+    )
+    composer = UnifiedInputSession(ctx.app_state, ctx.command_bus)
+    composer.set_mode(InputMode.STREAMING)
+    rows_while_queued: list[str] = []
+
+    @tool()
+    async def inspect_item(item: str) -> dict:
+        """Inspect an item before answering the user."""
+        from agenthicc.tui.workspace.queue_rows import queue_rows
+
+        for ch in "also run the linter":
+            await composer._dispatch(Key.CHAR, ch)
+        await composer._dispatch(Key.ENTER, "")
+        rows_while_queued.extend(queue_rows(ctx.app_state, 80))
+        return {"item": item, "status": "ready"}
+
+    mock = MockTransport()
+    mock.queue_tool_use("inspect_item", {"item": "first"})
+    mock.queue_response(
+        Completion(
+            id="c2",
+            model="mock-model",
+            content="Linted.",
+            tool_calls=[],
+            stop_reason="end_turn",
+            usage=TokenUsage(input_tokens=10, output_tokens=5),
+        )
+    )
+    runner = AgentRunnerBase(transport=mock, signals=SignalBus())
+
+    from agenthicc.runners.agent_turn import _run_agent_turn
+
+    turn = asyncio.create_task(
+        _run_agent_turn(
+            "implement goal 3",
+            runner,
+            running_processor,
+            project_plugin_tools=[inspect_item],
+            next_queued_message=session._next_queued_message,
+        )
+    )
+    session._agent_task = turn
+    await turn
+
+    assert any("at next tool" in row for row in rows_while_queued)
+    assert "also run the linter" in _user_texts(list(mock.calls[1].messages))
+    assert session._msg_queue.texts() == []

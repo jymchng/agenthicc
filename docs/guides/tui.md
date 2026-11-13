@@ -424,7 +424,10 @@ with an arrow and `at next tool`. ↑ on an empty prompt selects the newest row
 to edit, Delete or Backspace removes it, Esc returns to the prompt. Messages
 sent with Enter wait for the turn to end and then run in order; Ctrl+Enter or
 Alt+Enter sends an interjection that is added to the running turn at its next
-tool boundary. Commands (`/…`, `$…`) always wait for the turn to end.
+tool boundary. While a workflow runs, which can take hours, a message sent with
+Enter is an interjection too: every workflow takes it at its next tool boundary,
+and the row says `at next tool`. Commands (`/…`, `$…`) always wait for the turn
+or workflow run to end.
 
 ← opens the hub only when the prompt is empty. If the prompt was just emptied
 by Backspace, Ctrl+U or history recall, the first ← says "Press ← again to open

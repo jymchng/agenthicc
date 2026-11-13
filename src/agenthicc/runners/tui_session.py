@@ -3558,8 +3558,10 @@ class TUISession:
         (Ctrl+Enter / Alt+Enter) can be appended safely only after its tool
         results have been committed and before the loop's next model request.
         Messages queued with Enter wait for the turn to end, where
-        ``advance()`` sends them in order; so do slash commands and skills,
-        which are routed locally instead of being sent to the model.
+        ``advance()`` sends them in order, unless a workflow is running: they
+        are then queued as interjections too, since a workflow's turn can last
+        hours. Slash commands and skills always wait for the end of the run;
+        they are routed locally instead of being sent to the model.
         """
         if self._handoff_pending:
             # The tool results are committed synchronously after this call
@@ -5096,9 +5098,15 @@ class TUISession:
                 self._notify_busy_rejected(text, decision.reason)
                 return
             # Shown above the composer until the turn ends, or until the next
-            # tool boundary for an interjection (TUX-04 §2.6).
+            # tool boundary for an interjection (TUX-04 §2.6). A workflow runs
+            # for as long as its goals take, so "after the turn" could be hours
+            # away: while one runs, every message joins it at the next tool
+            # boundary, which is how Claude Code takes input typed mid-turn.
+            # Commands and skills are routed locally and wait for the run to end.
+            is_message = not text.startswith(("/", "$"))
             self._msg_queue.append(
-                text, interject=cmd.interject and not text.startswith(("/", "$"))
+                text,
+                interject=is_message and (cmd.interject or self._workflow_handle is not None),
             )
             if self._runtime_loading():
                 from agenthicc.tui.theme import glyphs
