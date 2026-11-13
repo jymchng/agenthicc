@@ -213,16 +213,19 @@ class EmbeddedComposer:
     # ── output ────────────────────────────────────────────────────────────
 
     def render(self) -> list[RenderableType]:
-        """The open picker, if any, then the prompt."""
+        """The open picker in place of the prompt, else the prompt.
+
+        A picker (or Ctrl+R history search) draws its own prompt line above its
+        rows, exactly as the main workspace shows it instead of the composer;
+        drawing the composer as well would show the input panel twice.
+        """
         from agenthicc.tui.workspace.components import ComposerComponent
 
-        lines: list[RenderableType] = []
         if self.overlay.active:
             rendered = self.overlay.render()
             if rendered is not None:
-                lines.append(rendered)
-        lines.append(ComposerComponent(self.state).render())
-        return lines
+                return [rendered]
+        return [ComposerComponent(self.state).render()]
 
 
 def _answer_excluded() -> tuple[type[object], ...]:

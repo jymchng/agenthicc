@@ -46,7 +46,7 @@ def test_plan_review_stays_single_and_stable_when_animation_is_paused() -> None:
 
     assert app_state.conversation.frame() == frame_before
     assert first == second
-    assert first.count("Plan Review") == 1
+    assert first.count("Approve the plan") == 1
 
 
 def test_waiting_render_is_stable_when_wall_clock_advances(monkeypatch: pytest.MonkeyPatch) -> None:

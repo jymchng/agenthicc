@@ -58,6 +58,7 @@ CONTEXTS = (
     "transcript",
     "subagents",
     "overlay",
+    "dialog",
 )
 
 #: Contexts that inherit another context's actions (after their own): the
@@ -274,8 +275,17 @@ class Keymap:
                             f"{second.name} in {context}"
                         )
         if self.leader is not None:
+            # The leader shadows a plain binding of the same key only where a
+            # two-step binding can start: in a context with one, its parents
+            # and children, and everywhere when ``global`` has one. Elsewhere
+            # (a dialog's Ctrl+T, say) the key keeps its own action.
+            leading = {
+                action.context
+                for action in self.actions
+                if any(key.startswith(LEADER) for key in action.keys)
+            }
             for action in self.actions:
-                if self.leader in action.keys:
+                if self.leader in action.keys and _shadowed(action.context, leading):
                     raise KeymapError(
                         f"{action.name} uses the leader key {display_key(self.leader)}"
                     )
@@ -616,6 +626,13 @@ def _tables(name: str, value: Mapping[str, object]) -> list[tuple[str, dict[str,
         if isinstance(item, dict):
             found.extend(_tables(f"{name}.{key}", item))
     return found
+
+
+def _shadowed(context: str, leading: set[str]) -> bool:
+    """Whether a two-step binding in *leading* contexts can take *context*'s keys."""
+    if "global" in leading or (context == "global" and leading):
+        return True
+    return any(context in _lineage(other) or other in _lineage(context) for other in leading)
 
 
 def _lineage(context: str) -> tuple[str, ...]:

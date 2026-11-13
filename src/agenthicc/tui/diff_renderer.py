@@ -163,7 +163,9 @@ def _counts(n_added: int, n_removed: int) -> Text:
     p = palette()
     if not n_added and not n_removed:
         return Text("no changes", style=p.muted)
-    return Text.assemble((f"+{n_added}", p.diff_add), " ", (f"−{n_removed}", p.diff_del))
+    return Text.assemble(
+        (f"+{n_added}", p.diff_add), " ", (f"{glyphs().minus}{n_removed}", p.diff_del)
+    )
 
 
 # ── table rows ────────────────────────────────────────────────────────────────

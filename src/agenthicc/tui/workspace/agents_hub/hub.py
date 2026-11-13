@@ -3947,7 +3947,9 @@ class AgentsHub:
                 line.truncate(width, overflow="crop")
                 lines.append(line)
         notice = self._status_notice()
-        if notice:
+        # An open composer already shows its own receipt under the input.
+        repeated = self._composer_open and notice == self._composer_receipt
+        if notice and not repeated:
             lines.append(Text(fit(" " + notice, width), style=palette().warning))
         return lines
 

@@ -24,9 +24,9 @@ agent-turn, HTTP, browser, and plugin execution timeouts.
 
 ## What happens at the deadline
 
-The shared `ApprovalService` owns the request deadline. The TUI displays a
-countdown in the Questions overlay, refreshes it in place, and does not append
-one transcript line per second. When the deadline expires, the overlay closes,
+The shared `ApprovalService` owns the request deadline. The questions dialog
+states it once, as its muted reason line ("Answer within 5 min."), with no
+ticking countdown (TUX-07). When the deadline expires, the dialog closes,
 the pending request is cleared, and `ask_user` returns a structured result:
 
 ```json

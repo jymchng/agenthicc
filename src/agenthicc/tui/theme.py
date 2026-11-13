@@ -128,6 +128,8 @@ class Glyphs:
     """Marks an approximate value, such as partially reported token usage."""
     flower: str = "*"
     """The mark of agenthicc's timing rows (``✾ Worked for 37s``)."""
+    minus: str = "-"
+    """The sign in a removed-lines count (``+12 −3``)."""
 
 
 UNICODE_GLYPHS = Glyphs(
@@ -156,6 +158,7 @@ UNICODE_GLYPHS = Glyphs(
     sep="·",
     approx="≈",
     flower="✾",
+    minus="−",
 )
 
 ASCII_GLYPHS = Glyphs(

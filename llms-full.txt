@@ -1091,6 +1091,7 @@ class ApprovalRequest:
     mode_options: tuple[str, ...] = ()
     # … workspace_access, request_id, timeout_s, deadline_at, question_fingerprint
     requester: ApprovalRequester | None = None
+    reason: str = ""
 ```
 
 An approval request is the session-owned handoff from an agent-side wait to a
@@ -1098,7 +1099,16 @@ TUI or headless approval service. `kind="plan_review"` selects the plan review
 overlay. `mode_options` is used by code-plan approval to advertise the
 canonical `Safe` and `Yolo` execution choices; ordinary tool and legacy plan
 review requests leave it empty. `requester` names the subagent worker that
-asked (AGX-08); `None` means the session's own agent.
+asked (AGX-08); `None` means the session's own agent. `reason` is the one
+sentence the dialog shows for why approval is needed (TUX-07):
+`ApprovalGate` sets it from the mode and capabilities with
+`approval_reason(mode_name, capabilities)` ("Safe mode asks before running
+commands."), and `WorkspaceAccessPolicy` from the workspace boundary.
+
+A denied call's tool result is `denial_payload(tool_name, message)`: when the
+user chose "No, and tell the agent what to do instead", `error` ends with
+their text and `user_instructions` carries it. `capability_values(caps)`
+returns the plain capability names of a set that may hold enum members.
 
 ### ApprovalRequester
 
@@ -1114,9 +1124,9 @@ class ApprovalRequester:
 ```
 
 A worker's approvals reach the session's broker through a wrapper that fills
-`requester` and marks the worker's panel row as waiting. The TUI prompt reads
-"executor #1 (executor) wants to run bash", `o` opens the worker's transcript
-first and Esc denies only that call; a background worker stores
+`requester` and marks the worker's panel row as waiting. The TUI dialog's
+badge reads "executor #1 · o open transcript", `o` opens the worker's
+transcript first and Esc denies only that call; a background worker stores
 `requester.to_dict()` in the inbox item's target.
 
 ### ApprovalResponse
@@ -2185,6 +2195,61 @@ The current overlay host maps approval request kinds to overlay classes in
 `runners.tui_session.TUISession`; `PlanApprovalOverlay` is the current plan
 review surface. See `docs/guides/tui.md` for rendering and resize contracts.
 
+### Dialog
+
+```python
+@dataclass(frozen=True)
+class DialogSettings:
+    keymap: Keymap | None = None
+    plain: bool = False                  # [ui] screen_reader: no box drawing
+    mode: str = ""                       # the badge
+    composer: ComposerContext | None = None
+    workspace: WorkspaceScope | None = None   # where approval diffs are read
+    redraw: Callable[[], None] = lambda: None # repaint after an in-dialog composer key
+
+class Dialog:
+    def __init__(self, title: str, *, settings: DialogSettings, badge: str | None = None,
+                 badge_token: str = "", cancel_label: str = "cancel") -> None: ...
+    title: str; reason: str; summary: str
+    options: list[DialogOption]; selected: int; scroll: int
+    conditions: frozenset[str]           # approval, note, details, requester, questions
+    def set_body(self, key: object, factory: Callable[[], list[RenderableType]]) -> None: ...
+    def set_details(self, factory: Callable[[], list[RenderableType]] | None) -> None: ...
+    def handle_key(self, key: Key, ch: str) -> DialogInput: ...
+    def render(self) -> RenderableType: ...
+    def announcement(self) -> str: ...
+```
+
+`agenthicc.tui.workspace.dialog` (TUX-07): the one frame every decision
+overlay composes — `ApprovalOverlay`, `PlanApprovalOverlay` and
+`QuestionsOverlay` keep their names and service contracts and expose it as
+`.dialog`. The title is a verb phrase on the top border ("Run a command",
+"Edit a file", "Approve the plan", "The agent asks"), the badge (the mode, or
+the asking worker) on its right; the body scrolls with `↑ N more`/`↓ N more`;
+one muted reason line; numbered `DialogOption`s; the key legend in the bottom
+border. Width `dialog_width(cols) = clamp(cols - 4, 60, 120)`, centred above
+124 columns; height at most the published overlay viewport (`rows - 6` before
+one). Keys come from the `dialog` keymap context (`DIALOG_ACTIONS` in
+`tui.actions`): `↑↓`/`j k` choose, Enter or `1`–`9` confirm, Esc the safe exit,
+Tab a note, `Ctrl+T` the full details inside the dialog, `[`/`]` and
+PgUp/PgDn scroll, and `y`/`a`/`A`/`n` stay as approval aliases.
+`handle_key` returns a `DialogInput` whose `DialogKey` the overlay acts on.
+`announcement(title, summary, reason, options)` is the screen-reader sentence;
+`render_lines(renderables, width)` renders to styled rows.
+
+`agenthicc.tui.workspace.overlays.approval_body.approval_content(req, scope)`
+returns the `ApprovalContent` (title, summary, body, details) that explains a
+tool call: the whole command (a `cd X &&` prefix shown as "in X"), a unified
+diff against the current file read inside `scope` with `+N -M` per file,
+paths and sizes for delete/move, method/host/path and the allow-list entry for
+network calls, the workspace-scope projection (never raw arguments), and a
+key/value table for anything else. `request_announcement(req)` is the
+sentence the announcer prints when a request opens a dialog.
+`approval_options(req)` lists the four approval choices: Yes; Yes, and allow
+<commands> for the rest of this turn; Yes, and allow <commands> this
+session; No, and tell the agent what to do instead (an `EmbeddedComposer`
+opens in the dialog). `plan_options(req)` lists the plan-review choices.
+
 ### LoopLagMonitor
 
 ```python
@@ -3214,12 +3279,13 @@ numeric string, and `default` otherwise.
 
 `ApprovalRequest.mode_options` advertises canonical execution modes to a
 plan-review overlay. The built-in `code_plan` planner sets it to
-`("Safe", "Yolo")`, so the overlay presents `Approve - Safe` and
-`Approve - YOLO`. `ApprovalResponse.mode` carries the selected mode back to
+`("Safe", "Yolo")`, so the dialog presents `Approve and run in Safe mode` and
+`Approve and run in Yolo mode` (TUX-07), then `Keep planning` and `Reject, with
+feedback`. `ApprovalResponse.mode` carries the selected mode back to
 the planner; the code-plan context stores it as `execute_mode` and applies it
 to every execute-phase turn. Missing or invalid mode values fail closed to
-`Safe`. Legacy plan-review requests omit `mode_options` and retain the
-original approval choices.
+`Safe`. Plan-review requests without `mode_options` offer `Approve`, `Keep planning`
+and `Reject, with feedback`; Tab adds a note to any choice.
 
 ## Workflow authoring — `agenthicc.workflows.create_workflow`
 

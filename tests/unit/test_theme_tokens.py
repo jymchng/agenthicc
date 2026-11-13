@@ -25,9 +25,6 @@ _PENDING: frozenset[str] = frozenset(
         "commands/builtins.py",
         "tui/welcome.py",
         "tui/workspace/appender.py",
-        "tui/workspace/overlays/approval.py",
-        "tui/workspace/overlays/plan_approval.py",
-        "tui/workspace/overlays/questions.py",
     }
 )
 
