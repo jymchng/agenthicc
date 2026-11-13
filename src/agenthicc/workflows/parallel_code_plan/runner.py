@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 
 from agenthicc.background import BackgroundStore, BackgroundSupervisor
 from agenthicc.background.settings import load_background_settings
-from agenthicc.runners.failure_kinds import failure_reason
+from agenthicc.runners.failure_kinds import failure_reason, reported_failure
 from agenthicc.tools.base import ToolLike
 from agenthicc.worktrees.coordinator import ParallelCoordinator
 from agenthicc.worktrees.store import ManifestStore
@@ -135,11 +135,14 @@ class ParallelCodePlanRunner(BaseWorkflowRunner):
             raise
         except Exception as exc:
             # A failed turn reports its own copy, never the provider's text
-            # (TUX-08); the checkpoint classifies the exception itself.
+            # (TUX-08); its exception keeps the status and provider metadata
+            # the checkpoint classifies, and persists only that copy.
             ctx.fail_reason = failure_reason(exc)
             if handle is not None:
                 handle.attach_context(ctx)
-                handle.finalize_failure(exc)
+                handle.finalize_failure(
+                    exc if reported_failure(exc) is not None else ctx.fail_reason
+                )
             raise
 
     async def resume(self, context: object) -> ParallelCodePlanContext:

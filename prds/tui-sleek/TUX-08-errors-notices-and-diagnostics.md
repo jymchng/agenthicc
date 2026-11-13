@@ -1,6 +1,6 @@
 ---
 title: "TUX-08: Errors, notices and diagnostics"
-status: Proposed
+status: Implemented (branch tux-tux08; the status-line display of transient notices is wired by the TUX-02 integrator)
 version: 1.0.0
 date: 2026-11-05
 scope: "a fixed vocabulary of failure kinds for turns and providers with actionable copy; one notice component with severities; transient vs. persistent notices; stray stderr and warnings kept out of the screen; and help text free of internal identifiers"
@@ -10,6 +10,69 @@ tags: [tui, errors, notices, diagnostics, ergonomics]
 ---
 
 # TUX-08: Errors, notices and diagnostics
+
+## Implementation status
+
+Implemented on branch `tux-tux08`. Acceptance criteria 1-7 are covered; the table
+lists each test. The amendments to the design follow it.
+
+| AC | Test |
+|---|---|
+| 1 No key | `tests/unit/test_agent_turn_failure_kinds.py::test_a_missing_key_is_reported_as_missing_credentials_without_sdk_text`; `tests/e2e/test_missing_key_e2e.py` (real CLI, no key: persisted JSONL has `kind` and no SDK text; the event renders as `✗ No API key for anthropic.` and its action line) |
+| 2 Every kind | `tests/unit/test_failure_kinds.py` builds each kind from a real anthropic, openai, httpx or lauren-ai exception (`test_every_kind_is_covered_by_a_real_exception`), with and without the lauren transport wrapper; unrecognised exceptions are `internal` |
+| 3 Headless | `tests/e2e/test_missing_key_e2e.py` (`{"type": "error", "kind": "missing_credentials", ...}` and `error_kind` on the result line) |
+| 4 One notice component | `tests/unit/test_notice.py::test_every_notice_renderer_prints_only_notices` (every notice kind in the BEAU-1 inventory prints only `Notice` objects); BEAU-4 screen-reader rules in `test_screen_reader_mode_spells_severities_and_keeps_announcements_literal` |
+| 5 Transient notices | `tests/unit/test_notice_transient.py` (4 s, replaced by a newer one, no scrollback row, no conversation event) |
+| 6 Stray stderr | `tests/unit/test_diagnostics.py::test_stray_stderr_reaches_the_log_and_one_notice_not_the_screen`, plus warnings, `--debug`, `/logs`, and the subprocess-fd-2 scan |
+| 7 Hub help | `tests/unit/test_agents_hub.py::test_help_overlay_lists_the_keys_from_the_keymap` and `tests/unit/test_keymap_help.py` (regular expression over the rendered help of every context) |
+
+### Amendments to the design
+
+- **`/retry`, `/bug` and `/copy` do not exist in this repository.** The kind
+  table's actions therefore say "send the message again" (and name `/model`,
+  `/compact` and `/logs`, which exist); `internal` points at `/logs`, not at a
+  `/bug` report (a crash reporter is a non-goal). `rate_limited` reads "Wait
+  40 s, then send the message again" from the provider's `retry_after`, and
+  `retried N times` counts the turn's transport retries. AC 5 is exercised
+  through `/dnd` and `ConversationStore.notify`; `/copy` (TUX-05/09) calls
+  `ctx.notify("success", "Copied")`.
+- **The status-line display is not wired here.** TUX-02 replaced
+  `StatusComponent`/`FooterComponent` with `StatusLine`/`ComposerFrame`. This
+  change exposes `ConversationStore.transient_notice` (a `Signal[Notice | None]`),
+  `ConversationStore.notify(severity, text)` and `CommandContext.notify`; the
+  integrator renders the signal in the status line's right segment. Screen
+  readers already hear it, through the `Announcer`.
+- **`Notice` is a Rich renderable with `literal` and `words` flags** (BEAU-4 §4.3
+  announcements stay byte-for-byte literal; `screen_reader` spells the severity
+  as `Error:`, `Warning:`, `Note:`, `Done:`). The `system` event may carry a
+  `severity`; it defaults to `info`. The compaction `⎋` prefix is removed from
+  the texts, since the marker comes from the notice.
+- **`turn_complete` and `activity_complete` keep their own rows** (PRD-257 and
+  TUX-10 own them), as do the tool-row, user-message and turn-header renderers
+  (TUX-06).
+- **`error` payload** gains `kind`, `message` and `action` (`{"hint", "commands"}`)
+  next to the existing redacted metadata. `detail` stays for text agenthicc wrote
+  (the missing provider session diagnostic). The failed turn also stores the
+  payload on its exception (`failure_kinds.FAILURE_ATTRIBUTE`), so workflow
+  runners, checkpoints, headless JSON and background workers persist only
+  agenthicc's copy (`failure_reason`), never the provider's exception text.
+- **Headless** prints the `error` line only for `--headless --workflow`, the
+  stream that runs turns; the `WorkflowRunCompleted` line gains `error_kind`.
+- **Diagnostics.** The log is `tui.diagnostics.diagnostics_log_path(session)`;
+  it is installed right after the first frame (so the first-frame module budget
+  is unchanged) and handed to `Workspace.redirect_stderr`, which survives an
+  external-editor handoff. `--debug` is a new global flag (`CLIFlags.debug`).
+  `/logs` opens a small pager overlay (`LogTailOverlay`) until TUX-09's
+  transcript view takes it over. The "no subprocess inherits fd 2" test is a
+  scan of the source for spawns without a `stderr` or `capture_output`
+  argument; the external editor, which owns the terminal after the live block
+  is suspended, and CLI-only commands are listed exceptions.
+- **Help phrases.** An unknown condition still reads as words ("when future
+  flag") rather than failing the help screen; `test_every_condition_in_the_default_actions_has_a_phrase`
+  fails instead.
+- **Command messages.** Every usage and error print in `commands/builtins.py` goes
+  through `ctx.notify`; `builtins.py` has no colour literals and is removed from
+  `test_theme_tokens._PENDING`. Tables and listings keep `console.print`.
 
 ## 1. Problem
 

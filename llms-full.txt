@@ -1945,6 +1945,115 @@ The current overlay host maps approval request kinds to overlay classes in
 `runners.tui_session.TUISession`; `PlanApprovalOverlay` is the current plan
 review surface. See `docs/guides/tui.md` for rendering and resize contracts.
 
+### Failure kinds — `agenthicc.runners.failure_kinds`
+
+```python
+class FailureKind(StrEnum):
+    MISSING_CREDENTIALS = "missing_credentials"; REJECTED_CREDENTIALS = "rejected_credentials"
+    RATE_LIMITED = "rate_limited"; OVERLOADED = "overloaded"; CONTEXT_TOO_LONG = "context_too_long"
+    MODEL_NOT_FOUND = "model_not_found"; BILLING = "billing"; NETWORK = "network"
+    TIMEOUT = "timeout"; CANCELLED = "cancelled"; INTERNAL = "internal"
+
+@dataclass(frozen=True)
+class FailureAction:
+    hint: str; commands: tuple[str, ...] = ()
+    def to_payload(self) -> dict[str, object]: ...   # {"hint": ..., "commands": [...]}
+
+@dataclass(frozen=True)
+class FailureCopy:
+    kind: FailureKind; message: str; action: FailureAction
+
+MESSAGE_PREFIXES: Mapping[FailureKind, tuple[str, ...]]
+FAILURE_ATTRIBUTE = "_agenthicc_failure"
+def classify_turn_failure(exc: BaseException, provider: str = "") -> FailureKind: ...
+def failure_copy(kind, *, provider, model="", profile="", exception_type="", retries=0,
+                 retry_after_s=None, timeout_s=None, host="", log_path=None) -> FailureCopy: ...
+def failure_payload(copy: FailureCopy) -> dict[str, object]: ...  # kind, message, action
+def failure_host(exc: BaseException) -> str: ...
+def reported_failure(exc: BaseException) -> dict[str, object] | None: ...
+def failure_reason(exc: BaseException) -> str: ...
+```
+
+TUX-08. `classify_turn_failure` is pure over the exception chain: provider
+error `type`/`code` first, then the HTTP status, the SDK exception class
+(anthropic, openai, httpx and lauren-ai names), and last the fixed lower-case
+`MESSAGE_PREFIXES` (for a missing key, which the SDKs report without a type or
+code). The matched text is never kept. A failed agent turn's `error` event
+payload is the redacted metadata (`provider`, `model`, `profile`,
+`exception_type`, `http_status`, provider ids) plus `kind`, `message` and
+`action` (`{"hint": str, "commands": [str]}`); `message` and `action` are
+agenthicc's own copy, and `detail` is reserved for text agenthicc wrote. An
+event without `kind` (an older log) renders as `internal` with its stored
+message. The turn also stores the payload on the exception under
+`FAILURE_ATTRIBUTE`; `reported_failure` finds it through wrapping exceptions,
+and `failure_reason` returns its message (else `"Type: text"` for an
+exception agenthicc raised itself), which workflow runners, checkpoints,
+background workers and headless JSON use. Headless prints
+`{"type": "error", "kind", "message", "action", "session_id", "workflow",
+"run_id"}` before the `WorkflowRunCompleted` line, which gains `error_kind`
+(`WorkflowExecutionResult.failure` / `error_record()`).
+
+### Notice — `agenthicc.tui.workspace.notice`
+
+```python
+Severity = Literal["error", "warning", "info", "success"]
+SEVERITIES: tuple[Severity, ...]
+
+@dataclass(frozen=True)
+class Notice:
+    severity: Severity; title: str; body: str = ""; actions: tuple[str, ...] = ()
+    literal: bool = False; words: bool = False
+    def marker(self) -> str: ...   # glyphs().fail/warn/info/ok, or "Error:"… with words=True
+    def plain(self) -> str: ...
+    def content(self) -> Text: ...
+
+def severity_of(value: object, default: Severity = "info") -> Severity: ...
+```
+
+A Rich renderable: the marker in the severity's token (`danger`, `warning`,
+`muted`, `success`), the title wrapped under itself, the body in `muted`, the
+actions in `accent`. `literal=True` prints the title exactly (screen-reader
+announcements, BEAU-4). The scroll buffer's `error`, `system` (its optional
+`severity` payload field, default `info`), `announcement`, `tool_recovery`,
+`mcp_server_failure`, `network_retry` and `provider_recovery_retry` rows are
+notices; with `[ui] screen_reader` they use words. Transient notices:
+`ConversationStore.notify(severity, text, *, duration=None) -> Notice` sets
+`ConversationStore.transient_notice: Signal[Notice | None]` for
+`TRANSIENT_NOTICE_S` (4.0 s) for the status line; they never reach the scroll
+buffer or the session log, and the screen-reader `Announcer` speaks them.
+`CommandContext.notify(severity, text, *, body="", actions=())` reports a slash
+command's usage, error or result: a one-line `info`/`success` goes to
+`CommandContext.transient_notify` (the session's `notify`) when set, anything
+else is printed as a persistent notice.
+
+### Diagnostics log — `agenthicc.tui.diagnostics`
+
+```python
+DIAGNOSTICS_NOTICE = "Diagnostics were written to the log · /logs"
+def diagnostics_log_path(session_id: str) -> Path: ...   # ~/.agenthicc/logs/<session>.log
+class DiagnosticsLog(io.TextIOBase):
+    def __init__(self, path: Path, on_first_write: Callable[[], None] | None = None) -> None: ...
+def install_stderr_sink(sink: DiagnosticsLog) -> None: ...
+def uninstall_stderr_sink() -> None: ...
+def stderr_sink() -> DiagnosticsLog | None: ...
+def log_tail(path: Path, *, max_lines: int = 200, max_bytes: int = 256_000) -> list[str]: ...
+```
+
+Right after the first frame, `TUISession` installs a `DiagnosticsLog` (unless
+`--debug`, `CLIFlags.debug`): every `warnings.warn` goes to it, and
+`Workspace.redirect_stderr(stream)` / `LiveRegion(stderr=…)` make it
+`sys.stderr` while the live block is up (an external-editor handoff restores
+the real stderr and re-installs it after). The first non-blank write calls
+`on_first_write` once, which shows `DIAGNOSTICS_NOTICE` as a transient notice.
+`fileno()` is the log's, so a child given `sys.stderr` writes into it. `/logs`
+shows `log_tail` in `tui.workspace.overlays.log_tail.LogTailOverlay`.
+
+Key help: `tui.keymap_phrases.CONDITION_PHRASES` maps every condition in
+`DEFAULT_ACTIONS` to a phrase, `phrase(flag)` and
+`describe_conditions(when, unless)` give `"in Library, except when an agent
+needs approval"`; `HelpEntry.conditions` is that text (`""` for always), so
+the hub's `?` overlay and `/keybindings` never show flag names.
+
 ### LoopLagMonitor
 
 ```python

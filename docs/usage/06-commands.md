@@ -22,6 +22,7 @@ The canonical registry is `BUILTIN_COMMANDS` in
 | `/expand` | `[tool-id-or-@path]` | Expand a collapsed tool group |
 | `/help` | `[/command]` | Show help |
 | `/history` | `[repair]` | Browse transcript history; `/history repair` retries safe local tool-history repair |
+| `/logs` | — | Show the tail of this session's diagnostics log (`~/.agenthicc/logs/<session>.log`): stray stderr and Python warnings captured while the TUI was live |
 | `/init` | `[write] [--force]` | Create the AGENTS.md / config scaffold |
 | `/mcp` | `[status\|reload\|connect NAME\|disconnect NAME\|refresh NAME\|doctor [NAME]]` | MCP status and control |
 | `/model` | `[provider] [model]` | Switch model |
