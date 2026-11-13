@@ -120,12 +120,14 @@ class SlashCommandTrigger(TriggerHandlerBase):
         if cmd.aliases:
             word = "alias" if len(cmd.aliases) == 1 else "aliases"
             detail = f"{detail} ({word} {', '.join(cmd.aliases)})"
-        policy = _policy(cmd)
         disabled = ""
-        if busy and policy is BusyPolicy.REJECT:
-            disabled = "not available while a turn runs"
-        elif busy and policy is BusyPolicy.QUEUE:
-            detail = f"{detail} · runs after the turn"
+        if busy:
+            # The picker and manual submission read the same busy policy.
+            policy = _policy(cmd)
+            if policy is BusyPolicy.REJECT:
+                disabled = "not available while a turn runs"
+            else:
+                detail = f"{detail}  [{_BUSY_LABELS.get(policy, 'queues while busy')}]"
         return MatchItem(
             value=cmd.name,
             label=cmd.name,
@@ -282,6 +284,14 @@ class SlashCommandTrigger(TriggerHandlerBase):
 
     def can_activate(self, buf: list[str]) -> bool:
         return not buf or buf[-1] == "\n"
+
+
+#: What the picker says about a command while a turn runs.
+_BUSY_LABELS: dict[BusyPolicy, str] = {
+    BusyPolicy.IMMEDIATE_READ_ONLY: "runs now",
+    BusyPolicy.IMMEDIATE_CONTROL: "control runs now",
+    BusyPolicy.QUEUE: "queues while busy",
+}
 
 
 def _policy(cmd: Command) -> BusyPolicy:

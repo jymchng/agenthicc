@@ -155,16 +155,14 @@ The canonical registry is `BUILTIN_COMMANDS`
 | `/history` | `[repair]` | — | `src/agenthicc/commands/builtins.py:1478` |
 | `/init` | `[write] [--force]` | — | `src/agenthicc/commands/builtins.py:1486` |
 | `/mcp` | `[status\|reload\|connect NAME\|disconnect NAME\|refresh NAME\|doctor [NAME]]` | — | `src/agenthicc/commands/builtins.py:1493` |
-| `/model` | `[provider] [model]` | — | `src/agenthicc/commands/builtins.py:1502` |
-| `/models` | — | — | `src/agenthicc/commands/builtins.py:1510` |
+| `/model` | `[provider] [model]` | `/models` | `src/agenthicc/commands/builtins.py:1502` |
 | `/skills` | `[reload]` | — | `src/agenthicc/commands/builtins.py:1516` |
 | `/status` | — | — | `src/agenthicc/commands/builtins.py:1524` |
 | `/startup` | — | — | `src/agenthicc/commands/builtins.py:1530` |
 | `/keybindings` | — | — | `src/agenthicc/commands/builtins.py:1536` |
 | `/perf` | — | — | `src/agenthicc/commands/builtins.py:1542` |
 | `/ps` | `[terminal-id] [--json]` | `/processes` | `src/agenthicc/commands/builtins.py:1548` |
-| `/background` | `(alias: /bg)` | `/bg` | `src/agenthicc/commands/builtins.py:1556` |
-| `/detach` | — | — | `src/agenthicc/commands/builtins.py:1563` |
+| `/background` | — | `/bg`, `/detach` | `src/agenthicc/commands/builtins.py:1556` |
 | `/workers` | `[--json]` | — | `src/agenthicc/commands/builtins.py:1568` |
 | `/stop` | `[terminal-id\|all] [--force]` | `/stop-terminal` | `src/agenthicc/commands/builtins.py:1575` |
 | `/usage` | — | — | `src/agenthicc/commands/builtins.py:1583` |
@@ -174,7 +172,7 @@ The canonical registry is `BUILTIN_COMMANDS`
 
 !!! note "Counting the registry"
     Count the `BUILTIN_COMMANDS` list literal rather than grepping for command
-    names: `/model` and `/models` are separate entries, and the file also
+    names: `/models` is an alias of `/model`, and the file also
     contains command names inside handler strings and printed messages that are
     not registry entries.
 
@@ -193,7 +191,7 @@ recorded explicitly. All of them are `BUILTIN_COMMANDS` entries, so the picker,
 | Command | Handled by | Evidence |
 |---|---|---|
 | `/workflow`, `/compact` | `TUISession.route()` (session memory and workflow state) | `src/agenthicc/runners/tui_session.py:3492,3494` |
-| `/background` (alias `/bg`), `/detach` | `TUISession.dispatch_slash()` (the background handoff, `_BACKGROUND_HANDOFF_COMMANDS`) | `src/agenthicc/runners/tui_session.py:536,2685` |
+| `/background` (aliases `/bg`, `/detach`) | `TUISession.dispatch_slash()` (the background handoff, `_BACKGROUND_HANDOFF_COMMANDS`) | `src/agenthicc/runners/tui_session.py:536,2685` |
 
 ### Bootstrap skills that provide slash commands
 
@@ -449,7 +447,7 @@ Checked specifically because they are counter-intuitive. Do not delete these.
 | Claim | Verification |
 |---|---|
 | `/create-tools` and `/create-commands` exist | Provided as bootstrap skills, `src/agenthicc/skills/bootstrap.py:222,269` |
-| `/bg`, `/background` and `/detach` exist | Registered in `src/agenthicc/commands/builtins.py` and intercepted by `TUISession.dispatch_slash` |
+| `/bg`, `/background` and `/detach` exist | `/bg` and `/detach` are aliases of `/background`, registered in `src/agenthicc/commands/builtins.py` and intercepted by `TUISession.dispatch_slash` |
 | A TUI command picker sees `/workflow` and `/compact` | Both are registry entries with `handler=None`, intercepted in `TUISession.route()` |
 | `name_that_ui.py` exists | Present at `src/agenthicc/workflows/name_that_ui.py` — older notes said it was missing |
 | `EventBusTestHarness` exists | A pytest fixture defined at `tests/conftest.py:89`, used to drive the kernel event bus from tests — it is *not* part of the `agenthicc.testing` public API, and an earlier register row wrongly called it absent |

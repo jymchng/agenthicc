@@ -23,7 +23,7 @@ non-ASCII character from its glyph set::
 from __future__ import annotations
 
 import textwrap
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Generic, TypeVar
 
@@ -171,11 +171,20 @@ class Picker(Generic[T]):
         glyph_w = max((cell_len(row.glyph) for row in self.rows), default=0)
         glyph_w = glyph_w + 1 if glyph_w else 0
         keys_w = max((cell_len(row.keys) for row in self.rows), default=0)
-        blocks = [
-            self._row_lines(row, index == self.selected, width, label_w, glyph_w, keys_w)
-            for index, row in enumerate(self.rows)
-        ]
-        self._clamp_scroll(blocks, width, height)
+        # Only the rows near the window are laid out: a listing can hold every
+        # file of a project, and a keystroke redraws it.
+        cache: dict[int, list[Text]] = {}
+
+        def block(index: int) -> list[Text]:
+            lines = cache.get(index)
+            if lines is None:
+                lines = self._row_lines(
+                    self.rows[index], index == self.selected, width, label_w, glyph_w, keys_w
+                )
+                cache[index] = lines
+            return lines
+
+        self._clamp_scroll(block, height)
         lines: list[Text] = []
         previous_group: str | None = None
         last_shown = self.scroll - 1
@@ -186,10 +195,10 @@ class Picker(Generic[T]):
                 if row.group and row.group != previous_group
                 else []
             )
-            block = [*heading, *blocks[index]]
-            if lines and len(lines) + len(block) > height:
+            rows_block = [*heading, *block(index)]
+            if lines and len(lines) + len(rows_block) > height:
                 break
-            lines.extend(block)
+            lines.extend(rows_block)
             previous_group = row.group
             last_shown = index
         self.visible = last_shown - self.scroll + 1
@@ -208,26 +217,29 @@ class Picker(Generic[T]):
             return min(longest, width - 8)
         return min(longest, _LABEL_MAX, width // 2)
 
-    def _block_height(
-        self, blocks: list[list[Text]], index: int, previous_group: str | None
-    ) -> int:
-        group = self.rows[index].group
-        return len(blocks[index]) + (1 if group and group != previous_group else 0)
+    def _clamp_scroll(self, block: Callable[[int], list[Text]], height: int) -> None:
+        """Move the window so the selected row (and its heading) is fully visible.
 
-    def _clamp_scroll(self, blocks: list[list[Text]], width: int, height: int) -> None:
-        """Move the window so the selected row (and its heading) is fully visible."""
+        Walks back from the selected row, so the cost is one window, however
+        far the selection jumped.
+        """
         selected = self.selected
         if selected < self.scroll:
             self.scroll = selected
-        while self.scroll < selected:
-            used = 0
-            previous: str | None = None
-            for index in range(self.scroll, selected + 1):
-                used += self._block_height(blocks, index, previous)
-                previous = self.rows[index].group
-            if used <= height:
+            return
+        used = 0
+        changes = 0
+        first = selected
+        for index in range(selected, self.scroll - 1, -1):
+            used += len(block(index))
+            group = self.rows[index].group
+            if index < selected:
+                following = self.rows[index + 1].group
+                changes += 1 if following and following != group else 0
+            if used + changes + (1 if group else 0) > height:
                 break
-            self.scroll += 1
+            first = index
+        self.scroll = first
 
     def _heading(self, group: str, width: int) -> Text:
         rule = glyphs().rule

@@ -2779,6 +2779,7 @@ class TUISession:
         Queued input drains even when loading failed, so each queued turn
         reports the failed dependency instead of waiting forever.
         """
+        self._warm_mention_picker()
         failure: Exception | None = None
         try:
             await self._prepare_agent_runtime()
@@ -2792,6 +2793,14 @@ class TUISession:
             raise failure
         self._tasks.start(self._prewarm_agents_hub(), name="agents-hub-prewarm")
         return None
+
+    def _warm_mention_picker(self) -> None:
+        """Ask git what changed now, off the loop, so the first ``@`` already shows it."""
+        from agenthicc.tui.triggers.at_mention import AtMentionTrigger
+
+        handler = self._ctx.trigger_registry.get("@")
+        if isinstance(handler, AtMentionTrigger):
+            handler.warm(Path.cwd())
 
     async def _prewarm_agents_hub(self) -> None:
         """Import the agents hub on a worker thread once the session is idle.
@@ -3306,6 +3315,8 @@ class TUISession:
                 cassette_dir=None,
             )
         ctx.agent_runner = cast("AgentRunnerBase", forked)
+        # Workflow runs are built from this session-owned base, not from ctx.
+        self._wf_config_base = replace(self._wf_config_base, agent_runner=ctx.agent_runner)
         ctx.cfg.execution = execution
         ctx.llm_config_error = None
         label = f"{execution.provider}/{execution.effective_model()}"
@@ -4513,8 +4524,7 @@ class TUISession:
         """Count a submitted command toward the ``/`` and ``$`` pickers' ranking."""
         from agenthicc.tui.triggers.slash_command import SlashCommandTrigger
 
-        triggers = self._ctx.trigger_registry
-        handler = triggers.get(text[0]) if triggers is not None else None
+        handler = self._ctx.trigger_registry.get(text[0])
         if isinstance(handler, SlashCommandTrigger):
             handler.record_use(text)
 
@@ -5708,8 +5718,6 @@ class TUISession:
         ctx.command_bus.register(OpenSubagentsCommand, self._open_subagents_command)
         ctx.command_bus.register(BackgroundSubagentsCommand, self._background_subagents_command)
         ctx.command_bus.register(OpenPaletteCommand, self._open_palette_command)
-        # TUX-05: the scroll buffer renders model_changed notices.
-        import agenthicc.tui.workspace.notices  # noqa: F401
 
         startup = ctx.startup
         if startup is not None:

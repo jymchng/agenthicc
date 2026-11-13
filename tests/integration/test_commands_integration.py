@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import pytest
 from pathlib import Path
-from unittest.mock import MagicMock
 
 from agenthicc.commands import build_builtin_registry, CommandDispatcher, Command
 from agenthicc.commands.plugin_loader import discover_command_plugins
@@ -51,22 +50,16 @@ def _status_context() -> tuple[object, object]:
 
 
 def test_dispatch_config_opens_menu():
-    """Dispatching /config with no args sets renderer._pending_menu."""
-    from agenthicc.config import AgenthiccConfig
+    """Dispatching /config with no args hands the config menu to set_pending_menu."""
+    from dataclasses import replace
 
     reg = build_builtin_registry()
     disp = CommandDispatcher(reg)
-    renderer = MagicMock()
-    cfg = AgenthiccConfig()
-    renderer._loaded_config = cfg
-    ctx = MagicMock()
-    ctx.renderer = renderer
-    ctx.args = ""
-    ctx.config = cfg
-    ctx.session_id = ""
-    result = disp.dispatch("/config", ctx)
+    menus: list[object] = []
+    ctx, _console = _status_context()
+    result = disp.dispatch("/config", replace(ctx, set_pending_menu=menus.append))
     assert result is True
-    assert renderer._pending_menu is not None
+    assert len(menus) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -78,10 +71,7 @@ def test_dispatch_unknown_returns_false():
     """Dispatching an unknown command returns False."""
     reg = build_builtin_registry()
     disp = CommandDispatcher(reg)
-    ctx = MagicMock()
-    ctx.renderer = None
-    ctx.args = ""
-    ctx.session_id = ""
+    ctx, _console = _status_context()
     result = disp.dispatch("/unknown-xyz", ctx)
     assert result is False
 
@@ -186,10 +176,7 @@ def test_plugin_command_registered_and_dispatched(tmp_path):
         reg.register(cmd)
 
     disp = CommandDispatcher(reg)
-    ctx = MagicMock()
-    ctx.renderer = None
-    ctx.args = ""
-    ctx.session_id = ""
+    ctx, _console = _status_context()
 
     result = disp.dispatch("/test-integration", ctx)
     assert result is True
@@ -321,9 +308,7 @@ def test_dispatch_with_args_uses_menu_factory(monkeypatch):
     )
 
     disp = CommandDispatcher(reg)
-    ctx = MagicMock()
-    ctx.args = ""
-    ctx.session_id = ""
+    ctx, _console = _status_context()
 
     # menu_factory receives the args; handler is never called
     disp.dispatch("/dual somearg", ctx)

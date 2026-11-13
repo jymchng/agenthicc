@@ -186,6 +186,7 @@ class CommandPaletteOverlay(Overlay):
         from rich.console import Group
         from rich.text import Text
 
+        from agenthicc.tui.input.renderer import build_prompt
         from agenthicc.tui.theme import glyphs, palette
 
         p, g = palette(), glyphs()
@@ -208,10 +209,8 @@ class CommandPaletteOverlay(Overlay):
             line.append(f" {vertical}", style=p.subtle)
             return line
 
-        search = Text()
-        search.append(f"{g.prompt} ", style=p.accent)
-        search.append(self.query)
-        search.append(g.cursor, style=p.accent)
+        # The composer's own prompt line: chevron, text and the block cursor.
+        search = build_prompt(list(self.query), len(self.query))
         if not self.query:
             search.append(
                 " type to search" if not self.command else " choose an argument", style=p.muted

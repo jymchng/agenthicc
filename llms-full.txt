@@ -2096,6 +2096,114 @@ the session with `TUISession.switch` set to a frozen
 driver runs the target in its own project directory and reopens the origin
 session when the target ends. A switch waits for a running turn to finish.
 
+### MatchItem — `agenthicc.tui.trigger`
+
+```python
+@dataclass
+class MatchItem:                       # one row of a trigger picker (TUX-05)
+    value: str                         # inserted into the prompt when chosen
+    label: str                         # left column: "/compact", "src/a.py"
+    detail: str = ""                   # description, size or entry count
+    group: str = ""                    # heading when it changes; "" = ranked list
+    glyph: str = ""                    # kind marker (directory, file, agent)
+    keys: str = ""                     # key binding, right-aligned ("ctrl+g")
+    disabled: str = ""                 # why the row cannot run now (row is dimmed)
+    path: bool = False                 # label is a path: directory muted, name plain
+```
+
+`MatchItem.display`, `TriggerHandler.get_lines` and the below-list hint line are
+gone: a trigger returns structured rows and `Picker` lays them out. Triggers
+(`AtMentionTrigger`, `SlashCommandTrigger`, `SkillTrigger` and plugin triggers)
+set `label`, `detail`, `group`, `glyph` and `keys`; `get_hint` stays on the
+protocol but nothing draws it. `mentions.matcher.filter_and_rank(query, items,
+*, boosted=())` ranks by `item.label` (boosted `value`s first within a tier);
+`match_positions(query, text)` and `fuzzy_positions(query, text)` give the
+characters a picker highlights.
+
+### Picker — `agenthicc.tui.workspace.picker`
+
+```python
+@dataclass(frozen=True)
+class PickerRow(Generic[T]):
+    value: T; label: str; detail: str = ""; group: str = ""; glyph: str = ""
+    keys: str = ""; disabled: str = ""; path: bool = False
+
+class Picker(Generic[T]):
+    def __init__(self, rows=(), *, query="", footer_keys="", empty="No matches") -> None: ...
+    rows: list[PickerRow[T]]; selected: int; scroll: int; visible: int
+    def set_rows(self, rows, *, query="") -> None: ...
+    def move(self, step: int) -> None: ...           # wraps around
+    current: PickerRow[T] | None
+    def render(self, width: int, height: int = 12) -> list[Text]: ...
+def rows_from_matches(items: Sequence[MatchItem]) -> list[PickerRow[MatchItem]]: ...
+def picker_height(terminal_rows: int) -> int: ...      # min(12, rows / 3), at least 3
+NARROW_WIDTH = 60                                      # below it a detail gets its own row
+```
+
+One component draws every list: the `/`, `$` and `@` pickers
+(`TriggerPickerOverlay`), the palette and the `/model`, `/mode` and `/agent`
+pickers. The selected row has an `accent` bar and `accent_bg`; matched
+characters are bold `accent`; a muted rule heads each group; keys are
+right-aligned; details wrap with a hanging indent (two rows at most); a
+`disabled` row is dimmed with its reason on a second row; the footer reads
+`N of M` and the keys. `render` lays out only the rows near the window, so a
+10,000-row listing costs the same as a short one, and no line is wider than
+`width`.
+
+TUX-05 (pickers and the palette):
+
+- **`/` ranking.** `UnifiedCommandRegistry.search(partial, usage)` returns
+  commands best first by `commands.registry.command_rank(cmd, partial)`:
+  `0` exact name, `1` exact alias, `2` name prefix, `3` alias prefix, `4`
+  fuzzy name, `5` a description word; ties by `usage` (name → `(count,
+  last_used)`), then name. `SlashCommandTrigger(registry, workflow_registry, *,
+  usage=None, keymap=None)`: with no fragment the rows are grouped (`Suggested`
+  = the five most used, then `Command.group`); aliases collapse into
+  `(alias /bg)` in their command's row; `record_use(text)` counts a submitted
+  command. `tui.input.command_usage.CommandUsage(project, path=None)`
+  (`counts()`, `most_used(limit)`, `record(name)`) keeps the counts per project
+  in `~/.agenthicc/state/command-usage.json` (`AGENTHICC_COMMAND_USAGE`).
+  `commands.command.COMMAND_GROUPS` lists the group headings; `Command.group`
+  defaults to `"Plugins"`. `/background` has the aliases `/bg` and `/detach`,
+  `/cancel` has `/interrupt`, `/model` has `/models`.
+  `tui.actions.COMMAND_ACTIONS` maps a command to the key action that does the
+  same, so its row shows the user's key (`SlashCommandTrigger` reads the
+  effective `Keymap`).
+- **`@` rows.** `AtMentionTrigger(agents=None, *, git=...)` gives directories
+  the glyph `Glyphs.folder` and an entry count, files `Glyphs.info` and a size
+  (the first `DETAIL_ROWS = 100` rows are measured; a listing holds at most
+  `MAX_MATCHES = 200`). `WorkingTreeStatus(cwd)` runs `git status` on a worker
+  thread (`refresh()` at most every `REFRESH_INTERVAL_S = 2.0`);
+  `AtMentionTrigger.warm(cwd)` starts it when the session starts;
+  `note_mention(value)` remembers recent mentions. Recent and changed files come
+  first; entries `.gitignore` ignores are left out unless named exactly.
+- **Palette.** Ctrl+P (`composer.palette`) on an empty prompt posts
+  `tui.runtime.commands.OpenPaletteCommand`; on a non-empty prompt it recalls
+  the previous prompt. `TUISession.open_palette()` mounts
+  `tui.workspace.overlays.palette.CommandPaletteOverlay(commands=, cwd=, keymap=,
+  actions=PALETTE_ACTIONS, themes=, run=, close=, busy=False)`: a search field
+  over every command, every key action in `tui.actions.PALETTE_ACTIONS` that has
+  a binding, and every theme; Enter calls `run(PaletteItem(kind, text))` with
+  `kind` `"command"`, `"action"`, `"theme"` or `"insert"` (a command that needs
+  an argument). `palette_width(columns)` is 60 % clamped to 60-100.
+- **Choice pickers.** `tui.workspace.overlays.choice_picker.ChoicePickerOverlay(title,
+  rows, *, choose, close, subtitle="", keep_open=False, extra_keys=None)`
+  serves `/model`, `/mode` and `/agent`; `AgentPickerOverlay` is removed.
+- **`/model` without a restart.** `runners.model_switch.model_choices(cfg,
+  environ=None)` lists `ModelChoice(provider, model, profile, context_window,
+  missing_env, current)` (`available`, `label`): each provider's default model
+  plus the current one, then the saved profiles; `missing_env` names the
+  variable to set and is never a value. `execution_for(cfg, choice)` derives the
+  `ExecutionSettings`. `TUISession.switch_model(choice)` forks the lazy runner
+  with `_LazyAgentRunner.for_execution`, sets `cfg.execution`, and appends one
+  `model_changed` conversation event (payload `provider`, `model`, `profile`,
+  `previous`; rendered `◆ model → name (from next turn)` by
+  `tui.workspace.notices`); during a turn the change waits for the turn to end.
+  `TUISession.save_model(choice)` writes `[execution] profile`, `provider` and
+  `model` with `tui.preferences.save_config_value(table, key, value)`.
+  `CommandContext.switch_model` and `save_model` carry both to the commands, and
+  `CommandDispatcher.dispatch` now passes the whole context to a handler.
+
 ### Keymap — `agenthicc.tui.keymap`
 
 ```python

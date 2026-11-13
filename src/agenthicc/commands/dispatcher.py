@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from .command import CommandContext
 from .registry import UnifiedCommandRegistry
 
@@ -34,39 +36,8 @@ class CommandDispatcher:
         if cmd.is_skill != name.startswith("$"):
             return False
 
-        ctx_with_args = CommandContext(
-            text=text,
-            args=args,
-            model=ctx.model,
-            console=ctx.console,
-            config=ctx.config,
-            session_id=ctx.session_id,
-            active_agent=ctx.active_agent,
-            skills=ctx.skills,
-            command_registry=ctx.command_registry,
-            tools=ctx.tools,
-            tool_sources=ctx.tool_sources,
-            workflow_registry=ctx.workflow_registry,
-            mcp_manager=ctx.mcp_manager,
-            startup=ctx.startup,
-            mode_manager=ctx.mode_manager,
-            terminal_manager=ctx.terminal_manager,
-            set_pending_skill=ctx.set_pending_skill,
-            set_pending_menu=ctx.set_pending_menu,
-            close_overlay=ctx.close_overlay,
-            set_pending_replay=ctx.set_pending_replay,
-            reload_skills=ctx.reload_skills,
-            reload_commands=ctx.reload_commands,
-            reload_tools=ctx.reload_tools,
-            reload_workflows=ctx.reload_workflows,
-            set_input_text=ctx.set_input_text,
-            usage_snapshot=ctx.usage_snapshot,
-            cancel_active=ctx.cancel_active,
-            list_workflow_runs=ctx.list_workflow_runs,
-            resume_workflow=ctx.resume_workflow,
-            repair_session_history=ctx.repair_session_history,
-            loop_manager=ctx.loop_manager,
-        )
+        # Every field the session supplied reaches the handler, not a copied subset.
+        ctx_with_args = replace(ctx, text=text, args=args)
 
         # Menu factory always takes precedence; factory receives args via ctx.args.
         if cmd.menu_factory is not None:

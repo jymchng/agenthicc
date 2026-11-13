@@ -133,9 +133,8 @@ longer matches). Queued dispatches, live workers, and unverifiable ownership
 remain protected. Reopen the intended session with `agenthicc --continue` or
 `agenthicc --resume <session-id>`, then retry `/detach`. If the error persists,
 another live process may own that session; close that process or wait for it to
-exit rather than deleting the owner file. Changing the model does not transfer
-session ownership, and `/model` itself requires a restart for its selection to
-take effect.
+exit rather than deleting the owner file. Changing the model with `/model` does not transfer
+session ownership; it applies from the next turn without a restart.
 
 If the recent preview is too short, raise `[behaviour] resume_transcript_turns`,
 `resume_transcript_max_events`, or `resume_transcript_max_bytes` within their

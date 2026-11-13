@@ -51,10 +51,10 @@ def test_discovered_skill_flows_through_dollar_picker_and_dispatch(
 
     assert triggers.get("/") is not None
     assert triggers.get("$") is not None
-    assert [item.value for item in triggers.get("$").get_matches("review", picker_context)] == [
-        "$review-code",
-        "$review",
-    ]
+    # An alias is not a row of its own: it ranks its skill first and is named in the row.
+    skill_rows = triggers.get("$").get_matches("review", picker_context)
+    assert [item.value for item in skill_rows] == ["$review-code"]
+    assert "(alias $review)" in skill_rows[0].detail
     assert triggers.get("/").get_matches("", picker_context) == []
 
     input_session = UnifiedInputSession(

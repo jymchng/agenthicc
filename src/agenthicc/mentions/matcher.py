@@ -24,7 +24,6 @@ pickers' highlight (TUX-05).
 from __future__ import annotations
 
 from collections.abc import Collection
-from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -75,10 +74,12 @@ def rank_match(query: str, display: str) -> int | None:
 
     q = query.casefold()
 
-    # Strip trailing "/" (directory marker) for path parsing
+    # Strip trailing "/" (directory marker) for path parsing. Plain string
+    # operations: this runs once per candidate on every keystroke, and a
+    # project can have tens of thousands of candidates.
     clean = display.rstrip("/")
-    name = PurePosixPath(clean).name.casefold()  # filename segment only
     full = clean.casefold()  # full normalised path
+    name = full.rpartition("/")[2]  # filename segment only
 
     # Tier 0 — exact match (filename or full path)
     if name == q or full == q:
@@ -89,8 +90,7 @@ def rank_match(query: str, display: str) -> int | None:
         return RANK_FILENAME_PREFIX
 
     # Tier 2 — any path segment starts with query
-    parts = [p.casefold() for p in PurePosixPath(clean).parts]
-    if any(p.startswith(q) for p in parts if p != name):
+    if any(p.startswith(q) for p in full.split("/") if p != name):
         return RANK_SEGMENT_PREFIX
 
     # Tier 3 — query is a substring of the filename

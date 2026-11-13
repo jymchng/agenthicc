@@ -34,6 +34,7 @@ def _session(monkeypatch: pytest.MonkeyPatch) -> tuple[object, AppState, list[st
     session._ctx = SimpleNamespace(app_state=state)  # type: ignore[attr-defined]
     session._msg_queue = _Queue()  # type: ignore[attr-defined]
     session._agent_task = None  # type: ignore[attr-defined]
+    session._pending_model = None  # type: ignore[attr-defined]
     return session, state, calls
 
 

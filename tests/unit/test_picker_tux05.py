@@ -177,7 +177,9 @@ def test_a_command_rejected_while_busy_is_dimmed_with_the_reason() -> None:
     }
     assert rows["/no"].disabled == "not available while a turn runs"
     assert rows["/ok"].disabled == "" and rows["/later"].disabled == ""
-    assert "runs after the turn" in rows["/later"].detail
+    assert "[" not in rows["/no"].detail  # the reason is on the second row instead
+    assert "[queues while busy]" in rows["/later"].detail
+    assert "[runs now]" in rows["/ok"].detail
     lines = Picker(rows_from_matches([rows["/no"]])).render(80)
     assert "not available while a turn runs" in lines[2].plain
 
@@ -449,3 +451,58 @@ def test_status_parsing_handles_renames_prefixes_and_ignored_dirs() -> None:
     assert status.ignored == frozenset({"node_modules"})
     assert status.is_ignored("node_modules/pkg/index.js")
     assert not status.is_ignored("new.py")
+
+
+# ── the trigger picker draws one prompt line (the composer is not drawn under it) ─────
+
+
+def test_the_open_picker_draws_exactly_one_prompt_line(repo: Path) -> None:
+    from agenthicc.tui.input.buffer import InputBuffer
+    from agenthicc.tui.workspace.overlays.trigger_picker import TriggerPickerOverlay
+
+    overlay = TriggerPickerOverlay(
+        InputBuffer(list("@sr")),
+        0,
+        AtMentionTrigger(),
+        cwd=repo,
+        keymap=Keymap.build(DEFAULT_ACTIONS),
+    )
+    console = Console(width=80, record=True, color_system=None)
+    console.print(overlay.render())
+    lines = console.export_text().splitlines()
+    assert sum(1 for line in lines if line.startswith(glyphs().prompt)) == 1
+    assert lines[0].startswith(f"{glyphs().prompt} @sr")
+    assert any("src/" in line for line in lines[1:])
+    assert glyphs().cursor not in lines[0]
+
+
+def test_page_keys_move_by_the_rows_the_picker_showed(repo: Path) -> None:
+    from agenthicc.tui.cbreak_reader import Key
+    from agenthicc.tui.input.buffer import InputBuffer
+    from agenthicc.tui.workspace.overlays.trigger_picker import TriggerPickerOverlay
+
+    for index in range(40):
+        (repo / f"file{index:02}.txt").write_text("x")
+    overlay = TriggerPickerOverlay(
+        InputBuffer(list("@file")),
+        0,
+        AtMentionTrigger(),
+        cwd=repo,
+        keymap=Keymap.build(DEFAULT_ACTIONS),
+    )
+    overlay.render()
+    shown = overlay._picker.visible
+    assert 3 <= shown < 40
+    overlay.handle_key(Key.PAGE_DOWN, "")
+    assert overlay.selected == shown
+
+
+def test_fuzzy_and_match_positions_find_the_highlighted_characters() -> None:
+    from agenthicc.mentions.matcher import fuzzy_positions, match_positions
+
+    assert fuzzy_positions("cmp", "/compact") == (1, 3, 4)
+    assert fuzzy_positions("zzz", "/compact") is None
+    assert match_positions("/co", "/compact") == (0, 1, 2)
+    # A substring in the filename wins over one in a directory.
+    assert match_positions("a", "ab/cab.py") == (4,)
+    assert match_positions("", "x") == () and match_positions("q", "abc") == ()

@@ -17,7 +17,9 @@ Matching behaviour
   ``.gitignore`` ignores are skipped unless the fragment names them exactly.
 
 Each row has a kind glyph (directory or file) and a muted detail: a file's
-size, a directory's entry count. ``git status`` runs on a worker thread
+size, a directory's entry count. Only the first :data:`DETAIL_ROWS` rows of a
+listing are measured (one ``stat`` each), so a keystroke costs the same in a
+10,000-file project as in a small one. ``git status`` runs on a worker thread
 (:class:`WorkingTreeStatus`), never on the event loop; the picker uses the
 last answer and asks for a fresh one at most every two seconds.
 """
@@ -51,6 +53,10 @@ SCAN_TTL_S = 2.0
 RECENT_LIMIT = 20
 #: Changed files added to an empty fragment's listing.
 CHANGED_LIMIT = 50
+#: Rows of a listing whose size or entry count is measured.
+DETAIL_ROWS = 100
+#: Rows a listing holds at most; a project's thousands of files are reached by typing.
+MAX_MATCHES = 200
 
 GitRunner = Callable[[Path], tuple[str, str] | None]
 
@@ -183,10 +189,18 @@ class WorkingTreeStatus:
 
 
 @dataclass(frozen=True)
-class _Entry:
-    relative: str  # path relative to the scanned directory, no trailing "/"
-    is_dir: bool
-    detail: str
+class _Scan:
+    """The top-level entries of a directory and their children, as picker rows.
+
+    The rows are built once per scan, not once per keystroke. ``visible`` and
+    ``hidden`` split them by what ``.gitignore`` ignores, as of *ignored_for*.
+    """
+
+    taken: float
+    items: tuple[MatchItem, ...]
+    ignored_for: frozenset[str]
+    visible: tuple[MatchItem, ...]
+    hidden: tuple[MatchItem, ...]
 
 
 def _entry_count(path: Path) -> str:
@@ -239,7 +253,7 @@ class AtMentionTrigger(TriggerHandlerBase):
         self._agents = agents
         self._git = git
         self._status: dict[Path, WorkingTreeStatus] = {}
-        self._scans: dict[Path, tuple[float, list[_Entry]]] = {}
+        self._scans: dict[Path, _Scan] = {}
         self._recent: list[str] = []
 
     # ------------------------------------------------------------------
@@ -253,6 +267,10 @@ class AtMentionTrigger(TriggerHandlerBase):
             status = WorkingTreeStatus(cwd, runner=self._git)
             self._status[cwd] = status
         return status
+
+    def warm(self, cwd: Path) -> None:
+        """Start ``git status`` for *cwd* now, so the first ``@`` already knows what changed."""
+        self.working_tree(cwd).refresh()
 
     def note_mention(self, value: str) -> None:
         """Remember *value* as mentioned in this session (most recent first)."""
@@ -280,41 +298,50 @@ class AtMentionTrigger(TriggerHandlerBase):
         return expanded if expanded.is_absolute() else cwd / expanded
 
     @staticmethod
-    def _item(display: str, is_dir: bool, detail: str) -> MatchItem:
+    def _item(display: str, is_dir: bool) -> MatchItem:
         g = glyphs()
         return MatchItem(
             value=f"{display}/" if is_dir else display,
             label=display,
-            detail=detail,
             glyph=g.folder if is_dir else g.info,
             path=True,
         )
 
-    def _scan(self, cwd: Path) -> list[_Entry]:
+    @staticmethod
+    def _measure(items: list[MatchItem], locate: Callable[[MatchItem], Path]) -> list[MatchItem]:
+        """Fill the detail of the first :data:`DETAIL_ROWS` of *items*; return *items*."""
+        for item in items[:DETAIL_ROWS]:
+            item.detail = _describe(locate(item), item.value.endswith("/"))
+        return items
+
+    def _scan(self, cwd: Path, status: WorkingTreeStatus) -> _Scan:
         """Top-level entries and their children, reused for a moment."""
         cached = self._scans.get(cwd)
         now = time.monotonic()
-        if cached is not None and now - cached[0] < SCAN_TTL_S:
-            return cached[1]
-        entries: list[_Entry] = []
-        for entry in _list(cwd):
-            path = Path(entry.path)
-            is_dir = entry.is_dir()
-            entries.append(_Entry(entry.name, is_dir, _describe(path, is_dir)))
-            # Always include immediate children so path-segment matching works:
-            # e.g. @read → docs/README.md even when "docs" doesn't start with "read".
-            if is_dir:
-                for child in _list(path):
-                    child_dir = child.is_dir()
-                    entries.append(
-                        _Entry(
-                            f"{entry.name}/{child.name}",
-                            child_dir,
-                            _describe(Path(child.path), child_dir),
-                        )
-                    )
-        self._scans[cwd] = (now, entries)
-        return entries
+        if cached is not None and now - cached.taken < SCAN_TTL_S:
+            items = cached.items
+            taken = cached.taken
+        else:
+            found: list[MatchItem] = []
+            for entry in _list(cwd):
+                is_dir = entry.is_dir()
+                found.append(self._item(entry.name, is_dir))
+                # Always include immediate children so path-segment matching works:
+                # e.g. @read → docs/README.md even when "docs" doesn't start with "read".
+                if is_dir:
+                    for child in _list(Path(entry.path)):
+                        found.append(self._item(f"{entry.name}/{child.name}", child.is_dir()))
+            items = tuple(found)
+            taken = now
+            cached = None
+        if cached is not None and cached.ignored_for is status.ignored:
+            return cached
+        ignored = status.ignored
+        visible = tuple(item for item in items if not status.is_ignored(item.label))
+        hidden = tuple(item for item in items if status.is_ignored(item.label))
+        scan = _Scan(taken, items, ignored, visible, hidden)
+        self._scans[cwd] = scan
+        return scan
 
     def get_matches(self, fragment: str, ctx: TriggerContext) -> list[MatchItem]:
         """Return filesystem matches for *fragment* relative to *ctx.cwd*.
@@ -361,6 +388,7 @@ class AtMentionTrigger(TriggerHandlerBase):
             # with all docs instead of returning no results.
             prefix_cf = file_prefix.casefold()
             results: list[MatchItem] = []
+            located: dict[str, Path] = {}
             for entry in _list(search_dir):
                 if prefix_cf and not entry.name.casefold().startswith(prefix_cf):
                     continue
@@ -368,27 +396,24 @@ class AtMentionTrigger(TriggerHandlerBase):
                 exact = entry.name.casefold() == prefix_cf
                 if not exact and status.is_ignored(display_path.replace("\\", "/")):
                     continue
-                is_dir = entry.is_dir()
-                results.append(
-                    self._item(display_path, is_dir, _describe(Path(entry.path), is_dir))
-                )
-            return results
+                item = self._item(display_path, entry.is_dir())
+                located[item.value] = Path(entry.path)
+                results.append(item)
+            return self._measure(results, lambda item: located[item.value])
 
         # ── top-level search: build candidate pool then rank ─────────────────
         if not cwd.is_dir():
             return []
 
         query = fragment.casefold()
-        candidates: dict[str, MatchItem] = {}
-        for scanned in self._scan(cwd):
-            named = query in (
-                scanned.relative.casefold(),
-                scanned.relative.rsplit("/", 1)[-1].casefold(),
-            )
-            if status.is_ignored(scanned.relative) and not named:
-                continue
-            item = self._item(scanned.relative, scanned.is_dir, scanned.detail)
-            candidates[item.value] = item
+        scan = self._scan(cwd, status)
+        # An ignored entry is offered only when the fragment names it exactly.
+        named = [
+            item
+            for item in scan.hidden
+            if query in (item.label.casefold(), item.label.rsplit("/", 1)[-1].casefold())
+        ]
+        candidates: dict[str, MatchItem] = {item.value: item for item in (*scan.visible, *named)}
         changed = [path for path in status.changed if not status.is_ignored(path)]
         for relative in [*self._recent, *changed[:CHANGED_LIMIT]]:
             clean = relative.rstrip("/")
@@ -396,9 +421,11 @@ class AtMentionTrigger(TriggerHandlerBase):
                 continue
             path = cwd / clean
             is_dir = path.is_dir()
+            if f"{clean}/" in candidates or clean in candidates:
+                continue
             if not (is_dir or path.is_file()):
                 continue
-            item = self._item(clean, is_dir, _describe(path, is_dir))
+            item = self._item(clean, is_dir)
             candidates.setdefault(item.value, item)
 
         # Values carry a trailing "/" for directories, as git reports them.
@@ -410,8 +437,9 @@ class AtMentionTrigger(TriggerHandlerBase):
                 key=lambda item: order[item.value],
             )
             rest = [item for item in candidates.values() if item.value not in order]
-            return [*first, *rest]
-        return filter_and_rank(fragment, list(candidates.values()), boosted=boosted)
+            return self._measure([*first, *rest][:MAX_MATCHES], lambda item: cwd / item.value)
+        ranked = filter_and_rank(fragment, list(candidates.values()), boosted=boosted)
+        return self._measure(ranked[:MAX_MATCHES], lambda item: cwd / item.value)
 
     def on_select(
         self,

@@ -43,7 +43,7 @@ class PickerOutcome(Enum):
 class TriggerPickerOverlay(Overlay):
     """Shows a dropdown picker for @mention and /command triggers.
 
-    Rendered inside the always-on Live block — no pause/restart required.
+    Rendered inside the always-on Live block — nothing pauses or restarts.
     TUX-05: the matches are drawn by :class:`agenthicc.tui.workspace.picker.Picker`
     (groups, match highlight, keys, wrapped details, a position footer).
     """
@@ -72,7 +72,9 @@ class TriggerPickerOverlay(Overlay):
         self._matches: list[MatchItem] = []
         self._selected: int = 0  # index into self._matches
         self._scroll: int = 0  # index of first visible item
-        self._visible: int = 0  # matches the last render showed
+        # The rows are built once per query, not once per redraw: an ``@``
+        # listing can hold every file of a project.
+        self._picker: Picker[MatchItem] = Picker()
         self.refresh()
 
     # ── the trigger, derived from the buffer ─────────────────────────────────
@@ -119,6 +121,10 @@ class TriggerPickerOverlay(Overlay):
             self._matches = self._handler.get_matches(fragment, self._ctx)
             self._selected = 0
             self._scroll = 0
+            self._picker.set_rows(
+                rows_from_matches(self._matches),
+                query=self._char + fragment if self._char == "/" else fragment,
+            )
         return True
 
     # ── keys ──────────────────────────────────────────────────────────────────
@@ -189,7 +195,7 @@ class TriggerPickerOverlay(Overlay):
 
     def _page_size(self) -> int:
         """Matches the last render showed (at least one)."""
-        return max(1, self._visible)
+        return max(1, self._picker.visible)
 
     # ── Overlay interface ──────────────────────────────────────────────────────
 
@@ -209,15 +215,11 @@ class TriggerPickerOverlay(Overlay):
         if self._matches:
             size = shutil.get_terminal_size((80, 24))
             g = glyphs()
-            picker = Picker(
-                rows_from_matches(self._matches),
-                query=self._char + self.fragment if self._char == "/" else self.fragment,
-                footer_keys=f"{g.up}{g.down} tab enter",
-            )
+            picker = self._picker
+            picker.footer_keys = f"{g.up}{g.down} tab enter"
             picker.selected = self._selected
             picker.scroll = self._scroll
             result_lines.extend(picker.render(size.columns, picker_height(size.lines)))
             self._scroll = picker.scroll
-            self._visible = picker.visible
 
         return Group(*result_lines)
