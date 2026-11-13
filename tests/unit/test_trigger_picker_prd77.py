@@ -27,7 +27,6 @@ def _make_registry(*chars: str):
         )
         h.get_matches.return_value = []
         h.get_hint.return_value = None
-        h.get_lines.side_effect = lambda item, w: [item.display[:w]]
         h.on_select.side_effect = lambda item, frag, buf, _ch=ch: TriggerResult(
             buffer=buf + [_ch] + list(frag) if item is None else buf + list(_ch + item.value)
         )
@@ -191,7 +190,7 @@ def test_enter_with_match_does_not_submit():
     from agenthicc.tui.trigger import TriggerResult, MatchItem
 
     registry, handlers = _make_registry("@")
-    match_item = MatchItem(display="docs/index.md", value="docs/index.md")
+    match_item = MatchItem(value="docs/index.md", label="docs/index.md")
     handlers["@"].get_matches.return_value = [match_item]
     handlers["@"].on_select.side_effect = lambda item, frag, buf: TriggerResult(
         buffer=buf + list("@" + item.value)
@@ -233,7 +232,7 @@ def test_tab_with_match_does_not_submit():
     from agenthicc.tui.trigger import TriggerResult, MatchItem
 
     registry, handlers = _make_registry("@")
-    match_item = MatchItem(display="docs/index.md", value="docs/index.md")
+    match_item = MatchItem(value="docs/index.md", label="docs/index.md")
     handlers["@"].get_matches.return_value = [match_item]
     handlers["@"].on_select.side_effect = lambda item, frag, buf: TriggerResult(
         buffer=buf + list("@" + item.value)
@@ -299,7 +298,7 @@ def test_space_is_inserted_without_selecting_a_command() -> None:
         label = "Command"
 
         def get_matches(self, fragment, ctx):
-            return [MatchItem(display="/build", value="build")] if fragment == "b" else []
+            return [MatchItem(value="build", label="/build")] if fragment == "b" else []
 
         def on_select(self, item, fragment, buf):
             raise AssertionError("SPACE must not select a completion")
@@ -312,9 +311,6 @@ def test_space_is_inserted_without_selecting_a_command() -> None:
 
         def get_hint(self, item):
             return None
-
-        def get_lines(self, item, available_width):
-            return [item.display]
 
     manager = TriggerManager()
     manager.register(Handler())

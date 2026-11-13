@@ -38,16 +38,22 @@ class TriggerResult:
 
 @dataclass
 class MatchItem:
-    """One row in the dropdown for any trigger type."""
+    """One row of a trigger picker, in structured fields (TUX-05).
 
-    display: str  # computed single-line fallback (backwards compat)
-    value: str  # text inserted into buffer on selection
-    hint: str = ""  # optional below-dropdown annotation
+    :class:`agenthicc.tui.workspace.picker.Picker` lays the fields out: the
+    *glyph* and *label* on the left, the *detail* beside them (wrapped with a
+    hanging indent, or on its own row in a narrow terminal), the *keys*
+    right-aligned, and a heading whenever *group* changes between rows.
+    """
 
-    # Structured fields (PRD-69) — set by handlers that want the overlay to
-    # render a two-column layout with description wrapping.
-    label: str = ""  # left column  (e.g. "/commands", "@docs/index.md")
-    detail: str = ""  # right column — full, untruncated description/path
+    value: str  # text inserted into the buffer on selection
+    label: str  # left column: "/compact", "src/a.py", "@agent:reviewer"
+    detail: str = ""  # description, size or entry count
+    group: str = ""  # heading this row belongs under; "" for a flat ranked list
+    glyph: str = ""  # kind marker drawn before the label (directory, file, agent)
+    keys: str = ""  # key binding shown right-aligned ("ctrl+g")
+    disabled: str = ""  # why the row cannot run now; the row is dimmed
+    path: bool = False  # the label is a path: directory muted, filename in text
 
 
 @dataclass
@@ -78,7 +84,6 @@ class TriggerHandler(Protocol):
     def on_cancel(self, fragment: str, buf: list[str]) -> list[str]: ...
     def can_activate(self, buf: list[str]) -> bool: ...
     def get_hint(self, item: MatchItem | None) -> str | None: ...
-    def get_lines(self, item: MatchItem, available_width: int) -> list[str]: ...
 
 
 class TriggerHandlerBase:
@@ -101,12 +106,8 @@ class TriggerHandlerBase:
         return True
 
     def get_hint(self, item: MatchItem | None) -> str | None:
-        """No hint by default."""
+        """No hint: the picker shows a row's detail in the row itself (TUX-05)."""
         return None
-
-    def get_lines(self, item: MatchItem, available_width: int) -> list[str]:
-        """Single-line display, clipped to available_width."""
-        return [item.display[:available_width]]
 
 
 class TriggerManager:

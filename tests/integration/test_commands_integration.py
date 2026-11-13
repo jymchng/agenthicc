@@ -232,7 +232,7 @@ def test_slash_and_skill_triggers_split_namespaces():
     from agenthicc.tui.trigger import TriggerContext
 
     reg = UnifiedCommandRegistry()
-    reg.register(Command("/builtin-cmd", "Built-in", group="Built-in"))
+    reg.register(Command("/builtin-cmd", "Built-in", group="Session"))
     reg.register(Command("$skill-cmd", "Skill", group="Skills", source_id="skill:skill-cmd"))
     reg.register(Command("/custom-cmd", "Custom", group="Custom"))
 

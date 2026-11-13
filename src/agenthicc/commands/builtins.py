@@ -9,8 +9,10 @@ from .command import BusyPolicy, Command, CommandContext, CommandHandler, UsageS
 from .registry import UnifiedCommandRegistry
 
 if TYPE_CHECKING:
+    from agenthicc.runners.model_switch import ModelChoice
     from agenthicc.skills.loader import SkillDef, SkillDiscoveryResult
     from agenthicc.tui.workspace.overlay import Overlay
+    from agenthicc.tui.workspace.picker import PickerRow
 
 __all__ = ["BUILTIN_COMMANDS", "build_builtin_registry", "_make_skill_handler"]
 
@@ -694,100 +696,107 @@ def _present_registry_result(ctx: CommandContext, title: str, message: str) -> N
     ctx.console.print(message, markup=False)
 
 
+def _model_rows(choices: "list[ModelChoice]") -> "list[PickerRow[ModelChoice]]":
+    """``/model`` picker rows: grouped by provider, then the saved profiles."""
+    from agenthicc.runners.model_switch import short_model
+    from agenthicc.tui.theme import glyphs
+    from agenthicc.tui.workspace.picker import PickerRow
+
+    g = glyphs()
+    rows: list[PickerRow[ModelChoice]] = []
+    for choice in choices:
+        window = f"{choice.context_window // 1000}k context" if choice.context_window else ""
+        state = g.ok if choice.available else f"{g.fail} set {choice.missing_env}"
+        detail = f" {g.sep} ".join(part for part in (window, state) if part)
+        if choice.current:
+            detail += " (current)"
+        rows.append(
+            PickerRow(
+                value=choice,
+                label=choice.profile or short_model(choice.model),
+                detail=detail if choice.available else window,
+                group=f"Profile {g.sep} {choice.provider}" if choice.profile else choice.provider,
+                disabled="" if choice.available else f"{g.fail} set {choice.missing_env}",
+            )
+        )
+    return rows
+
+
 def _cmd_model(ctx: CommandContext) -> bool:
-    try:
-        from rich.table import Table
-        from rich.text import Text
-        from rich import box as _rbox
-        from agenthicc.config import (
-            SUPPORTED_PROVIDERS,
-            PROVIDER_API_KEY_ENVVAR,
-            PROVIDER_DEFAULT_MODELS,
+    """``/model`` opens the picker; ``/model PROVIDER [MODEL] [--save]`` switches (TUX-05)."""
+    from rich.markup import escape
+
+    from agenthicc.config import SUPPORTED_PROVIDERS
+    from agenthicc.runners.model_switch import model_choice, model_choices
+    from agenthicc.tui.theme import palette
+
+    p = palette()
+    parts = ctx.args.split()
+    save = "--save" in parts
+    parts = [part for part in parts if part != "--save"]
+    if not parts:
+        choices = model_choices(ctx.config)
+        if ctx.set_pending_menu is None or ctx.switch_model is None:
+            for choice in choices:
+                mark = "*" if choice.current else " "
+                state = "ok" if choice.available else f"set {choice.missing_env}"
+                name = f"{choice.profile} ({choice.label})" if choice.profile else choice.label
+                ctx.console.print(f"{mark} {name}  {state}", markup=False)
+            return True
+        from agenthicc.tui.workspace.overlays.choice_picker import ChoicePickerOverlay
+
+        switch = ctx.switch_model
+        saver = ctx.save_model
+        overlay: ChoicePickerOverlay[ModelChoice] = ChoicePickerOverlay(
+            "Model",
+            _model_rows(choices),
+            subtitle="applies from the next turn, no restart",
+            choose=switch,
+            close=ctx.close_overlay if ctx.close_overlay is not None else (lambda: None),
+            keep_open=True,
+            extra_keys={"s": ("save as default", saver)} if saver is not None else None,
         )
-        import os
-    except ImportError:
-        ctx.console.print(f"  Model: {ctx.model}")
+        current = next((choice for choice in choices if choice.current), None)
+        if current is not None:
+            overlay.select_value(current)
+        ctx.set_pending_menu(overlay)
         return True
 
-    cfg = ctx.config
-    parts = ctx.text.split()
-
-    if len(parts) == 1 or parts[0] == "/models":
-        current_provider = cfg.execution.provider
-        current_model = cfg.execution.effective_model()
-        table = Table(title="LLM Providers", box=_rbox.SIMPLE)
-        table.add_column("Provider", style="cyan")
-        table.add_column("Default Model")
-        table.add_column("API Key Env")
-        table.add_column("Status")
-        for provider in SUPPORTED_PROVIDERS:
-            display_env_var = PROVIDER_API_KEY_ENVVAR.get(provider, "—")
-            key_set = (
-                "✓ set"
-                if (provider == "ollama" or os.environ.get(display_env_var))
-                else "✗ not set"
-            )
-            key_style = "green" if "✓" in key_set else "dim red"
-            active = "◀ active" if provider == current_provider else ""
-            table.add_row(
-                f"[bold]{provider}[/bold]" if active else provider,
-                PROVIDER_DEFAULT_MODELS.get(provider, "—"),
-                display_env_var,
-                Text(key_set, style=key_style),
-            )
-        ctx.console.print(table, markup=True)
-        ctx.console.print(
-            Text.assemble(
-                ("Active: ", "dim"),
-                (current_provider, "cyan bold"),
-                (" / ", "dim"),
-                (current_model, "bold"),
-            )
-        )
-        ctx.console.print(
-            Text(
-                "  Set provider: /model <provider> [model]\n"
-                "  Example:  /model anthropic claude-sonnet-4-6\n"
-                "  Note: restart required for the change to take effect.",
-                style="dim",
-            )
-        )
-        return True
-
-    provider = parts[1].lower()
-    model_override = parts[2] if len(parts) > 2 else ""
+    provider = parts[0].lower()
+    profile = ""
     if provider not in SUPPORTED_PROVIDERS:
-        ctx.console.print(
-            Text(
-                f"Unknown provider: {provider!r}\nSupported: {', '.join(SUPPORTED_PROVIDERS)}",
-                style="red",
+        if provider in ctx.config.providers:
+            profile, provider = provider, ctx.config.providers[provider].provider
+        else:
+            choices_text = ", ".join([*SUPPORTED_PROVIDERS, *sorted(ctx.config.providers)])
+            ctx.console.print(
+                f"[{p.danger}]Unknown provider or profile {escape(parts[0])!r}. "
+                f"Choose one of: {escape(choices_text)}[/]"
             )
+            return True
+    choice = model_choice(
+        ctx.config,
+        provider,
+        "" if profile else (parts[1] if len(parts) > 1 else ""),
+        profile=profile,
+    )
+    if not choice.available:
+        ctx.console.print(
+            f"[{p.warning}]{escape(choice.missing_env)} is not set; "
+            f"set it to use {escape(choice.label)}.[/]"
         )
         return True
-    env_var: str | None = PROVIDER_API_KEY_ENVVAR.get(provider)
-    if provider != "ollama" and env_var and not os.environ.get(env_var):
+    if ctx.switch_model is None:
         ctx.console.print(
-            Text(
-                f"Warning: {env_var} is not set — agent calls will fail.\n"
-                f'  export {env_var}="your-api-key"',
-                style="yellow",
-            )
+            "/model needs the interactive TUI; set [execution] provider and model "
+            "in the configuration instead.",
+            markup=False,
         )
-    effective_model = model_override or PROVIDER_DEFAULT_MODELS.get(provider, "")
-    ctx.console.print(
-        Text.assemble(
-            ("Switched to ", "dim"),
-            (provider, "cyan bold"),
-            (" / ", "dim"),
-            (effective_model, "bold"),
-            (
-                "\n  Add to .agenthicc/agenthicc.toml to persist:\n"
-                f'  [execution]\n  provider = "{provider}"\n'
-                f'  model = "{effective_model}"',
-                "dim",
-            ),
-        )
-    )
+        return True
+    message = ctx.switch_model(choice)
+    if save and ctx.save_model is not None:
+        message = f"{message}. {ctx.save_model(choice)}"
+    ctx.console.print(f"[{p.muted}]{escape(message)}[/]")
     return True
 
 
@@ -1373,41 +1382,60 @@ def _menu_config(ctx: CommandContext) -> "Overlay":
 
 
 def _cmd_mode(ctx: CommandContext) -> bool:
+    """``/mode`` opens the picker; ``/mode NAME`` switches (TUX-05 §2.5)."""
+    from rich.markup import escape
+
+    from agenthicc.tui.theme import palette
+
+    p = palette()
     mode_manager = ctx.mode_manager
     if mode_manager is None:
-        ctx.console.print("[dim]Mode system not available.[/dim]")
+        ctx.console.print(f"[{p.muted}]Mode system not available.[/]")
         return True
     args = (ctx.args or "").strip()
     if not args:
-        try:
-            from rich.table import Table
-            from rich import box as _rbox
+        modes = mode_manager.registry.all()
+        if ctx.set_pending_menu is None:
+            for mode in modes:
+                mark = "*" if mode.name == mode_manager.active_name else " "
+                ctx.console.print(f"{mark} {mode.name}  {mode.description}", markup=False)
+            return True
+        from agenthicc.tui.workspace.overlays.choice_picker import ChoicePickerOverlay
+        from agenthicc.tui.workspace.picker import PickerRow
 
-            table = Table(title="Modes", box=_rbox.SIMPLE)
-            table.add_column("Mode")
-            table.add_column("Label")
-            table.add_column("Description")
-            modes = mode_manager.registry.all()
-            for m in modes:
-                marker = " < active" if m.name == mode_manager.active_name else ""
-                table.add_row(m.name, m.badge, m.description + marker)
-            ctx.console.print(table)
-        except Exception:  # noqa: BLE001
-            ctx.console.print(f"  Active mode: {mode_manager.active_name}")
-        ctx.console.print("  [dim]Use Shift+Tab to cycle, or /mode <name>[/dim]")
-    else:
-        try:
-            new_mode = mode_manager.set_by_name(args)
-        except AttributeError:
-            new_mode = mode_manager.set(args)  # type: ignore[attr-defined]
-        if new_mode:
-            ctx.console.print(f"  {new_mode.badge} [dim]Switched to {new_mode.name} mode.[/dim]")
-        else:
-            try:
-                choices = ", ".join(mode_manager.registry.selectable_names())
-            except AttributeError:
-                choices = "Safe, Plan, Yolo"
-            ctx.console.print(f"  [red]Unknown mode: {args!r}. Choose one of: {choices}.[/red]")
+        def choose(name: str) -> str:
+            chosen = mode_manager.set_by_name(name)
+            return f"{chosen.badge} {chosen.name} mode" if chosen else f"Unknown mode {name!r}"
+
+        overlay: ChoicePickerOverlay[str] = ChoicePickerOverlay(
+            "Mode",
+            [
+                PickerRow(
+                    value=mode.name,
+                    label=mode.name,
+                    glyph=mode.badge,
+                    detail=mode.description
+                    + (" (current)" if mode.name == mode_manager.active_name else ""),
+                )
+                for mode in modes
+            ],
+            subtitle="what the agent may do without asking",
+            choose=choose,
+            close=ctx.close_overlay if ctx.close_overlay is not None else (lambda: None),
+        )
+        overlay.select_value(mode_manager.active_name)
+        ctx.set_pending_menu(overlay)
+        return True
+    new_mode = mode_manager.set_by_name(args)
+    if new_mode is None:
+        choices = ", ".join(mode_manager.registry.selectable_names())
+        ctx.console.print(
+            f"[{p.danger}]Unknown mode: {escape(args)!r}. Choose one of: {escape(choices)}.[/]"
+        )
+        return True
+    ctx.console.print(
+        f"  {escape(new_mode.badge)} [{p.muted}]Switched to {escape(new_mode.name)} mode.[/]"
+    )
     return True
 
 
@@ -1457,13 +1485,14 @@ def _make_skill_handler(slug: str, skill: "SkillDef") -> CommandHandler:
 BUILTIN_COMMANDS: list[Command] = [
     Command(
         name="/replay",
+        group="Session",
         description="Replay a previous session's conversation in the scroll buffer",
         argument_hint="[session-id]",
-        group="Built-in",
         handler=_cmd_replay,
     ),
     Command(
         name="/cancel",
+        group="Session",
         description="Cancel the currently running intent",
         aliases=("/interrupt",),
         busy_policy=BusyPolicy.IMMEDIATE_CONTROL,
@@ -1471,109 +1500,111 @@ BUILTIN_COMMANDS: list[Command] = [
     ),
     Command(
         name="/loop",
+        group="Workflows",
         description="Schedule a recurring prompt or registered slash command",
         argument_hint="[interval] <prompt> | status | pause | resume | stop",
-        group="Built-in",
         busy_policy=BusyPolicy.QUEUE,
         busy_policy_resolver=_loop_busy_policy,
         handler=_cmd_loop,
     ),
     Command(
         name="/loops",
+        group="Workflows",
         description="Manage all scheduled loop jobs",
         argument_hint="",
-        group="Built-in",
         busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
         handler=_cmd_loops,
     ),
     Command(
         name="/schedules",
+        group="Workflows",
         description="Manage repository-scoped scheduled workflows",
         argument_hint="",
-        group="Built-in",
         busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
         handler=_cmd_schedules,
     ),
     Command(
         name="/schedule",
+        group="Workflows",
         description="Create or control a repository scheduled workflow",
         argument_hint="create ... | run-now ID | pause ID | resume ID NEXT-RUN | delete ID --confirm",
-        group="Built-in",
         busy_policy=BusyPolicy.IMMEDIATE_CONTROL,
         handler=_cmd_schedule,
     ),
     Command(
         name="/agents",
+        group="Agents",
         description="Open the agents hub: running work, what needs you, history, library",
         argument_hint="[running|needs-you|history|library]",
-        group="Built-in",
         busy_policy=BusyPolicy.IMMEDIATE_CONTROL,
         handler=_cmd_agents,
     ),
     Command(
         name="/dnd",
+        group="Agents",
         description="Toggle do-not-disturb for background agent attention",
-        group="Built-in",
         busy_policy=BusyPolicy.IMMEDIATE_CONTROL,
         handler=_cmd_dnd,
     ),
     Command(
         name="/inbox",
+        group="Agents",
         description="Review and answer background approvals and questions (agents hub)",
-        group="Built-in",
         busy_policy=BusyPolicy.IMMEDIATE_CONTROL,
         handler=_cmd_inbox,
     ),
     Command(
         name="/agent",
+        group="Agents",
         description="Choose the primary agent the session talks to (also Tab)",
         argument_hint="[name]",
-        group="Built-in",
         busy_policy=BusyPolicy.IMMEDIATE_CONTROL,
         handler=_cmd_agent,
     ),
     Command(
         name="/subagents",
+        group="Agents",
         description="Show the turn's subagents and open a worker's transcript (also Ctrl+O)",
-        group="Built-in",
         busy_policy=BusyPolicy.IMMEDIATE_CONTROL,
         handler=_cmd_subagents,
     ),
     Command(
         name="/clear",
+        group="Session",
         description="Clear the transcript display",
         busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
         handler=_cmd_clear,
     ),
     Command(
         name="/commands",
+        group="Session",
         description="List all registered commands with their source",
         argument_hint="[reload]",
-        group="Built-in",
         busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
         busy_policy_resolver=_reloadable_list_policy,
         handler=_cmd_commands,
     ),
     Command(
         name="/tools",
+        group="Configuration",
         description="List all tools registered for this session",
         argument_hint="[reload]",
-        group="Built-in",
         busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
         busy_policy_resolver=_reloadable_list_policy,
         handler=_cmd_tools,
     ),
     Command(
         name="/workflows",
+        group="Workflows",
         description="List all loaded workflows and their phases",
         argument_hint="[runs|reload]",
-        group="Built-in",
         busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
         busy_policy_resolver=_workflows_busy_policy,
         handler=_cmd_workflows,
     ),
     Command(
         name="/theme",
+        group="Configuration",
         description="Choose the colour theme; applies at once, no restart",
         argument_hint="[name] [--save]",
         busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
@@ -1581,13 +1612,14 @@ BUILTIN_COMMANDS: list[Command] = [
     ),
     Command(
         name="/config",
+        group="Configuration",
         description="Open configuration editor",
-        group="Built-in",
         menu_factory=_menu_config,
         busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
     ),
     Command(
         name="/expand",
+        group="Session",
         description="Expand tool output or @mention",
         argument_hint="[tool-id-or-@path]",
         busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
@@ -1595,6 +1627,7 @@ BUILTIN_COMMANDS: list[Command] = [
     ),
     Command(
         name="/help",
+        group="Session",
         description="List available commands",
         argument_hint="[/command]",
         busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
@@ -1602,6 +1635,7 @@ BUILTIN_COMMANDS: list[Command] = [
     ),
     Command(
         name="/history",
+        group="Session",
         description="Browse transcript history or repair provider tool history",
         argument_hint="[repair]",
         busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
@@ -1610,15 +1644,15 @@ BUILTIN_COMMANDS: list[Command] = [
     ),
     Command(
         name="/init",
+        group="Session",
         description="Inspect the project and preview AGENTS.md guidance",
         argument_hint="[write] [--force]",
-        group="Built-in",
         handler=_cmd_init,
     ),
     Command(
         name="/mcp",
-        description="Show MCP server status",
         group="MCP",
+        description="Show MCP server status",
         argument_hint="[status|reload|connect NAME|disconnect NAME|refresh NAME|doctor [NAME]]",
         busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
         busy_policy_resolver=_mcp_busy_policy,
@@ -1626,20 +1660,17 @@ BUILTIN_COMMANDS: list[Command] = [
     ),
     Command(
         name="/model",
-        description="Show or switch LLM provider/model",
+        group="Configuration",
+        aliases=("/models",),
+        description="Choose the provider and model; applies from the next turn",
         argument_hint="[provider] [model]",
         busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
         busy_policy_resolver=_read_only_without_args,
         handler=_cmd_model,
     ),
     Command(
-        name="/models",
-        description="List all available LLM providers",
-        busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
-        handler=_cmd_model,
-    ),
-    Command(
         name="/skills",
+        group="Configuration",
         description="List or reload available skills",
         argument_hint="[reload]",
         busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
@@ -1648,30 +1679,35 @@ BUILTIN_COMMANDS: list[Command] = [
     ),
     Command(
         name="/status",
+        group="Session",
         description="Show running agents and their tasks",
         busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
         handler=_cmd_status,
     ),
     Command(
         name="/startup",
+        group="Session",
         description="Show startup phase readiness and timing diagnostics",
         busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
         handler=_cmd_startup,
     ),
     Command(
         name="/keybindings",
+        group="Configuration",
         description="Show key bindings and where to change them",
         busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
         handler=_cmd_keybindings,
     ),
     Command(
         name="/perf",
+        group="Session",
         description="Show live-block frame counts and render and write cost",
         busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
         handler=_cmd_perf,
     ),
     Command(
         name="/ps",
+        group="Session",
         description="Open the live manager for owned background terminals",
         aliases=("/processes",),
         argument_hint="[terminal-id] [--json]",
@@ -1680,18 +1716,14 @@ BUILTIN_COMMANDS: list[Command] = [
     ),
     Command(
         name="/background",
-        aliases=("/bg",),
-        description="Detach the active session into a background agent",
-        argument_hint="(alias: /bg)",
-        busy_policy=BusyPolicy.IMMEDIATE_CONTROL,
-    ),
-    Command(
-        name="/detach",
+        group="Session",
+        aliases=("/bg", "/detach"),
         description="Detach the active session into a background agent",
         busy_policy=BusyPolicy.IMMEDIATE_CONTROL,
     ),
     Command(
         name="/workers",
+        group="Agents",
         description="Show parallel workers in the agents hub",
         argument_hint="[--json]",
         busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
@@ -1699,6 +1731,7 @@ BUILTIN_COMMANDS: list[Command] = [
     ),
     Command(
         name="/stop",
+        group="Session",
         description="Stop all or one named background terminal",
         argument_hint="[terminal-id|all] [--force]",
         aliases=("/stop-terminal",),
@@ -1707,23 +1740,23 @@ BUILTIN_COMMANDS: list[Command] = [
     ),
     Command(
         name="/usage",
+        group="Session",
         description="Show local token, cost, and active-run usage",
-        group="Built-in",
         busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
         handler=_cmd_usage,
     ),
     Command(
         name="/mode",
+        group="Configuration",
         description="Show or switch operational mode",
         argument_hint="[Safe|Plan|Yolo]",
-        group="Built-in",
         handler=_cmd_mode,
     ),
     Command(
         name="/workflow",
+        group="Workflows",
         description="Switch workflow, or resume the latest saved run",
         argument_hint="<name> | resume [run-id] | reset [run-id]",
-        group="Built-in",
         # No handler: /workflow is intercepted in TUISession.route() before
         # dispatch_slash() so it can access session-local state.  The entry
         # exists here solely so the trigger picker displays and completes it.
@@ -1731,8 +1764,8 @@ BUILTIN_COMMANDS: list[Command] = [
     ),
     Command(
         name="/compact",
+        group="Session",
         description="Summarise conversation history to free context-window space",
-        group="Built-in",
         # No handler: /compact is intercepted in TUISession.route() before
         # dispatch_slash() so it can access session memory directly.
         handler=None,

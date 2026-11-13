@@ -167,8 +167,10 @@ def test_trigger_handlers_and_picker_navigation(tmp_path: Path) -> None:
     commands.register(Command("/very-long", "A very long description " * 5, argument_hint="[x]"))
     slash = SlashCommandTrigger(commands)
     item = slash.get_matches("very", TriggerContext(tmp_path))[0]
-    assert slash.get_lines(item, 30)
-    assert len(slash.get_lines(item, 200)) == 1
+    from agenthicc.tui.workspace.picker import Picker, rows_from_matches
+
+    assert len(Picker(rows_from_matches([item])).render(50)) == 4  # label, 2 detail rows, footer
+    assert len(Picker(rows_from_matches([item])).render(200)) == 2
     assert slash.can_activate([]) and not slash.can_activate(["x"])
 
     class Handler(TriggerHandlerBase):
@@ -176,7 +178,7 @@ def test_trigger_handlers_and_picker_navigation(tmp_path: Path) -> None:
         label = "test"
 
         def get_matches(self, fragment: str, ctx: TriggerContext) -> list[MatchItem]:
-            return [MatchItem("one", "one", hint="hint"), MatchItem("two", "two")]
+            return [MatchItem("one", "one", detail="detail"), MatchItem("two", "two")]
 
         def on_select(self, item: MatchItem | None, fragment: str, buf: list[str]):
             from agenthicc.tui.trigger import TriggerResult

@@ -138,6 +138,6 @@ def test_command_completion_factory_uses_the_same_picker_continuation() -> None:
 
 def test_argument_match_items_are_not_treated_as_command_prefixes() -> None:
     trigger = _trigger()
-    item = MatchItem(display="/workflow docs", value="/workflow docs")
+    item = MatchItem(value="/workflow docs", label="/workflow docs")
 
     assert trigger.has_argument_completions(item) is False

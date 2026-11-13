@@ -106,10 +106,13 @@ if TYPE_CHECKING:
         CycleAgentCommand,
         InterruptAgentCommand,
         OpenAgentsHubCommand,
+        OpenPaletteCommand,
         OpenSubagentsCommand,
         SendMessageCommand,
     )
+    from agenthicc.runners.model_switch import ModelChoice
     from agenthicc.tui.workspace import Workspace
+    from agenthicc.tui.workspace.overlays.palette import PaletteItem
     from agenthicc.tui.workspace.agents_hub import HubResult
     from agenthicc.tui.workspace.overlay import Overlay
     from agenthicc.tui.workspace.overlays.questions import AnswerContext
@@ -1552,9 +1555,17 @@ async def _build_session_context_impl(
     _register_skill_commands(cmd_registry, skills)
 
     trigger_registry = TriggerManager()
+    from agenthicc.tui.input.command_usage import CommandUsage
+
+    # TUX-05: one per-project usage record ranks both pickers and the palette.
+    command_usage = CommandUsage(Path.cwd())
     trigger_registry.register(AtMentionTrigger(agents=agents_registry.subagents))
-    trigger_registry.register(SlashCommandTrigger(cmd_registry, workflow_registry))
-    trigger_registry.register(SkillTrigger(cmd_registry))
+    trigger_registry.register(
+        SlashCommandTrigger(
+            cmd_registry, workflow_registry, usage=command_usage, keymap=app_state.keymap
+        )
+    )
+    trigger_registry.register(SkillTrigger(cmd_registry, usage=command_usage))
 
     # ── agent runner ──────────────────────────────────────────────────────────
     agent_runner = _build_agent_runner(
@@ -1670,6 +1681,8 @@ class TUISession:
         self._pending_skill_body: list[str] = []
         self._msg_queue: list[str] = []
         self._agent_task: asyncio.Task[object] | None = None
+        # TUX-05: a model chosen while a turn runs, applied when it ends.
+        self._pending_model: ModelChoice | None = None
         self._deferred_startup_task: asyncio.Task[object] | None = None
         self._last_submitted_text: str = ""
         # Foreground /background handoff state (agenthicc.background.integration).
@@ -3064,20 +3077,174 @@ class TUISession:
         return message
 
     def open_agent_picker(self) -> None:
-        """``/agent``: choose among the primary agents."""
+        """``/agent``: choose among the primary agents (AGX-09's library list)."""
         from agenthicc.agents.selection import DEFAULT_AGENT, project_default
-        from agenthicc.tui.workspace.overlays.agent_picker import AgentPickerOverlay
+        from agenthicc.tui.workspace.overlays.choice_picker import ChoicePickerOverlay
+        from agenthicc.tui.workspace.picker import PickerRow
 
         overlays = self._workspace.overlays
+        current = self._ctx.app_state.agent()
+        default = project_default(Path.cwd()) or DEFAULT_AGENT
+        rows = [
+            PickerRow(
+                value=spec.name,
+                label=spec.name,
+                detail=spec.description
+                + (" (project default)" if spec.name == default else "")
+                + (" (current)" if spec.name == current else ""),
+            )
+            for spec in self._ctx.agents_registry.primary()
+        ]
+        overlay: ChoicePickerOverlay[str] = ChoicePickerOverlay(
+            "Agent",
+            rows,
+            subtitle="the next turn talks to the one you choose",
+            choose=self.select_agent,
+            close=overlays.hide,
+        )
+        overlay.picker.empty = "No primary agents are defined."
+        overlay.select_value(current)
+        overlays.show(overlay)
+
+    # ── command palette (TUX-05 §2.4) ────────────────────────────────────────
+
+    async def _open_palette_command(self, _command: OpenPaletteCommand) -> None:
+        self.open_palette()
+
+    def open_palette(self) -> None:
+        """Ctrl+P on an empty prompt: every command, key action and theme."""
+        from agenthicc.tui.actions import PALETTE_ACTIONS
+        from agenthicc.tui.theme import available_themes
+        from agenthicc.tui.triggers.slash_command import SlashCommandTrigger as _Slash
+        from agenthicc.tui.workspace.overlays.palette import CommandPaletteOverlay
+
+        handler = self._ctx.trigger_registry.get("/")
+        commands = (
+            handler
+            if isinstance(handler, _Slash)
+            else _Slash(self._ctx.cmd_registry, self._ctx.workflow_registry)
+        )
+        overlays = self._workspace.overlays
+        task = self._agent_task
         overlays.show(
-            AgentPickerOverlay(
-                self._ctx.agents_registry.primary(),
-                current=self._ctx.app_state.agent(),
-                default=project_default(Path.cwd()) or DEFAULT_AGENT,
-                choose=self.select_agent,
+            CommandPaletteOverlay(
+                commands=commands,
+                cwd=Path.cwd(),
+                keymap=self._ctx.app_state.keymap(),
+                actions=PALETTE_ACTIONS,
+                themes=available_themes(Path.cwd()),
+                run=self._run_palette_item,
                 close=overlays.hide,
+                busy=task is not None and not task.done(),
             )
         )
+
+    def _run_palette_item(self, item: PaletteItem) -> None:
+        """Run what the palette chose, the way its key or command would."""
+        from agenthicc.tui.runtime import (
+            BackgroundSubagentsCommand,
+            CycleAgentCommand,
+            SendMessageCommand,
+        )
+
+        bus = self._ctx.command_bus
+        if item.kind == "insert":
+            self._set_input_text(item.text)
+            return
+        if item.kind in ("command", "theme"):
+            text = item.text if item.kind == "command" else f"/theme {item.text}"
+            self._tasks.start(
+                bus.dispatch_async(SendMessageCommand(text=text)), name="palette-command"
+            )
+            return
+        match item.text:
+            case "agents.open_hub":
+                self.open_agents_hub("")
+            case "subagents.focus":
+                self.open_subagents()
+            case "composer.mode_cycle":
+                mode = self._ctx.mode_manager.cycle()
+                self._ctx.app_state.conversation.notify_transient(f"Switched to {mode.name} mode")
+            case "agents.cycle":
+                self._tasks.start(bus.dispatch_async(CycleAgentCommand()), name="palette-agent")
+            case "subagents.background":
+                self._tasks.start(
+                    bus.dispatch_async(BackgroundSubagentsCommand()), name="palette-background"
+                )
+
+    # ── model switching (TUX-05 §2.5) ────────────────────────────────────────
+
+    def switch_model(self, choice: ModelChoice) -> str:
+        """Use *choice* from the next turn; while a turn runs, after it ends."""
+        if not choice.available:
+            return f"{choice.missing_env} is not set"
+        task = self._agent_task
+        if task is not None and not task.done():
+            self._pending_model = choice
+            message = f"model {choice.label} after this turn"
+            self._ctx.app_state.conversation.notify_transient(message)
+            return message
+        return self._apply_model(choice)
+
+    def _apply_model(self, choice: ModelChoice) -> str:
+        """Fork the runner for *choice* through the start-up factory and say so."""
+        from agenthicc.runners.model_switch import execution_for, short_model
+        from agenthicc.tui.workspace.notices import MODEL_CHANGED
+
+        ctx = self._ctx
+        try:
+            execution = execution_for(ctx.cfg, choice)
+        except ValueError as exc:
+            return f"Cannot use {choice.label}: {exc}"
+        previous = ctx.model_label
+        runner = ctx.agent_runner
+        if isinstance(runner, _LazyAgentRunner):
+            forked = runner.for_execution(execution, conversation_id=ctx.session_id)
+        else:
+            from functools import partial
+
+            from agenthicc.config import build_llm_config
+
+            forked = _LazyAgentRunner(
+                partial(build_llm_config, execution, conversation_id=ctx.session_id),
+                cassette_dir=None,
+            )
+        ctx.agent_runner = cast("AgentRunnerBase", forked)
+        ctx.cfg.execution = execution
+        ctx.llm_config_error = None
+        label = f"{execution.provider}/{execution.effective_model()}"
+        ctx.model_label = label
+        ctx.app_state.conversation.model_name.set(label)
+        ctx.app_state.conversation.append_event(
+            MODEL_CHANGED,
+            {
+                "provider": execution.provider,
+                "model": execution.effective_model(),
+                "profile": choice.profile,
+                "previous": previous,
+            },
+        )
+        return f"model {short_model(execution.effective_model())} from the next turn"
+
+    def save_model(self, choice: ModelChoice) -> str:
+        """Save *choice* as ``[execution]`` provider/model (or profile) in the user config."""
+        from agenthicc.tui.preferences import save_config_value
+
+        try:
+            save_config_value("execution", "profile", choice.profile)
+            save_config_value("execution", "provider", choice.provider)
+            path = save_config_value("execution", "model", choice.model)
+        except (OSError, ValueError) as exc:
+            return f"Could not save the model: {exc}"
+        return f"Saved {choice.profile or choice.label} as the default in {path}"
+
+    def _apply_pending_model(self) -> None:
+        """A model chosen during the turn applies once the turn has ended."""
+        choice = self._pending_model
+        if choice is None:
+            return
+        self._pending_model = None
+        self._apply_model(choice)
 
     # ── subagents (AGX-08) ───────────────────────────────────────────────────
 
@@ -3315,6 +3482,8 @@ class TUISession:
             open_subagents=self.open_subagents,
             select_agent=self.select_agent,
             open_agent_picker=self.open_agent_picker,
+            switch_model=self.switch_model,
+            save_model=self.save_model,
         )
         return bool(self._cmd_dispatcher.dispatch(text, context))
 
@@ -4219,13 +4388,23 @@ class TUISession:
             return False
         # PRD-114: /workflow is handled locally — not via the command registry.
         # PRD-119: /compact likewise — needs access to session memory.
+        from agenthicc.tui.triggers.slash_command import SlashCommandTrigger
+
         parts = msg.split(None, 1)
+        if parts[0] in ("/workflow", "/compact"):
+            handler = self._ctx.trigger_registry.get("/")
+            if isinstance(handler, SlashCommandTrigger):
+                handler.record_use(msg)
         if parts[0] == "/workflow":
             return self._handle_workflow_command(parts[1] if len(parts) > 1 else "")
         if parts[0] == "/compact":
             self._tasks.start(self._handle_compact_command(), name="compact")
             return True
         command = self._ctx.cmd_registry.get(parts[0])
+        handler = self._ctx.trigger_registry.get(parts[0][0])
+        if command is not None and isinstance(handler, SlashCommandTrigger):
+            # TUX-05: the pickers rank by how often and how recently it ran.
+            handler.record_use(msg)
         if command is None and parts[0].startswith("$"):
             # Unknown dollar-prefixed text is ordinary user input, not a
             # failed command.  This also keeps literal `$...` prompts usable.
@@ -4386,6 +4565,8 @@ class TUISession:
 
     def advance(self) -> None:
         """Drain _msg_queue: dispatch slash commands, start next agent task."""
+        if self._agent_task is None or self._agent_task.done():
+            self._apply_pending_model()
         notice_kept = False
         while self._msg_queue:
             msg = self._msg_queue.pop(0).strip()
@@ -5370,6 +5551,7 @@ class TUISession:
             CycleAgentCommand,
             InterruptAgentCommand,
             OpenAgentsHubCommand,
+            OpenPaletteCommand,
             OpenSubagentsCommand,
             SendMessageCommand,
         )
@@ -5382,6 +5564,9 @@ class TUISession:
         ctx.command_bus.register(OpenAgentsHubCommand, self._open_agents_hub_command)
         ctx.command_bus.register(OpenSubagentsCommand, self._open_subagents_command)
         ctx.command_bus.register(BackgroundSubagentsCommand, self._background_subagents_command)
+        ctx.command_bus.register(OpenPaletteCommand, self._open_palette_command)
+        # TUX-05: the scroll buffer renders model_changed notices.
+        import agenthicc.tui.workspace.notices  # noqa: F401
 
         startup = ctx.startup
         if startup is not None:

@@ -116,6 +116,8 @@ class Glyphs:
     meter_full: str
     meter_empty: str
     sep: str
+    folder: str
+    """A directory row in the ``@`` picker (TUX-05)."""
 
 
 UNICODE_GLYPHS = Glyphs(
@@ -141,6 +143,7 @@ UNICODE_GLYPHS = Glyphs(
     meter_full="▰",
     meter_empty="▱",
     sep="·",
+    folder="▸",
 )
 
 ASCII_GLYPHS = Glyphs(
@@ -166,6 +169,7 @@ ASCII_GLYPHS = Glyphs(
     meter_full="#",
     meter_empty=".",
     sep="-",
+    folder=">",
 )
 
 

@@ -1,17 +1,49 @@
-"""Command and skill triggers — implements PRD-36, PRD-37, PRD-38, PRD-69."""
+"""Command and skill triggers — PRD-36, PRD-37, PRD-38, TUX-05.
+
+The ``/`` picker matches fuzzily over a command's name, aliases and
+description (:meth:`UnifiedCommandRegistry.search`), breaks ties by how often
+and how recently the command ran in this project (:class:`CommandUsage`), and
+with an empty fragment lists the commands grouped: *Suggested* (the five
+most used) and then the registry's groups. Aliases collapse into their
+command's row, and a command bound to a key shows the key.
+"""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Literal
 
 from agenthicc.commands.command import BusyPolicy, Command
 from agenthicc.commands.registry import UnifiedCommandRegistry
 from agenthicc.tui.trigger import MatchItem, TriggerContext, TriggerHandlerBase, TriggerResult
 
 if TYPE_CHECKING:
+    from agenthicc.tui.input.command_usage import CommandUsage
+    from agenthicc.tui.keymap import Keymap
     from agenthicc.workflows.registry import WorkflowRegistry
 
-_NAME_COL = 24  # characters reserved for the command name column
+__all__ = ["SUGGESTED_GROUP", "SkillTrigger", "SlashCommandTrigger", "command_keys"]
+
+#: The heading of the most used commands in an empty-fragment listing.
+SUGGESTED_GROUP = "Suggested"
+_SUGGESTED_COUNT = 5
+
+
+def command_keys(name: str, keymap: Keymap | None = None) -> str:
+    """The key bound to the action that does what command *name* does, or ``""``.
+
+    *keymap* is the user's effective keymap; without one the defaults apply.
+    """
+    from agenthicc.tui.actions import COMMAND_ACTIONS, DEFAULT_ACTIONS
+
+    action_name = COMMAND_ACTIONS.get(name)
+    if action_name is None:
+        return ""
+    if keymap is not None:
+        keys = keymap.action(action_name).keys
+    else:
+        keys = next((a.keys for a in DEFAULT_ACTIONS if a.name == action_name), ())
+    return keys[0] if keys else ""
 
 
 class SlashCommandTrigger(TriggerHandlerBase):
@@ -20,18 +52,22 @@ class SlashCommandTrigger(TriggerHandlerBase):
     char = "/"
     label = "Command"
     skill_only = False
-    include_aliases = False
 
     def __init__(
         self,
         registry: UnifiedCommandRegistry | None = None,
         workflow_registry: WorkflowRegistry | None = None,
+        *,
+        usage: CommandUsage | None = None,
+        keymap: Callable[[], Keymap] | None = None,
     ) -> None:
         self._registry = registry  # UnifiedCommandRegistry | None
         # Keep the live registry reference rather than taking a snapshot.  The
         # TUI reload path replaces the registry contents in place, so newly
         # discovered workflows become available without rebuilding triggers.
         self._workflow_registry = workflow_registry
+        self._usage = usage
+        self._keymap = keymap
 
     def get_matches(self, fragment: str, ctx: TriggerContext) -> list[MatchItem]:
         if self._registry is None:
@@ -41,32 +77,63 @@ class SlashCommandTrigger(TriggerHandlerBase):
         if argument_matches is not None:
             return argument_matches
 
-        partial = self.char + fragment
-        cmds = [
+        keymap = self._keymap() if self._keymap is not None else None
+        counts = self._usage.counts() if self._usage is not None else {}
+        if fragment:
+            ranked = [
+                cmd
+                for cmd in self._registry.search(self.char + fragment, counts)
+                if _is_skill_command(cmd) is self.skill_only
+            ]
+            return [self._row(cmd, "", ctx.busy, keymap) for cmd in ranked]
+
+        commands = [
             cmd
-            for cmd in self._registry.matches(partial)
+            for cmd in self._registry.all_commands()
             if _is_skill_command(cmd) is self.skill_only
         ]
-        results = []
-        for cmd in cmds:
-            names = (cmd.name, *cmd.aliases) if self.include_aliases else (cmd.name,)
-            for name in names:
-                if not name.startswith(partial):
-                    continue
-                # display: short single-line fallback for consumers without get_lines
-                description = self._display_description(cmd)
-                short_desc = description[:36] + "…" if len(description) > 36 else description
-                display = f"{name:<{_NAME_COL}} {short_desc}"
-                results.append(
-                    MatchItem(
-                        display=display,
-                        value=name,
-                        hint=self._format_hint(cmd, name, busy=ctx.busy),
-                        label=name,
-                        detail=self._detail(cmd, ctx.busy),
-                    )
-                )
-        return results
+        by_name = {cmd.name: cmd for cmd in commands}
+        suggested = [
+            name
+            for name, _ in sorted(counts.items(), key=lambda item: (-item[1][0], -item[1][1]))
+            if name in by_name
+        ][:_SUGGESTED_COUNT]
+        rows = [self._row(by_name[name], SUGGESTED_GROUP, ctx.busy, keymap) for name in suggested]
+        for group in self._registry.groups():
+            rows.extend(
+                self._row(cmd, group, ctx.busy, keymap)
+                for cmd in commands
+                if cmd.group == group and cmd.name not in suggested
+            )
+        return rows
+
+    def record_use(self, text: str) -> None:
+        """Count a submitted command toward the picker's ranking."""
+        if self._usage is None or self._registry is None:
+            return
+        command = self._registry.get(text.split(None, 1)[0]) if text.strip() else None
+        if command is not None and _is_skill_command(command) is self.skill_only:
+            self._usage.record(command.name)
+
+    def _row(self, cmd: Command, group: str, busy: bool, keymap: Keymap | None) -> MatchItem:
+        detail = self._display_description(cmd)
+        if cmd.aliases:
+            word = "alias" if len(cmd.aliases) == 1 else "aliases"
+            detail = f"{detail} ({word} {', '.join(cmd.aliases)})"
+        policy = _policy(cmd)
+        disabled = ""
+        if busy and policy is BusyPolicy.REJECT:
+            disabled = "not available while a turn runs"
+        elif busy and policy is BusyPolicy.QUEUE:
+            detail = f"{detail} · runs after the turn"
+        return MatchItem(
+            value=cmd.name,
+            label=cmd.name,
+            detail=detail,
+            group=group,
+            keys=command_keys(cmd.name, keymap),
+            disabled=disabled,
+        )
 
     def _get_argument_matches(self, fragment: str) -> list[MatchItem] | None:
         """Return argument completions when *fragment* contains a command.
@@ -146,15 +213,7 @@ class SlashCommandTrigger(TriggerHandlerBase):
                 if workflow is not None
                 else f"Use {value}"
             )
-            results.append(
-                MatchItem(
-                    display=f"{value:<{_NAME_COL}} {detail}",
-                    value=value,
-                    hint=f"  ↑ {value}  —  {detail}",
-                    label=value,
-                    detail=detail,
-                )
-            )
+            results.append(MatchItem(value=value, label=value, detail=detail))
         return results
 
     def has_argument_completions(self, item: MatchItem | None) -> bool:
@@ -167,36 +226,26 @@ class SlashCommandTrigger(TriggerHandlerBase):
             or (command.name == "/workflow" and self._workflow_registry is not None)
         )
 
+    def registry_command(self, name: str) -> Command | None:
+        """The command *name* (or an alias of it) names, if registered."""
+        return self._registry.get(name) if self._registry is not None else None
+
+    def argument_need(self, name: str) -> Literal["", "completions", "required"]:
+        """What running *name* bare needs: nothing, a completed argument, or a typed one."""
+        command = self.registry_command(name)
+        if command is None:
+            return ""
+        item = MatchItem(value=command.name, label=command.name)
+        if self.has_argument_completions(item):
+            return "completions"
+        first_form = command.argument_hint.split("|", 1)[0]
+        if any(token.startswith("<") for token in first_form.split()):
+            return "required"
+        return ""
+
     def _display_description(self, cmd: Command) -> str:
         """Return the description used by the picker and its fallback row."""
         return cmd.description
-
-    @staticmethod
-    def _busy_label(cmd: Command) -> str:
-        try:
-            policy = cmd.policy_for_args("")
-        except Exception:  # noqa: BLE001
-            policy = BusyPolicy.QUEUE
-        return {
-            BusyPolicy.IMMEDIATE_READ_ONLY: "runs now",
-            BusyPolicy.IMMEDIATE_CONTROL: "control runs now",
-            BusyPolicy.QUEUE: "queues while busy",
-            BusyPolicy.REJECT: "unavailable while busy",
-        }.get(policy, "queues while busy")
-
-    def _format_hint(self, cmd: Command, name: str | None = None, *, busy: bool = False) -> str:
-        display_name = name or cmd.name
-        availability = f"  • {self._busy_label(cmd)}" if busy else ""
-        description = self._display_description(cmd)
-        if cmd.argument_hint:
-            return f"  ↑ {display_name} {cmd.argument_hint}  —  {description}{availability}"
-        return f"  ↑ {display_name}  —  {description}{availability}"
-
-    def _detail(self, cmd: Command, busy: bool) -> str:
-        description = self._display_description(cmd)
-        if not busy:
-            return description
-        return f"{description}  [{self._busy_label(cmd)}]"
 
     def on_select(
         self,
@@ -214,54 +263,13 @@ class SlashCommandTrigger(TriggerHandlerBase):
     def can_activate(self, buf: list[str]) -> bool:
         return not buf or buf[-1] == "\n"
 
-    def get_hint(self, item: MatchItem | None) -> str | None:
-        return item.hint if item and item.hint else None
 
-    def get_lines(self, item: MatchItem, available_width: int) -> list[str]:
-        """Two-column layout: command name left, description right with wrapping.
-
-        When the description is short enough it fits on one line:
-            "  ▶ /commands              List all registered commands"
-
-        When too long it wraps under the description column:
-            "  ▶ /commands              List all registered commands with
-                                        their source and group"
-
-        The indicator and indentation are NOT included — the overlay adds them.
-        """
-        name = item.label or item.value
-        detail = item.detail or item.display
-
-        # Space available for the description: total width minus name column
-        # minus the 4-char indicator prefix ("  ▶ " / "    ") the overlay adds.
-        indent_width = 4  # "  ▶ " or "    "
-        name_field = _NAME_COL  # fixed column width for command name
-        desc_col = indent_width + name_field + 1  # column where description starts
-        desc_width = max(available_width - desc_col, 16)
-
-        if len(detail) <= desc_width:
-            # Fits on one line.
-            return [f"{name:<{name_field}} {detail}"]
-
-        # Wrap: break detail into chunks of desc_width.
-        chunks: list[str] = []
-        remaining = detail
-        while remaining:
-            # Try to break at a word boundary within desc_width.
-            if len(remaining) <= desc_width:
-                chunks.append(remaining)
-                break
-            cut = remaining.rfind(" ", 0, desc_width + 1)
-            if cut <= 0:
-                cut = desc_width
-            chunks.append(remaining[:cut].rstrip())
-            remaining = remaining[cut:].lstrip()
-
-        lines = [f"{name:<{name_field}} {chunks[0]}"]
-        continuation_prefix = " " * (name_field + 1)  # aligns under description
-        for chunk in chunks[1:]:
-            lines.append(f"{continuation_prefix}{chunk}")
-        return lines
+def _policy(cmd: Command) -> BusyPolicy:
+    """The command's policy with no arguments; a broken resolver queues."""
+    try:
+        return cmd.policy_for_args("")
+    except Exception:  # noqa: BLE001
+        return BusyPolicy.QUEUE
 
 
 def _is_skill_command(cmd: Command) -> bool:
@@ -275,9 +283,25 @@ class SkillTrigger(SlashCommandTrigger):
     char = "$"
     label = "Skill"
     skill_only = True
-    include_aliases = True
 
     _DESCRIPTION_LIMIT = 220
+
+    def registry_command(self, name: str) -> Command | None:
+        """The command *name* (or an alias of it) names, if registered."""
+        return self._registry.get(name) if self._registry is not None else None
+
+    def argument_need(self, name: str) -> Literal["", "completions", "required"]:
+        """What running *name* bare needs: nothing, a completed argument, or a typed one."""
+        command = self.registry_command(name)
+        if command is None:
+            return ""
+        item = MatchItem(value=command.name, label=command.name)
+        if self.has_argument_completions(item):
+            return "completions"
+        first_form = command.argument_hint.split("|", 1)[0]
+        if any(token.startswith("<") for token in first_form.split()):
+            return "required"
+        return ""
 
     def _display_description(self, cmd: Command) -> str:
         """Compact skill metadata into a readable picker description."""
