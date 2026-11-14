@@ -189,6 +189,9 @@ async def test_resumed_tui_replays_transcript_before_accepting_input(
         def stop(self) -> None:
             self.calls.append("stop")
 
+        def redirect_stderr(self, stream: object) -> None:
+            self.stderr = stream
+
     class Input:
         history: list[str] = []
         on_ready = None

@@ -55,7 +55,7 @@ def test_scroll_appender_renders_structured_retry_without_exception_dump() -> No
     )
 
     rendered = console.export_text()
-    assert "⟳ Network issue retry 1/10 in 0.8s" in rendered
+    assert " ! Network issue · retry 1/10 in 0.8s" in rendered
     assert "Provider temporarily unavailable · HTTP 429" in rendered
     assert "All endpoints are currently overloaded. Please try again later." in rendered
     assert "TransientTransportError" not in rendered

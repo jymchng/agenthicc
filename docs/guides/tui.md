@@ -308,6 +308,82 @@ a theme change restyles history too. Session logs written before TUX-06 are
 migrated once, as they are read. A plugin tool can supply its own summary;
 see [tool summaries](plugins.md#transcript-summaries).
 
+### Notices
+
+Every error, warning and info line in the scroll buffer is one component,
+`tui/workspace/notice.py: Notice(severity, title, body, actions)` (TUX-08):
+
+```text
+ ✗ No API key for anthropic.
+   Set ANTHROPIC_API_KEY, or run /model to switch provider.
+
+ ! MCP server is unavailable; continuing without its tools.   /mcp
+
+ · Compacted → ~12,400 tokens
+```
+
+| Severity | Marker | Token | Used for |
+|---|---|---|---|
+| `error` | `✗` | `danger` | turn failures, a required MCP server, a command error |
+| `warning` | `!` | `warning` | retries, an optional MCP server, a refused command |
+| `info` | `·` | `muted` | compaction, recovery, model changes |
+| `success` | `✓` | `success` | results the user asked for ("Theme: dark") |
+
+The title wraps under itself, the body sits below it in `muted`, and the
+commands a notice suggests follow the title. With ASCII glyphs the markers are
+`x ! . +`; with `screen_reader` they are words (`Error:`, `Warning:`, `Note:`,
+`Done:`), so a severity never depends on a glyph or a colour. Screen-reader
+announcements are printed exactly as their text, with no marker.
+
+Notices are **persistent** when something happened in the conversation: they
+are printed into the scroll buffer. **Transient** notices are confirmations and
+FYIs ("Do not disturb on", "Mode → Plan"): `ConversationStore.notify(severity,
+text)` sets `ConversationStore.transient_notice` for 4 seconds
+(`TRANSIENT_NOTICE_S`) for the status line's right segment, and nothing reaches
+the scroll buffer or the session log. A newer notice replaces the previous one.
+Slash commands report through `CommandContext.notify(severity, text, body=...,
+actions=...)`: a one-line `info` or `success` goes to the status line when the
+session has one; errors, warnings and anything with a body are printed as a
+persistent notice.
+
+### Turn failures
+
+A failed turn's `error` event names a fixed **kind** and agenthicc's own copy
+for it; the provider's exception text is never shown or persisted (the session
+JSONL, workflow checkpoints, headless JSON and background rows all carry the
+copy). `runners/failure_kinds.py: classify_turn_failure(exc, provider)` reads
+the exception's type, HTTP status and provider error code; for a missing key,
+where the SDK has neither, it matches a fixed allow-list of SDK message
+prefixes, tested against the installed SDKs.
+
+| `kind` | Message (example) | Action |
+|---|---|---|
+| `missing_credentials` | No API key for anthropic. | Set ANTHROPIC_API_KEY, or run /model to switch provider. |
+| `rejected_credentials` | anthropic rejected the API key (profile work). | Check the key, or run /model to switch provider. |
+| `rate_limited` | Rate limited by anthropic; retried 3 times. | Wait 40 s, then send the message again. |
+| `overloaded` | anthropic is overloaded. | Send the message again to retry. |
+| `context_too_long` | The conversation is longer than opus-4.8's context. | Run /compact, then send the message again. |
+| `model_not_found` | anthropic has no model named claude-x. | Run /model to choose another model. |
+| `billing` | anthropic refused the request for billing reasons. | Check the anthropic account's plan and credit. |
+| `network` | Cannot reach api.anthropic.com. | Check the network or proxy, then send the message again. |
+| `timeout` | anthropic did not answer in 600 s. | Send the message again to retry. |
+| `cancelled` | (an interrupt; no error row) | |
+| `internal` | The turn failed unexpectedly (TypeError). | Run /logs to see the diagnostics log at ~/.agenthicc/logs/<session>.log. |
+
+An event from an older log has no `kind` and renders its stored message.
+
+### Diagnostics log
+
+While the TUI is live, anything a library writes to `sys.stderr`, and every
+Python warning, goes to the session's diagnostics log,
+`~/.agenthicc/logs/<session>.log`, instead of being printed between frames.
+The first stray write of a session shows the transient notice
+"Diagnostics were written to the log · /logs". `/logs` opens the log's last
+200 lines in a pager (Esc closes it). The log is installed right after the
+first frame. Child processes capture their own stderr (MCP `stderr_tail`,
+`tools/exec`), and a unit test checks that no subprocess a session starts
+inherits fd 2. `agenthicc --debug` keeps stderr and warnings on the screen.
+
 ## Modes
 
 The selectable mode cycle is **Safe → Plan → Yolo → Safe**. Safe is the default:
@@ -567,7 +643,8 @@ sentence is its title, summary, reason and option count, for example "Run a
 command: npm test. Safe mode asks before running commands. 4 options." Between
 turns the status line is announced too, only when it changes: "Idle. Opus 4.8.
 Context 12 percent."
-Announcements are not written to the session's event log. With
+A transient status-line notice is announced too, with its severity as a word
+("Done: Theme: dark"). Announcements are not written to the session's event log. With
 `mouse = "on"`, the wheel moves the composer's cursor through a tall prompt;
 `"off"` never writes a mouse-reporting sequence. `NO_COLOR` is respected.
 
@@ -894,6 +971,7 @@ injected separately by the background integration, and `/create-tools` and
 | Input pastes as multiple submissions | Bracketed paste handling | Use the paste state the input panel maintains rather than sending raw newlines |
 | The first frame takes a long time on a slow network or big store | That is exactly what progressive startup prevents | The first frame should not wait on MCP, browsers, or history replay. If it does, inspect `/startup` for a phase that is loaded synchronously |
 | Sessions from an older runtime generation do not appear | Two indexes exist | `sessions list` merges the historical project-local index with the current user-wide TUI index by design |
+| "Diagnostics were written to the log" appears | A library wrote to stderr or raised a warning while the TUI was live | `/logs` shows it; run with `--debug` to see such output on the screen instead |
 
 ### Which `AppState` am I looking at?
 

@@ -261,6 +261,24 @@ def _trust_test_extensions(
         yield trust
 
 
+@pytest.fixture(autouse=True)
+def _restore_active_theme() -> Iterator[None]:
+    """Give every test the theme it started with.
+
+    ``use_theme`` swaps a process-wide theme. A test that starts a real TUI
+    session installs the one resolved from its (non-terminal) environment, and
+    without this the next test would render in that theme.
+    """
+    from agenthicc.tui.theme import current_theme, use_theme
+
+    before = current_theme()
+    try:
+        yield
+    finally:
+        if current_theme() is not before:
+            use_theme(before)
+
+
 @pytest.fixture(scope="session")
 def _signed_out_account_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """A token-store directory whose cached account tier is a fresh ``signed_out``."""

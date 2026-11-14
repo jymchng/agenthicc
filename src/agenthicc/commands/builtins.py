@@ -31,17 +31,19 @@ def _cmd_replay(ctx: CommandContext) -> bool:
         # excluding the current session itself.
         session_id = find_latest_session_for_cwd() or ""
         if not session_id or session_id == ctx.session_id:
-            ctx.console.print(
-                "[red]Usage:[/red] /replay [dim]<session-id>[/dim]  "
-                "— no previous session found for this directory."
+            ctx.notify(
+                "error",
+                "No previous session found for this directory.",
+                body="Usage: /replay <session-id>",
             )
             return True
 
     path = get_session_log_path(session_id)
     if not path.exists():
-        ctx.console.print(
-            f"[red]Session [bold]{session_id[:16]}[/bold] not found.[/red]\n"
-            "[dim]Check ~/.agenthicc/sessions/ for available session IDs.[/dim]"
+        ctx.notify(
+            "error",
+            f"Session {session_id[:16]} not found.",
+            body="Check ~/.agenthicc/sessions/ for available session IDs.",
         )
         return True
 
@@ -52,9 +54,9 @@ def _cmd_replay(ctx: CommandContext) -> bool:
 
 def _cmd_cancel(ctx: CommandContext) -> bool:
     if ctx.cancel_active is not None and ctx.cancel_active():
-        ctx.console.print("[yellow]Cancellation requested for the active run.[/yellow]")
+        ctx.notify("info", "Cancellation requested for the active run.")
     else:
-        ctx.console.print("[dim]No active intent to cancel.[/dim]")
+        ctx.notify("info", "No active intent to cancel.")
     return True
 
 
@@ -72,7 +74,7 @@ def _cmd_loop(ctx: CommandContext) -> bool:
 
     manager = ctx.loop_manager
     if manager is None:
-        ctx.console.print("Loop scheduling is unavailable in this session.", markup=False)
+        ctx.notify("warning", "Loop scheduling is unavailable in this session.")
         return True
     ctx.console.print(manager.handle_command(ctx.args), markup=False)
     return True
@@ -83,10 +85,10 @@ def _cmd_loops(ctx: CommandContext) -> bool:
 
     manager = ctx.loop_manager
     if manager is None:
-        ctx.console.print("Loop scheduling is unavailable in this session.", markup=False)
+        ctx.notify("warning", "Loop scheduling is unavailable in this session.")
         return True
     if ctx.args.strip():
-        ctx.console.print("Usage: /loops", markup=False)
+        ctx.notify("error", "/loops takes no arguments.", body="Usage: /loops")
         return True
     if ctx.set_pending_menu is not None:
         from agenthicc.tui.workspace.overlays.loops import LoopJobsOverlay
@@ -136,11 +138,11 @@ def _cmd_schedules(ctx: CommandContext) -> bool:
     """Open the repository schedule manager."""
 
     if ctx.args.strip():
-        ctx.console.print("Usage: /schedules", markup=False)
+        ctx.notify("error", "/schedules takes no arguments.", body="Usage: /schedules")
         return True
     manager = ctx.schedule_manager
     if manager is None:
-        ctx.console.print("Repository schedule management is unavailable.", markup=False)
+        ctx.notify("warning", "Repository schedule management is unavailable.")
         return True
     if ctx.set_pending_menu is not None:
         from agenthicc.tui.workspace.overlays.schedules import (
@@ -185,7 +187,7 @@ def _cmd_schedule(ctx: CommandContext) -> bool:
 
     manager = ctx.schedule_manager
     if manager is None:
-        ctx.console.print("Repository schedule management is unavailable.", markup=False)
+        ctx.notify("warning", "Repository schedule management is unavailable.")
         return True
     _, separator, raw_args = ctx.text.partition(" ")
     if not separator:
@@ -260,7 +262,7 @@ def _cmd_schedule(ctx: CommandContext) -> bool:
                 "resume ID NEXT-RUN | delete ID --confirm"
             )
     except (OSError, RuntimeError, ValueError) as exc:
-        ctx.console.print(f"/schedule: {exc}", markup=False)
+        ctx.notify("error", f"/schedule: {exc}")
     return True
 
 
@@ -272,10 +274,10 @@ def _cmd_agents(ctx: CommandContext) -> bool:
     tab = ctx.args.strip()
     names = [item.value for item in Tab]
     if tab and tab not in names:
-        ctx.console.print(f"/agents: unknown tab {tab!r}; use {', '.join(names)}", markup=False)
+        ctx.notify("error", f"/agents: unknown tab {tab!r}.", body=f"Use {', '.join(names)}.")
         return True
     if ctx.open_agents_hub is None:
-        ctx.console.print("The agents hub needs the interactive TUI: run agenthicc agents.")
+        ctx.notify("warning", "The agents hub needs the interactive TUI: run agenthicc agents.")
         return True
     ctx.open_agents_hub(tab)
     return True
@@ -285,14 +287,14 @@ def _cmd_dnd(ctx: CommandContext) -> bool:
     """Toggle attention notifications without hiding the status badge (AGX-10)."""
 
     if ctx.args.strip():
-        ctx.console.print("/dnd takes no arguments; run it again to toggle", markup=False)
+        ctx.notify("error", "/dnd takes no arguments; run it again to toggle.")
         return True
     if ctx.toggle_dnd is None:
-        ctx.console.print("/dnd needs the interactive TUI", markup=False)
+        ctx.notify("warning", "/dnd needs the interactive TUI.")
         return True
     enabled = ctx.toggle_dnd()
     label = "on" if enabled else "off"
-    ctx.console.print(f"Do not disturb {label}", markup=False)
+    ctx.notify("success", f"Do not disturb {label}")
     return True
 
 
@@ -316,8 +318,6 @@ def _cmd_theme(ctx: CommandContext) -> bool:
     """``/theme`` opens the picker; ``/theme NAME [--save]`` switches (TUX-01)."""
     from pathlib import Path
 
-    from rich.markup import escape
-
     from agenthicc.tui.preferences import save_ui_preference
     from agenthicc.tui.theme import (
         Theme,
@@ -325,7 +325,6 @@ def _cmd_theme(ctx: CommandContext) -> bool:
         available_themes,
         current_theme,
         load_theme,
-        palette,
         use_theme,
     )
 
@@ -363,13 +362,13 @@ def _cmd_theme(ctx: CommandContext) -> bool:
     try:
         theme = load_theme(name, cwd)
     except (ThemeError, OSError) as exc:
-        ctx.console.print(f"[{palette().danger}]! {escape(str(exc))}[/]")
+        ctx.notify("error", str(exc))
         return True
     apply(theme)
     message = f"Theme: {theme.name}"
     if "--save" in parts[1:]:
         message += f". {save(theme.name)}"
-    ctx.console.print(f"[{palette().muted}]{escape(message)}[/]")
+    ctx.notify("success", message)
     return True
 
 
@@ -402,7 +401,7 @@ def _cmd_subagents(ctx: CommandContext) -> bool:
     """The turn's subagents and the session's earlier ones (AGX-08 §5.2)."""
 
     if ctx.open_subagents is None:
-        ctx.console.print("[dim]/subagents needs the interactive TUI.[/dim]")
+        ctx.notify("warning", "/subagents needs the interactive TUI.")
         return True
     ctx.open_subagents()
     return True
@@ -442,7 +441,7 @@ def _cmd_usage(ctx: CommandContext) -> bool:
     provider = ctx.usage_snapshot
     snapshot = provider() if provider is not None else None
     if not isinstance(snapshot, UsageSnapshot):
-        ctx.console.print("Usage is unavailable in this command context.", markup=False)
+        ctx.notify("warning", "Usage is unavailable in this command context.")
         return True
     state = "running" if snapshot.active_run else "idle"
     if snapshot.usage_status == "unavailable":
@@ -475,7 +474,7 @@ def _cmd_clear(ctx: CommandContext) -> bool:
 
 
 def _cmd_expand(ctx: CommandContext) -> bool:
-    ctx.console.print("[dim]/expand: not available in this mode.[/dim]")
+    ctx.notify("info", "/expand is not available in this mode.")
     return True
 
 
@@ -532,10 +531,12 @@ def _cmd_history(ctx: CommandContext) -> bool:
             ctx.console.print(message, markup=False)
         return True
     if action:
-        ctx.console.print("Usage: /history [repair]", markup=False)
+        ctx.notify(
+            "error", f"Unknown /history action: {action!r}.", body="Usage: /history [repair]"
+        )
         return True
     if not ctx.session_id:
-        ctx.console.print("Transcript history is unavailable without a session ID.", markup=False)
+        ctx.notify("warning", "Transcript history is unavailable without a session ID.")
         return True
     from agenthicc.tui.runtime.session_log import load_recent_transcript_page
 
@@ -549,7 +550,7 @@ def _cmd_history(ctx: CommandContext) -> bool:
             max_event_bytes=behavior.resume_transcript_max_event_bytes,
         )
     except (OSError, RuntimeError, ValueError) as exc:
-        ctx.console.print(f"Unable to load transcript history: {type(exc).__name__}.", markup=False)
+        ctx.notify("error", f"Unable to load transcript history: {type(exc).__name__}.")
         return True
     if ctx.set_pending_menu is not None:
         from agenthicc.tui.workspace.overlays.transcript_history import (
@@ -571,6 +572,32 @@ def _cmd_history(ctx: CommandContext) -> bool:
     return True
 
 
+def _cmd_logs(ctx: CommandContext) -> bool:
+    """Show the tail of this session's diagnostics log (TUX-08 §2.3)."""
+    from agenthicc.tui.diagnostics import diagnostics_log_path, log_tail
+
+    path = diagnostics_log_path(ctx.session_id)
+    lines = log_tail(path)
+    if not lines:
+        ctx.notify("info", "The diagnostics log is empty.")
+        return True
+    if ctx.set_pending_menu is not None:
+        from agenthicc.tui.workspace.overlays.log_tail import LogTailOverlay
+
+        ctx.set_pending_menu(
+            LogTailOverlay(
+                path,
+                lines,
+                ctx.close_overlay if ctx.close_overlay is not None else (lambda: None),
+            )
+        )
+        return True
+    ctx.console.print(f"Diagnostics log: {path}", markup=False, highlight=False)
+    for line in lines:
+        ctx.console.print(line, markup=False, highlight=False)
+    return True
+
+
 def _cmd_init(ctx: CommandContext) -> bool:
     """Preview or explicitly write project guidance in ``AGENTS.md``."""
     from pathlib import Path
@@ -588,7 +615,7 @@ def _cmd_init(ctx: CommandContext) -> bool:
     try:
         plan = build_bootstrap_plan(Path.cwd())
     except BootstrapError as exc:
-        ctx.console.print(f"error: {exc}", markup=False)
+        ctx.notify("error", str(exc))
         return True
 
     preview = plan.preview()
@@ -607,25 +634,28 @@ def _cmd_init(ctx: CommandContext) -> bool:
         )
         return True
     if plan.exists and not force:
-        ctx.console.print(
-            "Refusing to overwrite existing AGENTS.md. Review the diff, then run "
-            "/init write --force.",
-            markup=False,
+        ctx.notify(
+            "warning",
+            "Refusing to overwrite existing AGENTS.md.",
+            body="Review the diff, then run /init write --force.",
         )
         return True
     try:
         target = write_bootstrap_plan(plan, force=force)
     except BootstrapWriteError as exc:
-        ctx.console.print(f"error: {exc}", markup=False)
+        ctx.notify("error", str(exc))
         return True
     ctx.console.print(f"Updated {target}", markup=False)
     return True
 
 
+_MCP_USAGE = "Usage: /mcp [status|reload|connect NAME|disconnect NAME|refresh NAME|doctor [NAME]]"
+
+
 def _cmd_mcp(ctx: CommandContext) -> bool:
     manager = ctx.mcp_manager
     if manager is None:
-        ctx.console.print("[dim]/mcp: no MCP servers configured or not available.[/dim]")
+        ctx.notify("info", "No MCP servers are configured or available.")
         return True
     parts = ctx.args.strip().split()
     action = parts[0].lower() if parts else "status"
@@ -633,23 +663,17 @@ def _cmd_mcp(ctx: CommandContext) -> bool:
     if action in {"status", "list"}:
         status = manager.status()
         if not status:
-            ctx.console.print("[dim]/mcp: no MCP servers configured.[/dim]")
+            ctx.notify("info", "No MCP servers are configured.")
         else:
             ctx.console.print(json.dumps(status, sort_keys=True, indent=2), markup=False)
         return True
     if action == "reload" and name is not None:
-        ctx.console.print(
-            "Usage: /mcp [status|reload|connect NAME|disconnect NAME|refresh NAME|doctor [NAME]]",
-            markup=False,
-        )
+        ctx.notify("error", f"Unknown /mcp command: {ctx.args.strip()!r}.", body=_MCP_USAGE)
         return True
     if action not in {"connect", "disconnect", "refresh", "doctor", "reload"} or (
         action not in {"doctor", "reload"} and not name
     ):
-        ctx.console.print(
-            "Usage: /mcp [status|reload|connect NAME|disconnect NAME|refresh NAME|doctor [NAME]]",
-            markup=False,
-        )
+        ctx.notify("error", f"Unknown /mcp command: {ctx.args.strip()!r}.", body=_MCP_USAGE)
         return True
 
     async def _run() -> None:
@@ -670,7 +694,7 @@ def _cmd_mcp(ctx: CommandContext) -> bool:
                 f"/mcp {action} complete{f' for {name}' if name else ''}.", markup=False
             )
         except Exception as exc:  # noqa: BLE001
-            ctx.console.print(f"/mcp {action} failed: {type(exc).__name__}: {exc}", markup=False)
+            ctx.notify("error", f"/mcp {action} failed: {type(exc).__name__}: {exc}")
 
     manager.start_action(_run(), name=f"mcp-{action}")
     ctx.console.print(f"/mcp {action} scheduled{f' for {name}' if name else ''}.", markup=False)
@@ -730,6 +754,8 @@ def _cmd_model(ctx: CommandContext) -> bool:
             PROVIDER_DEFAULT_MODELS,
         )
         import os
+
+        from agenthicc.tui.theme import glyphs, palette, style
     except ImportError:
         ctx.console.print(f"  Model: {ctx.model}")
         return True
@@ -741,18 +767,15 @@ def _cmd_model(ctx: CommandContext) -> bool:
         current_provider = cfg.execution.provider
         current_model = cfg.execution.effective_model()
         table = Table(title="LLM Providers", box=_rbox.SIMPLE)
-        table.add_column("Provider", style="cyan")
+        table.add_column("Provider", style=palette().accent)
         table.add_column("Default Model")
         table.add_column("API Key Env")
         table.add_column("Status")
         for provider in SUPPORTED_PROVIDERS:
             display_env_var = PROVIDER_API_KEY_ENVVAR.get(provider, "—")
-            key_set = (
-                "✓ set"
-                if (provider == "ollama" or os.environ.get(display_env_var))
-                else "✗ not set"
-            )
-            key_style = "green" if "✓" in key_set else "dim red"
+            has_key = provider == "ollama" or bool(os.environ.get(display_env_var))
+            key_set = f"{glyphs().ok} set" if has_key else f"{glyphs().fail} not set"
+            key_style = style("success") if has_key else style("danger")
             active = "◀ active" if provider == current_provider else ""
             table.add_row(
                 f"[bold]{provider}[/bold]" if active else provider,
@@ -764,7 +787,7 @@ def _cmd_model(ctx: CommandContext) -> bool:
         ctx.console.print(
             Text.assemble(
                 ("Active: ", "dim"),
-                (current_provider, "cyan bold"),
+                (current_provider, style("accent", bold=True)),
                 (" / ", "dim"),
                 (current_model, "bold"),
             )
@@ -782,27 +805,24 @@ def _cmd_model(ctx: CommandContext) -> bool:
     provider = parts[1].lower()
     model_override = parts[2] if len(parts) > 2 else ""
     if provider not in SUPPORTED_PROVIDERS:
-        ctx.console.print(
-            Text(
-                f"Unknown provider: {provider!r}\nSupported: {', '.join(SUPPORTED_PROVIDERS)}",
-                style="red",
-            )
+        ctx.notify(
+            "error",
+            f"Unknown provider: {provider!r}",
+            body=f"Supported: {', '.join(SUPPORTED_PROVIDERS)}",
         )
         return True
     env_var: str | None = PROVIDER_API_KEY_ENVVAR.get(provider)
     if provider != "ollama" and env_var and not os.environ.get(env_var):
-        ctx.console.print(
-            Text(
-                f"Warning: {env_var} is not set — agent calls will fail.\n"
-                f'  export {env_var}="your-api-key"',
-                style="yellow",
-            )
+        ctx.notify(
+            "warning",
+            f"{env_var} is not set — agent calls will fail.",
+            body=f'export {env_var}="your-api-key"',
         )
     effective_model = model_override or PROVIDER_DEFAULT_MODELS.get(provider, "")
     ctx.console.print(
         Text.assemble(
             ("Switched to ", "dim"),
-            (provider, "cyan bold"),
+            (provider, style("accent", bold=True)),
             (" / ", "dim"),
             (effective_model, "bold"),
             (
@@ -874,8 +894,10 @@ def _cmd_skills(ctx: CommandContext) -> bool:
         from rich.table import Table
         from rich import box as _rbox
 
+        from agenthicc.tui.theme import palette
+
         table = Table(title="Available Skills", box=_rbox.SIMPLE)
-        table.add_column("Command", style="bold cyan")
+        table.add_column("Command", style=f"bold {palette().accent}")
         table.add_column("Name")
         table.add_column("Description")
         if not visible_skills:
@@ -924,7 +946,7 @@ def _cmd_keybindings(ctx: CommandContext) -> bool:
     """Show the effective key bindings and create the bindings file (AGX-13)."""
     service = ctx.keymap_service
     if service is None:
-        ctx.console.print("Key bindings are unavailable here.", markup=False)
+        ctx.notify("warning", "Key bindings are unavailable here.")
         return True
     from agenthicc.tui.keymap_table import render_bindings
 
@@ -945,7 +967,7 @@ def _cmd_perf(ctx: CommandContext) -> bool:
     """Show how many frames the live block drew and what they cost (AGX-11)."""
     stats = ctx.frame_stats() if ctx.frame_stats is not None else None
     if stats is None:
-        ctx.console.print("Rendering diagnostics are unavailable.", markup=False)
+        ctx.notify("warning", "Rendering diagnostics are unavailable.")
         return True
     from agenthicc.tui.terminal.capabilities import capabilities
 
@@ -989,7 +1011,7 @@ def _cmd_startup(ctx: CommandContext) -> bool:
     """Show redacted startup phase timing and readiness diagnostics."""
     coordinator = ctx.startup
     if coordinator is None:
-        ctx.console.print("Startup diagnostics are unavailable.", markup=False)
+        ctx.notify("warning", "Startup diagnostics are unavailable.")
         return True
     milestones = coordinator.milestones()
 
@@ -1027,7 +1049,7 @@ def _cmd_ps(ctx: CommandContext) -> bool:
 
     manager = ctx.terminal_manager
     if manager is None:
-        ctx.console.print("[dim]Background terminal management is unavailable.[/dim]")
+        ctx.notify("info", "Background terminal management is unavailable.")
         return True
     args = ctx.args.strip().split()
     if "--json" in args:
@@ -1134,7 +1156,7 @@ def _cmd_stop(ctx: CommandContext) -> bool:
 
     manager = ctx.terminal_manager
     if manager is None:
-        ctx.console.print("[dim]Background terminal management is unavailable.[/dim]")
+        ctx.notify("warning", "Background terminal management is unavailable.")
         return True
     args = ctx.args.strip().split()
     force = "--force" in args
@@ -1143,22 +1165,23 @@ def _cmd_stop(ctx: CommandContext) -> bool:
     if target == "all":
         confirmed = force or "--confirm" in args
         if not confirmed:
-            ctx.console.print(
-                "[yellow]This will stop every visible background terminal. "
-                "Repeat as /stop all --confirm (or --force) to confirm.[/yellow]"
+            ctx.notify(
+                "warning",
+                "This will stop every visible background terminal.",
+                body="Repeat as /stop all --confirm (or --force) to confirm.",
             )
             return True
         count = manager.request_stop_all(force=force)
-        ctx.console.print(f"[yellow]Stop requested for {count} background terminal(s).[/yellow]")
+        ctx.notify("info", f"Stop requested for {count} background terminal(s).")
         return True
     if target is None:
         count = manager.request_stop_all(force=force)
-        ctx.console.print(f"[yellow]Stop requested for {count} background terminal(s).[/yellow]")
+        ctx.notify("info", f"Stop requested for {count} background terminal(s).")
         return True
     if manager.request_stop(target, force=force):
-        ctx.console.print(f"[yellow]Stop requested for {target}.[/yellow]")
+        ctx.notify("info", f"Stop requested for {target}.")
     else:
-        ctx.console.print(f"[dim]No running owned terminal found for {target}.[/dim]")
+        ctx.notify("warning", f"No running owned terminal found for {target}.")
     return True
 
 
@@ -1252,8 +1275,10 @@ def _cmd_tools(ctx: CommandContext) -> bool:
         from rich import box as _rbox
         from rich.table import Table
 
+        from agenthicc.tui.theme import palette
+
         table = Table(title="Available Tools", box=_rbox.SIMPLE)
-        table.add_column("Tool", style="bold cyan")
+        table.add_column("Tool", style=f"bold {palette().accent}")
         table.add_column("Source", style="dim")
         table.add_column("Description")
         if not tools:
@@ -1327,10 +1352,12 @@ def _cmd_workflows(ctx: CommandContext) -> bool:
                 from rich import box as _rbox
                 from rich.table import Table
 
+                from agenthicc.tui.theme import palette
+
                 table = Table(title="Paused Workflow Runs", box=_rbox.SIMPLE)
-                table.add_column("Workflow", style="bold cyan")
+                table.add_column("Workflow", style=f"bold {palette().accent}")
                 table.add_column("Phase")
-                table.add_column("Status", style="yellow")
+                table.add_column("Status", style=palette().warning)
                 table.add_column("Run ID", no_wrap=True)
                 for record in records:
                     table.add_row(
@@ -1388,8 +1415,10 @@ def _cmd_workflows(ctx: CommandContext) -> bool:
         from rich import box as _rbox
         from rich.table import Table
 
+        from agenthicc.tui.theme import palette
+
         table = Table(title="Registered Workflows", box=_rbox.SIMPLE)
-        table.add_column("Workflow", style="bold cyan")
+        table.add_column("Workflow", style=f"bold {palette().accent}")
         table.add_column("Source", style="dim")
         table.add_column("Description")
         for workflow in workflows:
@@ -1418,7 +1447,7 @@ def _menu_config(ctx: CommandContext) -> "Overlay":
 def _cmd_mode(ctx: CommandContext) -> bool:
     mode_manager = ctx.mode_manager
     if mode_manager is None:
-        ctx.console.print("[dim]Mode system not available.[/dim]")
+        ctx.notify("warning", "The mode system is not available.")
         return True
     args = (ctx.args or "").strip()
     if not args:
@@ -1444,13 +1473,15 @@ def _cmd_mode(ctx: CommandContext) -> bool:
         except AttributeError:
             new_mode = mode_manager.set(args)  # type: ignore[attr-defined]
         if new_mode:
-            ctx.console.print(f"  {new_mode.badge} [dim]Switched to {new_mode.name} mode.[/dim]")
+            from agenthicc.tui.theme import glyphs
+
+            ctx.notify("success", f"Mode {glyphs().right} {new_mode.name}")
         else:
             try:
                 choices = ", ".join(mode_manager.registry.selectable_names())
             except AttributeError:
                 choices = "Safe, Plan, Yolo"
-            ctx.console.print(f"  [red]Unknown mode: {args!r}. Choose one of: {choices}.[/red]")
+            ctx.notify("error", f"Unknown mode: {args!r}.", body=f"Choose one of: {choices}.")
     return True
 
 
@@ -1657,6 +1688,12 @@ BUILTIN_COMMANDS: list[Command] = [
         busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
         busy_policy_resolver=_history_busy_policy,
         handler=_cmd_history,
+    ),
+    Command(
+        name="/logs",
+        description="Show this session's diagnostics log",
+        busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
+        handler=_cmd_logs,
     ),
     Command(
         name="/init",

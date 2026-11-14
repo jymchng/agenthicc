@@ -235,6 +235,7 @@ class HelpEntry:
     keys: str
     label: str
     description: str
+    #: When the action applies, in words (``keymap_phrases``); ``""`` for always.
     conditions: str
     source: str
 
@@ -415,11 +416,12 @@ class Keymap:
 
     def help(self, context: str) -> list[HelpEntry]:
         """Return every action of *context* (and ``global``) for the help overlay."""
+        from agenthicc.tui.keymap_phrases import describe_conditions
+
         entries: list[HelpEntry] = []
         for action in self._in(context):
-            conditions = ", ".join(
-                [*sorted(action.when), *(f"not {flag}" for flag in sorted(action.unless))]
-            )
+            # TUX-08: help reads in phrases ("in Library"), never flag names.
+            conditions = describe_conditions(action.when, action.unless)
             entries.append(
                 HelpEntry(
                     action=action.name,

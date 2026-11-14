@@ -30,6 +30,7 @@ if TYPE_CHECKING:
     from agenthicc.tui.loop_lag import LoopLagMonitor
     from agenthicc.tui.workspace.frames import FrameStats
     from agenthicc.schedules.manager import ScheduleManager
+    from agenthicc.tui.workspace.notice import Severity
     from agenthicc.memory.tool_history import ToolHistoryRecoveryState
     from agenthicc.tui.conversation_store import AppState
 
@@ -140,6 +141,32 @@ class CommandContext:
     open_agent_picker: "Callable[[], None] | None" = None
     #: The TUI's presentation state, for ``/status`` (TUX-02); TUI only.
     app_state: "AppState | None" = None
+
+    #: Shows a transient status-line notice (TUX-08); TUI only.
+    transient_notify: "Callable[[Severity, str], object] | None" = None
+
+    def notify(
+        self,
+        severity: "Severity",
+        text: str,
+        *,
+        body: str = "",
+        actions: tuple[str, ...] = (),
+    ) -> None:
+        """Report a command's usage, error or result as one notice (TUX-08).
+
+        An ``error`` or ``warning`` — and anything with a *body* — is a
+        persistent notice printed with the command's output. A one-line
+        ``info`` or ``success`` confirmation goes to the status line for a
+        few seconds when the session offers one (``transient_notify``), and is
+        printed as a notice otherwise (headless, tests).
+        """
+        if severity in ("info", "success") and not body and self.transient_notify is not None:
+            self.transient_notify(severity, text)
+            return
+        from agenthicc.tui.workspace.notice import Notice
+
+        self.console.print(Notice(severity, text, body, actions), highlight=False)
 
 
 # A handler takes a CommandContext and returns True if it handled the command.

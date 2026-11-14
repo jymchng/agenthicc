@@ -27,6 +27,7 @@ from agenthicc.background.model import (
 )
 from agenthicc.background.store import BackgroundStore, InvalidSessionTransition
 from agenthicc.cli.context import CLIContext, CLIFlags
+from agenthicc.runners.failure_kinds import failure_reason
 
 logger = logging.getLogger(__name__)
 
@@ -2707,7 +2708,8 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
         )
         outcome = _WorkerOutcome(
             status=SessionStatus.FAILED,
-            error=safe_provider_error or f"{type(exc).__name__}: {exc}",
+            # A failed turn reports its kind's copy, never provider text (TUX-08).
+            error=safe_provider_error or failure_reason(exc),
             activity="Worker failed",
             exit_reason="irrecoverable_error",
             failure_category="irrecoverable_error",

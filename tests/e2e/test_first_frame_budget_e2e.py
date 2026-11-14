@@ -72,7 +72,10 @@ _DENIED = (
 
 #: Per-minor budgets account for the standard-library modules loaded by each
 #: supported Python version while keeping the application import ceiling fixed.
-_FIRST_FRAME_MODULE_BUDGETS = {"3.11": 372, "3.12": 374, "3.13": 377}
+#: TUX adds eight modules the first frame draws with: the theme, the status
+#: line (``statusline``, ``attention_labels``), the queue and running-tool rows,
+#: ``tool_summary``, and the POSIX terminal backend with ``termios``.
+_FIRST_FRAME_MODULE_BUDGETS = {"3.11": 380, "3.12": 382, "3.13": 385}
 
 
 def _module_budget() -> int:

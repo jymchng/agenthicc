@@ -145,7 +145,9 @@ def test_help_lists_every_action_with_its_conditions() -> None:
     entries = {entry.action: entry for entry in Keymap.build(COMPOSER_ACTIONS).help("composer")}
     assert set(entries) == {action.name for action in COMPOSER_ACTIONS}
     assert entries["composer.interrupt"].keys == "Esc"
-    assert entries["composer.interrupt"].conditions == "running, not paste_at_cursor"
+    assert entries["composer.interrupt"].conditions == (
+        "while a turn runs, except right after a condensed paste"
+    )
     assert entries["composer.submit"].source == "default"
 
 

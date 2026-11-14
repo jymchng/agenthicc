@@ -25,6 +25,49 @@ For a clean error without the TUI, run headless:
 agenthicc --headless --workflow code_plan < /dev/null
 ```
 
+## What a failed turn tells you
+
+A failed turn prints one error notice: what went wrong and what to do next.
+
+```text
+ ✗ No API key for anthropic.
+   Set ANTHROPIC_API_KEY, or run /model to switch provider.
+```
+
+The message names a fixed failure **kind**. The provider's own error text is
+never shown or saved, because it can contain prompts or secrets.
+
+| Kind | Typical cause | What to do |
+|---|---|---|
+| `missing_credentials` | No key in the environment or the profile | Export the variable named in the message, or `/model` |
+| `rejected_credentials` | HTTP 401/403 | See [Provider authentication failures](#provider-authentication-failures) |
+| `rate_limited` | HTTP 429 | See [Rate limits](#rate-limits) |
+| `overloaded` | HTTP 5xx/529 | Send the message again |
+| `context_too_long` | The prompt exceeds the model's context | `/compact`, then send again |
+| `model_not_found` | HTTP 404 on the model | See [Model not found](#model-not-found) |
+| `billing` | HTTP 402, `insufficient_quota`, low credit | Check the provider account |
+| `network` | Connection, DNS or TLS errors | Check the network or proxy |
+| `timeout` | No answer within `timeout_s` | Send again, or raise `timeout_s` |
+| `internal` | Anything else | `/logs`, then report it |
+
+Headless runs print the same kind as a JSON line before the result line:
+
+```json
+{"type": "error", "kind": "missing_credentials", "message": "No API key for anthropic.", "action": {"hint": "Set ANTHROPIC_API_KEY, or run /model to switch provider.", "commands": ["/model"]}, "session_id": "…", "workflow": "code_plan", "run_id": "…"}
+```
+
+The `WorkflowRunCompleted` line carries `error_kind` and the same message in
+`error`.
+
+## Stray output and the diagnostics log
+
+**Symptom:** the status line says "Diagnostics were written to the log · /logs".
+
+A library wrote to stderr, or Python raised a warning, while the TUI was on
+screen. The output went to `~/.agenthicc/logs/<session>.log` so it could not
+corrupt the transcript. Run `/logs` to read it. To see such output on the
+screen while debugging, start with `agenthicc --debug`.
+
 ## Provider authentication failures
 
 **Symptom:** the provider rejects the request with an auth error.

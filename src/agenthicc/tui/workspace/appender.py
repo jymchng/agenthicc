@@ -61,6 +61,7 @@ if TYPE_CHECKING:
     from rich.text import Text
 
     from agenthicc.tui.conversation_store import AppState
+    from agenthicc.tui.workspace.notice import Severity
 
 
 # ── tool detail level (TUX-06 §2.4) ───────────────────────────────────────────
@@ -1000,24 +1001,44 @@ def _render_file_modified(self: ScrollBufferAppender, ev: ConversationEvent) -> 
     self._gap_pending = True
 
 
+def _print_notice(
+    self: ScrollBufferAppender,
+    severity: Severity,
+    title: str,
+    body: str = "",
+    *,
+    actions: tuple[str, ...] = (),
+    literal: bool = False,
+) -> None:
+    """Print one persistent :class:`Notice`; screen readers get the severity as a word.
+
+    The notice module loads with the first notice, never for the first frame.
+    """
+    from agenthicc.tui.preferences import ui_settings
+    from agenthicc.tui.workspace.notice import Notice
+
+    ui = ui_settings(self._state)
+    words = ui is not None and ui.screen_reader and not literal
+    notice = Notice(severity, title, body, actions, literal=literal, words=words)
+    self._console.print(notice, highlight=False)
+
+
 @register_renderer("error")
 def _render_error(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
-    self._flush_group_summary()
-    from rich.markup import escape as _e
+    """A turn or command failure (TUX-08).
 
-    msg = _text(ev.payload, "message")
-    detail = _text(ev.payload, "detail")
-    self._console.print(
-        f"[red bold]ERROR[/red bold] {_e(msg)}",
-        markup=True,
-        highlight=False,
-    )
-    if detail:
-        self._console.print(
-            f"[dim]{_e(detail[:500])}[/dim]",
-            markup=True,
-            highlight=False,
-        )
+    ``message`` and the ``action`` hint are agenthicc's own copy for the
+    event's ``kind``; ``detail`` is text agenthicc wrote itself. An event from
+    an older log has no ``kind`` and renders as ``internal`` with its stored
+    message.
+    """
+    self._flush_group_summary()
+    message = _text(ev.payload, "message") or "The turn failed unexpectedly."
+    action = ev.payload.get("action")
+    hint = action.get("hint") if isinstance(action, Mapping) else None
+    detail = _text(ev.payload, "detail")[:500]
+    body = [line for line in (hint if isinstance(hint, str) else "", detail) if line]
+    _print_notice(self, "error", message, "\n".join(body))
 
 
 def clock_time(timestamp: float) -> str:
@@ -1143,45 +1164,56 @@ def _render_replay_separator(self: ScrollBufferAppender, ev: ConversationEvent) 
 
 @register_renderer("system")
 def _render_system(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
-    from rich.markup import escape as _e
-
-    text = str(ev.payload.get("text", ""))
+    """A self-describing notice (compaction, model change); ``info`` unless it says."""
+    text = _text(ev.payload, "text")
     if text:
-        prefix = "  " if text.startswith("⎋ Compacted") else ""
-        self._console.print(f"{prefix}[dim]{_e(text)}[/dim]", markup=True, highlight=False)
+        from agenthicc.tui.workspace.notice import severity_of
+
+        _print_notice(self, severity_of(ev.payload.get("severity")), text)
         self._console.print()
 
 
 @register_renderer("announcement")
 def _render_announcement(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
+    """A screen-reader announcement: the event's exact text (BEAU-4 §4.3)."""
     text = str(ev.payload.get("text", ""))
     if text:
-        self._console.print(text, markup=False, highlight=False)
+        _print_notice(self, "info", text, literal=True)
 
 
 @register_renderer("tool_recovery")
 def _render_tool_recovery(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
     """Render one concise, redacted interrupted-exchange notice."""
-    from rich.markup import escape as _e
-
     text = _text(
         ev.payload,
         "text",
         "Tool execution was interrupted; incomplete tool results were recorded so the session can continue safely.",
     )
-    self._console.print(f"[dim]{_e(text)}[/dim]", markup=True, highlight=False)
+    _print_notice(self, "info", text)
     self._console.print()
 
 
 @register_renderer("mcp_server_failure")
 def _render_mcp_server_failure(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
     """Render one generation-scoped, redacted MCP startup outcome."""
-    from rich.markup import escape as _e
-
     text = _text(ev.payload, "text", "MCP server is unavailable; continuing without its tools.")
-    style = "red" if bool(ev.payload.get("required", False)) else "yellow"
-    self._console.print(f"[{style}]{_e(text)}[/{style}]", markup=True, highlight=False)
+    severity: Severity = "error" if bool(ev.payload.get("required", False)) else "warning"
+    _print_notice(self, severity, text, actions=("/mcp",))
     self._console.print()
+
+
+def _retry_heading(payload: Mapping[str, object], label: str) -> str:
+    attempt = max(1, int(_number(payload, "attempt", 1)))
+    max_retries = max(attempt, int(_number(payload, "max_retries", attempt)))
+    delay = max(0.0, _number(payload, "delay_s"))
+    return f"{label} · retry {attempt}/{max_retries} in {delay:.1f}s"
+
+
+def _http_status(payload: Mapping[str, object]) -> str:
+    status_code = payload.get("status_code")
+    if isinstance(status_code, int) and not isinstance(status_code, bool):
+        return f"HTTP {status_code}"
+    return ""
 
 
 @register_renderer("network_retry")
@@ -1193,62 +1225,26 @@ def _render_network_retry(self: ScrollBufferAppender, ev: ConversationEvent) -> 
     useful in debug logs but makes the scroll buffer noisy and hard to scan.
     The retry producer supplies already-bounded, user-facing fields instead.
     """
-    from rich.markup import escape as _e
-
-    attempt = max(1, int(_number(ev.payload, "attempt", 1)))
-    max_retries = max(attempt, int(_number(ev.payload, "max_retries", attempt)))
-    delay = max(0.0, _number(ev.payload, "delay_s"))
     reason = _text(ev.payload, "reason", "Temporary network problem")
     detail = _text(ev.payload, "detail")
-    status_code = ev.payload.get("status_code")
-    status = (
-        f"HTTP {status_code}"
-        if isinstance(status_code, int) and not isinstance(status_code, bool)
-        else ""
-    )
-
-    self._console.print(
-        "[yellow]⟳[/yellow] [bold]Network issue[/bold] "
-        f"[dim]retry {attempt}/{max_retries} in[/dim] "
-        f"[cyan]{delay:.1f}s[/cyan]",
-        markup=True,
-        highlight=False,
-    )
-    metadata = " · ".join(part for part in (reason, status) if part)
-    self._console.print(
-        f"  [dim]{_e(metadata)}[/dim]" if metadata else "  [dim]Retrying…[/dim]",
-        markup=True,
-        highlight=False,
-    )
+    metadata = " · ".join(part for part in (reason, _http_status(ev.payload)) if part)
+    body = [metadata or "Retrying…"]
     if detail and detail.casefold() != reason.casefold():
-        self._console.print(f"  [dim]{_e(detail)}[/dim]", markup=True, highlight=False)
+        body.append(detail)
+    heading = _retry_heading(ev.payload, "Network issue")
+    _print_notice(self, "warning", heading, "\n".join(body))
     self._console.print()
 
 
 @register_renderer("provider_recovery_retry")
 def _render_provider_recovery_retry(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
     """Render a compact retry notice for a provider-rejected request."""
-    from rich.markup import escape as _e
-
-    attempt = max(1, int(_number(ev.payload, "attempt", 1)))
-    max_retries = max(attempt, int(_number(ev.payload, "max_retries", attempt)))
-    delay = max(0.0, _number(ev.payload, "delay_s"))
     detail = _text(ev.payload, "detail")
-    status_code = ev.payload.get("status_code")
-    status = (
-        f"HTTP {status_code}"
-        if isinstance(status_code, int) and not isinstance(status_code, bool)
-        else "provider rejected request"
-    )
-    self._console.print(
-        "[yellow]⚠[/yellow] [bold]Provider request rejected[/bold] "
-        f"[dim]retry {attempt}/{max_retries} in[/dim] [cyan]{delay:.1f}s[/cyan]",
-        markup=True,
-        highlight=False,
-    )
-    self._console.print(f"  [dim]{_e(status)}[/dim]", markup=True, highlight=False)
+    body = [_http_status(ev.payload) or "provider rejected request"]
     if detail:
-        self._console.print(f"  [dim]{_e(detail)}[/dim]", markup=True, highlight=False)
+        body.append(detail)
+    heading = _retry_heading(ev.payload, "Provider request rejected")
+    _print_notice(self, "warning", heading, "\n".join(body))
     self._console.print()
 
 

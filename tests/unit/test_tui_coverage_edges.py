@@ -872,4 +872,4 @@ def test_scroll_buffer_appender_renders_event_families(capsys: pytest.CaptureFix
     rendered = console.export_text()
     assert "Read x" in rendered and "Completed" not in rendered
     assert "! @dir could not be read" in rendered
-    assert "ERROR" in capsys.readouterr().out
+    assert " ✗ boom" in capsys.readouterr().out

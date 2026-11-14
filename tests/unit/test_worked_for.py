@@ -161,7 +161,7 @@ class TestCompletionRecapRenderers:
             ("turn_complete", {"elapsed_s": 2.0}),
             ("activity_complete", {"elapsed_s": 3.0}),
         )
-        assert "boom" in output
+        assert " ✗ boom" in output
         assert "✾ Worked for 2s | 10:20 AM" in output
         assert "Completed" not in output
         assert "since last IDLE" not in output
@@ -175,4 +175,4 @@ class TestCompletionRecapRenderers:
         )
         suffix = output.split("✾ Done in 2s across 2 turns | 10:20 AM", 1)[1]
         assert suffix.startswith("\n\n") and not suffix.startswith("\n\n\n")
-        assert "MCP server 'asyncmove' failed to start" in suffix
+        assert " ✗ MCP server 'asyncmove' failed to start" in suffix

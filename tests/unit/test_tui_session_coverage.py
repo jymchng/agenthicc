@@ -43,6 +43,9 @@ class _Workspace:
     def flush_scroll(self) -> None:
         pass
 
+    def redirect_stderr(self, stream: object) -> None:
+        self.stderr = stream
+
 
 class _Input:
     def __init__(self) -> None:

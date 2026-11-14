@@ -23,6 +23,8 @@ From `docs/usage/12-troubleshooting.md`.
 | Symptom | Where |
 |---|---|
 | Nothing works and you have not looked at logs yet | [Start with these three](../usage/12-troubleshooting.md#start-with-these-three) |
+| A failed turn names a kind (`missing_credentials`, `rate_limited`, …) | [What a failed turn tells you](../usage/12-troubleshooting.md#what-a-failed-turn-tells-you) |
+| "Diagnostics were written to the log · /logs" | [Stray output and the diagnostics log](../usage/12-troubleshooting.md#stray-output-and-the-diagnostics-log) |
 | Provider rejects the request or claims a missing key | [Provider authentication failures](../usage/12-troubleshooting.md#provider-authentication-failures) |
 | The configured model is not accepted | [Model not found](../usage/12-troubleshooting.md#model-not-found) |
 | Requests are being throttled | [Rate limits](../usage/12-troubleshooting.md#rate-limits) |

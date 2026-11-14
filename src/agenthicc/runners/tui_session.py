@@ -15,7 +15,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, NoReturn, cast
+from typing import TYPE_CHECKING, Literal, NoReturn, TextIO, cast
 
 from agenthicc.supervised_tasks import SupervisedTasks
 
@@ -523,7 +523,15 @@ def _fmt_exc(exc: BaseException) -> str:
 
     Never returns a bare ``str(exc)`` — the exception class name is always
     included so users can identify the failure type (e.g. ``ReadTimeout``).
+    A failed agent turn's exception is reported by its own copy instead
+    ("No API key for anthropic."), so provider text never reaches the
+    transcript or a checkpoint (TUX-08).
     """
+    from agenthicc.runners.failure_kinds import reported_failure
+
+    reported = reported_failure(exc)
+    if reported is not None:
+        return str(reported.get("message", ""))
     name = type(exc).__name__
     msg = str(exc).strip()
     return f"{name}: {msg}" if msg else name
@@ -1148,8 +1156,6 @@ async def _build_session_context_impl(
     app_state = AppState.create()
     app_state.conversation.model_name.set(model_label)
     app_state.conversation.session_id.set(session_id)
-    # TUX-02: the status line's context meter divides by this window.
-    app_state.conversation.context_window.set(cfg.execution.effective_context_window())
     app_state.conversation.current_directory.set(str(Path.cwd()))
     app_state.ui.set(cfg.ui)
 
@@ -2847,6 +2853,10 @@ class TUISession:
             except Exception as exc:  # noqa: BLE001 - the failed phase blocks turns
                 ctx.llm_config_error = str(exc)
                 ctx.app_state.conversation.notify_transient(f"⚠ LLM config error: {exc}")
+        # TUX-02: the status line's context meter divides by this window. The
+        # lookup reads lauren-ai's model registry, which the first frame may
+        # not import, so the meter appears once the runtime has loaded.
+        ctx.app_state.conversation.context_window.set(ctx.cfg.execution.effective_context_window())
         # PRD-129 Phase 3: auto-resume a direct turn the prior session left
         # interrupted (no-op on a clean start or when a workflow was in progress).
         self._maybe_resume_interrupted_turn()
@@ -3429,6 +3439,7 @@ class TUISession:
             select_agent=self.select_agent,
             open_agent_picker=self.open_agent_picker,
             app_state=ctx.app_state,
+            transient_notify=ctx.app_state.conversation.notify,
         )
         return bool(self._cmd_dispatcher.dispatch(text, context))
 
@@ -4321,7 +4332,7 @@ class TUISession:
         mem = ctx.session_memory
 
         if mem is None or not mem._messages:
-            conv.notify_transient("⎋ Nothing to compact")
+            conv.notify_transient("Nothing to compact")
             return
 
         transport = getattr(ctx.agent_runner, "_transport", None)
@@ -4346,9 +4357,9 @@ class TUISession:
         )
         if outcome.applied:
             conv.notify_transient(
-                "⎋ Compacted"
+                "Compacted"
                 if outcome.status == "compacted_summary"
-                else "⎋ Compaction fallback: retained recent complete exchanges"
+                else "Compaction fallback: retained recent complete exchanges"
             )
         elif outcome.status == "blocked_durability_error":
             conv.notify_transient(
@@ -4356,7 +4367,7 @@ class TUISession:
             )
         elif outcome.status == "skipped_concurrent_update":
             conv.notify_transient(
-                "⎋ Compaction skipped because the conversation changed; newer history was kept"
+                "Compaction skipped because the conversation changed; newer history was kept"
             )
         else:
             conv.notify_transient(
@@ -5532,6 +5543,37 @@ class TUISession:
                 self._workflow_handle = None
             self.advance()
 
+    # ── diagnostics (TUX-08 §2.3) ─────────────────────────────────────────────
+
+    def _install_diagnostics_log(self) -> None:
+        """Send stray stderr and warnings to the session log, unless ``--debug``.
+
+        Called right after the first frame (which loads no diagnostics code),
+        before any post-frame task runs. The first stray write shows one
+        transient notice pointing at /logs.
+        """
+        if self._ctx.app_state.cli_flags.debug:
+            return
+        from agenthicc.tui.diagnostics import (
+            DIAGNOSTICS_NOTICE,
+            DiagnosticsLog,
+            diagnostics_log_path,
+            install_stderr_sink,
+        )
+
+        conversation = self._ctx.app_state.conversation
+        loop = asyncio.get_running_loop()
+
+        def first_write() -> None:
+            # A library may write from any thread; the notice is set on the loop.
+            loop.call_soon_threadsafe(conversation.notify, "info", DIAGNOSTICS_NOTICE)
+
+        sink = DiagnosticsLog(diagnostics_log_path(self._ctx.session_id), first_write)
+        install_stderr_sink(sink)
+        # A text stream with a real file descriptor, so a child given
+        # sys.stderr writes into the log too.
+        self._workspace.redirect_stderr(cast("TextIO", sink))
+
     # ── main loop ─────────────────────────────────────────────────────────────
 
     async def run(self) -> None:
@@ -5572,6 +5614,7 @@ class TUISession:
         if startup is not None:
             startup.finish("first_frame")
             startup.record_first_frame_modules(len(sys.modules))
+        self._install_diagnostics_log()
         self._wire_approval_overlay()
         # AGX-13: the user's key bindings, hot-reloaded while the session runs.
         # They load right after the first frame (whose hints use the defaults)
@@ -5737,7 +5780,13 @@ class TUISession:
                 *owned,
                 return_exceptions=True,
             )
-            self._workspace.stop()
+            try:
+                self._workspace.stop()
+            finally:
+                # After the live region has given sys.stderr back.
+                from agenthicc.tui.diagnostics import uninstall_stderr_sink
+
+                uninstall_stderr_sink()
             agents_service, self._agents_service = self._agents_service, None
             if agents_service is not None:
                 await agents_service.close()
