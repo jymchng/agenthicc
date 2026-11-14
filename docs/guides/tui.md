@@ -4,9 +4,9 @@ The current interactive UI is a Rich Live workspace. It is not the older
 prompt-toolkit `build_app()`/`TranscriptModel` design referenced by historical
 docs.
 
-The startup welcome panel keeps its `What's new` heading even when the remote
-changelog cannot be reached. In that case it displays `No list`; on success it
-renders the entries from `https://agenthicc.dev/changelog.json`.
+At start-up the session prints a three-line header, runs a pre-flight check, and
+may ask whether to work in a new directory; see
+[the start-up header](#the-start-up-header).
 
 The scroll buffer reads as a conversation, not a log (TUX-06):
 
@@ -166,6 +166,108 @@ Terminal resize signals are debounced into one repaint after the new geometry
 settles. That frame erases the block at its old height and paints every row
 again, in one write, so an active plan review remains a single overlay instead
 of leaking duplicate frames into scrollback.
+
+### The start-up header
+
+Right after the first frame the session prints its header into the scroll
+buffer: at most three rows, one more notice row when a check fails (TUX-03).
+
+```text
+ ◆ agenthicc 0.42.0                                   what's new: /release-notes
+   opus-4.8 · anthropic · Safe mode
+   ~/py…/agenthicc  (main)
+```
+
+- **Line 1** is the name in `accent` and the installed version, read from
+  package metadata. `what's new: /release-notes` is right-aligned on it, and
+  appears only on the first start after the version changed.
+- **Line 2** is the model, the provider and the mode.
+- **Line 3** is the working directory, with the home directory written `~`
+  and the middle of a long path cut (`~/py…/agenthicc`), and the git branch.
+- **Under 60 columns** lines 2 and 3 merge into one paragraph of at most two
+  rows.
+- **The first run on a machine** also shows the mascot and the tagline beside
+  the lines (four rows), and never again. `[ui] banner = "full"` always shows
+  them; `banner = "off"` prints nothing before the composer, except a failed
+  pre-flight notice. The default is `"compact"`.
+
+What agenthicc remembers is in `~/.agenthicc/state.json`: the version that last
+started (so the first run and an upgrade are known), the last version whose
+notes `/release-notes` showed, and a counter that rotates the composer's tip. It
+is not configuration; delete it to see the first run again.
+
+#### The pre-flight check
+
+`agenthicc.runners.preflight.check_session(config, env)` answers whether a turn
+can succeed, from the configuration and the environment alone: no request is
+sent and no process is started. The header, `/status` (a `Pre-flight` row) and
+`agenthicc config show` print the same findings.
+
+| Check | Fails when | Blocks prompts |
+|---|---|---|
+| Credentials | The active provider or saved profile has no resolvable key: its `api_key` or `SecretReference`, its `api_key_env`, the `[execution]` equivalents, or the provider's variable (`ANTHROPIC_API_KEY`; `ANTHROPIC_AUTH_TOKEN` also counts). Ollama needs none | Yes |
+| Model | No model is configured and the provider has no default in `PROVIDER_DEFAULT_MODELS` | No |
+| Workspace | The working directory is not writable and the mode is not Plan | No |
+| Tools | `bwrap` is missing on Linux in a project with `.agenthicc/environment.toml`, or `rg` is missing (an info notice: search falls back to the built-in scanner) | No |
+
+The `/model` picker asks the same question of each choice
+(`runners.preflight.credential_variable`), so it offers a provider exactly when a
+turn on it would pass this check, and names the variable to set when it would not.
+
+A failed check prints one notice under the header, naming the fix:
+
+```text
+ ! No API key for anthropic. Set ANTHROPIC_API_KEY, or run /model to pick another provider.
+```
+
+The composer stays usable for slash commands. Submitting a prompt while the
+credential check has failed sends nothing to the provider: the notice appears
+again, the prompt stays in the composer, and `/model` runs. The check runs again
+at each submission, so exporting a key in another way, or switching provider
+with `/model`, unblocks it. When every check passes nothing is printed.
+
+#### Work in this directory?
+
+A directory that is not a git repository, has no `.agenthicc/agenthicc.toml`
+and has no earlier session, or the home directory, asks once, in a dialog:
+
+```text
+╭─ Work in ~/Downloads? ──────────────────────────────── Safe ─╮
+│  agenthicc can read and change files here.                    │
+│  ▌ 1  Yes                                                     │
+│    2  Yes, in Plan mode                                       │
+│    3  Choose another directory…                               │
+╰─ ↑↓ choose · Enter confirm · Esc not now ─────────────────────╯
+```
+
+The answer is stored per directory in `~/.agenthicc/trust.json`, beside the
+extension trust records (`ExtensionTrust.workspace_decision`). "Yes, in Plan
+mode" also starts every later session there in Plan mode. "Choose another
+directory…" asks for a path and restarts the session in it. Esc is "not now":
+nothing is remembered and the question returns next time.
+
+#### Composer suggestions
+
+The empty composer's dimmed placeholder follows the context, most specific
+first: `try /init to write AGENTS.md for this repository` when the repository
+has no `AGENTS.md`; `resume your last session: /resume` when the newest other
+session of the directory stopped in the middle of a turn; `2 sessions need you ·
+press ←` while background sessions wait; otherwise one of twenty tips such as
+`Ctrl+R searches history` or `/compact summarises the conversation to free up
+context`. The tip advances once per session and never changes while it is
+visible. A tip that names a key shows the key your key bindings give that action.
+
+Tab on the empty prompt accepts a suggestion that is a command: it puts
+`/init`, `/resume` or the tip's command in the prompt without sending it. With
+no such suggestion, or a draft, Tab still switches to the next agent.
+
+#### Release notes
+
+`/release-notes` opens a pager (a scrollable dialog) with the entries of the
+packaged `CHANGELOG.md`: the installed version, every version since the last one
+whose notes it showed, and `Unreleased`, the work in this build that no release
+has. `↑↓` scroll, `PgUp`/`PgDn` page, `Esc` or `q` close. `/resume` opens the
+agents hub on its History tab, where Enter resumes a saved session.
 
 ### Rendering
 
@@ -450,6 +552,8 @@ idle.
 | Shift+Tab | `composer.mode_cycle` | always |
 | Ctrl+G, ← | `agents.open_hub` — open the agents hub over the conversation | ← only on an empty prompt |
 | Ctrl+O | `subagents.focus` — move to the subagent panel | while the panel is shown |
+| Tab | `composer.accept_suggestion` — put the suggested command in the prompt | empty prompt that suggests a command, idle |
+| Tab | `agents.cycle` — talk to the next primary agent | otherwise |
 
 Word motion is Unicode-aware: letters, digits and `_` form words, and path
 separators stop, so Ctrl+W on `src/agenthicc/tui` deletes `tui`. Consecutive
@@ -644,7 +748,7 @@ diff tokens and the three mode badges. No other module names a colour, and
 Tokens carry meaning, not hue: failures are `danger`; anything waiting for you
 is `warning`; running work and progress are `info`; finished work is
 `success`; subagent identity is `agent`; metadata is `muted`; the composer's
-frame — its box or its two rules — is `frame`, the yellow of the welcome panel
+frame — its box or its two rules — is `frame`, agenthicc's brand yellow
 (the light theme darkens it to stay readable on white), and so is the `❯` of the
 prompt it frames; every other rule and border is `subtle`. The Safe, Plan and
 Yolo badges (`✓ Safe`, `◆ Plan`,
@@ -985,6 +1089,10 @@ Every built-in command belongs to a group the `/` picker and the palette show:
 default for a command that names none). `/background` carries the aliases
 `/bg` and `/detach`, `/cancel` has `/interrupt`, and `/model` has `/models`: an
 alias is a name for the same command, not a second row.
+
+`/release-notes` and `/resume` (TUX-03) are ordinary registry entries: the first
+is a `menu_factory` command that returns a `ReleaseNotesOverlay`, the second
+opens the agents hub's History tab through `CommandContext.open_agents_hub`.
 
 Skills use the `$skill-name` or `$alias` trigger and are deliberately excluded
 from the `/` picker. `/skills` and `/skills reload` remain slash commands for

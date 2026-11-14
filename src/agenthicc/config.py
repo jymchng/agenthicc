@@ -1698,6 +1698,7 @@ class BehaviourSettings:
 _MOUSE_MODES = ("auto", "on", "off")
 _GLYPH_MODES = ("auto", "unicode", "ascii")
 _COMPOSER_FRAMES = ("box", "rules")
+_BANNERS = ("full", "compact", "off")
 _TOOL_DETAIL_LEVELS = ("compact", "normal", "verbose")
 
 
@@ -1731,6 +1732,12 @@ class UISettings:
     segments (TUX-02). It receives the session state as JSON on stdin, runs at
     most once a second with a 500 ms timeout, and is ignored in an untrusted
     project configuration."""
+    banner: str = "compact"
+    """The start-up header (TUX-03): ``compact`` prints three lines (version;
+    model, provider and mode; directory and branch), and on the first run on a
+    machine also the mascot and tagline; ``full`` always prints the mascot and
+    tagline; ``off`` prints nothing before the composer, except a failed
+    pre-flight notice."""
     tool_detail: str = "compact"
     """How much of each tool call the transcript shows (TUX-06): ``compact``
     (one row; failures show their last lines), ``normal`` (plus a four-line
@@ -1744,6 +1751,8 @@ class UISettings:
             raise ValueError(f"ui.composer_frame must be one of: {', '.join(_COMPOSER_FRAMES)}")
         if self.glyphs not in _GLYPH_MODES:
             raise ValueError(f"ui.glyphs must be one of: {', '.join(_GLYPH_MODES)}")
+        if self.banner not in _BANNERS:
+            raise ValueError(f"ui.banner must be one of: {', '.join(_BANNERS)}")
         if not self.theme.strip():
             raise ValueError("ui.theme must not be empty")
         if self.tool_detail not in _TOOL_DETAIL_LEVELS:
@@ -2795,6 +2804,7 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
         theme=_as_str(ui_data.get("theme"), "auto").strip(),
         glyphs=_as_str(ui_data.get("glyphs"), "auto").strip().lower(),
         composer_frame=_as_str(ui_data.get("composer_frame"), "rules").strip().lower(),
+        banner=_as_str(ui_data.get("banner"), "compact").strip().lower(),
         statusline_command=_as_str(_section(ui_data.get("statusline")).get("command"), "").strip(),
         tool_detail=_as_str(ui_data.get("tool_detail"), "compact").strip().lower(),
     )

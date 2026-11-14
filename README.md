@@ -155,8 +155,8 @@ See the [goal-runs guide](./docs/guides/goal-runs.md) for run identity,
 worker correlation, recovery, and JSON control output.
 
 Startup is progressive: the TUI renders its first frame from the local
-session/configuration boundary while optional extensions, remote changelog,
-MCP connections, and browser integrations report readiness in the background.
+session/configuration boundary while optional extensions, MCP connections,
+and browser integrations report readiness in the background.
 Use `/startup` to inspect phase timings. Session listing uses a bounded index
 and restores only the selected session; see the [startup guide](./docs/guides/startup.md).
 

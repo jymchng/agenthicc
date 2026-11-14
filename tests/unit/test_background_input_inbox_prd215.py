@@ -833,6 +833,8 @@ def test_agent_turn_context_inherits_worker_input_source() -> None:
 def test_background_command_router_uses_target_registry_and_rejects_ui_only_commands() -> None:
     from types import SimpleNamespace
 
+    from agenthicc.config import AgenthiccConfig
+
     from agenthicc.background.worker import _dispatch_background_command
     from agenthicc.commands import build_builtin_registry
 
@@ -848,7 +850,7 @@ def test_background_command_router_uses_target_registry_and_rejects_ui_only_comm
         cmd_registry=build_builtin_registry(),
         model_label="openai/test-model",
         session_id="target-session",
-        cfg=object(),
+        cfg=AgenthiccConfig(),  # /status reads it for the pre-flight rows (TUX-03)
         skills={},
         workflow_registry=object(),
         mode_manager=object(),

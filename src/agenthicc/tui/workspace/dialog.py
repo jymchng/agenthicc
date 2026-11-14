@@ -294,6 +294,11 @@ class Dialog:
                 self.selected = (self.selected - 1) % count
             case "dialog.down" if count:
                 self.selected = (self.selected + 1) % count
+            # A dialog without options is a pager: the arrows scroll its body.
+            case "dialog.up":
+                self.scroll = max(0, self.scroll - 1)
+            case "dialog.down":
+                self.scroll += 1
             case "dialog.confirm" if count:
                 return DialogInput(DialogKey.CHOOSE, self.selected)
             case "dialog.choose" if ch.isdigit() and 0 < int(ch) <= count:

@@ -8,7 +8,8 @@ about its state; the composer reports:
 - ``paste`` — a large paste is shown condensed;
 - ``paste_at_cursor`` — the cursor is right after that condensed paste;
 - ``empty`` — the prompt is empty;
-- ``queued`` — messages are queued for after the running turn (TUX-04).
+- ``queued`` — messages are queued for after the running turn (TUX-04);
+- ``suggestion`` — the empty prompt suggests a command that Tab accepts (TUX-03).
 
 The ``picker``, ``search`` and ``queue`` contexts are the composer's ``/``/``@``
 pickers, its Ctrl+R history search and its queued-message rows (TUX-04).
@@ -329,11 +330,20 @@ _COMPOSER_ACTIONS: tuple[Action, ...] = (
         description="Open the agents hub (← only on an empty prompt)",
     ),
     Action(
+        "composer.accept_suggestion",
+        "composer",
+        ("tab",),
+        "accept",
+        description="Put the suggested command in the empty prompt",
+        when=frozenset({"suggestion"}),
+    ),
+    Action(
         "agents.cycle",
         "composer",
         ("tab",),
         "agent",
         description="Talk to the next primary agent (from the next turn)",
+        unless=frozenset({"suggestion"}),
     ),
     Action(
         "subagents.background",

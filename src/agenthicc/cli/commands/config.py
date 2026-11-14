@@ -60,6 +60,15 @@ def config_show(ctx: CLIContext) -> None:
     for notice in notices:
         print(f"# {notice}")
 
+    from agenthicc.runners.preflight import check_session
+
+    issues = check_session(cfg, os.environ)
+    print("\n# Pre-flight")
+    if not issues:
+        print("# all checks passed")
+    for issue in issues:
+        print(f"# ! {issue.text}")
+
 
 def config_validate(ctx: CLIContext) -> None:
     """Validate profile selection, endpoint syntax, and required env secrets."""

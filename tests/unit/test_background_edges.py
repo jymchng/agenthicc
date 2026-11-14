@@ -1393,6 +1393,7 @@ async def test_tui_session_remembers_plain_request_for_background() -> None:
     fake = SimpleNamespace(
         dispatch_slash=lambda text: False,
         route=lambda text: False,
+        _blocked_by_credentials=lambda text: False,
         _agent_task=None,
         _runtime_loading=lambda: False,
         _ctx=SimpleNamespace(app_state=SimpleNamespace(conversation=conversation)),

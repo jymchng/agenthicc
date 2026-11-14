@@ -18,13 +18,10 @@ _SRC = Path(__file__).resolve().parents[2] / "src" / "agenthicc"
 _SCANNED = (_SRC / "tui", _SRC / "commands")
 _EXEMPT = {_SRC / "tui" / "theme.py"}
 
-#: Files still to migrate: each later TUX wave removes the files it rewrites.
-#: The series is complete when this set is empty.
-_PENDING: frozenset[str] = frozenset(
-    {
-        "tui/welcome.py",
-    }
-)
+#: Files still to migrate: each TUX wave removed the files it rewrote. The set
+#: is empty (TUX-03 rewrote the last one, ``tui/welcome.py``), which is what
+#: completes the migration; a new offender is a failure, not an entry.
+_PENDING: frozenset[str] = frozenset()
 
 _COLOR = re.compile(
     r"(?<![A-Za-z_0-9.-])"

@@ -781,9 +781,28 @@ def _hidden_row(arrow: str, count: int) -> Line:
     return (Segment(f"  {arrow} {count} more line{'s' if count != 1 else ''}", _HIDDEN_STYLE),)
 
 
-def _placeholder(width: int) -> str:
-    """The longest placeholder form that fits *width* cells, or ``""``."""
-    return next((text for text in PLACEHOLDER if cell_len(text) <= width), "")
+def _placeholder(width: int, suggestion: str = "") -> str:
+    """The longest placeholder form that fits *width* cells, or ``""``.
+
+    The context's *suggestion* (TUX-03) comes first; the shorter generic forms
+    are what a narrow frame falls back to.
+    """
+    forms = (suggestion, *PLACEHOLDER) if suggestion else PLACEHOLDER
+    return next((text for text in forms if cell_len(text) <= width), "")
+
+
+def _suggestion_text(app_state: AppState) -> str:
+    """The empty composer's suggestion (``/init``, ``/resume``, attention or a tip)."""
+    conv = app_state.conversation
+    stored = _signal(conv, "suggestion")
+    needs = _signal_int(conv, "background_needs_you")
+    if stored is None and needs <= 0:
+        return ""
+    from agenthicc.tui.suggestions import Suggestion, current_suggestion
+
+    static = stored if isinstance(stored, Suggestion) else None
+    suggestion = current_suggestion(static, needs, _hub_key(app_state))
+    return suggestion.text if suggestion is not None else ""
 
 
 class _ComposerView:
@@ -833,7 +852,9 @@ class ComposerComponent:
                 # Callers that set only a paste label show the label.
                 buf, cursor = list(label), len(label)
         elif not buf:
-            hint = "" if _reader(self._state) else _placeholder(width)
+            hint = (
+                "" if _reader(self._state) else _placeholder(width, _suggestion_text(self._state))
+            )
             return [_Row(f"{g.prompt} ", "", 0, hint)], 0
         rows: list[_Row] = []
         cursor_row = 0

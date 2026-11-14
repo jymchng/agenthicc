@@ -49,10 +49,21 @@ class _Workspace:
 
 class _Input:
     def __init__(self) -> None:
+        from agenthicc.tui.input.unified_session import TerminalHooks
+
         self.modes: list[object] = []
+        # What a dialog's embedded composer takes from the real input session.
+        self.terminal_hooks = TerminalHooks()
+        self.exit_requested = False
 
     def set_mode(self, mode: object) -> None:
         self.modes.append(mode)
+
+    async def run_terminal_handoff(self, operation: object) -> None:
+        return None
+
+    def request_exit(self) -> None:
+        self.exit_requested = True
 
 
 def _make_session(

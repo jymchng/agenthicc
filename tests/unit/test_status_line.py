@@ -261,28 +261,29 @@ def test_the_meter_bar_fills_by_fifths() -> None:
 
 # ── 4. Width ──────────────────────────────────────────────────────────────────
 
+# With sessions that need the user, the empty prompt says so too (TUX-03 §2.5).
 _SNAPSHOTS: dict[int, list[str]] = {
     40: [
         "────── fix flaky scheduler test · Safe ─",
-        "❯ ask, or type / for commands",
+        "❯ 2 sessions need you · press ←",
         "─" * 40,
         " ● Idle · ◆ 2 sess. ← · ctx 12%",
     ],
     50: [
         "──────────────── fix flaky scheduler test · Safe ─",
-        "❯ ask, or type / for commands, @ for files",
+        "❯ 2 sessions need you · press ←",
         "─" * 50,
         " ● Idle · ◆ 2 sessions need you ← · ctx 12% ▰▱▱▱▱",
     ],
     80: [
         "─" * 46 + " fix flaky scheduler test · Safe ─",
-        "❯ ask, or type / for commands, @ for files",
+        "❯ 2 sessions need you · press ←",
         "─" * 80,
         " ● Idle · ◆ 2 sessions need you ← · ctx 12% ▰▱▱▱▱ · opus-4.8               /help",
     ],
     120: [
         "─" * 86 + " fix flaky scheduler test · Safe ─",
-        "❯ ask, or type / for commands, @ for files",
+        "❯ 2 sessions need you · press ←",
         "─" * 120,
         " ● Idle · ◆ 2 sessions need you ← · ctx 12% ▰▱▱▱▱ · opus-4.8 · ↑12.4k ↓3.1k · "
         "$0.42 · main*                        /help",
@@ -337,7 +338,7 @@ def test_mode_badge_uses_its_mode_token() -> None:
 
 
 def test_the_composer_frame_draws_in_the_frame_token() -> None:
-    """Rules, corners and side edges are `frame`, so the composer matches the welcome panel."""
+    """Rules, corners and side edges are `frame`, agenthicc's brand yellow."""
     from agenthicc.tui.theme import style
 
     state = _state(ui=UISettings(composer_frame="box"))

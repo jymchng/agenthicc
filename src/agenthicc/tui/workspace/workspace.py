@@ -197,6 +197,7 @@ class Workspace:
             conv.background_dnd,
             conv.background_toast,
             conv.session_title,  # TUX-02: frame title
+            conv.suggestion,  # TUX-03: the empty composer's suggestion
             conv.context_tokens,  # TUX-02: context meter
             conv.context_window,
             conv.git_branch,

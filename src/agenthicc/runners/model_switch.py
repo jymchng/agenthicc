@@ -20,13 +20,12 @@ from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
+from agenthicc.runners.preflight import credential_variable
+
 if TYPE_CHECKING:
     from agenthicc.config import AgenthiccConfig, ExecutionSettings
 
 __all__ = ["ModelChoice", "execution_for", "model_choice", "model_choices", "short_model"]
-
-#: Providers that need no API key.
-_KEYLESS = frozenset({"ollama"})
 
 
 @dataclass(frozen=True)
@@ -69,37 +68,6 @@ def _context_window(cfg: AgenthiccConfig, provider: str, model: str) -> int:
         return 0
 
 
-def _missing_env(
-    cfg: AgenthiccConfig, provider: str, profile: str, environ: Mapping[str, str]
-) -> str:
-    """The variable to set for *provider* (or *profile*), or ``""`` when credentials resolve."""
-    from agenthicc.config import PROVIDER_API_KEY_ENVVAR, SecretReference
-
-    if provider in _KEYLESS:
-        return ""
-    if profile:
-        spec = cfg.providers.get(profile)
-        if spec is not None:
-            if isinstance(spec.api_key, str) and spec.api_key:
-                return ""
-            if isinstance(spec.api_key, SecretReference):
-                return "" if environ.get(spec.api_key.env) else spec.api_key.env
-            if spec.api_key_env:
-                return "" if environ.get(spec.api_key_env) else spec.api_key_env
-    execution = cfg.execution
-    if execution.provider == provider and not profile:
-        if isinstance(execution.api_key, str) and execution.api_key:
-            return ""
-        if isinstance(execution.api_key, SecretReference):
-            return "" if environ.get(execution.api_key.env) else execution.api_key.env
-        if execution.api_key_env:
-            return "" if environ.get(execution.api_key_env) else execution.api_key_env
-    variable = PROVIDER_API_KEY_ENVVAR.get(provider, "")
-    if not variable or environ.get(variable):
-        return ""
-    return variable
-
-
 def model_choice(
     cfg: AgenthiccConfig,
     provider: str,
@@ -124,7 +92,7 @@ def model_choice(
         model=resolved_model,
         profile=profile,
         context_window=_context_window(cfg, provider, resolved_model),
-        missing_env=_missing_env(cfg, provider, profile, env),
+        missing_env=credential_variable(cfg, provider, profile, env),
         current=current,
     )
 

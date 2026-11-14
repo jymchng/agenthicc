@@ -126,11 +126,11 @@ class _Session:
         self.app_state = _AppState()
         self.agents_registry = build_agents_registry(load_external=False)
         self.agent_runner = object()
-        self.cfg = SimpleNamespace(
-            execution=SimpleNamespace(max_agent_turns=5, profile=""),
-            agents=SimpleNamespace(skill_permissions_for=lambda name: object()),
-            workflows={},
-        )
+        # A real configuration: ``/status`` reads it for the pre-flight rows (TUX-03).
+        from agenthicc.config import AgenthiccConfig
+
+        self.cfg = AgenthiccConfig()
+        self.cfg.execution.max_agent_turns = 5
         self.session_memory = object()
         self.session_conversation = None
         self.workspace_scope = None

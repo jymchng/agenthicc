@@ -44,7 +44,7 @@ from agenthicc.tui.input.paste import PasteState
 from agenthicc.tui.reactive import ReactiveProperty, _Observable
 from agenthicc.tui.runtime.replay import ConversationReplayer
 from agenthicc.tui.runtime.session_log import SessionEventLog, register_session
-from agenthicc.tui.welcome import render_welcome
+from agenthicc.tui.welcome import WelcomeInfo, render_welcome
 
 pytestmark = pytest.mark.unit
 
@@ -69,7 +69,17 @@ def test_reactive_property_and_welcome_and_diff_renderers(monkeypatch: pytest.Mo
     state._notify()
     assert len(changes) == 3
 
-    assert render_welcome("model", "/a/very/long/project/path")
+    assert render_welcome(
+        WelcomeInfo(
+            version="1.0",
+            model="model",
+            provider="anthropic",
+            mode="Safe",
+            directory=Path("/a/very/long/project/path"),
+            home=Path("/home/me"),
+        ),
+        80,
+    )
     assert _word_spans("old value", "new value")[0]
     opcodes = [
         ("equal", 0, 5, 0, 5),

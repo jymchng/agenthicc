@@ -258,6 +258,63 @@ def find_latest_session_for_cwd(cwd: str | None = None) -> str | None:
     return latest[0]
 
 
+def sessions_for_cwd(cwd: str | None = None, *, exclude: str = "") -> list[str]:
+    """Every recorded session of *cwd* but *exclude*, newest first (TUX-03)."""
+    canonical_cwd = str(Path(cwd or os.getcwd()).expanduser().resolve())
+    with _index_guard():
+        index = _load_index()
+    matching = [
+        (session_id, meta)
+        for session_id, meta in index.items()
+        if meta.get("cwd") == canonical_cwd and session_id != exclude
+    ]
+    matching.sort(
+        key=lambda item: (_float_value(item[1].get("last_active")), item[0]), reverse=True
+    )
+    return [session_id for session_id, _meta in matching]
+
+
+#: A log whose last of these events opens a turn ended before the turn finished.
+_TURN_OPENERS = frozenset({"user_message", "turn_start"})
+_TURN_CLOSERS = frozenset({"turn_complete", "activity_complete"})
+
+
+def session_ended_mid_turn(session_id: str) -> bool:
+    """Whether the session's log stops between a turn's start and its completion.
+
+    Only the log's tail is read. A session that was closed while idle, or one
+    with no turns at all, is not interrupted.
+    """
+    path = get_session_log_path(session_id)
+    try:
+        with path.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            size = handle.tell()
+            handle.seek(max(0, size - _TAIL_READ_BYTES))
+            tail = handle.read()
+    except OSError:
+        return False
+    for raw in reversed(tail.split(b"\n")):
+        try:
+            record = json.loads(raw)
+        except ValueError:
+            continue  # blank, or the partial first line of the tail
+        kind = record.get("kind") if isinstance(record, dict) else None
+        if kind in _TURN_OPENERS:
+            return True
+        if kind in _TURN_CLOSERS:
+            return False
+    return False
+
+
+def find_interrupted_session(cwd: str | None = None, *, exclude: str = "") -> str | None:
+    """The newest other session of *cwd*, when it ended in the middle of a turn."""
+    for session_id in sessions_for_cwd(cwd, exclude=exclude)[:1]:
+        if session_ended_mid_turn(session_id):
+            return session_id
+    return None
+
+
 def get_session_log_path(session_id: str) -> Path:
     return _SESSIONS_DIR / session_id / "conversation.jsonl"
 

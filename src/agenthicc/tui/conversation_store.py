@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     import asyncio as _asyncio
     from agenthicc.tools.approval import ApprovalRequest
     from agenthicc.tui.workspace.notice import Notice, Severity
+    from agenthicc.tui.suggestions import Suggestion
     from agenthicc.tui.runtime.mode_manager import RuntimeMode
     from agenthicc.workflows.plugin import WorkflowRun
     from agenthicc.subagents.pool import SubagentPoolState
@@ -268,6 +269,10 @@ class ConversationStore:
         self.session_title: Signal[str] = Signal("", name="session_title")
         """The session's title: the first prompt, cut as AGX-05 cuts a
         background session's intent; empty until the first prompt."""
+        self.suggestion: Signal[Suggestion | None] = Signal(None, name="suggestion")
+        """What the empty composer suggests: ``/init``, ``/resume`` or a tip
+        (TUX-03). ``None`` until the session has decided; the live
+        "N sessions need you" suggestion is not stored here."""
         self.context_tokens: Signal[int] = Signal(0, name="context_tokens")
         """Input tokens (cache reads and writes included) the provider reported
         for the latest main-agent call: how full the context window is."""

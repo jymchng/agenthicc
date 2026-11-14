@@ -210,7 +210,7 @@ _DARK = Palette(
     text="none",
     muted="#8a8f98",
     subtle="#636a75",
-    #: The composer frame matches the welcome panel's yellow border.
+    #: The composer frame is agenthicc's brand yellow.
     frame="yellow",
     accent="#7aa2f7",
     accent_bg="#1f2a44",

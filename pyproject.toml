@@ -75,6 +75,8 @@ where = ["src"]
     "llms.txt",
     "llms-full.txt",
     "README.md",
+    # ``/release-notes`` reads this file; nothing is fetched (TUX-03).
+    "CHANGELOG.md",
 ]
 "share/agenthicc/docs/guides" = ["docs/guides/*.md"]
 "share/agenthicc/docs/reference" = ["docs/reference/*.md", "docs/reference/*.json"]

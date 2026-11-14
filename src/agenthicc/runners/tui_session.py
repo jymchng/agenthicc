@@ -90,6 +90,8 @@ if TYPE_CHECKING:
     from agenthicc.memory.tool_history import ToolHistoryRecoveryState
     from agenthicc.memory.vector import SemanticIndex
     from agenthicc.plugins.discovery import PluginToolSet
+    from agenthicc.runners.first_run import FirstRun
+    from agenthicc.runners.preflight import PreflightIssue
     from agenthicc.runners.session_context import SessionContext
     from agenthicc.runners.startup import StartupCoordinator
     from agenthicc.runners.workflow_handle import WorkflowRunHandle
@@ -1141,16 +1143,8 @@ async def _build_session_context_impl(
             # its agent runtime after the first frame instead (AGX-02).
             llm_config()
     except ValueError as exc:
+        # Reported under the header as a notice (TUISession._show_welcome).
         llm_config_error = str(exc)
-        from rich.markup import escape as _escape
-
-        from agenthicc.tui.theme import palette as _palette
-
-        console.print(
-            f"[{_palette().danger}]LLM config error: {_escape(str(exc))}[/]\n"
-            "[dim]Set ANTHROPIC_API_KEY or OPENAI_API_KEY, or --set execution.provider=...[/dim]",
-            markup=True,
-        )
         llm_config = None
 
     model_label = f"{cfg.execution.provider}/{cfg.execution.effective_model()}"
@@ -1663,10 +1657,11 @@ class SessionSwitch:
     ``attach`` continues a background agent in the foreground and
     ``open_saved`` resumes a saved session; when that session ends, the
     *origin* session reopens. ``hub`` follows ``/background``: the agents hub
-    opens with the new background agent selected.
+    opens with the new background agent selected. ``directory`` (TUX-03) starts
+    a new session in the directory *target*; the origin does not reopen.
     """
 
-    action: Literal["attach", "open_saved", "hub"]
+    action: Literal["attach", "open_saved", "hub", "directory"]
     target: str
     origin: str
     origin_cwd: str
@@ -1682,6 +1677,10 @@ class TUISession:
     _workflow_handle_value: WorkflowRunHandle | None = None
     #: ``/bg`` arrived while a tool ran: hand off at the next tool boundary.
     _handoff_pending: bool = False
+    #: The pre-flight finding that stops prompts from being sent (TUX-03).
+    _credential_issue: PreflightIssue | None = None
+    #: This session's place in the tip rotation (TUX-03).
+    _tip_index: int = 0
 
     @property
     def _workflow_handle(self) -> WorkflowRunHandle | None:
@@ -3187,6 +3186,153 @@ class TUISession:
     async def _open_agents_hub_command(self, command: OpenAgentsHubCommand) -> None:
         self.open_agents_hub(command.tab, command.run_id)
 
+    # ── welcome and first run (TUX-03) ───────────────────────────────────────
+
+    async def _show_welcome(self) -> None:
+        """Print the header and any pre-flight notice, then ask about a new directory.
+
+        The facts are gathered on a worker thread (the state file, the git
+        branch, the pre-flight check, the suggestion); the loop only prints.
+        Nothing is fetched: the check reads configuration and the environment.
+        A failure degrades the ``preflight`` start-up phase, never the session.
+        """
+        startup = self._ctx.startup
+        if startup is None:
+            await self._welcome()
+        else:
+            await startup.run("preflight", self._welcome, degrade_on_error=True)
+
+    async def _welcome(self) -> None:
+        from agenthicc.runners.first_run import prepare_first_run
+
+        ctx = self._ctx
+        app_state = ctx.app_state
+        cwd = Path(os.getcwd())
+        report = await asyncio.to_thread(
+            prepare_first_run,
+            config=ctx.cfg,
+            env=os.environ,
+            cwd=cwd,
+            mode=app_state.active_mode().name,
+            session_id=ctx.session_id,
+            keymap=app_state.keymap(),
+        )
+        self._tip_index = report.tip_index
+        self._print_welcome(report)
+        app_state.conversation.suggestion.set(report.suggestion)
+        # A turn may write AGENTS.md; the suggestion follows when it ends.
+        app_state.conversation.agent_state.subscribe(self._refresh_suggestion)
+        if report.plan_mode and app_state.active_mode().name == "Safe":
+            ctx.mode_manager.set_by_name("Plan")
+        if report.ask_workspace:
+            self._ask_workspace(cwd)
+
+    def _print_welcome(self, report: FirstRun) -> None:
+        """The header (unless ``[ui] banner = "off"``), then one notice per failed check."""
+        from agenthicc.tui.workspace.formatters import short_model
+        from agenthicc.tui.workspace.notice import Notice
+
+        ctx = self._ctx
+        console = ctx.console
+        ui = ctx.cfg.ui
+        provider = ctx.cfg.execution.provider
+        if ui.banner != "off":
+            from agenthicc.tui.welcome import WelcomeInfo, print_welcome
+
+            print_welcome(
+                console,
+                WelcomeInfo(
+                    version=report.version,
+                    model=short_model(ctx.model_label, default_provider=provider),
+                    provider=provider,
+                    mode=ctx.app_state.active_mode().name,
+                    directory=Path(os.getcwd()),
+                    home=Path.home(),
+                    branch=report.branch,
+                    whats_new=report.whats_new,
+                    # A screen reader would read the mascot's characters out.
+                    mascot=(report.first_run or ui.banner == "full") and not ui.screen_reader,
+                ),
+            )
+        for issue in report.issues:
+            console.print(
+                Notice(issue.severity, issue.text, words=ui.screen_reader), highlight=False
+            )
+        blocking = next((issue for issue in report.issues if issue.blocking), None)
+        self._credential_issue = blocking
+        if blocking is None and ctx.llm_config_error:
+            console.print(
+                Notice(
+                    "error", f"LLM config error: {ctx.llm_config_error}", words=ui.screen_reader
+                ),
+                highlight=False,
+            )
+
+    def _ask_workspace(self, directory: Path) -> None:
+        """Ask "Work in <directory>?" once, in a dialog over the composer (TUX-03 §2.4)."""
+        from agenthicc.tui.workspace.overlays.workspace_trust import WorkspaceTrustOverlay
+
+        overlays = self._workspace.overlays
+        overlays.show(
+            WorkspaceTrustOverlay(
+                directory,
+                on_decision=lambda decision: self._remember_workspace(directory, decision),
+                on_choose_directory=self._switch_directory,
+                on_dismiss=overlays.hide,
+                settings=self._dialog_settings(self._answer_context()),
+            )
+        )
+
+    def _remember_workspace(self, directory: Path, decision: str) -> None:
+        from agenthicc.plugins.trust import current_extension_trust
+
+        current_extension_trust().remember_workspace(directory, decision)
+        if decision == "plan":
+            self._ctx.mode_manager.set_by_name("Plan")
+        self._workspace.overlays.hide()
+
+    def _switch_directory(self, directory: Path) -> None:
+        """Leave this session for a new one in *directory*."""
+        self._switch = SessionSwitch(
+            "directory", str(directory), origin=self._ctx.session_id, origin_cwd=os.getcwd()
+        )
+        self._workspace.overlays.hide()
+        self._input_session.request_exit()
+
+    def _refresh_suggestion(self) -> None:
+        """Replace a stale ``/init`` suggestion once ``AGENTS.md`` exists."""
+        from agenthicc.tui.suggestions import agents_md_missing, tip_for
+
+        conversation = self._ctx.app_state.conversation
+        current = conversation.suggestion()
+        if current is not None and current.kind == "init" and not agents_md_missing(Path.cwd()):
+            conversation.suggestion.set(tip_for(self._tip_index, self._ctx.app_state.keymap()))
+
+    def _blocked_by_credentials(self, text: str) -> bool:
+        """Refuse a prompt the provider cannot accept; say why and open ``/model``.
+
+        Only a failed credential check blocks (TUX-03 §2.3), and it is checked
+        again here, so a ``/model`` switch or a key exported since start-up
+        unblocks it. Slash commands never reach the provider and are not held.
+        """
+        issue = self._credential_issue
+        if issue is None or text.startswith("/"):
+            return False
+        from agenthicc.runners.preflight import check_credentials
+        from agenthicc.tui.workspace.notice import Notice
+
+        current = check_credentials(self._ctx.cfg, os.environ)
+        self._credential_issue = current
+        if current is None:
+            return False
+        ui = self._ctx.cfg.ui
+        self._ctx.console.print(
+            Notice(current.severity, current.text, words=ui.screen_reader), highlight=False
+        )
+        self._set_input_text(text)  # keep what was typed, ready to send again
+        self.dispatch_slash("/model")
+        return True
+
     # ── the primary agent (AGX-09) ───────────────────────────────────────────
 
     async def _cycle_agent_command(self, _command: CycleAgentCommand) -> None:
@@ -3621,7 +3767,9 @@ class TUISession:
             app_state=ctx.app_state,
             transient_notify=ctx.app_state.conversation.notify,
         )
-        return bool(self._cmd_dispatcher.dispatch(text, context))
+        handled = bool(self._cmd_dispatcher.dispatch(text, context))
+        self._refresh_suggestion()  # /init write may have created AGENTS.md
+        return handled
 
     def _toggle_dnd(self) -> bool:
         conversation = self._ctx.app_state.conversation
@@ -5281,6 +5429,12 @@ class TUISession:
             # A handoff must run even while a turn is active.
             self.dispatch_slash(text)
             return
+        # A prompt the user types and the provider cannot accept is refused before
+        # it can be queued behind the loading runtime (TUX-03 §2.3). A scheduled
+        # ``/loop`` prompt is not: it fails as a turn, without opening a picker
+        # every interval.
+        if source == "user" and self._blocked_by_credentials(text):
+            return
         # TUISession emits user_message before opening the agent turn, so the
         # event is not owned by a ConversationTurn; remember the accepted input
         # for /background.
@@ -5828,6 +5982,7 @@ class TUISession:
         self._start_deferred_startup()
         self._tasks.start(self._watch_agent_definitions(), name="agent-definitions-watch")
         self._start_agent_runtime()
+        await self._show_welcome()
         if ctx.resumed:
             from agenthicc.runners.startup import ReadinessState
             from agenthicc.tui.runtime.session_log import (
@@ -6024,6 +6179,7 @@ async def _run_tui_session(
         *,
         session_id: str | None,
         first: bool = False,
+        reload_config: bool = False,
     ) -> SessionSwitch | None:
         return await _run_tui_session_in(
             directory,
@@ -6037,7 +6193,8 @@ async def _run_tui_session(
             workflow_name=workflow_name if first else None,
             agent_name=agent_name if first else None,
             owner_lease=owner_lease if first else None,
-            config=config,
+            # A new project directory has its own project configuration.
+            config=None if reload_config else config,
         )
 
     async def run_target(action: str, target: str) -> SessionSwitch | None:
@@ -6056,6 +6213,8 @@ async def _run_tui_session(
                 return
             origin, origin_cwd = returns.pop()
             switch = await run_once(origin_cwd, session_id=origin)
+        elif switch.action == "directory":
+            switch = await run_once(switch.target, session_id=None, reload_config=True)
         elif switch.action == "hub":
             result = await _agents_hub_after_background(
                 switch.target,
@@ -6222,18 +6381,11 @@ async def _run_tui_session_impl(
     Returns where to go when the session ends (:class:`SessionSwitch`).
     """
     from agenthicc.tui.input.unified_session import TerminalHooks, UnifiedInputSession
-    from agenthicc.tui.welcome import (
-        fetch_changelog,
-        load_cached_changelog,
-        print_welcome,
-    )
     from agenthicc.tui.workspace import Workspace
 
     cassette_base: Path | None = Path(record_cassette) if record_cassette else None
-    cached_changelog = load_cached_changelog()
 
     ctx = None
-    changelog_task: asyncio.Task[object] | None = None
     try:
         ctx = await _build_session_context(
             resume_id,
@@ -6247,15 +6399,7 @@ async def _run_tui_session_impl(
             owner_lease=owner_lease,
             config=config,
         )
-        # Welcome metadata is non-essential startup UI. It starts after the
-        # session coordinator exists and is never awaited before the first
-        # frame; the static panel uses the bounded last-known-good cache.
         assert ctx.startup is not None
-        changelog_task = ctx.startup.start_background(
-            "welcome",
-            lambda: fetch_changelog(),
-            degrade_on_error=True,
-        )
         ctx.startup.begin("tui_shell")
         # PRD-79: stamp CLIFlags onto AppState immediately after creation; frozen for session lifetime.
         if cli_flags is not None:
@@ -6314,27 +6458,14 @@ async def _run_tui_session_impl(
         # tasks.  Run the same idempotent close boundary used by a live TUI so
         # partial startup cannot strand the session owner or its handles.
         try:
-            if changelog_task is not None and not changelog_task.done():
-                changelog_task.cancel()
-            if changelog_task is not None:
-                await asyncio.gather(changelog_task, return_exceptions=True)
             if ctx is not None:
                 await _close_tui_session_resources(ctx, None, None, None)
         except BaseException:  # noqa: BLE001 - preserve the startup failure
             pass
         raise
     try:
-        print_welcome(
-            ctx.console,
-            model=ctx.model_label,
-            cwd=os.getcwd(),
-            changelog=cached_changelog,
-        )
         await session.run()
     finally:
-        if not changelog_task.done():
-            changelog_task.cancel()
-        await asyncio.gather(changelog_task, return_exceptions=True)
         await _close_tui_session_resources(ctx, session, terminal_context_token, cassette_base)
     return session.switch
 

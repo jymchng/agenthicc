@@ -12,6 +12,8 @@ The canonical registry is `BUILTIN_COMMANDS` in
 | `/schedules` | — | Manage repository-scoped scheduled workflows |
 | `/schedule` | `create ... \| run-now ID \| pause ID \| resume ID NEXT-RUN \| delete ID --confirm` | Create or control a repository scheduled workflow |
 | `/agents` | `[running\|needs-you\|history\|library]` | Open the agents hub over the conversation, optionally on one tab (also Ctrl+G, or ← on an empty prompt) |
+| `/resume` | — | Resume a saved session: opens the agents hub on its History tab, where Enter resumes one |
+| `/release-notes` | — | Page the packaged `CHANGELOG.md`: the installed version, every version since the last one you read, and unreleased work |
 | `/inbox` | — | Open the agents hub's Needs you tab: pending approvals, questions and input requests |
 | `/subagents` | — | Show the turn's subagents and the session's earlier ones; Enter opens a worker's transcript (also Ctrl+O while the panel is shown) |
 | `/clear` | — | Clear the transcript |
@@ -27,7 +29,7 @@ The canonical registry is `BUILTIN_COMMANDS` in
 | `/mcp` | `[status\|reload\|connect NAME\|disconnect NAME\|refresh NAME\|doctor [NAME]]` | MCP status and control |
 | `/model` | `[provider] [model] [--save]` | Open the model picker, or switch to a provider and model at once; applies from the next turn, no restart (alias `/models`) |
 | `/skills` | `[reload]` | Inspect and reload skills |
-| `/status` | — | Show session status |
+| `/status` | — | Show the session, model, usage and the pre-flight check's findings (credentials, model, workspace, tools) |
 | `/startup` | — | Print startup milestones (process start → first frame → agent runtime ready, modules at first frame) and the bounded phase report |
 | `/keybindings` | — | Show the effective key bindings and where each comes from; create `~/.agenthicc/keybindings.toml` with every action listed |
 | `/perf` | — | Print live-block rendering diagnostics: frames drawn, full redraws, render and write time percentiles, characters per frame, whether synchronized output is on, event-loop lag (p50, p95, max) and the last five loop stalls with the code that caused them |
