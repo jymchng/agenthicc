@@ -21,12 +21,12 @@ from agenthicc.tui.trigger import MatchItem
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 
-def item(display: str) -> MatchItem:
-    return MatchItem(display=display, value=display)
+def item(label: str) -> MatchItem:
+    return MatchItem(value=label, label=label)
 
 
 def displays(items: list[MatchItem]) -> list[str]:
-    return [i.display for i in items]
+    return [i.label for i in items]
 
 
 # ── rank_match ────────────────────────────────────────────────────────────────
@@ -158,7 +158,7 @@ def test_filter_case_insensitive_upper_query() -> None:
 def test_filter_preserves_original_casing() -> None:
     pool = [item("README.md")]
     result = filter_and_rank("read", pool)
-    assert result[0].display == "README.md"
+    assert result[0].label == "README.md"
     assert result[0].value == "README.md"
 
 
@@ -275,3 +275,26 @@ def test_fuzzy_empty_query() -> None:
 @pytest.mark.unit
 def test_fuzzy_longer_than_text_fails() -> None:
     assert not _fuzzy_match("abcdefg", "abc")
+
+
+# ── TUX-05: boosts and highlight positions ───────────────────────────────────
+
+
+def test_filter_boosted_values_lead_their_tier_and_an_empty_query() -> None:
+    from agenthicc.mentions.matcher import filter_and_rank
+
+    pool = [item("alpha.py"), item("apple.py"), item("zeta.py")]
+    assert displays(filter_and_rank("a", pool, boosted={"apple.py"}))[:2] == [
+        "apple.py",
+        "alpha.py",
+    ]
+    assert displays(filter_and_rank("", pool, boosted={"zeta.py"}))[0] == "zeta.py"
+
+
+def test_match_positions_prefer_the_filename_then_fuzzy() -> None:
+    from agenthicc.mentions.matcher import fuzzy_positions, match_positions
+
+    assert match_positions("read", "docs/README.md") == (5, 6, 7, 8)
+    assert match_positions("rdm", "README.md") == (0, 3, 4)
+    assert match_positions("zz", "README.md") == ()
+    assert fuzzy_positions("cpt", "/compact") == (1, 4, 7)

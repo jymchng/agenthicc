@@ -1,0 +1,11 @@
+── compact ──
+ ◆ model → gpt-4o (from next turn)
+ ◆ model → work (gpt-w) (from next turn)
+
+── normal ──
+ ◆ model → gpt-4o (from next turn)
+ ◆ model → work (gpt-w) (from next turn)
+
+── verbose ──
+ ◆ model → gpt-4o (from next turn)
+ ◆ model → work (gpt-w) (from next turn)

@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 from agenthicc.tui.cbreak_reader import Key, key_name
 from agenthicc.tui.trigger import MatchItem, TriggerContext, TriggerHandler, TriggerResult
 from agenthicc.tui.workspace.overlay import Overlay
+from agenthicc.tui.workspace.picker import Picker, picker_height, rows_from_matches
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -42,13 +43,12 @@ class PickerOutcome(Enum):
 class TriggerPickerOverlay(Overlay):
     """Shows a dropdown picker for @mention and /command triggers.
 
-    Rendered inside the always-on Live block — no pause/restart required.
-    PRD-69: uses handler.get_lines() for line-height-aware scroll so long
-    descriptions can wrap without overflowing the visible window.
+    Rendered inside the always-on Live block — nothing pauses or restarts.
+    TUX-05: the matches are drawn by :class:`agenthicc.tui.workspace.picker.Picker`
+    (groups, match highlight, keys, wrapped details, a position footer).
     """
 
     name = "trigger_picker"
-    _MAX_LINES = 12  # terminal-line budget for the dropdown (not item count)
 
     def __init__(
         self,
@@ -72,7 +72,9 @@ class TriggerPickerOverlay(Overlay):
         self._matches: list[MatchItem] = []
         self._selected: int = 0  # index into self._matches
         self._scroll: int = 0  # index of first visible item
-        self._hint: str | None = None
+        # The rows are built once per query, not once per redraw: an ``@``
+        # listing can hold every file of a project.
+        self._picker: Picker[MatchItem] = Picker()
         self.refresh()
 
     # ── the trigger, derived from the buffer ─────────────────────────────────
@@ -119,7 +121,10 @@ class TriggerPickerOverlay(Overlay):
             self._matches = self._handler.get_matches(fragment, self._ctx)
             self._selected = 0
             self._scroll = 0
-            self._hint = self._handler.get_hint(self._matches[0] if self._matches else None)
+            self._picker.set_rows(
+                rows_from_matches(self._matches),
+                query=self._char + fragment if self._char == "/" else fragment,
+            )
         return True
 
     # ── keys ──────────────────────────────────────────────────────────────────
@@ -187,28 +192,19 @@ class TriggerPickerOverlay(Overlay):
             self._selected = (self._selected + delta) % len(self._matches)
         else:
             self._selected = max(0, min(len(self._matches) - 1, self._selected + delta))
-        self._hint = self._handler.get_hint(self._matches[self._selected])
 
     def _page_size(self) -> int:
-        """Matches that fit in one dropdown page (at least one)."""
-        cols = shutil.get_terminal_size((80, 24)).columns
-        width = max(cols - 4, 20)
-        used = 0
-        count = 0
-        for item in self._matches[self._scroll :]:
-            used += len(self._handler.get_lines(item, width))
-            if used > self._MAX_LINES:
-                break
-            count += 1
-        return max(1, count)
+        """Matches the last render showed (at least one)."""
+        return max(1, self._picker.visible)
 
     # ── Overlay interface ──────────────────────────────────────────────────────
 
     def render(self) -> RenderableType:
+        """The prompt line, then the matches drawn by :class:`Picker` (TUX-05)."""
         from rich.console import Group
-        from rich.text import Text
 
         from agenthicc.tui.input.renderer import build_prompt
+        from agenthicc.tui.theme import glyphs
 
         prompt_buf = self._buffer.buf
         prompt_cursor = self._buffer.cursor
@@ -217,55 +213,13 @@ class TriggerPickerOverlay(Overlay):
         result_lines: list[RenderableType] = [build_prompt(prompt_buf, prompt_cursor)]
 
         if self._matches:
-            cols = shutil.get_terminal_size((80, 24)).columns
-            # 4-char prefix "  ▶ " / "    " is added by us below
-            avail_w = max(cols - 4, 20)
-            item_line_lists = [self._handler.get_lines(item, avail_w) for item in self._matches]
-
-            # Clamp scroll so selected item is fully visible within _MAX_LINES.
-            self._clamp_scroll(item_line_lists)
-
-            # Render items from scroll position until line budget exhausted.
-            lines_used = 0
-            for idx in range(self._scroll, len(self._matches)):
-                item_lines = item_line_lists[idx]
-                if lines_used + len(item_lines) > self._MAX_LINES:
-                    break
-                selected = idx == self._selected
-                indicator = "▶" if selected else " "
-                style = "reverse" if selected else ""
-                for li, line_text in enumerate(item_lines):
-                    prefix = f"  {indicator} " if li == 0 else "    "
-                    result_lines.append(Text(prefix + line_text, style=style))
-                lines_used += len(item_lines)
-
-        if self._hint:
-            result_lines.append(Text(f"  {self._hint}", style="dim"))
+            size = shutil.get_terminal_size((80, 24))
+            g = glyphs()
+            picker = self._picker
+            picker.footer_keys = f"{g.up}{g.down} tab enter"
+            picker.selected = self._selected
+            picker.scroll = self._scroll
+            result_lines.extend(picker.render(size.columns, picker_height(size.lines)))
+            self._scroll = picker.scroll
 
         return Group(*result_lines)
-
-    # ── scroll helpers ─────────────────────────────────────────────────────────
-
-    def _clamp_scroll(self, item_line_lists: list[list[str]]) -> None:
-        """Adjust self._scroll so the selected item is fully visible."""
-        if not item_line_lists:
-            return
-
-        sel = self._selected
-
-        # If selected item is above the window, scroll up.
-        if sel < self._scroll:
-            self._scroll = sel
-            return
-
-        # Count lines from _scroll to sel (inclusive) to check if sel is visible.
-        lines_to_sel_end = sum(len(item_line_lists[i]) for i in range(self._scroll, sel + 1))
-        if lines_to_sel_end <= self._MAX_LINES:
-            return  # already fully visible
-
-        # Selected item is below the window — advance scroll until it fits.
-        while self._scroll <= sel:
-            self._scroll += 1
-            lines_to_sel_end = sum(len(item_line_lists[i]) for i in range(self._scroll, sel + 1))
-            if lines_to_sel_end <= self._MAX_LINES:
-                break

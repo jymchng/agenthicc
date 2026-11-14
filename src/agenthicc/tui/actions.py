@@ -34,6 +34,7 @@ worker has a transcript), ``running_worker`` (it has not finished) and
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import replace
 
 from agenthicc.tui.keymap import Action
@@ -43,10 +44,12 @@ __all__ = [
     "AGENTS_DETAIL_ACTIONS",
     "AGENTS_LIST_ACTIONS",
     "AGENTS_PEEK_ACTIONS",
+    "COMMAND_ACTIONS",
     "COMPOSER_ACTIONS",
     "DEFAULT_ACTIONS",
     "DIALOG_ACTIONS",
     "GLOBAL_ACTIONS",
+    "PALETTE_ACTIONS",
     "PICKER_ACTIONS",
     "QUEUE_ACTIONS",
     "SEARCH_ACTIONS",
@@ -1159,9 +1162,44 @@ DIALOG_ACTIONS: tuple[Action, ...] = (
     ),
 )
 
+
+# ── command palette (TUX-05 §2.4) ─────────────────────────────────────────────
+
+#: Ctrl+P opens the palette on an empty prompt; on a non-empty prompt the same
+#: key keeps its history meaning (previous line, then the previous prompt).
+PALETTE_KEY_ACTIONS: tuple[Action, ...] = (
+    Action(
+        "composer.palette",
+        "composer",
+        ("ctrl+p",),
+        "commands",
+        description="Open the command palette (on a non-empty prompt: the previous prompt)",
+    ),
+)
+
+#: A slash command and the key action that does the same thing: the ``/``
+#: picker and the palette show the action's key in the command's row.
+COMMAND_ACTIONS: Mapping[str, str] = {
+    "/agents": "agents.open_hub",
+    "/agent": "agents.cycle",
+    "/subagents": "subagents.focus",
+    "/mode": "composer.mode_cycle",
+    "/cancel": "composer.cancel",
+}
+
+#: Composer actions the palette lists, with the palette's name for each.
+PALETTE_ACTIONS: Mapping[str, str] = {
+    "agents.open_hub": "Open agents hub",
+    "composer.mode_cycle": "Cycle mode",
+    "agents.cycle": "Talk to the next primary agent",
+    "subagents.focus": "Move to the subagent panel",
+    "subagents.background": "Background the subagent pool",
+}
+
 DEFAULT_ACTIONS: tuple[Action, ...] = (
     *GLOBAL_ACTIONS,
     *COMPOSER_ACTIONS,
+    *PALETTE_KEY_ACTIONS,
     *PICKER_ACTIONS,
     *SEARCH_ACTIONS,
     *QUEUE_ACTIONS,

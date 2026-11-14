@@ -240,9 +240,9 @@ Transient provider failures are rendered as compact retry notices showing the at
 | `/loops` | Open the table of all persisted schedule jobs; Enter runs the selected job and `d` deletes it after confirmation |
 | `/inbox [filters]` | Review and answer exact background approvals, questions, and input requests |
 | `/ps [terminal-id]`, `/stop [terminal-id\|all]` | Inspect or stop owned background terminals; `/ps` is paginated and `/ps --json` returns all records; `/stop` stops all |
-| `/mode [name]` | Show or change the operating mode |
+| `/mode [name]` | Choose or change the operating mode (a picker without a name) |
 | `/workflow <name> \| resume [run-id] \| reset [run-id]` | Select a workflow, resume the latest eligible run when `run-id` is omitted, or reset a workflow; use `/workflow create_workflow` to author one directly in `.agenthicc/workflows/` |
-| `/model [provider] [model]` | Inspect or switch the model selection |
+| `/model [provider] [model]` | Choose the provider and model from a picker (or directly); applies from the next turn, no restart |
 | `/config` | Open the configuration overlay |
 | `/init` | Preview or explicitly write managed project `AGENTS.md` guidance |
 | `/compact` | Compact conversation memory |

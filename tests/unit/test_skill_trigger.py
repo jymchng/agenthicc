@@ -38,20 +38,18 @@ def test_skill_trigger_uses_dollar_and_filters_to_skill_entries() -> None:
 
     assert trigger.char == "$"
     assert trigger.label == "Skill"
-    values = [item.value for item in trigger.get_matches("", CTX)]
-    assert values == ["$review-code", "$review", "$inspect"]
+    items = trigger.get_matches("", CTX)
+    # Aliases collapse into their skill's row (TUX-05 §2.2).
+    assert [item.value for item in items] == ["$review-code"]
+    assert items[0].detail.endswith("(aliases $review, $inspect)")
 
 
 def test_skill_trigger_matches_canonical_name_and_alias_prefix() -> None:
     trigger = SkillTrigger(_registry())
 
-    assert [item.value for item in trigger.get_matches("review", CTX)] == [
-        "$review-code",
-        "$review",
-    ]
-    # Registry matching follows aliases while the picker keeps the canonical
-    # command as the inserted value, just like the command picker.
-    assert [item.value for item in trigger.get_matches("inspect", CTX)] == ["$inspect"]
+    assert [item.value for item in trigger.get_matches("review", CTX)] == ["$review-code"]
+    # Typing an alias ranks its skill first; the canonical name is inserted.
+    assert [item.value for item in trigger.get_matches("inspect", CTX)] == ["$review-code"]
     assert trigger.get_matches("status", CTX) == []
 
 
@@ -68,7 +66,7 @@ def test_slash_trigger_excludes_stale_slash_named_skill_records() -> None:
 
 def test_skill_trigger_selection_preserves_dollar_prefix() -> None:
     trigger = SkillTrigger(CommandRegistry())
-    item = MatchItem(display="$review-code  Review", value="$review-code")
+    item = MatchItem(value="$review-code", label="$review-code", detail="Review")
 
     selected = trigger.on_select(item, "review", list("run "))
     assert isinstance(selected, TriggerResult)
@@ -79,7 +77,9 @@ def test_skill_trigger_selection_preserves_dollar_prefix() -> None:
     assert "".join(literal.buffer) == "$unknown"
 
 
-def test_skill_trigger_reuses_picker_hint_and_wrapping() -> None:
+def test_skill_trigger_rows_wrap_in_a_narrow_picker() -> None:
+    from agenthicc.tui.workspace.picker import Picker, rows_from_matches
+
     registry = UnifiedCommandRegistry()
     registry.register(
         Command(
@@ -93,9 +93,10 @@ def test_skill_trigger_reuses_picker_hint_and_wrapping() -> None:
     trigger = SkillTrigger(registry)
     item = trigger.get_matches("", CTX)[0]
 
-    assert "$review-code" in item.hint
-    assert "[path]" in item.hint
-    assert len(trigger.get_lines(item, available_width=48)) > 1
+    assert item.label == "$review-code"
+    lines = Picker(rows_from_matches([item])).render(70)
+    assert len(lines) == 4  # Skills heading, label row, wrapped description row, footer
+    assert all(len(line.plain) <= 70 for line in lines)
 
 
 def test_skill_trigger_compacts_long_multiline_descriptions() -> None:

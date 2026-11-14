@@ -70,9 +70,9 @@ def test_mode_command_lists_only_the_three_user_modes() -> None:
 
     _cmd_mode(_command_context(manager, "", console))
 
-    table = console.print.call_args_list[0].args[0]
-    assert [cell for cell in table.columns[0]._cells] == ["Safe", "Plan", "Yolo"]
-    assert "Replay" not in table.columns[0]._cells
+    rows = [str(call.args[0]).split() for call in console.print.call_args_list]
+    assert [row[1] if row[0] == "*" else row[0] for row in rows] == ["Safe", "Plan", "Yolo"]
+    assert not any("Replay" in row for row in rows)
 
 
 def test_legacy_mode_plugin_is_discoverable_but_does_not_replace_policy(

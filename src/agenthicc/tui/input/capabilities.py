@@ -666,6 +666,37 @@ class BackgroundSubagentsCapability:
         return _CONSUMED
 
 
+class PaletteCapability:
+    """Ctrl+P: the command palette on an empty prompt (TUX-05 §2.4).
+
+    On a non-empty prompt the key keeps its history meaning: the previous
+    line of a multi-line prompt, else (when idle) the previous prompt.
+    """
+
+    async def handle(
+        self,
+        key: Key,
+        ch: str,
+        session: UnifiedInputSession,
+    ) -> CapabilityResult:
+        if session._action != "composer.palette":
+            return _PASS
+        if not session._buf.text and not session._paste.condensed:
+            from agenthicc.tui.runtime.commands import OpenPaletteCommand
+
+            if not session._bus.handles(OpenPaletteCommand):
+                return _PASS
+            await session._bus.dispatch_async(OpenPaletteCommand())
+            return _CONSUMED
+        if not session._paste.move_up(session._buf) and "running" not in session.conditions():
+            result = session._hist.up(session._buf.buf)
+            if result is not None:
+                session._buf.set(result)
+                session._paste.condensed = False
+        session._push()
+        return _CONSUMED
+
+
 # ── Mouse ─────────────────────────────────────────────────────────────────────
 
 
@@ -749,6 +780,7 @@ IDLE_CAPABILITIES: list[Capability] = [
     AgentsHubCapability(),
     SubagentsCapability(),
     AgentCycleCapability(),
+    PaletteCapability(),
     MouseCapability(),
     InsertCapability(),  # fallback — must be last
 ]
@@ -775,6 +807,7 @@ STREAMING_CAPABILITIES: list[Capability] = [
     SubagentsCapability(),  # workers run while their turn does
     BackgroundSubagentsCapability(),
     AgentCycleCapability(),  # the choice applies from the next turn
+    PaletteCapability(),  # the palette opens over a running turn too
     MouseCapability(),
     InsertCapability(),  # fallback — must be last
 ]

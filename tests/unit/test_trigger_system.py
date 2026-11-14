@@ -30,7 +30,7 @@ class EchoTrigger:
 
     def get_matches(self, fragment, ctx):
         if fragment:
-            return [MatchItem(display=fragment, value=fragment)]
+            return [MatchItem(value=fragment, label=fragment)]
         return []
 
     def on_select(self, item, fragment, buf):
@@ -97,7 +97,7 @@ def test_registry_overwrite_same_char():
         char = "!"
 
         def get_matches(self, fragment, ctx):
-            return [MatchItem(display="first", value="first")]
+            return [MatchItem(value="first", label="first")]
 
         def on_select(self, item, fragment, buf):
             return buf
@@ -112,7 +112,7 @@ def test_registry_overwrite_same_char():
         char = "!"
 
         def get_matches(self, fragment, ctx):
-            return [MatchItem(display="second", value="second")]
+            return [MatchItem(value="second", label="second")]
 
         def on_select(self, item, fragment, buf):
             return buf
@@ -172,20 +172,23 @@ def test_registry_get_unregistered_returns_none():
 
 
 def test_match_item_defaults():
-    item = MatchItem(display="src/auth.py", value="src/auth.py")
-    assert item.display == "src/auth.py"
+    item = MatchItem(value="src/auth.py", label="src/auth.py")
+    assert item.label == "src/auth.py"
     assert item.value == "src/auth.py"
-    assert item.hint == ""
+    assert (item.detail, item.group, item.glyph, item.keys, item.disabled) == ("",) * 5
+    assert item.path is False
 
 
-def test_match_item_hint_set():
-    item = MatchItem(display="x", value="x", hint="some hint")
-    assert item.hint == "some hint"
+def test_match_item_structured_fields_set():
+    item = MatchItem(
+        value="/agents", label="/agents", detail="Open the hub", group="Agents", keys="ctrl+g"
+    )
+    assert (item.detail, item.group, item.keys) == ("Open the hub", "Agents", "ctrl+g")
 
 
-def test_match_item_display_differs_from_value():
-    item = MatchItem(display="+ src/auth.py", value="src/auth.py")
-    assert item.display != item.value
+def test_match_item_label_differs_from_value():
+    item = MatchItem(value="docs/", label="docs", glyph="▸", path=True)
+    assert item.label != item.value
 
 
 # ── TriggerContext ────────────────────────────────────────────────────────────
@@ -232,7 +235,7 @@ def test_echo_trigger_matches_with_fragment():
     result = t.get_matches("hello", ctx)
     assert len(result) == 1
     assert result[0].value == "hello"
-    assert result[0].display == "hello"
+    assert result[0].label == "hello"
 
 
 def test_echo_trigger_no_matches_empty_fragment():
@@ -244,7 +247,7 @@ def test_echo_trigger_no_matches_empty_fragment():
 
 def test_echo_trigger_on_select_with_item():
     t = EchoTrigger()
-    item = MatchItem(display="world", value="world")
+    item = MatchItem(value="world", label="world")
     result = t.on_select(item, "world", list("say "))
     assert isinstance(result, TriggerResult)
     assert "".join(result.buffer) == "say !world"
@@ -260,7 +263,7 @@ def test_echo_trigger_on_select_no_item():
 
 def test_echo_trigger_on_enter_inserts_a_match():
     t = EchoTrigger()
-    result = t.on_enter(MatchItem(display="part", value="part"), "part", [])
+    result = t.on_enter(MatchItem(value="part", label="part"), "part", [])
     assert "".join(result.buffer) == "!part"
     assert result.submit is False
 
@@ -274,7 +277,7 @@ def test_echo_trigger_on_enter_without_a_match_submits():
 
 def test_echo_trigger_get_hint_with_item():
     t = EchoTrigger()
-    item = MatchItem(display="x", value="x")
+    item = MatchItem(value="x", label="x")
     hint = t.get_hint(item)
     assert hint is not None
     assert "echo" in hint

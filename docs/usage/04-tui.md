@@ -24,9 +24,10 @@ context use and the session's file paths.
 
 | Trigger | Picker |
 |---|---|
-| `/` | Command picker |
+| `/` | Command picker (ranked, grouped, with keys) |
 | `$` | Skill-only picker |
-| `@` | Project file/mention picker |
+| `@` | Project file/mention picker (changed files first) |
+| Ctrl+P on an empty prompt | Command palette: commands, key actions and themes |
 
 Submitted `@` text is parsed conservatively. Existing files and directories,
 explicit paths such as `@./missing.py`, globs, and `http://`/`https://` URLs

@@ -126,6 +126,8 @@ class Glyphs:
     sep: str
     approx: str
     """Marks an approximate value, such as partially reported token usage."""
+    folder: str
+    """A directory row in the ``@`` picker (TUX-05)."""
     flower: str = "*"
     """The mark of agenthicc's timing rows (``✾ Worked for 37s``)."""
     minus: str = "-"
@@ -157,6 +159,7 @@ UNICODE_GLYPHS = Glyphs(
     meter_empty="▱",
     sep="·",
     approx="≈",
+    folder="▸",
     flower="✾",
     minus="−",
 )
@@ -185,6 +188,7 @@ ASCII_GLYPHS = Glyphs(
     meter_empty=".",
     sep="-",
     approx="~",
+    folder=">",
 )
 
 

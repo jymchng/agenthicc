@@ -303,6 +303,10 @@ def _isolate_keybindings(
     monkeypatch.setenv(
         "AGENTHICC_AGENTS_HUB_STATE", str(tmp_path_factory.mktemp("hub") / "agents-hub.json")
     )
+    # How often each command ran, which ranks the pickers (TUX-05).
+    monkeypatch.setenv(
+        "AGENTHICC_COMMAND_USAGE", str(tmp_path_factory.mktemp("usage") / "command-usage.json")
+    )
 
 
 @pytest.fixture(autouse=True)

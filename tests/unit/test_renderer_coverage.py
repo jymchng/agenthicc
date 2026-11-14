@@ -55,6 +55,10 @@ CASES: dict[str, list[dict[str, object]]] = {
     "turn_start": [{"agent": "reviewer", "model": "sonnet-4.6", "agent_name": "x"}],
     "user_message": [{"text": "Fix the failing tests in @src/app.py please"}],
     "text": [{"text": "I'll run the tests first."}],
+    "model_changed": [
+        {"provider": "openai", "model": "gpt-4o", "profile": "", "previous": "anthropic/x"},
+        {"provider": "openai", "model": "gpt-w", "profile": "work", "previous": "openai/gpt-4o"},
+    ],
     "thinking_step": [{"step": "Comparing the recovery flow", "done": False}],
     "mention_chips": [
         {
