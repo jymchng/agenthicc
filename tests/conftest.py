@@ -261,6 +261,31 @@ def _trust_test_extensions(
         yield trust
 
 
+def _clear_rich_style_caches() -> None:
+    """Drop the ``Style`` objects Rich shares between consoles."""
+    from rich.style import Style
+
+    Style.parse.cache_clear()
+    Style.normalize.cache_clear()
+    Style._add.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _fresh_rich_style_cache() -> Iterator[None]:
+    """Keep one test's terminal colour depth out of the next test's output.
+
+    Rich caches a style's ANSI codes on the ``Style`` object, whichever colour
+    system first rendered it, and ``Style.parse`` and ``Style.__add__`` hand out
+    shared instances. A test that renders a hex palette token to a 16-colour
+    console would otherwise make a later truecolor console print 16-colour codes
+    for the same token. A process has one terminal in production, so only tests
+    need this.
+    """
+    _clear_rich_style_caches()
+    yield
+    _clear_rich_style_caches()
+
+
 @pytest.fixture(autouse=True)
 def _restore_active_theme() -> Iterator[None]:
     """Give every test the theme it started with.
