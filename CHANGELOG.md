@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — compaction in the transcript
+
+- **A quieter compaction indicator.** While the conversation is compacted, a
+  row under the transcript reads `◜ Refreshing context · 2s`: a ring that turns
+  once a second in the theme's accent colour and a time that moves every
+  second. It replaces the `Compacting` word in the status line and the
+  `⎋ Compacting conversation…` line in the scrollback. The ring rests as `◌`
+  under `reduced_motion` and `screen_reader`. When the compaction ends the row
+  gives way to `✓ Context refreshed · 849 tokens · 3s`, or to
+  `✗ Context refresh failed · 3s` with the reason underneath. A thin bar
+  appears under the row only for a history long enough to be summarised in
+  several model calls, and follows the calls that have really finished; a
+  compaction that is one call shows the spinner alone. The `compaction_status`
+  event gained `elapsed_s` and `label`; the compactor no longer appends
+  `system` text events, and `/compact` no longer repeats the outcome as a
+  status-line notice.
+
 ### Changed — agents experience (AGX series)
 
 - **CLI start-up (AGX-01).** Built-in commands are declared in

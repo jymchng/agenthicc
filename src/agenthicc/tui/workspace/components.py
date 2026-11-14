@@ -520,8 +520,6 @@ class StatusLine:
             return forms("info", g.bullet, ("Loading transcript", "Loading"))
         # Shown from 0s while work runs, so the row never shifts on the first tick.
         elapsed = _fmt_elapsed(_cached_elapsed(conv))
-        if _signal_bool(conv, "compaction_active"):
-            return forms("warning", spinner, ("Compacting",), elapsed)
         agent_state = _signal(conv, "agent_state")
         name = str(getattr(agent_state, "name", "IDLE")).lower()
         if name == "running":

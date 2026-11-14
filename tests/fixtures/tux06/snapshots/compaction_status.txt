@@ -1,0 +1,17 @@
+── compact ──
+ ✓ Context refreshed · 849 tokens · 3s
+
+ ✗ Context refresh failed · 3s
+   Compaction blocked: no protocol-safe history boundary can fit
+
+── normal ──
+ ✓ Context refreshed · 849 tokens · 3s
+
+ ✗ Context refresh failed · 3s
+   Compaction blocked: no protocol-safe history boundary can fit
+
+── verbose ──
+ ✓ Context refreshed · 849 tokens · 3s
+
+ ✗ Context refresh failed · 3s
+   Compaction blocked: no protocol-safe history boundary can fit

@@ -51,6 +51,7 @@ class Announcer:
             (conv.active_tool, self._on_agent_state),
             (self._state.pending_approval, self._on_approval),
             (conv.notification, self._on_notification),
+            (conv.compaction_active, self._on_compaction),
             (conv.transient_notice, self._on_transient_notice),
             (self._state.active_mode, self._on_mode),
             (conv.agent_state, self._on_status),
@@ -93,6 +94,11 @@ class Announcer:
         from agenthicc.tui.workspace.overlays.approval_body import request_announcement
 
         self._say("approval", request_announcement(pending))
+
+    def _on_compaction(self) -> None:
+        # The result is a notice row, which a screen reader reads as "Done: ...".
+        active = self._state.conversation.compaction_active()
+        self._say("compaction", "Refreshing context." if active else "")
 
     def _on_notification(self) -> None:
         text = self._state.conversation.notification()

@@ -4671,7 +4671,9 @@ class TUISession:
         model = ctx.cfg.execution.effective_model()
         # Bound each summariser call to the model window so compacting a history
         # larger than the window map-reduces instead of overflowing (PRD-135 B).
-        outcome = await compact_memory_with_result(
+        # The outcome is the transcript's result row (``✓ Context refreshed``
+        # or ``✗ Context refresh failed``), drawn from the compaction_status event.
+        await compact_memory_with_result(
             mem,
             transport,
             model=model,
@@ -4683,24 +4685,6 @@ class TUISession:
             max_completion_tokens=ctx.cfg.execution.max_completion_tokens,
             request_options=ctx.cfg.execution.request_options,
         )
-        if outcome.applied:
-            conv.notify_transient(
-                "Compacted"
-                if outcome.status == "compacted_summary"
-                else "Compaction fallback: retained recent complete exchanges"
-            )
-        elif outcome.status == "blocked_durability_error":
-            conv.notify_transient(
-                "⚠ Compaction was not committed; conversation history is preserved"
-            )
-        elif outcome.status == "skipped_concurrent_update":
-            conv.notify_transient(
-                "Compaction skipped because the conversation changed; newer history was kept"
-            )
-        else:
-            conv.notify_transient(
-                "⚠ Compaction did not change the conversation; history is preserved"
-            )
 
     def _record_command_use(self, text: str) -> None:
         """Count a submitted command toward the ``/`` and ``$`` pickers' ranking."""

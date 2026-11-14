@@ -79,11 +79,11 @@ def _plain(markup: str) -> str:
     return Text.from_markup(markup).plain
 
 
-def test_compaction_shows_in_the_state_segment() -> None:
+def test_compaction_is_the_inline_row_and_not_a_second_indicator_in_the_status_line() -> None:
     state = _real()
     state.conversation.begin_turn("agent", "turn-1")
-    state.conversation.compaction_active.set(True)
-    assert "Compacting" in _plain(components.StatusLine(state).markup(80))
+    state.conversation.begin_compaction()
+    assert "Compacting" not in _plain(components.StatusLine(state).markup(80))
     assert components._fmt_elapsed(61.2) == "1m 1s"
 
 

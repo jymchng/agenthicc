@@ -420,16 +420,6 @@ class TestFrameDrivesAnimation:
             results.add(self._plain(state)[1])
         assert results == set(spinner)
 
-    def test_compaction_spinner_changes_with_frame(self) -> None:
-        results: set[str] = set()
-        for i in range(4):
-            state = self._state(i)
-            state.conversation.compaction_active.set(True)
-            line = self._plain(state)
-            assert "Compacting" in line
-            results.add(line[1])
-        assert len(results) == 4
-
     def test_transcript_loading_status_has_no_spinner(self) -> None:
         from agenthicc.tui.theme import glyphs
 
