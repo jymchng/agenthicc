@@ -248,3 +248,68 @@ def test_the_check_is_fast() -> None:
     for _ in range(50):
         check_session(_config(), {"PATH": os.environ.get("PATH", "")}, cwd=Path.cwd())
     assert (time.perf_counter() - started) / 50 < 0.05
+
+
+# ── one resolver for the pre-flight check and the /model picker ───────────────
+
+
+def _profile_config() -> AgenthiccConfig:
+    config = _config()
+    config.providers["work"] = ProviderProfile(
+        name="work", provider="openai", api_key_env="WORK_OPENAI_KEY"
+    )
+    config.providers["vault"] = ProviderProfile(
+        name="vault", provider="openai", api_key=SecretReference("VAULT_KEY")
+    )
+    config.providers["bare"] = ProviderProfile(name="bare", provider="anthropic")
+    return config
+
+
+@pytest.mark.parametrize(
+    "environment",
+    [
+        {},
+        {"ANTHROPIC_API_KEY": "k"},
+        {"ANTHROPIC_AUTH_TOKEN": "t"},
+        {"OPENAI_API_KEY": "k"},
+        {"WORK_OPENAI_KEY": "k"},
+        {"VAULT_KEY": "k"},
+    ],
+    ids=["none", "anthropic-key", "anthropic-token", "openai-key", "work-key", "vault-key"],
+)
+def test_the_model_picker_offers_a_choice_exactly_when_a_turn_on_it_would_pass(
+    environment: dict[str, str],
+) -> None:
+    """The picker and the start-up check ask `credential_variable` the same question."""
+    from agenthicc.runners.model_switch import model_choices
+
+    for profile in ("", "work", "vault", "bare"):
+        config = _profile_config()
+        config.execution.profile = profile
+        active = check_credentials(config, environment) is None
+        # The active choice: the current provider default, or the saved profile.
+        chosen = next(
+            choice
+            for choice in model_choices(config, environment)
+            if choice.profile == profile and (choice.current or profile)
+        )
+        assert chosen.available is active, (profile, environment)
+
+
+def test_an_anthropic_token_makes_the_picker_offer_anthropic() -> None:
+    from agenthicc.runners.model_switch import model_choice
+
+    config = _config()
+
+    assert model_choice(config, "anthropic", environ={}).missing_env == "ANTHROPIC_API_KEY"
+    assert model_choice(config, "anthropic", environ={"ANTHROPIC_AUTH_TOKEN": "t"}).available
+
+
+def test_the_execution_key_serves_only_the_provider_it_was_written_for() -> None:
+    from agenthicc.runners.preflight import credential_variable
+
+    config = _config("anthropic", api_key_env="MY_ANTHROPIC_KEY")
+
+    assert credential_variable(config, "anthropic", "", {}) == "MY_ANTHROPIC_KEY"
+    assert credential_variable(config, "openai", "", {}) == "OPENAI_API_KEY"
+    assert credential_variable(config, "ollama", "", {}) == ""

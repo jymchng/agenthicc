@@ -65,6 +65,11 @@ class CycleAgentCommand(Command):
     """Talk to the next primary agent from the next turn (Tab; AGX-09 §5.3)."""
 
 
+@dataclass(frozen=True)
+class OpenPaletteCommand(Command):
+    """Open the command palette over the conversation (Ctrl+P; TUX-05 §2.4)."""
+
+
 C = TypeVar("C", bound=Command)
 
 

@@ -27,27 +27,25 @@ The canonical registry is `BUILTIN_COMMANDS` in
 | `/logs` | — | Show the tail of this session's diagnostics log (`~/.agenthicc/logs/<session>.log`): stray stderr and Python warnings captured while the TUI was live |
 | `/init` | `[write] [--force]` | Create the AGENTS.md / config scaffold |
 | `/mcp` | `[status\|reload\|connect NAME\|disconnect NAME\|refresh NAME\|doctor [NAME]]` | MCP status and control |
-| `/model` | `[provider] [model]` | Switch model |
-| `/models` | — | List models |
+| `/model` | `[provider] [model] [--save]` | Open the model picker, or switch to a provider and model at once; applies from the next turn, no restart (alias `/models`) |
 | `/skills` | `[reload]` | Inspect and reload skills |
 | `/status` | — | Show the session, model, usage and the pre-flight check's findings (credentials, model, workspace, tools) |
 | `/startup` | — | Print startup milestones (process start → first frame → agent runtime ready, modules at first frame) and the bounded phase report |
 | `/keybindings` | — | Show the effective key bindings and where each comes from; create `~/.agenthicc/keybindings.toml` with every action listed |
 | `/perf` | — | Print live-block rendering diagnostics: frames drawn, full redraws, render and write time percentiles, characters per frame, whether synchronized output is on, event-loop lag (p50, p95, max) and the last five loop stalls with the code that caused them |
 | `/ps` | `[terminal-id] [--json]` | List processes (alias `/processes`) |
-| `/background` | — | Detach the active session into a background agent and open the agents hub with it selected (alias `/bg`) |
-| `/detach` | — | Detach the active session into a background agent |
+| `/background` | — | Detach the active session into a background agent and open the agents hub with it selected (aliases `/bg`, `/detach`) |
 | `/workers` | `[--json]` | Open the agents hub's Running tab, where this session's parallel workers are nested under it; `--json` prints their worker manifests |
 | `/stop` | `[terminal-id\|all] [--force]` | Stop a terminal (alias `/stop-terminal`) |
 | `/usage` | — | Show the local token/cost snapshot |
-| `/mode` | `[Safe\|Plan\|Yolo]` | Switch mode |
+| `/mode` | `[Safe\|Plan\|Yolo]` | Open the mode picker, or switch directly |
 | `/workflow` | `<name> \| resume [run-id] \| reset [run-id]` | Select or resume a workflow |
 | `/compact` | — | Compact the conversation |
 
 !!! note "Commands outside `BUILTIN_COMMANDS`"
     `/create-tools` and `/create-commands` come from bootstrap skills, not the
-    registry. `/background`, `/bg` and `/detach` are registry entries that
-    `TUISession` intercepts to hand the conversation to the background
+    registry. `/background` (aliases `/bg` and `/detach`) is a registry entry
+    that `TUISession` intercepts to hand the conversation to the background
     service.
 
 !!! note "`/workflow` and `/compact` carry `handler=None`"
@@ -58,9 +56,16 @@ The canonical registry is `BUILTIN_COMMANDS` in
 
 ## Trigger pickers
 
-- `/` — command picker
+- `/` — command picker: fuzzy over name, aliases and description; grouped when
+  nothing is typed; shows each command's key
 - `$` — skill-only picker
-- `@` — project file/mention picker
+- `@` — project file/mention picker: directories and files with sizes, changed
+  and recently mentioned files first
+- Ctrl+P on an empty prompt — the command palette (every command, key action
+  and theme)
+
+See the [TUI guide](../guides/tui.md#pickers-and-the-command-palette) for how
+rows are ranked and drawn.
 
 ## Recurring session prompts
 

@@ -68,6 +68,28 @@ supported by the same command-specific loader. Both forms are discovered at
 startup and by `/commands reload`; do not add a second command registry in a
 plugin.
 
+## Writing a trigger
+
+A trigger handler (a `TriggerHandlerBase` subclass registered with
+`TriggerManager.register`) returns `MatchItem` rows from `get_matches(fragment,
+ctx)`. The picker draws them with `Picker`; set the fields it understands:
+
+| Field | Purpose |
+|---|---|
+| `value` | Text inserted into the prompt when the row is chosen. |
+| `label` | Left column (`/compact`, `src/a.py`); matched characters are highlighted. |
+| `detail` | Muted description, size or count; wrapped with a hanging indent. |
+| `group` | Heading shown when it changes between rows; leave empty for a ranked list. |
+| `glyph` | Kind marker before the label; take it from `agenthicc.tui.theme.glyphs()`. |
+| `keys` | Key binding shown right-aligned. |
+| `disabled` | Why the row cannot run now; the row is dimmed and shows the reason. |
+| `path` | The label is a path: the directory is muted, the file name plain. |
+
+`MatchItem.display` and `TriggerHandler.get_lines` are gone, and `get_hint` is no
+longer drawn: put what it said in `detail`. To rank your own rows the way the `@`
+picker does, call `agenthicc.mentions.matcher.filter_and_rank(query, items,
+boosted=values)`.
+
 ## Command specification
 
 `Command` is the canonical slash-command object. Its useful fields are:
@@ -76,7 +98,7 @@ plugin.
 |---|---|
 | `name` | Canonical slash name, including `/`, such as `/greet`. |
 | `description` | Full text shown in the picker and `/commands`. |
-| `group` | Display grouping; use `Plugins` for project commands. |
+| `group` | Heading in the `/` picker and the palette: `Session`, `Agents`, `Workflows`, `Configuration`, `Skills`, `Plugins` or `MCP`. Omit it (or use `Plugins`) for project commands. |
 | `aliases` | Tuple of alternate slash names, also including `/`. |
 | `argument_hint` | Picker/help hint such as `[name]` or `<path>`. |
 | `handler` | Synchronous `CommandContext → bool` function. |
@@ -157,9 +179,16 @@ names are not accepted.
 ## Picker and submission journey
 
 The slash trigger activates when `/` is typed at the beginning of the input or
-after a newline. The picker asks the registry for commands whose canonical
-name or alias starts with the current fragment. It displays the command's
-description and argument hint. Selecting an alias inserts the canonical name.
+after a newline. The picker asks the registry for commands matching the
+current fragment (`UnifiedCommandRegistry.search`), best first: exact name or
+alias, name prefix, alias prefix, the name's characters in order, then a word of
+the description. Ties go to the command run most often, then most recently, in
+this project. With no fragment it lists the commands grouped by `Command.group`,
+after a *Suggested* group of the five most used. Aliases are not rows: they are
+named in their command's row, and typing one ranks the command first. A row
+shows the description, the key bound to the same action (`/agents  ctrl+g`),
+and, while a turn runs, whether the command queues or is not available. Selecting
+an alias inserts the canonical name.
 
 Typing `$` at the same line boundary opens the skill-only picker. It matches
 discovered skill names and aliases and inserts the canonical `$skill-name`.
@@ -218,8 +247,9 @@ default to `queue`; an immediate-control policy is reserved for built-in
 controls. A command-policy resolver is pure, and resolver failures fail closed
 to the queue.
 
-While the run is active, the slash picker labels entries as `runs now`,
-`queues while busy`, or `unavailable while busy`. Manual submission and the
+While the run is active, the slash picker labels entries as `[runs now]` or
+`[queues while busy]`; a command that is rejected is dimmed with the reason
+`not available while a turn runs`. Manual submission and the
 picker use the same metadata. Immediate output is local: `/usage` reads the
 session `UsageLedger` projection and never becomes an agent message. It remains
 available during active runs; quality fields distinguish complete, partial,

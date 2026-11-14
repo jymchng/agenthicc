@@ -210,6 +210,10 @@ sent and no process is started. The header, `/status` (a `Pre-flight` row) and
 | Workspace | The working directory is not writable and the mode is not Plan | No |
 | Tools | `bwrap` is missing on Linux in a project with `.agenthicc/environment.toml`, or `rg` is missing (an info notice: search falls back to the built-in scanner) | No |
 
+The `/model` picker asks the same question of each choice
+(`runners.preflight.credential_variable`), so it offers a provider exactly when a
+turn on it would pass this check, and names the variable to set when it would not.
+
 A failed check prints one notice under the header, naming the fix:
 
 ```text
@@ -540,6 +544,7 @@ idle.
 | Ctrl+Y | `composer.yank` — insert the last kill | always |
 | Ctrl+Z / Ctrl+Shift+Z, Alt+Z | `composer.undo` / `composer.redo`, by edit group | always |
 | Ctrl+R | `composer.history_search` — reverse history search | always |
+| Ctrl+P | `composer.palette` — open the command palette; on a non-empty prompt, the previous prompt | always |
 | Ctrl+X Ctrl+E (or Ctrl+X alone) | `composer.external_editor` — edit in `$VISUAL`/`$EDITOR` | always |
 | Ctrl+L | `composer.redraw` — repaint the live region | always |
 | ←→, ↑↓, Backspace | cursor, history, delete | ↑↓ history idle only |
@@ -656,6 +661,80 @@ Shift/Alt/Ctrl with arrows, Home and End, Delete, Insert, F1–F12, focus
 reports, and SGR mouse reports. A key nothing binds is ignored — before AGX-13,
 Ctrl+letters, Alt combinations and unknown sequences arrived as Esc.
 
+### Pickers and the command palette
+
+One component, `tui.workspace.picker.Picker`, draws every list you choose from:
+the `/`, `$` and `@` pickers, the Ctrl+P palette and the `/model`, `/mode` and
+`/agent` pickers.
+
+```text
+ ❯ /co
+   ─ Suggested ──────────────────────────────────────────────
+ ▌ /compact        Summarise the conversation to free context
+   /config         Open configuration editor
+   ─ Session ────────────────────────────────────────────────
+   /commands       List all registered commands with their source
+                                                         1 of 3 · ↑↓ tab enter
+```
+
+- The selected row has an accent bar and background. The characters you typed
+  are bold in the accent colour. A muted rule heads each group. A key binding
+  is right-aligned (`/agents  ctrl+g`), and it is the key you have bound, not
+  the default.
+- Descriptions wrap with a hanging indent, two rows at most. Below 60 columns a
+  description goes on its own row, and no row is wider than the terminal.
+- A row that cannot run now is dimmed, with the reason under it
+  (`not available while a turn runs`). The footer reads `N of M` and the keys.
+- The list uses up to `min(12, rows / 3)` rows and never covers the composer.
+
+**The `/` picker.** Matching is fuzzy over the name, the aliases and the
+description. The order is: exact name or alias, name prefix, alias prefix, the
+name's characters in order, then a description word (`/summar` finds
+`/compact`). Ties go to the command you run more often, then more recently, in
+this project; the counts live in `~/.agenthicc/state/command-usage.json`
+(`AGENTHICC_COMMAND_USAGE` overrides the path) and hold only command names, counts and
+times. With nothing typed the list is grouped: **Suggested** (your five most
+used), **Session**, **Agents**, **Workflows**, **Configuration**, then
+**Skills**, **Plugins** and **MCP**. An alias is not a row of its own: typing
+`/bg` or `/detach` ranks `/background` first, and its row says
+`(aliases /bg, /detach)`.
+
+**The `@` picker.** A directory row starts with `▸` and shows its entry count; a
+file row starts with `·` and shows its size; the path is muted and the file name
+plain, with the matched characters bold. Files you mentioned in this session and
+files `git status` reports as changed come first, and with nothing typed they
+are the whole top of the list. Entries `.gitignore` ignores are left out unless
+you type their exact name. `git status` runs on a worker thread when the session
+starts and at most every two seconds after, never on the event loop, and only
+the first 100 rows are measured, so typing stays smooth in a 10,000-file
+project. A listing holds at most 200 rows: type to narrow it.
+
+**The command palette.** Ctrl+P on an empty prompt opens a centred modal (60 %
+of the width, between 60 and 100 columns) with a search field. It lists every
+command, every key action that has a binding (`Open agents hub  ctrl+g`,
+`Cycle mode  shift+tab`) and every theme, in the same groups as the `/` picker.
+Enter runs the item: a command that needs an argument is put in the prompt for
+you to finish, and one with argument completions (`/workflow`) lists them in the
+same modal. Esc closes it. On a non-empty prompt Ctrl+P keeps its history
+meaning.
+
+**`/model`, `/mode`, `/agent`.** With no argument each opens a picker.
+
+- `/model` lists the providers (each with its default model and the current
+  one) and your saved `[providers.*]` profiles. A row shows the context window
+  and whether the credentials resolve: `✓`, or `✗ set ANTHROPIC_API_KEY`. A
+  row without credentials is dimmed and cannot be chosen until the variable is
+  set. Choosing a row applies it **from the next turn**, without a restart: the
+  session builds a new transport through the same factory it used at start-up,
+  and the conversation shows `◆ model → gpt-4o (from next turn)`. If a turn is
+  running the change waits for it to end. Press `s` after choosing to save it
+  as the default (`[execution] provider` and `model`, or `profile`). `/model
+  openai gpt-4o [--save]` applies directly. No credential value appears in the
+  notice or in any event.
+- `/mode` lists Safe, Plan, Yolo and plugin modes with a one-line summary.
+- `/agent` lists the primary agents (AGX-09); `/theme` is described under
+  [Themes and glyphs](#themes-and-glyphs).
+
 ### Themes and glyphs
 
 Every colour on screen comes from a semantic token of the active theme
@@ -754,9 +833,11 @@ normal double-Ctrl+C exit sequence responsive after an interrupt on Windows.
 
 Current triggers include:
 
-- `/` — command picker backed by the unified command registry;
+- `/` — command picker backed by the unified command registry (see
+  [Pickers and the command palette](#pickers-and-the-command-palette));
 - `$` — skill-only picker backed by discovered skill records;
 - `@` — project file/mention picker;
+- Ctrl+P on an empty prompt — the command palette;
 - trigger selection may update the input buffer or submit immediately.
 
 The `@` picker accepts path-like fragments, including `./`, `../`, absolute
@@ -999,6 +1080,13 @@ commands such as `/workflow` and `/compact` are intentionally intercepted by
 `TUISession` because they need session fields. The legacy completion constants
 and `CommandRegistry` in `tui/input/completions.py` are compatibility adapters
 over the canonical registry; new commands must not be added there.
+
+Every built-in command belongs to a group the `/` picker and the palette show:
+`Session`, `Agents`, `Workflows`, `Configuration` or `MCP` (`Command.group`;
+`commands.command.COMMAND_GROUPS` lists them with `Skills` and `Plugins`, the
+default for a command that names none). `/background` carries the aliases
+`/bg` and `/detach`, `/cancel` has `/interrupt`, and `/model` has `/models`: an
+alias is a name for the same command, not a second row.
 
 `/release-notes` and `/resume` (TUX-03) are ordinary registry entries: the first
 is a `menu_factory` command that returns a `ReleaseNotesOverlay`, the second

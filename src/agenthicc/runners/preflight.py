@@ -25,13 +25,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
-    from agenthicc.config import AgenthiccConfig, ExecutionSettings, ProviderProfile
+    from agenthicc.config import AgenthiccConfig
 
 __all__ = [
     "PreflightCheck",
     "PreflightIssue",
     "check_credentials",
     "check_session",
+    "credential_variable",
 ]
 
 #: Credentials a provider's SDK accepts besides its API key.
@@ -94,13 +95,9 @@ def check_session(
 def check_credentials(config: AgenthiccConfig, env: Mapping[str, str]) -> PreflightIssue | None:
     """A finding when the active provider needs a key or token that *env* lacks.
 
-    The selected profile's ``api_key`` (a literal or a ``SecretReference``) and
-    ``api_key_env`` come first, then the ``[execution]`` equivalents, then the
-    provider's own variable (``PROVIDER_API_KEY_ENVVAR``). A provider with no
-    such variable, such as Ollama, needs no key.
+    See :func:`credential_variable` for where a key may come from. A provider
+    with no such variable, such as Ollama, needs none.
     """
-    from agenthicc.config import PROVIDER_API_KEY_ENVVAR
-
     execution = config.execution
     profile_name = execution.profile.strip()
     profile = config.providers.get(profile_name) if profile_name else None
@@ -112,17 +109,8 @@ def check_credentials(config: AgenthiccConfig, env: Mapping[str, str]) -> Prefli
             blocking=True,
         )
     provider = profile.provider if profile is not None else execution.provider
-    default_variable = PROVIDER_API_KEY_ENVVAR.get(provider)
-    if default_variable is None:
-        return None  # Ollama and friends: nothing to authenticate with
-    variable = _key_variable(execution, profile, default_variable)
-    if variable is None:
-        return None  # a literal key in the configuration
-    if env.get(variable):
-        return None
-    if variable == default_variable and any(
-        env.get(token) for token in _TOKEN_ENVVARS.get(provider, ())
-    ):
+    variable = credential_variable(config, provider, profile_name, env)
+    if not variable:
         return None
     suffix = f" (profile {profile_name})" if profile_name else ""
     return PreflightIssue(
@@ -133,30 +121,47 @@ def check_credentials(config: AgenthiccConfig, env: Mapping[str, str]) -> Prefli
     )
 
 
-def _key_variable(
-    execution: ExecutionSettings, profile: ProviderProfile | None, default_variable: str
-) -> str | None:
-    """The environment variable the key comes from, or ``None`` for a literal key.
+def credential_variable(
+    config: AgenthiccConfig, provider: str, profile_name: str, env: Mapping[str, str]
+) -> str:
+    """The variable to set for *provider* (under saved profile *profile_name*), or ``""``.
 
-    The order is the one :meth:`ProviderProfile.resolve` and
-    :meth:`ExecutionSettings.effective_api_key` apply: the profile's own key,
-    then the ``[execution]`` key when the profile has none, then the provider's
-    default variable.
+    ``""`` means the credential resolves in *env* (or is a literal key in the
+    configuration), or the provider needs none. The sources are the ones
+    :meth:`ProviderProfile.resolve` and :meth:`ExecutionSettings.effective_api_key`
+    apply: the profile's own ``api_key`` (a literal or a ``SecretReference``) or
+    ``api_key_env``; then the ``[execution]`` ones, for the active provider or
+    for a profile that has none; then the provider's own variable
+    (``PROVIDER_API_KEY_ENVVAR``, and ``ANTHROPIC_AUTH_TOKEN`` for anthropic).
+
+    The ``/model`` picker (``runners.model_switch``) asks the same question of
+    each choice, so a provider is offered as available exactly when a turn on it
+    would pass this check.
     """
-    from agenthicc.config import SecretReference
+    from agenthicc.config import PROVIDER_API_KEY_ENVVAR, SecretReference
 
+    default_variable = PROVIDER_API_KEY_ENVVAR.get(provider)
+    if default_variable is None:
+        return ""
+    execution = config.execution
+    profile = config.providers.get(profile_name) if profile_name else None
     sources: list[tuple[str | SecretReference | None, str]] = []
     if profile is not None:
         sources.append((profile.api_key, profile.api_key_env))
-    if profile is None or (profile.api_key is None and not profile.api_key_env):
+    keyless_profile = profile is not None and profile.api_key is None and not profile.api_key_env
+    if keyless_profile or (profile is None and provider == execution.provider):
         sources.append((execution.api_key or None, execution.api_key_env))
     for key, key_env in sources:
         if isinstance(key, SecretReference):
-            return key.env
+            return "" if env.get(key.env) else key.env
         if key:
-            return None
+            return ""  # a literal key in the configuration
         if key_env:
-            return key_env
+            return "" if env.get(key_env) else key_env
+    if env.get(default_variable) or any(
+        env.get(token) for token in _TOKEN_ENVVARS.get(provider, ())
+    ):
+        return ""
     return default_variable
 
 

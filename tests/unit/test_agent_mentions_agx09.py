@@ -59,7 +59,8 @@ def test_at_picker_suggests_visible_subagents_and_inserts_exact_name() -> None:
 
     assert [item.value for item in matches] == ["agent:reviewer"]
     assert trigger.on_select(matches[0], "agent:rev", []).buffer == list("@agent:reviewer")
-    assert trigger.get_lines(matches[0], 70)[0].startswith("@agent:reviewer")
+    assert matches[0].label == "@agent:reviewer"
+    assert matches[0].detail == "Reviews changes"
     assert (
         trigger.get_matches("agent:", TriggerContext(cwd=Path.cwd()))[0].value == "agent:reviewer"
     )

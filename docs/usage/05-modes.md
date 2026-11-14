@@ -38,7 +38,7 @@ Shift+Tab          # cycle Safe → Plan → Yolo
 /mode Plan         # switch directly
 /mode Auto         # alias → Yolo
 /mode Debug        # rejected
-/mode              # list modes
+/mode              # open the mode picker
 ```
 
 `ModeRegistry.resolve` raises `UnknownModeError` for a name that is neither

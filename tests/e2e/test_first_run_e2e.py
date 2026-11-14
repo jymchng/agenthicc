@@ -229,8 +229,17 @@ def test_a_first_run_without_a_key_shows_the_header_the_notice_and_holds_the_pro
         # Submitting a prompt shows the same notice again and opens /model.
         terminal.send("hello\r")
         terminal.wait_for(lambda text: text.count(_MISSING_KEY) == 2, "the notice a second time")
-        terminal.wait_for(lambda text: "openai" in text, "the /model listing")
-        assert "❯ hello" in terminal.text()  # what was typed is kept
+        terminal.wait_for(
+            lambda text: "Model" in text and "no restart" in text, "the /model picker"
+        )
+        picker = terminal.text()
+        # TUX-05's picker says which providers cannot be chosen and why.
+        assert "set ANTHROPIC_API_KEY" in picker and "set OPENAI_API_KEY" in picker
+        assert "llama3.2" in picker  # Ollama needs no key
+
+        # Closing the picker returns to the composer with what was typed.
+        terminal.send("\x1b")
+        terminal.wait_for(lambda text: "❯ hello" in text, "the prompt kept after the picker")
     finally:
         terminal.close()
 

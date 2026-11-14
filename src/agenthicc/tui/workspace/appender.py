@@ -1173,6 +1173,22 @@ def _render_system(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
         self._console.print()
 
 
+@register_renderer("model_changed")
+def _render_model_changed(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
+    """``◆ model → name (from next turn)``: the diamond in accent, the rest muted (TUX-05)."""
+    from rich.text import Text
+
+    from agenthicc.tui.theme import palette
+    from agenthicc.tui.workspace.notices import model_changed_text
+
+    p = palette()
+    text = model_changed_text(ev.payload)
+    line = Text(" ")
+    line.append(text[:1], style=p.accent)
+    line.append(text[1:], style=p.muted)
+    self._console.print(line, highlight=False)
+
+
 @register_renderer("announcement")
 def _render_announcement(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
     """A screen-reader announcement: the event's exact text (BEAU-4 §4.3)."""

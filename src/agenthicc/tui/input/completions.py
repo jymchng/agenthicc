@@ -49,7 +49,7 @@ class CommandSpec:
     description: str  # e.g. "Show running agents and their tasks"
     aliases: tuple[str, ...] = ()
     argument_hint: str = ""  # e.g. "[provider] [model]"  (PRD-37)
-    group: str = "Built-in"  # "Built-in" | "Skills" | "Plugins" | "MCP"  (PRD-38)
+    group: str = "Plugins"  # one of agenthicc.commands.command.COMMAND_GROUPS
 
 
 # Keep the legacy export as an alias, rather than maintaining a second list of

@@ -6,6 +6,7 @@ import dataclasses
 from types import SimpleNamespace
 
 from agenthicc.runners.session_context import SessionContext
+from agenthicc.tui.trigger import TriggerManager
 from agenthicc.workflows.config import WorkflowConfig
 
 
@@ -32,9 +33,10 @@ def session_context(**fields: object) -> SimpleNamespace:
     """Return a ``SessionContext`` stand-in that carries every field.
 
     Production code reads ``SessionContext`` fields directly, so a fake must
-    have all of them.
+    have all of them. A session always has a trigger registry, so the stand-in
+    carries an empty one unless the test supplies its own.
     """
-    return _stand_in(SessionContext, fields)
+    return _stand_in(SessionContext, {"trigger_registry": TriggerManager(), **fields})
 
 
 def workflow_config(**fields: object) -> SimpleNamespace:

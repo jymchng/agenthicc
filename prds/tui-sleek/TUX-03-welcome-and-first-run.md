@@ -19,8 +19,8 @@ the table names it. The amendments to the design follow.
 |---|---|
 | 1 Height | `tests/unit/test_welcome_header.py::test_the_header_is_at_most_three_rows_after_the_first_run` (widths 40–200), `test_the_first_run_header_is_at_most_four_rows`, `test_a_notice_row_after_the_header_stays_within_the_budget`; `tests/e2e/test_first_run_e2e.py::test_a_later_start_is_three_rows_and_whats_new_appears_only_after_an_upgrade` (the real CLI in a pseudo-terminal) |
 | 2 No placeholders | `test_welcome_header.py::test_no_placeholder_text_appears_anywhere_in_src`, `test_the_remote_changelog_is_gone_from_src_and_scripts`; `tests/unit/test_first_run_session.py::test_starting_up_makes_no_network_request` (the shared HTTP client and `httpx` fail on any call) |
-| 3 Missing key | `tests/e2e/test_first_run_e2e.py::test_a_prompt_with_no_key_makes_no_provider_request_and_opens_model` (a scripted `MockTransport` records zero calls; `/model` is dispatched; the notice appears under the header and again after "hello") and `test_a_first_run_without_a_key_shows_the_header_the_notice_and_holds_the_prompt` (the real CLI, read through `pyte`); `test_first_run_session.py::test_a_prompt_with_no_key_is_not_sent_and_opens_model` and the unblocking tests |
-| 4 Key from a profile; Ollama | `tests/unit/test_preflight.py::test_a_key_from_a_saved_profiles_api_key_env_passes`, `test_ollama_needs_no_key`, `test_a_secret_reference_names_its_variable`, `test_an_anthropic_token_passes_without_a_key` |
+| 3 Missing key | `tests/e2e/test_first_run_e2e.py::test_a_prompt_with_no_key_makes_no_provider_request_and_opens_model` (a scripted `MockTransport` records zero calls; `/model` is dispatched; the notice appears under the header and again after "hello") and `test_a_first_run_without_a_key_shows_the_header_the_notice_and_holds_the_prompt` (the real CLI, read through `pyte`); `test_first_run_session.py::test_a_prompt_with_no_key_is_not_sent_and_opens_model` and the unblocking tests; the e2e test also checks that TUX-05's picker opens, names the variables to set and gives the prompt back on Esc |
+| 4 Key from a profile; Ollama | `tests/unit/test_preflight.py::test_a_key_from_a_saved_profiles_api_key_env_passes`, `test_ollama_needs_no_key`, `test_a_secret_reference_names_its_variable`, `test_an_anthropic_token_passes_without_a_key`, and `test_the_model_picker_offers_a_choice_exactly_when_a_turn_on_it_would_pass` |
 | 5 `/release-notes`; the hint once | `tests/unit/test_release_notes.py` (parsing, which versions are listed, the pager, the command with the installed version's entries, the next view since the last one seen); `tests/unit/test_first_run.py::test_whats_new_appears_once_after_an_upgrade_and_not_on_the_next_start`; the e2e `…whats_new_appears_only_after_an_upgrade` opens the pager in the real CLI and starts a second time |
 | 6 `banner = "off"` | `test_first_run_session.py::test_banner_off_prints_nothing_before_the_composer_except_a_failed_check` and `…with_every_check_passing_prints_nothing_at_all`; the e2e `test_banner_off_prints_nothing_before_the_composer` |
 | 7 Suggestions | `tests/unit/test_suggestions.py::test_the_placeholder_names_init_without_agents_md_and_not_with_it`, the resume, attention, tip and Tab tests |
@@ -41,9 +41,10 @@ store (`tests/unit/test_first_run.py`), and "Work in <directory>?" end to end
   `importlib.metadata` alone loads 17 modules. `TUISession.run` therefore
   prints the header and the notices right after `Workspace.start()` and
   `record_first_frame_modules`, through the console the live block already
-  hooks, and the first frame is 374 modules (the budget is unchanged).
-  The panel's `rich.panel`, `rich.table`, `rich.rule` and
-  `rich.box` imports left the first frame with it.
+  hooks. The first frame is 375 modules on Python 3.13 after the merge with
+  TUX-05 (the budget there is 381/383/386, and this change does not raise it).
+  The panel's `rich.panel`, `rich.table`, `rich.rule` and `rich.box` imports
+  left the first frame with it.
 - **`banner = "full"`.** §2.1 says the mascot appears only on the first run, and
   also defines `full`. `compact` (the default) shows the mascot on the first
   run on a machine only; `full` shows it on every start; `off` prints nothing
@@ -126,9 +127,24 @@ store (`tests/unit/test_first_run.py`), and "Work in <directory>?" end to end
     runs); `agents.cycle` is `unless suggestion`, so Tab still switches agents
     otherwise.
 - **The dispatcher copied a subset of `CommandContext`.** `CommandDispatcher`
-  now builds the handler's context with `dataclasses.replace(ctx, text=…,
-  args=…)`, so `/resume` and `/status` can reach the session. The same change is
-  on the TUX-05 branch, and its tests are updated the same way.
+  builds the handler's context with `dataclasses.replace(ctx, text=…, args=…)`,
+  so `/resume` and `/status` can reach the session. TUX-05 made the identical
+  change, and this branch was merged with it (one copy remains).
+- **Merged with TUX-05.**
+  - `/resume` is in the `Agents` group and `/release-notes` in `Session`, the
+    groups TUX-05 gave the `/` picker and the palette.
+  - `/model` is now a picker. A prompt refused for a missing key therefore opens
+    that picker, which marks Anthropic and OpenAI `✗ set <VARIABLE>` and Ollama
+    `✓`; Esc closes it and the prompt is still in the composer.
+  - **One credential resolver.** TUX-05's `model_switch._missing_env` answered
+    the same question as the pre-flight check, and the two already differed
+    (it ignored `ANTHROPIC_AUTH_TOKEN` and the `[execution]` key of a keyless
+    profile). `runners.preflight.credential_variable(config, provider, profile,
+    env)` is now the only resolver: `check_credentials` and
+    `model_switch.model_choice` both call it, and `_missing_env` is deleted. A
+    test checks that the picker offers a choice exactly when the start-up check
+    passes, for a default, a profile with `api_key_env`, a `SecretReference` and
+    a bare profile.
 - **The AC 3 test has no cassette.** There is no provider traffic to record; a
   scripted `MockTransport` asserting zero calls is the stronger check, and it
   would fail without the gate.

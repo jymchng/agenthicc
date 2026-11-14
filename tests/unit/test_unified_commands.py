@@ -66,7 +66,8 @@ def test_command_default_group():
     from agenthicc.commands import Command
 
     cmd = Command("/x", "X")
-    assert cmd.group == "Built-in"
+    # A command that names no group is an extension (TUX-05).
+    assert cmd.group == "Plugins"
 
 
 def test_command_default_source_id():
@@ -168,24 +169,24 @@ def test_registry_commands_for_group():
     from agenthicc.commands import UnifiedCommandRegistry, Command
 
     reg = UnifiedCommandRegistry()
-    reg.register(Command("/a", "A", group="Built-in"))
+    reg.register(Command("/a", "A", group="Session"))
     reg.register(Command("/b", "B", group="Skills"))
-    reg.register(Command("/c", "C", group="Built-in"))
-    builtins = reg.commands_for_group("Built-in")
+    reg.register(Command("/c", "C", group="Session"))
+    builtins = reg.commands_for_group("Session")
     assert len(builtins) == 2
-    assert all(c.group == "Built-in" for c in builtins)
+    assert all(c.group == "Session" for c in builtins)
 
 
 def test_registry_groups_order():
-    """groups() returns Built-in before Skills before Plugins before MCP."""
+    """groups() returns the built-in groups before Skills, Plugins and MCP."""
     from agenthicc.commands import UnifiedCommandRegistry, Command
 
     reg = UnifiedCommandRegistry()
     reg.register(Command("/a", "A", group="MCP"))
     reg.register(Command("/b", "B", group="Skills"))
-    reg.register(Command("/c", "C", group="Built-in"))
+    reg.register(Command("/c", "C", group="Session"))
     groups = reg.groups()
-    order = ["Built-in", "Skills", "MCP"]
+    order = ["Session", "Skills", "MCP"]
     # Only groups that are present should appear; order must respect the defined ordering
     present = [g for g in order if g in groups]
     assert groups[: len(present)] == present

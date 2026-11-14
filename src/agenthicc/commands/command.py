@@ -32,9 +32,11 @@ if TYPE_CHECKING:
     from agenthicc.schedules.manager import ScheduleManager
     from agenthicc.tui.workspace.notice import Severity
     from agenthicc.memory.tool_history import ToolHistoryRecoveryState
+    from agenthicc.runners.model_switch import ModelChoice
     from agenthicc.tui.conversation_store import AppState
 
 __all__ = [
+    "COMMAND_GROUPS",
     "Command",
     "CommandContext",
     "CommandHandler",
@@ -56,6 +58,19 @@ class BusyPolicy(StrEnum):
 
 
 BusyPolicyResolver = Callable[[str], BusyPolicy]
+
+#: Picker and help headings, in display order (TUX-05 §2.2). Built-in
+#: commands are assigned one of the first four in ``commands/builtins.py``;
+#: a command that names no group is an extension and shows under Plugins.
+COMMAND_GROUPS: tuple[str, ...] = (
+    "Session",
+    "Agents",
+    "Workflows",
+    "Configuration",
+    "Skills",
+    "Plugins",
+    "MCP",
+)
 
 
 @dataclass(frozen=True)
@@ -139,6 +154,10 @@ class CommandContext:
     select_agent: "Callable[[str], str] | None" = None
     #: Shows the primary-agent picker (AGX-09); TUI only.
     open_agent_picker: "Callable[[], None] | None" = None
+    #: Uses a provider/model from the next turn and says so (TUX-05); TUI only.
+    switch_model: "Callable[[ModelChoice], str] | None" = None
+    #: Saves a provider/model as the default in the user configuration (TUX-05).
+    save_model: "Callable[[ModelChoice], str] | None" = None
     #: The TUI's presentation state, for ``/status`` (TUX-02); TUI only.
     app_state: "AppState | None" = None
 
@@ -185,7 +204,7 @@ class Command:
 
     name: str  # canonical name, e.g. "/config" or "$review-code"
     description: str  # shown in dropdown right column
-    group: str = "Built-in"  # "Built-in" | "Skills" | "Plugins" | "MCP"
+    group: str = "Plugins"  # one of COMMAND_GROUPS
     aliases: tuple[str, ...] = field(default_factory=tuple)  # e.g. ("/cfg",) or ("$review",)
     argument_hint: str = ""  # e.g. "[section.key=value]"
 

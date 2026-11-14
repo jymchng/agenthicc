@@ -297,7 +297,7 @@ environment.
 
 TUI commands are a separate registry from CLI subcommands. The built-ins are
 `/help`, `/commands`, `/tools [reload]`, `/workflows [runs|reload]`, `/status`,
-`/history [repair]`, `/mode`, `/workflow`, `/init`, `/model`, `/models`,
+`/history [repair]`, `/mode`, `/workflow`, `/init`, `/model` (alias `/models`),
 `/skills [reload]`, `/mcp`, `/config`, `/compact`, `/replay`, `/cancel`,
 `/loop`, `/loops`, `/clear`, and `/expand`.
 

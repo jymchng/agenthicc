@@ -13,13 +13,17 @@ Ranking tiers (lower = better)
 4  RANK_PATH_SUBSTR      — query appears anywhere in the full path
 5  RANK_FUZZY            — all query characters appear in the filename in order
 
-Within a tier results are sorted alphabetically by their casefolded display
-string, making ranking deterministic (identical input → identical ordering).
+Within a tier, *boosted* values (recently mentioned or changed files) come
+first; then results are sorted alphabetically by their casefolded label,
+making ranking deterministic (identical input → identical ordering).
+
+:func:`match_positions` returns the characters a query matched, for the
+pickers' highlight (TUX-05).
 """
 
 from __future__ import annotations
 
-from pathlib import PurePosixPath
+from collections.abc import Collection
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -34,6 +38,8 @@ __all__ = [
     "RANK_FUZZY",
     "rank_match",
     "filter_and_rank",
+    "fuzzy_positions",
+    "match_positions",
 ]
 
 RANK_EXACT = 0
@@ -68,10 +74,12 @@ def rank_match(query: str, display: str) -> int | None:
 
     q = query.casefold()
 
-    # Strip trailing "/" (directory marker) for path parsing
+    # Strip trailing "/" (directory marker) for path parsing. Plain string
+    # operations: this runs once per candidate on every keystroke, and a
+    # project can have tens of thousands of candidates.
     clean = display.rstrip("/")
-    name = PurePosixPath(clean).name.casefold()  # filename segment only
     full = clean.casefold()  # full normalised path
+    name = full.rpartition("/")[2]  # filename segment only
 
     # Tier 0 — exact match (filename or full path)
     if name == q or full == q:
@@ -82,8 +90,7 @@ def rank_match(query: str, display: str) -> int | None:
         return RANK_FILENAME_PREFIX
 
     # Tier 2 — any path segment starts with query
-    parts = [p.casefold() for p in PurePosixPath(clean).parts]
-    if any(p.startswith(q) for p in parts if p != name):
+    if any(p.startswith(q) for p in full.split("/") if p != name):
         return RANK_SEGMENT_PREFIX
 
     # Tier 3 — query is a substring of the filename
@@ -101,7 +108,12 @@ def rank_match(query: str, display: str) -> int | None:
     return None
 
 
-def filter_and_rank(query: str, items: list[MatchItem]) -> list[MatchItem]:
+def filter_and_rank(
+    query: str,
+    items: list[MatchItem],
+    *,
+    boosted: Collection[str] = (),
+) -> list[MatchItem]:
     """Filter *items* case-insensitively and return them ranked by match quality.
 
     Parameters
@@ -109,26 +121,65 @@ def filter_and_rank(query: str, items: list[MatchItem]) -> list[MatchItem]:
     query:
         The fragment typed by the user.
     items:
-        Candidate ``MatchItem`` objects.  ``item.display`` is used for
-        matching; ``item.value`` and ``item.display`` are returned unchanged
-        so original casing is always preserved.
+        Candidate ``MatchItem`` objects.  ``item.label`` is used for
+        matching; items are returned unchanged so original casing is always
+        preserved.
+    boosted:
+        ``item.value`` strings ranked first within their tier (and, for an
+        empty query, before every other item).
 
     Returns
     -------
     list[MatchItem]
         Filtered and sorted items.  Empty list when nothing matches.
     """
+    preferred = set(boosted)
     if not query:
-        return list(items)
+        return sorted(items, key=lambda item: item.value not in preferred)
 
-    scored: list[tuple[int, str, MatchItem]] = []
+    scored: list[tuple[int, bool, str, MatchItem]] = []
     for item in items:
-        rank = rank_match(query, item.display)
+        rank = rank_match(query, item.label)
         if rank is not None:
-            scored.append((rank, item.display.casefold(), item))
+            scored.append((rank, item.value not in preferred, item.label.casefold(), item))
 
-    scored.sort(key=lambda x: (x[0], x[1]))
-    return [item for _, _, item in scored]
+    scored.sort(key=lambda x: (x[0], x[1], x[2]))
+    return [item for _, _, _, item in scored]
+
+
+def fuzzy_positions(query: str, text: str) -> tuple[int, ...] | None:
+    """Indices of *text* that spell *query* in order (case-insensitive), or ``None``."""
+    positions: list[int] = []
+    lowered = text.casefold()
+    start = 0
+    for ch in query.casefold():
+        index = lowered.find(ch, start)
+        if index < 0:
+            return None
+        positions.append(index)
+        start = index + 1
+    return tuple(positions)
+
+
+def match_positions(query: str, text: str) -> tuple[int, ...]:
+    """The characters of *text* a picker highlights for *query*.
+
+    A substring match highlights the substring (preferring the last path
+    segment, then a word start); otherwise the in-order fuzzy characters.
+    Nothing matches → ``()``.
+    """
+    if not query or not text:
+        return ()
+    q = query.casefold()
+    lowered = text.casefold()
+    candidates = [i for i in range(len(lowered)) if lowered.startswith(q, i)]
+    if candidates:
+        segment = lowered.rstrip("/").rfind("/") + 1
+        word_starts = [i for i in candidates if i == 0 or not lowered[i - 1].isalnum()]
+        in_name = [i for i in candidates if i >= segment]
+        start = (in_name or word_starts or candidates)[0]
+        return tuple(range(start, start + len(q)))
+    return fuzzy_positions(query, text) or ()
 
 
 # ── internal helpers ─────────────────────────────────────────────────────────

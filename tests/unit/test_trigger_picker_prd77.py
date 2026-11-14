@@ -31,7 +31,7 @@ class _Commands(TriggerHandlerBase):
     label = "Command"
 
     def get_matches(self, fragment: str, ctx: TriggerContext) -> list[MatchItem]:
-        return [MatchItem(display="/build", value="/build")] if fragment == "b" else []
+        return [MatchItem(value="/build", label="/build")] if fragment == "b" else []
 
     def on_select(self, item: MatchItem | None, fragment: str, buf: list[str]) -> TriggerResult:
         if item is None:
