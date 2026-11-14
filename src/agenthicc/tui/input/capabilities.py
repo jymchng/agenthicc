@@ -609,6 +609,28 @@ class AgentsHubCapability:
         return _CONSUMED
 
 
+class SuggestionCapability:
+    """Tab on an empty prompt that suggests a command puts that command in it (TUX-03 §2.5).
+
+    The text is not sent: it is what typing the command would leave, so Enter
+    runs it. With no command to suggest, Tab keeps cycling the agent.
+    """
+
+    async def handle(
+        self,
+        key: Key,
+        ch: str,
+        session: UnifiedInputSession,
+    ) -> CapabilityResult:
+        if session._action != "composer.accept_suggestion":
+            return _PASS
+        command = session.suggested_command()
+        if not command:
+            return _PASS
+        session.set_text(command)
+        return _CONSUMED
+
+
 class AgentCycleCapability:
     """Tab talks to the next primary agent (AGX-09 §5.3); Shift+Tab is the mode."""
 
@@ -748,6 +770,7 @@ IDLE_CAPABILITIES: list[Capability] = [
     ModeCycleCapability(),
     AgentsHubCapability(),
     SubagentsCapability(),
+    SuggestionCapability(),
     AgentCycleCapability(),
     MouseCapability(),
     InsertCapability(),  # fallback — must be last

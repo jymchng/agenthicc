@@ -84,6 +84,10 @@ def _session(state: AppState, action: Action) -> UnifiedInputSession:
         session._buf.set(list("text"))
     if "queued" in action.when:
         state.conversation.queue.append("queued message")
+    if "suggestion" in action.when:
+        from agenthicc.tui.suggestions import Suggestion
+
+        state.conversation.suggestion.set(Suggestion("init", "try /init", "/init"))
     return session
 
 

@@ -182,6 +182,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   distinguishes the placeholder under `--theme no-color`; every colour remains a
   theme token (TUX-01).
 
+### Changed — the start-up header, a pre-flight check and first-run help (TUX-03)
+
+- The welcome panel is replaced by a three-line header: `◆ agenthicc 0.42.0`
+  (with `what's new: /release-notes` after an upgrade), the model, provider and
+  mode, and the directory with its git branch. The first run on a machine also
+  shows the mascot once. `[ui] banner = "compact" | "full" | "off"` chooses how
+  much of it prints. The panel's `No list` placeholder, its `Welcome back!`
+  greeting and its fixed `/init` tip are gone.
+- **Release notes are local.** The remote `changelog.json` fetch, its cache and
+  `AGENTHICC_CHANGELOG_CACHE` are deleted. `/release-notes` pages the
+  `CHANGELOG.md` that ships with the package: the installed version, everything
+  since the last version you read, and unreleased work.
+- **A pre-flight check** (`agenthicc.runners.preflight.check_session`) looks for
+  a credential, a model, a writable workspace and the tools agenthicc uses,
+  without a network call. A failed check prints one notice under the header
+  (`No API key for anthropic. Set ANTHROPIC_API_KEY, or run /model to pick
+  another provider.`); a prompt submitted while the credential check fails is
+  not sent: the notice shows again, the prompt stays in the composer and
+  `/model` runs. `/status` and `agenthicc config show` print the same findings.
+- **First run in a directory.** A directory that is not a git repository and has
+  no history with agenthicc, or the home directory, asks "Work in ~/Downloads?"
+  once (Yes, Yes in Plan mode, Choose another directory…). The answer is stored
+  per directory in `~/.agenthicc/trust.json`.
+- **Composer suggestions.** The empty composer suggests `/init` when the
+  repository has no `AGENTS.md`, `/resume` after an interrupted session,
+  `N sessions need you · press ←`, or one of twenty tips that name a key from
+  your key bindings or a command. Tab accepts a suggestion that is a command.
+  `/resume` is new: it opens the agents hub's History tab.
+- The command dispatcher passes every `CommandContext` field to a handler
+  instead of a copied subset, so `/resume` and `/status` can reach the session.
+
 ### Changed — background questions have a five-minute deadline by default
 
 - `[background] question_timeout_s` now defaults to `300` seconds instead of

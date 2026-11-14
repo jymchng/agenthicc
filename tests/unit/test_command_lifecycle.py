@@ -226,12 +226,18 @@ def test_config_command_sets_pending_menu():
 
     reg = build_builtin_registry()
     disp = CommandDispatcher(reg)
-    renderer = MagicMock()
-    cfg = AgenthiccConfig()
-    renderer._loaded_config = cfg
-    ctx = MagicMock()
-    ctx.renderer = renderer
-    ctx.args = ""
-    ctx.config = cfg
+    from rich.console import Console
+
+    from agenthicc.commands import CommandContext
+
+    menus: list[object] = []
+    ctx = CommandContext(
+        text="/config",
+        args="",
+        model="m",
+        console=Console(record=True),
+        config=AgenthiccConfig(),
+        set_pending_menu=menus.append,
+    )
     disp.dispatch("/config", ctx)
-    assert renderer._pending_menu is not None
+    assert len(menus) == 1

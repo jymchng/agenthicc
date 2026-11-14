@@ -279,6 +279,19 @@ def _restore_active_theme() -> Iterator[None]:
             use_theme(before)
 
 
+@pytest.fixture(autouse=True)
+def _isolate_user_state(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Keep ``~/.agenthicc/state.json`` (TUX-03) out of the developer's home.
+
+    A test that starts a session reads and rewrites it (first run, upgrade,
+    tip rotation), so every test gets a file of its own.
+    """
+    path = tmp_path_factory.mktemp("user-state") / "state.json"
+    monkeypatch.setattr("agenthicc.user_state.state_path", lambda: path)
+
+
 @pytest.fixture(scope="session")
 def _signed_out_account_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """A token-store directory whose cached account tier is a fresh ``signed_out``."""

@@ -194,7 +194,7 @@ That extra is what provides `pytest`, `pytest-asyncio`, `pytest-timeout`,
 | A test depends on real network access | A live provider was called | Use cassettes and the recording approval services instead of reaching the network |
 | A test asserts against the TUI's old rendered-frame contract | The `render_frame_ansi`/`pyte` contract is historical and removed | Assert on structured state (`tui/conversation_store.py`), not on rendered frames |
 | Approval tests are flaky | A real approval service is being exercised | Use the recording or mock approval service so prompts are deterministic |
-| Results differ between runs | A shared temporary directory or a real user cache | Use temporary homes and project directories; set `AGENTHICC_CHANGELOG_CACHE` to isolate the changelog cache |
+| Results differ between runs | A shared temporary directory or a real user cache | Use temporary homes and project directories; the shared fixtures already point `~/.agenthicc/state.json` at a file of the test's own |
 | `llms_check` fails after a code change | A new public kernel symbol has no `### Symbol` heading | Add the heading to `llms-full.txt`, or remove the symbol from `kernel.__all__` — do not weaken the check |
 | The docs build fails in strict mode | A warning is treated as an error | Fix the warning; keep `mkdocs build --strict` in the gate rather than downgrading it |
 

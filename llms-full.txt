@@ -2158,7 +2158,7 @@ problems returned in `KeymapLoad.errors`. A file binding a key that a
 `agenthicc.tui.actions`; `tui.keymap_service.KeymapService` keeps
 `AppState.keymap` current as the file changes, and `/keybindings` shows the
 effective bindings. `AppState.ui` holds `config.UISettings` (`[ui]`:
-`mouse`, `screen_reader`, `reduced_motion`, `theme`, `glyphs`,
+`mouse`, `screen_reader`, `reduced_motion`, `theme`, `glyphs`, `banner`,
 `tool_detail`).
 
 Themes (TUX-01): `agenthicc.tui.theme` owns every colour and chrome glyph.
@@ -2330,6 +2330,97 @@ buffer or the session log, and the screen-reader `Announcer` speaks them.
 command's usage, error or result: a one-line `info`/`success` goes to
 `CommandContext.transient_notify` (the session's `notify`) when set, anything
 else is printed as a persistent notice.
+
+### Start-up header, pre-flight check and first run (TUX-03)
+
+```python
+# agenthicc.runners.preflight
+class PreflightCheck(StrEnum): CREDENTIALS; MODEL; WORKSPACE; TOOLS
+
+@dataclass(frozen=True, slots=True)
+class PreflightIssue:
+    check: PreflightCheck; message: str; fix: str
+    blocking: bool = False                       # only a missing credential blocks prompts
+    severity: Literal["warning", "info"] = "warning"
+    @property
+    def text(self) -> str: ...                   # f"{message} {fix}"
+
+def check_session(config: AgenthiccConfig, env: Mapping[str, str], *,
+                  cwd: Path | None = None, mode: str = "") -> tuple[PreflightIssue, ...]: ...
+def check_credentials(config: AgenthiccConfig, env: Mapping[str, str]) -> PreflightIssue | None: ...
+
+# agenthicc.runners.first_run
+@dataclass(frozen=True, slots=True)
+class FirstRun:
+    version: str; first_run: bool; whats_new: bool; branch: str
+    issues: tuple[PreflightIssue, ...]; suggestion: Suggestion; tip_index: int
+    ask_workspace: bool; plan_mode: bool
+def prepare_first_run(*, config, env, cwd, mode, session_id, keymap,
+                      trust=None, home=None, state_file=None) -> FirstRun: ...
+def workspace_needs_decision(cwd: Path, *, home: Path, trust: ExtensionTrust, session_id: str) -> bool: ...
+
+# agenthicc.tui.welcome
+@dataclass(frozen=True, slots=True)
+class WelcomeInfo:
+    version: str; model: str; provider: str; mode: str; directory: Path; home: Path
+    branch: str = ""; whats_new: bool = False; mascot: bool = False
+def render_welcome(info: WelcomeInfo, width: int) -> Group: ...   # one Text per row
+def print_welcome(console: Console, info: WelcomeInfo) -> None: ...
+def home_relative(path: Path, home: Path) -> str: ...             # "~/work/app"
+def middle_truncate(text: str, room: int) -> str: ...             # "~/py…/agenthicc"
+
+# agenthicc.user_state
+@dataclass(frozen=True, slots=True)
+class UserState:
+    version: str = ""; release_notes_seen: str = ""; tip_index: int = 0
+    first_run: bool                              # property: no version recorded
+def load_user_state(path: Path | None = None) -> UserState: ...
+def save_user_state(state: UserState, path: Path | None = None) -> bool: ...
+def state_path() -> Path: ...                    # ~/.agenthicc/state.json
+
+# agenthicc.release_notes
+@dataclass(frozen=True, slots=True)
+class ReleaseEntry: version: str; date: str; body: str   # .unreleased, .title
+def parse_changelog(text: str) -> tuple[ReleaseEntry, ...]: ...
+def load_entries(path: Path | None = None) -> tuple[ReleaseEntry, ...]: ...
+def select(entries, *, installed: str, last_seen: str = "") -> tuple[ReleaseEntry, ...]: ...
+
+# agenthicc.tui.suggestions
+@dataclass(frozen=True, slots=True)
+class Suggestion: kind: Literal["init", "resume", "attention", "tip"]; text: str; command: str = ""
+TIPS: tuple[Tip, ...]                            # twenty; {key} is read from the keymap
+def static_suggestion(cwd: Path, *, session_id: str, tip_index: int, keymap: Keymap) -> Suggestion: ...
+def current_suggestion(static: Suggestion | None, needs_you: int, hub_key: str = "") -> Suggestion | None: ...
+def tip_for(index: int, keymap: Keymap) -> Suggestion: ...
+def agents_md_missing(cwd: Path) -> bool: ...
+```
+
+Right after the first frame `TUISession._show_welcome` runs the `preflight`
+start-up phase: `prepare_first_run` on a worker thread (the state file, the git
+branch from `HEAD`, `check_session`, the suggestion, whether to ask about the
+directory), then the header and one `Notice` per finding. Nothing is fetched.
+`check_session` is pure apart from reading `cwd` and `env["PATH"]`: a
+credential comes from the selected profile's `api_key`/`SecretReference`/
+`api_key_env`, the `[execution]` equivalents, or `PROVIDER_API_KEY_ENVVAR`
+(`ANTHROPIC_AUTH_TOKEN` also counts for anthropic; a provider with no variable,
+such as Ollama, needs none). Only the credential finding is `blocking`:
+`TUISession._blocked_by_credentials` re-checks at each submission, refuses a
+non-slash prompt, prints the notice, puts the text back in the composer and runs
+`/model`. `agenthicc config show` and `/status` print `check_session` too.
+`[ui] banner = "compact" | "full" | "off"` (`UISettings.banner`) selects the
+header; the mascot shows on the first run on a machine (`UserState.first_run`),
+and `what's new: /release-notes` only when the version changed.
+`/release-notes` opens `tui.workspace.overlays.release_notes.ReleaseNotesOverlay`
+(a `Dialog` without options, so its arrows scroll) over `release_notes.select`;
+the changelog is `CHANGELOG.md` beside the docs tree (a checkout's root, or
+`share/agenthicc/docs`). `tui.workspace.overlays.workspace_trust.WorkspaceTrustOverlay`
+asks "Work in <directory>?" once; "Choose another directory…" ends the session
+with `SessionSwitch("directory", path, …)`, which `_run_tui_session` answers
+with a new session there. `/resume` opens the agents hub's History tab.
+`ConversationStore.suggestion: Signal[Suggestion | None]` holds the static
+suggestion; the composer's placeholder is `current_suggestion(...)`, and the
+`composer.accept_suggestion` action (Tab, condition `suggestion`) puts its
+`command` in an empty prompt while `agents.cycle` keeps Tab otherwise.
 
 ### Diagnostics log — `agenthicc.tui.diagnostics`
 
@@ -5651,6 +5742,8 @@ class ExtensionTrust:
     def trust(self, path: Path, *, kind: str) -> TrustRecord: ...
     def revoke(self, path: Path) -> bool: ...
     def records(self) -> tuple[TrustRecord, ...]: ...
+    def workspace_decision(self, directory: Path) -> WorkspaceDecision | None: ...   # TUX-03
+    def remember_workspace(self, directory: Path, decision: str) -> WorkspaceDecision: ...
 ```
 
 Decides whether an extension file may be imported and records trust. `check`
@@ -5658,6 +5751,22 @@ returns why a file may not be imported (`"not trusted"`, `"changed since it was
 trusted"` or `"unreadable: ..."`); `permits` logs that reason and returns
 `False`. The store is written atomically with mode `0600`; an unreadable store
 trusts nothing.
+
+### WorkspaceDecision
+
+```python
+@dataclass(frozen=True)
+class WorkspaceDecision:
+    path: str          # the resolved directory
+    decision: str      # "allow" or "plan" (start in Plan mode)
+    decided_at: str
+```
+
+The user's answer to "Work in <directory>?" (TUX-03), stored per directory in
+the `workspaces` list of `~/.agenthicc/trust.json`, next to the extension
+records. `ExtensionTrust.remember_workspace(directory, decision)` raises
+`ValueError` for any other decision; rewriting the extension records keeps the
+workspace answers and the other way round.
 
 ### TrustRecord
 

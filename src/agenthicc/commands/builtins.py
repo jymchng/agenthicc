@@ -10,6 +10,7 @@ from .registry import UnifiedCommandRegistry
 
 if TYPE_CHECKING:
     from agenthicc.skills.loader import SkillDef, SkillDiscoveryResult
+    from agenthicc.tui.workspace.dialog import DialogSettings
     from agenthicc.tui.workspace.overlay import Overlay
 
 __all__ = ["BUILTIN_COMMANDS", "build_builtin_registry", "_make_skill_handler"]
@@ -281,6 +282,55 @@ def _cmd_agents(ctx: CommandContext) -> bool:
         return True
     ctx.open_agents_hub(tab)
     return True
+
+
+def _cmd_resume(ctx: CommandContext) -> bool:
+    """Open the agents hub on its History tab, where Enter resumes a saved session (TUX-03)."""
+
+    if ctx.open_agents_hub is None:
+        ctx.notify(
+            "warning", "/resume needs the interactive TUI: run agenthicc agents --tab history."
+        )
+        return True
+    ctx.open_agents_hub("history")
+    return True
+
+
+def _dialog_settings(ctx: CommandContext) -> DialogSettings:
+    """The session's keymap, screen-reader setting and mode for a dialog (TUX-07)."""
+    from agenthicc.tui.preferences import ui_settings
+    from agenthicc.tui.workspace.dialog import DEFAULT_DIALOG_SETTINGS, DialogSettings
+
+    app_state = ctx.app_state
+    if app_state is None:
+        return DEFAULT_DIALOG_SETTINGS
+    ui = ui_settings(app_state)
+    return DialogSettings(
+        keymap=app_state.keymap(),
+        plain=ui is not None and ui.screen_reader,
+        mode=app_state.active_mode().name,
+    )
+
+
+def _release_notes_menu(ctx: CommandContext) -> Overlay:
+    """The packaged changelog's entries since the last version whose notes were viewed (TUX-03)."""
+    from dataclasses import replace
+
+    from agenthicc.cli.version import package_version
+    from agenthicc.release_notes import load_entries, select
+    from agenthicc.tui.workspace.overlays.release_notes import ReleaseNotesOverlay
+    from agenthicc.user_state import load_user_state, save_user_state
+
+    installed = package_version()
+    state = load_user_state()
+    entries = select(load_entries(), installed=installed, last_seen=state.release_notes_seen)
+    save_user_state(replace(state, release_notes_seen=installed))
+    return ReleaseNotesOverlay(
+        entries,
+        version=installed,
+        on_close=ctx.close_overlay if ctx.close_overlay is not None else (lambda: None),
+        settings=_dialog_settings(ctx),
+    )
 
 
 def _cmd_dnd(ctx: CommandContext) -> bool:
@@ -918,6 +968,19 @@ def _cmd_skills(ctx: CommandContext) -> bool:
     return True
 
 
+def _preflight_rows(ctx: CommandContext) -> list[tuple[str, str]]:
+    """The pre-flight check's findings as ``/status`` rows (TUX-03 §5)."""
+    import os
+
+    from agenthicc.runners.preflight import check_session
+
+    mode = ctx.app_state.active_mode().name if ctx.app_state is not None else ""
+    issues = check_session(ctx.config, os.environ, mode=mode)
+    if not issues:
+        return [("Pre-flight", "all checks passed")]
+    return [("Pre-flight", issue.text) for issue in issues]
+
+
 def _cmd_status(ctx: CommandContext) -> bool:
     """Print the session's identity, model, usage and files (TUX-02 §2.2).
 
@@ -935,7 +998,7 @@ def _cmd_status(ctx: CommandContext) -> bool:
 
         rows = status_report(ctx.app_state)
     # Transcript times are local ``HH:MM``; the zone is shown here (TUX-06 §2.5).
-    rows = [*rows, ("Time zone", time.strftime("%Z %z"))]
+    rows = [*rows, ("Time zone", time.strftime("%Z %z")), *_preflight_rows(ctx)]
     width = max(len(label) for label, _ in rows) + 1
     for label, value in rows:
         ctx.console.print(f"  [dim]{label + ':':<{width}}[/dim] {escape(value)}")
@@ -1583,6 +1646,20 @@ BUILTIN_COMMANDS: list[Command] = [
         group="Built-in",
         busy_policy=BusyPolicy.IMMEDIATE_CONTROL,
         handler=_cmd_agents,
+    ),
+    Command(
+        name="/resume",
+        description="Resume a saved session: the agents hub's History tab",
+        group="Built-in",
+        busy_policy=BusyPolicy.IMMEDIATE_CONTROL,
+        handler=_cmd_resume,
+    ),
+    Command(
+        name="/release-notes",
+        description="Show what changed in this version and since the last one you read",
+        group="Built-in",
+        busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
+        menu_factory=_release_notes_menu,
     ),
     Command(
         name="/dnd",

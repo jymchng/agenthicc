@@ -34,6 +34,7 @@ __all__ = [
     "StatusLineCommand",
     "read_git_branch",
     "refresh_git_status",
+    "repository_root",
     "sanitize_status_output",
     "status_report",
     "statusline_input",
@@ -52,20 +53,28 @@ JsonValue = str | int | float | None
 # ── git ───────────────────────────────────────────────────────────────────────
 
 
-def _git_dir(start: Path) -> Path | None:
+def repository_root(start: Path) -> Path | None:
+    """The directory holding the ``.git`` entry that covers *start*, if any."""
     for directory in (start, *start.parents):
-        marker = directory / ".git"
-        if marker.is_dir():
-            return marker
-        if marker.is_file():
-            try:
-                text = marker.read_text(encoding="utf-8").strip()
-            except OSError:
-                return None
-            if text.startswith("gitdir:"):
-                target = Path(text.removeprefix("gitdir:").strip())
-                return target if target.is_absolute() else (directory / target).resolve()
-            return None
+        if (directory / ".git").exists():
+            return directory
+    return None
+
+
+def _git_dir(start: Path) -> Path | None:
+    root = repository_root(start)
+    if root is None:
+        return None
+    marker = root / ".git"
+    if marker.is_dir():
+        return marker
+    try:
+        text = marker.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if text.startswith("gitdir:"):
+        target = Path(text.removeprefix("gitdir:").strip())
+        return target if target.is_absolute() else (root / target).resolve()
     return None
 
 

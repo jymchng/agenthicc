@@ -341,9 +341,23 @@ class UnifiedInputSession:
                 flags.add("paste_at_cursor")
         elif not self._buf.text:
             flags.add("empty")
+            if self._mode != InputMode.STREAMING and self.suggested_command():
+                flags.add("suggestion")
         if self._state.conversation.queue:
             flags.add("queued")
         return frozenset(flags)
+
+    def suggested_command(self) -> str:
+        """The command the empty prompt suggests (Tab accepts it), or ``""`` (TUX-03)."""
+        conversation = self._state.conversation
+        static = conversation.suggestion()
+        needs = conversation.background_needs_you()
+        if static is None and needs <= 0:
+            return ""
+        from agenthicc.tui.suggestions import current_suggestion
+
+        suggestion = current_suggestion(static, needs)
+        return suggestion.command if suggestion is not None else ""
 
     async def _dispatch(self, key: Key, ch: str) -> _ExitSentinel | None:
         """Run the active capability list until one consumes the key.

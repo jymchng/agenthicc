@@ -24,6 +24,7 @@ CONDITION_PHRASES: Mapping[str, str] = {
     "subagents_running": "while subagents run",
     "empty": "when the prompt is empty",
     "queued": "when messages are queued",
+    "suggestion": "when the empty prompt suggests a command",
     # decision dialogs
     "approval": "on an approval request",
     "details": "when there are full details to show",

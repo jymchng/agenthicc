@@ -6,6 +6,7 @@ recording Rich console and asserts on the text a user would see.
 
 from __future__ import annotations
 
+import re
 import json
 import os
 import time
@@ -421,7 +422,7 @@ def test_status_shows_the_time_zone_the_headers_leave_out() -> None:
             text="/status", args="", model="m", console=console, config=AgenthiccConfig()
         )
     )
-    assert "Time zone: UTC +0000" in console.export_text()
+    assert re.search(r"Time zone:\s+UTC \+0000", console.export_text())
 
 
 def test_tool_detail_is_validated_and_parsed_from_config(tmp_path: Path) -> None:
