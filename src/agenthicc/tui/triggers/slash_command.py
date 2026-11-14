@@ -261,17 +261,23 @@ class SlashCommandTrigger(TriggerHandlerBase):
         fragment: str,
         buf: list[str],
     ) -> TriggerResult:
-        """One Enter runs a command that needs no argument (TUX-04 §2.5).
+        """Enter places the highlighted command in the prompt; it does not run it.
 
-        A command with a required argument, or with argument completions,
-        is completed with a trailing space and the picker stays open on its
-        arguments. A chosen argument completion runs the full command.
+        The user reviews or extends the text and sends it with a second Enter.
+        Three cases differ (operator request, amending TUX-04 §2.5):
+
+        * a command with a required argument, or with argument completions,
+          is completed with a trailing space and the picker stays open on its
+          arguments;
+        * a command typed out in full has nothing to pick, so Enter sends it;
+        * with no match, Enter sends the text as typed.
         """
         if item is None:
             return TriggerResult(buffer=buf + [self.char] + list(fragment), submit=True)
         if " " not in item.value and self.needs_argument(item):
             return TriggerResult(buffer=buf + list(item.value + " "), keep_open=True)
-        return TriggerResult(buffer=buf + list(item.value), submit=True)
+        typed_in_full = item.value == self.char + fragment
+        return TriggerResult(buffer=buf + list(item.value), submit=typed_in_full)
 
     def needs_argument(self, item: MatchItem) -> bool:
         """Whether Enter on *item* must ask for an argument instead of running it."""

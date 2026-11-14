@@ -18,7 +18,7 @@ Implemented on branch `tux-tux04`. Every acceptance criterion has a test:
 |---|---|
 | 1. The editing table | `tests/unit/test_composer_tux04.py::test_the_editing_table` (one case per §2.1 row: Ctrl+W on `src/agenthicc/tui`, Ctrl+K then Ctrl+Y, undo after a paste, …), `test_ctrl_d_on_an_empty_prompt_still_exits`, `test_ctrl_l_redraws_the_live_region`, `test_kills_accumulate_and_the_undo_stack_is_bounded`, `test_word_boundaries_are_unicode_aware` |
 | 2. The F10 reproduction | `test_ctrl_u_with_a_picker_open_clears_the_prompt_and_closes_it`, `test_ctrl_w_with_a_picker_open_keeps_the_picker_in_step`, `test_editing_keys_with_a_picker_open`; `tests/unit/test_trigger_picker_prd77.py` |
-| 3. One Enter | `test_one_enter_runs_a_command_without_a_required_argument`, `test_one_enter_opens_help_through_the_session`, `test_enter_on_a_command_that_needs_an_argument_lists_its_arguments` (`/workflow`, see amendment 1), `test_tab_only_completes` |
+| 3. One Enter (replaced by amendment 12) | `test_enter_places_a_picked_command_and_a_second_enter_runs_it`, `test_enter_sends_a_command_that_was_typed_in_full`, `test_one_enter_opens_help_through_the_session`, `test_enter_on_a_command_that_needs_an_argument_lists_its_arguments` (`/workflow`, see amendment 1), `test_tab_only_completes` |
 | 4. Ctrl+R | `test_ctrl_r_finds_an_entry_and_enter_puts_it_in_the_prompt_unsent`, `test_ctrl_r_again_is_older_ctrl_s_newer_and_case_is_ignored`, `test_esc_restores_the_draft_exactly`, `test_the_search_row_shows_the_count_and_hints` |
 | 5. External editor | `test_ctrl_x_ctrl_e_replaces_the_prompt_with_the_edited_file` (the criterion's `EDITOR`, terminal mode compared by a fake backend), `test_the_editor_file_is_private_and_holds_the_draft`, `test_a_failing_editor_keeps_the_draft_and_says_so`, `test_ctrl_x_alone_opens_the_editor_after_the_timeout`, `test_another_key_after_ctrl_x_cancels_the_chord` |
 | 6. The queue | `test_two_messages_typed_during_a_turn_render_as_two_rows`, `test_at_most_three_rows_then_more`, `test_deleting_the_first_leaves_only_the_second_to_be_sent`, `test_enter_in_the_queue_moves_the_message_back_into_the_prompt`, `test_ctrl_enter_while_busy_queues_an_interjection`; `tests/integration/test_composer_interjection.py` (scripted transport) |
@@ -97,6 +97,17 @@ Amendments to the design:
     interjection (`at next tool`), exactly as Alt+Enter would; commands and
     skills still wait for the run to end. Every workflow starts its turns with
     the session's claim hook (`tests/unit/test_workflow_queued_input_contract.py`).
+
+12. **Picking a command places it; it does not run it (operator request,
+    replaces §2.5 and criterion 3's "one Enter").** In the `/` and `$`
+    pickers Enter puts the highlighted command in the prompt and closes the
+    picker; a second Enter sends it, so the user can read or extend it first.
+    Three cases keep their old result: a command with a required argument or
+    argument completions (`/workflow`) is placed with a trailing space and the
+    picker stays open on its arguments; a command typed out in full
+    (`/help` while `/help` is highlighted) has nothing to pick, so Enter
+    sends it; and Enter with no match sends the text as typed. The Ctrl+P
+    palette is a different surface and still runs the item.
 
 
 ## 1. Problem
@@ -197,7 +208,7 @@ Notes on the keys:
 - It then loads the file back into the prompt with the cursor at the end, and deletes the file.
 - A non-zero exit keeps the previous draft and shows a notice.
 
-### 2.5 One Enter runs a command
+### 2.5 One Enter runs a command (replaced: see Implementation status, amendment 12)
 
 - In the `/` picker, Enter on a highlighted command **runs it** when the command takes no required argument (`argument_hint` is empty or optional).
 - When the command needs an argument, Enter completes `/model ` and opens its argument picker (TUX-05).

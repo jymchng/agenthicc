@@ -177,11 +177,19 @@ def _enter_registry():
 
 
 @pytest.mark.parametrize("name", ["/status", "/help"])
-def test_on_enter_runs_a_command_without_a_required_argument(name: str):
+def test_on_enter_places_a_picked_command_without_running_it(name: str):
     t = SlashCommandTrigger(_enter_registry())
-    result = t.on_enter(MatchItem(value=name, label=name), name[1:2], list("x\n"))
+    result = t.on_enter(MatchItem(value=name, label=name), name[1:3], list("x\n"))
     assert "".join(result.buffer) == f"x\n{name}"
-    assert result.submit is True and result.keep_open is False
+    assert result.submit is False and result.keep_open is False
+
+
+@pytest.mark.parametrize("name", ["/status", "/help"])
+def test_on_enter_sends_a_command_that_was_typed_in_full(name: str):
+    t = SlashCommandTrigger(_enter_registry())
+    result = t.on_enter(MatchItem(value=name, label=name), name[1:], [])
+    assert "".join(result.buffer) == name
+    assert result.submit is True
 
 
 @pytest.mark.parametrize("name", ["/open", "/env"])
@@ -192,10 +200,16 @@ def test_on_enter_completes_a_command_that_needs_an_argument(name: str):
     assert result.keep_open is True and result.submit is False
 
 
-def test_on_enter_runs_a_chosen_argument_completion():
+def test_on_enter_places_a_chosen_argument_completion_without_running_it():
     t = SlashCommandTrigger(_enter_registry())
     result = t.on_enter(MatchItem(value="/env dev", label="/env dev"), "env d", [])
     assert "".join(result.buffer) == "/env dev"
+    assert result.submit is False and result.keep_open is False
+
+
+def test_on_enter_sends_an_argument_completion_typed_in_full():
+    t = SlashCommandTrigger(_enter_registry())
+    result = t.on_enter(MatchItem(value="/env dev", label="/env dev"), "env dev", [])
     assert result.submit is True
 
 

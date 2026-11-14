@@ -3,7 +3,7 @@
 1. the §2.1 editing table, on the main composer and (8.) every
    ``EmbeddedComposer``;
 2. the F10 reproduction (keys reach the prompt while a picker is open);
-3. one Enter runs a command;
+3. Enter places a picked command, and a second Enter runs it;
 4. Ctrl+R history search;
 5. Ctrl+X Ctrl+E external editor;
 6. a visible, editable queue (the interjection's delivery is an integration
@@ -291,12 +291,27 @@ def _command_session(tmp_path: Path) -> tuple[UnifiedInputSession, list[str]]:
     return session, sent
 
 
-async def test_one_enter_runs_a_command_without_a_required_argument(tmp_path: Path) -> None:
+async def test_enter_places_a_picked_command_and_a_second_enter_runs_it(tmp_path: Path) -> None:
     session, sent = _command_session(tmp_path)
-    await _press(session, _chars("/help"))
+    await _press(session, _chars("/hel"))
     picker = session.picker
     assert picker is not None
     assert picker.matches[picker.selected].value == "/help"  # visible and highlighted
+
+    await session._dispatch(Key.ENTER, "")
+    assert sent == []  # picked, not run
+    assert session.picker is None
+    assert session._buf.text == "/help"
+
+    await session._dispatch(Key.ENTER, "")
+    assert sent == ["/help"]
+    assert session._buf.text == ""
+
+
+async def test_enter_sends_a_command_that_was_typed_in_full(tmp_path: Path) -> None:
+    session, sent = _command_session(tmp_path)
+    await _press(session, _chars("/help"))
+    assert session.picker is not None
 
     await session._dispatch(Key.ENTER, "")
     assert sent == ["/help"]
@@ -317,6 +332,10 @@ async def test_enter_on_a_command_that_needs_an_argument_lists_its_arguments(
     assert picker is not None
     assert "/workflow docs" in [item.value for item in picker.matches]
     await _press(session, _chars("d"))
+    await session._dispatch(Key.ENTER, "")
+    assert sent == []  # the chosen argument is placed, not run
+    assert session._buf.text == "/workflow docs"
+    assert session.picker is None
     await session._dispatch(Key.ENTER, "")
     assert sent == ["/workflow docs"]
 
