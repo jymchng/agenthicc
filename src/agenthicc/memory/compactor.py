@@ -260,8 +260,7 @@ async def compact_memory_with_result(
         return outcome
     if conv_store is not None:
         try:
-            conv_store.compaction_active.set(True)
-            conv_store.append_event("system", {"text": "Compacting conversation…"})
+            conv_store.begin_compaction()
             conv_store.append_event(
                 "compaction_status",
                 {"status": "started", "before_tokens": before_tokens},
@@ -299,6 +298,7 @@ async def compact_memory_with_result(
             run_id=run_id,
             max_completion_tokens=max_completion_tokens,
             request_options=request_options,
+            on_progress=_progress_reporter(conv_store),
         )
         summary = summary_result.text
 
@@ -429,7 +429,7 @@ async def compact_memory_with_result(
     finally:
         if conv_store is not None:
             try:
-                conv_store.compaction_active.set(False)
+                conv_store.end_compaction()
             except Exception as exc:  # noqa: BLE001 - presentation is advisory
                 log.warning("could not clear compaction indicator (%s)", type(exc).__name__)
 
@@ -884,6 +884,26 @@ def _is_conversational_user_message(message: object) -> bool:
     return True
 
 
+def _progress_reporter(conv_store: ConversationStore | None) -> Callable[[int, int], None] | None:
+    """The observer that forwards a multi-call summary's real progress to the UI."""
+    if conv_store is None:
+        return None
+
+    def report(done: int, total: int) -> None:
+        try:
+            conv_store.report_compaction_progress(done, total)
+        except Exception as exc:  # noqa: BLE001 - presentation is advisory
+            log.warning("could not project compaction progress (%s)", type(exc).__name__)
+
+    return report
+
+
+def _elapsed_seconds(conv_store: ConversationStore) -> float:
+    """How long the attempt has taken; ``0.0`` when the store cannot say."""
+    elapsed = conv_store.compaction_elapsed()
+    return round(elapsed, 3) if isinstance(elapsed, (int, float)) else 0.0
+
+
 def _emit_outcome(conv_store: ConversationStore | None, outcome: CompactionOutcome) -> None:
     """Project redacted status only; never include conversation contents."""
     if conv_store is None:
@@ -943,9 +963,12 @@ def _emit_outcome(conv_store: ConversationStore | None, outcome: CompactionOutco
                 "summary_error_type": outcome.summary_error_type,
                 "fallback_result": outcome.fallback_result,
                 "recovery_reason": outcome.recovery_reason,
+                # How long the attempt took, and agenthicc's own words for what
+                # happened: the transcript row is drawn from this event.
+                "elapsed_s": _elapsed_seconds(conv_store),
+                "label": label,
             },
         )
-        conv_store.append_event("system", {"text": label})
     except Exception as exc:  # noqa: BLE001 - observability must not fail a turn
         log.warning("compaction status projection failed (%s)", type(exc).__name__)
 
@@ -1009,6 +1032,7 @@ async def _summarize_text(
     run_id: str = "",
     max_completion_tokens: int | None = None,
     request_options: object | None = None,
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> _SummaryResult:
     """Summarise text using lauren-ai's stable transport contract.
 
@@ -1016,6 +1040,11 @@ async def _summarize_text(
     command's normal behaviour.  A positive limit performs map/reduce calls
     with bounded prompts so a large history never becomes one oversized
     request.
+
+    *on_progress* is told ``(finished, known)`` after each model call of a
+    map/reduce run: every chunk is a call, and so is the final merge. It is an
+    observer only: a single-call summary reports nothing, because it has no
+    steps to count.
     """
     from lauren_ai._transport import Message
 
@@ -1122,11 +1151,22 @@ async def _summarize_text(
             return summary
         return await summarize_chunk_call(chunk, retry=True)
 
+    # Calls finished, and calls known so far: the chunks plus the final merge.
+    finished_calls = 0
+    known_calls = len(chunks) + 1 if len(chunks) > 1 else 0
+
+    def report_progress() -> None:
+        if on_progress is not None and known_calls:
+            on_progress(finished_calls, known_calls)
+
+    report_progress()
     partials: list[str] = []
     last_result: _SummaryResult | None = None
     for chunk in chunks:
         chunk_result = await summarize_chunk(chunk)
         last_result = chunk_result
+        finished_calls += 1
+        report_progress()
         if not chunk_result.text:
             return _SummaryResult(
                 text="",
@@ -1140,15 +1180,21 @@ async def _summarize_text(
         reduced = "\n\n".join(partials)
         if max_input_chars <= 0 or len(reduced) <= max_input_chars:
             reduced_result = await summarize_chunk(reduced)
+            finished_calls += 1
+            report_progress()
             return replace(reduced_result, attempts=attempts)
         chunks = [
             reduced[index : index + max_input_chars]
             for index in range(0, len(reduced), max_input_chars)
         ]
+        known_calls += len(chunks)  # another round of summaries before the merge
+        report_progress()
         partials = []
         for chunk in chunks:
             chunk_result = await summarize_chunk(chunk)
             last_result = chunk_result
+            finished_calls += 1
+            report_progress()
             if not chunk_result.text:
                 return _SummaryResult(
                     text="",

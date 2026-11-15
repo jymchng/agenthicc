@@ -186,6 +186,7 @@ class Workspace:
             conv.live_tool_overflow,  # overflow bridge row
             conv.workflow_override,  # PRD-114: /workflow indicator
             conv.compaction_active,  # PRD-119: compaction on/off toggle
+            conv.compaction_progress,  # a multi-call compaction's measured steps
             conv.subagent_pool_state,  # PRD-124: subagent pool progress
             conv.subagent_rows,  # AGX-08: finished panel rows expire
             conv.terminal_waiting,  # PRD-149: owned terminal wait
@@ -214,6 +215,8 @@ class Workspace:
         # question input owns the terminal. Keep this callback separate so a
         # compatibility writer cannot repaint an unchanged waiting modal.
         self._unsubs.append(conv.activity_elapsed_s.subscribe(self._redraw_activity))
+        # The compaction row's seconds change once a second, in every motion mode.
+        self._unsubs.append(conv.compaction_seconds.subscribe(self._redraw_activity))
         # Frame is an animation-only signal. Keep it behind an activity guard
         # so compatibility code that writes it while idle cannot repaint an
         # unchanged Live block into clients that do not interpret ANSI erase

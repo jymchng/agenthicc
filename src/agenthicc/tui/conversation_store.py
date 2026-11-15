@@ -157,6 +157,22 @@ class CompactionProgress:
     fraction: float
 
 
+@dataclass(frozen=True, slots=True)
+class CompactionProgress:
+    """How far a multi-call compaction has measurably got.
+
+    Only a compaction that summarises its history in several model calls
+    (map/reduce) can say so: each finished call is one real step. ``done`` of
+    ``total`` counts the calls known so far; ``fraction`` is the furthest the
+    bar has reached, so a late extra round of summaries never moves it back.
+    A compaction that is one call has no progress to report and none is shown.
+    """
+
+    done: int
+    total: int
+    fraction: float
+
+
 # ── Queued messages (TUX-04 §2.6) ─────────────────────────────────────────────
 
 

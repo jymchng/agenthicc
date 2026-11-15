@@ -95,6 +95,20 @@ CASES: dict[str, list[dict[str, object]]] = {
     ],
     "error": [{"message": "Agent turn failed", "detail": "Provider returned HTTP 400"}],
     "system": [{"text": "Compacted 12 messages"}],
+    "compaction_status": [
+        {"status": "started", "before_tokens": 9000},
+        {
+            "status": "compacted_summary",
+            "after_tokens": 849,
+            "elapsed_s": 3.2,
+            "label": "Compacted → ~849 tokens",
+        },
+        {
+            "status": "blocked_irreducible_context",
+            "elapsed_s": 3.4,
+            "label": "Compaction blocked: no protocol-safe history boundary can fit",
+        },
+    ],
     "announcement": [{"text": "Agent finished."}],
     "tool_recovery": [{"text": "Tool execution was interrupted."}],
     "mcp_server_failure": [{"text": "MCP server github is unavailable.", "required": False}],

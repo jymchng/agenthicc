@@ -246,8 +246,9 @@ class TestCompactMemory:
         await compact_memory(mem, _MockTransport(""), model="m", conv_store=conv)
 
         assert any(
-            event.kind == "system"
-            and str(event.payload.get("text", "")).startswith(
+            event.kind == "compaction_status"
+            and event.payload.get("status") == "skipped_summary_unavailable"
+            and str(event.payload.get("label", "")).startswith(
                 "Compaction summary unavailable (empty_final; 2 attempts)"
             )
             for event in events
@@ -376,7 +377,12 @@ class TestCompactMemory:
         assert transport.calls[1]["max_completion_tokens"] == 2_048
         assert transport.calls[0]["request_options"].option == "preserved"
         assert mem._messages[0]["content"].endswith("Recovered conversation summary.")
-        assert any(event.payload.get("text", "").startswith("Compacted →") for event in events)
+        assert any(
+            event.kind == "compaction_status"
+            and event.payload.get("status") == "compacted_summary"
+            and str(event.payload.get("label", "")).startswith("Compacted →")
+            for event in events
+        )
         assert not any("empty summary" in event.payload.get("text", "") for event in events)
 
     async def test_raw_provider_content_is_used_without_using_reasoning_blocks(self) -> None:
