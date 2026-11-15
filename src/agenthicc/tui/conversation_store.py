@@ -138,6 +138,22 @@ class RunningTool:
     background: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class CompactionProgress:
+    """How far a multi-call compaction has measurably got.
+
+    Only a compaction that summarises its history in several model calls
+    (map/reduce) can say so: each finished call is one real step. ``done`` of
+    ``total`` counts the calls known so far; ``fraction`` is the furthest the
+    bar has reached, so a late extra round of summaries never moves it back.
+    A compaction that is one call has no progress to report and none is shown.
+    """
+
+    done: int
+    total: int
+    fraction: float
+
+
 # ── Queued messages (TUX-04 §2.6) ─────────────────────────────────────────────
 
 
@@ -299,6 +315,14 @@ class ConversationStore:
         """True while a resumed session transcript is being replayed."""
         self.compaction_active: Signal[bool] = Signal(False, name="compaction_active")
         """True while a compaction LLM call is in flight (PRD-119)."""
+        self.compaction_progress: Signal[CompactionProgress | None] = Signal(
+            None, name="compaction_progress"
+        )
+        """Measured progress of the running compaction, ``None`` when it has none."""
+        self.compaction_seconds: Signal[int] = Signal(0, name="compaction_seconds")
+        """Whole seconds the running compaction has taken: redraws its row once a second,
+        which keeps the elapsed time moving under ``reduced_motion`` too."""
+        self._compaction_started_at: float | None = None
         self.subagent_pool_state: Signal[SubagentPoolState | None] = Signal(
             None, name="subagent_pool_state"
         )
@@ -540,6 +564,8 @@ class ConversationStore:
         # the same frozen waiting modal on every session tick. Capture the
         # elapsed value again when the wait ends or the activity completes.
         self._advance_activity_clock(now)
+        if self.compaction_active():
+            self.compaction_seconds.set(int(self.compaction_elapsed(now)))
         # Idle/complete/error status is static. Publishing a frame on every
         # idle tick would cause Workspace to refresh the Live block at 20 Hz;
         # terminals or captured clients that do not interpret Rich's erase
@@ -552,6 +578,40 @@ class ConversationStore:
         ):
             # Running-tool rows blink their dot, so they keep the clock going.
             self.frame.set(self.frame() + 1)
+
+    def begin_compaction(self) -> None:
+        """Start the inline compaction row and its clock."""
+        self._compaction_started_at = time.monotonic()
+        self.compaction_progress.set(None)
+        self.compaction_seconds.set(0)
+        self.compaction_active.set(True)
+
+    def end_compaction(self) -> None:
+        """Take the compaction row down.
+
+        The start time stays until the next :meth:`begin_compaction`, so the
+        result row can still say how long the whole attempt took, including a
+        local fallback that runs after the summary call has returned.
+        """
+        self.compaction_active.set(False)
+        self.compaction_progress.set(None)
+
+    def compaction_elapsed(self, now: float | None = None) -> float:
+        """Seconds since :meth:`begin_compaction`; ``0.0`` when none has begun."""
+        started = self._compaction_started_at
+        if started is None:
+            return 0.0
+        return max(0.0, (time.monotonic() if now is None else now) - started)
+
+    def report_compaction_progress(self, done: int, total: int) -> None:
+        """Record that *done* of the *total* calls known so far have finished."""
+        if total <= 0:
+            return
+        previous = self.compaction_progress()
+        fraction = min(1.0, max(0, done) / total)
+        if previous is not None:
+            fraction = max(fraction, previous.fraction)
+        self.compaction_progress.set(CompactionProgress(done, total, fraction))
 
     def set_terminal_wait(
         self,

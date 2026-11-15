@@ -26,8 +26,8 @@ The scroll buffer reads as a conversation, not a log (TUX-06):
 - **Rhythm.** One blank row comes before each new block. Consecutive tool rows
   have none between them.
 
-The completed `⎋ Compacted` notice is indented beneath its related activity;
-the in-progress `⎋ Compacting` notice remains level 1.
+A compaction is shown as one live row and one result row (see
+[Compaction](#compaction)).
 
 ## Runtime components
 
@@ -339,6 +339,51 @@ the retry number and delay, a short category such as `Request timed out` or
 `Provider temporarily unavailable`, and a bounded provider message when one is
 available. Full chained exception details remain at debug log level.
 
+### Compaction
+
+While the conversation is compacted, a row sits under the transcript, above the
+composer, in the quiet accent of the theme:
+
+```text
+◜ Refreshing context · 2s
+```
+
+The ring turns once a second on the frame clock and the time moves every
+second. `reduced_motion` and `screen_reader` hold the ring still as `◌` (and
+`o` with ASCII glyphs) and the time still advances; a screen reader is told
+"Refreshing context." once. The row is the only indicator: the status line does
+not repeat it. It is there from `0s`, so the layout does not shift as time
+passes.
+
+A thin bar appears under the row only when the compaction can measure how far
+it has got:
+
+```text
+◜ Refreshing context · 2s
+━━━━━━━━━━━━━━━━━━━━╸─────────
+```
+
+Most compactions are one model call and have nothing to measure: they show the
+spinner alone. A history too long for one call is summarised in several (a
+call per chunk, then a merge), and the bar then follows the calls that have
+really finished, in half-cell steps; it moves only when a call finishes, has no
+percentage, and never moves back if another round turns out to be needed. It is
+the accent colour on a muted track, 30 cells wide or less, and is left out on
+a terminal too narrow to draw it.
+
+When the compaction ends, the row leaves and the transcript gains one notice,
+drawn from the `compaction_status` event (its `elapsed_s` is the time taken):
+
+```text
+ ✓ Context refreshed · 849 tokens · 3s
+
+ ✗ Context refresh failed · 3s
+   Compaction blocked: no protocol-safe history boundary can fit
+```
+
+A summary that fell back to keeping recent exchanges is still a success and
+says so underneath. With `screen_reader` the markers are `Done:` and `Error:`.
+
 ### Tool rows
 
 Each tool call is one row: the operation, a human summary of its target, and
@@ -421,15 +466,15 @@ Every error, warning and info line in the scroll buffer is one component,
 
  ! MCP server is unavailable; continuing without its tools.   /mcp
 
- · Compacted → ~12,400 tokens
+ ✓ Context refreshed · 12,400 tokens · 3s
 ```
 
 | Severity | Marker | Token | Used for |
 |---|---|---|---|
 | `error` | `✗` | `danger` | turn failures, a required MCP server, a command error |
 | `warning` | `!` | `warning` | retries, an optional MCP server, a refused command |
-| `info` | `·` | `muted` | compaction, recovery, model changes |
-| `success` | `✓` | `success` | results the user asked for ("Theme: dark") |
+| `info` | `·` | `muted` | recovery, model changes |
+| `success` | `✓` | `success` | results the user asked for ("Theme: dark"), a finished compaction |
 
 The title wraps under itself, the body sits below it in `muted`, and the
 commands a notice suggests follow the title. With ASCII glyphs the markers are

@@ -2077,6 +2077,24 @@ CHORD_TIMEOUT_S = 0.3                          # Ctrl+X waits this long for Ctrl
   `matches`, `current`, `older()`, `newer()`) and
   `tui.input.history_search.HistorySearchOverlay` (the `search` context,
   `SEARCH_ACTIONS`; `choose()` returns a `SearchOutcome`).
+- **Compaction.** `ConversationStore.begin_compaction()` starts the clock and
+  sets `compaction_active`; `end_compaction()` clears it and
+  `compaction_progress` (the elapsed time stays for the result row, read with
+  `compaction_elapsed()`); `compaction_seconds` changes once a second and
+  redraws the row in every motion mode. `report_compaction_progress(done,
+  total)` records `CompactionProgress(done, total, fraction)`, whose `fraction`
+  never decreases. Only a multi-call (map/reduce) summary reports progress:
+  `memory.compactor._summarize_text(..., on_progress=)` calls it after each
+  model call with the calls finished and known so far, and a one-call
+  compaction reports nothing. `tui.workspace.running_rows.compaction_row(state)`
+  draws `◜ Refreshing context · 2s` (`Glyphs.ring`, one turn per
+  `RING_FRAMES = 20` frames; `Glyphs.ring_still` under `reduced_motion` and
+  `screen_reader`) and `compaction_bar(state, cols)` the bar under it
+  (`Glyphs.progress_fill`/`progress_half`/`progress_track`, at most
+  `BAR_WIDTH = 30` cells) or `None` when nothing was measured. The result is a
+  `compaction_status` event with `elapsed_s` and `label`, printed as a `Notice`
+  (`✓ Context refreshed · 849 tokens · 3s` or `✗ Context refresh failed · 3s`);
+  the compactor no longer appends `system` text events.
 - **Queue.** `tui.conversation_store.MessageQueue` (`ConversationStore.queue`)
   holds `QueuedMessage(id, text, interject)` in the `items` signal and the
   selected id in `focus`; `append(text, interject=)`, `insert`, `pop`,

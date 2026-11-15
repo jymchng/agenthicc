@@ -352,7 +352,7 @@ _TOOL_KINDS: Final = frozenset({"tool_complete", "file_modified"})
 #: A tool row's quiet detail is cut only when at least this many cells fit.
 _MIN_DETAIL_CELLS: Final = 16
 #: Kinds whose renderer places its own blank line and pending turn header.
-_SELF_SPACED_KINDS: Final = _TOOL_KINDS | {"mention_chips", "turn_start"}
+_SELF_SPACED_KINDS: Final = _TOOL_KINDS | {"mention_chips", "turn_start", "compaction_status"}
 #: Presentation-only kinds whose timestamp is "now", not the conversation's.
 _UNTIMED_KINDS: Final = frozenset({"announcement", "replay_separator"})
 
@@ -1043,6 +1043,53 @@ def _print_notice(
     words = ui is not None and ui.screen_reader and not literal
     notice = Notice(severity, title, body, actions, literal=literal, words=words)
     self._console.print(notice, highlight=False)
+
+
+#: ``compaction_status`` values that end an attempt with a result row. The
+#: others (``started``, ``token_count_unavailable``) draw nothing: the live
+#: ``Refreshing context`` row is the start.
+_COMPACTION_SUCCEEDED: Final = frozenset({"compacted_summary", "compacted_local_fallback"})
+_COMPACTION_FAILED: Final = frozenset(
+    {
+        "skipped_summary_unavailable",
+        "skipped_concurrent_update",
+        "blocked_durability_error",
+        "blocked_irreducible_context",
+    }
+)
+
+
+@register_renderer("compaction_status")
+def _render_compaction_status(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
+    """The result of a compaction, where its live ``Refreshing context`` row stood::
+
+     ✓ Context refreshed · 849 tokens · 3s
+     ✗ Context refresh failed · 3s
+       compaction blocked: no protocol-safe history boundary can fit
+
+    A summary that fell back to keeping recent exchanges is a success that says
+    so underneath. The time is the one the compaction measured; an event
+    without it (an older log) shows the row without a time.
+    """
+    status = _text(ev.payload, "status")
+    succeeded = status in _COMPACTION_SUCCEEDED
+    if not succeeded and status not in _COMPACTION_FAILED:
+        return
+    self._print_pending_header()
+    self._open_block("compaction_status")
+    sep = f" {glyphs().sep} "
+    elapsed = _number(ev.payload, "elapsed_s")
+    took = compact_duration(elapsed) if elapsed > 0 else ""
+    label = _text(ev.payload, "label")[:300]
+    if succeeded:
+        tokens = _number(ev.payload, "after_tokens")
+        measured = f"{int(tokens):,} tokens" if tokens > 0 else ""
+        title = sep.join(part for part in ("Context refreshed", measured, took) if part)
+        _print_notice(self, "success", title, label if status != "compacted_summary" else "")
+    else:
+        title = sep.join(part for part in ("Context refresh failed", took) if part)
+        _print_notice(self, "error", title, label)
+    self._gap_pending = True
 
 
 @register_renderer("error")

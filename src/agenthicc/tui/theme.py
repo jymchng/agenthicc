@@ -132,6 +132,15 @@ class Glyphs:
     """The mark of agenthicc's timing rows (``✾ Worked for 37s``)."""
     minus: str = "-"
     """The sign in a removed-lines count (``+12 −3``)."""
+    ring: tuple[str, ...] = ("|", "/", "-", "\\")
+    """One turn of the quiet ring spinner that marks compaction."""
+    ring_still: str = "o"
+    """The ring's resting form: ``reduced_motion``, ``screen_reader``."""
+    progress_fill: str = "="
+    """A filled cell of a progress bar; ``progress_half`` ends it on a half cell."""
+    progress_half: str = "-"
+    progress_track: str = "."
+    """An empty cell of a progress bar."""
 
 
 UNICODE_GLYPHS = Glyphs(
@@ -162,6 +171,11 @@ UNICODE_GLYPHS = Glyphs(
     folder="▸",
     flower="✾",
     minus="−",
+    ring=("◜", "◠", "◝", "◞", "◡", "◟"),
+    ring_still="◌",
+    progress_fill="━",
+    progress_half="╸",
+    progress_track="─",
 )
 
 ASCII_GLYPHS = Glyphs(
@@ -189,6 +203,11 @@ ASCII_GLYPHS = Glyphs(
     sep="-",
     approx="~",
     folder=">",
+    ring=("|", "/", "-", "\\"),
+    ring_still="o",
+    progress_fill="=",
+    progress_half="-",
+    progress_track=".",
 )
 
 

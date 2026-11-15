@@ -177,9 +177,12 @@ release exposing `ShortTermMemory.validate_tool_history()`,
 `commit_tool_exchange()`, and `abort_tool_exchange()`. Agenthicc fails closed
 with an upgrade message when that contract is absent.
 
-Automatic and manual compaction emit a visible
-`⎋ Compacting conversation…` event and a bounded `compaction_status` record.
-The status record includes a start marker and distinguishes successful summary
+Automatic and manual compaction show a live `◜ Refreshing context · 2s` row
+while they run and end in a `✓ Context refreshed` or `✗ Context refresh failed`
+transcript row (see the [TUI guide](tui.md#compaction)); both come from a
+bounded `compaction_status` record. The record's `elapsed_s` is how long the
+attempt took and its `label` is Agenthicc's own description of the result. The
+status record includes a start marker and distinguishes successful summary
 compaction, local complete-turn reduction, summary unavailability, journal
 failure, and irreducible context. The lossy local outcome is never described
 as an LLM summary.

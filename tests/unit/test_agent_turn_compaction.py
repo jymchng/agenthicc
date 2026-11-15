@@ -185,10 +185,10 @@ async def test_empty_summary_uses_a_bounded_local_fallback() -> None:
     # arbitrary transcript excerpt into a synthetic tool-history message.
     assert len(memory._messages) < 6
     fallback_notices = [
-        call.args[1]["text"]
+        call.args[1]["label"]
         for call in ctx.conv_store.append_event.call_args_list  # type: ignore[union-attr]
-        if call.args[0] == "system"
-        and str(call.args[1].get("text", "")).startswith("Compaction fallback:")
+        if call.args[0] == "compaction_status"
+        and str(call.args[1].get("label", "")).startswith("Compaction fallback:")
     ]
     assert len(fallback_notices) == 1
     assert "retained recent complete exchanges" in fallback_notices[0]
