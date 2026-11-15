@@ -11,7 +11,7 @@ so the three cannot disagree.
 
 Users rebind keys in ``~/.agenthicc/keybindings.toml`` (see
 :func:`load_keybindings`); ``"none"`` removes an action's keys. A leader key
-(``leader = "ctrl+t"``) enables two-step bindings such as ``"<leader>a"``.
+(``leader = "alt+x"``) enables two-step bindings such as ``"<leader>a"``.
 
 Within a context two actions may share a key only when their conditions are
 mutually exclusive; anything else is a :class:`KeymapError`. A context may
@@ -654,7 +654,7 @@ def template(actions: Iterable[Action]) -> str:
         '# Keys: "y", "Y", "ctrl+g", "alt+x", "shift+up", "enter", "escape", "space",',
         '# "pageup", "f5", and "<leader>a" for two-step bindings.',
         "",
-        '# leader = "ctrl+t"',
+        '# leader = "alt+x"',
         "# leader_timeout_ms = 2000",
     ]
     by_context: dict[str, list[Action]] = {}

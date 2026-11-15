@@ -6,11 +6,12 @@ import asyncio
 import os
 import re
 import subprocess
+from collections.abc import Sequence
 from dataclasses import astuple, dataclass, field
 from pathlib import Path
 
 import pytest
-from rich.console import Console, Group
+from rich.console import Console, Group, RenderableType
 
 from agenthicc.tools.approval import (
     ApprovalRequest,
@@ -220,18 +221,30 @@ def test_patch_file_shows_a_unified_diff_of_the_real_file(
         capabilities=frozenset({"write"}),
         reason="Safe mode asks before changing files.",
     )
-    settings = DialogSettings(mode="Safe", workspace=WorkspaceScope.create(tmp_path))
+    opened: list[tuple[str, str]] = []
+
+    def open_details(title: str, renderables: Sequence[RenderableType]) -> None:
+        console = Console(record=True, width=100, color_system=None, highlight=False)
+        for renderable in renderables:
+            console.print(renderable)
+        opened.append((title, console.export_text()))
+
+    settings = DialogSettings(
+        mode="Safe", workspace=WorkspaceScope.create(tmp_path), open_details=open_details
+    )
     overlay, _service, _closed = _approval(req, settings)
     text = _text(overlay, 100)
     assert "Edit a file" in text
     assert "app.py  +1 -1" in text
     assert "return 1" in text and "return 2" in text
+    # TUX-09: Ctrl+T hands the full diff to the transcript view; the dialog itself
+    # does not change, so Esc in the view returns to exactly this.
     overlay.handle_key(Key.CTRL_T, "")
-    details = _text(overlay, 100)
+    assert [title for title, _text_ in opened] == ["Edit a file"]
+    details = opened[0][1]
     assert "--- a/app.py" in details and "+++ b/app.py" in details
     assert "-    return 1" in details and "+    return 2" in details
-    overlay.handle_key(Key.CTRL_T, "")
-    assert "Edit a file" in _text(overlay, 100)
+    assert _text(overlay, 100) == text
 
 
 def test_a_new_file_is_marked_and_bounded(tmp_path: Path) -> None:

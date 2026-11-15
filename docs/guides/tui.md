@@ -679,7 +679,7 @@ Rebind them in `~/.agenthicc/keybindings.toml` (`AGENTHICC_KEYBINDINGS`
 overrides the path). A value is a key, a list of keys, or `"none"`:
 
 ```toml
-leader = "ctrl+t"          # optional: enables "<leader>a" two-step bindings
+leader = "alt+x"           # optional: enables "<leader>a" two-step bindings (not Ctrl+T)
 leader_timeout_ms = 2000
 
 [composer]
@@ -1080,8 +1080,9 @@ questions share one frame, `Dialog` (`tui/workspace/dialog.py`, TUX-07):
 Keys come from the `dialog` keymap context, so `~/.agenthicc/keybindings.toml`
 can rebind them (`[dialog] "dialog.details" = "ctrl+e"`), and `/shortcuts`
 lists them. A `leader` key only shadows a plain binding of the same key in
-the contexts that have two-step bindings, so a dialog keeps `Ctrl+T` when the
-composer uses it as the leader.
+the contexts that have two-step bindings, so a dialog keeps a key the composer
+uses as its leader. `Ctrl+T` opens the transcript view in the composer, so it
+cannot be the leader.
 
 **Plan review** shows the rendered plan in the body and offers "Approve and
 run in Safe mode", "Approve and run in Yolo mode", "Keep planning" and

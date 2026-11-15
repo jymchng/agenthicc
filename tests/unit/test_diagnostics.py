@@ -152,6 +152,9 @@ _TERMINAL_SPAWNS = {
     # Ctrl+X Ctrl+E (TUX-04): the composer suspends the live region and hands
     # the terminal to $EDITOR.
     "tui/input/unified_session.py",
+    # ``e`` in the transcript view (TUX-09): the view leaves the alternate
+    # screen and hands the terminal to $PAGER, like the editor above.
+    "tui/transcript/clipboard.py",
     # CLI subcommands and developer scripts, never part of a TUI session.
     "background/coverage_gate.py",
     "cli/commands/keybindings.py",
@@ -221,4 +224,6 @@ def test_logs_opens_the_transcript_view_on_the_diagnostics_log() -> None:
 
     notices: list[tuple[str, str]] = []
     command.handler(_logs_context(console, transient_notify=lambda s, t: notices.append((s, t))))
-    assert notices == [("warning", "The log view is available only in an interactive session.")]
+    # A warning is a persistent notice, printed with the command's output.
+    assert "The log view is available only in an interactive session." in console.export_text()
+    assert notices == []

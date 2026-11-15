@@ -87,7 +87,15 @@ def copy_text(
 
 def _run_clipboard(command: list[str], data: bytes) -> bool:
     try:
-        return subprocess.run(command, input=data, check=False, timeout=5).returncode == 0
+        completed = subprocess.run(
+            command,
+            input=data,
+            check=False,
+            timeout=5,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return completed.returncode == 0
     except (OSError, subprocess.SubprocessError):
         return False
 
