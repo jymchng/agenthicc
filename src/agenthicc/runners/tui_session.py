@@ -5305,7 +5305,7 @@ class TUISession:
             elif handle is not None and handle.lifecycle in {"running", "resuming", "pausing"}:
                 self._fail_workflow_run("cancelled", kind="user_cancelled")
             # close_turn() is idempotent — inner layers may have already called it.
-            conv.close_turn()
+            conv.close_turn(interrupted=True)
             self._input_session.set_mode(InputMode.IDLE)
         except Exception as exc:  # noqa: BLE001 - surface unexpected turn failures in the UI
             turn_failed = True
@@ -5840,7 +5840,7 @@ class TUISession:
                 await self._finalize_workflow_pause(handle)
             elif handle is not None and handle.lifecycle in {"resuming", "running", "pausing"}:
                 self._fail_workflow_run("cancelled", kind="user_cancelled")
-            ctx.app_state.conversation.close_turn()
+            ctx.app_state.conversation.close_turn(interrupted=True)
             self._input_session.set_mode(InputMode.IDLE)
         except Exception as exc:  # noqa: BLE001 - route unexpected workflow failures to the UI
             conv = ctx.app_state.conversation

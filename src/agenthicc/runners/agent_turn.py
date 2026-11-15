@@ -36,6 +36,7 @@ from agenthicc.runners.failure_kinds import (
 from agenthicc.runners.prompt_contract import PromptBlock
 from agenthicc.runners.recovery_projection import ToolRecoveryProjector
 from agenthicc.tools.base import tool_name
+from agenthicc.tui.activity import tool_verb
 from agenthicc.tui.tool_summary import (
     OutputProjection,
     ToolPresentation,
@@ -1263,6 +1264,7 @@ class AgentTurnRunner:
             operation=presentation.operation,
             target=summary.target,
             started_at=time.time(),
+            verb=tool_verb(presentation),
         )
 
     async def _snapshot_file(self, tid: str, rel_path: str) -> None:
@@ -3020,7 +3022,7 @@ class AgentTurnRunner:
                 self._project_legacy_recovery()
             _record_partial_fragment()
             if ctx.conv_store:
-                ctx.conv_store.close_turn()
+                ctx.conv_store.close_turn(interrupted=True)
             raise  # must propagate so task.cancel() terminates the workflow runner
         except Exception as exc:
             turn_error = exc
@@ -3258,6 +3260,7 @@ class AgentTurnRunner:
         # Counted for the final failure's copy ("retried 3 times", TUX-08).
         self._transport_retries = attempt
         if ctx.conv_store is not None:
+            ctx.conv_store.begin_retry(attempt, max_retries, delay)
             ctx.conv_store.append_event(
                 "network_retry",
                 {
@@ -3316,6 +3319,7 @@ class AgentTurnRunner:
             "category": "irrecoverable_provider",
         }
         if ctx.conv_store is not None:
+            ctx.conv_store.begin_retry(attempt, max_retries, delay)
             ctx.conv_store.append_event(
                 "provider_recovery_retry",
                 payload,

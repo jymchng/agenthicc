@@ -138,15 +138,16 @@ def test_status_preserves_priority_and_fits_display_cells() -> None:
     for width in (40, 48, 64, 80, 120, 200):
         row = line.markup(width)
         assert visible_len(row) <= width
-        assert "Running" in _plain(row)
+        assert "Working" in _plain(row)
 
     wide = _plain(line.markup(200))
-    assert "Running run_tests tests/unit/test_status_layout.py" in wide
+    # Two workers are still working: the state says so, not the internal tool name.
+    assert "Working with 2 agents" in wide and "run_tests" not in wide
     assert "1/4 workers" in wide  # failures do not count as successful completions
     assert "≈↑230M ↓1.5M" in wide
     assert "openai/deepseek-v4.1-flash" in wide
-    # Narrow: the tool argument goes before the state segment is cut.
-    assert "Running run_tests" in _plain(line.markup(40))
+    # Narrow: the state segment is the last thing cut.
+    assert "Working" in _plain(line.markup(40))
 
 
 def test_unavailable_usage_is_simply_absent() -> None:

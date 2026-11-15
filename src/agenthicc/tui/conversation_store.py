@@ -9,6 +9,7 @@ Architecture: PRD-58 §6, PRD-59 §3.
 
 from __future__ import annotations
 
+import math
 import os
 import time
 import uuid
@@ -136,6 +137,8 @@ class RunningTool:
     target: str
     started_at: float
     background: bool = False
+    verb: str = ""
+    """What the status line says it is doing (``Reading``, ``Running``); empty for a terminal."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -241,6 +244,15 @@ class MessageQueue:
 
     def clear(self) -> None:
         self._set(())
+
+
+@dataclass(frozen=True, slots=True)
+class RetryNotice:
+    """A provider call that failed and is scheduled again (TUX-10 §2.1)."""
+
+    attempt: int
+    max_retries: int
+    seconds_left: int
 
 
 # ── Store ─────────────────────────────────────────────────────────────────────
@@ -350,6 +362,13 @@ class ConversationStore:
             None, name="background_toast_kind"
         )
         self.terminal_focused: Signal[bool] = Signal(True, name="terminal_focused")
+        self.terminal_focus_known: Signal[bool] = Signal(False, name="terminal_focus_known")
+        """True once the terminal has reported a focus change (TUX-10 §2.3): until then
+        ``terminal_focused`` is only the starting guess."""
+        self.retry: Signal[RetryNotice | None] = Signal(None, name="retry")
+        """The scheduled provider retry the status line counts down, or ``None``."""
+        self._retry_deadline: float | None = None
+        self._retry_attempt: tuple[int, int] = (0, 0)
         self.agents_target: Signal[str | None] = Signal(None, name="agents_target")
         self.agents_item_target: Signal[str | None] = Signal(None, name="agents_item_target")
         self.agents_toast_target: Signal[str | None] = Signal(None, name="agents_toast_target")
@@ -410,6 +429,7 @@ class ConversationStore:
         # to IDLE, including internal turn boundaries and user-owned waits.
         self.activity_elapsed_s: Signal[float] = Signal(0.0, name="activity_elapsed_s")
         self._activity_start_time: float = 0.0
+        self._activity_tokens_out_base: int = 0
         self._activity_active: bool = False
         self._activity_external_scope: bool = False
 
@@ -490,7 +510,12 @@ class ConversationStore:
         self._activity_active = True
         self._activity_external_scope = external
         self._activity_start_time = time.monotonic()
+        self._activity_tokens_out_base = self.tokens_out()
         self.activity_elapsed_s.set(0.0)
+
+    def activity_tokens_out(self) -> int:
+        """Output tokens the provider has reported since this activity began (TUX-10)."""
+        return max(0, self.tokens_out() - self._activity_tokens_out_base)
 
     @property
     def is_activity_active(self) -> bool:
@@ -549,6 +574,7 @@ class ConversationStore:
             self.set_display_paused(paused)
         now = time.monotonic()
         self._advance_display_clock(now)
+        self._advance_retry(now)
         pool = self.subagent_pool_state()
         if pool is not None:
             wall = time.time()
@@ -637,6 +663,27 @@ class ConversationStore:
         self.terminal_wait_label.set("")
         self.terminal_wait_elapsed_s.set(0.0)
         self.terminal_running_count.set(0)
+
+    def begin_retry(self, attempt: int, max_retries: int, delay_s: float) -> None:
+        """Count down a scheduled provider retry on the status line (TUX-10 §2.1)."""
+        self._retry_attempt = (attempt, max_retries)
+        self._retry_deadline = time.monotonic() + max(0.0, delay_s)
+        self._advance_retry(time.monotonic())
+
+    def _advance_retry(self, now: float) -> None:
+        """Publish the seconds left before the retry, and clear it once the delay is over."""
+        deadline = self._retry_deadline
+        if deadline is None:
+            return
+        left = math.ceil(deadline - now)
+        if left <= 0:
+            self._retry_deadline = None
+            self.retry.set(None)
+            return
+        attempt, limit = self._retry_attempt
+        current = self.retry()
+        if current is None or current.seconds_left != left or current.attempt != attempt:
+            self.retry.set(RetryNotice(attempt, limit, left))
 
     # ── turn lifecycle ────────────────────────────────────────────────────────
 
@@ -757,7 +804,7 @@ class ConversationStore:
         """True when a turn is currently open (between begin_turn and close_turn)."""
         return self._current_turn is not None
 
-    def close_turn(self, *, error: str | None = None) -> None:
+    def close_turn(self, *, error: str | None = None, interrupted: bool = False) -> None:
         """Idempotent cleanup for one ConversationTurn.
 
         Safe to call multiple times; subsequent calls are no-ops.
@@ -774,6 +821,10 @@ class ConversationStore:
             When set, appends an ``error`` scroll-buffer event and marks the
             turn as ``AgentState.ERROR`` internally. An outer activity remains
             non-idle until its own ``end_activity()`` call.
+        interrupted:
+            The user stopped the turn (Esc or Ctrl+C). The ``turn_complete``
+            event says so, and the transcript ends the turn with
+            ``Interrupted after …`` (TUX-10 §2.2).
         """
         # Capture elapsed before clearing _start_time.
         elapsed = self.elapsed_s
@@ -785,7 +836,10 @@ class ConversationStore:
                 self._current_turn.state = AgentState.COMPLETE
             # Always emit turn_complete (with elapsed) so the scroll buffer can
             # print the turn duration regardless of success or error path.
-            self.append_event("turn_complete", {"elapsed_s": elapsed})
+            ending: dict[str, object] = {"elapsed_s": elapsed}
+            if interrupted:
+                ending["interrupted"] = True
+            self.append_event("turn_complete", ending)
         activity_active = self._activity_active
         external_activity = self._activity_external_scope
         self._current_turn = None
@@ -798,6 +852,8 @@ class ConversationStore:
             self.agent_state.set(AgentState.IDLE)
         self.active_tool.set("")
         self.running_tools.set(())
+        self._retry_deadline = None
+        self.retry.set(None)
         self._start_time = 0.0
         self.display_elapsed_s.set(0.0)
         self._display_paused = False

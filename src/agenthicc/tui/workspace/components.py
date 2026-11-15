@@ -485,23 +485,29 @@ class StatusLine:
         frame = _signal_int(conv, "frame")
         spinner = g.spinner[frame % len(g.spinner)] if _animated(app) else g.bullet
 
+        joiner = ", " if reader else f" {g.sep} "
+
         def forms(
             token: str,
             lead: str,
             words: Sequence[str],
-            elapsed: str = "",
+            extras: Sequence[str] = (),
             *,
             sweep: bool = False,
         ) -> tuple[_Form, ...]:
+            """Each word, longest first, with its muted extras (elapsed, tokens) dropped last-first."""
             out: list[_Form] = []
-            for text in words:
-                tail = f" {elapsed}" if elapsed else ""
-                if reader:
-                    out.append(_form(escape(f"{text}{tail}")))
-                    continue
-                word = _sweep(text, frame) if sweep and _animated(app) else escape(text)
-                body = _tint(token, word) + (_tint("muted", tail) if tail else "")
-                out.append(_form(f"{_tint(token, lead)} {body}" if lead else body))
+            for position, text in enumerate(words):
+                # Only the longest word keeps the extras: shorter ones are the fallbacks.
+                tails = range(len(extras), -1, -1) if position == 0 else (0,)
+                for keep in tails:
+                    tail = "".join(f"{joiner}{extra}" for extra in extras[:keep])
+                    if reader:
+                        out.append(_form(escape(f"{text}{tail}")))
+                        continue
+                    word = _sweep(text, frame) if sweep and _animated(app) else escape(text)
+                    body = _tint(token, word) + (_tint("muted", tail) if tail else "")
+                    out.append(_form(f"{_tint(token, lead)} {body}" if lead else body))
             return tuple(out)
 
         if _signal_bool(conv, "terminal_waiting"):
@@ -511,26 +517,41 @@ class StatusLine:
                 "info",
                 spinner,
                 (f"Waiting for terminal: {label}", "Waiting for terminal", "Waiting"),
-                elapsed,
+                (elapsed,),
             )
-        if _signal(app, "pending_approval") is not None:
-            return forms("warning", g.diamond, ("Waiting for you", "Waiting"))
+        pending = _signal(app, "pending_approval")
+        if pending is not None:
+            reason = _waiting_reason(pending)
+            full = f"Waiting for you{joiner}{reason}" if reason else "Waiting for you"
+            return forms("warning", g.diamond, (full, "Waiting for you", "Waiting"))
         if _signal_bool(conv, "transcript_loading"):
             # The frame clock does not run while idle: a still bullet, no spinner.
             return forms("info", g.bullet, ("Loading transcript", "Loading"))
-        # Shown from 0s while work runs, so the row never shifts on the first tick.
+        # Elapsed time is muted and appears after 3 s; the token count after 10 s (TUX-10).
         elapsed = _fmt_elapsed(_cached_elapsed(conv))
         agent_state = _signal(conv, "agent_state")
         name = str(getattr(agent_state, "name", "IDLE")).lower()
-        if name == "running":
-            tool = _signal_text(conv, "active_tool").strip()
-            words = [f"Running {tool}", f"Running {tool.split()[0]}"] if tool else []
-            return forms("info", spinner, (*dict.fromkeys(words), "Running"), elapsed)
+        if name in ("running", "thinking"):
+            extras = _extras(conv, elapsed, reader)
+            retry = _retrying(conv)
+            if retry:
+                return forms("warning", spinner, (retry, "Retrying"))
+            agents = _working_agents(conv)
+            if agents:
+                text = f"Working with {agents} agent{'s' if agents != 1 else ''}"
+                return forms("agent", spinner, (text, "Working"), extras)
+            activity = _tool_activity(conv, name == "running")
+            if activity is not None:
+                verb, target = activity
+                words = _activity_words(verb, target, reader, g.ellipsis)
+                return forms("info", spinner, words, extras)
         if name == "thinking":
             # The turning flower and one bold letter sweeping across the word.
-            return forms("warning", spinner, ("Thinking",), elapsed, sweep=True)
+            return forms(
+                "warning", spinner, ("Thinking",), _extras(conv, elapsed, reader), sweep=True
+            )
         if name == "recovering":
-            return forms("danger", spinner, ("Recovering",), elapsed)
+            return forms("danger", spinner, ("Recovering",), _extras(conv, elapsed, reader))
         if name == "error":
             return forms("danger", g.fail, ("Error",))
         return forms("success", g.bullet, ("Idle",))
@@ -674,6 +695,101 @@ def status_sentence(app_state: AppState) -> str:
     if percent is not None:
         sentences.append(f"Context {percent} percent")
     return " ".join(f"{sentence}." for sentence in sentences)
+
+
+# ── the state segment's activity (TUX-10 §2.1) ───────────────────────────────
+
+#: The elapsed time shows after this many seconds, the token count after the second.
+_ELAPSED_AFTER_S = 3.0
+_TOKENS_AFTER_S = 10.0
+#: The target in the state segment: whole, then shortened, then dropped.
+_TARGET_CELLS = (48, 28)
+
+
+def _extras(conv: object, elapsed: str, reader: bool) -> tuple[str, ...]:
+    """The muted tail of the state segment: ``12s`` after 3 s, ``↓ 2.1k tokens`` after 10 s."""
+    seconds = _cached_elapsed(conv)
+    extras: list[str] = []
+    if seconds >= _ELAPSED_AFTER_S:
+        extras.append(elapsed)
+    if not reader and seconds >= _TOKENS_AFTER_S:
+        produced = _signal_int(conv, "activity_tokens_out")
+        if produced > 0:
+            extras.append(f"{glyphs().down}{compact_token_count(produced)} tokens")
+    return tuple(extras)
+
+
+def _waiting_reason(pending: object) -> str:
+    """What the open dialog asks of the user: ``approve a command``, ``review the plan``."""
+    from agenthicc.tools.approval import ApprovalRequest
+    from agenthicc.tui.activity import waiting_reason
+
+    if not isinstance(pending, ApprovalRequest):
+        return ""
+    return waiting_reason(
+        pending.kind, pending.tool_name, workspace_access=bool(pending.workspace_access)
+    )
+
+
+def _retrying(conv: object) -> str:
+    """``Retrying (2/5) in 8s`` while a provider retry is scheduled, else ``""``."""
+    from agenthicc.tui.activity import retry_text
+    from agenthicc.tui.conversation_store import RetryNotice
+
+    retry = _signal(conv, "retry")
+    if not isinstance(retry, RetryNotice):
+        return ""
+    return retry_text(retry.attempt, retry.max_retries, retry.seconds_left)
+
+
+def _working_agents(conv: object) -> int:
+    """How many subagent workers are working for this turn (running, queued or asking)."""
+    from agenthicc.subagents.pool import SubagentPoolState
+
+    pool = _signal(conv, "subagent_pool_state")
+    if not isinstance(pool, SubagentPoolState):
+        return 0
+    counts = pool_status_counts(pool)
+    return counts.running + counts.queued + counts.needs_input
+
+
+def _tool_activity(conv: object, running: bool) -> tuple[str, str] | None:
+    """The verb and target of the newest running tool call, for the state segment.
+
+    ``None`` while only the model is working (the state says ``Thinking``).
+    """
+    from agenthicc.tui.conversation_store import RunningTool
+
+    calls = _signal(conv, "running_tools")
+    if isinstance(calls, tuple) and calls:
+        newest = calls[-1]
+        if isinstance(newest, RunningTool) and newest.verb:
+            return newest.verb, newest.target
+    if not running:
+        return None
+    from agenthicc.tui.activity import tool_verb
+    from agenthicc.tui.tool_summary import tool_presentation
+
+    name = _signal_text(conv, "active_tool").strip()
+    return (tool_verb(tool_presentation(name)) if name else "Running"), ""
+
+
+def _activity_words(verb: str, target: str, reader: bool, ellipsis: str) -> tuple[str, ...]:
+    """``Reading src/app.py``, shorter forms of it, then the verb alone (a reader hears one)."""
+    from agenthicc.tui.activity import activity_text
+    from agenthicc.tui.tool_summary import middle_truncate
+
+    if reader:
+        return (activity_text(verb, target),)
+    is_path = "/" in target and " " not in target
+    words = []
+    for cells in _TARGET_CELLS:
+        if is_path or len(target) <= cells:
+            cut = middle_truncate(target, cells, path=is_path, ellipsis=ellipsis)
+        else:  # a command reads from its start, cut at the end
+            cut = target[: cells - len(ellipsis)].rstrip() + ellipsis
+        words.append(activity_text(verb, cut))
+    return tuple(dict.fromkeys([*words, verb]))
 
 
 # ── ComposerComponent ─────────────────────────────────────────────────────────

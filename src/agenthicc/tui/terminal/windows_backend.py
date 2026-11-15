@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import ctypes
 import importlib
+import os
 import threading
 from types import ModuleType
 from typing import cast
@@ -559,6 +560,39 @@ class WindowsBackend:
             k32.SetConsoleMode(handle, self._raw_mode_flags(self._orig_mode))
         except (AttributeError, OSError):
             pass
+
+    def write_control(self, sequence: str) -> None:
+        """Write *sequence* (title, progress, notification) to a terminal, never to a pipe.
+
+        Windows Terminal and the modern console read escape sequences from the
+        output stream; a redirected stream never receives one (TUX-10).
+        """
+        if not sequence or not self._stdout_is_terminal():
+            return
+        try:
+            sys.stdout.write(sequence)
+            sys.stdout.flush()
+        except (OSError, ValueError):
+            pass  # stdout closed during shutdown
+
+    def supports_progress(self) -> bool:
+        """Whether this console draws ``OSC 9;4`` progress: Windows Terminal and ConEmu."""
+        from agenthicc.tui.terminal.osc import progress_supported
+
+        return self._stdout_is_terminal() and progress_supported(os.environ)
+
+    def supports_hyperlinks(self) -> bool:
+        """Whether this console opens ``OSC 8`` hyperlinks (Windows Terminal, VS Code)."""
+        from agenthicc.tui.terminal.osc import hyperlinks_supported
+
+        return self._stdout_is_terminal() and hyperlinks_supported(os.environ)
+
+    @staticmethod
+    def _stdout_is_terminal() -> bool:
+        try:
+            return sys.stdout.isatty()
+        except (OSError, ValueError):
+            return False
 
     def _restore_input_mode(self) -> None:
         """Restore the saved console input mode, if one was captured."""

@@ -65,6 +65,23 @@ class TerminalBackend(Protocol):
         """
         ...
 
+    def write_control(self, sequence: str) -> None:
+        """Write a control sequence (window title, progress, notification) to the terminal.
+
+        Nothing is written when the output is not a terminal, so a pipe or a
+        file never receives an escape sequence (TUX-10). Builders for the
+        sequences are in :mod:`agenthicc.tui.terminal.osc`.
+        """
+        ...
+
+    def supports_progress(self) -> bool:
+        """Whether this terminal draws ``OSC 9;4`` progress (TUX-10)."""
+        ...
+
+    def supports_hyperlinks(self) -> bool:
+        """Whether this terminal opens ``OSC 8`` hyperlinks (TUX-10)."""
+        ...
+
 
 def get_backend() -> TerminalBackend:
     """Return the appropriate ``TerminalBackend`` for the current platform.
