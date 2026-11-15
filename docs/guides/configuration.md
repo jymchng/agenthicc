@@ -595,7 +595,12 @@ pre-flight notice); see [the start-up header](tui.md#the-start-up-header).
 much of each tool call the transcript shows: `"compact"` (the default, one row
 per call; failures show their last lines), `"normal"` (plus a four-line preview
 of reads and commands) or `"verbose"` (the whole bounded output); `/details`
-changes it for the session, see [tool rows](tui.md#tool-rows). Key bindings
+changes it for the session, see [tool rows](tui.md#tool-rows). `layout` (TUX-09)
+is `"inline"` (the default: the conversation goes to the terminal's own
+scrollback) or `"fullscreen"` (the session runs in the alternate screen, with a
+scrolling transcript pane over the docked composer; `/fullscreen` switches it
+for a session, and `screen_reader` forces `inline`); see
+[the fullscreen layout](tui.md#fullscreen-layout). Key bindings
 live in their own file, `~/.agenthicc/keybindings.toml`
 ([key bindings](tui.md#key-bindings)).
 
@@ -612,9 +617,9 @@ Setting it to `0` removes only this turn-count limit; the hard page limits still
 apply. The defaults cap the preview at 128 events, 128 KiB of serialized event
 data, and 16 KiB per decoded event. Configured values are clamped to hard
 maximums of 1,024 events, 1 MiB per page, and 128 KiB per event. Older events
-remain available on demand with `/history`; `Enter` opens one event's full
-details. `[`/`PageUp` browse older pages and `]`/`PageDown` return toward newer
-pages. Browsing history never inserts old events into live scrollback.
+remain available on demand with `/history` (the transcript view, which expands
+an event to its full stored output with `Enter`). Browsing history never inserts
+old events into live scrollback.
 
 The limits affect only the visual preview and the input editor's accepted
 user-message history, which are projected from the same page. Provider

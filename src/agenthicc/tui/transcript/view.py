@@ -40,6 +40,7 @@ from rich.text import Text
 from agenthicc.tui.cbreak_reader import Key, MouseEvent, key_name
 from agenthicc.tui.theme import current_theme, glyphs, key_arrows, palette, style
 from agenthicc.tui.transcript.log import SearchJob
+from agenthicc.tui.transcript.render import path_label
 from agenthicc.tui.transcript.sources import TranscriptSource
 from agenthicc.tui.transcript.text import highlight
 
@@ -103,6 +104,7 @@ class TranscriptView:
         rewind: bool = False,
         subtitle: str = "",
         start: str = "end",
+        path: str = "",
     ) -> None:
         from agenthicc.tui.keymap import Dispatcher
 
@@ -110,6 +112,8 @@ class TranscriptView:
         self.keymap = keymap
         self.rewind = rewind
         self.subtitle = subtitle
+        #: A file the view shows (the ``/logs`` title ends with it).
+        self.path = path
         self._dispatcher = Dispatcher(keymap)
         self.selected = -1
         self.top = 0
@@ -570,6 +574,9 @@ class TranscriptView:
             parts.append(f"{count} turn{'s' if count != 1 else ''}")
         close = self.keymap.hint("transcript_view.close")
         left = Text(f" {f' {g.sep} '.join(parts)}", style=style("accent", bold=True), no_wrap=True)
+        if self.path:
+            left.append(f" {g.sep} ", p.muted)
+            left.append_text(path_label(self.path))
         right = Text(f"{close.keys if close else 'q'} close ", style=p.muted)
         pad = self.width - left.cell_len - right.cell_len
         if pad < 1:

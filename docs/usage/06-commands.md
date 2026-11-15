@@ -23,8 +23,10 @@ The canonical registry is `BUILTIN_COMMANDS` in
 | `/config` | — | Open the configuration overlay |
 | `/expand` | `[tool-id-or-@path]` | Expand a collapsed tool group |
 | `/help` | `[/command]` | Show help |
-| `/history` | `[repair]` | Browse transcript history; `/history repair` retries safe local tool-history repair |
-| `/logs` | — | Show the tail of this session's diagnostics log (`~/.agenthicc/logs/<session>.log`): stray stderr and Python warnings captured while the TUI was live |
+| `/history` | `[repair]` | Open the transcript view over the whole session (turn jumps, search, expandable tool output); `/history repair` retries safe local tool-history repair |
+| `/logs` | — | Open this session's diagnostics log (`~/.agenthicc/logs/<session>.log`: stray stderr and Python warnings captured while the TUI was live) in the same viewer, with search |
+| `/rewind` | — | Pick a user turn and fork the conversation from it, with that prompt in the composer; the original session is kept and files are not restored |
+| `/fullscreen` | — | Switch between the inline layout and the fullscreen layout (scrolling transcript pane over a docked composer) |
 | `/init` | `[write] [--force]` | Create the AGENTS.md / config scaffold |
 | `/mcp` | `[status\|reload\|connect NAME\|disconnect NAME\|refresh NAME\|doctor [NAME]]` | MCP status and control |
 | `/model` | `[provider] [model] [--save]` | Open the model picker, or switch to a provider and model at once; applies from the next turn, no restart (alias `/models`) |

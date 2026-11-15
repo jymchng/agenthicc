@@ -27,7 +27,7 @@ from agenthicc.tui.theme import glyphs, palette
 if TYPE_CHECKING:
     from agenthicc.config import UISettings
 
-__all__ = ["EXPAND_LIMIT_BYTES", "EventRenderer", "rows_of"]
+__all__ = ["EXPAND_LIMIT_BYTES", "EventRenderer", "path_label", "rows_of"]
 
 #: Output shown for one expanded item (the old history overlay's detail cap).
 EXPAND_LIMIT_BYTES = 64 * 1024
@@ -43,6 +43,16 @@ class _RecordingConsole(Console):
             segments = list(self._record_buffer)
             self._record_buffer.clear()
         return segments
+
+
+def path_label(path: str) -> Text:
+    """A file path as the view's title shows it.
+
+    The one place the view itself prints a path (the ``/logs`` title). TUX-10's
+    OSC 8 hyperlinks wrap it here; paths inside tool rows and diffs come from
+    the scrollback renderers, which that change links at their source.
+    """
+    return Text(path, style=palette().muted, no_wrap=True, overflow="ellipsis")
 
 
 def rows_of(segments: list[Segment]) -> list[Text]:

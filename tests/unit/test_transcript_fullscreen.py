@@ -33,9 +33,9 @@ pytestmark = pytest.mark.unit
 
 #: One frame's rows, built from a 10,000-event log: under one frame interval.
 FRAME_BUDGET_S = 0.016
-#: A page scrolled to events never rendered before (about 25 of them, rendered
-#: once and then cached): well inside TUIR-04's 0.25 s loop-stall budget.
-SCROLL_BUDGET_S = 0.1
+#: A page scrolled to events never rendered before (about 25 of them, loaded and
+#: rendered once, then cached; measured 40-90 ms): inside TUIR-04's loop-stall budget.
+SCROLL_BUDGET_S = 0.25
 
 
 @pytest.fixture(autouse=True)

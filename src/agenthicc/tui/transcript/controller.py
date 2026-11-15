@@ -90,7 +90,7 @@ class TranscriptController:
             if not path.is_file() or path.stat().st_size == 0:
                 self.notify("info", "The diagnostics log is empty.")
                 return
-            await self._run(TextFileSource(path), subtitle=str(path), start="end")
+            await self._run(TextFileSource(path), subtitle="", start="end", path=str(path))
             return
         ui = ui_settings(self.state)
         title = self.state.conversation.session_title()
@@ -116,12 +116,13 @@ class TranscriptController:
         subtitle: str,
         start: str,
         rewind: bool = False,
+        path: str = "",
     ) -> None:
         from agenthicc.tui.transcript.host import HostResult, TranscriptHost
         from agenthicc.tui.transcript.view import TranscriptView
 
         view = TranscriptView(
-            source, self.state.keymap(), rewind=rewind, subtitle=subtitle, start=start
+            source, self.state.keymap(), rewind=rewind, subtitle=subtitle, start=start, path=path
         )
         host = TranscriptHost(view, self.console, self.backend(), ui=ui_settings(self.state))
         outcome: list[HostResult] = []
