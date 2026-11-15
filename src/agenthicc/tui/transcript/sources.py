@@ -63,6 +63,9 @@ _WINDOW_BYTES = 512 * 1024
 _EVENT_BYTES = 32 * 1024
 #: Windows kept loaded.
 _WINDOWS_KEPT = 512
+#: A worker thread sleeps this long after each 1 MiB chunk, so a log of 100 MB
+#: never holds the interpreter away from the event loop for long (TUIR-04).
+_WORKER_PAUSE_S = 0.0005
 #: The longest text-file line read in full.
 _LINE_BYTES = 64 * 1024
 
@@ -143,7 +146,7 @@ class _IndexedSource:
 
     def _scan(self) -> None:
         try:
-            self.index.scan(self._cancel)
+            self.index.scan(self._cancel, pause_s=_WORKER_PAUSE_S)
         finally:
             self._ready.set()
             self.on_change()
@@ -198,7 +201,7 @@ class _IndexedSource:
 
         def run() -> None:
             self._ready.wait()
-            job.hits = self.index.search(query, job.cancel)
+            job.hits = self.index.search(query, job.cancel, pause_s=_WORKER_PAUSE_S)
             job.done = not job.cancel.is_set()
             self.on_change()
 

@@ -23,6 +23,7 @@ import bisect
 import json
 import re
 import threading
+import time
 from array import array
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -209,11 +210,18 @@ class LogIndex:
         except OSError:
             return 0
 
-    def scan(self, cancel: threading.Event | None = None, *, limit: int | None = None) -> int:
+    def scan(
+        self,
+        cancel: threading.Event | None = None,
+        *,
+        limit: int | None = None,
+        pause_s: float = 0.0,
+    ) -> int:
         """Index the bytes appended since the last scan; return the items added.
 
         With *limit* at most that many bytes are read (the rest waits for the
-        next call). A line without its newline is left for later, unless it is
+        next call). A worker thread passes *pause_s*, a short sleep after each
+        chunk that hands the interpreter to the event loop. A line without its newline is left for later, unless it is
         a complete record, which a hand-written log may end with.
         """
         with self._lock:
@@ -224,7 +232,7 @@ class LogIndex:
             budget = size if limit is None else min(size, self._scanned + limit)
             try:
                 with self.path.open("rb") as handle:
-                    self._read(handle, size, budget, cancel)
+                    self._read(handle, size, budget, cancel, pause_s)
             except OSError:
                 pass
             self.count = len(self.starts)
@@ -241,7 +249,12 @@ class LogIndex:
         self._scanned = 0
 
     def _read(
-        self, handle: BinaryIO, size: int, budget: int, cancel: threading.Event | None
+        self,
+        handle: BinaryIO,
+        size: int,
+        budget: int,
+        cancel: threading.Event | None,
+        pause_s: float,
     ) -> None:
         offset = self._scanned
         handle.seek(offset)
@@ -264,6 +277,8 @@ class LogIndex:
             carry_start += newline + 1
             self._scanned = carry_start
             self.count = len(self.starts)
+            if pause_s:
+                time.sleep(pause_s)
         if carry.strip() and offset >= size and self.fmt.complete(carry.rstrip(b"\r")):
             self._add(carry_start, carry_start + len(carry), carry.rstrip(b"\r"))
             self._scanned = carry_start + len(carry)
@@ -311,7 +326,9 @@ class LogIndex:
 
     # ── search ───────────────────────────────────────────────────────────────
 
-    def search(self, query: str, cancel: threading.Event | None = None) -> list[int]:
+    def search(
+        self, query: str, cancel: threading.Event | None = None, *, pause_s: float = 0.0
+    ) -> list[int]:
         """The items whose text contains *query*, in order (smart case, substring).
 
         Chunks of about 1 MiB are lower-cased and scanned for the raw bytes of
@@ -362,4 +379,6 @@ class LogIndex:
                     if text is not None and matches(query, text):
                         hits.append(owner)
                 item = last
+                if pause_s:
+                    time.sleep(pause_s)
         return hits

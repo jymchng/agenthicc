@@ -67,7 +67,7 @@ def copy_text(
     *,
     write: Callable[[str], None],
     env: Mapping[str, str] | None = None,
-    which: Callable[[str], str | None] = shutil.which,
+    which: Callable[[str], str | None] | None = None,
     run: Callable[[list[str], bytes], bool] | None = None,
 ) -> CopyResult:
     """Copy *text*: OSC 52 through *write*, or a system command where OSC 52 is not available."""
@@ -77,8 +77,9 @@ def copy_text(
         write(osc52_sequence(text))
         return CopyResult("osc52", cut)
     runner = run or _run_clipboard
+    find = which or shutil.which
     for command in _SYSTEM_COMMANDS:
-        if which(command[0]) is not None and runner(list(command), text.encode("utf-8")):
+        if find(command[0]) is not None and runner(list(command), text.encode("utf-8")):
             return CopyResult("system", False)
     # Nothing else is left to try; a terminal that ignores OSC 52 loses nothing.
     write(osc52_sequence(text))

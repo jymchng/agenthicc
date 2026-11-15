@@ -132,6 +132,8 @@ class TranscriptView:
         self._bodies: OrderedDict[tuple[object, ...], list[Text]] = OrderedDict()
         self._placed = False
         self._start = start
+        #: :meth:`_signature` as of the last :meth:`render`.
+        self._drawn: tuple[object, ...] = ()
 
     # ── geometry ─────────────────────────────────────────────────────────────
 
@@ -515,11 +517,22 @@ class TranscriptView:
 
     # ── following a log that grows ───────────────────────────────────────────
 
+    def _signature(self) -> tuple[object, ...]:
+        """What the screen shows that is not in a key: compared with the last frame."""
+        return (
+            self.selected,
+            self.top,
+            self.top_skip,
+            self._status(),
+            self.source.ready,
+            self._count(),
+            self.entering,
+        )
+
     def tick(self) -> bool:
-        """Pick up appended items and finished searches; whether anything changed."""
+        """Pick up appended items and finished work; whether the screen is out of date."""
         before = self._count()
         at_end = self.selected < 0 or self.selected >= before - 1
-        seen = (self.selected, self.top, self.top_skip, self._status(), self.source.ready)
         added = self.source.refresh()
         self.poll()
         if added and at_end:
@@ -528,13 +541,7 @@ class TranscriptView:
             if last >= 0:
                 self.selected = last
                 self._anchor_bottom(self._count() - 1)
-        return bool(added) or seen != (
-            self.selected,
-            self.top,
-            self.top_skip,
-            self._status(),
-            self.source.ready,
-        )
+        return self._signature() != self._drawn
 
     # ── drawing ──────────────────────────────────────────────────────────────
 
@@ -550,6 +557,7 @@ class TranscriptView:
         rows = [self._title_row(), rule]
         rows += self._content()
         rows += [rule.copy(), self._footer_row()]
+        self._drawn = self._signature()
         return rows[: self.height]
 
     def _title_row(self) -> Text:
