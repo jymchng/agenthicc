@@ -7,89 +7,138 @@ above them, the *pane*:
 
 - the pane is the transcript view's engine (:class:`TranscriptView`) over the
   session's own log, anchored to the tail while it follows;
-- the welcome header is its first item;
+- what the session prints straight to the console (the welcome header, a
+  command's listing, a notice) is captured and shown in the pane in order with
+  the events, so the pane's first item is the welcome header (TUX-03);
 - PageUp/PageDown, Shift+↑/↓ and the mouse wheel scroll it; scrolling up
   stops following and shows ``↓ N new · End to follow``; End follows again;
 - only the rows on screen are rendered, from a bounded cache of rendered items
   (AGX-11), so a log of 10,000 events costs what a screenful costs.
 
 Leaving the layout prints the conversation to the normal screen in ``compact``
-form (what the pane held since the layout began), so the terminal's scrollback
-still has the session.
+form (what the pane held since the layout began, console output included), so
+the terminal's scrollback still has the session.
 """
 
 from __future__ import annotations
 
 import bisect
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Literal
 
-from rich.console import Console
+from rich.console import Console, ConsoleRenderable, RenderableType, RenderHook
+from rich.control import Control
+from rich.segment import Segments
 from rich.style import Style
 from rich.text import Text
 
 from agenthicc.tui.conversation_store import AppState, ConversationEvent
-from agenthicc.tui.theme import glyphs, palette, style
+from agenthicc.tui.theme import glyphs, key_arrows, palette, style
 from agenthicc.tui.transcript.log import SearchJob
-from agenthicc.tui.transcript.sources import SessionLogSource, TranscriptSource
+from agenthicc.tui.transcript.sources import SessionLogSource
 from agenthicc.tui.transcript.view import TranscriptView
 
 if TYPE_CHECKING:
     from agenthicc.config import UISettings
     from agenthicc.tui.keymap import Keymap
-    from agenthicc.tui.welcome import WelcomeInfo
 
-__all__ = ["FullscreenLayout", "HeaderedSource", "PaneAction", "PaneView"]
+__all__ = ["ConsoleCapture", "FullscreenLayout", "NotedSource", "PaneAction", "PaneView"]
 
 PaneAction = Literal[
     "page_up", "page_down", "line_up", "line_down", "wheel_up", "wheel_down", "follow"
 ]
 #: Rows one wheel notch scrolls.
 _WHEEL_ROWS = 3
-
 #: Events read per chunk when the exit transcript is printed.
 _DUMP_CHUNK = 256
+#: Console prints kept (the oldest are dropped from the pane, not from the log).
+_MAX_NOTES = 500
 
 
-class HeaderedSource:
-    """A source whose first item is a header (the welcome rows)."""
+class ConsoleCapture(RenderHook):
+    """Takes what is printed to the console while the layout is on, for the pane."""
+
+    def __init__(self, take: Callable[[RenderableType], None]) -> None:
+        self._take = take
+
+    def process_renderables(self, renderables: list[ConsoleRenderable]) -> list[ConsoleRenderable]:
+        """Take every renderable but terminal control: frames and mode switches pass through."""
+        passed: list[ConsoleRenderable] = []
+        for renderable in renderables:
+            if isinstance(renderable, (Segments, Control)):
+                passed.append(renderable)
+            else:
+                self._take(renderable)
+        return passed
+
+
+class NotedSource:
+    """A session log's items with the console's output interleaved at the moment it was printed."""
 
     has_turns = False
 
-    def __init__(self, inner: TranscriptSource, header: Callable[[int], list[Text]]) -> None:
+    def __init__(self, inner: SessionLogSource) -> None:
         self.inner = inner
-        self._header = header
-        self._rows: list[Text] = []
-        self._width = 0
         self.title = inner.title
         self.on_change: Callable[[], None] = inner.on_change
+        #: ``(byte offset of the log's end when printed, what was printed)``.
+        self.notes: list[tuple[int, RenderableType]] = []
+        self._keys: list[int] = []
+        self._synced = (-1, -1)
+        self._rows: dict[tuple[int, int], list[Text]] = {}
 
-    _offset = 1
+    def note(self, renderable: RenderableType) -> None:
+        """Keep *renderable*, which was just printed, after the log items before it."""
+        if len(self.notes) >= _MAX_NOTES:
+            del self.notes[0]
+            self._rows.clear()
+        self.notes.append((self.inner.index.size(), renderable))
+        self._synced = (-1, -1)
 
-    def refit(self) -> None:
-        """Ask the header for its rows again (the welcome changed)."""
-        self._width = 0
+    def positions(self) -> list[int]:
+        """Each note's place in the log's items (the number of items before it)."""
+        index = self.inner.index
+        return [
+            bisect.bisect_left(index.starts, offset, 0, index.count) for offset, _ in self.notes
+        ]
+
+    def _sync(self) -> None:
+        state = (self.inner.count(), len(self.notes))
+        if state != self._synced:
+            self._keys = [pos + number for number, pos in enumerate(self.positions())]
+            self._synced = state
 
     @property
     def ready(self) -> bool:
         return self.inner.ready
 
     def count(self) -> int:
-        return self.inner.count() + self._offset
+        return self.inner.count() + len(self.notes)
 
     def fit(self, width: int) -> None:
         self.inner.fit(width)
-        if width != self._width:
-            self._rows = self._header(width)
-            self._width = width
 
     def refresh(self) -> int:
         return self.inner.refresh()
 
     def rows(self, item: int, width: int, expanded: bool) -> list[Text]:
-        if item == 0:
-            return [row.copy() for row in self._rows]
-        return self.inner.rows(item - self._offset, width, expanded)
+        self._sync()
+        at = bisect.bisect_left(self._keys, item)
+        if at < len(self._keys) and self._keys[at] == item:
+            return [row.copy() for row in self._note_rows(at, width)]
+        return self.inner.rows(item - at, width, expanded)
+
+    def _note_rows(self, number: int, width: int) -> list[Text]:
+        key = (number, width)
+        rows = self._rows.get(key)
+        if rows is None:
+            from agenthicc.tui.workspace.dialog import render_lines
+
+            rows = render_lines([self.notes[number][1]], width)
+            if len(self._rows) > 256:
+                self._rows.clear()
+            self._rows[key] = rows
+        return rows
 
     def can_expand(self, item: int) -> bool:
         return False
@@ -132,7 +181,7 @@ class PaneView(TranscriptView):
 
     def __init__(
         self,
-        source: HeaderedSource,
+        source: NotedSource,
         keymap: Keymap,
         *,
         on_scrolled: Callable[[bool], None] = lambda scrolled: None,
@@ -188,10 +237,9 @@ class PaneView(TranscriptView):
             case "follow":
                 self._set_follow(True)
                 return
-        count = self._count()
         if action in ("page_up", "line_up", "wheel_up"):
             self._set_follow(False)
-        elif count and self._at_bottom():
+        elif self._count() and self._at_bottom():
             self._set_follow(True)
 
     def _at_bottom(self) -> bool:
@@ -223,7 +271,7 @@ class PaneView(TranscriptView):
         """The last pane row, ending in ``↓ N new · End to follow``."""
         p, g = palette(), glyphs()
         hint = self.keymap.hint("composer.pane_follow")
-        key = hint.keys if hint is not None else "End"
+        key = key_arrows(hint.keys) if hint is not None else "End"
         unseen = self.unseen
         text = f" {g.down} {f'{unseen} new {g.sep} ' if unseen else ''}{key} to follow "
         cut = max(0, self.width - len(text))
@@ -242,37 +290,16 @@ class FullscreenLayout:
         keymap: Callable[[], Keymap],
         *,
         ui: UISettings | None = None,
-        welcome: WelcomeInfo | None = None,
-        welcome_printed: bool = True,
         on_scrolled: Callable[[bool], None] = lambda scrolled: None,
     ) -> None:
         self.session_id = session_id
-        self.welcome = welcome
-        #: Whether the header is already in the terminal's scrollback.
-        self.welcome_printed = welcome_printed
         self.source = SessionLogSource(session_id, ui=ui)
-        self._header_source = HeaderedSource(self.source, self._header_rows)
-        self.pane = PaneView(self._header_source, keymap(), on_scrolled=on_scrolled)
+        self.noted = NotedSource(self.source)
+        self.pane = PaneView(self.noted, keymap(), on_scrolled=on_scrolled)
+        self.capture = ConsoleCapture(self.noted.note)
         #: The log's size when the layout began: what is before it is already in
         #: the terminal's scrollback (or was never printed, on a resume).
         self.entry_offset = self.source.index.size()
-
-    def set_welcome(self, info: WelcomeInfo, *, printed: bool) -> None:
-        """Show *info* as the pane's first item (it arrives after the first frame)."""
-        self.welcome = info
-        self.welcome_printed = printed
-        self._header_source.refit()
-        self.pane._invalidate()
-
-    def _header_rows(self, width: int) -> list[Text]:
-        from agenthicc.tui.welcome import render_welcome
-        from agenthicc.tui.workspace.dialog import render_lines
-
-        info = self.welcome
-        if info is None:
-            return []
-        rows = render_lines([render_welcome(info, width)], width)
-        return [*rows, Text("")]
 
     # ── frames ───────────────────────────────────────────────────────────────
 
@@ -293,42 +320,45 @@ class FullscreenLayout:
         self.source.wait_ready(timeout)
         self.source.refresh()
 
-    def exit_events(self) -> Iterator[list[ConversationEvent]]:
-        """The events the terminal's scrollback has not seen, in chunks."""
-        self.settle()
-        index = self.source.index
-        count = index.count
-        first = bisect.bisect_left(index.starts, self.entry_offset, 0, count)
-        chunk: list[ConversationEvent] = []
-        for item in range(first, count):
+    def _events(self, first: int, last: int) -> list[ConversationEvent]:
+        events: list[ConversationEvent] = []
+        for item in range(first, last):
             event = self.source.event(item, full=False)
-            if event is None:
-                continue
-            chunk.append(event)
-            if len(chunk) >= _DUMP_CHUNK:
-                yield chunk
-                chunk = []
-        if chunk:
-            yield chunk
+            if event is not None:
+                events.append(event)
+        return events
 
     def print_exit_transcript(self, console: Console) -> int:
-        """Print the pane's conversation to *console* in compact form; return the events printed."""
+        """Print the pane's conversation to *console* in compact form; return the events printed.
+
+        Events and the console output captured between them are printed in the
+        order they happened, through a private appender at the ``compact`` level.
+        """
         from agenthicc.tui.workspace.appender import ScrollBufferAppender
 
-        printed = 0
-        if self.welcome is not None and not self.welcome_printed:
-            from agenthicc.tui.welcome import print_welcome
-
-            print_welcome(console, self.welcome)
-            self.welcome_printed = True
-        # A private state: the appender's counters never reach the session's own.
+        self.settle()
+        index = self.source.index
+        first = bisect.bisect_left(index.starts, self.entry_offset, 0, index.count)
         appender = ScrollBufferAppender(
             AppState(), console, max_live_tool_calls=10**9, fixed_detail="compact"
         )
-        for chunk in self.exit_events():
-            printed += len(chunk)
-            appender.print_events(chunk)
-        self.entry_offset = self.source.index.scanned
+        printed = 0
+        cursor = first
+
+        def events_until(end: int) -> None:
+            nonlocal cursor, printed
+            while cursor < end:
+                stop = min(end, cursor + _DUMP_CHUNK)
+                chunk = self._events(cursor, stop)
+                printed += len(chunk)
+                appender.print_events(chunk)
+                cursor = stop
+
+        for position, (_offset, note) in zip(self.noted.positions(), self.noted.notes, strict=True):
+            events_until(max(first, position))
+            console.print(note)
+        events_until(index.count)
+        self.entry_offset = index.scanned
         return printed
 
     def close(self) -> None:

@@ -33,6 +33,7 @@ from enum import Enum, auto
 from typing import TYPE_CHECKING
 
 from rich.console import Console
+from rich.segment import Segment
 from rich.style import Style
 from rich.text import Text
 
@@ -83,12 +84,11 @@ _NONE = Outcome()
 
 
 def to_lines(console: Console, rows: Sequence[Text], width: int) -> list[Line]:
-    """Rows as the segment lines a :class:`LiveRegion` draws."""
-    options = console.options.update(width=width, no_wrap=True, overflow="crop")
+    """Rows as the segment lines a :class:`LiveRegion` draws, cropped to *width*."""
     lines: list[Line] = []
     for row in rows:
-        rendered = console.render_lines(row, options, pad=False, new_lines=False)
-        lines.append(tuple(rendered[0]) if rendered else ())
+        segments = list(row.render(console, end=""))
+        lines.append(tuple(Segment.adjust_line_length(segments, width, pad=False)))
     return lines
 
 

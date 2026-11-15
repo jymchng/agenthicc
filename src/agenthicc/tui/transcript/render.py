@@ -98,6 +98,8 @@ class EventRenderer:
             console = _RecordingConsole(
                 file=io.StringIO(),
                 width=width,
+                # A fixed height too: without one every ``size`` asks the terminal.
+                height=1_000,
                 force_terminal=True,
                 color_system="truecolor",
                 highlight=False,

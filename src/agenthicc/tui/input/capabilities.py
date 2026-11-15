@@ -764,7 +764,7 @@ class PaneScrollCapability:
 
         if not session._bus.handles(ScrollPaneCommand):
             return _PASS
-        await session._bus.dispatch_async(ScrollPaneCommand(action))
+        await session._bus.dispatch_async(ScrollPaneCommand(action=action))
         return _CONSUMED
 
 
@@ -795,9 +795,9 @@ class MouseCapability:
 
             if session._bus.handles(ScrollPaneCommand):
                 if event.wheel < 0:
-                    await session._bus.dispatch_async(ScrollPaneCommand("wheel_up"))
+                    await session._bus.dispatch_async(ScrollPaneCommand(action="wheel_up"))
                 else:
-                    await session._bus.dispatch_async(ScrollPaneCommand("wheel_down"))
+                    await session._bus.dispatch_async(ScrollPaneCommand(action="wheel_down"))
             return _CONSUMED
         if event is not None and event.wheel < 0:
             session._paste.move_up(session._buf)

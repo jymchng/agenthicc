@@ -3245,9 +3245,10 @@ class TUISession:
         ui = ctx.cfg.ui
         provider = ctx.cfg.execution.provider
         if ui.banner != "off":
-            from agenthicc.tui.welcome import WelcomeInfo
+            from agenthicc.tui.welcome import WelcomeInfo, print_welcome
 
-            self._workspace.show_welcome(
+            print_welcome(
+                console,
                 WelcomeInfo(
                     version=report.version,
                     model=short_model(ctx.model_label, default_provider=provider),

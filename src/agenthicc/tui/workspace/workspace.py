@@ -56,7 +56,6 @@ if TYPE_CHECKING:
     from agenthicc.tui.statusline import StatusLineCommand
     from agenthicc.tui.theme import Theme
     from agenthicc.tui.transcript.fullscreen import FullscreenLayout, PaneAction
-    from agenthicc.tui.welcome import WelcomeInfo
     from agenthicc.tui.workspace.announcer import Announcer
 
 # Rendered markup rows kept for reuse: a few frames' worth of distinct rows.
@@ -119,10 +118,8 @@ class Workspace:
         self._statusline: StatusLineCommand | None = None
         self._git_task: asyncio.Task[None] | None = None
         self._was_running = False
-        # TUX-09: the fullscreen layout, and the header it shows first.
+        # TUX-09: the fullscreen layout, while it is on.
         self._fullscreen: FullscreenLayout | None = None
-        self._welcome: WelcomeInfo | None = None
-        self._welcome_printed = False
 
     # ── lifecycle ─────────────────────────────────────────────────────────────
 
@@ -386,11 +383,11 @@ class Workspace:
             conv.session_id(),
             self._state.keymap,
             ui=_ui(self._state),
-            welcome=self._welcome,
-            welcome_printed=self._welcome_printed,
             on_scrolled=conv.pane_scrolled.set,
         )
         self._console.set_alt_screen(True)
+        # What is printed to the console now goes to the pane, not past it.
+        self._console.push_render_hook(layout.capture)
         self.scroll.hold()
         self._fullscreen = layout
         conv.fullscreen.set(True)
@@ -414,6 +411,7 @@ class Workspace:
         running = self._live is not None
         if running:
             self.suspend_for_external_process()
+        self._console.pop_render_hook()
         self._console.set_alt_screen(False)
         try:
             layout.print_exit_transcript(self._console)
@@ -433,19 +431,6 @@ class Workspace:
         if layout is not None:
             layout.scroll(action)
             self._redraw_input()
-
-    def show_welcome(self, info: WelcomeInfo) -> None:
-        """Print the start-up header, or make it the fullscreen pane's first item."""
-        self._welcome = info
-        layout = self._fullscreen
-        if layout is not None:
-            layout.set_welcome(info, printed=False)
-            self._redraw()
-            return
-        from agenthicc.tui.welcome import print_welcome
-
-        print_welcome(self._console, info)
-        self._welcome_printed = True
 
     # ── rendering ─────────────────────────────────────────────────────────────
 
