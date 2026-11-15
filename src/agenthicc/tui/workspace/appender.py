@@ -405,6 +405,9 @@ class ScrollBufferAppender:
         self._last_event_ts: float | None = None
         # A turn header waits for the mention chips that belong to the user.
         self._pending_header: Text | None = None
+        #: While held (the transcript view or the fullscreen pane owns the
+        #: screen) events queue instead of printing (TUX-09).
+        self._held = False
         # ``/details`` lasts for the session that owns this appender.
         if fixed_detail is None:
             set_session_tool_detail(None)
@@ -421,6 +424,20 @@ class ScrollBufferAppender:
             self._unsub()
             self._unsub = None
 
+    def hold(self) -> None:
+        """Stop printing: new events wait until :meth:`release` (TUX-09)."""
+        self._held = True
+
+    def release(self, *, discard: bool = False) -> None:
+        """Print what waited while held; with *discard* drop it (it was shown elsewhere)."""
+        self._held = False
+        if discard:
+            self._pending = []
+            self._flush_scheduled = False
+            return
+        if self._pending:
+            self._flush_batch()
+
     def flush(self) -> None:
         """Render queued events and persist any open tool-group summary.
 
@@ -430,6 +447,8 @@ class ScrollBufferAppender:
         scroll buffer instead of remaining in the live footer.  It is safe to
         call repeatedly; both group counters are reset after flushing.
         """
+        if self._held:
+            return
         if self._pending or self._flush_scheduled:
             self._flush_batch()
         with self._console:
@@ -502,6 +521,8 @@ class ScrollBufferAppender:
 
     def _flush_batch(self) -> None:
         self._flush_scheduled = False
+        if self._held:
+            return
         pending, self._pending = self._pending, []
         # Wrap the entire batch in one console context so all console.print()
         # calls share a single write() + flush().  Without this, each print

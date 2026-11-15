@@ -519,6 +519,7 @@ class TranscriptView:
         """Pick up appended items and finished searches; whether anything changed."""
         before = self._count()
         at_end = self.selected < 0 or self.selected >= before - 1
+        seen = (self.selected, self.top, self.top_skip, self._status(), self.source.ready)
         added = self.source.refresh()
         self.poll()
         if added and at_end:
@@ -527,7 +528,13 @@ class TranscriptView:
             if last >= 0:
                 self.selected = last
                 self._anchor_bottom(self._count() - 1)
-        return bool(added)
+        return bool(added) or seen != (
+            self.selected,
+            self.top,
+            self.top_skip,
+            self._status(),
+            self.source.ready,
+        )
 
     # ── drawing ──────────────────────────────────────────────────────────────
 

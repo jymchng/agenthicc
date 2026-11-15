@@ -54,6 +54,17 @@ _KIND = re.compile(rb'"kind"\s*:\s*"([^"\\]{1,64})"')
 _FAILED = re.compile(rb'"success"\s*:\s*false|"error_code"\s*:\s*"')
 _EXIT_CODE = re.compile(rb'"exit_code"\s*:\s*(-?\d+)')
 _STATE = re.compile(rb'"state"\s*:\s*"([a-z_]+)"')
+_STATUS = re.compile(rb'"status"\s*:\s*"([a-z_]+)"')
+#: ``compaction_status`` values that print no row (the live row is their start).
+_SILENT_STATUSES = frozenset({b"started", b"token_count_unavailable"})
+_FAILED_STATUSES = frozenset(
+    {
+        b"skipped_summary_unavailable",
+        b"skipped_concurrent_update",
+        b"blocked_durability_error",
+        b"blocked_irreducible_context",
+    }
+)
 _QUIET_STATES = frozenset({b"exited", b"running", b"waiting"})
 
 #: Kinds that always call for attention (``{`` and ``}`` stop on them).
@@ -102,6 +113,12 @@ def _classify_event(line: bytes) -> tuple[str, bool] | None:
         return None
     if kind == "tool_complete":
         return kind, _tool_failed(line)
+    if kind == "compaction_status":
+        # Only the result rows show (TUX-09 reads the appender's own rule).
+        status = _STATUS.search(line)
+        if status is None or status.group(1) in _SILENT_STATUSES:
+            return None
+        return kind, status.group(1) in _FAILED_STATUSES
     return kind, kind in _ATTENTION_KINDS
 
 

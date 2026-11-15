@@ -71,6 +71,10 @@ def plain_text(kind: str, payload: Mapping[str, object]) -> str:
                 )
                 if part
             )
+        case "compaction_status":
+            elapsed = payload.get("elapsed_s")
+            took = f" {elapsed:.0f}s" if isinstance(elapsed, (int, float)) and elapsed >= 1 else ""
+            return f"Context refresh{took}\n{_field(payload, 'label')}".strip()
         case "turn_start" | "turn_complete" | "activity_complete" | "replay_separator":
             return ""
         case _:
