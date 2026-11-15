@@ -145,6 +145,9 @@ class UnifiedInputSession:
         self.terminal_hooks: TerminalHooks = terminal_hooks or TerminalHooks()
         # Set by the /background handoff to end the input loop after detaching.
         self._exit_requested: bool = False
+        #: The session to name in the ``--resume`` hint once the normal screen is back
+        #: (the fullscreen layout cannot show it).
+        self.deferred_exit_hint: str = ""
         self._terminal_handoff: (
             tuple[Callable[[], Awaitable[None]], asyncio.Future[None]] | None
         ) = None
@@ -242,7 +245,8 @@ class UnifiedInputSession:
                     ui = ui_settings(self._state)
                     backend.set_reporting(
                         focus=True,
-                        mouse=ui is not None and ui.mouse_enabled(fullscreen=False),
+                        mouse=ui is not None
+                        and ui.mouse_enabled(fullscreen=self._state.conversation.fullscreen()),
                     )
                     while True:
                         try:
@@ -291,6 +295,17 @@ class UnifiedInputSession:
                 pending[1].set_exception(
                     RuntimeError("the input session stopped before terminal handoff")
                 )
+
+    def sync_reporting(self) -> None:
+        """Re-apply mouse reporting after the layout changed (TUX-09 §2.3)."""
+        backend = self._backend
+        if backend is None:
+            return
+        ui = ui_settings(self._state)
+        backend.set_reporting(
+            mouse=ui is not None
+            and ui.mouse_enabled(fullscreen=self._state.conversation.fullscreen())
+        )
 
     async def run_terminal_handoff(self, operation: Callable[[], Awaitable[None]]) -> None:
         """Run *operation* with cooked terminal input, then resume this session."""
@@ -345,6 +360,10 @@ class UnifiedInputSession:
                 flags.add("suggestion")
         if self._state.conversation.queue:
             flags.add("queued")
+        if self._state.conversation.fullscreen():
+            flags.add("fullscreen")
+        if self._state.conversation.pane_scrolled():
+            flags.add("scrolled")
         return frozenset(flags)
 
     def suggested_command(self) -> str:
@@ -437,7 +456,10 @@ class UnifiedInputSession:
         self._state.conversation.notification.set(None)
         from agenthicc.tui.input.renderer import show_exit_hint
 
-        show_exit_hint(self._state.conversation.session_id())
+        if self._state.conversation.fullscreen():
+            self.deferred_exit_hint = self._state.conversation.session_id()
+        else:
+            show_exit_hint(self._state.conversation.session_id())
         return _EXIT
 
     def _prepare_submission(self) -> None:

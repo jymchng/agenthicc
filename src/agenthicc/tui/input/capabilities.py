@@ -12,7 +12,7 @@ requires registering it in TriggerManager — no changes here.
 from __future__ import annotations
 
 import time
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
 
 from agenthicc.tui.cbreak_reader import Key
 
@@ -719,6 +719,55 @@ class PaletteCapability:
         return _CONSUMED
 
 
+class TranscriptCapability:
+    """Ctrl+T opens the transcript view on the last tool call (TUX-09 §2.1)."""
+
+    async def handle(
+        self,
+        key: Key,
+        ch: str,
+        session: UnifiedInputSession,
+    ) -> CapabilityResult:
+        if session._action != "composer.transcript":
+            return _PASS
+        from agenthicc.tui.runtime.commands import OpenTranscriptCommand
+
+        if not session._bus.handles(OpenTranscriptCommand):
+            return _PASS
+        await session._bus.dispatch_async(OpenTranscriptCommand())
+        return _CONSUMED
+
+
+#: The key action → the pane scroll it asks for (fullscreen layout, TUX-09 §2.3).
+_PANE_SCROLLS: dict[str, Literal["page_up", "page_down", "line_up", "line_down", "follow"]] = {
+    "composer.pane_page_up": "page_up",
+    "composer.pane_page_down": "page_down",
+    "composer.pane_line_up": "line_up",
+    "composer.pane_line_down": "line_down",
+    "composer.pane_follow": "follow",
+}
+
+
+class PaneScrollCapability:
+    """PageUp/PageDown, Shift+↑/↓ and End scroll the fullscreen layout's pane."""
+
+    async def handle(
+        self,
+        key: Key,
+        ch: str,
+        session: UnifiedInputSession,
+    ) -> CapabilityResult:
+        action = _PANE_SCROLLS.get(session._action or "")
+        if action is None:
+            return _PASS
+        from agenthicc.tui.runtime.commands import ScrollPaneCommand
+
+        if not session._bus.handles(ScrollPaneCommand):
+            return _PASS
+        await session._bus.dispatch_async(ScrollPaneCommand(action))
+        return _CONSUMED
+
+
 # ── Mouse ─────────────────────────────────────────────────────────────────────
 
 
@@ -740,6 +789,16 @@ class MouseCapability:
         from agenthicc.tui.cbreak_reader import MouseEvent
 
         event = MouseEvent.decode(ch)
+        if event is not None and event.wheel and session._state.conversation.fullscreen():
+            # The fullscreen layout's pane takes the wheel (TUX-09 §2.3).
+            from agenthicc.tui.runtime.commands import ScrollPaneCommand
+
+            if session._bus.handles(ScrollPaneCommand):
+                if event.wheel < 0:
+                    await session._bus.dispatch_async(ScrollPaneCommand("wheel_up"))
+                else:
+                    await session._bus.dispatch_async(ScrollPaneCommand("wheel_down"))
+            return _CONSUMED
         if event is not None and event.wheel < 0:
             session._paste.move_up(session._buf)
             session._push()
@@ -804,6 +863,8 @@ IDLE_CAPABILITIES: list[Capability] = [
     SuggestionCapability(),
     AgentCycleCapability(),
     PaletteCapability(),
+    TranscriptCapability(),
+    PaneScrollCapability(),
     MouseCapability(),
     InsertCapability(),  # fallback — must be last
 ]
@@ -831,6 +892,8 @@ STREAMING_CAPABILITIES: list[Capability] = [
     BackgroundSubagentsCapability(),
     AgentCycleCapability(),  # the choice applies from the next turn
     PaletteCapability(),  # the palette opens over a running turn too
+    TranscriptCapability(),  # the transcript opens over a running turn too
+    PaneScrollCapability(),
     MouseCapability(),
     InsertCapability(),  # fallback — must be last
 ]

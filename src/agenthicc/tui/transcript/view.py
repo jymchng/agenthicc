@@ -244,7 +244,7 @@ class TranscriptView:
     def _first_placement(self) -> None:
         """Where the view starts: the end (the newest item), or the first turn."""
         count = self._count()
-        if count == 0 or self._placed:
+        if count == 0 or self._placed or not self.source.ready:
             return
         self._placed = True
         last = self._step(count, -1)

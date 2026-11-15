@@ -23,13 +23,11 @@ from agenthicc.tui.diagnostics import (
     DIAGNOSTICS_NOTICE,
     DiagnosticsLog,
     diagnostics_log_path,
-    log_tail,
     stderr_sink,
     uninstall_stderr_sink,
 )
 from agenthicc.tui.workspace import Workspace
 from agenthicc.tui.workspace.notice import Notice
-from agenthicc.tui.workspace.overlays.log_tail import LogTailOverlay
 from tests.tui_frames import settle_frames
 
 pytestmark = pytest.mark.unit
@@ -194,16 +192,6 @@ def test_no_subprocess_started_by_a_session_inherits_fd_2() -> None:
     assert inheriting == []
 
 
-def test_log_tail_keeps_the_last_whole_lines(tmp_path: Path) -> None:
-    path = tmp_path / "x.log"
-    assert log_tail(path) == []
-    path.write_text("".join(f"line {index}\n" for index in range(500)), encoding="utf-8")
-    assert log_tail(path, max_lines=3) == ["line 497", "line 498", "line 499"]
-    tail = log_tail(path, max_lines=1000, max_bytes=40)
-    assert tail[-1] == "line 499"
-    assert all(line.startswith("line ") for line in tail)
-
-
 def test_the_log_path_is_per_session_and_safe() -> None:
     assert diagnostics_log_path("abc") == Path.home() / ".agenthicc" / "logs" / "abc.log"
     assert diagnostics_log_path("../../etc/passwd").name == "....etcpasswd.log"
@@ -222,24 +210,15 @@ def _logs_context(console: Console, **fields: object) -> CommandContext:
     )
 
 
-def test_logs_opens_the_tail_or_says_the_log_is_empty() -> None:
+def test_logs_opens_the_transcript_view_on_the_diagnostics_log() -> None:
+    """``/logs`` asks the session for the one transcript view (TUX-09); no pager of its own."""
     command = build_builtin_registry().get("/logs")
     assert command is not None and command.handler is not None
     console = Console(record=True, width=80, force_terminal=False, color_system=None)
+    opened: list[str] = []
+    command.handler(_logs_context(console, open_transcript=opened.append))
+    assert opened == ["logs"]
+
     notices: list[tuple[str, str]] = []
-    shown: list[object] = []
-
     command.handler(_logs_context(console, transient_notify=lambda s, t: notices.append((s, t))))
-    assert notices == [("info", "The diagnostics log is empty.")]
-
-    path = diagnostics_log_path("sess-1")
-    path.parent.mkdir(parents=True)
-    path.write_text("first\nsecond\n", encoding="utf-8")
-    command.handler(_logs_context(console, set_pending_menu=shown.append))
-    assert len(shown) == 1 and isinstance(shown[0], LogTailOverlay)
-    overlay_console = Console(record=True, width=80, force_terminal=False, color_system=None)
-    overlay_console.print(shown[0].render())
-    assert overlay_console.export_text().splitlines()[1:3] == [" first", " second"]
-
-    command.handler(_logs_context(console))
-    assert console.export_text().splitlines()[-2:] == ["first", "second"]
+    assert notices == [("warning", "The log view is available only in an interactive session.")]

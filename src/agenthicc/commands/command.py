@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Callable, TYPE_CHECKING
+from typing import Callable, Literal, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -160,6 +160,10 @@ class CommandContext:
     save_model: "Callable[[ModelChoice], str] | None" = None
     #: The TUI's presentation state, for ``/status`` (TUX-02); TUI only.
     app_state: "AppState | None" = None
+    #: Opens the transcript view: ``history``, ``logs`` or ``rewind`` (TUX-09); TUI only.
+    open_transcript: Callable[[Literal["history", "logs", "rewind"]], None] | None = None
+    #: Switches the fullscreen layout for the session; returns whether it is now on (TUX-09).
+    toggle_fullscreen: Callable[[], bool] | None = None
 
     #: Shows a transient status-line notice (TUX-08); TUI only.
     transient_notify: "Callable[[Severity, str], object] | None" = None

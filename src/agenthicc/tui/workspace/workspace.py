@@ -55,6 +55,8 @@ if TYPE_CHECKING:
     from agenthicc.tui.conversation_store import AppState, ConversationEvent
     from agenthicc.tui.statusline import StatusLineCommand
     from agenthicc.tui.theme import Theme
+    from agenthicc.tui.transcript.fullscreen import FullscreenLayout, PaneAction
+    from agenthicc.tui.welcome import WelcomeInfo
     from agenthicc.tui.workspace.announcer import Announcer
 
 # Rendered markup rows kept for reuse: a few frames' worth of distinct rows.
@@ -117,6 +119,10 @@ class Workspace:
         self._statusline: StatusLineCommand | None = None
         self._git_task: asyncio.Task[None] | None = None
         self._was_running = False
+        # TUX-09: the fullscreen layout, and the header it shows first.
+        self._fullscreen: FullscreenLayout | None = None
+        self._welcome: WelcomeInfo | None = None
+        self._welcome_printed = False
 
     # ── lifecycle ─────────────────────────────────────────────────────────────
 
@@ -127,6 +133,9 @@ class Workspace:
         # Overlay key handling echoes like typing does.
         self.overlays.set_redraw_callback(self._redraw_input)
         self.scroll.mount()
+        ui = _ui(self._state)
+        if ui is not None and ui.fullscreen:
+            self._begin_fullscreen()
 
         # Transient, so the block leaves no copy in the scroll buffer. Rows
         # past the terminal height are cropped.
@@ -142,7 +151,6 @@ class Workspace:
 
         # TUX-01: /theme applies at once; repaint every row with the new tokens.
         self._unsubs.append(on_theme_change(lambda _theme: self._repaint_for_theme()))
-        ui = _ui(self._state)
         if ui is not None and ui.screen_reader:
             from agenthicc.tui.workspace.announcer import Announcer
 
@@ -273,6 +281,8 @@ class Workspace:
             signal.signal(signal.SIGWINCH, signal.SIG_DFL)
         except (AttributeError, OSError):
             pass
+        # The conversation is printed to the normal screen before it ends (TUX-09).
+        self.leave_fullscreen(resume=False)
 
         for unsub in self._unsubs:
             try:
@@ -361,6 +371,82 @@ class Workspace:
             # before input is accepted.
             await asyncio.sleep(0)
 
+    # ── fullscreen layout (TUX-09 §2.3) ───────────────────────────────────────
+
+    @property
+    def fullscreen(self) -> bool:
+        return self._fullscreen is not None
+
+    def _begin_fullscreen(self) -> None:
+        """Take the alternate screen and hold the scrollback appender."""
+        from agenthicc.tui.transcript.fullscreen import FullscreenLayout
+
+        conv = self._state.conversation
+        layout = FullscreenLayout(
+            conv.session_id(),
+            self._state.keymap,
+            ui=_ui(self._state),
+            welcome=self._welcome,
+            welcome_printed=self._welcome_printed,
+            on_scrolled=conv.pane_scrolled.set,
+        )
+        self._console.set_alt_screen(True)
+        self.scroll.hold()
+        self._fullscreen = layout
+        conv.fullscreen.set(True)
+
+    def enter_fullscreen(self) -> None:
+        """``/fullscreen``: move the running session into the alternate screen."""
+        if self._fullscreen is not None:
+            return
+        running = self._live is not None
+        if running:
+            self.suspend_for_external_process()
+        self._begin_fullscreen()
+        if running:
+            self.resume_after_external_process()
+
+    def leave_fullscreen(self, *, resume: bool = True) -> None:
+        """Return to the normal screen and print the conversation there, compact."""
+        layout = self._fullscreen
+        if layout is None:
+            return
+        running = self._live is not None
+        if running:
+            self.suspend_for_external_process()
+        self._console.set_alt_screen(False)
+        try:
+            layout.print_exit_transcript(self._console)
+        finally:
+            layout.close()
+            self._fullscreen = None
+            self.scroll.release(discard=True)
+            conv = self._state.conversation
+            conv.fullscreen.set(False)
+            conv.pane_scrolled.set(False)
+        if running and resume:
+            self.resume_after_external_process()
+
+    def scroll_pane(self, action: PaneAction) -> None:
+        """PageUp/PageDown, Shift+↑/↓, the wheel and End, in the fullscreen layout."""
+        layout = self._fullscreen
+        if layout is not None:
+            layout.scroll(action)
+            self._redraw_input()
+
+    def show_welcome(self, info: WelcomeInfo) -> None:
+        """Print the start-up header, or make it the fullscreen pane's first item."""
+        self._welcome = info
+        layout = self._fullscreen
+        if layout is not None:
+            layout.set_welcome(info, printed=False)
+            self._redraw()
+            return
+        from agenthicc.tui.welcome import print_welcome
+
+        print_welcome(self._console, info)
+        self._welcome_printed = True
+
     # ── rendering ─────────────────────────────────────────────────────────────
 
     def _markup(self, markup: str, cols: int) -> tuple[Line, ...]:
@@ -404,7 +490,21 @@ class Workspace:
         return list(self._markup(markup, cols))
 
     def _build_lines(self) -> list[Line]:
-        """Return the live block's rows at the console's current width (TUX-02)."""
+        """The live block's rows; in the fullscreen layout, the pane over them (TUX-09)."""
+        lines = self._inline_lines()
+        layout = self._fullscreen
+        if layout is None:
+            return lines
+        from agenthicc.tui.transcript.view import to_lines
+
+        cols, rows = max(1, self._console.width), _get_rows(self._console)
+        if len(lines) >= rows:
+            return lines
+        pane = to_lines(self._console, layout.rows(cols, rows - len(lines)), cols)
+        return [*pane, *lines]
+
+    def _inline_lines(self) -> list[Line]:
+        """Return the composer, status line and overlays at the console's width (TUX-02)."""
         cols = max(1, self._console.width)
         overlay = self.overlays.widget
         lines: list[Line] = self._overflow_rows(cols)
