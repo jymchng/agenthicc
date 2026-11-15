@@ -1,0 +1,179 @@
+"""One logged event as rows, drawn by the scrollback's own renderers (TUX-09).
+
+The live transcript is printed by :class:`ScrollBufferAppender` (TUX-06). The
+view does not keep a second set of renderers: it gives each event a private
+appender that prints into a recording console, and reads the styled rows back.
+Collapsed items use the ``compact`` detail level; an expanded item uses
+``verbose`` and adds the call's arguments. Output is cut at 64 KiB and says so.
+
+The console's width is the room the view gives the item, so nothing wraps
+twice.
+"""
+
+from __future__ import annotations
+
+import io
+import json
+from collections.abc import Mapping
+from typing import TYPE_CHECKING
+
+from rich.console import Console
+from rich.segment import Segment
+from rich.text import Text
+
+from agenthicc.tui.conversation_store import AppState, ConversationEvent
+from agenthicc.tui.theme import glyphs, palette
+
+if TYPE_CHECKING:
+    from agenthicc.config import UISettings
+
+__all__ = ["EXPAND_LIMIT_BYTES", "EventRenderer", "rows_of"]
+
+#: Output shown for one expanded item (the old history overlay's detail cap).
+EXPAND_LIMIT_BYTES = 64 * 1024
+#: Argument values longer than this are cut in the arguments block.
+_ARGUMENT_CELLS = 300
+
+
+class _RecordingConsole(Console):
+    """A console whose printed segments can be taken back, one print at a time."""
+
+    def take_segments(self) -> list[Segment]:
+        with self._record_buffer_lock:
+            segments = list(self._record_buffer)
+            self._record_buffer.clear()
+        return segments
+
+
+def rows_of(segments: list[Segment]) -> list[Text]:
+    """The styled :class:`Text` of each printed line (control codes dropped)."""
+    rows: list[Text] = []
+    for line in Segment.split_lines(segments):
+        row = Text(no_wrap=True, overflow="ellipsis")
+        for segment in line:
+            if not segment.control:
+                row.append(segment.text, segment.style)
+        rows.append(row)
+    return rows
+
+
+def _trim(rows: list[Text]) -> list[Text]:
+    """Drop the blank rows a block prints after itself: the view has its own spacing."""
+    while rows and not rows[-1].plain.strip():
+        rows.pop()
+    return rows
+
+
+def _bounded_output(payload: Mapping[str, object]) -> tuple[dict[str, object], bool]:
+    """*payload* with its output cut at :data:`EXPAND_LIMIT_BYTES`, and whether it was."""
+    lines = payload.get("output_lines")
+    if not isinstance(lines, list):
+        return dict(payload), False
+    kept: list[object] = []
+    used = 0
+    for line in lines:
+        used += len(str(line).encode("utf-8", "replace")) + 1
+        if used > EXPAND_LIMIT_BYTES:
+            return {**payload, "output_lines": kept}, True
+        kept.append(line)
+    return dict(payload), False
+
+
+class EventRenderer:
+    """Render events at a width; one instance serves one view."""
+
+    def __init__(self, ui: UISettings | None = None) -> None:
+        # A private state: the appender's group counters and live overflow
+        # signal must never reach the session's own.
+        self._state = AppState()
+        if ui is not None:
+            self._state.ui.set(ui)
+        self._consoles: dict[int, _RecordingConsole] = {}
+
+    def _console(self, width: int) -> _RecordingConsole:
+        console = self._consoles.get(width)
+        if console is None:
+            if len(self._consoles) > 8:
+                self._consoles.clear()
+            console = _RecordingConsole(
+                file=io.StringIO(),
+                width=width,
+                force_terminal=True,
+                color_system="truecolor",
+                highlight=False,
+                emoji=False,
+                record=True,
+                legacy_windows=False,
+            )
+            self._consoles[width] = console
+        return console
+
+    def rows(self, event: ConversationEvent, width: int, *, expanded: bool) -> list[Text]:
+        """The rows *event* prints at *width* (no rows for an event the scrollback skips)."""
+        from agenthicc.tui.workspace.appender import ScrollBufferAppender
+
+        width = max(10, width)
+        console = self._console(width)
+        console.take_segments()
+        payload: Mapping[str, object] = event.payload
+        truncated = False
+        if expanded and event.kind == "tool_complete":
+            payload, truncated = _bounded_output(payload)
+        shown = ConversationEvent(event.event_id, event.kind, dict(payload), event.timestamp)
+        appender = ScrollBufferAppender(
+            self._state,
+            console,
+            max_live_tool_calls=10**9,
+            group_exploratory_calls=False,
+            fixed_detail="verbose" if expanded else "compact",
+        )
+        appender.print_events([shown])
+        rows = _retarget_hint(_trim(rows_of(console.take_segments())), expanded=expanded)
+        if expanded and event.kind == "tool_complete":
+            rows += _argument_rows(event.payload, width)
+            if truncated:
+                rows.append(
+                    Text(f"  {glyphs().ellipsis} output truncated at 64 KiB", style=palette().muted)
+                )
+        return rows
+
+
+def _retarget_hint(rows: list[Text], *, expanded: bool) -> list[Text]:
+    """The scrollback's ``ctrl+t to expand`` footer says ``enter`` here, and nothing once open."""
+    from agenthicc.tui.workspace.appender import EXPAND_HINT
+
+    p, g = palette(), glyphs()
+    kept: list[Text] = []
+    for row in rows:
+        if not row.plain.endswith(EXPAND_HINT):
+            kept.append(row)
+            continue
+        row.right_crop(len(EXPAND_HINT))
+        if not expanded:
+            row.append("enter to expand", p.muted)
+            kept.append(row)
+            continue
+        separator = f"{g.sep} "
+        if row.plain.endswith(separator):
+            row.right_crop(len(separator))
+        if row.plain.strip() not in ("", g.elbow):
+            kept.append(row)
+    return kept
+
+
+def _argument_rows(payload: Mapping[str, object], width: int) -> list[Text]:
+    """``arguments`` and one ``name: value`` row for each, from the stored call."""
+    args = payload.get("args")
+    if not isinstance(args, Mapping) or not args:
+        return []
+    p, g = palette(), glyphs()
+    rows = [Text(f"  {g.elbow} arguments", style=p.muted)]
+    for name, value in args.items():
+        shown = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+        first, *more = str(shown).splitlines() or [""]
+        if len(first) > _ARGUMENT_CELLS or more:
+            first = first[:_ARGUMENT_CELLS].rstrip() + g.ellipsis
+        row = Text(f"      {name}: ", style=p.muted, no_wrap=True, overflow="ellipsis")
+        row.append(first, p.text)
+        rows.append(row)
+    return rows

@@ -56,6 +56,7 @@ CONTEXTS = (
     "agents.peek",
     "agents.detail",
     "transcript",
+    "transcript_view",
     "subagents",
     "overlay",
     "dialog",

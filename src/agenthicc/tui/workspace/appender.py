@@ -55,6 +55,11 @@ def register_renderer(kind: str) -> Callable[[_EventRenderer], _EventRenderer]:
     return decorator
 
 
+def has_renderer(kind: str) -> bool:
+    """Whether *kind* events print anything; other kinds are invisible."""
+    return kind in _RENDERERS
+
+
 if TYPE_CHECKING:
     from rich.console import Console
     from rich.style import Style
@@ -127,7 +132,7 @@ _PREVIEW_LINES = 4
 _DIFF_ROWS = 20
 #: A turn header is printed again after this much quiet time.
 _HEADER_GAP_S = 30 * 60
-_EXPAND_HINT = "ctrl+t to expand"
+EXPAND_HINT = "ctrl+t to expand"
 
 _LIVE_WORDS: dict[str, tuple[str, str]] = {
     "ready": ("ready", "info"),
@@ -366,9 +371,13 @@ class ScrollBufferAppender:
         console: Console,
         max_live_tool_calls: int = 5,
         group_exploratory_calls: bool = True,
+        fixed_detail: str | None = None,
     ) -> None:
         self._state: AppState = app_state
         self._console: Console = console
+        #: A tool detail level this appender always uses (the transcript view
+        #: renders one event at the level it chooses); ``None`` follows ``/details``.
+        self._fixed_detail = fixed_detail
         self._unsub: Callable[[], None] | None = None
         self._max_tool_calls: int = max_live_tool_calls
         self._group_exploratory_calls: bool = group_exploratory_calls
@@ -397,7 +406,8 @@ class ScrollBufferAppender:
         # A turn header waits for the mention chips that belong to the user.
         self._pending_header: Text | None = None
         # ``/details`` lasts for the session that owns this appender.
-        set_session_tool_detail(None)
+        if fixed_detail is None:
+            set_session_tool_detail(None)
 
     def mount(self) -> None:
         self._unsub = self._state.conversation.on_event(self._queue_event)
@@ -456,6 +466,18 @@ class ScrollBufferAppender:
         """
         payload: dict[str, object] = {"edge": "start", "since": since, "events": events}
         self._queue_event(ConversationEvent(event_id="", kind="replay_separator", payload=payload))
+
+    def print_events(self, events: Iterable[ConversationEvent]) -> None:
+        """Render *events* now, in order, and close any open group (TUX-09).
+
+        The transcript view renders each event through the same renderers as
+        the live scrollback; nothing is persisted and nothing waits for the
+        next loop turn.
+        """
+        for event in events:
+            event.rendered = False
+            self._pending.append(event)
+        self.flush()
 
     def announce(self, text: str) -> None:
         """Print a plain sentence in order with the transcript (AGX-13).
@@ -532,6 +554,8 @@ class ScrollBufferAppender:
             self._console.print(header, highlight=False, soft_wrap=True)
 
     def _tool_detail(self) -> str:
+        if self._fixed_detail is not None:
+            return self._fixed_detail
         if _session_detail is not None:
             return _session_detail
         from agenthicc.tui.preferences import ui_settings
@@ -655,9 +679,7 @@ class ScrollBufferAppender:
                 self._child(g.pipe, line, p.text)
             shown = len(lines)
         hidden = view.total - shown
-        footer = (
-            f"{_plural(hidden, 'more line')} {g.sep} {_EXPAND_HINT}" if hidden else _EXPAND_HINT
-        )
+        footer = f"{_plural(hidden, 'more line')} {g.sep} {EXPAND_HINT}" if hidden else EXPAND_HINT
         self._child(g.elbow, footer, p.muted)
 
     def _render_success_output(self, view: _ToolView, level: str) -> None:
