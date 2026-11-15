@@ -365,6 +365,12 @@ def glyphs() -> Glyphs:
     return _current.glyphs
 
 
+def key_arrows(text: str) -> str:
+    """*text* (a key name such as ``"↑↓"``) with the active glyph set's arrows."""
+    g = _current.glyphs
+    return text.replace("↑", g.up).replace("↓", g.down).replace("←", g.left).replace("→", g.right)
+
+
 def style(token: str, *, bold: bool = False, background: str | None = None) -> Style:
     """The *token* of the active palette as a :class:`Style` (unknown → error)."""
     value = _current.palette.get(token)

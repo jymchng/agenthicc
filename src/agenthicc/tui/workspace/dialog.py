@@ -42,7 +42,7 @@ from rich.console import Console, Group
 from rich.text import Text
 
 from agenthicc.tui.cbreak_reader import Key, key_name
-from agenthicc.tui.theme import glyphs, palette, style
+from agenthicc.tui.theme import glyphs, key_arrows, palette, style
 
 if TYPE_CHECKING:
     from rich.console import RenderableType
@@ -184,12 +184,6 @@ def _keymap(settings: DialogSettings) -> Keymap:
 
         _default_keymap = Keymap.build(DEFAULT_ACTIONS)
     return _default_keymap
-
-
-def _ascii_arrows(text: str) -> str:
-    """Keymap key names use arrows; draw them with the active glyph set."""
-    g = glyphs()
-    return text.replace("↑", g.up).replace("↓", g.down).replace("←", g.left).replace("→", g.right)
 
 
 @dataclass
@@ -358,7 +352,7 @@ class Dialog:
         if not entries:
             for hint in _keymap(self.settings).hints("dialog", frozenset(conditions)):
                 label = self.cancel_label if hint.action == "dialog.cancel" else hint.label
-                entries.append(f"{_ascii_arrows(hint.keys)} {label}")
+                entries.append(f"{key_arrows(hint.keys)} {label}")
         return f" {glyphs().sep} ".join(entries)
 
     def render(self) -> RenderableType:

@@ -37,7 +37,7 @@ from rich.style import Style
 from rich.text import Text
 
 from agenthicc.tui.cbreak_reader import Key, MouseEvent, key_name
-from agenthicc.tui.theme import current_theme, glyphs, palette, style
+from agenthicc.tui.theme import current_theme, glyphs, key_arrows, palette, style
 from agenthicc.tui.transcript.log import SearchJob
 from agenthicc.tui.transcript.sources import TranscriptSource
 from agenthicc.tui.transcript.text import highlight
@@ -605,7 +605,8 @@ class TranscriptView:
         else:
             row.append(" ")
         row.append_text(body)
-        if item in self.expanded and index == 0:
+        # The tag sits on the first output row (the header row is full).
+        if item in self.expanded and index == min(1, self._height(item) - 1):
             tag = "[expanded]"
             room = self.width - row.cell_len
             if room > len(tag) + 2:
@@ -636,7 +637,7 @@ class TranscriptView:
         left = Text(" ", no_wrap=True)
         room = self.width - len(right) - 2
         for hint in hints:
-            piece = f"{hint.keys} {hint.label}"
+            piece = f"{key_arrows(hint.keys)} {hint.label}"
             sep = f" {g.sep} " if left.cell_len > 1 else ""
             if left.cell_len + len(sep) + len(piece) > room:
                 break
