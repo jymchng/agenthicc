@@ -10,7 +10,7 @@ import os
 import sys
 import threading
 import uuid
-from collections.abc import Awaitable, Callable, Iterable, Iterator
+from collections.abc import Awaitable, Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC
 from functools import partial
@@ -122,6 +122,7 @@ if TYPE_CHECKING:
     from agenthicc.tui.workspace.overlays.palette import PaletteItem
     from agenthicc.tui.workspace.agents_hub import HubResult
     from agenthicc.tui.workspace.dialog import DialogSettings
+    from rich.console import RenderableType
     from agenthicc.tui.workspace.overlay import Overlay
     from agenthicc.tui.workspace.overlays.questions import AnswerContext
     from agenthicc.tui.workspace.overlays.subagents import TranscriptTarget
@@ -2576,7 +2577,7 @@ class TUISession:
             composer=answers.composer,
             workspace=workspace_access.scope if workspace_access is not None else None,
             redraw=answers.redraw,
-            open_details=self._transcript_controller().open_document,
+            open_details=self.open_details,
         )
 
     def _answer_context(self) -> AnswerContext:
@@ -3573,6 +3574,10 @@ class TUISession:
         """``/history``, ``/logs`` and ``/rewind``: the transcript view."""
         view_kind: ViewKind = kind
         self._transcript_controller().open(view_kind)
+
+    def open_details(self, title: str, renderables: Sequence[RenderableType]) -> None:
+        """A dialog's ``Ctrl+T``: its full arguments or diff, in the transcript view."""
+        self._transcript_controller().open_document(title, renderables)
 
     async def _open_transcript_command(self, _command: OpenTranscriptCommand) -> None:
         """Ctrl+T: the view, with the last tool call selected and expanded."""
