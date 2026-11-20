@@ -783,7 +783,7 @@ meaning.
 
 Every colour on screen comes from a semantic token of the active theme
 (`agenthicc.tui.theme`): `text`, `muted`, `subtle`, `frame`, `accent`,
-`accent_bg`, `user_bg`, `success`, `warning`, `danger`, `info`, `agent`, the
+`user_bg`, `success`, `warning`, `danger`, `info`, `agent`, the
 diff tokens and the three mode badges. No other module names a colour, and
 `tests/unit/test_theme_tokens.py` enforces that (TUX-01).
 
@@ -796,10 +796,9 @@ prompt it frames; every other rule and border is `subtle`. The Safe, Plan and
 Yolo badges (`✓ Safe`, `◆ Plan`,
 `❯❯ Yolo`; `+`, `*` and `>>` with ASCII glyphs) use `mode_safe`, `mode_plan`
 and `mode_yolo`. In list views the selected row is marked by an `accent` bar
-(`▌`). In the agents hub (and its answer form), the subagent panel, `/history`,
-`/help` and the command, skill, tool and workflow lists, the selected row also
-sits on the `accent_bg` background; `/config` keeps reverse video for its
-focused row. Renderers read the theme each time they draw, so a
+(`▌`) and bold text; a selection never gets a background, in the agents hub
+(and its answer form), dialogs, the subagent panel, `/history`, `/help`, the
+pickers and the `/config` menu alike. Renderers read the theme each time they draw, so a
 `/theme` switch recolours them on the next frame.
 
 ```toml

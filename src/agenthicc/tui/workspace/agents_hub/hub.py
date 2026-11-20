@@ -3925,7 +3925,9 @@ class AgentsHub:
             for index, option in enumerate(choice.options):
                 selected = index == choice.index
                 shown = f"[{option}]" if selected else f" {option} "
-                line.append(shown, style="reverse bold" if selected and not plain else "")
+                line.append(
+                    shown, style=style("accent", bold=True) if selected and not plain else ""
+                )
                 line.append(" ")
             line.append("  ←→ choose · Enter confirm · Esc cancel", style="dim")
             line.truncate(width, overflow="crop")

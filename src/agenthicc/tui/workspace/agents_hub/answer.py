@@ -240,7 +240,7 @@ class AnswerView:
                     preview = " ".join(state.label.split())
                     clipped = "…" if len(preview) > _TYPED_PREVIEW_CHARS else ""
                     option = f'Other: "{preview[:_TYPED_PREVIEW_CHARS]}{clipped}"'
-                # The cursor row: an accent bar on the selected-row background (TUX-07).
+                # The cursor row: an accent bar and bold text, no background.
                 lead = Text("   ", no_wrap=True)
                 if cursor:
                     lead.append(g.bar, style=p.accent)
@@ -251,7 +251,7 @@ class AnswerView:
                 block = hanging(lead, option, width)
                 for row in block:
                     if cursor and not plain:
-                        row.stylize(p.on("accent_bg"))
+                        row.stylize("bold")
                     elif not chosen:
                         row.stylize("dim")
                 blocks.append(block)

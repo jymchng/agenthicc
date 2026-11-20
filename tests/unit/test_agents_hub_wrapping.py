@@ -215,17 +215,24 @@ def test_the_report_from_the_field_is_no_longer_cut_at_the_edge() -> None:
     assert rows[first + 1].startswith("     ")  # continues under the option's own text
 
 
-def test_the_highlight_covers_every_row_of_the_option_under_the_cursor() -> None:
-    from agenthicc.tui.theme import palette
-
+def test_the_cursor_option_is_bold_on_every_row_and_has_no_background() -> None:
     lines = _answer_lines(_answer(), 50)
-    background = palette().on("accent_bg")
-    rows = [line for line in lines if any(str(span.style) == background for span in line.spans)]
-    first_option = " ".join(row.plain for row in rows)
+    # No row of the form has a background colour, selected or not.
+    from rich.style import Style
+
+    assert not any(
+        Style.parse(str(span.style)).bgcolor is not None for line in lines for span in line.spans
+    )
+    bold_rows = [
+        line
+        for line in lines
+        if any("bold" in str(span.style) for span in line.spans) and line.plain.strip()
+    ]
+    first_option = " ".join(row.plain for row in bold_rows)
     assert "stays live" in first_option and "typing in" in first_option
-    assert len(rows) >= 3
-    # The other options are not highlighted.
-    assert not any("Only the shell" in row.plain for row in rows)
+    assert len(bold_rows) >= 3
+    # The other options are not bold.
+    assert not any("Only the shell" in row.plain for row in bold_rows)
 
 
 def test_an_option_that_was_chosen_keeps_its_check_on_the_first_row_only() -> None:

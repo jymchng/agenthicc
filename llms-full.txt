@@ -2172,7 +2172,7 @@ NARROW_WIDTH = 60                                      # below it a detail gets 
 
 One component draws every list: the `/`, `$` and `@` pickers
 (`TriggerPickerOverlay`), the palette and the `/model`, `/mode` and `/agent`
-pickers. The selected row has an `accent` bar and `accent_bg`; matched
+pickers. The selected row has an `accent` bar and bold text, with no background; matched
 characters are bold `accent`; a muted rule heads each group; keys are
 right-aligned; details wrap with a hanging indent (two rows at most); a
 `disabled` row is dimmed with its reason on a second row; the footer reads
@@ -2291,7 +2291,7 @@ effective bindings. `AppState.ui` holds `config.UISettings` (`[ui]`:
 
 Themes (TUX-01): `agenthicc.tui.theme` owns every colour and chrome glyph.
 - **Types.** `Palette` is a frozen set of semantic tokens (`TOKENS`: `text`,
-  `muted`, `subtle`, `frame`, `accent`, `accent_bg`, `user_bg`, `success`,
+  `muted`, `subtle`, `frame`, `accent`, `user_bg`, `success`,
   `warning`, `danger`, `info`, `agent`, `diff_*`, `mode_safe|plan|yolo`). Each
   token is a Rich style string. `Palette.on(token)` gives the background form.
   `Glyphs` has `UNICODE_GLYPHS` and an all-ASCII `ASCII_GLYPHS`. `Theme`

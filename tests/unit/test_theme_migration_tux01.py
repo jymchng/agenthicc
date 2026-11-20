@@ -50,6 +50,12 @@ def _hex(style: Style, *, background: bool = False) -> str:
     return f"#{triplet.red:02x}{triplet.green:02x}{triplet.blue:02x}"
 
 
+def _bg(style: Style | str) -> bool:
+    """Whether *style* sets a background colour."""
+    parsed = style if isinstance(style, Style) else Style.parse(style)
+    return parsed.bgcolor is not None
+
+
 def _style_of(text: Text, needle: str) -> Style:
     return text.get_style_at_offset(_CONSOLE, text.plain.index(needle))
 
@@ -82,11 +88,12 @@ def test_a_hub_row_resolves_its_colours_when_it_renders() -> None:
     assert _hex(_style_of(light, "reviewer")) == light_p.warning
     assert _hex(_style_of(dark, "project")) == dark_p.muted
     assert _hex(_style_of(light, "project")) == light_p.muted
-    # The selected row: an accent bar on the selected-row background.
+    # The selected row: an accent bar and bold text, never a background.
     assert dark.plain.startswith(BUILTIN_THEMES["dark"].glyphs.bar)
     assert _hex(_style_of(dark, dark.plain[0])) == dark_p.accent
-    assert _hex(_style_of(dark, "project"), background=True) == dark_p.accent_bg
-    assert _hex(_style_of(light, "project"), background=True) == light_p.accent_bg
+    for selected_row in (dark, light):
+        assert _style_of(selected_row, "project").bold
+        assert not any(span.style and _bg(span.style) for span in selected_row.spans)
     assert dark_p.warning != light_p.warning
 
 
@@ -111,9 +118,10 @@ def test_the_subagent_panel_resolves_its_colours_when_it_renders() -> None:
         glyph_set = BUILTIN_THEMES[palette_name].glyphs
         assert _hex(_style_of(running, glyph_set.bullet)) == p.info
         assert _hex(_style_of(failed, glyph_set.fail)) == p.danger
-        # Worker w1 is selected: the accent bar on the selected-row background.
+        # Worker w1 is selected: the accent bar and bold text, no background.
         assert _hex(_style_of(running, glyph_set.bar)) == p.accent
-        assert _hex(_style_of(running, "Explorer"), background=True) == p.accent_bg
+        assert _style_of(running, "Explorer").bold
+        assert _style_of(running, "Explorer").bgcolor is None
     assert [line.spans for line in dark] != [line.spans for line in light]
 
 
@@ -151,4 +159,5 @@ def test_a_registry_list_marks_the_selection_with_the_accent_bar_not_reverse() -
     bar = next(segment for segment in segments if segment.text == "▌")
     assert bar.style is not None and _hex(bar.style) == p.accent
     selected = next(segment for segment in segments if "cmd0" in segment.text)
-    assert selected.style is not None and _hex(selected.style, background=True) == p.accent_bg
+    assert selected.style is not None and selected.style.bold
+    assert all(segment.style is None or segment.style.bgcolor is None for segment in segments)

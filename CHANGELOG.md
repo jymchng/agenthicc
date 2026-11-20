@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — selections have no background
+
+- **A selected row is the accent bar and bold text.** The answer form and the
+  `ask_user` options, the agents hub list, dialogs, the `/` `@` and Ctrl+P
+  pickers, `/help`, `/history`, the registry lists, the subagent panel and the
+  theme picker no longer draw a background behind the selected row. Reverse video
+  is gone from the `/config` menu and the hub's confirm choices too (the focused
+  row is bold in the accent colour). The `accent_bg` theme token is removed.
+
 ### Changed — a message typed during a turn reaches the model during it
 
 - **Enter now sends into the running turn.** A message typed while a turn runs

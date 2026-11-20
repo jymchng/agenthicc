@@ -12,6 +12,8 @@ tags: [tui, pickers, command-palette, model-switching, ergonomics]
 
 ## Implementation status
 
+> **Amended (operator request):** a selected row has no background. The `accent_bg` token is removed; the `accent` bar and bold text mark the selection.
+
 Implemented on branch `tux-tux05m`. Every acceptance criterion has a test:
 
 | Criterion | Tests |

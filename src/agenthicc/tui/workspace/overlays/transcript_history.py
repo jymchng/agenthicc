@@ -79,13 +79,13 @@ class TranscriptHistoryOverlay(Overlay):
                 event = entry.event
                 timestamp = _timestamp(event.timestamp)
                 preview = _event_preview(event.payload)
-                # The selected row: an accent bar on the selected-row background.
+                # The selected row: an accent bar and bold text, no background.
                 line = Text(glyphs().bar if selected else " ", style=p.accent)
                 line.append(" ")
                 line.append(f"{timestamp}  {event.kind:<22} ", style="dim")
                 line.append(preview)
                 if selected:
-                    line.stylize(p.on("accent_bg"))
+                    line.stylize("bold")
                 lines.append(line)
         else:
             lines.append(Text("(No events on this page)", style="dim"))

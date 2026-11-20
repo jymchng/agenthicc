@@ -12,6 +12,8 @@ tags: [tui, overlays, approvals, dialogs, ergonomics]
 
 ## Implementation status (2026-11-07)
 
+> **Amended (operator request):** a selected row has no background. The `accent_bg` token is removed; the `accent` bar and bold text mark the selection.
+
 Delivered on branch `tux-tux07`. Every acceptance criterion in §4 is met and
 tested; the confirmation dialogs and pagers of §2.3 are deferred (below).
 

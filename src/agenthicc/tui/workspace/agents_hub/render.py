@@ -305,7 +305,7 @@ def row_line(
             for span_start, span_end in highlight_spans(shown, list(context.words)):
                 line.stylize("reverse", start + span_start, start + span_end)
     if selected:
-        line.stylize(p.on("accent_bg"), 0, len(line.plain))
+        line.stylize("bold", 0, len(line.plain))  # the gutter's accent bar marks it
     return line
 
 

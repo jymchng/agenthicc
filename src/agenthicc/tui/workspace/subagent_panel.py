@@ -191,8 +191,8 @@ def worker_line(
     else:
         line = f"{lead}{tail}"
     if selected:
-        # The selected row: an accent bar on the selected-row background.
-        line = f"[{p.on('accent_bg')}]{line}[/]"
+        # The selected row: an accent bar and bold text, no background.
+        line = f"[bold]{line}[/]"
     return fit(line, cols)
 
 

@@ -97,7 +97,7 @@ class ThemePickerOverlay(Overlay):
             mark = " (current)" if name == self._current else ""
             bar = f"[{p.accent}]{g.bar}[/]" if selected else " "
             row = f" {bar} {escape(name)}[{p.muted}]{escape(mark)}[/]"
-            lines.append(Text.from_markup(row, style=p.on("accent_bg") if selected else "none"))
+            lines.append(Text.from_markup(row, style="bold" if selected else "none"))
         lines.append(Text(""))
         preview = self._highlighted()
         if isinstance(preview, str):

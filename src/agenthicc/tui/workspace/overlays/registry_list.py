@@ -86,7 +86,7 @@ class _RegistryListOverlay(Overlay):
             for offset, row in enumerate(visible):
                 index = self._scroll + offset
                 selected = index == self._selected
-                # The selected row: an accent bar on the selected-row background.
+                # The selected row: an accent bar and bold text, no background.
                 line = Text("  ")
                 line.append(glyphs().bar if selected else " ", style=palette().accent)
                 line.append(" ")
@@ -95,7 +95,7 @@ class _RegistryListOverlay(Overlay):
                 line.append("  ")
                 line.append(_shorten(row.description or "—", 52))
                 if selected:
-                    line.stylize(palette().on("accent_bg"))
+                    line.stylize("bold")
                 lines.append(line)
         lines.extend(
             [
