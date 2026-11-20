@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 
 from rich.console import Console
 from rich.segment import Segment
+from rich.table import Table
 from rich.text import Text
 
 from agenthicc.tui.conversation_store import AppState, ConversationEvent
@@ -31,8 +32,6 @@ __all__ = ["EXPAND_LIMIT_BYTES", "EventRenderer", "path_label", "rows_of"]
 
 #: Output shown for one expanded item (the old history overlay's detail cap).
 EXPAND_LIMIT_BYTES = 64 * 1024
-#: Argument values longer than this are cut in the arguments block.
-_ARGUMENT_CELLS = 300
 
 
 class _RecordingConsole(Console):
@@ -138,15 +137,17 @@ class EventRenderer:
             max_live_tool_calls=10**9,
             group_exploratory_calls=False,
             fixed_detail="verbose" if expanded else "compact",
+            wrap=True,
         )
         appender.print_events([shown])
-        rows = _retarget_hint(_trim(rows_of(console.take_segments())), expanded=expanded)
         if expanded and event.kind == "tool_complete":
-            rows += _argument_rows(event.payload, width)
-            if truncated:
-                rows.append(
-                    Text(f"  {glyphs().ellipsis} output truncated at 64 KiB", style=palette().muted)
-                )
+            appender.flush()
+            _print_arguments(console, event.payload)
+        rows = _retarget_hint(_trim(rows_of(console.take_segments())), expanded=expanded)
+        if truncated:
+            rows.append(
+                Text(f"  {glyphs().ellipsis} output truncated at 64 KiB", style=palette().muted)
+            )
         return rows
 
 
@@ -157,10 +158,12 @@ def _retarget_hint(rows: list[Text], *, expanded: bool) -> list[Text]:
     p, g = palette(), glyphs()
     kept: list[Text] = []
     for row in rows:
-        if not row.plain.endswith(EXPAND_HINT):
+        plain = row.plain.rstrip()
+        if not plain.endswith(EXPAND_HINT):
             kept.append(row)
             continue
-        row.right_crop(len(EXPAND_HINT))
+        # A wrapped row is padded to the width; cut the padding with the hint.
+        row.right_crop(len(row.plain) - len(plain) + len(EXPAND_HINT))
         if not expanded:
             row.append("enter to expand", p.muted)
             kept.append(row)
@@ -173,19 +176,33 @@ def _retarget_hint(rows: list[Text], *, expanded: bool) -> list[Text]:
     return kept
 
 
-def _argument_rows(payload: Mapping[str, object], width: int) -> list[Text]:
-    """``arguments`` and one ``name: value`` row for each, from the stored call."""
+def _print_arguments(console: Console, payload: Mapping[str, object]) -> None:
+    """``arguments`` and one ``name  value`` entry for each, in full and wrapped.
+
+    The values are what the call was given, already bounded when the event was
+    written; a value of several lines keeps them, and a long line folds.
+    """
     args = payload.get("args")
     if not isinstance(args, Mapping) or not args:
-        return []
+        return
     p, g = palette(), glyphs()
-    rows = [Text(f"  {g.elbow} arguments", style=p.muted)]
+    console.print(Text(f"  {g.elbow} arguments", style=p.muted), highlight=False)
+    names = [str(name) for name in args]
+    label = min(24, max(len(name) for name in names)) + 2
+    grid = Table.grid(expand=True)
+    grid.add_column(width=6 + label, no_wrap=True)
+    grid.add_column(ratio=1, overflow="fold")
+    used = 0
     for name, value in args.items():
         shown = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
-        first, *more = str(shown).splitlines() or [""]
-        if len(first) > _ARGUMENT_CELLS or more:
-            first = first[:_ARGUMENT_CELLS].rstrip() + g.ellipsis
-        row = Text(f"      {name}: ", style=p.muted, no_wrap=True, overflow="ellipsis")
-        row.append(first, p.text)
-        rows.append(row)
-    return rows
+        used += len(shown.encode("utf-8", "replace"))
+        if used > EXPAND_LIMIT_BYTES:
+            shown = shown[: max(0, EXPAND_LIMIT_BYTES - (used - len(shown)))]
+        grid.add_row(
+            Text(f"      {str(name)[:24]}:".ljust(6 + label), style=p.muted),
+            Text(shown, style=p.text, overflow="fold"),
+        )
+        if used > EXPAND_LIMIT_BYTES:
+            grid.add_row(Text(""), Text(f"{g.ellipsis} cut at 64 KiB", style=p.muted))
+            break
+    console.print(grid, highlight=False)

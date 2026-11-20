@@ -44,6 +44,7 @@ from agenthicc.tui.transcript.log import (
 )
 from agenthicc.tui.transcript.render import EventRenderer
 from agenthicc.tui.transcript.text import plain_text
+from agenthicc.tui.workspace.appender import USER_BAND_LINES
 
 if TYPE_CHECKING:
     from rich.console import RenderableType
@@ -283,7 +284,12 @@ class SessionLogSource(_IndexedSource):
         return self._renderer.rows(event, width, expanded=expanded)
 
     def can_expand(self, item: int) -> bool:
-        return self.index.kind(item) in _EXPANDABLE
+        kind = self.index.kind(item)
+        if kind == "user_message":
+            # A long paste is condensed to a few lines in the row; Enter shows it whole.
+            text = self.user_text(item)
+            return text.count("\n") + 1 > USER_BAND_LINES
+        return kind in _EXPANDABLE
 
     def plain_text(self, item: int) -> str:
         event = self.event(item, full=True)

@@ -1027,7 +1027,10 @@ prompt, the cursor and the history are exactly as they were when you leave:
 
 - **What it shows.** Every item is drawn by the scrollback's own renderers
   (TUX-06): `compact` for the rest, `verbose` and the call's arguments for the
-  item you expanded. User turns are numbered from 1. Events that print nothing
+  item you expanded. Nothing is cut with an ellipsis: a long command, a long
+  line of output and a long argument wrap under a hanging indent (the
+  scrollback keeps one row per call). A user message the scrollback condenses
+  (more than 12 lines) expands with Enter too. User turns are numbered from 1. Events that print nothing
   in the scrollback (token counts) are not items; a compaction shows its result
   row (`✓ Context refreshed · 849 tokens · 3s`), not its start.
 - **Opening points.** `Ctrl+T` opens on the last tool call, selected and

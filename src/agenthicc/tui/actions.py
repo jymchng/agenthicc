@@ -417,7 +417,6 @@ _COMPOSER_ACTIONS: tuple[Action, ...] = (
         "composer",
         ("end",),
         "follow",
-        hint_priority=85,
         when=_FULLSCREEN | _SCROLLED,
         description="Follow the end of the conversation again",
     ),

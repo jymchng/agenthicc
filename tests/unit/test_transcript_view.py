@@ -223,9 +223,10 @@ def test_expanded_output_is_cut_at_64_kib_and_says_so(
     view = _view(tmp_path, monkeypatch, [("user_message", {"text": "go"}), ("tool_complete", huge)])
     _press(view, (Key.END, ""))
     _press(view, (Key.ENTER, ""))
-    text = "\n".join(_screen(view, height=200))
+    # Every line wraps (nothing is cropped); the whole of it, and nothing past 64 KiB.
+    text = "\n".join(_screen(view, 100, 1_500))
     assert "output truncated at 64 KiB" in text
-    assert text.count("x" * 1000) <= 66
+    assert 60_000 < text.count("x") <= 64 * 1024
 
 
 # ── navigation ────────────────────────────────────────────────────────────────
@@ -494,3 +495,65 @@ def test_a_theme_change_restyles_the_view_at_the_next_frame(
     use_theme(BUILTIN_THEMES["light"])
     light = [[str(span.style) for span in row.spans] for row in view.render(100, 24)]
     assert dark != light
+
+
+def test_long_lines_wrap_in_the_view_and_the_scrollback_still_cuts_them(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The view's own text wraps (nothing is cut with an ellipsis); the scrollback keeps its rows."""
+    long_line = "E   AssertionError: " + " ".join(f"word{i}" for i in range(40))
+    command = "pytest tests/unit/test_scheduler.py -q -k " + "very_long_test_name_" * 6
+    failing = {
+        **failed_tool(3, command=command),
+        "output_lines": ["short", long_line],
+        "output_head": 2,
+        "output_total": 2,
+        "args": {"command": command + "\nsecond line of the script"},
+    }
+    events: list[tuple[str, dict[str, object]]] = [
+        ("user_message", {"text": "run it"}),
+        ("tool_complete", failing),
+    ]
+    view = _view(tmp_path, monkeypatch, events)
+    view.render(60, 40)
+    for expanded in (False, True):
+        if expanded:
+            _press(view, (Key.END, ""), (Key.ENTER, ""))
+        rows = [row.plain for row in view.render(60, 40)]
+        flat = " ".join(" ".join(rows).split())
+        assert "…" not in flat and all(f"word{i}" in flat for i in range(40))
+        # The command folds mid-word at the width; read back without the gutter,
+        # the indent and the right-hand "exit 1 · 3.2s", it is whole.
+        solid = "".join("".join(rows).replace("▌", "").split()).replace("exit1·3.2s", "")
+        assert "".join(command.split()) in solid
+    text = "\n".join(rows)
+    assert "second line of the script" in text  # a multi-line argument keeps its lines
+    assert all(len(row) <= 60 for row in rows)
+
+    # The scrollback prints the same event as one row per line, cut with an ellipsis.
+    from io import StringIO
+
+    from rich.console import Console
+
+    from agenthicc.tui.conversation_store import AppState, ConversationEvent
+    from agenthicc.tui.workspace.appender import ScrollBufferAppender
+
+    console = Console(file=StringIO(), width=60, record=True, color_system=None)
+    appender = ScrollBufferAppender(AppState.create(), console)
+    appender.print_events([ConversationEvent("e", "tool_complete", dict(failing), 1.0)])
+    printed = console.export_text().splitlines()
+    assert all(len(line) <= 60 for line in printed) and any("…" in line for line in printed)
+
+
+def test_a_long_user_message_is_condensed_until_it_is_expanded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    message = "\n".join(f"pasted line {i}" for i in range(30))
+    view = _view(tmp_path, monkeypatch, [("user_message", {"text": message})])
+    collapsed = "\n".join(_screen(view, 100, 50))
+    assert "pasted line 3" in collapsed and "pasted line 4" not in collapsed
+    assert "[+26 more lines]" in collapsed and "Enter expand" in collapsed
+    _press(view, (Key.ENTER, ""))
+    expanded = "\n".join(_screen(view, 100, 50))
+    assert all(f"pasted line {i}" in expanded for i in range(30))
+    assert "more lines]" not in expanded

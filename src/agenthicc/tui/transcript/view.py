@@ -204,7 +204,9 @@ class TranscriptView:
             height = self._height(at)
             if used + height >= budget:
                 self.top = at
-                self.top_skip = 0 if at == item and height > budget else used + height - budget
+                self.top_skip = (
+                    used + height - budget
+                )  # an item taller than the screen shows its end
                 return
             used += height
             at -= 1
@@ -623,8 +625,13 @@ class TranscriptView:
         # The tag sits on the first output row (the header row is full).
         if item in self.expanded and index == min(1, self._height(item) - 1):
             tag = "[expanded]"
-            room = self.width - row.cell_len
-            if room > len(tag) + 2:
+            # The renderers pad a wrapped row to the width: the tag replaces the
+            # padding, unless that padding carries a style (a user message's band).
+            used = len(row.plain.rstrip())
+            plain_tail = not any(span.end > used for span in row.spans)
+            room = self.width - used
+            if plain_tail and room > len(tag) + 2:
+                row.right_crop(len(row.plain) - used)
                 row.append(" " * (room - len(tag) - 1))
                 row.append(tag, p.muted)
         if selected:

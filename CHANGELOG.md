@@ -21,7 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   keys), copies an item with `y` (OSC 52, or the system clipboard where the
   terminal cannot take it) and opens it in `$PAGER` with `e`. A decision
   dialog's `Ctrl+T` opens its full arguments or diff here, and `Esc` returns to
-  the dialog.
+  the dialog. Text is wrapped, never cut with an ellipsis, and a long pasted
+  prompt expands with Enter.
 - **A fullscreen layout.** `[ui] layout = "fullscreen"` or `/fullscreen` runs
   the session in the alternate screen: a scrolling transcript pane over the
   docked composer and status line. PgUp/PgDn, Shift+↑/↓ and the wheel scroll

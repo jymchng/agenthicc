@@ -63,6 +63,12 @@ _KEYS: dict[str, tuple[Key, str]] = {
     "ctrl+l": (Key.CTRL_L, ""),
     "ctrl+g": (Key.CTRL_G, ""),
     "ctrl+o": (Key.CTRL_O, ""),
+    # TUX-09
+    "ctrl+t": (Key.CTRL_T, ""),
+    "pageup": (Key.PAGE_UP, ""),
+    "pagedown": (Key.PAGE_DOWN, ""),
+    "shift+up": (Key.MODIFIED, "shift+up"),
+    "shift+down": (Key.MODIFIED, "shift+down"),
 }
 
 
@@ -84,6 +90,10 @@ def _session(state: AppState, action: Action) -> UnifiedInputSession:
         session._buf.set(list("text"))
     if "queued" in action.when:
         state.conversation.queue.append("queued message")
+    if "fullscreen" in action.when:
+        state.conversation.fullscreen.set(True)
+    if "scrolled" in action.when:
+        state.conversation.pane_scrolled.set(True)
     if "suggestion" in action.when:
         from agenthicc.tui.suggestions import Suggestion
 

@@ -133,6 +133,8 @@ _DIFF_ROWS = 20
 #: A turn header is printed again after this much quiet time.
 _HEADER_GAP_S = 30 * 60
 EXPAND_HINT = "ctrl+t to expand"
+#: A user message longer than this many lines is condensed in the scrollback.
+USER_BAND_LINES = 12
 
 _LIVE_WORDS: dict[str, tuple[str, str]] = {
     "ready": ("ready", "info"),
@@ -372,12 +374,18 @@ class ScrollBufferAppender:
         max_live_tool_calls: int = 5,
         group_exploratory_calls: bool = True,
         fixed_detail: str | None = None,
+        wrap: bool = False,
     ) -> None:
         self._state: AppState = app_state
         self._console: Console = console
         #: A tool detail level this appender always uses (the transcript view
         #: renders one event at the level it chooses); ``None`` follows ``/details``.
         self._fixed_detail = fixed_detail
+        #: Wrap long rows under a hanging indent instead of cutting them with an
+        #: ellipsis. The scrollback keeps its one-row-per-call density (TUX-06);
+        #: the transcript view, whose job is to show what the scrollback cut,
+        #: wraps (TUX-09).
+        self._wrap = wrap
         self._unsub: Callable[[], None] | None = None
         self._max_tool_calls: int = max_live_tool_calls
         self._group_exploratory_calls: bool = group_exploratory_calls
@@ -605,6 +613,11 @@ class ScrollBufferAppender:
         width = max(20, self._console.width)
         meta_width = meta.cell_len + 2 if meta is not None and meta.cell_len else 0
         fixed = cell_len(f"{marker} {operation} ") + meta_width
+        if self._wrap:
+            natural = fixed + cell_len(target) + (cell_len(detail) + 2 if detail else 0)
+            if natural > width:
+                self._wrapped_tool_row(marker, marker_style, operation, target, detail, meta)
+                return
         # The target keeps priority. The quiet detail ("in objective-create-a/")
         # is shown whole, cut only when a readable part fits, else dropped: a
         # sliver of it reads as noise ("  i").
@@ -639,9 +652,55 @@ class ScrollBufferAppender:
         row.truncate(width, overflow="ellipsis")
         self._console.print(row, highlight=False, no_wrap=True, overflow="ellipsis")
 
+    def _wrapped_tool_row(
+        self,
+        marker: str,
+        marker_style: str | Style,
+        operation: str,
+        target: str,
+        detail: str,
+        meta: Text | None,
+    ) -> None:
+        """A row too long for one line: the words wrap under the operation, meta on the first line."""
+        from rich.cells import cell_len
+        from rich.table import Table
+        from rich.text import Text
+
+        p = palette()
+        body = Text.assemble(
+            (operation, f"bold {p.text}"),
+            " " if target else "",
+            (target, p.text),
+            (f"  {detail}" if detail else "", p.muted),
+        )
+        body.overflow = "fold"
+        grid = Table.grid(expand=True)
+        grid.add_column(width=cell_len(marker) + 1, no_wrap=True)
+        grid.add_column(ratio=1, overflow="fold")
+        marker_cell = Text(marker, style=marker_style)
+        if meta is not None and meta.cell_len:
+            grid.add_column(justify="right", no_wrap=True)
+            grid.add_row(marker_cell, body, Text.assemble("  ", meta))
+        else:
+            grid.add_row(marker_cell, body)
+        self._console.print(grid, highlight=False)
+
     def _child(self, glyph: str, text: str, style: str) -> None:
         from rich.text import Text
 
+        if self._wrap:
+            from rich.cells import cell_len
+            from rich.table import Table
+
+            gutter = f"  {glyph} "
+            grid = Table.grid(expand=True)
+            grid.add_column(width=cell_len(gutter), no_wrap=True)
+            grid.add_column(ratio=1, overflow="fold")
+            grid.add_row(
+                Text(gutter, style=palette().muted), Text(text, style=style, overflow="fold")
+            )
+            self._console.print(grid, highlight=False)
+            return
         width = max(20, self._console.width)
         row = Text.assemble((f"  {glyph} ", palette().muted), (text, style))
         row.truncate(width, overflow="ellipsis")
@@ -942,7 +1001,8 @@ def _render_user_message(self: ScrollBufferAppender, ev: ConversationEvent) -> N
 
     p, g = palette(), glyphs()
     lines = _text(ev.payload, "text").splitlines() or [""]
-    if len(lines) > 12:
+    whole = self._wrap and self._tool_detail() == "verbose"  # the transcript view, expanded
+    if len(lines) > USER_BAND_LINES and not whole:
         # A long paste is condensed; the full text stays in the event.
         lines = [*lines[:4], f"[+{len(lines) - 4} more lines]"]
     body = Text("\n".join(lines), style=p.text)
