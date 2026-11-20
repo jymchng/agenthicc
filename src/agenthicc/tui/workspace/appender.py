@@ -56,8 +56,9 @@ def register_renderer(kind: str) -> Callable[[_EventRenderer], _EventRenderer]:
 
 
 if TYPE_CHECKING:
-    from rich.console import Console
-    from rich.style import Style
+    from rich.console import Console, RenderableType
+    from rich.console import OverflowMethod
+    from rich.style import Style, StyleType
     from rich.text import Text
 
     from agenthicc.tui.conversation_store import AppState
@@ -386,6 +387,8 @@ class ScrollBufferAppender:
         # Rhythm: a blank line is owed before the next block that is not a
         # continuation (a tool row after a tool row, chips after the user).
         self._gap_pending: bool = False
+        # True while the last thing printed was a blank line: a second one is never printed.
+        self._after_blank: bool = False
         self._last_block: str = ""
         #: Turns finished since the last ``activity_complete`` and the last one's
         #: time, so the request's total is printed only when it adds something.
@@ -514,6 +517,43 @@ class ScrollBufferAppender:
         if ev.kind not in _UNTIMED_KINDS:
             self._last_event_ts = ev.timestamp
 
+    def _print(
+        self,
+        *objects: RenderableType,
+        end: str = "\n",
+        highlight: bool | None = None,
+        markup: bool | None = None,
+        no_wrap: bool | None = None,
+        overflow: OverflowMethod | None = None,
+        soft_wrap: bool | None = None,
+        style: StyleType | None = None,
+    ) -> None:
+        """Print content to the scrollback (the one place the appender prints it)."""
+        self._console.print(
+            *objects,
+            end=end,
+            highlight=highlight,
+            markup=markup,
+            no_wrap=no_wrap,
+            overflow=overflow,
+            soft_wrap=soft_wrap,
+            style=style,
+        )
+        self._after_blank = False
+
+    def _blank(self) -> None:
+        """One blank line, and never a second in a row.
+
+        Blocks space themselves in three ways (a gap owed before the next
+        block, a trailing blank after a response, a blank that an event with
+        nothing to show still opened), and several of them can meet. One blank
+        line is the spacing; the rest is dropped (operator request).
+        """
+        if self._after_blank:
+            return
+        self._console.print()
+        self._after_blank = True
+
     def _open_block(self, kind: str) -> None:
         """Print the owed blank line before a new block.
 
@@ -521,7 +561,7 @@ class ScrollBufferAppender:
         as in Claude Code's transcript (operator request; amends TUX-06 §2.3).
         """
         if self._gap_pending:
-            self._console.print()
+            self._blank()
         self._gap_pending = False
         self._last_block = "tool" if kind in _TOOL_KINDS else kind
 
@@ -529,7 +569,7 @@ class ScrollBufferAppender:
         header, self._pending_header = self._pending_header, None
         if header is not None:
             self._open_block("turn_header")
-            self._console.print(header, highlight=False, soft_wrap=True)
+            self._print(header, highlight=False, soft_wrap=True)
 
     def _tool_detail(self) -> str:
         if _session_detail is not None:
@@ -592,7 +632,7 @@ class ScrollBufferAppender:
             row.append(" " * max(2, width - row.cell_len - meta.cell_len))
             row.append_text(meta)
         row.truncate(width, overflow="ellipsis")
-        self._console.print(row, highlight=False, no_wrap=True, overflow="ellipsis")
+        self._print(row, highlight=False, no_wrap=True, overflow="ellipsis")
 
     def _child(self, glyph: str, text: str, style: str) -> None:
         from rich.text import Text
@@ -600,7 +640,7 @@ class ScrollBufferAppender:
         width = max(20, self._console.width)
         row = Text.assemble((f"  {glyph} ", palette().muted), (text, style))
         row.truncate(width, overflow="ellipsis")
-        self._console.print(row, highlight=False, no_wrap=True, overflow="ellipsis")
+        self._print(row, highlight=False, no_wrap=True, overflow="ellipsis")
 
     def _render_tool_complete(self, payload: Mapping[str, object]) -> None:
         from rich.text import Text
@@ -855,8 +895,8 @@ class ScrollBufferAppender:
             identity = [f"[dim]{escape(line)}[/dim]" for line in identity]
         header_lines = [*identity, *summary_lines]
         for line in header_lines:
-            self._console.print(line, markup=not reader, highlight=False)
-        self._console.print(f"[dim]{g.rule * cols}[/dim]", markup=True, highlight=False)
+            self._print(line, markup=not reader, highlight=False)
+        self._print(f"[dim]{g.rule * cols}[/dim]", markup=True, highlight=False)
 
 
 # ── built-in renderers — registered at module load time, after class is complete ──
@@ -910,7 +950,7 @@ def _render_user_message(self: ScrollBufferAppender, ev: ConversationEvent) -> N
     band.add_column(ratio=1)
     band.add_row(Text(f"{g.prompt} ", style=f"bold {p.accent}"), body)
     self._open_block("user_message")
-    self._console.print(band, style=p.on("user_bg"), highlight=False)
+    self._print(band, style=p.on("user_bg"), highlight=False)
     self._gap_pending = True
 
 
@@ -939,11 +979,11 @@ def _render_text(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
     if text.strip():
         from rich.markdown import Markdown
 
-        self._console.print(Markdown(text), end="")
+        self._print(Markdown(text), end="")
         # Keep each LLM response visually separated from the next event.
         # Markdown is printed with ``end=""`` so Rich controls its rendering;
         # this explicit empty print adds the trailing blank line consistently.
-        self._console.print()
+        self._blank()
 
 
 @register_renderer("thinking_step")
@@ -954,7 +994,7 @@ def _render_thinking_step(self: ScrollBufferAppender, ev: ConversationEvent) -> 
     step = _text(ev.payload, "step")
     done = ev.payload.get("done", False)
     icon = f"[{p.success}]{g.ok}[/]" if done else f"[{p.warning}]{g.right}[/]"
-    self._console.print(
+    self._print(
         f"  {icon} [dim]{_e(step)}[/dim]",
         markup=True,
         highlight=False,
@@ -980,11 +1020,9 @@ def _render_file_modified(self: ScrollBufferAppender, ev: ConversationEvent) -> 
 
     if old_lines is not None and new_lines is not None:
         if old_line_list == []:
-            self._console.print(
-                render_file_create(path, new_line_list, language=lang), highlight=False
-            )
+            self._print(render_file_create(path, new_line_list, language=lang), highlight=False)
         else:
-            self._console.print(
+            self._print(
                 render_file_diff(
                     path,
                     old_line_list,
@@ -1020,7 +1058,7 @@ def _print_notice(
     ui = ui_settings(self._state)
     words = ui is not None and ui.screen_reader and not literal
     notice = Notice(severity, title, body, actions, literal=literal, words=words)
-    self._console.print(notice, highlight=False)
+    self._print(notice, highlight=False)
 
 
 #: ``compaction_status`` values that end an attempt with a result row. The
@@ -1112,7 +1150,7 @@ def _render_turn_complete(self: ScrollBufferAppender, ev: ConversationEvent) -> 
     self._activity_turns += 1
     self._last_turn_s = elapsed
     if elapsed >= 1.0:
-        self._console.print(
+        self._print(
             _timing_row(glyphs().flower, f"Worked for {compact_duration(elapsed)}", ev.timestamp),
             highlight=False,
         )
@@ -1137,7 +1175,7 @@ def _render_activity_complete(self: ScrollBufferAppender, ev: ConversationEvent)
     text = f"Done in {compact_duration(elapsed)}"
     if turns > 1:
         text += f" across {turns} turns"
-    self._console.print(_timing_row(glyph, text, ev.timestamp), highlight=False)
+    self._print(_timing_row(glyph, text, ev.timestamp), highlight=False)
     self._gap_pending = True
 
 
@@ -1165,7 +1203,7 @@ def _render_mention_chips(self: ScrollBufferAppender, ev: ConversationEvent) -> 
             row.append("  ")
         row.rstrip()
         row.truncate(width, overflow="ellipsis")
-        self._console.print(row, highlight=False, no_wrap=True, overflow="ellipsis")
+        self._print(row, highlight=False, no_wrap=True, overflow="ellipsis")
     for chip in chips:
         if chip.get("ok", True) is not False:
             continue
@@ -1177,7 +1215,7 @@ def _render_mention_chips(self: ScrollBufferAppender, ev: ConversationEvent) -> 
             (f" {reason}", p.warning),
         )
         row.truncate(width, overflow="ellipsis")
-        self._console.print(row, highlight=False, no_wrap=True, overflow="ellipsis")
+        self._print(row, highlight=False, no_wrap=True, overflow="ellipsis")
     self._gap_pending = True
 
 
@@ -1202,7 +1240,7 @@ def _render_replay_separator(self: ScrollBufferAppender, ev: ConversationEvent) 
     width = max(20, self._console.width)
     rule = f"{g.rule * 2} {label} "
     rule += g.rule * max(2, width - len(rule))
-    self._console.print(Text(rule[:width], style=p.muted), highlight=False, no_wrap=True)
+    self._print(Text(rule[:width], style=p.muted), highlight=False, no_wrap=True)
     self._gap_pending = False
 
 
@@ -1217,7 +1255,7 @@ def _render_system(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
         from agenthicc.tui.workspace.notice import severity_of
 
         _print_notice(self, severity_of(ev.payload.get("severity")), text)
-        self._console.print()
+        self._blank()
 
 
 @register_renderer("model_changed")
@@ -1233,7 +1271,7 @@ def _render_model_changed(self: ScrollBufferAppender, ev: ConversationEvent) -> 
     line = Text(" ")
     line.append(text[:1], style=p.accent)
     line.append(text[1:], style=p.muted)
-    self._console.print(line, highlight=False)
+    self._print(line, highlight=False)
 
 
 @register_renderer("announcement")
@@ -1253,7 +1291,7 @@ def _render_tool_recovery(self: ScrollBufferAppender, ev: ConversationEvent) -> 
         "Tool execution was interrupted; incomplete tool results were recorded so the session can continue safely.",
     )
     _print_notice(self, "info", text)
-    self._console.print()
+    self._blank()
 
 
 @register_renderer("mcp_server_failure")
@@ -1262,7 +1300,7 @@ def _render_mcp_server_failure(self: ScrollBufferAppender, ev: ConversationEvent
     text = _text(ev.payload, "text", "MCP server is unavailable; continuing without its tools.")
     severity: Severity = "error" if bool(ev.payload.get("required", False)) else "warning"
     _print_notice(self, severity, text, actions=("/mcp",))
-    self._console.print()
+    self._blank()
 
 
 def _retry_heading(payload: Mapping[str, object], label: str) -> str:
@@ -1296,7 +1334,7 @@ def _render_network_retry(self: ScrollBufferAppender, ev: ConversationEvent) -> 
         body.append(detail)
     heading = _retry_heading(ev.payload, "Network issue")
     _print_notice(self, "warning", heading, "\n".join(body))
-    self._console.print()
+    self._blank()
 
 
 @register_renderer("provider_recovery_retry")
@@ -1308,7 +1346,7 @@ def _render_provider_recovery_retry(self: ScrollBufferAppender, ev: Conversation
         body.append(detail)
     heading = _retry_heading(ev.payload, "Provider request rejected")
     _print_notice(self, "warning", heading, "\n".join(body))
-    self._console.print()
+    self._blank()
 
 
 @register_renderer("goal_list_mutated")
@@ -1322,7 +1360,7 @@ def _render_goal_list_mutated(self: ScrollBufferAppender, ev: ConversationEvent)
 
     p, g = palette(), glyphs()
     heading, detail, continuation = _goal_mutation_lines(ev.payload)
-    self._console.print(
+    self._print(
         Text.assemble(
             (f"{g.diamond} ", f"bold {p.accent}"),
             (heading, "bold"),
@@ -1330,7 +1368,7 @@ def _render_goal_list_mutated(self: ScrollBufferAppender, ev: ConversationEvent)
         ),
         highlight=False,
     )
-    self._console.print(Text(f"  {g.elbow} {continuation}", style=p.muted), highlight=False)
+    self._print(Text(f"  {g.elbow} {continuation}", style=p.muted), highlight=False)
     self._gap_pending = True
 
 
@@ -1359,15 +1397,15 @@ def _render_phase_control_requested(self: ScrollBufferAppender, ev: Conversation
     operation = _text(ev.payload, "operation", "change")
     phase_id = _bounded_phase_id(ev.payload.get("phase_id", "unknown"))
     reason = _text(ev.payload, "reason")[:160]
-    self._console.print(
+    self._print(
         f"  [dim]⎿[/dim] [{p.warning}]{_e(_phase_control_label(operation))}[/] "
         f"[dim]{_e(phase_id)} at safe boundary[/dim]",
         markup=True,
         highlight=False,
     )
     if reason:
-        self._console.print(f"    [dim]{_e(reason)}[/dim]", markup=True, highlight=False)
-    self._console.print()
+        self._print(f"    [dim]{_e(reason)}[/dim]", markup=True, highlight=False)
+    self._blank()
 
 
 @register_renderer("phase_plan_mutated")
@@ -1380,15 +1418,15 @@ def _render_phase_plan_mutated(self: ScrollBufferAppender, ev: ConversationEvent
     phase_id = _bounded_phase_id(ev.payload.get("phase_id", "unknown"))
     disposition = _text(ev.payload, "disposition", "updated")
     reason = _text(ev.payload, "reason")[:160]
-    self._console.print(
+    self._print(
         f"  [dim]⎿[/dim] [{p.accent}]{_e(_phase_control_label(operation))}[/] "
         f"[dim]{_e(phase_id)} → {_e(disposition)}; checkpointed[/dim]",
         markup=True,
         highlight=False,
     )
     if reason:
-        self._console.print(f"    [dim]{_e(reason)}[/dim]", markup=True, highlight=False)
-    self._console.print()
+        self._print(f"    [dim]{_e(reason)}[/dim]", markup=True, highlight=False)
+    self._blank()
 
 
 @register_renderer("phase_control_rejected")
@@ -1400,13 +1438,13 @@ def _render_phase_control_rejected(self: ScrollBufferAppender, ev: ConversationE
     operation = _text(ev.payload, "operation", "change")
     phase_id = _bounded_phase_id(ev.payload.get("phase_id", "unknown"))
     error_code = _text(ev.payload, "error_code", "rejected")
-    self._console.print(
+    self._print(
         f"  [dim]⎿[/dim] [{p.danger}]Phase control rejected[/] "
         f"[dim]{_e(operation)} {_e(phase_id)} ({_e(error_code)})[/dim]",
         markup=True,
         highlight=False,
     )
-    self._console.print()
+    self._blank()
 
 
 # ── Subagent pool renderers (PRD-124 Phase 3) ─────────────────────────────────
@@ -1424,7 +1462,7 @@ def _render_subagent_pool_started(self: ScrollBufferAppender, ev: ConversationEv
     total = max(_nonnegative_int(ev.payload, "total"), len(workers))
     title = f"◈ Subagents · {total} worker{'s' if total != 1 else ''} started"
     title = fit(_e(title), max(1, cols - 2))
-    self._console.print(f"[bold]{title}[/bold]", markup=True, highlight=False)
+    self._print(f"[bold]{title}[/bold]", markup=True, highlight=False)
 
     for worker in workers[:3]:
         raw_label = worker.get("label", "Worker")
@@ -1435,12 +1473,12 @@ def _render_subagent_pool_started(self: ScrollBufferAppender, ev: ConversationEv
         remaining = max(0, cols - visible_len(prefix))
         preview = fit(_e(task), remaining) if task and remaining else ""
         line = prefix + (f"[dim]{preview}[/dim]" if preview else "")
-        self._console.print(fit(line, cols), markup=True, highlight=False)
+        self._print(fit(line, cols), markup=True, highlight=False)
 
     remaining_workers = total - min(3, len(workers))
     if remaining_workers > 0:
         more = fit(_e(f"  +{remaining_workers} more · Ctrl+O details"), cols)
-        self._console.print(f"[dim]{more}[/dim]", markup=True, highlight=False)
+        self._print(f"[dim]{more}[/dim]", markup=True, highlight=False)
 
 
 @register_renderer("subagent_worker_done")
@@ -1464,14 +1502,14 @@ def _render_subagent_worker_done(self: ScrollBufferAppender, ev: ConversationEve
         else:
             summary = str(ev.payload.get("text", "")).strip().splitlines()[0:1]
             detail = f"  {_e(summary[0][:120])}" if summary else ""
-        self._console.print(
+        self._print(
             f"[{p.success}]✓[/] [{done}/{total}] [{p.accent}]{label}[/]{dur}{detail}",
             markup=True,
             highlight=False,
         )
     else:
         error = _e(str(ev.payload.get("error", "failed"))[:80])
-        self._console.print(
+        self._print(
             f"[{p.danger}]✗[/] [{done}/{total}] [{p.accent}]{label}[/]  [dim]{error}[/dim]",
             markup=True,
             highlight=False,
@@ -1481,7 +1519,7 @@ def _render_subagent_worker_done(self: ScrollBufferAppender, ev: ConversationEve
 @register_renderer("subagent_transcript_degraded")
 def _render_subagent_transcript_degraded(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
     failures = _nonnegative_int(ev.payload, "transcript_write_failures")
-    self._console.print(
+    self._print(
         f"  [{palette().warning}]![/] [dim]Subagent transcripts are partial: "
         f"{failures} write{'s' if failures != 1 else ''} failed[/dim]",
         markup=True,
@@ -1504,9 +1542,9 @@ def _render_subagent_pool_done(self: ScrollBufferAppender, ev: ConversationEvent
     suffix = " · ".join(parts)
     if isinstance(reason, str) and reason:
         suffix += f" · budget exceeded: {_e(reason.replace('_', ' '))}"
-    self._console.print(
+    self._print(
         f"[bold]◈ Subagents {status} · {suffix}[/bold]",
         markup=True,
         highlight=False,
     )
-    self._console.print()
+    self._blank()

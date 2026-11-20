@@ -553,7 +553,7 @@ explicit switch and reports the canonical choices for an unknown name.
 `UnifiedInputSession` enters raw mode once and dispatches each key through the
 active capability list. IDLE supports triggers, history, cursor movement,
 paste, mode cycling, and submission. STREAMING reduces the capability set so
-the user can queue or interject input, edit the queue, or interrupt an active
+the user can send messages into it, edit the queue, or interrupt an active
 turn while keeping every editing key.
 
 ### Key bindings
@@ -570,10 +570,9 @@ idle.
 
 | Key | Action | When |
 |---|---|---|
-| Enter | `composer.submit` — send; while a turn runs, queue it for after the turn | always |
+| Enter | `composer.submit` — send; while a turn runs, the message joins it at its next tool call | always |
 | Ctrl+J, Shift+Enter | `composer.newline` | always |
-| Alt+Enter, Ctrl+Enter | `composer.newline_alt` — a line break | idle |
-| Alt+Enter, Ctrl+Enter | `composer.interject` — deliver at the turn's next tool boundary | a turn is running |
+| Alt+Enter, Ctrl+Enter | `composer.newline_alt` — a line break | always |
 | `/`, `@` | command picker, mention picker (fixed) | always |
 | Ctrl+V / Esc | expand / delete a condensed paste | a paste is condensed (Esc: cursor right after it) |
 | Esc | `composer.interrupt` — pause the turn | a turn is running |
@@ -614,8 +613,7 @@ external editor — so `CSI 13;2u` arrives as Shift+Enter. Every CSI-u key decod
 to the key a legacy terminal sends for it (Ctrl+A stays Ctrl+A). The Windows
 console reports Enter's modifiers directly. Elsewhere use Ctrl+J or Alt+Enter:
 most terminals send Shift+Enter and Ctrl+Enter as a plain Enter, which sends
-(or queues) the prompt. The footer therefore shows `Ctrl+J newline` and, while
-a turn runs and the footer is wide enough, `Alt+Enter interject`.
+the prompt. The footer therefore shows `Ctrl+J newline`.
 
 **Pickers.** The `/`, `$` and `@` pickers have no text of their own: the
 trigger is the text from the trigger character to the cursor. A picker handles
@@ -646,16 +644,15 @@ directory under `~/.agenthicc/sessions/`, hands the terminal to `$VISUAL`,
 non-zero exit keeps the draft and says so.
 
 **Queued messages.** A message sent while a turn runs shows above the prompt,
-one muted row each (at most three, then `+N more`); an interjection is marked
-with an arrow and `at next tool`. ↑ on an empty prompt selects the newest row
-(the `queue` context): ↑/↓ move, Enter moves the message back into the prompt
-to edit, Delete or Backspace removes it, Esc returns to the prompt. Messages
-sent with Enter wait for the turn to end and then run in order; Ctrl+Enter or
-Alt+Enter sends an interjection that is added to the running turn at its next
-tool boundary. While a workflow runs, which can take hours, a message sent with
-Enter is an interjection too: every workflow takes it at its next tool boundary,
-and the row says `at next tool`. Commands (`/…`, `$…`) always wait for the turn
-or workflow run to end.
+one muted row each (at most three, then `+N more`), marked with an arrow and
+`at next tool`. It reaches the model without waiting for the turn to end: the
+running turn takes it at its next tool call, one message per call, in the order
+typed, whether that turn is a direct reply or a workflow phase. If the turn ends
+first, what is left is sent as the next turn. A command or skill (`/…`, `$…`)
+is routed locally, not sent to the model, so it waits for the end of the turn
+and runs then. ↑ on an empty prompt selects the newest row (the `queue`
+context): ↑/↓ move, Enter moves the message back into the prompt to edit, Delete
+or Backspace removes it, Esc returns to the prompt.
 
 ← opens the hub only when the prompt is empty. If the prompt was just emptied
 by Backspace, Ctrl+U or history recall, the first ← says "Press ← again to open

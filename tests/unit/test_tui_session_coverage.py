@@ -659,22 +659,22 @@ def test_tui_routing_workflow_commands_and_skill_reload(
     assert ctx.cmd_registry.get("/coverage") is None
 
 
-def test_only_interjections_are_claimed_at_a_tool_boundary() -> None:
-    """TUX-04 §2.6: Enter queues for after the turn; Ctrl+Enter interjects."""
+def test_ordinary_messages_are_claimed_at_a_tool_boundary_and_commands_wait() -> None:
+    """TUX-04 §2.6: a message joins the running turn, one per tool call, in order."""
     session, _ctx, _workspace, _input = _make_session()
 
-    session._msg_queue.append("follow-up")
-    assert session._next_queued_message() is None
-    assert session._msg_queue.texts() == ["follow-up"]
-
-    session._msg_queue.append("look at the tests too", interject=True)
+    session._msg_queue.append("/workflow demo")
+    session._msg_queue.append("look at the tests too")
+    session._msg_queue.append("and the docs")
     assert session._next_queued_message() == "look at the tests too"
-    assert session._msg_queue.texts() == ["follow-up"]
+    assert session._next_queued_message() == "and the docs"
+    assert session._next_queued_message() is None  # only the command is left
+    assert session._msg_queue.texts() == ["/workflow demo"]
 
     session._msg_queue.clear()
-    session._msg_queue.append("/workflow demo", interject=True)
+    session._msg_queue.append("$skill")
     assert session._next_queued_message() is None
-    assert session._msg_queue.texts() == ["/workflow demo"]
+    assert session._msg_queue.texts() == ["$skill"]
 
 
 def test_tui_reload_tools_replaces_session_tools_and_workflow_config(

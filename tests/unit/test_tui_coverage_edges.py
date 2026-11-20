@@ -179,9 +179,9 @@ class _FakeSession:
     def _prepare_submission(self) -> None:
         UnifiedInputSession._prepare_submission(self)  # type: ignore[arg-type]
 
-    async def _submit_buffer(self, *, commit_history: bool, interject: bool = False) -> None:
+    async def _submit_buffer(self, *, commit_history: bool) -> None:
         await UnifiedInputSession._submit_buffer(  # type: ignore[arg-type]
-            self, commit_history=commit_history, interject=interject
+            self, commit_history=commit_history
         )
 
     def _find_trigger_anchor(self) -> int | None:

@@ -21,7 +21,7 @@ Implemented on branch `tux-tux04`. Every acceptance criterion has a test:
 | 3. One Enter (replaced by amendment 12) | `test_enter_places_a_picked_command_and_a_second_enter_runs_it`, `test_enter_sends_a_command_that_was_typed_in_full`, `test_one_enter_opens_help_through_the_session`, `test_enter_on_a_command_that_needs_an_argument_lists_its_arguments` (`/workflow`, see amendment 1), `test_tab_only_completes` |
 | 4. Ctrl+R | `test_ctrl_r_finds_an_entry_and_enter_puts_it_in_the_prompt_unsent`, `test_ctrl_r_again_is_older_ctrl_s_newer_and_case_is_ignored`, `test_esc_restores_the_draft_exactly`, `test_the_search_row_shows_the_count_and_hints` |
 | 5. External editor | `test_ctrl_x_ctrl_e_replaces_the_prompt_with_the_edited_file` (the criterion's `EDITOR`, terminal mode compared by a fake backend), `test_the_editor_file_is_private_and_holds_the_draft`, `test_a_failing_editor_keeps_the_draft_and_says_so`, `test_ctrl_x_alone_opens_the_editor_after_the_timeout`, `test_another_key_after_ctrl_x_cancels_the_chord` |
-| 6. The queue | `test_two_messages_typed_during_a_turn_render_as_two_rows`, `test_at_most_three_rows_then_more`, `test_deleting_the_first_leaves_only_the_second_to_be_sent`, `test_enter_in_the_queue_moves_the_message_back_into_the_prompt`, `test_ctrl_enter_while_busy_queues_an_interjection`; `tests/integration/test_composer_interjection.py` (scripted transport) |
+| 6. The queue | `test_two_messages_typed_during_a_turn_render_as_two_rows`, `test_at_most_three_rows_then_more`, `test_deleting_the_first_leaves_only_the_second_to_be_sent`, `test_enter_in_the_queue_moves_the_message_back_into_the_prompt`, `test_enter_while_busy_queues_a_message_for_the_next_tool_call`, `test_alt_enter_is_a_line_break_whether_or_not_a_turn_runs`; `tests/integration/test_composer_interjection.py` (scripted transport) |
 | 7. Shift+Enter | `test_csi_u_keys_decode_to_their_legacy_keys`, `test_the_kitty_mode_is_only_used_where_supported`, `test_the_posix_backend_pushes_and_restores_the_kitty_mode` (fake TTY); `tests/unit/test_windows_terminal_backend.py` |
 | 8. Embedded composers | `test_embedded_composers_pass_the_same_table` (the criterion-1 table on `EmbeddedComposer`); `tests/unit/test_embedded_composer.py` |
 | §5 Rollout | `tests/unit/test_keymap.py::test_a_file_keeps_a_key_a_new_default_took_and_says_so_once`, `tests/unit/test_keymap_screens.py::test_rebinding_applies_without_restart` |
@@ -39,22 +39,21 @@ Amendments to the design:
    prompt as typed).
 2. **Queue rows (§2.6).** `⌛` is an emoji, which TUX-01 bans from chrome, so
    a queued row starts with the glyph set's `pipe` (`│ 1  text`) and an
-   interjection with `right` plus `at next tool`. The footer computes its own
+   message that joins the turn with `right` plus `at next tool`. The footer computes its own
    conditions (`components.py`, owned by TUX-02), so the `↑ edit queue` hint
    is drawn at the end of the last queue row instead of in the footer, and
    only while a turn runs (while the runtime loads, ↑ recalls history). The
    rows also show while a picker is open. The old `⌛ Queued #N: … — loading
    agent runtime…` text becomes a transient `Queued until loading agent
    runtime finishes…` notice, shown only while the runtime loads.
-3. **Ctrl+Enter / Alt+Enter while idle** insert a line break
-   (`composer.newline_alt`); while a turn runs they interject
-   (`composer.interject`). The keymap alias `ctrl+enter` → `ctrl+j` is gone:
+3. **Ctrl+Enter / Alt+Enter** insert a line break (`composer.newline_alt`),
+   idle or not (amendment 11 removed `composer.interject`). The keymap alias
+   `ctrl+enter` → `ctrl+j` is gone:
    Ctrl+Enter is its own key (kitty `CSI 13;5u`, and the Windows console).
    Most terminals send Shift+Enter and Ctrl+Enter as a plain Enter, so the
    footer shows the keys every terminal can send: `composer.newline` lists
-   Ctrl+J before Shift+Enter, and `composer.interject` lists Alt+Enter before
-   Ctrl+Enter. The interjection hint ranks below `Esc pause`, which keeps its
-   place in an 80-column footer while a turn runs.
+   Ctrl+J before Shift+Enter, and `composer.newline_alt` lists Alt+Enter before
+   Ctrl+Enter.
 4. **Kitty keyboard mode (§2.1).** Enabled where the environment identifies
    kitty, WezTerm, Ghostty or foot (`TERM`, `TERM_PROGRAM`,
    `KITTY_WINDOW_ID`) and not under tmux/screen, rather than by a terminal
@@ -81,7 +80,7 @@ Amendments to the design:
 9. Files changed outside the listed ownership, kept minimal:
    `tui/trigger.py`, `tui/triggers/slash_command.py`,
    `tui/triggers/at_mention.py` (`on_enter`, `on_cancel` removed),
-   `tui/runtime/commands.py` (`SendMessageCommand.interject`),
+   `tui/runtime/commands.py` (`SendMessageCommand`),
    `tui/keymap_service.py` and `tui/keymap_table.py` (notices),
    `tui/conversation_store.py` (`MessageQueue`, `ConversationStore.queue`),
    `docs/guides/startup.md`.
@@ -90,13 +89,21 @@ Amendments to the design:
     `tui/theme.py` from TUX-01, which the integration branch removes
     (`refactor(tui): look palette tokens up without getattr`). TUX-04 adds no
     `getattr` or `hasattr` call.
-11. **Workflows take queued input (operator request).** §2.6's "plain Enter
-    queues it for after the turn" left a message stranded for hours while a
-    workflow such as `goal_flow` ran, because the whole run is one turn. While a
-    workflow handle is live, an ordinary message typed with Enter is queued as an
-    interjection (`at next tool`), exactly as Alt+Enter would; commands and
-    skills still wait for the run to end. Every workflow starts its turns with
-    the session's claim hook (`tests/unit/test_workflow_queued_input_contract.py`).
+11. **A message joins the running turn (operator request, replaces §2.6's
+    "plain Enter queues it for after the turn" and the Ctrl+Enter interjection).**
+    A turn, and above all a workflow run, can last for hours, and a message
+    queued for "after the turn" sat unread for all of it. While a turn runs,
+    Enter queues an ordinary message that the turn takes at its next tool call
+    (`at next tool`), one per call, in the order typed; if the turn ends first,
+    the rest is sent as the next turn. Commands and skills (`/…`, `$…`) are
+    routed locally and still wait for the end of the turn. This holds for a
+    direct turn and for every workflow, which start their turns with the
+    session's claim hook (`tests/unit/test_workflow_queued_input_contract.py`).
+    The second key became redundant and is gone: `composer.interject`,
+    `InterjectCapability`, `SendMessageCommand.interject` and
+    `QueuedMessage.interject` are deleted (`QueuedMessage.joins_turn` is derived
+    from the text), `claim_interjection` is `claim_message`, and Alt+Enter and
+    Ctrl+Enter are a line break in every state.
 
 12. **Picking a command places it; it does not run it (operator request,
     replaces §2.5 and criterion 3's "one Enter").** In the `/` and `$`
@@ -229,7 +236,7 @@ Notes on the keys:
   - Delete removes it;
   - Esc returns.
 - The footer notification `⌛ Queued #N` is deleted.
-- Ctrl+Enter, where the terminal reports it, or Alt+Enter while busy, sends the message as an **interjection**. It is appended at the next tool boundary, which is what `_next_queued_message` does now. Plain Enter queues it for after the turn. Qoder distinguishes the two the same way.
+- Enter while busy sends the message into the running turn (**amended by 11**; originally Ctrl+Enter / Alt+Enter did this and Enter queued for after the turn). It is appended at the next tool boundary, which is what `_next_queued_message` does now. Plain Enter queues it for after the turn. Qoder distinguishes the two the same way.
 
 ## 3. Non-goals
 
@@ -254,7 +261,7 @@ Notes on the keys:
 6. **The queue.**
    - Two messages typed during a turn render as two queue rows.
    - Deleting the first leaves only the second to be sent.
-   - Ctrl+Enter's interjection is delivered at the next tool boundary (an integration test with a scripted transport).
+   - A message typed with Enter is delivered at the next tool boundary (an integration test with a scripted transport).
 7. **Shift+Enter.** The reader decodes `\x1b[13;2u` as Shift+Enter, and the session restores the kitty keyboard mode on exit. This is tested on the POSIX backend with a fake TTY.
 8. **Embedded composers inherit everything.** AGI-05's `EmbeddedComposer` tests pass the same key table.
 

@@ -280,21 +280,6 @@ class SubmitCapability:
         return _CONSUMED
 
 
-class InterjectCapability:
-    """Ctrl+Enter / Alt+Enter during a turn: deliver at its next tool boundary (TUX-04 §2.6)."""
-
-    async def handle(
-        self,
-        key: Key,
-        ch: str,
-        session: UnifiedInputSession,
-    ) -> CapabilityResult:
-        if session._action != "composer.interject":
-            return _PASS
-        await session._submit_buffer(commit_history=False, interject=True)
-        return _CONSUMED
-
-
 # ── Newline ───────────────────────────────────────────────────────────────────
 
 
@@ -808,7 +793,7 @@ IDLE_CAPABILITIES: list[Capability] = [
     InsertCapability(),  # fallback — must be last
 ]
 
-#: During a turn: queue or interject messages, interrupt, and the same editing.
+#: During a turn: send messages into it, interrupt, and the same editing.
 STREAMING_CAPABILITIES: list[Capability] = [
     OverlayCapability(),
     CondensedPasteEscapeCapability(),
@@ -816,7 +801,6 @@ STREAMING_CAPABILITIES: list[Capability] = [
     PasteCapability(),
     TriggerCapability(),  # @, / etc. — same as idle
     SubmitCapability(commit_history=False),
-    InterjectCapability(),
     NewlineCapability(),
     BackspaceCapability(),
     EditingCapability(),

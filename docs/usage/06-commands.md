@@ -29,7 +29,7 @@ The canonical registry is `BUILTIN_COMMANDS` in
 | `/mcp` | `[status\|reload\|connect NAME\|disconnect NAME\|refresh NAME\|doctor [NAME]]` | MCP status and control |
 | `/model` | `[provider] [model] [--save]` | Open the model picker, or switch to a provider and model at once; applies from the next turn, no restart (alias `/models`) |
 | `/skills` | `[reload]` | Inspect and reload skills |
-| `/status` | — | Show the session, model, usage and the pre-flight check's findings (credentials, model, workspace, tools) |
+| `/status` | — | Show the session, model, usage, the terminal (its size, `TERM`, tmux or screen, and a `$COLUMNS` that disagrees with it) and the pre-flight check's findings (credentials, model, workspace, tools) |
 | `/startup` | — | Print startup milestones (process start → first frame → agent runtime ready, modules at first frame) and the bounded phase report |
 | `/keybindings` | — | Show the effective key bindings and where each comes from; create `~/.agenthicc/keybindings.toml` with every action listed |
 | `/perf` | — | Print live-block rendering diagnostics: frames drawn, full redraws, render and write time percentiles, characters per frame, whether synchronized output is on, event-loop lag (p50, p95, max) and the last five loop stalls with the code that caused them |

@@ -458,8 +458,8 @@ class UnifiedInputSession:
         self._prepare_submission()
         await self._bus.dispatch_async(SendMessageCommand(text=text))
 
-    async def _submit_buffer(self, *, commit_history: bool, interject: bool = False) -> None:
-        """Send the prompt (Enter, a picker's one-Enter command, an interjection).
+    async def _submit_buffer(self, *, commit_history: bool) -> None:
+        """Send the prompt (Enter, or a picker's Enter on a command typed in full).
 
         A target-bound composer (``clear_after_acceptance``) keeps the text
         until its owner accepts it; otherwise the prompt clears first.
@@ -467,7 +467,7 @@ class UnifiedInputSession:
         raw_text = self._buf.text
         has_text = bool(raw_text.strip())
         text = raw_text if self._preserve_submission_text else raw_text.strip()
-        command = SendMessageCommand(text=text, interject=interject)
+        command = SendMessageCommand(text=text)
         if self._clear_after_acceptance and has_text:
             result = await self._bus.dispatch_async(command)
             if isinstance(result, Acceptance) and not result.ok:
