@@ -312,7 +312,7 @@ garbage collection holds the GIL and stalls the loop from whichever thread
 triggered it, while the loop thread looks idle, so collections are timed too:
 a stall that was mostly collection reads `garbage collection (450 ms)`.
 `tests/performance/test_subagent_loop_lag.py` gates this with six subagents
-searching a 33,000-file project: worst stall under 250 ms and p95 under 25 ms.
+searching a 33,000-file project: worst stall under 500 ms and p95 under 100 ms.
 
 The shared animation frame advances only while an animated status is active:
 thinking, tool execution, recovery, or compaction. Idle, complete, and error
