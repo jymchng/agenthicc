@@ -222,7 +222,7 @@ async def test_ctrl_t_shows_the_failed_commands_full_output_and_q_returns_with_t
         await rig.show("Transcript")
         await rig.show("stored line 30")
         screen = rig.screen()
-        assert all(f"stored line {i}" in screen for i in range(1, 31))
+        assert all(f"stored line {i}" in screen for i in range(1, 31)), screen
         assert "exit 3" in screen
         assert "[expanded]" in screen
         assert rig.suspended == 1 and rig.held == 1  # the live block gave the screen up
