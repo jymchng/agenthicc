@@ -10,7 +10,7 @@ non-ASCII character from its glyph set::
      /config         Show or change configuration
                                                          1 of 2 ·  ↑↓ tab ⏎
 
-- The selected row has an ``accent`` bar and an ``accent_bg`` background.
+- The selected row has an ``accent`` bar and bold text, with no background.
 - The characters the query matched are bold in ``accent``.
 - Key bindings are right-aligned in ``muted``.
 - A muted rule heads each group.
@@ -329,6 +329,5 @@ class Picker(Generic[T]):
             line.overflow = "crop"
             line.truncate(width)
             if selected:
-                line.pad_right(max(0, width - cell_len(line.plain)))
-                line.stylize(p.on("accent_bg"))
+                line.stylize("bold")  # the accent bar marks it; nothing is drawn behind it
         return lines

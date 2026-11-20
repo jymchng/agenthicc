@@ -19,7 +19,7 @@ pytestmark = pytest.mark.unit
 
 
 class _Queue:
-    def claim_interjection(self) -> str | None:
+    def claim_message(self) -> str | None:
         return None
 
 

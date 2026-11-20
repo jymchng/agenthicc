@@ -29,11 +29,10 @@ from typing import TYPE_CHECKING, Literal
 from rich.console import Console, ConsoleRenderable, RenderableType, RenderHook
 from rich.control import Control
 from rich.segment import Segments
-from rich.style import Style
 from rich.text import Text
 
 from agenthicc.tui.conversation_store import AppState, ConversationEvent
-from agenthicc.tui.theme import glyphs, key_arrows, palette, style
+from agenthicc.tui.theme import glyphs, key_arrows, style
 from agenthicc.tui.transcript.log import SearchJob
 from agenthicc.tui.transcript.sources import SessionLogSource
 from agenthicc.tui.transcript.view import TranscriptView
@@ -269,7 +268,7 @@ class PaneView(TranscriptView):
 
     def _indicator(self, row: Text) -> Text:
         """The last pane row, ending in ``↓ N new · End to follow``."""
-        p, g = palette(), glyphs()
+        g = glyphs()
         hint = self.keymap.hint("composer.pane_follow")
         key = key_arrows(hint.keys) if hint is not None else "End"
         unseen = self.unseen
@@ -277,7 +276,7 @@ class PaneView(TranscriptView):
         cut = max(0, self.width - len(text))
         kept = row.copy()
         kept.truncate(cut, pad=True)
-        kept.append(text, style("accent", bold=True) + Style.parse(p.on("accent_bg")))
+        kept.append(text, style("accent", bold=True))
         return kept
 
 

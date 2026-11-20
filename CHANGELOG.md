@@ -41,6 +41,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   scrolling details body (`Dialog.showing_details`) is gone too; `Ctrl+T`
   opens the transcript view. `Ctrl+T` can no longer be a keybindings `leader`.
 
+### Changed — selections have no background
+
+- **A selected row is the accent bar and bold text.** The answer form and the
+  `ask_user` options, the agents hub list, dialogs, the `/` `@` and Ctrl+P
+  pickers, `/help`, `/history`, the registry lists, the subagent panel and the
+  theme picker no longer draw a background behind the selected row. Reverse video
+  is gone from the `/config` menu and the hub's confirm choices too (the focused
+  row is bold in the accent colour). The `accent_bg` theme token is removed.
+
+### Changed — a message typed during a turn reaches the model during it
+
+- **Enter now sends into the running turn.** A message typed while a turn runs
+  waited for the turn to end, which for a long turn or a workflow run meant it
+  sat unread for minutes or hours. Now the running turn takes it at its next
+  tool call, one message per call in the order typed (the queue row says
+  `at next tool`), and if the turn ends first the rest is sent as the next turn.
+  This holds for a direct reply and for every workflow. Commands and skills
+  (`/…`, `$…`) are routed locally, so they still wait for the end of the turn.
+- **One key fewer.** `Alt+Enter` / `Ctrl+Enter` used to be "interject" while a
+  turn ran; Enter does that now, so they are a line break in every state and the
+  `composer.interject` action, its footer hint, `SendMessageCommand.interject`
+  and `QueuedMessage.interject` are gone (`claim_interjection` is
+  `claim_message`).
+- **One blank line, never two.** The scrollback prints a blank line only when the
+  previous output was not one, so a block's trailing blank, the gap owed before
+  the next block and the blank an event with nothing to show opened can no longer
+  stack up after `✾ Worked for …`.
+- **A real terminal's size wins over a stale `COLUMNS` / `LINES`.** Rich takes
+  those variables over the terminal's own answer, so a shell that had exported
+  them made the TUI wrap for one width and draw at another (cut lines, a live
+  block repainted over itself). On a terminal they are now ignored. `/status`
+  gained a `Terminal` row (the size the terminal reports, `TERM`, tmux or screen,
+  and a `$COLUMNS` that disagrees) to compare with output that looks cut off.
+
+### Fixed — the agents hub no longer cuts text off
+
+- **Answer form.** A long option (`A — One screen, interleaved (recommended): the
+  shell stays l…`) was cut at the panel's edge. Options now wrap under their own
+  text with the highlight on every row, and a short terminal scrolls the options
+  around the cursor (`↑ 3 more`, `↓ 2 more`) instead of pushing the hint and
+  footer off screen.
+- **Transcript.** The hub's transcript showed the first line of each reply, cut
+  at 240 characters, and tool calls the same way. A reply now keeps its
+  paragraphs (up to 8,000 characters) and tool calls their summary and first
+  output line; each entry wraps under its role and an entry beyond 40 lines ends
+  in `… N more lines`.
+- **Requests and details.** The command in an approval request was flattened to
+  one line and cut at 240 characters. It now keeps its lines, wraps, and the
+  detail view shows it whole (up to 4,000 characters). Errors, the latest
+  activity, the receipt, change stats, attempts, the status notice, the empty
+  state and the help screen's descriptions wrap the same way. A capped block says
+  how many lines it left out; nothing is cut without a marker.
+
 ### Changed — compaction in the transcript
 
 - **A quieter compaction indicator.** While the conversation is compacted, a

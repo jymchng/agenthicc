@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-from unittest.mock import MagicMock
 
 from agenthicc.subagents.pool import WorkerState, SubagentPoolState
 from agenthicc.tui.conversation_store import AppState, ConversationStore
@@ -87,11 +86,13 @@ class TestScrollBufferRenderers:
         renderer = _RENDERERS.get(kind)
         if renderer is None:
             return ""
+        from agenthicc.tui.conversation_store import AppState
+        from agenthicc.tui.workspace.appender import ScrollBufferAppender
+
         buf = StringIO()
         console = Console(file=buf, highlight=False, markup=False, no_color=True, width=width)
-        stub = MagicMock()
-        stub._console = console
-        renderer(stub, ev)
+        # A real appender: renderers print through its own methods.
+        renderer(ScrollBufferAppender(AppState.create(), console), ev)
         return buf.getvalue()
 
     def test_system_renderer_prints_text(self) -> None:

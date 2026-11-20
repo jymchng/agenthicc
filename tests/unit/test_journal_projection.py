@@ -137,7 +137,9 @@ async def test_usage_records_never_wait_for_a_slow_disk(
         journal.close()
 
     assert len(records) == 60
-    assert worst < 0.010, f"an append took {worst * 1000:.1f} ms"
+    # The simulated disk stalls for 50 ms per fsync, so an append that waited on it
+    # takes at least that long. 30 ms keeps that distinction with room for a busy host.
+    assert worst < 0.030, f"an append took {worst * 1000:.1f} ms"
 
 
 def test_a_durable_record_is_on_disk_after_queued_usage_and_in_seq_order(tmp_path: Path) -> None:

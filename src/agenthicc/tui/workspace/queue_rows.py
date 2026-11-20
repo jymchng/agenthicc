@@ -6,8 +6,8 @@ While a turn runs, each message typed for after it shows as one muted row
      │ 1  also update the changelog
      → 2  check the lockfile too        at next tool
 
-An interjection (Ctrl+Enter / Alt+Enter) is marked with an arrow and is
-delivered at the running turn's next tool boundary. After ↑ on an empty prompt
+A message that joins the running turn (anything but a command) is marked with
+an arrow and is delivered at the turn's next tool call. After ↑ on an empty prompt
 the selected row is highlighted and a hint row lists the queue's keys.
 """
 
@@ -66,8 +66,8 @@ def queue_rows(state: AppState, cols: int) -> list[str]:
     for number, item in enumerate(items[start:end], start + 1):
         lines = item.text.splitlines() or [""]
         first = lines[0] + (f" {g.ellipsis}" if len(lines) > 1 else "")
-        marker = g.right if item.interject else g.pipe
-        tag = "  at next tool" if item.interject else ""
+        marker = g.right if item.joins_turn else g.pipe
+        tag = "  at next tool" if item.joins_turn else ""
         prefix = f"  {marker} {number}  "
         body = _clip(first, max(8, cols - len(prefix) - len(tag) - 1), g.ellipsis)
         if item.id == focus:

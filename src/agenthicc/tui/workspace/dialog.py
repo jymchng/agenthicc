@@ -10,7 +10,7 @@ are the same everywhere, so the three no longer disagree:
   taller than the room left, and shrinks to fit when it is short;
 - one muted **reason** line;
 - numbered **options**: ``1``–``9`` choose and confirm, the selected row has
-  the ``accent`` bar on ``accent_bg``, and a destructive choice is drawn in
+  the ``accent`` bar and bold text, and a destructive choice is drawn in
   ``danger`` only while it is selected;
 - the **key legend** in the bottom border, from the ``dialog`` keymap context.
 
@@ -408,8 +408,7 @@ class Dialog:
                 row.append(f"  {option.mark}", p.success)
             for line in row.wrap(_measure_console(width), width, overflow="fold"):
                 if selected:
-                    line.align("left", width)
-                    line.stylize(p.on("accent_bg"))
+                    line.stylize("bold")
                 rows.append(line)
         return rows
 

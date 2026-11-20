@@ -10,7 +10,7 @@ import os
 import sys
 import threading
 import uuid
-from collections.abc import Awaitable, Callable, Iterable, Iterator, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Iterator, MutableMapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC
 from functools import partial
@@ -807,6 +807,23 @@ def _discover_workflow_registry_sync() -> WorkflowRegistry:
 # ── session construction ──────────────────────────────────────────────────────
 
 
+def _trust_the_terminal_size(environ: MutableMapping[str, str], *, is_terminal: bool) -> None:
+    """Drop a stale ``COLUMNS`` / ``LINES`` so the live block uses the real size.
+
+    Rich, like :func:`shutil.get_terminal_size`, takes ``$COLUMNS`` and
+    ``$LINES`` over what the terminal reports. A shell that exports them (a
+    login script, a multiplexer, an IDE) leaves the size it started with in the
+    environment for good, so after a resize or in a narrower pane the text is
+    wrapped for one width and drawn at another: lines are cut and the live block
+    is repainted over itself. On a real terminal the kernel's answer is the only
+    right one; without one (a pipe, a test) the variables stay in force.
+    """
+    if not is_terminal:
+        return
+    environ.pop("COLUMNS", None)
+    environ.pop("LINES", None)
+
+
 def _apply_startup_theme(console: Console, cfg: AgenthiccConfig) -> None:
     """Choose the session's theme and glyphs before anything is drawn (TUX-01).
 
@@ -1118,6 +1135,7 @@ async def _build_session_context_impl(
 
     configure_walk_limit(cfg.tools.max_fs_walks)
 
+    _trust_the_terminal_size(os.environ, is_terminal=not headless and sys.stdout.isatty())
     console = Console(
         highlight=False,
         markup=True,
@@ -3985,16 +4003,16 @@ class TUISession:
         return integration._handoff(self)
 
     def _next_queued_message(self) -> str | None:
-        """Claim the next interjection at a completed tool boundary (TUX-04 §2.6).
+        """Claim the next queued message at a completed tool boundary (TUX-04 §2.6).
 
-        The active agent loop owns the shared memory, so an interjection
-        (Ctrl+Enter / Alt+Enter) can be appended safely only after its tool
-        results have been committed and before the loop's next model request.
-        Messages queued with Enter wait for the turn to end, where
-        ``advance()`` sends them in order, unless a workflow is running: they
-        are then queued as interjections too, since a workflow's turn can last
-        hours. Slash commands and skills always wait for the end of the run;
-        they are routed locally instead of being sent to the model.
+        The active agent loop owns the shared memory, so a message can be
+        appended safely only after its tool results have been committed and
+        before the loop's next model request. Every ordinary message typed
+        while a turn runs, in a workflow or not, is taken here, one per tool
+        call, in the order it was typed; if the turn ends first, ``advance()``
+        sends what is left as the next turn. Slash commands and skills are
+        routed locally instead of being sent to the model, so they always wait
+        for the end of the run.
         """
         if self._handoff_pending:
             # The tool results are committed synchronously after this call
@@ -4002,7 +4020,7 @@ class TUISession:
             # cancels the turn only once the exchange is complete.
             asyncio.get_running_loop().call_soon(self._run_background_handoff)
             return None
-        text = self._msg_queue.claim_interjection()
+        text = self._msg_queue.claim_message()
         if text is None:
             return None
         self._ctx.app_state.conversation.append_event("user_message", {"text": text})
@@ -5532,17 +5550,12 @@ class TUISession:
             if decision.policy.value == "reject":
                 self._notify_busy_rejected(text, decision.reason)
                 return
-            # Shown above the composer until the turn ends, or until the next
-            # tool boundary for an interjection (TUX-04 §2.6). A workflow runs
-            # for as long as its goals take, so "after the turn" could be hours
-            # away: while one runs, every message joins it at the next tool
-            # boundary, which is how Claude Code takes input typed mid-turn.
-            # Commands and skills are routed locally and wait for the run to end.
-            is_message = not text.startswith(("/", "$"))
-            self._msg_queue.append(
-                text,
-                interject=is_message and (cmd.interject or self._workflow_handle is not None),
-            )
+            # Shown above the composer. A message joins the running turn at its
+            # next tool call, as in Claude Code, or starts the next turn if this
+            # one ends first; a turn (and a workflow run) can last for hours, so
+            # waiting for its end would leave the message unread all that time.
+            # A command or skill is routed locally and waits for the end.
+            self._msg_queue.append(text)
             if self._runtime_loading():
                 from agenthicc.tui.theme import glyphs
 

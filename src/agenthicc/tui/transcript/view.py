@@ -635,8 +635,8 @@ class TranscriptView:
                 row.append(" " * (room - len(tag) - 1))
                 row.append(tag, p.muted)
         if selected:
-            row.pad_right(max(0, self.width - row.cell_len))
-            row.stylize(Style.parse(p.on("accent_bg")))
+            # The accent bar and bold text: a selection has no background.
+            row.stylize(Style(bold=True), 1)
         return row
 
     def _is_turn(self, item: int) -> bool:

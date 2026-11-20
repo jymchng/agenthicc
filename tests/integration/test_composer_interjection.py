@@ -1,10 +1,11 @@
-"""TUX-04 §2.6: Ctrl+Enter's interjection reaches the agent at the next tool boundary.
+"""TUX-04 §2.6: a message typed during a turn reaches the agent at its next tool call.
 
 A scripted transport runs one tool and then answers. While the tool runs the
-user types two messages into the composer: one with Ctrl+Enter (an
-interjection) and one with Enter (queued for after the turn). The second
-model request carries the interjection and nothing else; the queued message
-is still waiting when the turn ends.
+user types two messages and a command into the composer with Enter. The second
+model request carries the first message, in the order typed and one per tool
+call; the second message and the command are still waiting when the turn ends
+(the command always waits; the message would go at the next tool call, or start
+the next turn).
 
 NOTE: no ``from __future__ import annotations`` here — ``@tool()`` inspects
 real annotations at decoration time.
@@ -39,7 +40,7 @@ def _user_texts(messages: list[object]) -> list[str]:
     return texts
 
 
-async def test_an_interjection_is_delivered_at_the_next_tool_boundary(running_processor):
+async def test_a_message_is_delivered_at_the_next_tool_boundary(running_processor):
     session, ctx, _workspace, _input = _make_session()
     ctx.command_bus.register(SendMessageCommand, session.handle_send)
     composer = UnifiedInputSession(ctx.app_state, ctx.command_bus)
@@ -55,8 +56,9 @@ async def test_an_interjection_is_delivered_at_the_next_tool_boundary(running_pr
         """Inspect an item before answering the user."""
         # The user types while the tool runs.
         # Queued first, so a FIFO that ignored the kind would deliver it instead.
+        await type_keys("check the lockfile too", (Key.ENTER, ""))
         await type_keys("then update the changelog", (Key.ENTER, ""))
-        await type_keys("check the lockfile too", (Key.MODIFIED, "ctrl+enter"))
+        await type_keys("/help", (Key.ENTER, ""))
         return {"item": item, "status": "ready"}
 
     mock = MockTransport()
@@ -90,11 +92,12 @@ async def test_an_interjection_is_delivered_at_the_next_tool_boundary(running_pr
     assert len(mock.calls) == 2
     second = _user_texts(list(mock.calls[1].messages))
     assert "check the lockfile too" in second
-    assert "then update the changelog" not in second
-    assert session._msg_queue.texts() == ["then update the changelog"]
+    assert "then update the changelog" not in second  # one message per tool call
+    assert "/help" not in second  # a command is routed locally, never sent to the model
+    assert session._msg_queue.texts() == ["then update the changelog", "/help"]
 
 
-async def test_an_enter_message_joins_a_running_workflow_at_the_next_tool_boundary(
+async def test_a_message_joins_a_running_workflow_at_the_next_tool_boundary(
     running_processor,
 ):
     """A workflow's turn can last hours: Enter must not wait for all of it."""

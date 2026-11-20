@@ -180,7 +180,9 @@ The TUI lists the oldest pending requests first.
 open the answer form. It works like the foreground Questions overlay:
 
 - it shows one question at a time, with its options and "Other — type your
-  answer";
+  answer"; a long option wraps under its own text instead of being cut at the
+  panel's edge, and on a short terminal the options scroll around the cursor
+  (`↑ 3 more`, `↓ 2 more`) so the hint line and footer stay on screen;
 - ↑/↓ choose an option and ←/→ move between questions;
 - Enter confirms an answer; on the last unanswered question it sends them
   all, and Ctrl+S sends once every question is answered;
@@ -428,10 +430,18 @@ sections answer four questions:
 |---|---|---|
 | Needs you | The agent waits or its worker was lost | The inbox request's canonical target — tool, input, workspace paths, mode — redacted; `y`/`n` resolve that exact item |
 | Now | The agent is active | Phase progress, queue position, the latest activity |
-| Transcript | Always | The last 50 journal events, redacted with the export redactor, one line each; `f` toggles following new events, `t` the whole transcript |
+| Transcript | Always | The last 50 journal events, redacted with the export redactor, each wrapped under its role: a reply keeps its paragraphs (up to 8,000 characters), a tool call its summary and first output line; an entry longer than 40 lines ends in `… N more lines`; `f` toggles following new events, `t` the whole transcript |
 | Changes | A worktree agent | `git diff --stat` from its base commit including uncommitted work; `d` shows the full diff |
 | Attempts | More than one attempt | Each attempt's outcome and error |
 | Details | Always | Only fields that have a value |
+
+Content is wrapped, never cropped. A command, path, reply, error or option longer
+than the panel continues on the lines below it, in the same column, and a block
+that is capped says how many lines it left out (`… 5 more lines`). The peek
+panel keeps at most six lines of a request value, and the detail view shows it
+whole (up to 4,000 characters, with a marker beyond that), so Enter always opens
+the complete request. Only fixed-column chrome (the list rows, headings, the key
+hints) is shortened with an ellipsis.
 
 The title and the Needs you card stay at the top while the rest scrolls.
 The header shows the agent's tokens and cost across all its attempts. The

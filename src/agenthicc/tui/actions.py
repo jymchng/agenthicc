@@ -81,7 +81,7 @@ _COMPOSER_ACTIONS: tuple[Action, ...] = (
         ("enter",),
         "submit",
         hint_priority=90,
-        description="Send the prompt; while a turn runs it is queued for after the turn",
+        description="Send the prompt; while a turn runs it joins the turn at its next tool call",
     ),
     Action(
         "composer.newline",
@@ -96,21 +96,10 @@ _COMPOSER_ACTIONS: tuple[Action, ...] = (
     Action(
         "composer.newline_alt",
         "composer",
-        ("alt+enter", "ctrl+enter"),
-        "newline",
-        unless=_RUNNING,
-        description="Insert a line break (while a turn runs these keys interject)",
-    ),
-    Action(
-        "composer.interject",
-        "composer",
         # Alt+Enter first: most terminals send Ctrl+Enter as a plain Enter.
         ("alt+enter", "ctrl+enter"),
-        "interject",
-        # Below Esc pause (70), which must stay in an 80-column footer.
-        hint_priority=65,
-        when=_RUNNING,
-        description="Send the prompt into the running turn at its next tool boundary",
+        "newline",
+        description="Insert a line break",
     ),
     Action(
         "composer.commands",
@@ -428,7 +417,6 @@ _YIELDING = frozenset(
     {
         "composer.newline",
         "composer.newline_alt",
-        "composer.interject",
         "composer.delete_forward",
         "composer.kill_to_end",
         "composer.delete_word_back",

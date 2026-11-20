@@ -206,14 +206,14 @@ def _plain(lines: list[Text]) -> list[str]:
     return [line.plain.rstrip() for line in lines]
 
 
-def test_the_selected_row_has_an_accent_bar_and_background_not_reverse() -> None:
+def test_the_selected_row_has_an_accent_bar_and_bold_text_and_no_background() -> None:
     picker: Picker[str] = Picker(_rows(), query="/co")
     lines = picker.render(80)
     selected = lines[1]
     assert selected.plain.startswith(f" {glyphs().bar} /compact")
     styles = {str(span.style) for span in selected.spans}
-    assert any(palette().accent_bg in style for style in styles)
-    assert not any("reverse" in style for style in styles)
+    assert any("bold" in style for style in styles)
+    assert not any("reverse" in style or " on " in style for style in styles)
     assert not lines[2].plain.startswith(f" {glyphs().bar}")
 
 

@@ -2096,14 +2096,16 @@ CHORD_TIMEOUT_S = 0.3                          # Ctrl+X waits this long for Ctrl
   (`✓ Context refreshed · 849 tokens · 3s` or `✗ Context refresh failed · 3s`);
   the compactor no longer appends `system` text events.
 - **Queue.** `tui.conversation_store.MessageQueue` (`ConversationStore.queue`)
-  holds `QueuedMessage(id, text, interject)` in the `items` signal and the
-  selected id in `focus`; `append(text, interject=)`, `insert`, `pop`,
-  `remove(id)`, `claim_interjection()`, `clear()`, `texts()`.
+  holds `QueuedMessage(id, text)` in the `items` signal and the selected id in
+  `focus`; `QueuedMessage.joins_turn` is true for an ordinary message and false
+  for a command or skill. `append(text)`, `insert`, `pop`, `remove(id)`,
+  `claim_message()` (the first message that joins a turn), `clear()`, `texts()`.
   `tui.workspace.queue_rows.queue_rows(state, cols)` draws one row per entry
   (`MAX_ROWS = 3`) above the prompt; the `queue` context
-  (`QUEUE_ACTIONS`) edits it. `SendMessageCommand.interject` marks
-  Ctrl+Enter / Alt+Enter while busy; `TUISession._next_queued_message` claims
-  only interjections at a tool boundary.
+  (`QUEUE_ACTIONS`) edits it. While a turn runs, Enter queues an ordinary message
+  and `TUISession._next_queued_message` claims one per completed tool call; a
+  command waits for the end of the turn. Alt+Enter and Ctrl+Enter are line
+  breaks (`composer.newline_alt`) in every state.
 - **Terminal.** `Key.SHIFT_ENTER`; `cbreak_reader.decode_csi_u(body)` maps
   every CSI-u key to its legacy key (Ctrl+Enter is `"ctrl+enter"`);
   `KITTY_KEYBOARD_PUSH` / `KITTY_KEYBOARD_POP` and
@@ -2170,7 +2172,7 @@ NARROW_WIDTH = 60                                      # below it a detail gets 
 
 One component draws every list: the `/`, `$` and `@` pickers
 (`TriggerPickerOverlay`), the palette and the `/model`, `/mode` and `/agent`
-pickers. The selected row has an `accent` bar and `accent_bg`; matched
+pickers. The selected row has an `accent` bar and bold text, with no background; matched
 characters are bold `accent`; a muted rule heads each group; keys are
 right-aligned; details wrap with a hanging indent (two rows at most); a
 `disabled` row is dimmed with its reason on a second row; the footer reads
@@ -2291,7 +2293,7 @@ cannot be the bindings file's `leader`.
 
 Themes (TUX-01): `agenthicc.tui.theme` owns every colour and chrome glyph.
 - **Types.** `Palette` is a frozen set of semantic tokens (`TOKENS`: `text`,
-  `muted`, `subtle`, `frame`, `accent`, `accent_bg`, `user_bg`, `success`,
+  `muted`, `subtle`, `frame`, `accent`, `user_bg`, `success`,
   `warning`, `danger`, `info`, `agent`, `diff_*`, `mode_safe|plan|yolo`). Each
   token is a Rich style string. `Palette.on(token)` gives the background form.
   `Glyphs` has `UNICODE_GLYPHS` and an all-ASCII `ASCII_GLYPHS`. `Theme`

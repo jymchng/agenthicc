@@ -141,10 +141,9 @@ class HelpOverlay(Overlay):
                 desc_col = (
                     row.description[:36] + "…" if len(row.description) > 36 else row.description
                 )
-                # The selected row: an accent bar on the selected-row background.
+                # The selected row: an accent bar and bold text, no background.
                 markup = (
-                    f"[{p.on('accent_bg')}]  [bold][{p.accent}]{g.bar} {name_col}[/][/bold]"
-                    f" {desc_col}[/]"
+                    f"  [bold][{p.accent}]{g.bar} {name_col}[/][/bold] {desc_col}"
                     if selected
                     else f"    [{p.accent}]{name_col}[/] {desc_col}"
                 )
