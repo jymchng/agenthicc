@@ -42,6 +42,7 @@ from agenthicc.tui.workspace.agents_hub.model import (
 )
 from agenthicc.background.vocabulary import status_look
 from agenthicc.tui.theme import glyphs, palette, style
+from agenthicc.tui.workspace.agents_hub.wrapping import hanging
 
 if TYPE_CHECKING:
     from agenthicc.subagents.pool import WorkerState
@@ -434,15 +435,25 @@ def help_lines(title: str, entries: Sequence[HelpEntry], width: int) -> list[Tex
     lines = [Text(fit(f" {title} — keys", width), style=style("accent", bold=True))]
     keys_width = min(22, max((cell_len(entry.keys) for entry in entries), default=4))
     for entry in entries:
-        line = Text(no_wrap=True, overflow="crop")
-        line.append(" " + fit(entry.keys, keys_width), style="bold")
-        line.append("  " + entry.description)
+        lead = Text(no_wrap=True, overflow="crop")
+        lead.append(" " + fit(entry.keys, keys_width), style="bold")
+        lead.append("  ")
+        shown = hanging(lead, entry.description, width)
+        notes: list[tuple[str, str | Style]] = []
         if entry.conditions:
-            line.append(f"  ({entry.conditions})", style="dim")
+            notes.append((f"({entry.conditions})", "dim"))
         if entry.source != "default":
-            line.append("  · your binding", style=p.accent)
-        line.truncate(width, overflow="crop")
-        lines.append(line)
+            notes.append((f"{glyphs().sep} your binding", p.accent))
+        indent = cell_len(lead.plain)
+        for note, note_style in notes:
+            # The note joins the last line when it fits there, else takes a line.
+            if cell_len(shown[-1].plain) + 2 + cell_len(note) <= width:
+                shown[-1].append("  " + note, style=note_style)
+            else:
+                shown.extend(
+                    _paragraph(note, width, indent=min(indent, width // 3), style=note_style)
+                )
+        lines.extend(shown)
     lines.append(Text(" Any key closes this help.", style="dim"))
     return lines
 
@@ -450,12 +461,19 @@ def help_lines(title: str, entries: Sequence[HelpEntry], width: int) -> list[Tex
 # ── peek and detail ──────────────────────────────────────────────────────────
 
 
-def _labelled(label: str, value: str, width: int, *, label_width: int = 8) -> Text:
-    line = Text(no_wrap=True, overflow="crop")
-    line.append("   " + fit(label, label_width), style="bold")
-    line.append("  " + value)
-    line.truncate(width, overflow="crop")
-    return line
+def _labelled(
+    label: str, value: str, width: int, *, label_width: int = 8, max_lines: int = 0
+) -> list[Text]:
+    """``   label  value`` with *value* wrapped under itself, never cut off.
+
+    A long command, path or reply continues on the lines below, in the value's
+    column. With *max_lines*, a longer value is cut there and followed by a
+    ``… N more lines`` line, which says how much was left out.
+    """
+    prefix = Text("   ")
+    prefix.append(fit(label, label_width), style="bold")
+    prefix.append("  ")
+    return hanging(prefix, value, width, max_lines=max_lines)
 
 
 def _waiting(session: BackgroundSession, now: float) -> str:
@@ -487,26 +505,49 @@ def peek_lines(
     lines = [header]
     if item is not None:
         for label, value in approval_lines(item, session):
-            lines.append(_labelled(label, value, width))
+            lines.extend(_labelled(label, value, width, max_lines=_PEEK_VALUE_LINES))
     elif reason := needs_you_reason(session):
-        lines.append(_labelled("", reason, width, label_width=0))
+        lines.extend(_labelled("", reason, width, label_width=0, max_lines=_PEEK_VALUE_LINES))
     else:
         report = report_line(data.transcript) if data is not None else ""
         if report or session.latest_activity:
-            lines.append(_labelled("", report or session.latest_activity, width, label_width=0))
+            lines.extend(
+                _labelled(
+                    "",
+                    report or session.latest_activity,
+                    width,
+                    label_width=0,
+                    max_lines=_PEEK_VALUE_LINES,
+                )
+            )
         if data is not None:
             tool = next(
                 (line for line in reversed(data.transcript) if line.role not in _TEXT_ROLES),
                 None,
             )
             if tool is not None:
-                lines.append(_labelled(tool.role, f"{tool.status} {tool.text}".strip(), width))
+                lines.extend(
+                    _labelled(
+                        tool.role,
+                        f"{tool.status} {tool.text}".strip(),
+                        width,
+                        label_width=min(14, max(8, cell_len(tool.role))),
+                        max_lines=_PEEK_TOOL_LINES,
+                    )
+                )
     if hints:
         lines.append(footer_line(hints, width))
     return lines
 
 
 _TEXT_ROLES = frozenset({"you", "assistant", "system", "question", "error"})
+
+#: Lines of one value in the peek panel, which sits inside the list. The detail
+#: view (Enter) shows the whole value.
+_PEEK_VALUE_LINES = 6
+_PEEK_TOOL_LINES = 3
+#: Lines of one value in the detail view's Details section (an intent can be long).
+_DETAIL_VALUE_LINES = 12
 
 
 def _section(title: str, width: int, key: str = "", *, plain: bool = False) -> Text:
@@ -519,6 +560,7 @@ def _section(title: str, width: int, key: str = "", *, plain: bool = False) -> T
     line.append(label, style="bold")
     line.append(rule, style=palette().subtle)
     line.append(tail, style="dim")
+    line.truncate(width, overflow="crop")  # a very narrow panel loses the key hint, not the width
     return line
 
 
@@ -532,24 +574,41 @@ def _usage(session: BackgroundSession) -> str:
     return " · ".join(parts)
 
 
-def _transcript_line(line: TranscriptLine, width: int) -> Text:
+#: Lines of one transcript entry in the detail view. An entry is a message or a
+#: tool call; a longer one ends in ``… N more lines``.
+_TRANSCRIPT_ENTRY_LINES = 40
+
+
+def _transcript_line(line: TranscriptLine, width: int) -> list[Text]:
+    """One transcript entry, wrapped under its role column and never cut off."""
     p = palette()
-    text = Text(no_wrap=True, overflow="crop")
+    prefix = Text()
     if line.status:
         # The transcript's status glyphs are data from the detail loader.
         status_style = {"✓": p.success, "✗": p.danger, "◆": p.warning, "●": p.info}
-        text.append(f"   {line.status} ", style=status_style.get(line.status, ""))
+        prefix.append(f"   {line.status} ", style=status_style.get(line.status, ""))
     else:
-        text.append("     ")
+        prefix.append("     ")
     role_style: dict[str, str | Style] = {
         "you": style("accent", bold=True),
         "assistant": "bold",
         "error": style("danger", bold=True),
     }
-    text.append(fit(line.role, 10), style=role_style.get(line.role, ""))
-    text.append(" " + line.text)
-    text.truncate(width, overflow="crop")
-    return text
+    prefix.append(fit(line.role, 10), style=role_style.get(line.role, ""))
+    prefix.append(" ")
+    return hanging(prefix, line.text, width, max_lines=_TRANSCRIPT_ENTRY_LINES)
+
+
+def _paragraph(
+    text: str,
+    width: int,
+    *,
+    indent: int = 3,
+    style: str | Style = "",
+    max_lines: int = 0,
+) -> list[Text]:
+    """*text* wrapped inside *width*, every line indented by *indent* cells."""
+    return hanging(Text(" " * indent), text, width, style=style, max_lines=max_lines)
 
 
 def _detail_fields(session: BackgroundSession, now: float) -> list[tuple[str, str]]:
@@ -663,7 +722,9 @@ def detail_lines(
     usage = _usage(session)
     if usage:
         facts.append(usage)
-    lines.append(Text(fit(" " + " · ".join(fact for fact in facts if fact), width), style="dim"))
+    lines.extend(
+        _paragraph(" · ".join(fact for fact in facts if fact), width, indent=1, style="dim")
+    )
     lines.append(Text(""))
 
     # Needs you
@@ -677,9 +738,9 @@ def detail_lines(
         lines.append(_section("Needs you", width, plain=plain))
         if item is not None:
             for label, value in approval_lines(item, session):
-                lines.append(_labelled(label, value, width))
+                lines.extend(_labelled(label, value, width))
         else:
-            lines.append(_labelled("", needs_you_reason(session), width, label_width=0))
+            lines.extend(_labelled("", needs_you_reason(session), width, label_width=0))
         lines.append(Text(""))
 
     pinned = len(lines)
@@ -702,11 +763,11 @@ def detail_lines(
             if session.current_phase:
                 phases.append(f"{session.current_phase} ●")
             position = len(session.phase_history) or 1
-            lines.append(Text(fit(f"   Phase {position} · " + " → ".join(phases), width)))
+            lines.extend(_paragraph(f"Phase {position} · " + " → ".join(phases), width))
         if queue_position is not None:
             lines.append(Text(fit(f"   Queued #{queue_position} (advisory)", width)))
         if session.latest_activity:
-            lines.append(Text(fit("   " + " ".join(session.latest_activity.split()), width)))
+            lines.extend(_paragraph(session.latest_activity, width, max_lines=_DETAIL_VALUE_LINES))
         lines.append(Text(""))
 
     # Transcript
@@ -722,9 +783,9 @@ def detail_lines(
     for entry in transcript:
         if entry.status == "◆":
             request_line = len(lines)
-        lines.append(_transcript_line(entry, width))
+        lines.extend(_transcript_line(entry, width))
     if data is not None and data.receipt:
-        lines.append(Text(fit(f"   Latest input: {data.receipt}", width), style="dim"))
+        lines.extend(_paragraph(f"Latest input: {data.receipt}", width, style="dim"))
     transcript_end = len(lines) - 1
     lines.append(Text(""))
 
@@ -735,9 +796,9 @@ def detail_lines(
         summary = changes.headline
         if changes.branch:
             summary += f"   (branch {changes.branch}, base {changes.base})"
-        lines.append(Text(fit("   " + summary, width)))
+        lines.extend(_paragraph(summary, width))
         for stat in changes.lines:
-            lines.append(Text(fit("   " + stat, width), style="dim"))
+            lines.extend(_paragraph(stat, width, style="dim"))
         lines.append(Text(""))
 
     # Attempts
@@ -748,8 +809,13 @@ def detail_lines(
             detail = previous.error or previous.latest_activity or ""
             if previous.failure_category:
                 outcome += f" · {previous.failure_category}"
-            lines.append(
-                Text(fit(f"   #{previous.attempt} {outcome}  {' '.join(detail.split())}", width))
+            lines.extend(
+                _paragraph(
+                    f"#{previous.attempt} {outcome}  {' '.join(detail.split())}",
+                    width,
+                    indent=3,
+                    max_lines=_DETAIL_VALUE_LINES,
+                )
             )
         lines.append(Text(fit(f"   #{session.attempt} {session.status.value} (current)", width)))
         lines.append(Text(""))
@@ -757,13 +823,15 @@ def detail_lines(
     # Error
     if session.error and session.status in (SessionStatus.FAILED, SessionStatus.CANCELLED):
         lines.append(_section("Error", width, plain=plain))
-        lines.append(
-            Text(fit("   " + " ".join(session.error.split()), width), style=palette().danger)
+        lines.extend(
+            _paragraph(
+                session.error, width, style=palette().danger, max_lines=_DETAIL_VALUE_LINES * 2
+            )
         )
         lines.append(Text(""))
 
     # Details
     lines.append(_section("Details", width, plain=plain))
     for label, value in _detail_fields(session, now):
-        lines.append(_labelled(label, value, width, label_width=16))
+        lines.extend(_labelled(label, value, width, label_width=16, max_lines=_DETAIL_VALUE_LINES))
     return DetailView(lines, transcript_end, request_line, pinned)

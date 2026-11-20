@@ -96,12 +96,35 @@ def journal_fingerprint(path: Path) -> tuple[int, int, int]:
     return (stat.st_ino, stat.st_size, stat.st_mtime_ns)
 
 
-def _first_line(text: str, limit: int = 240) -> str:
-    for line in text.splitlines():
-        stripped = " ".join(line.split())
-        if stripped:
-            return stripped[:limit]
-    return ""
+#: Characters of one message kept in the transcript. A longer one ends in a
+#: marker that says so; the view wraps what is kept, so nothing is cropped.
+MESSAGE_CHARS = 8_000
+#: Characters of one tool call's summary, and of its first output line.
+TOOL_CHARS = 1_500
+
+
+def _message_text(text: str, limit: int = MESSAGE_CHARS) -> str:
+    """A message with its paragraphs and line breaks kept and its blank runs collapsed.
+
+    This used to keep only the first line, cut at 240 characters, so an agent's
+    reply read as one clipped sentence. The text is now whole up to *limit*
+    characters, and a longer one ends in a line that says it was cut.
+    """
+    lines: list[str] = []
+    blank = False
+    for raw in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        line = " ".join(raw.split())
+        if not line:
+            blank = bool(lines)
+            continue
+        if blank:
+            lines.append("")
+            blank = False
+        lines.append(line)
+    kept = "\n".join(lines)
+    if len(kept) <= limit:
+        return kept
+    return kept[:limit].rstrip() + f"\n… (cut at {limit:,} characters)"
 
 
 def _payload_text(payload: dict[str, object], key: str) -> str:
@@ -120,10 +143,10 @@ def transcript_line(kind: str, payload: dict[str, object]) -> TranscriptLine | N
 
     payload = migrate_event_payload(kind, payload)
     if kind == "user_message":
-        text = _first_line(_payload_text(payload, "text"))
+        text = _message_text(_payload_text(payload, "text"))
         return TranscriptLine("you", text) if text else None
     if kind in ("text", "assistant_message"):
-        text = _first_line(_payload_text(payload, "text"))
+        text = _message_text(_payload_text(payload, "text"))
         return TranscriptLine("assistant", text) if text else None
     if kind == "tool_complete":
         name = _payload_text(payload, "name") or "tool"
@@ -142,21 +165,24 @@ def transcript_line(kind: str, payload: dict[str, object]) -> TranscriptLine | N
             if isinstance(output, list)
             else ""
         )
-        text = args.strip()
+        text = args.strip()[:TOOL_CHARS]
         if first:
+            first = first[:TOOL_CHARS]
             text = f"{text} · {first}" if text else first
-        return TranscriptLine(name, text[:240], status)
+        return TranscriptLine(name, text, status)
     if kind == "file_modified":
         path = _payload_text(payload, "path")
         return TranscriptLine("edit", path, "✓") if path else None
     if kind == "error":
-        message = _first_line(_payload_text(payload, "message"))
+        message = _message_text(_payload_text(payload, "message"))
         return TranscriptLine("error", message, "✗") if message else None
     if kind == "question_wait_started":
-        question = _first_line(_payload_text(payload, "question") or _payload_text(payload, "text"))
+        question = _message_text(
+            _payload_text(payload, "question") or _payload_text(payload, "text")
+        )
         return TranscriptLine("question", question or "waiting for an answer", "◆")
     if kind == "system":
-        text = _first_line(_payload_text(payload, "text"))
+        text = _message_text(_payload_text(payload, "text"))
         return TranscriptLine("system", text) if text else None
     return None
 
@@ -266,9 +292,16 @@ def changes_summary(session: BackgroundSession) -> ChangeSummary | None:
     )
 
 
-def _compact(value: object, limit: int = 240) -> str:
+#: Characters of one request value (a command, a path). The panel wraps it, and a
+#: longer one ends in a marker, so the operator is never shown half a command
+#: as if it were all of it.
+REQUEST_CHARS = 4_000
+
+
+def _compact(value: object, limit: int = REQUEST_CHARS) -> str:
+    """A request value on as many lines as it has, spaces collapsed, never silently cut."""
     text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str)
-    return " ".join(text.split())[:limit]
+    return _message_text(text, limit)
 
 
 def approval_lines(

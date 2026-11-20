@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — the agents hub no longer cuts text off
+
+- **Answer form.** A long option (`A — One screen, interleaved (recommended): the
+  shell stays l…`) was cut at the panel's edge. Options now wrap under their own
+  text with the highlight on every row, and a short terminal scrolls the options
+  around the cursor (`↑ 3 more`, `↓ 2 more`) instead of pushing the hint and
+  footer off screen.
+- **Transcript.** The hub's transcript showed the first line of each reply, cut
+  at 240 characters, and tool calls the same way. A reply now keeps its
+  paragraphs (up to 8,000 characters) and tool calls their summary and first
+  output line; each entry wraps under its role and an entry beyond 40 lines ends
+  in `… N more lines`.
+- **Requests and details.** The command in an approval request was flattened to
+  one line and cut at 240 characters. It now keeps its lines, wraps, and the
+  detail view shows it whole (up to 4,000 characters). Errors, the latest
+  activity, the receipt, change stats, attempts, the status notice, the empty
+  state and the help screen's descriptions wrap the same way. A capped block says
+  how many lines it left out; nothing is cut without a marker.
+
 ### Changed — compaction in the transcript
 
 - **A quieter compaction indicator.** While the conversation is compacted, a

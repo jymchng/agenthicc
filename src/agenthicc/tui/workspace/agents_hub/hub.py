@@ -82,6 +82,7 @@ from agenthicc.tui.workspace.agents_hub.model import (
 )
 from agenthicc.tui.workspace.agents_hub.prefs import HubPrefs
 from agenthicc.tui.workspace.agents_hub.sources import HubSources
+from agenthicc.tui.workspace.agents_hub.wrapping import hanging
 from agenthicc.worktrees.environment import EnvironmentCommand, EnvironmentRunReceipt
 
 if TYPE_CHECKING:
@@ -135,6 +136,8 @@ _RETRYABLE = frozenset({SessionStatus.FAILED})
 CHANGES_INTERVAL_S = 5.0
 #: A second click on the same row within this long opens it.
 _DOUBLE_CLICK_S = 0.4
+#: Lines of the status notice and the loading line; a longer one ends in ``… N more lines``.
+_NOTICE_LINES = 3
 _TABS = tuple(Tab)
 
 
@@ -3782,7 +3785,7 @@ class AgentsHub:
             lines += help_lines(title, keymap.help(self.context), width)
             self._geometry = geometry
             return lines[:height]
-        bottom = self._bottom_lines(width, plain)
+        bottom = self._bottom_lines(width, plain, height)
         hints = [
             hint
             for hint in keymap.hints(self.context, self.conditions())
@@ -3901,17 +3904,19 @@ class AgentsHub:
             column += size
         return spans
 
-    def _bottom_lines(self, width: int, plain: bool) -> list[Text]:
-        """Choice or prompt, then the notice: the lines above the footer."""
-        from rich.text import Text
+    def _bottom_lines(self, width: int, plain: bool, height: int) -> list[Text]:
+        """Choice or prompt, then the notice: the lines above the footer.
 
-        from agenthicc.tui.workspace.agents_hub.render import fit
+        An open answer form may use all but a few rows of the screen (*height*);
+        its options scroll when they need more, so the footer is never pushed off.
+        """
+        from rich.text import Text
 
         lines: list[Text] = []
         choice = self._choice
         prompt = self._prompt
         if self._answer is not None:
-            for renderable in self._answer.render(width, plain=plain):
+            for renderable in self._answer.render(width, plain=plain, rows=max(8, height - 6)):
                 lines.extend(_text_lines(self.console, renderable, width))
         elif choice is not None:
             line = Text(no_wrap=True, overflow="crop")
@@ -3950,7 +3955,11 @@ class AgentsHub:
         # An open composer already shows its own receipt under the input.
         repeated = self._composer_open and notice == self._composer_receipt
         if notice and not repeated:
-            lines.append(Text(fit(" " + notice, width), style=palette().warning))
+            # A failure's message can be long: it wraps (up to a few lines) rather than
+            # losing its end.
+            lines.extend(
+                hanging(Text(" "), notice, width, style=palette().warning, max_lines=_NOTICE_LINES)
+            )
         return lines
 
     def _status_notice(self) -> str:
@@ -3973,7 +3982,6 @@ class AgentsHub:
         from agenthicc.tui.workspace.agents_hub.layout import layout
         from agenthicc.tui.workspace.agents_hub.render import (
             RowContext,
-            fit,
             row_line,
             row_sentence,
         )
@@ -3997,9 +4005,9 @@ class AgentsHub:
         status = self._loading_line()
         if status:
             look = palette().danger if self._load_error else palette().info
-            lines.append(Text(fit(" " + status, width), style=look))
+            lines.extend(hanging(Text(" "), status, width, style=look, max_lines=_NOTICE_LINES))
         if not self._rows:
-            lines.append(Text(fit(" " + self._empty_message(), width), style="dim"))
+            lines.extend(hanging(Text(" "), self._empty_message(), width, style="dim"))
             return lines[:height]
         if (
             self.tab is Tab.RUNNING
@@ -4007,7 +4015,7 @@ class AgentsHub:
             and not self._running
             and not self._search.active
         ):
-            lines.append(Text(fit(" " + self._empty_message(), width), style="dim"))
+            lines.extend(hanging(Text(" "), self._empty_message(), width, style="dim"))
         context = RowContext(
             now=self._clock(),
             queue_positions=self._queue_positions,
