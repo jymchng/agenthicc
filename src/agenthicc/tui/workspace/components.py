@@ -715,7 +715,7 @@ def _extras(conv: object, elapsed: str, reader: bool) -> tuple[str, ...]:
     if not reader and seconds >= _TOKENS_AFTER_S:
         produced = _signal_int(conv, "activity_tokens_out")
         if produced > 0:
-            extras.append(f"{glyphs().down}{compact_token_count(produced)} tokens")
+            extras.append(f"{glyphs().down} {compact_token_count(produced)} tokens")
     return tuple(extras)
 
 
