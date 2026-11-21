@@ -11,11 +11,13 @@ from __future__ import annotations
 import asyncio
 import time
 from io import StringIO
+from pathlib import Path
 
 import pytest
 from rich.console import Console
 from rich.text import Text
 
+from agenthicc.background.model import SessionStatus
 from agenthicc.config import UISettings
 from agenthicc.tui.conversation_store import (
     AppState,
@@ -301,3 +303,72 @@ async def test_a_workflow_run_is_recorded_the_same_either_way(announce: bool, sa
         assert errors[0].payload["message"] == "cancelled"
     shown = "paused" in (conv.notification() or "")
     assert shown is (announce and saved)  # no "workflow paused" after a hand-off
+
+
+# ── the real session, through the real hand-off ──────────────────────────────
+
+
+async def test_the_real_session_hands_off_exits_and_confirms(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """``_handoff`` calls into ``TUISession``; the unit stand-ins cannot catch a mismatch.
+
+    Everything here is the real class and the real ``_handoff``; only the supervisor
+    that would start the worker is replaced.
+    """
+    from agenthicc.background.integration import _handoff
+    from agenthicc.background.settings import BackgroundSettings
+    from tests.unit.test_background_edges import _record
+    from tests.unit.test_tui_session_coverage import _make_session
+
+    store_root = tmp_path / "background"
+    record = _record(tmp_path, "real-session").evolve(status=SessionStatus.QUEUED)
+    monkeypatch.setattr(
+        "agenthicc.background.integration.load_background_settings",
+        lambda **_kwargs: BackgroundSettings(store_path=str(store_root)),
+    )
+    monkeypatch.setattr(
+        "agenthicc.background.integration.BackgroundSupervisor.handoff",
+        lambda _self, **_kwargs: record,
+    )
+    session, ctx, _workspace, input_session = _make_session()
+    events: list[ConversationEvent] = []
+    ctx.app_state.conversation.on_event(events.append)
+    session._background_intent = "refactor the parser"  # type: ignore[attr-defined]
+
+    assert _handoff(session) is True  # type: ignore[arg-type]
+
+    assert session._background_handoff_state == "started"  # type: ignore[attr-defined]
+    assert input_session._exit_requested is True  # type: ignore[attr-defined]
+    assert _kinds(events) == ["background_handoff"]
+    assert events[0].payload == {"session_id": "real-session", "status": "queued"}
+
+
+async def test_the_exit_does_not_wait_for_the_confirmation_row(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The foreground must leave the terminal even if the confirmation cannot be written."""
+    from agenthicc.background.integration import _handoff
+    from agenthicc.background.settings import BackgroundSettings
+    from tests.unit.test_background_edges import _record
+    from tests.unit.test_tui_session_coverage import _make_session
+
+    record = _record(tmp_path, "real-session").evolve(status=SessionStatus.QUEUED)
+    monkeypatch.setattr(
+        "agenthicc.background.integration.load_background_settings",
+        lambda **_kwargs: BackgroundSettings(store_path=str(tmp_path / "background")),
+    )
+    monkeypatch.setattr(
+        "agenthicc.background.integration.BackgroundSupervisor.handoff",
+        lambda _self, **_kwargs: record,
+    )
+    session, _ctx, _workspace, input_session = _make_session()
+    session._background_intent = "refactor the parser"  # type: ignore[attr-defined]
+
+    def refuse(_session_id: str, _status: str) -> None:
+        raise RuntimeError("cannot write the row")
+
+    session.announce_backgrounded = refuse  # type: ignore[attr-defined,method-assign]
+    with pytest.raises(RuntimeError, match="cannot write the row"):
+        _handoff(session)  # type: ignore[arg-type]
+    assert input_session._exit_requested is True  # type: ignore[attr-defined]
