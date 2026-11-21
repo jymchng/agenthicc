@@ -46,6 +46,7 @@ from agenthicc.tui.transcript.text import highlight
 
 if TYPE_CHECKING:
     from agenthicc.tui.keymap import Keymap
+    from agenthicc.tui.terminal.hyperlinks import Hyperlinks
     from agenthicc.tui.workspace.live_region import Line
 
 __all__ = ["Outcome", "OutcomeKind", "TranscriptView", "to_lines"]
@@ -105,6 +106,7 @@ class TranscriptView:
         subtitle: str = "",
         start: str = "end",
         path: str = "",
+        links: Hyperlinks | None = None,
     ) -> None:
         from agenthicc.tui.keymap import Dispatcher
 
@@ -114,6 +116,8 @@ class TranscriptView:
         self.subtitle = subtitle
         #: A file the view shows (the ``/logs`` title ends with it).
         self.path = path
+        #: OSC 8 links for that path (TUX-10).
+        self.links = links
         self._dispatcher = Dispatcher(keymap)
         self.selected = -1
         self.top = 0
@@ -578,7 +582,7 @@ class TranscriptView:
         left = Text(f" {f' {g.sep} '.join(parts)}", style=style("accent", bold=True), no_wrap=True)
         if self.path:
             left.append(f" {g.sep} ", p.muted)
-            left.append_text(path_label(self.path))
+            left.append_text(path_label(self.path, self.links))
         right = Text(f"{close.keys if close else 'q'} close ", style=p.muted)
         pad = self.width - left.cell_len - right.cell_len
         if pad < 1:

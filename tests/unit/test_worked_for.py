@@ -158,7 +158,7 @@ class TestCompletionRecapRenderers:
     def test_error_timing_rows_do_not_claim_success(self) -> None:
         output = self._render(
             ("error", {"message": "boom"}),
-            ("turn_complete", {"elapsed_s": 2.0}),
+            ("turn_complete", {"elapsed_s": 2.0, "failed": True}),
             ("activity_complete", {"elapsed_s": 3.0}),
         )
         assert " ✗ boom" in output

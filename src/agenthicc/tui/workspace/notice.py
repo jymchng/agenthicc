@@ -37,6 +37,8 @@ from agenthicc.tui.theme import glyphs, style
 if TYPE_CHECKING:
     from rich.console import Console, ConsoleOptions, RenderResult
 
+    from agenthicc.tui.terminal.hyperlinks import Hyperlinks
+
 __all__ = ["SEVERITIES", "Notice", "Severity", "severity_of"]
 
 Severity = Literal["error", "warning", "info", "success"]
@@ -80,6 +82,8 @@ class Notice:
     literal: bool = False
     #: Spell the severity as a word instead of a glyph (screen readers).
     words: bool = False
+    #: Link the files and URLs the text names (OSC 8, TUX-10).
+    links: Hyperlinks | None = None
 
     def marker(self) -> str:
         """The severity's glyph, or its word with ``words=True``."""
@@ -98,12 +102,17 @@ class Notice:
     def content(self) -> Text:
         """The title, actions and body, without the marker."""
         text = Text(self.title)
+        if self.links is not None:
+            self.links.linkify(text)
         if self.actions:
             text.append("   ")
             text.append("  ".join(self.actions), style=style("accent"))
         if self.body:
             text.append("\n")
-            text.append(self.body, style=style("muted"))
+            body = Text(self.body, style=style("muted"))
+            if self.links is not None:
+                self.links.linkify(body)
+            text.append_text(body)
         return text
 
     def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:

@@ -845,7 +845,12 @@ class ConversationStore:
                 self._current_turn.state = AgentState.COMPLETE
             # Always emit turn_complete (with elapsed) so the scroll buffer can
             # print the turn duration regardless of success or error path.
-            ending: dict[str, object] = {"elapsed_s": elapsed}
+            from agenthicc.tui.turn_summary import summarize_turn
+
+            ending: dict[str, object] = {
+                "elapsed_s": elapsed,
+                **summarize_turn(self._current_turn.events),
+            }
             if interrupted:
                 ending["interrupted"] = True
             self.append_event("turn_complete", ending)

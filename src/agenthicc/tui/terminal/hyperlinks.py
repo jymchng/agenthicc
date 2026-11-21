@@ -118,6 +118,20 @@ class Hyperlinks:
         url = self.url(path, line)
         return None if url is None else Style(link=url)
 
+    def style_if_exists(self, path: str | Path, line: int | None = None) -> Style | None:
+        """Like :meth:`style`, but only for a file or directory that is there.
+
+        A tool row's target may be a document name or a count ("3 files"), and
+        a deleted file has nothing to open.
+        """
+        if not self.enabled or not str(path) or "\n" in str(path):
+            return None
+        try:
+            present = self.absolute(path).exists()
+        except (OSError, ValueError):
+            return None
+        return self.style(path, line) if present else None
+
     def linkify(self, text: Text) -> Text:
         """Link the URLs and the existing workspace files named in *text* (in place).
 

@@ -121,8 +121,16 @@ class TranscriptController:
         from agenthicc.tui.transcript.host import HostResult, TranscriptHost
         from agenthicc.tui.transcript.view import TranscriptView
 
+        from agenthicc.tui.terminal.hyperlinks import Hyperlinks
+
         view = TranscriptView(
-            source, self.state.keymap(), rewind=rewind, subtitle=subtitle, start=start, path=path
+            source,
+            self.state.keymap(),
+            rewind=rewind,
+            subtitle=subtitle,
+            start=start,
+            path=path,
+            links=Hyperlinks.for_state(self.state, backend=self.backend()),
         )
         host = TranscriptHost(view, self.console, self.backend(), ui=ui_settings(self.state))
         outcome: list[HostResult] = []

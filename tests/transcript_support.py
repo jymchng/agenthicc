@@ -103,7 +103,8 @@ def scheduler_session(turns: int = 50) -> list[tuple[str, dict[str, object]]]:
         if turn % 5 == 0:
             events.append(("tool_complete", failed_tool()))
         events.append(("text", {"text": f"Done with turn {turn}."}))
-        events.append(("turn_complete", {"elapsed_s": 4.0}))
+        # The store summarises a turn when it closes (TUX-10): it ran its tools.
+        events.append(("turn_complete", {"elapsed_s": 4.0, "tools": 2 if turn % 5 == 0 else 1}))
     return events
 
 
@@ -171,6 +172,15 @@ class FakeBackend:
 
     def set_reporting(self, *, focus: bool | None = None, mouse: bool | None = None) -> None:
         self.reporting.append({"focus": focus, "mouse": mouse})
+
+    def write_control(self, sequence: str) -> None:
+        """Nothing reaches a real terminal from a fake one (TUX-10)."""
+
+    def supports_progress(self) -> bool:
+        return False
+
+    def supports_hyperlinks(self) -> bool:
+        return False
 
 
 class FakeTerminal:

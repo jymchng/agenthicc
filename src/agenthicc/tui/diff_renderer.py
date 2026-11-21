@@ -32,6 +32,7 @@ from rich.console import Group
 if TYPE_CHECKING:
     from rich.console import RenderableType
 from rich.padding import Padding
+from rich.style import Style
 from rich.table import Table
 from rich.text import Text
 
@@ -144,14 +145,18 @@ def _word_spans(
 # ── header / summary ──────────────────────────────────────────────────────────
 
 
-def _header(path: str, operation: str, counts: Text) -> Text:
-    """``● Edit src/app/main.py  +12 −3``: the quiet one-row edit header."""
+def _header(path: str, operation: str, counts: Text, link: Style | None = None) -> Text:
+    """``● Edit src/app/main.py  +12 −3``: the quiet one-row edit header.
+
+    With *link* the path is an OSC 8 hyperlink (TUX-10).
+    """
     p, g = palette(), glyphs()
+    path_style = Style.parse(p.text) + link if link is not None else p.text
     header = Text.assemble(
         (f"{g.bullet} ", p.muted),
         (operation, f"bold {p.text}"),
         " ",
-        (path, p.text),
+        (path, path_style),
     )
     if counts.plain:
         header.append("  ")
@@ -460,6 +465,7 @@ def render_file_diff(
     language: str = "python",
     operation: str = "Update",
     max_rows: int | None = None,
+    link: Style | None = None,
 ) -> "RenderableType":
     """Render a GitHub-style diff between *old_lines* and *new_lines*.
 
@@ -478,6 +484,8 @@ def render_file_diff(
     max_rows:
         Most table rows shown; the rest become one omission row.  ``None``
         shows the whole bounded diff.
+    link:
+        A style carrying an OSC 8 hyperlink for the path in the header.
     """
     sm = difflib.SequenceMatcher(None, old_lines, new_lines, autojunk=False)
     opcodes = sm.get_opcodes()
@@ -563,7 +571,7 @@ def render_file_diff(
     grid.add_column(no_wrap=False)  # code
     table.into(grid, max_rows)
     return Group(
-        _header(path, operation, _counts(n_added, n_removed)),
+        _header(path, operation, _counts(n_added, n_removed), link),
         Padding(grid, pad=(0, 0, 0, 2)),
     )
 
@@ -574,6 +582,7 @@ def render_file_create(
     *,
     max_lines: int = CREATE_PREVIEW_LINES,
     language: str = "python",
+    link: Style | None = None,
 ) -> "RenderableType":
     """Render a file-creation event showing at most *max_lines* lines.
 
@@ -602,4 +611,4 @@ def render_file_create(
             Text(f"{n_total - max_lines} more lines", style="dim"),
         )
     counts = Text(f"+{n_total}", style=palette().diff_add)
-    return Group(_header(path, "Create", counts), Padding(table, pad=(0, 0, 0, 2)))
+    return Group(_header(path, "Create", counts, link), Padding(table, pad=(0, 0, 0, 2)))
