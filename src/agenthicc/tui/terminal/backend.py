@@ -12,13 +12,29 @@ import ``msvcrt``, ``termios``, or ``tty`` directly.
 from __future__ import annotations
 
 import os
+import sys
 from contextlib import AbstractContextManager
-from typing import TYPE_CHECKING, Protocol
+from typing import IO, TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
     from agenthicc.tui.cbreak_reader import Key
 
-__all__ = ["TerminalBackend", "get_backend"]
+__all__ = ["TerminalBackend", "get_backend", "terminal_stream"]
+
+
+def terminal_stream() -> IO[str]:
+    """The stream the terminal reads: ``sys.stdout``, without the live block's text proxy.
+
+    While the live block runs, ``sys.stdout`` is a Rich ``FileProxy`` that prints what
+    is written as text: it strips control characters, including the BEL that ends a
+    title, progress or notification sequence, and so leaves the sequence unterminated,
+    when everything printed after it is swallowed. Control sequences are not text;
+    they are written to the stream underneath.
+    """
+    from rich.file_proxy import FileProxy
+
+    stream = sys.stdout
+    return stream.rich_proxied_file if isinstance(stream, FileProxy) else stream
 
 
 class TerminalBackend(Protocol):

@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — the window title and taskbar progress no longer blank the screen
+
+- **Control sequences bypass the live block's text proxy.** While the live block
+  runs, `sys.stdout` is a Rich proxy that prints what it is given as text and
+  strips control characters, including the BEL that ends a title, progress or
+  notification sequence. The terminal title was therefore written unterminated,
+  and a terminal or emulator reads everything after an open `OSC 2` as part of
+  the title: the screen went blank. Title, progress and notification sequences
+  now go to the stream underneath (`terminal_stream()`), on POSIX and Windows.
+
 ### Added — motion, feedback and terminal integration (TUX-10)
 
 - **A status line that says what is happening.** The state segment reads

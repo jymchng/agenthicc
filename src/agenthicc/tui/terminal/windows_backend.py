@@ -569,9 +569,12 @@ class WindowsBackend:
         """
         if not sequence or not self._stdout_is_terminal():
             return
+        from agenthicc.tui.terminal.backend import terminal_stream
+
         try:
-            sys.stdout.write(sequence)
-            sys.stdout.flush()
+            stream = terminal_stream()
+            stream.write(sequence)
+            stream.flush()
         except (OSError, ValueError):
             pass  # stdout closed during shutdown
 

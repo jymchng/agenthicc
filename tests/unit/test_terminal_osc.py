@@ -539,3 +539,34 @@ def test_the_attention_router_sends_through_the_sink_and_no_longer_sets_the_titl
     parameters = inspect.signature(AgentAttentionRouter.__init__).parameters
     assert "set_terminal_title" not in parameters
     assert "send_terminal_notification" in parameters
+
+
+# ── control sequences must reach the terminal untouched ──────────────────────
+
+
+def test_a_title_written_while_the_live_block_runs_keeps_its_terminator() -> None:
+    """While the live block runs ``sys.stdout`` is Rich's text proxy, which strips BEL.
+
+    An unterminated ``OSC 2`` swallows everything printed after it, in a terminal as
+    much as in an emulator, so control sequences go to the stream under the proxy.
+    """
+    import sys
+
+    from rich.console import Console
+    from rich.file_proxy import FileProxy
+
+    from agenthicc.tui.terminal.posix_backend import PosixBackend
+
+    class _Tty(io.StringIO):
+        def isatty(self) -> bool:
+            return True
+
+    real = _Tty()
+    original = sys.stdout
+    sys.stdout = FileProxy(Console(file=real, force_terminal=True), real)  # type: ignore[assignment]
+    try:
+        PosixBackend().write_control(osc.title("agenthicc"))
+        PosixBackend().write_control(osc.progress(osc.ProgressState.INDETERMINATE))
+    finally:
+        sys.stdout = original
+    assert real.getvalue() == f"\x1b]2;agenthicc{osc.BELL}\x1b]9;4;3;0{osc.BELL}"

@@ -93,7 +93,14 @@ class PosixBackend:
     def write_control(self, sequence: str) -> None:
         """Write *sequence* (title, progress, notification) to a terminal, never to a pipe."""
         if sequence and self._stdout_is_terminal():
-            self._write(sequence)
+            from agenthicc.tui.terminal.backend import terminal_stream
+
+            try:
+                stream = terminal_stream()
+                stream.write(sequence)
+                stream.flush()
+            except (OSError, ValueError):
+                pass  # stdout closed during shutdown
 
     def supports_progress(self) -> bool:
         """Whether this terminal draws ``OSC 9;4`` progress (TUX-10)."""
