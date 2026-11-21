@@ -8,6 +8,10 @@ inspects annotations at decoration time.
 """
 
 import asyncio
+import os
+import subprocess
+import sys
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -24,6 +28,7 @@ from agenthicc.runners.agent_turn import _run_agent_turn
 from agenthicc.tui.conversation_store import AppState as TUIAppState
 from agenthicc.tui.runtime.mode_manager import build_default_registry
 from agenthicc.tui.workspace.components import StatusLine
+from tests.cli_process import CLI_PROCESS_TIMEOUT_S, cli_test_timeout
 
 pytestmark = pytest.mark.e2e
 
@@ -160,3 +165,42 @@ async def test_cancelling_a_running_turn_ends_it_as_interrupted(
     closing = [event for event in events if event.kind == "turn_complete"]
     assert len(closing) == 1 and closing[0].payload.get("interrupted") is True
     assert not any(event.kind == "file_modified" for event in events)
+
+
+# ── escape sequences stay out of non-terminal output ──────────────────────────
+
+
+@cli_test_timeout(1)
+def test_headless_writes_no_escape_sequence_even_where_every_one_is_supported(
+    tmp_path: Path,
+) -> None:
+    """§5: under ``--headless`` (a pipe) nothing is a title, progress, link or notification."""
+    home, project = tmp_path / "home", tmp_path / "project"
+    home.mkdir()
+    project.mkdir()
+    env = {
+        name: value
+        for name, value in os.environ.items()
+        if not name.startswith("AGENTHICC_")
+        and name not in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY")
+    }
+    env.update(
+        HOME=str(home),
+        TERM="xterm-kitty",
+        TERM_PROGRAM="ghostty",
+        WT_SESSION="{guid}",
+        FORCE_HYPERLINK="1",
+    )
+    completed = subprocess.run(
+        [sys.executable, "-m", "agenthicc", "--headless", "--workflow", "code_plan"],
+        cwd=project,
+        env=env,
+        input="Explain this repository\n",
+        capture_output=True,
+        text=True,
+        timeout=CLI_PROCESS_TIMEOUT_S,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr[-2000:]
+    assert completed.stdout.strip(), "the headless run printed its JSON lines"
+    assert "\x1b" not in completed.stdout and "\x1b" not in completed.stderr

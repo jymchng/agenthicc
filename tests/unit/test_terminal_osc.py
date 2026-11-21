@@ -482,3 +482,60 @@ def test_nothing_is_written_before_the_presence_starts_or_after_it_stops(clock: 
     presence.update()
     presence.stop()
     assert backend.written == after
+
+
+# ── focus reports and the session's wiring ────────────────────────────────────
+
+
+async def test_a_focus_report_is_how_the_terminal_says_it_is_away(clock: Clock) -> None:
+    """Through the real key path: focus out arms the notifier, focus in disarms it."""
+    from agenthicc.tui.cbreak_reader import Key
+    from agenthicc.tui.input.unified_session import UnifiedInputSession
+    from agenthicc.tui.runtime.commands import CommandBus
+
+    state, backend = _state(), FakeBackend()
+    session = UnifiedInputSession(state, CommandBus())
+    _notifier(state, backend)
+    assert state.conversation.terminal_focus_known() is False
+    await session._dispatch(Key.FOCUS_OUT, "")
+    assert state.conversation.terminal_focus_known() is True
+    assert state.conversation.terminal_focused() is False
+    _run_turn(state, clock, 12.0)
+    assert len(backend.notifications()) == 1
+    await session._dispatch(Key.FOCUS_IN, "")
+    assert state.conversation.terminal_focused() is True
+    clock.now += 60.0
+    _run_turn(state, clock, 12.0)
+    assert len(backend.notifications()) == 1  # focused again: none
+
+
+def test_the_session_starts_and_stops_its_terminal_feedback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agenthicc.runners.tui_session import TUISession
+
+    backend = FakeBackend()
+    monkeypatch.setattr("agenthicc.tui.terminal.backend.get_backend", lambda: backend)
+    state = _state()
+    session = object.__new__(TUISession)
+    session._ctx = type("Ctx", (), {"app_state": state})()  # type: ignore[assignment]
+    session._notification_sink = None
+    session._turn_notifier = None
+    session._presence = None
+    session._start_terminal_feedback()
+    assert session._notification_sink is not None and session._presence is not None
+    assert backend.written[0] == osc.TITLE_PUSH
+    assert backend.titles()
+    session._stop_terminal_feedback()
+    assert backend.written[-1] == osc.TITLE_POP
+    assert session._presence is None and session._turn_notifier is None
+
+
+def test_the_attention_router_sends_through_the_sink_and_no_longer_sets_the_title() -> None:
+    import inspect
+
+    from agenthicc.tui.attention import AgentAttentionRouter
+
+    parameters = inspect.signature(AgentAttentionRouter.__init__).parameters
+    assert "set_terminal_title" not in parameters
+    assert "send_terminal_notification" in parameters
