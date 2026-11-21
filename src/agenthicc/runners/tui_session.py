@@ -73,6 +73,7 @@ if TYPE_CHECKING:
 
     from agenthicc.agents.registry import AgentsRegistry
     from agenthicc.background.agents_service import AgentsService
+    from agenthicc.tui.notifications import NotificationSink, TerminalPresence, TurnNotifier
     from agenthicc.background.attention import TUIAttentionLease
     from agenthicc.background.settings import BackgroundSettings
     from agenthicc.background.supervisor import BackgroundSupervisor
@@ -1804,6 +1805,10 @@ class TUISession:
         self._agents_settings: BackgroundSettings | None = None
         self._attention_lease: TUIAttentionLease | None = None
         self._attention_task: asyncio.Task[None] | None = None
+        # TUX-10: notifications for an away user, and the window title and progress.
+        self._notification_sink: NotificationSink | None = None
+        self._turn_notifier: TurnNotifier | None = None
+        self._presence: TerminalPresence | None = None
         self._background_prepared_supervisor: BackgroundSupervisor | None = None
         self._background_prepared_session_id: str | None = None
         self._turn_count: int = 0
@@ -3135,11 +3140,37 @@ class TUISession:
         )
         return self._agents_service, settings
 
+    def _start_terminal_feedback(self) -> None:
+        """The window title, the taskbar progress and notifications for an away user (TUX-10).
+
+        Imported here, after the first frame, so the start-up module budget
+        does not count them.
+        """
+        from agenthicc.tui.notifications import NotificationSink, TerminalPresence, TurnNotifier
+        from agenthicc.tui.terminal.backend import get_backend
+
+        backend = get_backend()
+        app_state = self._ctx.app_state
+        self._notification_sink = NotificationSink(backend, app_state)
+        self._turn_notifier = TurnNotifier(app_state, self._notification_sink)
+        self._turn_notifier.start()
+        self._presence = TerminalPresence(app_state, backend)
+        self._presence.start()
+
+    def _stop_terminal_feedback(self) -> None:
+        """Clear the progress and put the user's window title back."""
+        notifier, self._turn_notifier = self._turn_notifier, None
+        if notifier is not None:
+            notifier.stop()
+        presence, self._presence = self._presence, None
+        if presence is not None:
+            presence.stop()
+
     def _start_attention_routing(self) -> None:
         """Publish TUI presence and start the event-driven attention projection."""
         from agenthicc.background.attention import TUIAttentionLease
         from agenthicc.background.store import default_background_root
-        from agenthicc.tui.attention import AgentAttentionRouter, _emit_terminal_notification
+        from agenthicc.tui.attention import AgentAttentionRouter
 
         service, settings = self._agents_hub_service()
         if settings is None:
@@ -3156,17 +3187,12 @@ class TUISession:
         if service is None:
             return
 
-        def set_title(title: str) -> None:
-            self._ctx.console.set_window_title(title)
-
+        sink = self._notification_sink
         router = AgentAttentionRouter(
             service,
             settings,
             self._ctx.app_state,
-            set_terminal_title=set_title,
-            send_terminal_notification=lambda summary: _emit_terminal_notification(
-                self._ctx.console, summary
-            ),
+            send_terminal_notification=sink.background if sink is not None else None,
         )
         self._attention_task = self._tasks.start(router.run(), name="background-attention-router")
 
@@ -6058,6 +6084,7 @@ class TUISession:
             startup.finish("first_frame")
             startup.record_first_frame_modules(len(sys.modules))
         self._install_diagnostics_log()
+        self._start_terminal_feedback()
         self._wire_approval_overlay()
         # AGX-13: the user's key bindings, hot-reloaded while the session runs.
         # They load right after the first frame (whose hints use the defaults)
@@ -6174,6 +6201,8 @@ class TUISession:
                 # wait so SIGWINCH redraws do not race a changing status bar.
                 pending = ctx.app_state.pending_approval()
                 ctx.app_state.conversation.tick(paused=pending is not None)
+                if self._presence is not None:
+                    self._presence.update()
                 if _optional_field(pending, "kind") == "questions":
                     deadline = _optional_field(pending, "deadline_at")
                     if isinstance(deadline, (int, float)):
@@ -6230,6 +6259,7 @@ class TUISession:
                 *owned,
                 return_exceptions=True,
             )
+            self._stop_terminal_feedback()
             try:
                 self._workspace.stop()
             finally:
