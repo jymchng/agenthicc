@@ -385,9 +385,11 @@ class UnifiedInputSession:
         enter history, modify the prompt, or reach a keybinding.
         """
         if key is Key.FOCUS_IN:
+            self._state.conversation.terminal_focus_known.set(True)
             self._state.conversation.terminal_focused.set(True)
             return None
         if key is Key.FOCUS_OUT:
+            self._state.conversation.terminal_focus_known.set(True)
             self._state.conversation.terminal_focused.set(False)
             return None
         keymap = self._state.keymap()

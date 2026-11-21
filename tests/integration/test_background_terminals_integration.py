@@ -134,7 +134,7 @@ def test_wait_status_is_width_safe_and_contains_control_hints() -> None:
     console = Console(file=StringIO(), width=200, height=40, color_system=None)
     rows = lines_text(Workspace(state, console)._build_lines())
     status, hints = rows[-2], rows[-1]
-    assert "Waiting for terminal: uv run pytest tests/unit -q 6m 11s" in status
+    assert "Waiting for terminal: uv run pytest tests/unit -q · 6m 11s" in status
     assert "2 terminals running" in status
     assert hints.strip() == "Esc interrupt · /ps view · /stop stop all"
     text = "\n".join(rows)

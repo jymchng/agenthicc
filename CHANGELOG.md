@@ -9,6 +9,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — motion, feedback and terminal integration (TUX-10)
+
+- **A status line that says what is happening.** The state segment reads
+  `Reading src/app.py`, `Running npm test`, `Editing …`, `Working with 2 agents`,
+  `Retrying (2/5) in 8s` or `◆ Waiting for you · approve a command` instead of an
+  internal tool name, with the elapsed time after 3 s and `↓ 2.1k tokens`
+  after 10 s. The turning flower and the bold letter over `Thinking` stay, and
+  `reduced_motion` shows two identical frames half a second apart.
+- **Turn-end rows that say what the turn did.** `✾ Worked for 1m 12s | 10:20 AM`
+  gains `└ 6 tools · edited 3 files +34 −8`; an interrupted turn reads
+  `✾ Interrupted after 22s` with `nothing was changed` when no write succeeded,
+  a failed one `✾ Stopped after 8s`, and a quick answer has no row.
+- **The terminal knows.** When it is unfocused, one notification (OSC 9, OSC 777
+  or the bell, `[ui] notify`) when a request over 10 s ends, fails or needs an
+  approval; the window title (`✿ fix flaky test · agenthicc`, restored on exit,
+  `[ui] window_title`); and OSC 9;4 taskbar progress in Windows Terminal, ConEmu
+  and Ghostty, determinate only when a compaction reports measured progress.
+- **Clickable paths.** Paths in tool rows, diff headers, notices and the
+  transcript view, and URLs in the assistant's text, are OSC 8 links
+  (`[ui] hyperlinks`, `editor_links = "vscode" | "cursor" | "idea" | "zed"`).
+- **`/shortcuts` and `?`.** One page of every key in every context, generated
+  from the key map, saying which are yours (`composer.shortcuts`).
+
+### Changed
+
+- The background attention router no longer sets the window title; the title
+  adds `(2)` when other sessions need you. `_emit_terminal_notification` is
+  replaced by `tui.notifications.NotificationSink`.
+
 ### Added — navigation (TUX-09)
 
 - **A transcript view.** `Ctrl+T` (also while a turn runs), `/history`, `/logs`

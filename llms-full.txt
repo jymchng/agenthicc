@@ -2288,7 +2288,7 @@ problems returned in `KeymapLoad.errors`. A file binding a key that a
 `AppState.keymap` current as the file changes, and `/keybindings` shows the
 effective bindings. `AppState.ui` holds `config.UISettings` (`[ui]`:
 `mouse`, `screen_reader`, `reduced_motion`, `theme`, `glyphs`, `banner`,
-`tool_detail`, `layout`). `Ctrl+T` is the composer's `composer.transcript`, so it
+`tool_detail`, `layout`, `notify`, `window_title`, `hyperlinks`, `editor_links`). `Ctrl+T` is the composer's `composer.transcript`, so it
 cannot be the bindings file's `leader`.
 
 Themes (TUX-01): `agenthicc.tui.theme` owns every colour and chrome glyph.
@@ -2778,6 +2778,98 @@ class QuestionForm:
 In the agents hub, `i` on a question or input item opens `AnswerView`, which
 delivers `{"answers": {...}}` or `{"answer": text}` at the version shown. A
 failed send keeps the form open, and Esc keeps its progress.
+
+### Motion, feedback and terminal integration (TUX-10)
+
+```python
+# agenthicc.tui.activity — the state segment's words (pure)
+def tool_verb(presentation: ToolPresentation) -> str: ...        # "Reading", "Running", "Editing"…
+def activity_text(verb: str, target: str) -> str: ...            # "Reading src/app.py"
+def waiting_reason(kind: str, tool_name: str, *, workspace_access: bool = False) -> str: ...
+def retry_text(attempt: int, max_retries: int, seconds_left: int) -> str: ...  # "Retrying (2/5) in 8s"
+
+# agenthicc.tui.turn_summary — what a turn did, written on turn_complete
+def summarize_turn(events: Iterable[ConversationEvent]) -> dict[str, object]: ...
+#   tools, wrote, files, added, removed, failed
+
+# agenthicc.tui.terminal.osc — control-sequence builders (pure)
+class ProgressState(IntEnum): CLEAR = 0; DETERMINATE = 1; ERROR = 2; INDETERMINATE = 3
+def title(text: str) -> str: ...                       # OSC 2
+def progress(state: ProgressState, percent: int = 0) -> str: ...   # OSC 9;4
+def notification(mode: str, summary: str, heading: str = "agenthicc") -> str: ...
+def notify_mode(setting: str, env: Mapping[str, str]) -> str: ...   # osc9 | osc777 | bell | off
+def progress_supported(env: Mapping[str, str]) -> bool: ...
+def hyperlinks_supported(env: Mapping[str, str]) -> bool: ...
+def sanitize(text: str, limit: int = 240) -> str: ...
+TITLE_PUSH: str; TITLE_POP: str; BELL: str
+
+# agenthicc.tui.terminal.hyperlinks — the one OSC 8 helper
+@dataclass(frozen=True)
+class Hyperlinks:
+    enabled: bool; root: Path; editor: str = ""
+    @classmethod
+    def for_state(cls, app_state, *, backend: TerminalBackend | None = None) -> Hyperlinks: ...
+    def url(self, path: str | Path, line: int | None = None) -> str | None: ...
+    def style(self, path, line=None) -> Style | None: ...
+    def style_if_exists(self, path, line=None) -> Style | None: ...
+    def linkify(self, text: Text) -> Text: ...          # existing files and URLs
+def autolink_urls(markdown: str) -> str: ...
+def links_enabled(mode: str, *, supported: bool, screen_reader: bool = False) -> bool: ...
+EDITOR_SCHEMES: Mapping[str, str]                       # vscode, cursor, zed, idea
+
+# agenthicc.tui.notifications
+class NotificationSink:        # the one exit for terminal notifications
+    def __init__(self, backend, app_state, *, env=None, clock=time.monotonic) -> None: ...
+    def send(self, kind: str, summary: str) -> bool: ...
+    def background(self, kind: str, summary: str) -> None: ...   # AgentAttentionRouter's entry
+class TurnNotifier:            # an away user: a request over 10 s, a failure, an approval
+    def __init__(self, app_state, sink) -> None: ...
+    def start(self) -> None: ...; def stop(self) -> None: ...; def away(self, ran_for_s: float) -> bool: ...
+class TerminalPresence:        # window title + OSC 9;4 progress
+    def __init__(self, app_state, backend, *, clock=time.monotonic) -> None: ...
+    def start(self) -> None: ...; def update(self) -> None: ...; def stop(self) -> None: ...
+    def title_text(self) -> str: ...
+PRIORITY: Mapping[str, int]    # the routing table: approval/needs 3, failed 2, done/finished 1
+NOTIFY_AFTER_S = 10.0; UNKNOWN_FOCUS_AFTER_S = 30.0
+
+# agenthicc.tui.shortcuts and tui.workspace.overlays.shortcuts
+def shortcut_groups(keymap: Keymap) -> tuple[ShortcutGroup, ...]: ...
+class ShortcutsOverlay(Overlay): ...                    # /shortcuts, ? on an empty prompt
+```
+
+- **Backend.** `TerminalBackend` gains `write_control(sequence)` (writes only to
+  a terminal, never to a pipe or under `--headless`), `supports_progress()` and
+  `supports_hyperlinks()`; `PosixBackend` and `WindowsBackend` implement them.
+- **State segment.** `RunningTool.verb` carries the tool's verb; `StatusLine`
+  reads `Reading src/app.py`, `Running npm test`, `Editing …`, `Working with N
+  agents`, `Retrying (2/5) in 8s` (`ConversationStore.begin_retry`, the `retry`
+  signal and `RetryNotice`) or `◆ Waiting for you · approve a command`. The
+  elapsed time shows after 3 s and `↓ 2.1k tokens` after 10 s
+  (`ConversationStore.activity_tokens_out()`). The flower and the bold sweep
+  over `Thinking` are unchanged; compaction keeps its own row (`running_rows`).
+- **Turn end.** `ConversationStore.close_turn(error=None, interrupted=False)`
+  writes `summarize_turn(...)` and `interrupted` on `turn_complete`; the
+  appender prints `✾ Worked for 1m 12s | 10:20 AM` plus `└ 6 tools · edited 3
+  files +34 −8`, `✾ Interrupted after 22s | …` plus `└ 2 tools ran · nothing
+  was changed`, or `✾ Stopped after 8s | …`; no row for a turn under 5 s that
+  ran no tool, and no `Done in` for an interrupted or failed request.
+  `diff_renderer.diff_counts(old, new)` gives `(added, removed)`.
+- **Focus.** `ConversationStore.terminal_focus_known` is true once the terminal
+  has reported a focus change; `terminal_focused` is only the starting guess
+  until then.
+- **Attention router.** `AgentAttentionRouter(send_terminal_notification=
+  Callable[[kind, summary], None])` no longer sets the window title and
+  `_emit_terminal_notification` is gone: its notifications go through
+  `NotificationSink.background`.
+- **Settings.** `[ui] notify = "auto" | "osc" | "bell" | "off"`,
+  `window_title = true`, `hyperlinks = "auto" | "on" | "off"` and
+  `editor_links = "" | "vscode" | "cursor" | "idea" | "zed"` (`config.UISettings`).
+- **Keys.** `composer.shortcuts` (`?`, while the prompt is empty, rebindable)
+  and `OpenShortcutsCommand`; the hint row and the status line end with
+  `? shortcuts`.
+- **Hyperlinks.** `Notice(links=Hyperlinks | None)` links the files and URLs a
+  notice names; `render_file_diff(..., link=Style)`; `path_label(path, links)`
+  and `TranscriptView(..., links=)` link the transcript view's title.
 
 ## Historical TUI API — not in the current checkout
 

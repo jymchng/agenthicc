@@ -673,6 +673,30 @@ class BackgroundSubagentsCapability:
         return _CONSUMED
 
 
+class ShortcutsCapability:
+    """``?`` on an empty prompt opens the page of every key (TUX-10 §2.6).
+
+    Where nothing can show the page (an answer composer inside a dialog) the
+    key is an ordinary character, so a question can still start with ``?``.
+    """
+
+    async def handle(
+        self,
+        key: Key,
+        ch: str,
+        session: UnifiedInputSession,
+    ) -> CapabilityResult:
+        if session._action != "composer.shortcuts":
+            return _PASS
+        from agenthicc.tui.runtime.commands import OpenShortcutsCommand
+
+        if not session._bus.handles(OpenShortcutsCommand):
+            session._action_rebindable = False
+            return _PASS
+        await session._bus.dispatch_async(OpenShortcutsCommand())
+        return _CONSUMED
+
+
 class PaletteCapability:
     """Ctrl+P: the command palette on an empty prompt (TUX-05 §2.4).
 
@@ -847,6 +871,7 @@ IDLE_CAPABILITIES: list[Capability] = [
     SubagentsCapability(),
     SuggestionCapability(),
     AgentCycleCapability(),
+    ShortcutsCapability(),
     PaletteCapability(),
     TranscriptCapability(),
     PaneScrollCapability(),
@@ -875,6 +900,7 @@ STREAMING_CAPABILITIES: list[Capability] = [
     SubagentsCapability(),  # workers run while their turn does
     BackgroundSubagentsCapability(),
     AgentCycleCapability(),  # the choice applies from the next turn
+    ShortcutsCapability(),  # the page of keys opens over a running turn too
     PaletteCapability(),  # the palette opens over a running turn too
     TranscriptCapability(),  # the transcript opens over a running turn too
     PaneScrollCapability(),

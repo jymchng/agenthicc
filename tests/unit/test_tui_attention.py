@@ -61,7 +61,6 @@ def _router(
     app_state: AppState | None = None,
     monotonic: float = 100.0,
     now: datetime | None = None,
-    set_terminal_title: list[str] | None = None,
     send_terminal_notification: list[str] | None = None,
 ) -> AgentAttentionRouter:
     return AgentAttentionRouter(
@@ -70,9 +69,10 @@ def _router(
         app_state or AppState.create(),
         monotonic=lambda: monotonic,
         now=lambda: now or datetime.now().astimezone(),
-        set_terminal_title=(set_terminal_title.append if set_terminal_title is not None else None),
         send_terminal_notification=(
-            send_terminal_notification.append if send_terminal_notification is not None else None
+            (lambda _kind, summary: send_terminal_notification.append(summary))
+            if send_terminal_notification is not None
+            else None
         ),
     )
 
@@ -97,10 +97,9 @@ async def test_attention_snapshot_counts_waiting_and_running_sessions(
     assert {session.session_id for session in snapshot.sessions} == {"running", "waiting"}
 
 
-def test_router_publishes_counts_target_and_terminal_title() -> None:
+def test_router_publishes_counts_and_target() -> None:
     app_state = AppState.create()
-    titles: list[str] = []
-    router = _router(app_state=app_state, set_terminal_title=titles)
+    router = _router(app_state=app_state)
     waiting = _session("session-a", SessionStatus.WAITING_INPUT)
 
     router._publish_counts(_snapshot((waiting,), needs_you=1, running=2))
@@ -108,7 +107,6 @@ def test_router_publishes_counts_target_and_terminal_title() -> None:
     assert app_state.conversation.background_needs_you() == 1
     assert app_state.conversation.background_running() == 2
     assert app_state.conversation.agents_target() == "session-a"
-    assert titles[-1] == "Agenthicc · 1 session needs you · 2 sessions running"
 
 
 def test_router_coalesces_waiting_transition_and_defers_for_modal() -> None:
@@ -328,25 +326,6 @@ async def test_auto_backend_falls_back_to_tui_notification_escape(
     await asyncio.gather(*tuple(router._notification_tasks))
 
     assert emitted == ["session-a failed"]
-
-
-def test_terminal_notification_osc_filters_control_characters(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from io import StringIO
-
-    from rich.console import Console
-
-    from agenthicc.tui.attention import _emit_terminal_notification
-
-    monkeypatch.setenv("TERM", "xterm-256color")
-    stream = StringIO()
-    _emit_terminal_notification(
-        Console(file=stream, force_terminal=True),
-        "ready\n\x1b]52;clipboard\x07",
-    )
-
-    assert stream.getvalue() == "\x1b]9;ready]52;clipboard\x07"
 
 
 @pytest.mark.asyncio

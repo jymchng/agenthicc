@@ -27,6 +27,7 @@ from agenthicc.tui.theme import glyphs, palette
 
 if TYPE_CHECKING:
     from agenthicc.config import UISettings
+    from agenthicc.tui.terminal.hyperlinks import Hyperlinks
 
 __all__ = ["EXPAND_LIMIT_BYTES", "EventRenderer", "path_label", "rows_of"]
 
@@ -44,14 +45,18 @@ class _RecordingConsole(Console):
         return segments
 
 
-def path_label(path: str) -> Text:
-    """A file path as the view's title shows it.
+def path_label(path: str, links: Hyperlinks | None = None) -> Text:
+    """A file path as the view's title shows it, an OSC 8 link when *links* are on.
 
-    The one place the view itself prints a path (the ``/logs`` title). TUX-10's
-    OSC 8 hyperlinks wrap it here; paths inside tool rows and diffs come from
-    the scrollback renderers, which that change links at their source.
+    The one place the view itself prints a path (the ``/logs`` title); paths in
+    tool rows and diffs come from the scrollback renderers, which link them at
+    their source (:class:`agenthicc.tui.terminal.hyperlinks.Hyperlinks`).
     """
-    return Text(path, style=palette().muted, no_wrap=True, overflow="ellipsis")
+    label = Text(path, style=palette().muted, no_wrap=True, overflow="ellipsis")
+    link = links.style_if_exists(path) if links is not None else None
+    if link is not None:
+        label.stylize(link)
+    return label
 
 
 def rows_of(segments: list[Segment]) -> list[Text]:

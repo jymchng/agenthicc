@@ -90,6 +90,30 @@ class PosixBackend:
             self._mouse_reporting = mouse
         _set_reporting(focus=focus, mouse=mouse)
 
+    def write_control(self, sequence: str) -> None:
+        """Write *sequence* (title, progress, notification) to a terminal, never to a pipe."""
+        if sequence and self._stdout_is_terminal():
+            self._write(sequence)
+
+    def supports_progress(self) -> bool:
+        """Whether this terminal draws ``OSC 9;4`` progress (TUX-10)."""
+        from agenthicc.tui.terminal.osc import progress_supported
+
+        return self._stdout_is_terminal() and progress_supported(os.environ)
+
+    def supports_hyperlinks(self) -> bool:
+        """Whether this terminal opens ``OSC 8`` hyperlinks (TUX-10)."""
+        from agenthicc.tui.terminal.osc import hyperlinks_supported
+
+        return self._stdout_is_terminal() and hyperlinks_supported(os.environ)
+
+    @staticmethod
+    def _stdout_is_terminal() -> bool:
+        try:
+            return sys.stdout.isatty()
+        except (OSError, ValueError):
+            return False
+
     def restore(self) -> None:
         """Wake a worker blocked in :meth:`read_key` during shutdown."""
         write_fd = self._cancel_write_fd

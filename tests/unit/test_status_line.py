@@ -172,8 +172,9 @@ def test_no_frame_shows_placeholder_metadata(width: int) -> None:
         assert "cost unknown" not in text, name
         assert "usage unavailable" not in text, name
         assert not _UUID.search(text), name
-        assert not re.search(r"[↑↓]\s*\d+\S*\s*\?", text), name
-        assert " ?" not in text.replace("? shortcuts", ""), name
+        bare = text.replace("? shortcuts", "")
+        assert not re.search(r"[↑↓]\s*\d+\S*\s*\?", bare), name
+        assert " ?" not in bare, name
 
 
 def test_partial_usage_is_marked_approximate() -> None:
@@ -279,14 +280,14 @@ _SNAPSHOTS: dict[int, list[str]] = {
         "─" * 46 + " fix flaky scheduler test · Safe ─",
         "❯ 2 sessions need you · press ←",
         "─" * 80,
-        " ● Idle · ◆ 2 sessions need you ← · ctx 12% ▰▱▱▱▱ · opus-4.8               /help",
+        " ● Idle · ◆ 2 sessions need you ← · ctx 12% ▰▱▱▱▱ · opus-4.8         ? shortcuts",
     ],
     120: [
         "─" * 86 + " fix flaky scheduler test · Safe ─",
         "❯ 2 sessions need you · press ←",
         "─" * 120,
         " ● Idle · ◆ 2 sessions need you ← · ctx 12% ▰▱▱▱▱ · opus-4.8 · ↑12.4k ↓3.1k · "
-        "$0.42 · main*                        /help",
+        "$0.42 · main*                  ? shortcuts",
     ],
 }
 

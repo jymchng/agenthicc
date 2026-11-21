@@ -1,6 +1,6 @@
 ---
 title: "TUX-10: Motion, feedback and terminal integration"
-status: Proposed
+status: Implemented (branch tux-tux10)
 version: 1.0.0
 date: 2026-11-05
 scope: "the working indicator (one spinner, an activity verb, elapsed time), turn completion and interruption rows, notifications when the terminal is unfocused, the window title and progress OSC, clickable paths (OSC 8), and a generated /shortcuts reference"
@@ -10,12 +10,93 @@ tags: [tui, motion, feedback, notifications, terminal, polish]
 
 # TUX-10: Motion, feedback and terminal integration
 
-> **Amendment (operator, 2026-11-06).** Keep the original flower and the bold
-> letter sweeping across `Thinking`. §2.1 below is amended accordingly:
-> - The one spinner *is* the flower (`Glyphs.spinner`), not braille.
-> - `Thinking` keeps the sweep.
-> - The other verbs (`Reading …`, `Running …`) render plainly.
-> - Nothing in §5 deletes the flower or the sweep.
+## Implementation status
+
+Implemented on branch `tux-tux10`. Every acceptance criterion in §4 has a test;
+the table names it. The amendments to the design follow.
+
+| AC | Test |
+|---|---|
+| 1 The verb | `tests/e2e/test_motion_feedback_e2e.py::test_the_status_line_names_what_the_agent_is_doing_never_a_tool` (a scripted `MockTransport` turn: `read_file` then `run_bash npm test` read `Reading src/app.py` then `Running npm test`; no `⚒` and no internal tool name in any frame); `tests/unit/test_status_line_motion.py` (the verb for each tool family, a plugin tool, subagents, retry, waiting, the 3 s and 10 s tail, a long target) |
+| 2 Reduced motion | `test_status_line_motion.py::test_reduced_motion_frames_500_ms_apart_are_identical` (five frame ticks apart, with the same text), `…_without_reduced_motion_the_same_frames_differ`, `…_keeps_the_waiting_state_still_and_its_words` |
+| 3 Turn-end rows | `tests/unit/test_turn_end_rows.py`: `…_edits_three_files_ends_with_done_and_the_file_totals`, `…_interrupted_turn_with_no_writes_says_nothing_was_changed`, `…_a_two_second_answer_has_no_trailer`, plus the failed turn, the blank line, the stateless replay; `tests/e2e/test_motion_feedback_e2e.py::test_cancelling_a_running_turn_ends_it_as_interrupted` (the real cancellation path) |
+| 4 Notifications | `tests/unit/test_terminal_osc.py`: `…_twelve_second_turn_while_unfocused_emits_exactly_one_osc_9`, `…_a_focused_terminal_gets_none`, `…_an_approval_while_unfocused_emits_one`, `…_a_focus_report_is_how_the_terminal_says_it_is_away` (through the real key path), the unknown-focus 30 s rule, `[ui] notify`, and the routing table |
+| 5 Title and progress | `test_terminal_osc.py::test_the_title_changes_to_the_working_glyph_and_is_restored_on_exit`, `…_progress_is_written_only_where_wt_session_is_set` (the real backend, a fake TTY, `WT_SESSION` set and unset), `…_progress_is_indeterminate_while_working_and_cleared_at_the_end`, `…_compaction_progress_is_determinate_only_when_it_is_measured`, the once-a-second throttle, `window_title = false`, a pipe gets nothing (POSIX and Windows backends), `tests/e2e/test_motion_feedback_e2e.py::test_headless_writes_no_escape_sequence_…` |
+| 6 OSC 8 | `tests/unit/test_terminal_hyperlinks.py::test_a_read_row_links_to_the_file_when_hyperlinks_are_on` and `…_the_row_has_no_link_when_hyperlinks_are_off`; diff headers, notices, assistant URLs, the transcript view's row and title, the editor schemes, and the terminal matrix (tmux before 3.4, `TERM=dumb`, `screen_reader`) |
+| 7 `/shortcuts` | `tests/unit/test_shortcuts.py::test_every_action_in_the_default_actions_appears_exactly_once`, `…_a_rebinding_appears_with_its_new_key_and_says_so`, `…_no_row_shows_a_condition_identifier`; wrapping at 50/80/140 columns, the `?` key (empty prompt, mid-prompt, during a turn, in an answer composer, rebound), the hint row and status line ending with `? shortcuts` |
+
+### Amendments to the design
+
+- **Operator decisions that override §2.1 and §2.2.**
+  - The one spinner is agenthicc's flower (`Glyphs.spinner`), not braille, and
+    `Thinking` keeps its bold sweeping letter; the other verbs render plainly.
+    AC 1's "no flower glyph" therefore reads "no `⚒` and no internal tool name".
+  - The turn-end rows keep the operator's `✾ Worked for 24s | 10:20 AM` and
+    `✾ Done in … across N turns | …` (no `── now ──`, one blank line after).
+    §2.2's information is a muted second line under the row
+    (`└ 6 tools · edited 3 files +34 −8`), not a `── … ──` rule, and the
+    interrupted and failed rows read `✾ Interrupted after 22s` and
+    `✾ Stopped after 8s`. The `/retry` the PRD names does not exist
+    (TUX-08), so the failed row has no command.
+  - A request that ends interrupted or failed prints no `Done in …` total.
+  - Selections have no background (`accent_bg` is deleted), and `/shortcuts`
+    has none: it is a pager with no selection.
+- **Elapsed time after 3 s.** The status line no longer shows `0s` from the
+  first frame (TUX-02 amendment 7); the PRD's thresholds are 3 s for the time
+  and 10 s for `↓ N tokens`. The running-tool rows keep their own `(23s)`.
+- **The turn summary is data on the event.** §2.2 says the totals come from the
+  turn's file-change events; the store computes them when the turn closes
+  (`tui/turn_summary.py`) and writes `tools`, `wrote`, `files`, `added`,
+  `removed`, `failed` and `interrupted` on `turn_complete`, so a replay and the
+  transcript view (which renders one event at a time) print the same rows. A
+  log written before this change has no such fields and prints the row only
+  for a turn of 5 s or more.
+- **`_emit_terminal_notification` is gone.** §2.3 says to reuse it; it wrote to
+  the Rich console's stream and had no mode. Notifications now go through
+  `tui/notifications.py::NotificationSink` and `TerminalBackend.write_control`
+  (OSC 9, OSC 777 or the bell, by `[ui] notify`; the text is stripped of
+  control characters as before). The attention router takes
+  `send_terminal_notification(kind, summary)` and no longer sets the title.
+- **The AGX-10 routing table** (§2.3 "No duplicates") is `notifications.PRIORITY`:
+  an approval or a background session that needs you outranks a failure, which
+  outranks a finished request. A notification within 2 s of one that outranks
+  or equals it, and the same text within 10 s, is dropped. `/dnd` is not
+  consulted for the foreground: DND is for background attention.
+- **Focus.** Focus reporting was already enabled through the backend by AGX-10;
+  this change adds `ConversationStore.terminal_focus_known`, because
+  `terminal_focused` starts true and an unreporting terminal could not be told
+  from a focused one. Until the terminal reports, only a request of more than
+  30 s notifies.
+- **Title.** Written through `write_control` (`OSC 2`) at most once a second
+  from the session's 10 Hz tick. The user's own title is saved and restored with
+  the xterm title stack (`CSI 22;2 t` / `CSI 23;2 t`), which terminals that do
+  not implement it ignore. The state glyph is the flower (`●` idle, `◆`
+  waiting).
+- **Progress.** `OSC 9;4` is sent where `WT_SESSION`, `ConEmuPID` or Ghostty's
+  `TERM_PROGRAM` says it is drawn, and never under a multiplexer. During
+  compaction it follows `compaction_progress` only when that is not `None`
+  and is otherwise indeterminate; nothing is estimated. The compaction row and
+  `compaction_*` store API are unchanged.
+- **Links.** The check is a capability of the backend (`supports_hyperlinks`),
+  a known-terminal list plus `VTE_VERSION`, with `FORCE_HYPERLINK` as the
+  override. A tool row or diff path is linked only if it exists, so a document
+  name (`read_agenthicc_doc`) or a deleted file is not a dead link. With
+  hyperlinks off, assistant Markdown `[text](url)` is printed `text (url)`.
+  Dialog diffs (TUX-07) are not linked: the dialog crops its box.
+- **`/shortcuts`.** The page is a `Dialog` pager. Long descriptions wrap under
+  their key (TUX-09's wrapping rule), and each row shows `default` or
+  `your keybindings`. `?` is `composer.shortcuts` (`when: empty`, `yields`, so a
+  bindings file that already used `?` keeps it); where a session cannot show
+  the page (an in-dialog answer composer) the key is typed. The hint row
+  appends `? shortcuts` while the prompt is empty, the other hints giving way
+  first; the status line's right-hand hint (TUX-02) switches from `/help` to
+  it, and falls back to `/help` if the key is unbound.
+- **Merge note.** Merged with `tui-sleek-prds` at 9e16be7 (the compaction row
+  and TUX-09). The shared `tests/transcript_support.py` fake backend gained the
+  three new backend methods, and its `scheduler_session` turns carry the
+  `tools` field the store now writes. The transcript view's title path
+  (`render.path_label`) takes the OSC 8 helper, and `TranscriptView` takes
+  `links=`.
 
 ## 1. Problem
 

@@ -61,6 +61,7 @@ def has_renderer(kind: str) -> bool:
 
 
 if TYPE_CHECKING:
+    from agenthicc.tui.terminal.hyperlinks import Hyperlinks
     from rich.console import Console, RenderableType
     from rich.console import OverflowMethod
     from rich.style import Style, StyleType
@@ -151,6 +152,8 @@ _FAILURE_WORDS: dict[str, str] = {
     "orphaned": "orphaned",
 }
 _PATH_FAMILIES = frozenset({ToolFamily.READ, ToolFamily.WRITE, ToolFamily.LIST})
+#: A turn shorter than this that ran no tool is a quick answer: no closing row (TUX-10).
+_QUICK_ANSWER_S: Final = 5.0
 
 
 def _lang_for_path(path: str) -> str:
@@ -360,6 +363,15 @@ _SELF_SPACED_KINDS: Final = _TOOL_KINDS | {"mention_chips", "turn_start", "compa
 _UNTIMED_KINDS: Final = frozenset({"announcement", "replay_separator"})
 
 
+def _linked(base: str, link: Style | None) -> str | Style:
+    """*base* (a theme style string) with an OSC 8 hyperlink, when there is one."""
+    if link is None:
+        return base
+    from rich.style import Style
+
+    return Style.parse(base) + link
+
+
 class ScrollBufferAppender:
     """Subscribes to ConversationStore events and renders them to stdout.
 
@@ -411,6 +423,9 @@ class ScrollBufferAppender:
         #: time, so the request's total is printed only when it adds something.
         self._activity_turns: int = 0
         self._last_turn_s: float = 0.0
+        #: The request ended in an interrupted or failed turn: it was not "done".
+        self._activity_stopped: bool = False
+        self._links: Hyperlinks | None = None
         # The agent and model of the previous turn, for the header rule.
         self._turn_identity: tuple[str, str] | None = None
         self._last_event_ts: float | None = None
@@ -632,6 +647,15 @@ class ScrollBufferAppender:
         ui = ui_settings(self._state)
         return ui.tool_detail if ui is not None else "compact"
 
+    @property
+    def links(self) -> Hyperlinks:
+        """The OSC 8 links this session's ``[ui]`` settings ask for (TUX-10 §2.5)."""
+        if self._links is None:
+            from agenthicc.tui.terminal.hyperlinks import Hyperlinks
+
+            self._links = Hyperlinks.for_state(self._state)
+        return self._links
+
     # ── tool rows ─────────────────────────────────────────────────────────────
 
     def _tool_row(
@@ -644,8 +668,12 @@ class ScrollBufferAppender:
         meta: Text | None,
         *,
         path: bool,
+        link: Style | None = None,
     ) -> None:
-        """One width-fitted row: ``● Operation target  detail      meta``."""
+        """One width-fitted row: ``● Operation target  detail      meta``.
+
+        With *link* the target is an OSC 8 hyperlink (TUX-10).
+        """
         from rich.cells import cell_len
         from rich.text import Text
 
@@ -656,7 +684,7 @@ class ScrollBufferAppender:
         if self._wrap:
             natural = fixed + cell_len(target) + (cell_len(detail) + 2 if detail else 0)
             if natural > width:
-                self._wrapped_tool_row(marker, marker_style, operation, target, detail, meta)
+                self._wrapped_tool_row(marker, marker_style, operation, target, detail, meta, link)
                 return
         # The target keeps priority. The quiet detail ("in objective-create-a/")
         # is shown whole, cut only when a readable part fits, else dropped: a
@@ -683,7 +711,7 @@ class ScrollBufferAppender:
             " ",
             (operation, f"bold {p.text}"),
             " " if target else "",
-            (target, p.text),
+            (target, _linked(p.text, link)),
             (detail_text, p.muted),
         )
         if meta is not None and meta.cell_len:
@@ -700,6 +728,7 @@ class ScrollBufferAppender:
         target: str,
         detail: str,
         meta: Text | None,
+        link: Style | None = None,
     ) -> None:
         """A row too long for one line: the words wrap under the operation, meta on the first line."""
         from rich.cells import cell_len
@@ -710,7 +739,7 @@ class ScrollBufferAppender:
         body = Text.assemble(
             (operation, f"bold {p.text}"),
             " " if target else "",
-            (target, p.text),
+            (target, _linked(p.text, link)),
             (f"  {detail}" if detail else "", p.muted),
         )
         body.overflow = "fold"
@@ -774,6 +803,7 @@ class ScrollBufferAppender:
         else:
             meta.append(duration, p.muted)
             marker, marker_style = g.bullet, p.muted
+        is_path = view.family in _PATH_FAMILIES
         self._tool_row(
             marker,
             marker_style,
@@ -781,7 +811,8 @@ class ScrollBufferAppender:
             view.summary,
             view.detail,
             meta,
-            path=view.family in _PATH_FAMILIES,
+            path=is_path,
+            link=self.links.style_if_exists(view.summary) if is_path else None,
         )
         if view.failed:
             self._render_failure_output(view, level)
@@ -1059,14 +1090,15 @@ def _render_user_message(self: ScrollBufferAppender, ev: ConversationEvent) -> N
 
 @register_renderer("tool_complete")
 def _render_tool_complete_ev(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
+    view = _ToolView.of(ev.payload)
     presentation = self._exploration_payload(ev.payload)
-    if presentation is not None and not _ToolView.of(ev.payload).failed:
+    if presentation is not None and not view.failed:
         self._add_exploration(ev.payload, presentation)
         return
     self._flush_exploration_group()
     self._group_count += 1
     shown = self._group_count - self._group_hidden
-    if shown <= self._max_tool_calls or _ToolView.of(ev.payload).failed:
+    if shown <= self._max_tool_calls or view.failed:
         self._print_pending_header()
         self._open_block("tool_complete")
         self._render_tool_complete(ev.payload)
@@ -1082,7 +1114,12 @@ def _render_text(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
     if text.strip():
         from rich.markdown import Markdown
 
-        self._print(Markdown(text), end="")
+        if self.links.enabled:
+            from agenthicc.tui.terminal.hyperlinks import autolink_urls
+
+            text = autolink_urls(text)
+        # Off: the address is spelled out after the words, not hidden behind a link.
+        self._print(Markdown(text, hyperlinks=self.links.enabled), end="")
         # Keep each LLM response visually separated from the next event.
         # Markdown is printed with ``end=""`` so Rich controls its rendering;
         # this explicit empty print adds the trailing blank line consistently.
@@ -1118,12 +1155,16 @@ def _render_file_modified(self: ScrollBufferAppender, ev: ConversationEvent) -> 
     old_line_list = _string_list(old_lines)
     new_line_list = _string_list(new_lines)
     lang = _lang_for_path(path)
+    link = self.links.style_if_exists(path)
     operation = tool_presentation(tool).operation
     max_rows = None if self._tool_detail() == "verbose" else _DIFF_ROWS
 
     if old_lines is not None and new_lines is not None:
         if old_line_list == []:
-            self._print(render_file_create(path, new_line_list, language=lang), highlight=False)
+            self._print(
+                render_file_create(path, new_line_list, language=lang, link=link),
+                highlight=False,
+            )
         else:
             self._print(
                 render_file_diff(
@@ -1133,12 +1174,13 @@ def _render_file_modified(self: ScrollBufferAppender, ev: ConversationEvent) -> 
                     operation=operation,
                     language=lang,
                     max_rows=max_rows,
+                    link=link,
                 ),
                 highlight=False,
             )
     else:
         p, g = palette(), glyphs()
-        self._tool_row(g.bullet, p.muted, operation, path, "", None, path=True)
+        self._tool_row(g.bullet, p.muted, operation, path, "", None, path=True, link=link)
     self._gap_pending = True
 
 
@@ -1160,7 +1202,8 @@ def _print_notice(
 
     ui = ui_settings(self._state)
     words = ui is not None and ui.screen_reader and not literal
-    notice = Notice(severity, title, body, actions, literal=literal, words=words)
+    links = None if literal else self.links
+    notice = Notice(severity, title, body, actions, literal=literal, words=words, links=links)
     self._print(notice, highlight=False)
 
 
@@ -1246,17 +1289,58 @@ def _timing_row(glyph: str, text: str, timestamp: float) -> Text:
     )
 
 
+def _turn_detail(payload: Mapping[str, object], *, stopped: bool) -> str:
+    """``6 tools · edited 3 files +34 −8``; ``2 tools ran · nothing was changed`` when stopped."""
+    g = glyphs()
+    tools = _nonnegative_int(payload, "tools", 0)
+    files = _nonnegative_int(payload, "files", 0)
+    parts: list[str] = []
+    if tools:
+        parts.append(f"{_plural(tools, 'tool')} ran" if stopped else _plural(tools, "tool"))
+    if files:
+        added = _nonnegative_int(payload, "added", 0)
+        removed = _nonnegative_int(payload, "removed", 0)
+        parts.append(f"edited {_plural(files, 'file')} +{added} {g.minus}{removed}")
+    elif stopped and payload.get("wrote") is not True:
+        parts.append("nothing was changed")
+    return f" {g.sep} ".join(parts)
+
+
 @register_renderer("turn_complete")
 def _render_turn_complete(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
-    """``✾ Worked for 37s | 10:20 AM`` under the turn's last output."""
+    """The turn's closing row (TUX-10 §2.2)::
+
+        ✾ Worked for 1m 12s | 10:20 AM
+          └ 6 tools · edited 3 files +34 −8
+
+        ✾ Interrupted after 22s | 10:20 AM
+          └ 2 tools ran · nothing was changed
+
+        ✾ Stopped after 8s | 10:20 AM          (the turn failed; the error is above)
+
+    A turn that finished in under 5 s without running a tool is a quick answer
+    and has no row. The second row says what the turn did, when it did anything;
+    the store summarised that when the turn closed
+    (:func:`agenthicc.tui.turn_summary.summarize_turn`), so a replayed or
+    paged transcript prints the same rows.
+    """
     elapsed = _number(ev.payload, "elapsed_s")
+    interrupted = ev.payload.get("interrupted") is True
+    failed = ev.payload.get("failed") is True
     self._activity_turns += 1
     self._last_turn_s = elapsed
-    if elapsed >= 1.0:
-        self._print(
-            _timing_row(glyphs().flower, f"Worked for {compact_duration(elapsed)}", ev.timestamp),
-            highlight=False,
-        )
+    stopped = interrupted or failed
+    self._activity_stopped = stopped
+    ran = _nonnegative_int(ev.payload, "tools", 0) > 0
+    if not stopped and (elapsed < 1.0 or (elapsed < _QUICK_ANSWER_S and not ran)):
+        return
+    took = f" after {compact_duration(elapsed)}" if elapsed >= 1.0 else ""
+    word = "Interrupted" if interrupted else "Stopped" if failed else "Worked for"
+    text = f"{word}{took}" if stopped else f"{word} {compact_duration(elapsed)}"
+    self._print(_timing_row(glyphs().flower, text, ev.timestamp), highlight=False)
+    detail = _turn_detail(ev.payload, stopped=stopped)
+    if detail:
+        self._child(glyphs().elbow, detail, palette().muted)
 
 
 @register_renderer("activity_complete")
@@ -1268,8 +1352,12 @@ def _render_activity_complete(self: ScrollBufferAppender, ev: ConversationEvent)
     """
     elapsed = _number(ev.payload, "elapsed_s")
     turns, last = self._activity_turns, self._last_turn_s
-    self._activity_turns, self._last_turn_s = 0, 0.0
+    stopped = self._activity_stopped
+    self._activity_turns, self._last_turn_s, self._activity_stopped = 0, 0.0, False
     if elapsed < 1.0:
+        return
+    if stopped:
+        self._gap_pending = True
         return
     if turns <= 1 and abs(elapsed - last) < 1.0:
         self._gap_pending = True

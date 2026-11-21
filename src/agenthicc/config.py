@@ -1700,6 +1700,9 @@ _GLYPH_MODES = ("auto", "unicode", "ascii")
 _COMPOSER_FRAMES = ("box", "rules")
 _BANNERS = ("full", "compact", "off")
 _TOOL_DETAIL_LEVELS = ("compact", "normal", "verbose")
+_NOTIFY_MODES = ("auto", "osc", "bell", "off")
+_HYPERLINK_MODES = ("auto", "on", "off")
+_EDITOR_LINKS = ("", "vscode", "cursor", "idea", "zed")
 _LAYOUTS = ("inline", "fullscreen")
 
 
@@ -1744,6 +1747,22 @@ class UISettings:
     (one row; failures show their last lines), ``normal`` (plus a four-line
     preview of reads and commands) or ``verbose`` (the whole bounded output).
     ``/details`` changes it for the session."""
+    notify: str = "auto"
+    """When the terminal is unfocused and a turn ends after 10 s, fails, or
+    asks for you (TUX-10): ``auto`` raises an ``OSC 9`` notification (``OSC 777``
+    on terminals that prefer it), ``osc`` always ``OSC 9``, ``bell`` rings the
+    bell, ``off`` stays silent."""
+    window_title: bool = True
+    """Keep the terminal's window title current (``⠹ fix flaky test · agenthicc``)
+    and restore it on exit; ``false`` never writes it (TUX-10)."""
+    hyperlinks: str = "auto"
+    """``OSC 8`` links on workspace paths and URLs (TUX-10): ``auto`` for
+    terminals known to open them (never under ``screen_reader``, ``TERM=dumb``
+    or tmux before 3.4), ``on`` always, ``off`` never."""
+    editor_links: str = ""
+    """Open a linked path in an editor instead of the file manager: ``vscode``,
+    ``cursor``, ``idea`` or ``zed`` (their URL schemes, with the line number);
+    empty uses a ``file://`` URL (TUX-10)."""
     layout: str = "inline"
     """``inline`` (the default) prints the conversation to the terminal's own
     scrollback; ``fullscreen`` runs the session in the alternate screen, with a
@@ -1764,6 +1783,14 @@ class UISettings:
             raise ValueError("ui.theme must not be empty")
         if self.tool_detail not in _TOOL_DETAIL_LEVELS:
             raise ValueError(f"ui.tool_detail must be one of: {', '.join(_TOOL_DETAIL_LEVELS)}")
+        if self.notify not in _NOTIFY_MODES:
+            raise ValueError(f"ui.notify must be one of: {', '.join(_NOTIFY_MODES)}")
+        if self.hyperlinks not in _HYPERLINK_MODES:
+            raise ValueError(f"ui.hyperlinks must be one of: {', '.join(_HYPERLINK_MODES)}")
+        if self.editor_links not in _EDITOR_LINKS:
+            raise ValueError(
+                f"ui.editor_links must be one of: {', '.join(_EDITOR_LINKS[1:])} (or empty)"
+            )
         if self.layout not in _LAYOUTS:
             raise ValueError(f"ui.layout must be one of: {', '.join(_LAYOUTS)}")
 
@@ -2821,6 +2848,10 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
         banner=_as_str(ui_data.get("banner"), "compact").strip().lower(),
         statusline_command=_as_str(_section(ui_data.get("statusline")).get("command"), "").strip(),
         tool_detail=_as_str(ui_data.get("tool_detail"), "compact").strip().lower(),
+        notify=_as_str(ui_data.get("notify"), "auto").strip().lower(),
+        window_title=_as_bool(ui_data.get("window_title"), True),
+        hyperlinks=_as_str(ui_data.get("hyperlinks"), "auto").strip().lower(),
+        editor_links=_as_str(ui_data.get("editor_links"), "").strip().lower(),
         layout=_as_str(ui_data.get("layout"), "inline").strip().lower(),
     )
 

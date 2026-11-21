@@ -32,6 +32,7 @@ from rich.console import Group
 if TYPE_CHECKING:
     from rich.console import RenderableType
 from rich.padding import Padding
+from rich.style import Style
 from rich.table import Table
 from rich.text import Text
 
@@ -39,7 +40,7 @@ from agenthicc.tui.theme import current_theme, glyphs, palette
 
 Opcode = tuple[str, int, int, int, int]
 
-__all__ = ["render_file_diff", "render_file_create"]
+__all__ = ["diff_counts", "render_file_diff", "render_file_create"]
 
 #: Maximum lines shown in a file-creation preview (FR: show 10 lines).
 CREATE_PREVIEW_LINES: int = 10
@@ -144,14 +145,18 @@ def _word_spans(
 # ── header / summary ──────────────────────────────────────────────────────────
 
 
-def _header(path: str, operation: str, counts: Text) -> Text:
-    """``● Edit src/app/main.py  +12 −3``: the quiet one-row edit header."""
+def _header(path: str, operation: str, counts: Text, link: Style | None = None) -> Text:
+    """``● Edit src/app/main.py  +12 −3``: the quiet one-row edit header.
+
+    With *link* the path is an OSC 8 hyperlink (TUX-10).
+    """
     p, g = palette(), glyphs()
+    path_style = Style.parse(p.text) + link if link is not None else p.text
     header = Text.assemble(
         (f"{g.bullet} ", p.muted),
         (operation, f"bold {p.text}"),
         " ",
-        (path, p.text),
+        (path, path_style),
     )
     if counts.plain:
         header.append("  ")
@@ -439,6 +444,18 @@ def _build_hunks(
 # ── public API ────────────────────────────────────────────────────────────────
 
 
+def diff_counts(old_lines: Sequence[str], new_lines: Sequence[str]) -> tuple[int, int]:
+    """The lines added and removed between *old_lines* and *new_lines* (``+34 −8``)."""
+    matcher = difflib.SequenceMatcher(None, old_lines, new_lines, autojunk=False)
+    added = removed = 0
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag in ("insert", "replace"):
+            added += j2 - j1
+        if tag in ("delete", "replace"):
+            removed += i2 - i1
+    return added, removed
+
+
 def render_file_diff(
     path: str,
     old_lines: list[str],
@@ -448,6 +465,7 @@ def render_file_diff(
     language: str = "python",
     operation: str = "Update",
     max_rows: int | None = None,
+    link: Style | None = None,
 ) -> "RenderableType":
     """Render a GitHub-style diff between *old_lines* and *new_lines*.
 
@@ -466,6 +484,8 @@ def render_file_diff(
     max_rows:
         Most table rows shown; the rest become one omission row.  ``None``
         shows the whole bounded diff.
+    link:
+        A style carrying an OSC 8 hyperlink for the path in the header.
     """
     sm = difflib.SequenceMatcher(None, old_lines, new_lines, autojunk=False)
     opcodes = sm.get_opcodes()
@@ -551,7 +571,7 @@ def render_file_diff(
     grid.add_column(no_wrap=False)  # code
     table.into(grid, max_rows)
     return Group(
-        _header(path, operation, _counts(n_added, n_removed)),
+        _header(path, operation, _counts(n_added, n_removed), link),
         Padding(grid, pad=(0, 0, 0, 2)),
     )
 
@@ -562,6 +582,7 @@ def render_file_create(
     *,
     max_lines: int = CREATE_PREVIEW_LINES,
     language: str = "python",
+    link: Style | None = None,
 ) -> "RenderableType":
     """Render a file-creation event showing at most *max_lines* lines.
 
@@ -590,4 +611,4 @@ def render_file_create(
             Text(f"{n_total - max_lines} more lines", style="dim"),
         )
     counts = Text(f"+{n_total}", style=palette().diff_add)
-    return Group(_header(path, "Create", counts), Padding(table, pad=(0, 0, 0, 2)))
+    return Group(_header(path, "Create", counts, link), Padding(table, pad=(0, 0, 0, 2)))

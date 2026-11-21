@@ -314,6 +314,14 @@ _COMPOSER_ACTIONS: tuple[Action, ...] = (
         description="Move into the queued messages to edit or remove one",
     ),
     Action(
+        "composer.shortcuts",
+        "composer",
+        ("?",),
+        "shortcuts",
+        when=_EMPTY,
+        description="Show every key in every context (on an empty prompt; also /shortcuts)",
+    ),
+    Action(
         "composer.mode_cycle",
         "composer",
         ("shift+tab",),
@@ -439,6 +447,8 @@ _YIELDING = frozenset(
         "composer.pane_line_up",
         "composer.pane_line_down",
         "composer.pane_follow",
+        # TUX-10
+        "composer.shortcuts",
     }
 )
 COMPOSER_ACTIONS: tuple[Action, ...] = tuple(
