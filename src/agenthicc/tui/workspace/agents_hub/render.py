@@ -286,6 +286,8 @@ def row_line(
     width = columns.width
     if row.kind is RowKind.HEADER:
         return Text(fit(f" {row.text}", width), style="bold")
+    if row.kind is RowKind.SPACER:
+        return Text("")
     if row.kind is RowKind.NOTE:
         return Text(fit(f"   {row.text}", width), style="dim italic")
     cells = _cells(row, context)
@@ -313,6 +315,8 @@ def listing_line(row: HubRow, context: RowContext) -> str:
     """A row as one plain line for output without a terminal: ID first."""
     if row.kind is RowKind.HEADER:
         return f"{row.text}:"
+    if row.kind is RowKind.SPACER:
+        return ""
     if row.kind is RowKind.NOTE:
         return f"  {row.text}"
     cells = _cells(row, context)
@@ -340,7 +344,7 @@ def row_sentence(row: HubRow, context: RowContext, *, selected: bool = False) ->
     """A row as a sentence in reading order, for screen readers (AGX-13 §5.5)."""
     if row.kind is RowKind.HEADER:
         return Text(f"{row.text}:")
-    if row.kind is RowKind.NOTE:
+    if row.kind in (RowKind.SPACER, RowKind.NOTE):
         return Text(row.text)
     cells = _cells(row, context)
     parts = [cells["title"][0], cells["status"][0].split(" ", 1)[-1]]

@@ -79,6 +79,7 @@ from agenthicc.tui.workspace.agents_hub.model import (
     needs_you_rows,
     parse_search,
     running_rows,
+    spaced,
 )
 from agenthicc.tui.workspace.agents_hub.prefs import HubPrefs
 from agenthicc.tui.workspace.agents_hub.sources import HubSources
@@ -1059,6 +1060,7 @@ class AgentsHub:
             rows = history_rows(self._history, self._visible_saved())
         else:
             rows = library_rows([entry for entry in self._library if search.matches_entry(entry)])
+        rows = spaced(rows)
         self._rows = rows
         self._row_index = {row.key: index for index, row in enumerate(rows)}
         self._counts = {
@@ -4051,6 +4053,9 @@ class AgentsHub:
             row = self._rows[index]
             selected = row.key == self._selected_key
             session = row.session
+            if plain and row.kind is RowKind.SPACER:
+                index += 1  # a screen reader gets nothing from a blank line
+                continue
             if plain:
                 rendered = row_sentence(row, context, selected=selected)
             else:
@@ -4240,7 +4245,9 @@ class AgentsHub:
         lines = [f"Agents — {counts}"]
         if not any(row.selectable for row in self._rows):
             lines.append(self._empty_message())
-        lines.extend(listing_line(row, context) for row in self._rows)
+        lines.extend(
+            listing_line(row, context) for row in self._rows if row.kind is not RowKind.SPACER
+        )
         return lines
 
     # ── full screen ──────────────────────────────────────────────────────────
