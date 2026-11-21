@@ -1,6 +1,6 @@
 ---
 title: "TUX-10: Motion, feedback and terminal integration"
-status: Implemented
+status: Implemented (branch tux-tux10)
 version: 1.0.0
 date: 2026-11-05
 scope: "the working indicator (one spinner, an activity verb, elapsed time), turn completion and interruption rows, notifications when the terminal is unfocused, the window title and progress OSC, clickable paths (OSC 8), and a generated /shortcuts reference"
@@ -91,18 +91,12 @@ the table names it. The amendments to the design follow.
   appends `? shortcuts` while the prompt is empty, the other hints giving way
   first; the status line's right-hand hint (TUX-02) switches from `/help` to
   it, and falls back to `/help` if the key is unbound.
-- **Merge note.** `conversation_store.py` and `components.py` carry the same
-  compaction hunks as the compaction-indicator change; they are identical there
-  and drop out on merge. The shared `tests/transcript_support.py` fake backend
-  gained the three new backend methods, and its `scheduler_session` turns carry
-  the `tools` field the store now writes.
-
-> **Amendment (operator, 2026-11-06).** Keep the original flower and the bold
-> letter sweeping across `Thinking`. §2.1 below is amended accordingly:
-> - The one spinner *is* the flower (`Glyphs.spinner`), not braille.
-> - `Thinking` keeps the sweep.
-> - The other verbs (`Reading …`, `Running …`) render plainly.
-> - Nothing in §5 deletes the flower or the sweep.
+- **Merge note.** Merged with `tui-sleek-prds` at 9e16be7 (the compaction row
+  and TUX-09). The shared `tests/transcript_support.py` fake backend gained the
+  three new backend methods, and its `scheduler_session` turns carry the
+  `tools` field the store now writes. The transcript view's title path
+  (`render.path_label`) takes the OSC 8 helper, and `TranscriptView` takes
+  `links=`.
 
 ## 1. Problem
 
