@@ -9,6 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — `make_book` chapters speak to the reader as "you"
+
+- **One shared voice.** The new `agenthicc.workflows.make_book.voice` module owns the
+  prose style for the whole workflow. The `chapter` phase and the preface written by
+  `front_matter` now follow the full guide: the reader is addressed directly as "you"
+  and "your" in every section (technical ones included), conjunctions, transitions and
+  conversational connectives are used far more densely, sentences are compound and
+  complex rather than runs of short declaratives, and each paragraph picks up the
+  previous one's thought. The chapter agent revises its own file against the guide
+  before it confirms the chapter.
+- **Guardrails against padding.** Every added clause must carry an idea; connectives
+  must state a true relationship; hedges are kept for points the research leaves open;
+  "Furthermore", "Moreover", "Additionally" and "In fact" are capped at once or twice
+  per chapter. Headings, code, equations, tables, captions and citations are outside
+  the voice.
+- **Editing phases keep the voice.** `layout_review`, `final_layout_review` and
+  `compile` carry a prose-preservation guard so a layout or build fix cannot condense
+  a paragraph or remove its second person.
+- **Instructions that fought the voice are gone.** The chapter prompt no longer bans
+  "Furthermore"/"Moreover"/"Additionally" and "any formulaic transition", asks for
+  "dense, precise prose" and "short, scannable sections", or addresses a "specialist
+  colleague"; its two requirements numbered 6 are now 6 and 7. The declarative
+  `PhaseSpec` skeleton carries the same shared text. The workflow's phases, tools,
+  transition gates and checkpoint format are unchanged.
+
 ### Changed — a blank line before each heading in the agents hub
 
 - Each group heading in the hub list (`Running`, `Queued`, …) after the first is now
