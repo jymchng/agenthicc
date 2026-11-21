@@ -770,7 +770,7 @@ async def test_the_run_filter_shows_one_goal_runs_agents(
     hub = await _open(store, tmp_path, run_id="run-1")
     try:
         assert [row.key for row in hub.rows if row.selectable] == ["session:main", "session:worker"]
-        assert hub.rows[2].depth == 1
+        assert next(row for row in hub.rows if row.key == "session:worker").depth == 1
     finally:
         await hub.stop()
 

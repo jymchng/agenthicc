@@ -45,6 +45,7 @@ __all__ = [
     "parse_search",
     "project_name",
     "running_rows",
+    "spaced",
 ]
 
 #: Finished agents stay in the Running tab this long (AGX-06 §5.3).
@@ -128,6 +129,8 @@ class GroupBy(enum.Enum):
 
 class RowKind(enum.Enum):
     HEADER = "header"
+    #: The blank line that follows a heading (added by :func:`spaced`).
+    SPACER = "spacer"
     NOTE = "note"
     SESSION = "session"
     INBOX = "inbox"
@@ -204,7 +207,7 @@ class HubRow:
 
     @property
     def selectable(self) -> bool:
-        return self.kind not in (RowKind.HEADER, RowKind.NOTE)
+        return self.kind not in (RowKind.HEADER, RowKind.SPACER, RowKind.NOTE)
 
     @property
     def session_id(self) -> str | None:
@@ -218,6 +221,24 @@ class HubRow:
 
 def header(title: str) -> HubRow:
     return HubRow(RowKind.HEADER, f"header:{title}", group=title, text=title)
+
+
+def spacer(group: str) -> HubRow:
+    return HubRow(RowKind.SPACER, f"spacer:{group}", group=group)
+
+
+def spaced(rows: Sequence[HubRow]) -> list[HubRow]:
+    """*rows* with a blank line after every heading, so a group does not run into its title.
+
+    A row of its own, not drawing: the list scrolls and keeps the selection in view by
+    counting rows, so the blank line has to be one of them.
+    """
+    spaced_rows: list[HubRow] = []
+    for row in rows:
+        spaced_rows.append(row)
+        if row.kind is RowKind.HEADER:
+            spaced_rows.append(spacer(row.group))
+    return spaced_rows
 
 
 def note(group: str, text: str) -> HubRow:
