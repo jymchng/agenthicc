@@ -129,7 +129,7 @@ class GroupBy(enum.Enum):
 
 class RowKind(enum.Enum):
     HEADER = "header"
-    #: The blank line that follows a heading (added by :func:`spaced`).
+    #: The blank line that separates a group from the one above it (added by :func:`spaced`).
     SPACER = "spacer"
     NOTE = "note"
     SESSION = "session"
@@ -228,16 +228,17 @@ def spacer(group: str) -> HubRow:
 
 
 def spaced(rows: Sequence[HubRow]) -> list[HubRow]:
-    """*rows* with a blank line after every heading, so a group does not run into its title.
+    """*rows* with a blank line before every heading but the first, so groups do not run together.
 
-    A row of its own, not drawing: the list scrolls and keeps the selection in view by
-    counting rows, so the blank line has to be one of them.
+    The first heading sits right under the tab bar and needs none. The blank line is a row
+    of its own, not drawing: the list scrolls and keeps the selection in view by counting
+    rows, so it has to be one of them.
     """
     spaced_rows: list[HubRow] = []
     for row in rows:
-        spaced_rows.append(row)
-        if row.kind is RowKind.HEADER:
+        if row.kind is RowKind.HEADER and spaced_rows:
             spaced_rows.append(spacer(row.group))
+        spaced_rows.append(row)
     return spaced_rows
 
 
