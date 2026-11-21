@@ -195,6 +195,16 @@ def update_session_mode(session_id: str, mode: str) -> None:
         _write_metadata(session_id, updated)
 
 
+def load_session_metadata(session_id: str) -> dict[str, object]:
+    """The session's recorded metadata (``cwd``, ``model``, ``mode`` …), ``{}`` when absent."""
+    path = _SESSIONS_DIR / session_id / "metadata.json"
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return cast(dict[str, object], value) if isinstance(value, dict) else {}
+
+
 def load_session_mode(session_id: str) -> str | None:
     """Read a persisted mode name, returning ``None`` for old/corrupt metadata."""
     path = _SESSIONS_DIR / session_id / "metadata.json"

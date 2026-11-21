@@ -1703,6 +1703,7 @@ _TOOL_DETAIL_LEVELS = ("compact", "normal", "verbose")
 _NOTIFY_MODES = ("auto", "osc", "bell", "off")
 _HYPERLINK_MODES = ("auto", "on", "off")
 _EDITOR_LINKS = ("", "vscode", "cursor", "idea", "zed")
+_LAYOUTS = ("inline", "fullscreen")
 
 
 @dataclass(frozen=True)
@@ -1762,6 +1763,12 @@ class UISettings:
     """Open a linked path in an editor instead of the file manager: ``vscode``,
     ``cursor``, ``idea`` or ``zed`` (their URL schemes, with the line number);
     empty uses a ``file://`` URL (TUX-10)."""
+    layout: str = "inline"
+    """``inline`` (the default) prints the conversation to the terminal's own
+    scrollback; ``fullscreen`` runs the session in the alternate screen, with a
+    scrolling transcript pane over the docked composer and status line (TUX-09).
+    ``/fullscreen`` switches it for the session; ``screen_reader`` forces
+    ``inline``."""
 
     def __post_init__(self) -> None:
         if self.mouse not in _MOUSE_MODES:
@@ -1784,11 +1791,18 @@ class UISettings:
             raise ValueError(
                 f"ui.editor_links must be one of: {', '.join(_EDITOR_LINKS[1:])} (or empty)"
             )
+        if self.layout not in _LAYOUTS:
+            raise ValueError(f"ui.layout must be one of: {', '.join(_LAYOUTS)}")
 
     @property
     def animated(self) -> bool:
         """Whether spinners and other animation may run."""
         return not (self.screen_reader or self.reduced_motion)
+
+    @property
+    def fullscreen(self) -> bool:
+        """Whether the session starts in the fullscreen layout (never with a screen reader)."""
+        return self.layout == "fullscreen" and not self.screen_reader
 
     def mouse_enabled(self, *, fullscreen: bool) -> bool:
         """Whether a screen should turn on mouse reporting."""
@@ -2838,6 +2852,7 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
         window_title=_as_bool(ui_data.get("window_title"), True),
         hyperlinks=_as_str(ui_data.get("hyperlinks"), "auto").strip().lower(),
         editor_links=_as_str(ui_data.get("editor_links"), "").strip().lower(),
+        layout=_as_str(ui_data.get("layout"), "inline").strip().lower(),
     )
 
     subagent_data = _section(data.get("subagents"))

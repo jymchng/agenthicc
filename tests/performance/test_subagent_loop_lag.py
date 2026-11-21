@@ -20,8 +20,11 @@ pytestmark = pytest.mark.timeout(600)
 
 #: Budgets. Measured locally after TUIR-01/02: max 81-90 ms, p95 2-3 ms over
 #: about 155 samples (so p99 is the second-worst sample: too noisy to gate on).
-MAX_STALL_S = 0.25
-P95_STALL_S = 0.025
+#: Loosened on a loaded host, where this test alone measured p95 at 44-45 ms
+#: (operator request): the loop still has to stay responsive to a human, and a
+#: stall that really blocked the loop for search work would be hundreds of ms.
+MAX_STALL_S = 0.5
+P95_STALL_S = 0.1
 SEARCH_STALL_S = 0.10
 
 

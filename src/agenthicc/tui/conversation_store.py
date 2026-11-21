@@ -157,22 +157,6 @@ class CompactionProgress:
     fraction: float
 
 
-@dataclass(frozen=True, slots=True)
-class CompactionProgress:
-    """How far a multi-call compaction has measurably got.
-
-    Only a compaction that summarises its history in several model calls
-    (map/reduce) can say so: each finished call is one real step. ``done`` of
-    ``total`` counts the calls known so far; ``fraction`` is the furthest the
-    bar has reached, so a late extra round of summaries never moves it back.
-    A compaction that is one call has no progress to report and none is shown.
-    """
-
-    done: int
-    total: int
-    fraction: float
-
-
 # ── Queued messages (TUX-04 §2.6) ─────────────────────────────────────────────
 
 
@@ -182,9 +166,16 @@ class QueuedMessage:
 
     id: int
     text: str
-    #: Sent with Ctrl+Enter / Alt+Enter: delivered at the next tool boundary
-    #: of the running turn instead of after it.
-    interject: bool = False
+
+    @property
+    def joins_turn(self) -> bool:
+        """Whether the running turn takes this message at its next tool call.
+
+        An ordinary message does. A command or skill (``/…``, ``$…``) is routed
+        locally, so it waits for the end of the turn and runs then.
+        """
+        text = self.text.strip()
+        return bool(text) and not text.startswith(("/", "$"))
 
 
 class MessageQueue:
@@ -201,8 +192,8 @@ class MessageQueue:
         self.focus: Signal[int | None] = Signal(None, name="queue_focus")
         self._next_id = 1
 
-    def _new(self, text: str, interject: bool) -> QueuedMessage:
-        message = QueuedMessage(self._next_id, text, interject)
+    def _new(self, text: str) -> QueuedMessage:
+        message = QueuedMessage(self._next_id, text)
         self._next_id += 1
         return message
 
@@ -223,15 +214,15 @@ class MessageQueue:
     def texts(self) -> list[str]:
         return [item.text for item in self.items()]
 
-    def append(self, text: str, *, interject: bool = False) -> QueuedMessage:
-        message = self._new(text, interject)
+    def append(self, text: str) -> QueuedMessage:
+        message = self._new(text)
         self._set((*self.items(), message))
         return message
 
     def insert(self, index: int, text: str) -> None:
         """Put *text* back at *index* (a message whose release failed)."""
         items = list(self.items())
-        items.insert(index, self._new(text, False))
+        items.insert(index, self._new(text))
         self._set(tuple(items))
 
     def pop(self, index: int = 0) -> str:
@@ -249,13 +240,12 @@ class MessageQueue:
                 return item
         return None
 
-    def claim_interjection(self) -> str | None:
-        """Take the first interjection whose text is not a command."""
+    def claim_message(self) -> str | None:
+        """Take the first queued message that joins a running turn (not a command)."""
         for item in self.items():
-            text = item.text.strip()
-            if item.interject and text and not text.startswith(("/", "$")):
+            if item.joins_turn:
                 self.remove(item.id)
-                return text
+                return item.text.strip()
         return None
 
     def clear(self) -> None:
@@ -322,6 +312,9 @@ class ConversationStore:
         for the latest main-agent call: how full the context window is."""
         self.context_window: Signal[int] = Signal(0, name="context_window")
         """The model's context window in tokens; 0 when it is not known."""
+        # TUX-09: the fullscreen layout and whether its pane is scrolled up.
+        self.fullscreen: Signal[bool] = Signal(False, name="fullscreen")
+        self.pane_scrolled: Signal[bool] = Signal(False, name="pane_scrolled")
         self.git_branch: Signal[str] = Signal("", name="git_branch")
         """The working directory's branch, ``""`` outside a repository."""
         self.git_dirty: Signal[bool] = Signal(False, name="git_dirty")

@@ -12,6 +12,8 @@ tags: [tui, design-system, theme, accessibility, color]
 
 ## Implementation status
 
+> **Amended (operator request):** a selected row has no background. The `accent_bg` token is removed; the `accent` bar and bold text mark the selection.
+
 **Core (tux-core).**
 - **Module.** `tui/theme.py` holds the tokens, the five themes, the glyph sets and the active-theme API.
 - **Settings and commands.** `[ui] theme` and `[ui] glyphs`, `/theme` with a live preview, saving the choice, custom themes, and `NO_COLOR`.

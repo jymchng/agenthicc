@@ -15,7 +15,10 @@ from agenthicc.tui.runtime.session_log import (
     SessionEventLog,
     load_recent_transcript_page,
 )
-from agenthicc.tui.workspace.overlays.transcript_history import TranscriptHistoryOverlay
+from agenthicc.tui.actions import DEFAULT_ACTIONS
+from agenthicc.tui.keymap import Keymap
+from agenthicc.tui.transcript.sources import SessionLogSource
+from agenthicc.tui.transcript.view import TranscriptView
 from agenthicc.tui.workspace.workspace import Workspace
 
 pytestmark = pytest.mark.e2e
@@ -49,18 +52,17 @@ async def test_resume_preview_pages_old_history_and_keeps_live_events_once(
     live_log = SessionEventLog("attach-e2e")
     try:
         await workspace.replay_transcript(page.events)
-        history_overlay = TranscriptHistoryOverlay("attach-e2e", page, workspace.overlays.hide)
-        workspace.overlays.show(history_overlay)
-        history_overlay.handle_key(Key.PAGE_UP, "")
-        assert [entry.event.event_id for entry in history_overlay._pages[1].entries] == [
-            "old-0",
-            "old-1",
-            "old-2",
-            "old-3",
-            "old-4",
-        ]
-        history_overlay.handle_key(Key.ESC, "")
-        assert workspace.overlays.active is False
+        # The transcript view reads the older events from the log, past the
+        # three the resume preview rendered, without touching the live scrollback.
+        source = SessionLogSource("attach-e2e")
+        assert source.wait_ready(5)
+        view = TranscriptView(source, Keymap.build(DEFAULT_ACTIONS))
+        newest = [row.plain for row in view.render(100, 12)]
+        assert any("old answer 7" in row for row in newest)
+        view.handle_key(Key.HOME, "")
+        oldest = [row.plain for row in view.render(100, 12)]
+        assert any("old answer 0" in row for row in oldest)
+        assert view.handle_key(Key.CHAR, "q").kind.name == "CLOSE"
 
         # Historical browsing and rendering are projection-only. Replaying
         # did not call the durable log subscriber; the live event is appended

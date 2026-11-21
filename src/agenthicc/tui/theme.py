@@ -63,7 +63,6 @@ class Palette:
     subtle: str
     frame: str
     accent: str
-    accent_bg: str
     user_bg: str
     success: str
     warning: str
@@ -232,7 +231,6 @@ _DARK = Palette(
     #: The composer frame is agenthicc's brand yellow.
     frame="yellow",
     accent="#7aa2f7",
-    accent_bg="#1f2a44",
     user_bg="#1c1f24",
     success="#9ece6a",
     warning="#e0af68",
@@ -257,7 +255,6 @@ _LIGHT = Palette(
     #: Yellow on white is unreadable; the light theme keeps the hue, darkened.
     frame="#8a6d00",
     accent="#2f5bd3",
-    accent_bg="#e3ebff",
     user_bg="#f1f3f5",
     success="#2e7d32",
     warning="#a15c00",
@@ -281,7 +278,6 @@ _HIGH_CONTRAST = Palette(
     subtle="#9a9a9a",
     frame="#ffe066",
     accent="#7fbfff",
-    accent_bg="#00305f",
     user_bg="#202020",
     success="#7dff7d",
     warning="#ffd75f",
@@ -306,7 +302,6 @@ _ANSI = Palette(
     subtle="bright_black",
     frame="yellow",
     accent="blue",
-    accent_bg="none",
     user_bg="none",
     success="green",
     warning="yellow",
@@ -363,6 +358,12 @@ def palette() -> Palette:
 def glyphs() -> Glyphs:
     """The active theme's glyph set."""
     return _current.glyphs
+
+
+def key_arrows(text: str) -> str:
+    """*text* (a key name such as ``"↑↓"``) with the active glyph set's arrows."""
+    g = _current.glyphs
+    return text.replace("↑", g.up).replace("↓", g.down).replace("←", g.left).replace("→", g.right)
 
 
 def style(token: str, *, bold: bool = False, background: str | None = None) -> Style:

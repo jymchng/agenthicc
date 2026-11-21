@@ -312,7 +312,7 @@ garbage collection holds the GIL and stalls the loop from whichever thread
 triggered it, while the loop thread looks idle, so collections are timed too:
 a stall that was mostly collection reads `garbage collection (450 ms)`.
 `tests/performance/test_subagent_loop_lag.py` gates this with six subagents
-searching a 33,000-file project: worst stall under 250 ms and p95 under 25 ms.
+searching a 33,000-file project: worst stall under 500 ms and p95 under 100 ms.
 
 The shared animation frame advances only while an animated status is active:
 thinking, tool execution, recovery, or compaction. Idle, complete, and error
@@ -445,8 +445,9 @@ tool_detail = "compact"   # compact | normal | verbose
 call, with the gap marked) and the exploration group's individual calls.
 `/details` cycles the level for the session, and `/details verbose` sets it.
 The change applies to the next tool call; rows already printed are never
-re-rendered, so the scroll buffer stays an append-only log. Opening the last
-tool's full output with Ctrl+T belongs to the transcript view (TUX-09).
+re-rendered, so the scroll buffer stays an append-only log. `Ctrl+T` opens the
+[transcript view](#navigation-the-transcript-view-fullscreen-and-rewind) on the
+last tool call, with its whole stored output (TUX-09).
 
 Tool events carry data, not markup: the summary, a bounded and redacted
 projection of the arguments, the duration in milliseconds, the bounded output
@@ -525,8 +526,9 @@ While the TUI is live, anything a library writes to `sys.stderr`, and every
 Python warning, goes to the session's diagnostics log,
 `~/.agenthicc/logs/<session>.log`, instead of being printed between frames.
 The first stray write of a session shows the transient notice
-"Diagnostics were written to the log · /logs". `/logs` opens the log's last
-200 lines in a pager (Esc closes it). The log is installed right after the
+"Diagnostics were written to the log · /logs". `/logs` opens the log in the
+[transcript view](#navigation-the-transcript-view-fullscreen-and-rewind) (lines,
+search, copy; `q` closes it). The log is installed right after the
 first frame. Child processes capture their own stderr (MCP `stderr_tail`,
 `tools/exec`), and a unit test checks that no subprocess a session starts
 inherits fd 2. `agenthicc --debug` keeps stderr and warnings on the screen.
@@ -553,7 +555,7 @@ explicit switch and reports the canonical choices for an unknown name.
 `UnifiedInputSession` enters raw mode once and dispatches each key through the
 active capability list. IDLE supports triggers, history, cursor movement,
 paste, mode cycling, and submission. STREAMING reduces the capability set so
-the user can queue or interject input, edit the queue, or interrupt an active
+the user can send messages into it, edit the queue, or interrupt an active
 turn while keeping every editing key.
 
 ### Key bindings
@@ -570,10 +572,9 @@ idle.
 
 | Key | Action | When |
 |---|---|---|
-| Enter | `composer.submit` — send; while a turn runs, queue it for after the turn | always |
+| Enter | `composer.submit` — send; while a turn runs, the message joins it at its next tool call | always |
 | Ctrl+J, Shift+Enter | `composer.newline` | always |
-| Alt+Enter, Ctrl+Enter | `composer.newline_alt` — a line break | idle |
-| Alt+Enter, Ctrl+Enter | `composer.interject` — deliver at the turn's next tool boundary | a turn is running |
+| Alt+Enter, Ctrl+Enter | `composer.newline_alt` — a line break | always |
 | `/`, `@` | command picker, mention picker (fixed) | always |
 | Ctrl+V / Esc | expand / delete a condensed paste | a paste is condensed (Esc: cursor right after it) |
 | Esc | `composer.interrupt` — pause the turn | a turn is running |
@@ -614,8 +615,7 @@ external editor — so `CSI 13;2u` arrives as Shift+Enter. Every CSI-u key decod
 to the key a legacy terminal sends for it (Ctrl+A stays Ctrl+A). The Windows
 console reports Enter's modifiers directly. Elsewhere use Ctrl+J or Alt+Enter:
 most terminals send Shift+Enter and Ctrl+Enter as a plain Enter, which sends
-(or queues) the prompt. The footer therefore shows `Ctrl+J newline` and, while
-a turn runs and the footer is wide enough, `Alt+Enter interject`.
+the prompt. The footer therefore shows `Ctrl+J newline`.
 
 **Pickers.** The `/`, `$` and `@` pickers have no text of their own: the
 trigger is the text from the trigger character to the cursor. A picker handles
@@ -646,16 +646,15 @@ directory under `~/.agenthicc/sessions/`, hands the terminal to `$VISUAL`,
 non-zero exit keeps the draft and says so.
 
 **Queued messages.** A message sent while a turn runs shows above the prompt,
-one muted row each (at most three, then `+N more`); an interjection is marked
-with an arrow and `at next tool`. ↑ on an empty prompt selects the newest row
-(the `queue` context): ↑/↓ move, Enter moves the message back into the prompt
-to edit, Delete or Backspace removes it, Esc returns to the prompt. Messages
-sent with Enter wait for the turn to end and then run in order; Ctrl+Enter or
-Alt+Enter sends an interjection that is added to the running turn at its next
-tool boundary. While a workflow runs, which can take hours, a message sent with
-Enter is an interjection too: every workflow takes it at its next tool boundary,
-and the row says `at next tool`. Commands (`/…`, `$…`) always wait for the turn
-or workflow run to end.
+one muted row each (at most three, then `+N more`), marked with an arrow and
+`at next tool`. It reaches the model without waiting for the turn to end: the
+running turn takes it at its next tool call, one message per call, in the order
+typed, whether that turn is a direct reply or a workflow phase. If the turn ends
+first, what is left is sent as the next turn. A command or skill (`/…`, `$…`)
+is routed locally, not sent to the model, so it waits for the end of the turn
+and runs then. ↑ on an empty prompt selects the newest row (the `queue`
+context): ↑/↓ move, Enter moves the message back into the prompt to edit, Delete
+or Backspace removes it, Esc returns to the prompt.
 
 ← opens the hub only when the prompt is empty. If the prompt was just emptied
 by Backspace, Ctrl+U or history recall, the first ← says "Press ← again to open
@@ -679,7 +678,7 @@ Rebind them in `~/.agenthicc/keybindings.toml` (`AGENTHICC_KEYBINDINGS`
 overrides the path). A value is a key, a list of keys, or `"none"`:
 
 ```toml
-leader = "ctrl+t"          # optional: enables "<leader>a" two-step bindings
+leader = "alt+x"           # optional: enables "<leader>a" two-step bindings (not Ctrl+T)
 leader_timeout_ms = 2000
 
 [composer]
@@ -786,7 +785,7 @@ meaning.
 
 Every colour on screen comes from a semantic token of the active theme
 (`agenthicc.tui.theme`): `text`, `muted`, `subtle`, `frame`, `accent`,
-`accent_bg`, `user_bg`, `success`, `warning`, `danger`, `info`, `agent`, the
+`user_bg`, `success`, `warning`, `danger`, `info`, `agent`, the
 diff tokens and the three mode badges. No other module names a colour, and
 `tests/unit/test_theme_tokens.py` enforces that (TUX-01).
 
@@ -799,10 +798,9 @@ prompt it frames; every other rule and border is `subtle`. The Safe, Plan and
 Yolo badges (`✓ Safe`, `◆ Plan`,
 `❯❯ Yolo`; `+`, `*` and `>>` with ASCII glyphs) use `mode_safe`, `mode_plan`
 and `mode_yolo`. In list views the selected row is marked by an `accent` bar
-(`▌`). In the agents hub (and its answer form), the subagent panel, `/history`,
-`/help` and the command, skill, tool and workflow lists, the selected row also
-sits on the `accent_bg` background; `/config` keeps reverse video for its
-focused row. Renderers read the theme each time they draw, so a
+(`▌`) and bold text; a selection never gets a background, in the agents hub
+(and its answer form), dialogs, the subagent panel, the transcript view, `/help`, the
+pickers and the `/config` menu alike. Renderers read the theme each time they draw, so a
 `/theme` switch recolours them on the next frame.
 
 ```toml
@@ -857,7 +855,7 @@ glyph set.
 [ui]
 screen_reader = false   # no spinners or box drawing; state changes also printed as sentences
 reduced_motion = false  # keep the layout, replace animation with a static ●
-mouse = "auto"          # "auto": full-screen agents hub only; "on": also here; "off": never
+mouse = "auto"          # "auto": the agents hub and the fullscreen layout; "on": also inline; "off": never
 ```
 
 With `screen_reader`, the status line uses commas instead of separators and
@@ -956,11 +954,11 @@ does not scan the transcript a second time. Provider memory, usage, and
 workflow state continue to restore through their existing durable stores.
 
 The initial preview is bounded before rendering. Individual over-limit events
-appear as markers, and malformed tail records are skipped. Use `/history` to
-open a paginated overlay for older events: `[`/`PageUp` loads an older page,
-`]`/`PageDown` returns toward newer pages, `Enter` opens one event's details,
-and `Esc` returns to the live workspace. Historical pages are not appended to
-live scrollback; newly arriving events retain their normal order. `--continue`,
+appear as markers, and malformed tail records are skipped. Use `/history` (or
+`Ctrl+T`) to open the [transcript view](#navigation-the-transcript-view-fullscreen-and-rewind)
+over the whole log: it reads older events a bounded page at a time, jumps
+between turns and searches. Nothing it shows is appended to live scrollback;
+newly arriving events retain their normal order. `--continue`,
 `--resume SESSION_ID`, `agenthicc attach`, and the session-manager attach path
 share this same TUI bootstrap.
 
@@ -995,6 +993,113 @@ recap from subsequent scrollback or the persistent live status block.
 The Windows backend uses `ReadConsoleInputW` so Shift+Tab preserves its
 modifier. POSIX raw mode is a no-op for non-TTY file descriptors and restores
 the previous terminal state on exit.
+
+## Navigation: the transcript view, fullscreen and /rewind
+
+The scrollback is append-only (AGX-11), which keeps native scrolling, selection
+and copy. Three things in TUX-09 reach what scrolled past.
+
+### The transcript view
+
+`Ctrl+T` (in the composer, also while a turn runs), `/history`, `/logs` and
+`/rewind` open one full-screen view in the alternate screen. It is entered from
+the composer through the same terminal handoff as the external editor, so the
+prompt, the cursor and the history are exactly as they were when you leave:
+`q`, `Esc` or `Ctrl+T` return.
+
+```text
+ Transcript · fix flaky scheduler test · 14 turns                         q close
+ ──────────────────────────────────────────────────────────────────────────────
+  12 ❯ why does test_due_cursor fail on DST days?
+     ● Read schedules/recurrence.py:80-140
+     ✗ $ uv run pytest tests/unit/test_recurrence.py -q              exit 1 · 3.2s
+ ▌   │ E   AssertionError: 2026-03-29 02:30 not in …                   [expanded]
+     │ … 80 lines omitted
+     ● Edit schedules/recurrence.py  +6 −2
+  13 ❯ run the whole schedules suite
+ ──────────────────────────────────────────────────────────────────────────────
+  ↑↓ move · Enter expand · [] turns · / search · y copy · e pager
+```
+
+- **What it shows.** Every item is drawn by the scrollback's own renderers
+  (TUX-06): `compact` for the rest, `verbose` and the call's arguments for the
+  item you expanded. Nothing is cut with an ellipsis: a long command, a long
+  line of output and a long argument wrap under a hanging indent (the
+  scrollback keeps one row per call). A user message the scrollback condenses
+  (more than 12 lines) expands with Enter too. User turns are numbered from 1. Events that print nothing
+  in the scrollback (token counts) are not items; a compaction shows its result
+  row (`✓ Context refreshed · 849 tokens · 3s`), not its start.
+- **Opening points.** `Ctrl+T` opens on the last tool call, selected and
+  expanded (the `ctrl+t to expand` footer under a tool row). `/history` opens
+  at the end with nothing expanded. `/logs` opens the diagnostics log as plain
+  lines (no turn structure; `WARNING`/`ERROR` lines count for `{` and `}`).
+  A decision dialog's `Ctrl+T` opens the call's full arguments or diff, and
+  `Esc` returns to the dialog.
+- **Keys** (the `transcript_view` context; rebind them in `keybindings.toml`):
+
+  | Key | Does |
+  |---|---|
+  | `↑` `↓`, `j` `k`, PgUp/PgDn, Home/End (`g`/`G`) | move between items |
+  | `[` `]` | previous and next user turn |
+  | `{` `}` | previous and next failure, approval problem or error |
+  | Enter | expand or collapse the tool's full output, diff or arguments (up to 64 KiB, then "output truncated at 64 KiB") |
+  | `/` | search; Enter runs it |
+  | `n` `N` | next and previous hit (hits are highlighted in `accent`) |
+  | `y` | copy the item's plain text |
+  | `e` | open the item's text in `$PAGER`, or `$EDITOR` read-only |
+  | `q`, Esc, `Ctrl+T` | close |
+
+  The mouse wheel scrolls it when `[ui] mouse` allows.
+- **Search** is a substring, case-insensitive unless the query has capitals,
+  over user text, assistant text, tool summaries and stored output. It runs in
+  a worker thread in 1 MiB chunks, so a 100 MB log never stalls the keys; the
+  footer reads `searching…`, then `hit 3 of 17`.
+- **Copy.** `y` writes an OSC 52 sequence holding the base64 of the item's plain
+  text (no colour codes), which reaches the clipboard of the machine the
+  terminal runs on, over SSH too. On `TERM=linux` or `dumb` it runs `pbcopy`,
+  `wl-copy`, `xclip`, `xsel` or `clip.exe` instead. At most 74,994 bytes are
+  copied (the footer says "cut to fit").
+- **Following.** A log that is still being written is followed while the last
+  item is selected.
+
+### Fullscreen layout
+
+```toml
+[ui]
+layout = "inline"   # inline (default) | fullscreen
+```
+
+`/fullscreen` switches the layout for the session without losing the draft. In
+`fullscreen` the session runs in the alternate screen: the transcript is a
+scrolling pane (the view's engine, following the tail), the welcome header is
+its first item, and the composer frame and status line are docked below it.
+Anything printed straight to the console (a command's listing, a notice) shows
+in the pane at the place it was printed.
+
+- **Scrolling.** PgUp/PgDn, Shift+↑/↓ and the mouse wheel (`[ui] mouse` `auto`
+  turns reporting on in this layout; `off` keeps native handling) scroll the
+  pane. Scrolling up stops following and the last pane row reads
+  `↓ 3 new · End to follow`; `End` follows again (with the pane at its end,
+  `End` keeps its composer meaning, the end of the line).
+- **On exit** (`/fullscreen` again, or the end of the session) what the normal
+  screen has not seen is printed to it in `compact` form, so the terminal's
+  scrollback still holds the conversation.
+- **Cost.** Only the rows on screen are rendered, from a bounded cache of
+  rendered items, so a 10,000-event session scrolls inside the frame budget.
+- **Accessibility.** `screen_reader = true` forces `inline`; `/fullscreen` says
+  so. A screen reader follows the scrollback better than a repainted pane.
+- Inline stays the default and the baseline. The transcript view works in both.
+
+### /rewind
+
+`/rewind` opens the transcript view selecting user turns only. Enter on turn N
+asks, in a decision dialog, to **Edit and resend from here** or **Copy the
+prompt**. The first forks the conversation: a new session gets turns 1 to N-1
+(the log and the model's memory up to that point) and turn N's text in its
+composer, and the session continues there. The original session is never
+changed. Files are **not** restored: only the conversation is forked, and the
+dialog says so. When the model's memory cannot be matched to the turn (an old
+journal) the fork keeps the log and says that the model starts without it.
 
 ## Overlays and approvals
 
@@ -1056,8 +1161,8 @@ questions share one frame, `Dialog` (`tui/workspace/dialog.py`, TUX-07):
   `network_allow_list` entry that admits it (or that none does); the exact
   targets, workspace root and mode of a workspace-access approval (never its
   raw arguments); and a key/value table for MCP and plugin tools. A long
-  body scrolls with `↑ N more` / `↓ N more`, and `Ctrl+T` shows the full
-  arguments or diff, scrollable inside the dialog (`Ctrl+T` or Esc returns).
+  body scrolls with `↑ N more` / `↓ N more`, and `Ctrl+T` opens the full
+  arguments or diff in the transcript view (Esc there returns to the dialog).
   Nothing is redacted more or less than before.
 - **Reason.** One muted line from the mode, capability or workspace boundary
   that asked ("Safe mode asks before running commands.").
@@ -1080,8 +1185,9 @@ questions share one frame, `Dialog` (`tui/workspace/dialog.py`, TUX-07):
 Keys come from the `dialog` keymap context, so `~/.agenthicc/keybindings.toml`
 can rebind them (`[dialog] "dialog.details" = "ctrl+e"`), and `/shortcuts`
 lists them. A `leader` key only shadows a plain binding of the same key in
-the contexts that have two-step bindings, so a dialog keeps `Ctrl+T` when the
-composer uses it as the leader.
+the contexts that have two-step bindings, so a dialog keeps a key the composer
+uses as its leader. `Ctrl+T` opens the transcript view in the composer, so it
+cannot be the leader.
 
 **Plan review** shows the rendered plan in the body and offers "Approve and
 run in Safe mode", "Approve and run in Yolo mode", "Keep planning" and

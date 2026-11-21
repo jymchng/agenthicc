@@ -10,7 +10,7 @@ import os
 import sys
 import threading
 import uuid
-from collections.abc import Awaitable, Callable, Iterable, Iterator
+from collections.abc import Awaitable, Callable, Iterable, Iterator, MutableMapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC
 from functools import partial
@@ -112,13 +112,17 @@ if TYPE_CHECKING:
         OpenAgentsHubCommand,
         OpenPaletteCommand,
         OpenSubagentsCommand,
+        OpenTranscriptCommand,
+        ScrollPaneCommand,
         SendMessageCommand,
     )
     from agenthicc.runners.model_switch import ModelChoice
+    from agenthicc.tui.transcript.controller import TranscriptController, ViewKind
     from agenthicc.tui.workspace import Workspace
     from agenthicc.tui.workspace.overlays.palette import PaletteItem
     from agenthicc.tui.workspace.agents_hub import HubResult
     from agenthicc.tui.workspace.dialog import DialogSettings
+    from rich.console import RenderableType
     from agenthicc.tui.workspace.overlay import Overlay
     from agenthicc.tui.workspace.overlays.questions import AnswerContext
     from agenthicc.tui.workspace.overlays.subagents import TranscriptTarget
@@ -803,6 +807,23 @@ def _discover_workflow_registry_sync() -> WorkflowRegistry:
 # ── session construction ──────────────────────────────────────────────────────
 
 
+def _trust_the_terminal_size(environ: MutableMapping[str, str], *, is_terminal: bool) -> None:
+    """Drop a stale ``COLUMNS`` / ``LINES`` so the live block uses the real size.
+
+    Rich, like :func:`shutil.get_terminal_size`, takes ``$COLUMNS`` and
+    ``$LINES`` over what the terminal reports. A shell that exports them (a
+    login script, a multiplexer, an IDE) leaves the size it started with in the
+    environment for good, so after a resize or in a narrower pane the text is
+    wrapped for one width and drawn at another: lines are cut and the live block
+    is repainted over itself. On a real terminal the kernel's answer is the only
+    right one; without one (a pipe, a test) the variables stay in force.
+    """
+    if not is_terminal:
+        return
+    environ.pop("COLUMNS", None)
+    environ.pop("LINES", None)
+
+
 def _apply_startup_theme(console: Console, cfg: AgenthiccConfig) -> None:
     """Choose the session's theme and glyphs before anything is drawn (TUX-01).
 
@@ -1114,6 +1135,7 @@ async def _build_session_context_impl(
 
     configure_walk_limit(cfg.tools.max_fs_walks)
 
+    _trust_the_terminal_size(os.environ, is_terminal=not headless and sys.stdout.isatty())
     console = Console(
         highlight=False,
         markup=True,
@@ -1659,9 +1681,11 @@ class SessionSwitch:
     *origin* session reopens. ``hub`` follows ``/background``: the agents hub
     opens with the new background agent selected. ``directory`` (TUX-03) starts
     a new session in the directory *target*; the origin does not reopen.
+    ``fork`` (TUX-09's ``/rewind``) continues in the session forked from the
+    origin, in the same directory; the origin is kept but does not reopen.
     """
 
-    action: Literal["attach", "open_saved", "hub", "directory"]
+    action: Literal["attach", "open_saved", "hub", "directory", "fork"]
     target: str
     origin: str
     origin_cwd: str
@@ -1681,6 +1705,8 @@ class TUISession:
     _credential_issue: PreflightIssue | None = None
     #: This session's place in the tip rotation (TUX-03).
     _tip_index: int = 0
+    #: Opens the transcript view; built on first use (TUX-09).
+    _transcript: TranscriptController | None = None
 
     @property
     def _workflow_handle(self) -> WorkflowRunHandle | None:
@@ -2569,6 +2595,7 @@ class TUISession:
             composer=answers.composer,
             workspace=workspace_access.scope if workspace_access is not None else None,
             redraw=answers.redraw,
+            open_details=self.open_details,
         )
 
     def _answer_context(self) -> AnswerContext:
@@ -3530,6 +3557,89 @@ class TUISession:
         self._pending_model = None
         self._apply_model(choice)
 
+    # ── transcript view, fullscreen and /rewind (TUX-09) ─────────────────────
+
+    def _transcript_controller(self) -> TranscriptController:
+        """The one controller that opens the transcript view (built on first use)."""
+        if self._transcript is not None:
+            return self._transcript
+        from agenthicc.tui.diagnostics import diagnostics_log_path
+        from agenthicc.tui.terminal.backend import get_backend
+        from agenthicc.tui.transcript.controller import TranscriptController
+
+        ctx = self._ctx
+        workspace = self._workspace
+        controller = TranscriptController(
+            session_id=ctx.session_id,
+            console=ctx.console,
+            state=ctx.app_state,
+            handoff=self._input_session.run_terminal_handoff,
+            spawn=lambda coroutine, name: self._tasks.start(coroutine, name=name),
+            suspend=workspace.suspend_for_external_process,
+            resume=workspace.resume_after_external_process,
+            hold=workspace.scroll.hold,
+            release=workspace.scroll.release,
+            notify=ctx.app_state.conversation.notify,
+            rewind=self._rewind_to,
+            busy=lambda: self._agent_task is not None and not self._agent_task.done(),
+            backend=get_backend,
+            log_path=lambda: diagnostics_log_path(ctx.session_id),
+        )
+        self._transcript = controller
+        return controller
+
+    def open_transcript(self, kind: Literal["history", "logs", "rewind"]) -> None:
+        """``/history``, ``/logs`` and ``/rewind``: the transcript view."""
+        view_kind: ViewKind = kind
+        self._transcript_controller().open(view_kind)
+
+    def open_details(self, title: str, renderables: Sequence[RenderableType]) -> None:
+        """A dialog's ``Ctrl+T``: its full arguments or diff, in the transcript view."""
+        self._transcript_controller().open_document(title, renderables)
+
+    async def _open_transcript_command(self, _command: OpenTranscriptCommand) -> None:
+        """Ctrl+T: the view, with the last tool call selected and expanded."""
+        self._transcript_controller().open("tool")
+
+    async def _scroll_pane_command(self, command: ScrollPaneCommand) -> None:
+        self._workspace.scroll_pane(command.action)
+
+    def toggle_fullscreen(self) -> bool:
+        """``/fullscreen``: switch the layout for this session; return whether it is on."""
+        ui = self._ctx.cfg.ui
+        if self._workspace.fullscreen:
+            self._workspace.leave_fullscreen()
+        elif ui.screen_reader:
+            self._ctx.app_state.conversation.notify(
+                "warning", "A screen reader follows the scrollback better: staying inline."
+            )
+        else:
+            self._workspace.enter_fullscreen()
+        self._input_session.sync_reporting()
+        return self._workspace.fullscreen
+
+    def _rewind_to(self, prompt: str, turn: int) -> None:
+        """Fork the conversation before user turn *turn* and continue in the fork."""
+        self._tasks.start(self._fork_and_switch(turn), name="rewind")
+
+    async def _fork_and_switch(self, turn: int) -> None:
+        from agenthicc.tui.transcript.fork import fork_session
+
+        conversation = self._ctx.app_state.conversation
+        try:
+            fork = await asyncio.to_thread(fork_session, self._ctx.session_id, turn)
+        except (OSError, ValueError) as exc:
+            conversation.notify("error", f"Could not rewind: {exc}")
+            return
+        if not fork.memory:
+            conversation.notify_transient(
+                "The model does not remember the earlier turns of this fork", duration=6.0
+            )
+        self._switch = SessionSwitch(
+            "fork", fork.session_id, origin=self._ctx.session_id, origin_cwd=os.getcwd()
+        )
+        self._input_session.request_exit()
+
     # ── subagents (AGX-08) ───────────────────────────────────────────────────
 
     async def _open_subagents_command(self, _command: OpenSubagentsCommand) -> None:
@@ -3766,6 +3876,8 @@ class TUISession:
             save_model=self.save_model,
             app_state=ctx.app_state,
             transient_notify=ctx.app_state.conversation.notify,
+            open_transcript=self.open_transcript,
+            toggle_fullscreen=self.toggle_fullscreen,
         )
         handled = bool(self._cmd_dispatcher.dispatch(text, context))
         self._refresh_suggestion()  # /init write may have created AGENTS.md
@@ -3891,16 +4003,16 @@ class TUISession:
         return integration._handoff(self)
 
     def _next_queued_message(self) -> str | None:
-        """Claim the next interjection at a completed tool boundary (TUX-04 §2.6).
+        """Claim the next queued message at a completed tool boundary (TUX-04 §2.6).
 
-        The active agent loop owns the shared memory, so an interjection
-        (Ctrl+Enter / Alt+Enter) can be appended safely only after its tool
-        results have been committed and before the loop's next model request.
-        Messages queued with Enter wait for the turn to end, where
-        ``advance()`` sends them in order, unless a workflow is running: they
-        are then queued as interjections too, since a workflow's turn can last
-        hours. Slash commands and skills always wait for the end of the run;
-        they are routed locally instead of being sent to the model.
+        The active agent loop owns the shared memory, so a message can be
+        appended safely only after its tool results have been committed and
+        before the loop's next model request. Every ordinary message typed
+        while a turn runs, in a workflow or not, is taken here, one per tool
+        call, in the order it was typed; if the turn ends first, ``advance()``
+        sends what is left as the next turn. Slash commands and skills are
+        routed locally instead of being sent to the model, so they always wait
+        for the end of the run.
         """
         if self._handoff_pending:
             # The tool results are committed synchronously after this call
@@ -3908,7 +4020,7 @@ class TUISession:
             # cancels the turn only once the exchange is complete.
             asyncio.get_running_loop().call_soon(self._run_background_handoff)
             return None
-        text = self._msg_queue.claim_interjection()
+        text = self._msg_queue.claim_message()
         if text is None:
             return None
         self._ctx.app_state.conversation.append_event("user_message", {"text": text})
@@ -5438,17 +5550,12 @@ class TUISession:
             if decision.policy.value == "reject":
                 self._notify_busy_rejected(text, decision.reason)
                 return
-            # Shown above the composer until the turn ends, or until the next
-            # tool boundary for an interjection (TUX-04 §2.6). A workflow runs
-            # for as long as its goals take, so "after the turn" could be hours
-            # away: while one runs, every message joins it at the next tool
-            # boundary, which is how Claude Code takes input typed mid-turn.
-            # Commands and skills are routed locally and wait for the run to end.
-            is_message = not text.startswith(("/", "$"))
-            self._msg_queue.append(
-                text,
-                interject=is_message and (cmd.interject or self._workflow_handle is not None),
-            )
+            # Shown above the composer. A message joins the running turn at its
+            # next tool call, as in Claude Code, or starts the next turn if this
+            # one ends first; a turn (and a workflow run) can last for hours, so
+            # waiting for its end would leave the message unread all that time.
+            # A command or skill is routed locally and waits for the end.
+            self._msg_queue.append(text)
             if self._runtime_loading():
                 from agenthicc.tui.theme import glyphs
 
@@ -5915,12 +6022,16 @@ class TUISession:
             OpenAgentsHubCommand,
             OpenPaletteCommand,
             OpenSubagentsCommand,
+            OpenTranscriptCommand,
+            ScrollPaneCommand,
             SendMessageCommand,
         )
 
         ctx = self._ctx
 
         ctx.command_bus.register(SendMessageCommand, self.handle_send)
+        ctx.command_bus.register(OpenTranscriptCommand, self._open_transcript_command)
+        ctx.command_bus.register(ScrollPaneCommand, self._scroll_pane_command)
         ctx.command_bus.register(CycleAgentCommand, self._cycle_agent_command)
         ctx.command_bus.register(InterruptAgentCommand, self.handle_interrupt)
         ctx.command_bus.register(OpenAgentsHubCommand, self._open_agents_hub_command)
@@ -6041,6 +6152,12 @@ class TUISession:
                     startup.finish("transcript_preview_render")
             if preview is not None and preview.notice:
                 ctx.app_state.conversation.notify_transient(preview.notice, duration=8.0)
+        # ``/rewind`` leaves the prompt it forked at for the new session's composer.
+        from agenthicc.tui.transcript.fork import take_session_draft
+
+        draft = take_session_draft(ctx.session_id)
+        if draft:
+            self._input_session.set_text(draft)
         proc_task = asyncio.create_task(ctx.processor.run())
         loop_manager = vars(self).get("_loop_manager")
         if loop_manager is not None:
@@ -6120,6 +6237,12 @@ class TUISession:
                 from agenthicc.tui.diagnostics import uninstall_stderr_sink
 
                 uninstall_stderr_sink()
+            # The fullscreen layout could not show the hint; the normal screen can.
+            resume_hint = self._input_session.deferred_exit_hint
+            if resume_hint:
+                from agenthicc.tui.input.renderer import show_exit_hint
+
+                show_exit_hint(resume_hint)
             agents_service, self._agents_service = self._agents_service, None
             if agents_service is not None:
                 await agents_service.close()
@@ -6199,6 +6322,8 @@ async def _run_tui_session(
             switch = await run_once(origin_cwd, session_id=origin)
         elif switch.action == "directory":
             switch = await run_once(switch.target, session_id=None, reload_config=True)
+        elif switch.action == "fork":
+            switch = await run_once(switch.origin_cwd, session_id=switch.target)
         elif switch.action == "hub":
             result = await _agents_hub_after_background(
                 switch.target,

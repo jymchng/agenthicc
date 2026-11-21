@@ -172,8 +172,9 @@ class ConfigMenuOverlay(Overlay):
             icon = g.down if section.expanded else g.right
             focused = si == si_cur and fi_cur == -1
             row = (
-                f"  {'[reverse]' if focused else ''}[bold]{icon} {section.name}[/bold]"
-                f"{'[/reverse]' if focused else ''}"
+                f"  [bold {p.accent}]{icon} {section.name}[/]"
+                if focused
+                else f"  [bold]{icon} {section.name}[/bold]"
             )
             rows.append(row)
             if section.expanded:
@@ -185,9 +186,9 @@ class ConfigMenuOverlay(Overlay):
                     if foc and self._state == _State.EDIT:
                         val = self._edit_buf + g.cursor
                     rows.append(
-                        f"  {'[reverse]' if foc else ''}{ind} {chg}"
+                        f"  {'[bold]' if foc else ''}{ind} {chg}"
                         f"{_e(field.label):<24}{_e(val)}"
-                        f"{'[/reverse]' if foc else ''}"
+                        f"{'[/bold]' if foc else ''}"
                     )
         return rows
 

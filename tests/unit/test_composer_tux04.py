@@ -703,7 +703,7 @@ async def test_enter_in_the_queue_moves_the_message_back_into_the_prompt() -> No
     assert state.conversation.queue.focus() is None
 
 
-async def test_ctrl_enter_while_busy_queues_an_interjection() -> None:
+async def test_enter_while_busy_queues_a_message_for_the_next_tool_call() -> None:
     from tests.unit.test_tui_session_coverage import _make_session
 
     tui, ctx, _workspace, _input = _make_session()
@@ -713,19 +713,38 @@ async def test_ctrl_enter_while_busy_queues_an_interjection() -> None:
     composer = UnifiedInputSession(ctx.app_state, ctx.command_bus)
     composer.set_mode(InputMode.STREAMING)
     try:
-        await _press(composer, [*_chars("after"), (Key.ENTER, "")])
-        await _press(composer, [*_chars("now"), (Key.MODIFIED, "ctrl+enter")])
-        await _press(composer, [*_chars("also now"), (Key.MODIFIED, "alt+enter")])
+        await _press(composer, [*_chars("first"), (Key.ENTER, "")])
+        await _press(composer, [*_chars("second"), (Key.ENTER, "")])
+        await _press(composer, [*_chars("/help"), (Key.ENTER, "")])
         items = ctx.app_state.conversation.queue.items()
-        assert [(item.text, item.interject) for item in items] == [
-            ("after", False),
-            ("now", True),
-            ("also now", True),
+        assert [(item.text, item.joins_turn) for item in items] == [
+            ("first", True),
+            ("second", True),
+            ("/help", False),
         ]
-        assert "at next tool" in _rows(ctx.app_state)[1]
-        assert tui._next_queued_message() == "now"
+        rows = _rows(ctx.app_state)
+        assert "at next tool" in rows[0] and "at next tool" in rows[1]
+        assert "at next tool" not in rows[2]  # a command waits for the end of the turn
+        assert tui._next_queued_message() == "first"
+        assert tui._next_queued_message() == "second"
+        assert tui._next_queued_message() is None
     finally:
         active.cancel()
+
+
+async def test_alt_enter_is_a_line_break_whether_or_not_a_turn_runs() -> None:
+    """Enter already sends into the running turn, so Alt+Enter has one meaning."""
+    from tests.unit.test_tui_session_coverage import _make_session
+
+    tui, ctx, _workspace, _input = _make_session()
+    ctx.command_bus.register(SendMessageCommand, tui.handle_send)
+    composer = UnifiedInputSession(ctx.app_state, ctx.command_bus)
+    for mode in (InputMode.IDLE, InputMode.STREAMING):
+        composer.set_mode(mode)
+        composer.set_text("")
+        await _press(composer, [*_chars("a"), (Key.MODIFIED, "alt+enter"), *_chars("b")])
+        assert composer._buf.text == "a\nb", mode
+        assert len(ctx.app_state.conversation.queue.items()) == 0
 
 
 # ── 7. Shift+Enter and the kitty keyboard mode ───────────────────────────────

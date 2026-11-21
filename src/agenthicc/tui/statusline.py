@@ -21,7 +21,7 @@ import os
 import re
 import signal
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -38,6 +38,7 @@ __all__ = [
     "sanitize_status_output",
     "status_report",
     "statusline_input",
+    "terminal_description",
 ]
 
 #: The command's deadline: a slower command is killed (TUX-02 §2.3).
@@ -334,6 +335,35 @@ def _kill(process: asyncio.subprocess.Process) -> None:
 # ── /status ───────────────────────────────────────────────────────────────────
 
 
+def terminal_description(environ: Mapping[str, str] | None = None) -> str:
+    """What the terminal is, for ``/status``: its size, ``TERM`` and any multiplexer.
+
+    ``65 columns × 30 rows · TERM tmux-256color · inside tmux``. Output that looks
+    cut off on screen is either cut by the app or by whatever shows it, and the
+    size the terminal reports (and a ``$COLUMNS`` that disagrees with it) is the
+    first thing to compare with the width of the cut lines.
+    """
+    env = os.environ if environ is None else environ
+    try:
+        size = os.get_terminal_size()
+    except OSError:
+        parts = ["not a terminal"]
+        columns = 0
+    else:
+        parts = [f"{size.columns} columns × {size.lines} rows"]
+        columns = size.columns
+    forced = env.get("COLUMNS", "")
+    if forced.isdigit() and int(forced) != columns:
+        parts.append(f"$COLUMNS={forced} overrides it")
+    if env.get("TERM"):
+        parts.append(f"TERM {env['TERM']}")
+    if env.get("TMUX"):
+        parts.append("inside tmux")
+    elif env.get("STY"):
+        parts.append("inside screen")
+    return " · ".join(parts)
+
+
 def status_report(app_state: AppState) -> list[tuple[str, str]]:
     """``/status``: (label, value) rows, each absent value said in words."""
     from agenthicc.memory.journal import journal_path_for
@@ -361,6 +391,7 @@ def status_report(app_state: AppState) -> list[tuple[str, str]]:
         ("Provider", provider or "unknown"),
         ("Mode", app_state.active_mode().name),
         ("Turns", str(conv.turn_count())),
+        ("Terminal", terminal_description()),
     ]
     usage = conv.usage_status()
     if usage in {"complete", "partial"}:

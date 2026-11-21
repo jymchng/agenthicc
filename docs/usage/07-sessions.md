@@ -41,8 +41,9 @@ presentation-only — the events are not re-persisted. Set
 `[behaviour] resume_transcript_turns = N` to change how many turns are replayed
 (`0` removes only the turn limit; event and byte caps still apply). The default
 preview is also capped by event count, total bytes, and per-event bytes. Use
-`/history` to browse older transcript pages without delaying attach or mixing
-old events into live scrollback. The same bounded page supplies the input
+`/history` (or `Ctrl+T`) to browse the whole transcript in the transcript view
+without delaying attach or mixing old events into live scrollback. `/rewind`
+forks the conversation at an earlier prompt into a new session. The same bounded page supplies the input
 editor's accepted-message history.
 
 ## How sessions work

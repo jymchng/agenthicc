@@ -27,9 +27,6 @@ class Command:
 class SendMessageCommand(Command):
     text: str = ""
     source: str = "user"
-    #: Ctrl+Enter / Alt+Enter while a turn runs: deliver the message at the
-    #: turn's next tool boundary instead of after it (TUX-04 §2.6).
-    interject: bool = False
 
 
 @dataclass(frozen=True)
@@ -68,6 +65,20 @@ class CycleAgentCommand(Command):
 @dataclass(frozen=True)
 class OpenPaletteCommand(Command):
     """Open the command palette over the conversation (Ctrl+P; TUX-05 §2.4)."""
+
+
+@dataclass(frozen=True)
+class OpenTranscriptCommand(Command):
+    """Open the transcript view on the last tool call (Ctrl+T; TUX-09 §2.1)."""
+
+
+@dataclass(frozen=True)
+class ScrollPaneCommand(Command):
+    """Scroll the fullscreen layout's transcript pane (TUX-09 §2.3)."""
+
+    action: Literal[
+        "page_up", "page_down", "line_up", "line_down", "wheel_up", "wheel_down", "follow"
+    ] = "page_up"
 
 
 C = TypeVar("C", bound=Command)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Sequence
 import json
 import os
 from typing import Any
@@ -14,7 +15,7 @@ from agenthicc.tools.approval import ApprovalRequest, ApprovalService
 from agenthicc.tui.cbreak_reader import Key
 from agenthicc.tui.conversation_store import AppState
 from agenthicc.tui.workspace import Workspace
-from agenthicc.tui.workspace.live_region import lines_text
+from agenthicc.tui.workspace.live_region import Line, lines_text
 from agenthicc.tui.workspace.overlays.approval import ApprovalOverlay
 from agenthicc.tui.workspace.overlays.plan_approval import PlanApprovalOverlay
 from agenthicc.tui.workspace.overlays.questions import QuestionsOverlay
@@ -105,14 +106,22 @@ async def test_resize_storm_repaints_one_current_waiting_modal(
             workspace.overlays.handle_key(Key.DOWN, "")
             await asyncio.sleep(0)
 
+        # The workspace reads the git branch on a worker thread when it starts, and the
+        # result repaints the block. That is a real frame but not part of this resize, and
+        # on a busy host it could land inside the window below: let it finish and draw first.
+        git_task = workspace._git_task
+        if git_task is not None:
+            await git_task
+        await asyncio.sleep(0.1)
+
         live = workspace._live
         assert live is not None
         updates: list[object] = []
         original_update = live.update
 
-        def _record_update(renderable: object, *, refresh: bool = False) -> None:
+        def _record_update(renderable: Sequence[Line]) -> None:
             updates.append(renderable)
-            original_update(renderable, refresh=refresh)
+            original_update(renderable)
 
         live.update = _record_update  # type: ignore[method-assign]
         updates.clear()

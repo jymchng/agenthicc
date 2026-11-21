@@ -539,7 +539,7 @@ def _help_menu(ctx: CommandContext) -> "Overlay":
 
 
 def _cmd_history(ctx: CommandContext) -> bool:
-    """Open the bounded, paginated event-history view for this session."""
+    """Open this session's transcript view, or repair its provider tool history."""
 
     action = ctx.args.strip().casefold()
     if action == "repair":
@@ -587,66 +587,38 @@ def _cmd_history(ctx: CommandContext) -> bool:
             "error", f"Unknown /history action: {action!r}.", body="Usage: /history [repair]"
         )
         return True
-    if not ctx.session_id:
-        ctx.notify("warning", "Transcript history is unavailable without a session ID.")
+    if not ctx.session_id or ctx.open_transcript is None:
+        ctx.notify("warning", "The transcript view is available only in an interactive session.")
         return True
-    from agenthicc.tui.runtime.session_log import load_recent_transcript_page
-
-    behavior = ctx.config.behaviour
-    try:
-        page = load_recent_transcript_page(
-            ctx.session_id,
-            last_turns=behavior.resume_transcript_turns,
-            max_events=behavior.resume_transcript_max_events,
-            max_bytes=behavior.resume_transcript_max_bytes,
-            max_event_bytes=behavior.resume_transcript_max_event_bytes,
-        )
-    except (OSError, RuntimeError, ValueError) as exc:
-        ctx.notify("error", f"Unable to load transcript history: {type(exc).__name__}.")
-        return True
-    if ctx.set_pending_menu is not None:
-        from agenthicc.tui.workspace.overlays.transcript_history import (
-            TranscriptHistoryOverlay,
-        )
-
-        ctx.set_pending_menu(
-            TranscriptHistoryOverlay(
-                ctx.session_id,
-                page,
-                ctx.close_overlay if ctx.close_overlay is not None else (lambda: None),
-            )
-        )
-        return True
-    ctx.console.print(
-        f"Transcript preview loaded {len(page.entries)} events; use the interactive TUI to browse older pages.",
-        markup=False,
-    )
+    ctx.open_transcript("history")
     return True
 
 
 def _cmd_logs(ctx: CommandContext) -> bool:
-    """Show the tail of this session's diagnostics log (TUX-08 §2.3)."""
-    from agenthicc.tui.diagnostics import diagnostics_log_path, log_tail
-
-    path = diagnostics_log_path(ctx.session_id)
-    lines = log_tail(path)
-    if not lines:
-        ctx.notify("info", "The diagnostics log is empty.")
+    """Open this session's diagnostics log in the transcript view (TUX-08, TUX-09)."""
+    if ctx.open_transcript is None:
+        ctx.notify("warning", "The log view is available only in an interactive session.")
         return True
-    if ctx.set_pending_menu is not None:
-        from agenthicc.tui.workspace.overlays.log_tail import LogTailOverlay
+    ctx.open_transcript("logs")
+    return True
 
-        ctx.set_pending_menu(
-            LogTailOverlay(
-                path,
-                lines,
-                ctx.close_overlay if ctx.close_overlay is not None else (lambda: None),
-            )
-        )
+
+def _cmd_rewind(ctx: CommandContext) -> bool:
+    """Pick a user turn and fork the conversation from it (TUX-09 §2.4)."""
+    if not ctx.session_id or ctx.open_transcript is None:
+        ctx.notify("warning", "/rewind is available only in an interactive session.")
         return True
-    ctx.console.print(f"Diagnostics log: {path}", markup=False, highlight=False)
-    for line in lines:
-        ctx.console.print(line, markup=False, highlight=False)
+    ctx.open_transcript("rewind")
+    return True
+
+
+def _cmd_fullscreen(ctx: CommandContext) -> bool:
+    """Switch between the inline and the fullscreen layout (TUX-09 §2.3)."""
+    if ctx.toggle_fullscreen is None:
+        ctx.notify("warning", "/fullscreen is available only in an interactive session.")
+        return True
+    on = ctx.toggle_fullscreen()
+    ctx.notify("info", "Fullscreen layout on." if on else "Inline layout on.")
     return True
 
 
@@ -1796,6 +1768,20 @@ BUILTIN_COMMANDS: list[Command] = [
         description="Show this session's diagnostics log",
         busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
         handler=_cmd_logs,
+    ),
+    Command(
+        name="/rewind",
+        group="Session",
+        description="Fork the conversation from an earlier prompt",
+        busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
+        handler=_cmd_rewind,
+    ),
+    Command(
+        name="/fullscreen",
+        group="Configuration",
+        description="Switch between the inline and fullscreen layouts",
+        busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
+        handler=_cmd_fullscreen,
     ),
     Command(
         name="/init",

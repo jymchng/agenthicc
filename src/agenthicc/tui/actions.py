@@ -26,6 +26,12 @@ The agents hub (AGX-05–07) reports, for its selected row and tab:
   shown children; ``running_tab`` — the Running tab is shown;
 - ``transcript``, ``changes`` — the detail view has those sections.
 
+The composer also reports ``fullscreen`` while the fullscreen layout is on and
+``scrolled`` while its pane is scrolled away from the tail (TUX-09). The
+transcript view (``transcript_view``) reports ``turns`` (the log has user
+turns), ``expandable`` (the selected item has more to show), ``rewind`` (it
+selects turns only) and ``hits`` (a search found something).
+
 The composer also reports ``subagents`` while the subagent panel is shown
 (AGX-08), and ``subagents_running`` while a pool still has live workers. Ctrl+B
 backgrounds that active pool. The panel and a worker's transcript report ``worker`` (the selected
@@ -56,12 +62,15 @@ __all__ = [
     "SEARCH_ACTIONS",
     "SUBAGENTS_ACTIONS",
     "TRANSCRIPT_ACTIONS",
+    "TRANSCRIPT_VIEW_ACTIONS",
 ]
 
 _RUNNING = frozenset({"running"})
 _PASTE = frozenset({"paste"})
 _PASTE_AT_CURSOR = frozenset({"paste_at_cursor"})
 _EMPTY = frozenset({"empty"})
+_FULLSCREEN = frozenset({"fullscreen"})
+_SCROLLED = frozenset({"scrolled"})
 
 GLOBAL_ACTIONS: tuple[Action, ...] = ()
 
@@ -72,7 +81,7 @@ _COMPOSER_ACTIONS: tuple[Action, ...] = (
         ("enter",),
         "submit",
         hint_priority=90,
-        description="Send the prompt; while a turn runs it is queued for after the turn",
+        description="Send the prompt; while a turn runs it joins the turn at its next tool call",
     ),
     Action(
         "composer.newline",
@@ -87,21 +96,10 @@ _COMPOSER_ACTIONS: tuple[Action, ...] = (
     Action(
         "composer.newline_alt",
         "composer",
-        ("alt+enter", "ctrl+enter"),
-        "newline",
-        unless=_RUNNING,
-        description="Insert a line break (while a turn runs these keys interject)",
-    ),
-    Action(
-        "composer.interject",
-        "composer",
         # Alt+Enter first: most terminals send Ctrl+Enter as a plain Enter.
         ("alt+enter", "ctrl+enter"),
-        "interject",
-        # Below Esc pause (70), which must stay in an 80-column footer.
-        hint_priority=65,
-        when=_RUNNING,
-        description="Send the prompt into the running turn at its next tool boundary",
+        "newline",
+        description="Insert a line break",
     ),
     Action(
         "composer.commands",
@@ -253,6 +251,7 @@ _COMPOSER_ACTIONS: tuple[Action, ...] = (
         "composer",
         ("end", "ctrl+e"),
         "end",
+        unless=_SCROLLED,
         description="Move to the line end; pressed again, to the end of the prompt",
     ),
     Action(
@@ -363,6 +362,53 @@ _COMPOSER_ACTIONS: tuple[Action, ...] = (
         description="Move to the subagent panel",
         when=frozenset({"subagents"}),
     ),
+    Action(
+        "composer.transcript",
+        "composer",
+        ("ctrl+t",),
+        "transcript",
+        description="Open the transcript view, on the last tool call",
+    ),
+    Action(
+        "composer.pane_page_up",
+        "composer",
+        ("pageup",),
+        "scroll up",
+        when=_FULLSCREEN,
+        description="Scroll the transcript pane up a page",
+    ),
+    Action(
+        "composer.pane_page_down",
+        "composer",
+        ("pagedown",),
+        "scroll down",
+        when=_FULLSCREEN,
+        description="Scroll the transcript pane down a page",
+    ),
+    Action(
+        "composer.pane_line_up",
+        "composer",
+        ("shift+up",),
+        "scroll up a row",
+        when=_FULLSCREEN,
+        description="Scroll the transcript pane up a row",
+    ),
+    Action(
+        "composer.pane_line_down",
+        "composer",
+        ("shift+down",),
+        "scroll down a row",
+        when=_FULLSCREEN,
+        description="Scroll the transcript pane down a row",
+    ),
+    Action(
+        "composer.pane_follow",
+        "composer",
+        ("end",),
+        "follow",
+        when=_FULLSCREEN | _SCROLLED,
+        description="Follow the end of the conversation again",
+    ),
 )
 
 #: Actions (or keys) added by TUX-04: a user binding of one of their keys,
@@ -371,7 +417,6 @@ _YIELDING = frozenset(
     {
         "composer.newline",
         "composer.newline_alt",
-        "composer.interject",
         "composer.delete_forward",
         "composer.kill_to_end",
         "composer.delete_word_back",
@@ -387,6 +432,13 @@ _YIELDING = frozenset(
         "composer.external_editor",
         "composer.redraw",
         "composer.queue_focus",
+        # TUX-09
+        "composer.transcript",
+        "composer.pane_page_up",
+        "composer.pane_page_down",
+        "composer.pane_line_up",
+        "composer.pane_line_down",
+        "composer.pane_follow",
     }
 )
 COMPOSER_ACTIONS: tuple[Action, ...] = tuple(
@@ -1042,6 +1094,162 @@ TRANSCRIPT_ACTIONS: tuple[Action, ...] = (
     ),
 )
 
+_TURNS = frozenset({"turns"})
+_REWIND = frozenset({"rewind"})
+_HITS = frozenset({"hits"})
+
+#: The transcript view (Ctrl+T, ``/history``, ``/logs``, ``/rewind``; TUX-09).
+#: Its conditions: ``turns`` (the log has user turns), ``expandable`` (the
+#: selected item has more to show), ``rewind`` (only turns can be selected) and
+#: ``hits`` (a search found something).
+TRANSCRIPT_VIEW_ACTIONS: tuple[Action, ...] = (
+    Action(
+        "transcript_view.up",
+        "transcript_view",
+        ("up", "k"),
+        "up",
+        description="Select the previous item",
+    ),
+    Action(
+        "transcript_view.down",
+        "transcript_view",
+        ("down", "j"),
+        "move",
+        hint_priority=100,
+        description="Select the next item",
+        paired="transcript_view.up",
+    ),
+    Action(
+        "transcript_view.page_up",
+        "transcript_view",
+        ("pageup",),
+        "page up",
+        description="Scroll up a screen",
+    ),
+    Action(
+        "transcript_view.page_down",
+        "transcript_view",
+        ("pagedown",),
+        "page down",
+        description="Scroll down a screen",
+    ),
+    Action(
+        "transcript_view.top",
+        "transcript_view",
+        ("home", "g"),
+        "start",
+        description="Go to the first item",
+    ),
+    Action(
+        "transcript_view.bottom",
+        "transcript_view",
+        ("end", "G"),
+        "end",
+        description="Go to the last item",
+    ),
+    Action(
+        "transcript_view.turn_previous",
+        "transcript_view",
+        ("[",),
+        "previous turn",
+        when=_TURNS,
+        description="Jump to the previous user turn",
+    ),
+    Action(
+        "transcript_view.turn_next",
+        "transcript_view",
+        ("]",),
+        "turns",
+        hint_priority=80,
+        when=_TURNS,
+        description="Jump to the next user turn",
+        paired="transcript_view.turn_previous",
+    ),
+    Action(
+        "transcript_view.attention_previous",
+        "transcript_view",
+        ("{",),
+        "previous failure",
+        description="Jump to the previous failure or error",
+    ),
+    Action(
+        "transcript_view.attention_next",
+        "transcript_view",
+        ("}",),
+        "next failure",
+        description="Jump to the next failure or error",
+        paired="transcript_view.attention_previous",
+    ),
+    Action(
+        "transcript_view.expand",
+        "transcript_view",
+        ("enter",),
+        "expand",
+        hint_priority=90,
+        when=frozenset({"expandable"}),
+        unless=_REWIND,
+        description="Expand or collapse the selected tool call's output, diff or arguments",
+    ),
+    Action(
+        "transcript_view.rewind",
+        "transcript_view",
+        ("enter",),
+        "rewind here",
+        hint_priority=90,
+        when=_REWIND,
+        description="Rewind to the selected turn (a new session; this one is kept)",
+    ),
+    Action(
+        "transcript_view.search",
+        "transcript_view",
+        ("/",),
+        "search",
+        hint_priority=70,
+        description="Search the items (case-insensitive unless the query has capitals)",
+        rebindable=False,
+    ),
+    Action(
+        "transcript_view.search_next",
+        "transcript_view",
+        ("n",),
+        "next hit",
+        hint_priority=65,
+        when=_HITS,
+        description="Go to the next search hit",
+    ),
+    Action(
+        "transcript_view.search_previous",
+        "transcript_view",
+        ("N",),
+        "previous hit",
+        when=_HITS,
+        description="Go to the previous search hit",
+    ),
+    Action(
+        "transcript_view.copy",
+        "transcript_view",
+        ("y",),
+        "copy",
+        hint_priority=60,
+        description="Copy the selected item's text",
+    ),
+    Action(
+        "transcript_view.editor",
+        "transcript_view",
+        ("e",),
+        "pager",
+        hint_priority=50,
+        description="Open the selected item's text in $PAGER, or $EDITOR read-only",
+    ),
+    Action(
+        "transcript_view.close",
+        "transcript_view",
+        ("q", "escape", "ctrl+t"),
+        "close",
+        description="Return to the prompt, exactly as it was left",
+    ),
+)
+
 _APPROVAL = frozenset({"approval"})
 
 #: Every decision dialog: tool approvals, plan review and questions (TUX-07).
@@ -1219,5 +1427,6 @@ DEFAULT_ACTIONS: tuple[Action, ...] = (
     *AGENTS_DETAIL_ACTIONS,
     *SUBAGENTS_ACTIONS,
     *TRANSCRIPT_ACTIONS,
+    *TRANSCRIPT_VIEW_ACTIONS,
     *DIALOG_ACTIONS,
 )

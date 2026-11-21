@@ -245,11 +245,11 @@ def test_an_invalid_file_is_reported_and_the_defaults_apply(
 def test_the_leader_is_read_from_the_file(tmp_path: Path) -> None:
     path = _write(
         tmp_path / "keybindings.toml",
-        'leader = "ctrl+t"\nleader_timeout_ms = 1500\n[composer]\n"composer.clear" = "<leader>u"\n',
+        'leader = "alt+x"\nleader_timeout_ms = 1500\n[composer]\n"composer.clear" = "<leader>u"\n',
     )
     loaded = load_keybindings(DEFAULT_ACTIONS, path)
     assert loaded.errors == ()
-    assert loaded.keymap.leader == "ctrl+t"
+    assert loaded.keymap.leader == "alt+x"
     assert loaded.keymap.leader_timeout_s == 1.5
 
 
@@ -259,3 +259,14 @@ def test_the_template_lists_every_rebindable_action_and_loads_as_defaults(tmp_pa
     for action in DEFAULT_ACTIONS:
         assert (f'"{action.name}"' in text) is action.rebindable
     assert load_keybindings(DEFAULT_ACTIONS, _write(tmp_path / "k.toml", text)).errors == ()
+
+
+def test_ctrl_t_opens_the_transcript_so_it_cannot_be_the_leader(tmp_path: Path) -> None:
+    """TUX-09 bound Ctrl+T in the composer; a file that makes it the leader says so."""
+    path = _write(
+        tmp_path / "keybindings.toml",
+        'leader = "ctrl+t"\n[composer]\n"composer.clear" = "<leader>u"\n',
+    )
+    loaded = load_keybindings(DEFAULT_ACTIONS, path)
+    assert any("composer.transcript" in error for error in loaded.errors)
+    assert loaded.keymap.action("composer.transcript").keys == ("ctrl+t",)

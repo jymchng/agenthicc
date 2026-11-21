@@ -28,7 +28,6 @@ __all__ = [
     "DiagnosticsLog",
     "diagnostics_log_path",
     "install_stderr_sink",
-    "log_tail",
     "stderr_sink",
     "uninstall_stderr_sink",
 ]
@@ -157,19 +156,3 @@ def uninstall_stderr_sink() -> None:
         _previous_showwarning = None
     if sink is not None:
         sink.close()
-
-
-def log_tail(path: Path, *, max_lines: int = 200, max_bytes: int = 256_000) -> list[str]:
-    """The last *max_lines* lines of the log at *path* (``[]`` when absent)."""
-    try:
-        with path.open("rb") as handle:
-            handle.seek(0, io.SEEK_END)
-            size = handle.tell()
-            handle.seek(max(0, size - max_bytes))
-            data = handle.read()
-    except OSError:
-        return []
-    lines = data.decode("utf-8", errors="replace").splitlines()
-    if size > max_bytes and lines:
-        lines = lines[1:]  # the first line may be cut
-    return lines[-max_lines:]
