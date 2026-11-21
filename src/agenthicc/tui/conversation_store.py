@@ -88,6 +88,8 @@ EventKind = Literal[
     "phase_control_requested",
     "phase_plan_mutated",
     "phase_control_rejected",
+    # The session was handed to the background service; it keeps running there.
+    "background_handoff",
 ]
 
 
@@ -336,6 +338,8 @@ class ConversationStore:
         """True while a resumed session transcript is being replayed."""
         self.compaction_active: Signal[bool] = Signal(False, name="compaction_active")
         """True while a compaction LLM call is in flight (PRD-119)."""
+        self.handoff_pending: Signal[bool] = Signal(False, name="handoff_pending")
+        """``/background`` waits for the running tool call to end before handing over."""
         self.compaction_progress: Signal[CompactionProgress | None] = Signal(
             None, name="compaction_progress"
         )
@@ -610,6 +614,7 @@ class ConversationStore:
             or self.compaction_active()
             or self.running_tools()
             or self.background_tools()
+            or self.handoff_pending()
         ):
             # Running-tool rows blink their dot, so they keep the clock going.
             self.frame.set(self.frame() + 1)

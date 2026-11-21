@@ -152,9 +152,7 @@ def _handoff(session: TUISession) -> bool:
                 ctx.console.print(record.error or "Background worker launch failed.")
                 return True
             session._background_handoff_state = "started"
-            ctx.app_state.conversation.notify_transient(
-                f"Backgrounded session {record.session_id[:12]}… ({record.status.value})"
-            )
+            session.announce_backgrounded(record.session_id, record.status.value)
             session._input_session._exit_requested = True
             return True
         session._background_handoff_state = "idle"
@@ -334,8 +332,6 @@ def _handoff(session: TUISession) -> bool:
         ctx.console.print(f"Unable to background session: {type(exc).__name__}: {exc}")
         return True
     session._background_handoff_state = "started"
-    ctx.app_state.conversation.notify_transient(
-        f"Backgrounded session {record.session_id[:12]}… ({record.status.value})"
-    )
+    session.announce_backgrounded(record.session_id, record.status.value)
     session._input_session._exit_requested = True
     return True

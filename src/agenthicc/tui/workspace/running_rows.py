@@ -16,6 +16,12 @@ spinner in the accent colour and the time it has taken::
 
     ◜ Refreshing context · 2s
 
+While ``/background`` waits for a running tool call to end, the last row says so,
+under the call, with a blue dot that blinks like the call's own::
+
+    ● $ go build ./... (23s)
+    ● Backgrounding after tool call ends…
+
 A thin bar under it appears only when the compaction can say how far it has
 got (a history summarised in several model calls); one that cannot is the
 spinner alone, and nothing is ever estimated::
@@ -39,6 +45,7 @@ __all__ = [
     "RING_FRAMES",
     "compaction_bar",
     "compaction_row",
+    "handoff_row",
     "running_rows",
 ]
 
@@ -78,6 +85,23 @@ def compaction_row(state: AppState, *, monotonic_now: float | None = None) -> st
         ring = g.ring_still
     elapsed = compact_duration(conv.compaction_elapsed(monotonic_now))
     return f"[{p.accent}]{escape(ring)}[/] Refreshing context [{p.muted}]{g.sep} {elapsed}[/]"
+
+
+def handoff_row(state: AppState) -> str:
+    """``● Backgrounding after tool call ends…``: the blue dot blinks like a running call's.
+
+    ``/background`` was typed while a tool call runs. The hand-off waits for that call
+    to finish, so the conversation it passes on is whole; this row says so until it
+    happens. ``reduced_motion`` and the screen reader keep the dot still.
+    """
+    from agenthicc.tui.preferences import ui_settings
+    from agenthicc.tui.theme import glyphs, palette
+
+    p, g = palette(), glyphs()
+    ui = ui_settings(state)
+    dot_on = _dot_on(state.conversation.frame(), ui is None or ui.animated)
+    dot = f"bold {p.info}" if dot_on else p.subtle
+    return f"[{dot}]{g.bullet}[/] Backgrounding after tool call ends{g.ellipsis}"
 
 
 def compaction_bar(state: AppState, cols: int) -> str | None:
@@ -136,7 +160,8 @@ def running_rows(state: AppState, cols: int, *, now: float | None = None) -> lis
     conv = state.conversation
     items = (*conv.running_tools(), *conv.background_tools())
     compacting = conv.compaction_active()
-    if not items and not compacting:
+    handing_off = conv.handoff_pending()
+    if not items and not compacting and not handing_off:
         return []
     ui = ui_settings(state)
     animated = ui is None or ui.animated
@@ -152,5 +177,7 @@ def running_rows(state: AppState, cols: int, *, now: float | None = None) -> lis
     hidden = len(items) - MAX_ROWS
     if hidden > 0:
         rows.append(f"  [{palette().muted}]+{hidden} more running[/]")
+    if handing_off:
+        rows.append(handoff_row(state))
     rows.append("")
     return rows

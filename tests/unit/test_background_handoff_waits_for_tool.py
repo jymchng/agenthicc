@@ -49,7 +49,9 @@ async def test_a_running_tool_delays_the_handoff_to_the_next_boundary(
     try:
         assert session.dispatch_slash(command) is True  # type: ignore[attr-defined]
         assert calls == []  # the tool is still running
-        assert "when $ make test finishes" in (state.conversation.notification() or "")
+        # A blinking row in the live region says the hand-off is waiting.
+        assert state.conversation.handoff_pending() is True
+        assert state.conversation.notification() is None
         assert (
             session.dispatch_slash("/bg") is True
         )  # a repeat does not queue twice  # type: ignore[attr-defined]
@@ -59,7 +61,7 @@ async def test_a_running_tool_delays_the_handoff_to_the_next_boundary(
         assert calls == []  # not before the results are committed
         await asyncio.sleep(0)
         assert calls == ["handoff"]
-        assert state.conversation.notification() is None
+        assert state.conversation.handoff_pending() is False
         assert session._handoff_pending is False  # type: ignore[attr-defined]
     finally:
         blocker.set()

@@ -1254,6 +1254,36 @@ def _render_compaction_status(self: ScrollBufferAppender, ev: ConversationEvent)
     self._gap_pending = True
 
 
+@register_renderer("background_handoff")
+def _render_background_handoff(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
+    """``● Successfully backgrounded · 6b9f7614-8ca (running)``.
+
+    The session was handed to the background service and keeps running there, so the
+    turn that is unwinding here was not cancelled and nothing failed. A screen reader
+    gets the severity as a word instead of the bullet.
+    """
+    from rich.text import Text
+
+    from agenthicc.tui.preferences import ui_settings
+
+    session_id = _text(ev.payload, "session_id")[:12]
+    status = _text(ev.payload, "status")
+    detail = f"{session_id} ({status})" if session_id and status else session_id
+    ui = ui_settings(self._state)
+    if ui is not None and ui.screen_reader:
+        _print_notice(self, "success", "Successfully backgrounded", detail)
+    else:
+        p, g = palette(), glyphs()
+        row = Text.assemble(
+            (f"{g.bullet} ", f"bold {p.success}"),
+            ("Successfully backgrounded", "bold"),
+        )
+        if detail:
+            row.append(f" {g.sep} {detail}", style=p.muted)
+        self._print(row, highlight=False)
+    self._gap_pending = True
+
+
 @register_renderer("error")
 def _render_error(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
     """A turn or command failure (TUX-08).

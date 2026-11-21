@@ -1,0 +1,8 @@
+── compact ──
+● Successfully backgrounded · 6b9f7614-8ca (running)
+
+── normal ──
+● Successfully backgrounded · 6b9f7614-8ca (running)
+
+── verbose ──
+● Successfully backgrounded · 6b9f7614-8ca (running)

@@ -95,6 +95,7 @@ CASES: dict[str, list[dict[str, object]]] = {
     ],
     "error": [{"message": "Agent turn failed", "detail": "Provider returned HTTP 400"}],
     "system": [{"text": "Compacted 12 messages"}],
+    "background_handoff": [{"session_id": "6b9f7614-8ca1-4d2e", "status": "running"}],
     "compaction_status": [
         {"status": "started", "before_tokens": 9000},
         {

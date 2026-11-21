@@ -1703,6 +1703,8 @@ class TUISession:
     _workflow_handle_value: WorkflowRunHandle | None = None
     #: ``/bg`` arrived while a tool ran: hand off at the next tool boundary.
     _handoff_pending: bool = False
+    #: A successful hand-off to say once the turn it cancelled has finished unwinding.
+    _backgrounded: tuple[str, str] | None = None
     #: The pre-flight finding that stops prompts from being sent (TUX-03).
     _credential_issue: PreflightIssue | None = None
     #: This session's place in the tip rotation (TUX-03).
@@ -2251,6 +2253,7 @@ class TUISession:
         kind: str = "workflow_error",
         recoverable: bool = True,
         error_event_id: str | None = None,
+        announce: bool = True,
     ) -> None:
         """Publish and finalize a workflow failure that escaped its runner.
 
@@ -2262,7 +2265,11 @@ class TUISession:
         cannot be accidentally reused by the next message.
         """
         conv = self._ctx.app_state.conversation
-        if conv.is_turn_active:
+        if not announce:
+            # The run is recorded as failed below, but nothing went wrong that the
+            # user should read: close the turn without an error row.
+            conv.close_turn()
+        elif conv.is_turn_active:
             conv.close_turn(error=error)
         else:
             conv.append_event("error", {"message": error}, event_id=error_event_id)
@@ -2293,7 +2300,10 @@ class TUISession:
                     )
                 )
         if checkpoint is not None:
-            self._ctx.app_state.conversation.notify_transient(self._workflow_pause_notice(handle))
+            if announce:
+                self._ctx.app_state.conversation.notify_transient(
+                    self._workflow_pause_notice(handle)
+                )
             self._publish_session_event(
                 "workflow_paused_after_error",
                 {
@@ -4018,10 +4028,8 @@ class TUISession:
         if running and task is not None and not task.done():
             if not self._handoff_pending:
                 self._handoff_pending = True
-                tool = running[-1]
-                conversation.notification.set(
-                    f"Moving to the background when {tool.operation} {tool.target} finishes"
-                )
+                # A blinking row in the live region says so until the call ends.
+                conversation.handoff_pending.set(True)
             return True
         return self._run_background_handoff()
 
@@ -4030,8 +4038,32 @@ class TUISession:
 
         if self._handoff_pending:
             self._handoff_pending = False
-            self._ctx.app_state.conversation.notification.set(None)
+            self._ctx.app_state.conversation.handoff_pending.set(False)
         return integration._handoff(self)
+
+    @property
+    def _handed_off(self) -> bool:
+        """Whether this session now runs in the background service."""
+        return self._background_handoff_state == "started"
+
+    def announce_backgrounded(self, session_id: str, status: str) -> None:
+        """Say that the session was handed to the background service.
+
+        The hand-off cancels the foreground turn, which is still unwinding and writes
+        its own closing rows: the confirmation waits for it, so it comes last.
+        """
+        self._backgrounded = (session_id, status)
+        self._flush_backgrounded()
+
+    def _flush_backgrounded(self) -> None:
+        task = self._agent_task
+        pending = self._backgrounded
+        if pending is None or (task is not None and not task.done()):
+            return
+        self._backgrounded = None
+        self._ctx.app_state.conversation.append_event(
+            "background_handoff", {"session_id": pending[0], "status": pending[1]}
+        )
 
     def _next_queued_message(self) -> str | None:
         """Claim the next queued message at a completed tool boundary (TUX-04 §2.6).
@@ -5012,6 +5044,7 @@ class TUISession:
 
     def advance(self) -> None:
         """Drain _msg_queue: dispatch slash commands, start next agent task."""
+        self._flush_backgrounded()
         if self._agent_task is None or self._agent_task.done():
             self._apply_pending_model()
         if self._handoff_pending:
@@ -5430,9 +5463,13 @@ class TUISession:
                 workflow_paused = True
                 await self._finalize_workflow_pause(handle)
             elif handle is not None and handle.lifecycle in {"running", "resuming", "pausing"}:
-                self._fail_workflow_run("cancelled", kind="user_cancelled")
+                self._fail_workflow_run(
+                    "cancelled", kind="user_cancelled", announce=not self._handed_off
+                )
             # close_turn() is idempotent — inner layers may have already called it.
-            conv.close_turn(interrupted=True)
+            # A turn cancelled by a successful hand-off was not interrupted: the
+            # work goes on in the background (it says so after this turn's rows).
+            conv.close_turn(interrupted=not self._handed_off)
             self._input_session.set_mode(InputMode.IDLE)
         except Exception as exc:  # noqa: BLE001 - surface unexpected turn failures in the UI
             turn_failed = True
@@ -5961,8 +5998,10 @@ class TUISession:
             if handle is not None and handle.is_pause_requested():
                 await self._finalize_workflow_pause(handle)
             elif handle is not None and handle.lifecycle in {"resuming", "running", "pausing"}:
-                self._fail_workflow_run("cancelled", kind="user_cancelled")
-            ctx.app_state.conversation.close_turn(interrupted=True)
+                self._fail_workflow_run(
+                    "cancelled", kind="user_cancelled", announce=not self._handed_off
+                )
+            ctx.app_state.conversation.close_turn(interrupted=not self._handed_off)
             self._input_session.set_mode(InputMode.IDLE)
         except Exception as exc:  # noqa: BLE001 - route unexpected workflow failures to the UI
             conv = ctx.app_state.conversation

@@ -50,7 +50,10 @@ def _approval_request(tool_name: str) -> ApprovalRequest:
 
 def _tui_session(**fields: object) -> SimpleNamespace:
     """A stand-in TUISession carrying the handoff state TUISession declares."""
+    announced: list[tuple[str, str]] = []
     state: dict[str, object] = {
+        "announced": announced,
+        "announce_backgrounded": lambda session_id, status: announced.append((session_id, status)),
         "_background_intent": "",
         "_background_handoff_state": "idle",
         "_background_prepared_supervisor": None,
@@ -1361,6 +1364,8 @@ def test_repeated_detach_in_one_tui_does_not_prepare_twice(
     assert _handoff(session) is True
     assert calls == [record.session_id]
     assert session._background_handoff_state == "started"
+    # Said once, with the session and its status, however often the command repeats.
+    assert [sid for sid, _status in session.announced] == [record.session_id]
 
 
 @pytest.mark.asyncio

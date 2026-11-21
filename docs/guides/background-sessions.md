@@ -32,8 +32,9 @@ The path through the runtime is:
    busy policy, so the command can be handled while an agent turn is running
    instead of waiting in the ordinary message queue. The integration bridge
    intercepts the command before it is treated as a new user request.
-   **While a tool call is running, the handoff waits for it to finish.** The
-   composer shows `Moving to the background when $ make test finishes`. The
+   **While a tool call is running, the handoff waits for it to finish.** A
+   blinking blue `●` under the running call says
+   `Backgrounding after tool call ends…` until it does. The
    handoff then happens at the next tool boundary, once the call's result is
    committed to the conversation, so the worker continues from a complete tool
    exchange instead of an interrupted one. If the turn ends first, the handoff
@@ -65,8 +66,11 @@ The path through the runtime is:
    resumes a valid checkpoint if present and otherwise exits without replaying
    the historical intent or making a model request. Progress and terminal
    status are written to the background store.
-7. **The foreground input loop exits.** The TUI shows a transient
-   `Backgrounded session …` notice and signals its input loop to exit. During
+7. **The foreground input loop exits.** The transcript ends with
+   `● Successfully backgrounded · <session id> (running)`, after the closing
+   rows of the turn the handoff stopped (that turn is not reported as
+   cancelled, failed or interrupted: the work continues in the background), and
+   the TUI signals its input loop to exit. During
    TUI shutdown, it awaits the foreground agent task while closing its other
    resources; after cleanup, control returns to the shell. The background
    worker is independent of that terminal shutdown.

@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — `/background` says what is happening
+
+- **While it waits.** When `/background`, `/bg` or `/detach` is typed while a tool
+  call runs, a blinking blue `●` under the call reads
+  `Backgrounding after tool call ends…` (it replaces the status-line notice). The
+  dot holds still under `reduced_motion` and for screen readers, who are told once.
+- **Once it has happened.** The transcript ends with
+  `● Successfully backgrounded · 6b9f7614-8ca (running)` instead of `✗ cancelled`.
+  Handing a session over cancels the foreground turn, which used to be reported as
+  a cancelled (and, in a workflow, paused) run. That turn now closes as ordinary
+  work, with no error row, no `Interrupted after …` row and no `Workflow paused`
+  notice; the workflow run is recorded exactly as before, so the background worker
+  resumes from the same checkpoint. The confirmation comes after the turn's own
+  closing rows.
+
 ### Fixed — the window title and taskbar progress no longer blank the screen
 
 - **Control sequences bypass the live block's text proxy.** While the live block

@@ -52,6 +52,7 @@ class Announcer:
             (self._state.pending_approval, self._on_approval),
             (conv.notification, self._on_notification),
             (conv.compaction_active, self._on_compaction),
+            (conv.handoff_pending, self._on_handoff_pending),
             (conv.transient_notice, self._on_transient_notice),
             (self._state.active_mode, self._on_mode),
             (conv.agent_state, self._on_status),
@@ -99,6 +100,10 @@ class Announcer:
         # The result is a notice row, which a screen reader reads as "Done: ...".
         active = self._state.conversation.compaction_active()
         self._say("compaction", "Refreshing context." if active else "")
+
+    def _on_handoff_pending(self) -> None:
+        pending = self._state.conversation.handoff_pending()
+        self._say("handoff", "Backgrounding after the tool call ends." if pending else "")
 
     def _on_notification(self) -> None:
         text = self._state.conversation.notification()
