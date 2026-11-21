@@ -30,7 +30,8 @@ _KEY_VARIABLES = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY")
 _SDK_TEXT = ("could not resolve authentication", "x-api-key", "auth_token")
 
 
-def _run_headless(tmp_path: Path) -> tuple[list[dict[str, object]], Path]:
+def _run_headless(tmp_path: Path) -> tuple[list[dict[str, object]], Path, str]:
+    """Run the headless CLI with no key; return its JSON lines, its home, and its stderr."""
     home = tmp_path / "home"
     project = tmp_path / "project"
     home.mkdir()
@@ -53,18 +54,19 @@ def _run_headless(tmp_path: Path) -> tuple[list[dict[str, object]], Path]:
     )
     assert completed.returncode == 0, completed.stderr[-2000:]
     records = [json.loads(line) for line in completed.stdout.splitlines() if line.strip()]
-    return records, home
+    return records, home, completed.stderr
 
 
 @cli_test_timeout(1)
 def test_a_missing_key_is_a_classified_redacted_error_everywhere(tmp_path: Path) -> None:
-    records, home = _run_headless(tmp_path)
+    records, home, stderr = _run_headless(tmp_path)
 
     # AC 3: headless emits one {"type": "error", "kind": ...} line for the turn.
     errors = [record for record in records if record.get("type") == "error"]
     assert len(errors) == 1, records
     error = errors[0]
-    assert error["kind"] == "missing_credentials"
+    # A misclassified failure shows the turn's stderr, which names the real exception.
+    assert error["kind"] == "missing_credentials", (error, stderr[-3000:])
     assert error["message"] == "No API key for anthropic."
     assert error["action"] == {
         "hint": "Set ANTHROPIC_API_KEY, or run /model to switch provider.",

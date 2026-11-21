@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import os
 from pathlib import Path
 
 import pytest
@@ -36,6 +37,12 @@ def machine(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr("agenthicc.cli.version.package_version", lambda: "0.5.0")
     for name in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"):
         monkeypatch.delenv(name, raising=False)
+    # The pre-flight ripgrep notice must not depend on the host: a stub ``rg`` on PATH.
+    stub_bin = tmp_path / "stub-bin"
+    stub_bin.mkdir()
+    (stub_bin / "rg").write_text("#!/bin/sh\n", encoding="utf-8")
+    (stub_bin / "rg").chmod(0o755)
+    monkeypatch.setenv("PATH", os.pathsep.join((str(stub_bin), os.environ.get("PATH", ""))))
     project = tmp_path / "project"
     (project / ".git").mkdir(parents=True)
     (project / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
