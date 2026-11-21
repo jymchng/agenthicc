@@ -46,6 +46,11 @@ from urllib.parse import urlparse
 
 from agenthicc.workflows.code_plan.runner import CodePlanRunner
 from agenthicc.workflows.make_book.builder import write_build_book_script
+from agenthicc.workflows.make_book.voice import (
+    PROSE_PRESERVATION,
+    PROSE_VOICE,
+    PROSE_VOICE_SUMMARY,
+)
 from agenthicc.workflows.payload import (
     payload_int,
     payload_mapping,
@@ -2270,25 +2275,13 @@ class MakeBookRunner(CodePlanRunner):
                     "appropriate (e.g. [RFC 8446], [ISO 9001:2015], or a bracketed "
                     "reference to the sources list). NEVER fabricate facts, numbers, or "
                     "citations not present in the research.\n"
-                    "- Prefer dense, precise prose over vague generalities. Show, don't "
-                    "tell: give the exact value, the exact step, the exact trade-off.\n"
+                    "- Be specific rather than vague: give the exact value, the exact "
+                    "step, the exact trade-off, and then explain in connected sentences "
+                    "why it matters to the reader.\n"
                     "- Cover limitations, edge cases, and pitfalls honestly.\n\n"
-                    "WRITE LIKE A HUMAN (the most important instruction in this phase):\n"
-                    "- Write as ONE human author who knows this material cold and is "
-                    "explaining it to a specialist colleague - warm, confident, "
-                    "unhurried. Not documentation, not an essay, not a wiki page.\n"
-                    "- Vary sentence length and rhythm. Let short, declarative sentences "
-                    "punctuate longer explanations. Break up uniform runs of 'X is... "
-                    "Y is... Z is...' - no two consecutive sentences should share the "
-                    "same shape.\n"
-                    "- Open every section with a concrete hook - a scene, a question, a "
-                    "one-line insight - before the technical setup, so the reader knows "
-                    "why this section exists before reading how it works.\n"
-                    "- NO AI tells. Never open with 'It is important to note', 'In "
-                    "conclusion', 'Furthermore'/'Moreover'/'Additionally', or any "
-                    "formulaic transition. Never end a section by restating its opening. "
-                    "Vary every transition: forward hooks, open questions, concrete "
-                    "previews - never the same shape twice in a row.\n"
+                    + PROSE_VOICE
+                    + "\n\n"
+                    "ANALOGIES AND LISTS (they serve the voice above):\n"
                     "- Use concrete, local analogies that actually teach (a queue for "
                     "Little's law, an envelope for a signed file share), and never carry "
                     "an analogy beyond its point.\n"
@@ -2305,7 +2298,7 @@ class MakeBookRunner(CodePlanRunner):
                     "   (a) Chapter titles carry NO 'Chapter N:' prefix — write the bare title only (e.g. '# Introduction to Codex', NOT '# Chapter 1: Introduction to Codex').\n"
                     "   (b) Every '## ' section subheading must be UNIQUE across ALL chapters — no two chapters may share the same section heading text. Vary each heading so it is original to its chapter while remaining recognisable for its section type.\n"
                     "- Mark every key indexable term in **bold** on first use — the index section collects these, so consistent marking makes the index accurate.\n"
-                    "- Keep paragraphs, lists, and spacing clean; prefer short, scannable sections over dense walls of text.\n"
+                    "- Keep lists, spacing, and section breaks clean, and make the chapter easy to navigate through its '## ' headings, figures, and tables; within a section, let each paragraph develop a full thought instead of splitting one explanation into fragments.\n"
                     "RICH CONTENT — use every enabled content type where it adds value:\n"
                     + (
                         "- IMAGES: create BOTH mermaid diagrams AND matplotlib graphs "
@@ -2369,7 +2362,8 @@ class MakeBookRunner(CodePlanRunner):
                     "and where useful: bullet lists, numbered steps, fenced code blocks, "
                     "tables, images, and blockquotes.\n"
                     "4. Length: 2,000–4,000 words of substantive technical content for this "
-                    "chapter (technical books run denser than general ones).\n"
+                    "chapter. Connected, elaborated prose may use the room it needs, but "
+                    "every added clause must carry an idea; never pad.\n"
                     "5. PAGE BREAKS: Each chapter MUST begin on a new page. Put the page "
                     "break IMMEDIATELY AFTER the '# ' title line of the chapter file. "
                     "CRITICAL \u2014 use the page-break syntax that matches the COMPILE "
@@ -2390,10 +2384,15 @@ class MakeBookRunner(CodePlanRunner):
                     "   ## Section 1\n\n"
                     "   Content here...\n"
                     "   ```\n"
-                    "6. End with a short transition that sets up the next chapter.\n"
-                    "6. Do NOT include the book title or author in the file — just the "
+                    "6. Close the chapter in the same connected, direct voice: gather what "
+                    "the chapter has made clear and lead into the next chapter's subject "
+                    "(in the final chapter, look past the book instead). Do not restate "
+                    "the chapter and do not use a formulaic sign-off.\n"
+                    "7. Do NOT include the book title or author in the file — just the "
                     "chapter content. The PDF metadata handles title/author.\n\n"
-                    "Write the file with the write tool, then call confirm_chapter_complete(summary=...). "
+                    "Write the file with the write tool, run the REVISION PASS from the "
+                    "writing voice on it (re-read the file and edit it in place), then "
+                    "call confirm_chapter_complete(summary=...). "
                     "The runner knows the current chapter, finds the canonical file, counts "
                     "its words, and verifies referenced assets. Do not send a chapter index, "
                     "path, word count, or asset list."
@@ -2608,7 +2607,8 @@ class MakeBookRunner(CodePlanRunner):
                     "Keep captions with their media.\n"
                     "The transition tool is verification-only. Use normal filesystem tools to "
                     "edit files, then call confirm_layout_ready(summary=...) with a concise "
-                    "summary. The runner derives the source inventory and rejects violations."
+                    "summary. The runner derives the source inventory and rejects violations.\n\n"
+                    + PROSE_PRESERVATION
                 ),
                 mode="Yolo",
                 max_turns=15,
@@ -2668,8 +2668,10 @@ class MakeBookRunner(CodePlanRunner):
                     "<output_dir>/assets/cover.png). Do NOT build, generate, or design "
                     "a cover page \u2014 the compile phase places the user-supplied cover "
                     "as page 1 / the library cover.\n"
-                    "PREFACE: write a short preface (why this book, who it is for, what "
-                    "the reader will learn). Do NOT create contents.md, any other "
+                    "PREFACE: write a short preface in the WRITING VOICE below, speaking to "
+                    "the reader as 'you' from its first sentence: why this book exists, who "
+                    "it is for, and what the reader will be able to do once they have worked "
+                    "through it. Do NOT create contents.md, any other "
                     "hand-written TOC, or a TOC page container. build_book.py generates "
                     "the real table of contents from the chapter headings with the "
                     "typesetting toolchain.\n"
@@ -2681,8 +2683,9 @@ class MakeBookRunner(CodePlanRunner):
                     "new page \u2014 put a raw '\\newpage' (LaTeX tier; pandoc passes it through) "
                     "or '#pagebreak()' (typst tier) on its own line right after the '# ' title "
                     "in the preface file. Do not create a contents file to hold a page break.\n\n"
-                    "Then call confirm_front_matter_ready(summary=...). The runner scans and verifies "
-                    "the Markdown files under front-matter/."
+                    "Run the REVISION PASS from the writing voice on the preface, then call "
+                    "confirm_front_matter_ready(summary=...). The runner scans and verifies "
+                    "the Markdown files under front-matter/.\n\n" + PROSE_VOICE
                 ),
                 mode="Yolo",
                 max_turns=15,
@@ -2798,6 +2801,8 @@ class MakeBookRunner(CodePlanRunner):
                     "Chapter files:\n" + "\n".join(f"  {c.file_path}" for c in written) + "\n\n"
                     "Asset files (images/figures the chapters reference):\n"
                     + ("\n".join(f"  {a}" for a in ctx.images) if ctx.images else "  (none)")
+                    + "\n\n"
+                    + PROSE_PRESERVATION
                     + "\n\n"
                     "BOOK POLISH — the finished PDF must look like a real published book. The preface and index page were built by the FRONT_MATTER and BACK_MATTER phases; build_book.py generates the TOC from chapter headings. Use the preface/index files, do NOT hand-write or rebuild the TOC. The COVER page is supplied by the END USER (e.g. <output_dir>/assets/cover.png) — place it as page 1; do NOT generate, design, or rebuild it:\n"
                     "  FRONT MATTER: the preface Markdown file(s) from the FRONT_MATTER phase (ctx.front_matter_files) go before the chapters. build_book.py inserts the engine-generated TOC after the cover and before the preface; there must be no contents.md source file.\n"
@@ -3171,9 +3176,7 @@ class MakeBookWorkflow(WorkflowPlugin):
                 "render it to a PNG via mermaid-cli) AND matplotlib graphs (write a "
                 "matplotlib script and run it to produce a PNG), save them under "
                 "<output_dir>/assets/, and reference them in the chapter. Then call "
-                "confirm_chapter_complete(summary=...). Write it in a natural human authorial "
-                "voice - no formulaic AI prose: vary sentence rhythm, open sections "
-                "with a concrete hook, and never use mechanical transitions. Every "
+                "confirm_chapter_complete(summary=...). " + PROSE_VOICE_SUMMARY + " Every "
                 "image you include must be appropriately sized for print - cap it at "
                 "6.175in wide (95% of the 6.5in content width) and 8.05in tall (70% of the "
                 "11.5in page height), and pre-resize or crop wider/taller sources so figures "
@@ -3195,7 +3198,7 @@ class MakeBookWorkflow(WorkflowPlugin):
                 "so every image/diagram fits within 6.175in width (95% of the 6.5in content "
                 "width) and 8.05in height (70% of the 11.5in page), and every table fits "
                 "within the same bounds. Then call "
-                "confirm_layout_ready(summary=...)."
+                "confirm_layout_ready(summary=...). " + PROSE_PRESERVATION
             ),
         ),
         PhaseSpec(
@@ -3210,7 +3213,8 @@ class MakeBookWorkflow(WorkflowPlugin):
                 "build_book.py generates the TOC from chapter headings, so do not create "
                 "contents.md, a TOC page container, or a hand-written listing. Do NOT build "
                 "a cover page \u2014 the cover is "
-                "supplied by the END USER; then call confirm_front_matter_ready(summary=...)."
+                "supplied by the END USER; then call confirm_front_matter_ready(summary=...). "
+                + PROSE_VOICE_SUMMARY
             ),
         ),
         PhaseSpec(
@@ -3240,7 +3244,7 @@ class MakeBookWorkflow(WorkflowPlugin):
                 "front-matter, chapter, and back-matter source. Correct any image, diagram, "
                 "or Markdown table that exceeds 6.175in width or 8.05in height (70% of the 11.5in "
                 "page), then call confirm_layout_ready(summary=...). The transition gate "
-                "must pass before compilation."
+                "must pass before compilation. " + PROSE_PRESERVATION
             ),
         ),
         PhaseSpec(
@@ -3264,7 +3268,8 @@ class MakeBookWorkflow(WorkflowPlugin):
                 "it to rebuild the PDF and EPUB end-to-end into dist/ "
                 "(compile at least twice so TOC page numbers resolve; user cover → TOC → "
                 "preface ordering; clean all intermediates), run it, and call "
-                "mark_book_complete(summary=...) after verification or reject_book(summary=...)."
+                "mark_book_complete(summary=...) after verification or reject_book(summary=...). "
+                + PROSE_PRESERVATION
             ),
         ),
     ]

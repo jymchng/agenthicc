@@ -349,6 +349,47 @@ asset, and metadata inputs. `mark_book_complete` is verification-only: the agent
 will accept the existing PDF and EPUB. Both paths are stored in the workflow
 checkpoint and artifact summary.
 
+#### `make_book` writing voice
+
+Generated chapters are written as one continuous conversation with the reader
+rather than as detached documentation. A single module,
+`agenthicc.workflows.make_book.voice`, owns that voice so no phase carries its
+own slightly different copy of a style rule:
+
+| Component | Used by | Purpose |
+|---|---|---|
+| `PROSE_VOICE` | `chapter`, `front_matter` | The full voice guide the authoring phases follow |
+| `PROSE_VOICE_SUMMARY` | the declarative `PhaseSpec` skeleton for `chapter` and `front_matter` | The guide's opening paragraph, so the skeleton and the live prompts cannot drift apart |
+| `PROSE_PRESERVATION` | `layout_review`, `final_layout_review`, `compile` | A guard for the phases that edit existing Markdown, so a layout or build fix never flattens the voice |
+
+The guide requires the author to address the reader directly as "you" and
+"your" in every section, including technical and analytical ones, without
+beginning every sentence with "you" or assuming anything about the reader's
+history beyond the stated prerequisites. It also asks for a much higher density
+of natural conjunctions, transitions and conversational connectives (drawn from
+the expression pools defined in the module, rendered into the prompt rather than
+pasted into it), for compound and complex sentences instead of runs of short
+disconnected ones, for varied sentence openings, and for paragraphs that
+continue the previous paragraph's thought. It names the formal transitions that
+are easy to overuse ("Furthermore", "Moreover", "Additionally", "In fact") and
+caps them at once or twice per chapter.
+
+Four safeguards keep the result from becoming padded or imprecise: every added
+clause must carry an idea, connectives must express a relationship that is
+true, hedges are reserved for points the research genuinely leaves open, and
+headings, code, equations, tables, captions and citations are excluded from the
+voice. The chapter agent also performs a revision pass on its own file before it
+calls `confirm_chapter_complete`; `make_book` has no separate proofreading
+phase, so that pass is where runs of short sentences and detached stretches are
+repaired. The planning, research, asset and index phases do not write prose and
+do not receive the guide.
+
+Changing the voice means editing `voice.py`; `tests/unit/test_make_book_voice.py`
+checks that every pool entry reaches the prompt, that every writing and editing
+phase receives the right component on every retry, and that the older
+instructions this voice replaced (such as the ban on "Furthermore" and "Moreover"
+and the preference for short, scannable sections) do not return.
+
 #### `make_book` phase handoffs
 
 Every `make_book` phase transition uses the same small model-facing contract:
