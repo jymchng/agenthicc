@@ -78,9 +78,32 @@ of the top rule, and one status line follows.
 - **The cursor** is Claude Code's block cursor: the character under it is
   drawn in reverse video, and a reversed space marks the end of a line. On an
   empty prompt it sits on the first letter of the dimmed placeholder.
-- **The state segment.** While the agent works, it turns agenthicc's flower
-  (`✿ ❀ ❁ ❃ …`), and a bold letter sweeps back and forth across `Thinking`.
-  `reduced_motion` keeps the words and stops both animations.
+- **The state segment** says what the agent is doing (TUX-10), in words, never
+  as an internal tool name. While it works it turns agenthicc's flower
+  (`✿ ❀ ❁ ❃ …`); while the model is thinking a bold letter sweeps back and
+  forth across `Thinking`. The word comes from the tool's family:
+
+  | The agent is… | The line reads |
+  |---|---|
+  | streaming with no tool | `Thinking` |
+  | reading or listing | `Reading src/app.py`, `Listing src/` |
+  | searching | `Searching "TODO" in docs/` |
+  | running a command | `Running npm test` |
+  | editing or writing | `Editing src/app.py`, `Writing notes.md` |
+  | a plugin or MCP tool | `Using <its operation word>` |
+  | subagents are working | `Working with 2 agents` |
+  | a provider call failed and will be retried | `Retrying (2/5) in 8s` |
+  | a dialog waits for you | `◆ Waiting for you · approve a command` |
+
+  The elapsed time follows in `muted` after 3 s (`Running npm test · 12s`), and
+  the tokens the provider has streamed for this request (`↓ 2.1k tokens`) after
+  10 s, when it reports usage. A long target is shortened in the middle before
+  the state is cut. While a dialog waits, the flower stops and the line uses
+  the `warning` token. `reduced_motion` shows a still `●` and the same words,
+  so two frames half a second apart are identical, and a screen reader hears
+  one plain sentence (`Reading src/app.py, 12s`). Compaction has its own row
+  below the transcript (see [Compaction](#compaction)); the status line does
+  not repeat it.
 - **Running calls.** Tool calls that are still running, and background
   terminals, show between the transcript and the composer. Each has a
   blinking `●` and, in parentheses after it, how long it has run; the dot blinks half a second on and
@@ -707,6 +730,32 @@ Shift/Alt/Ctrl with arrows, Home and End, Delete, Insert, F1–F12, focus
 reports, and SGR mouse reports. A key nothing binds is ignored — before AGX-13,
 Ctrl+letters, Alt combinations and unknown sequences arrived as Esc.
 
+### Every key on one page
+
+`?` on an empty prompt, or `/shortcuts`, opens a pager (a scrollable dialog,
+`tui/workspace/overlays/shortcuts.py`) listing every key in every context,
+generated from `DEFAULT_ACTIONS` plus your `keybindings.toml`:
+
+```text
+Composer
+  Enter                  Send the prompt; while a turn runs it joins the turn at its next tool call · default
+  Ctrl+Q                 Undo the last edit (typing in one run is one edit) · your keybindings
+Pickers
+Dialogs
+Transcript view
+Agents hub
+```
+
+The groups are the composer (with its history search, queue and subagent
+panel), the pickers, the dialogs, the transcript view and the agents hub; an
+action is listed once, under its own context. A row says when the key applies
+in words (`while a turn runs`, `when the prompt is empty`), never as an
+internal flag, and whether the binding is the `default` or `your keybindings`.
+Long descriptions wrap under their key. The key is the action
+`composer.shortcuts`, so it can be rebound; where nothing can show the page
+(the answer box of a dialog), `?` is just a character. The hint row ends with
+`? shortcuts` while the prompt is empty, and so does the status line.
+
 ### Pickers and the command palette
 
 One component, `tui.workspace.picker.Picker`, draws every list you choose from:
@@ -858,6 +907,47 @@ reduced_motion = false  # keep the layout, replace animation with a static ●
 mouse = "auto"          # "auto": the agents hub and the fullscreen layout; "on": also inline; "off": never
 ```
 
+### Terminal integration
+
+```toml
+[ui]
+notify = "auto"         # "auto" | "osc" | "bell" | "off": tell you when you are away
+window_title = true     # keep the window title current; false never writes it
+hyperlinks = "auto"     # "auto" | "on" | "off": OSC 8 links on paths and URLs
+editor_links = ""       # "vscode" | "cursor" | "idea" | "zed": open linked files there
+```
+
+- **Notifications.** The TUI turns on focus reporting (`CSI ? 1004 h`) through
+  the terminal backend and turns it off on exit. When the terminal is
+  **unfocused** (or focus is unknown and the request has run for more than
+  30 s) it raises one notification when a request ends after more than 10 s,
+  when a turn fails, and when an approval or question opens, for example
+  `fix flaky test: done in 1m 12s`. A request you interrupted yourself does
+  not notify. `auto` uses `OSC 9` (`OSC 777` on terminals that prefer it, such
+  as foot), `osc` always `OSC 9`, `bell` the terminal bell and `off` nothing;
+  text is stripped of control characters. One routing table in
+  `tui/notifications.py` makes a foreground approval and a background session
+  that needs you the same moment, so you never get two.
+- **Window title and progress.** The title reads `<state glyph> <session title>
+  · agenthicc` (`✿ fix flaky test · agenthicc`, `◆ …` while it waits for you,
+  `(2)` added when other sessions need you), is written at most once a second,
+  and the terminal's own title is restored on exit. `OSC 9;4` progress is
+  indeterminate while a turn works, shows the error state for a few seconds
+  after a failure and is cleared at the end; during compaction it is
+  determinate only while the compaction reports measured progress. It is sent
+  only where the terminal draws it (Windows Terminal, ConEmu, Ghostty) and
+  never to anything but a terminal, under `--headless` included.
+- **Clickable paths.** With `hyperlinks = "auto"`, workspace paths in tool
+  rows, diff headers, notices and the transcript view, and URLs in the
+  assistant's text, are OSC 8 links in terminals known to open them (iTerm2,
+  kitty, WezTerm, Ghostty, foot, Alacritty, Windows Terminal, VS Code, VTE
+  terminals) and not under `screen_reader`, `TERM=dumb` or tmux before 3.4;
+  `FORCE_HYPERLINK=1` forces them on. A file link is `file://<workspace>/path`;
+  with `editor_links` it is the editor's own URL (`vscode://file/…:LINE`).
+  Only a path that exists is linked. With links off, a Markdown link prints as
+  `text (url)`. The one helper is `tui/terminal/hyperlinks.py`
+  (`Hyperlinks.for_state(app_state)`), which the transcript view uses too.
+
 With `screen_reader`, the status line uses commas instead of separators and
 words instead of arrows and meters, the composer and dialogs have no frame,
 nothing animates, and each change — the agent thinking, running a tool,
@@ -989,6 +1079,28 @@ internal turns and workflow phases; it is not model-only time or the sum of
 the visible turn rows.
 Durations use whole-second `s`, `m`, and `h` units. One blank row separates the
 recap from subsequent scrollback or the persistent live status block.
+
+A turn that ran tools or edited files adds one muted line under its row
+(TUX-10), from what the turn's own events say:
+
+```text
+✾ Worked for 1m 12s | 10:20 AM
+  └ 6 tools · edited 3 files +34 −8
+
+✾ Interrupted after 22s | 10:20 AM
+  └ 2 tools ran · nothing was changed
+
+✾ Stopped after 8s | 10:20 AM
+  └ nothing was changed
+```
+
+An interrupted turn (Esc or Ctrl+C) says so, and says `nothing was changed`
+only when no write tool succeeded; a failed turn reads `Stopped` and its
+error is printed above. A turn shorter than 5 s that ran no tool has no row,
+and a request that ended interrupted or failed prints no `Done in` total. The
+conversation store writes these numbers on the `turn_complete` event
+(`tools`, `files`, `added`, `removed`, `wrote`, `failed`, `interrupted`;
+`tui/turn_summary.py`), so a replay and the transcript view print the same rows.
 
 The Windows backend uses `ReadConsoleInputW` so Shift+Tab preserves its
 modifier. POSIX raw mode is a no-op for non-TTY file descriptors and restores
@@ -1240,6 +1352,9 @@ Every built-in command belongs to a group the `/` picker and the palette show:
 default for a command that names none). `/background` carries the aliases
 `/bg` and `/detach`, `/cancel` has `/interrupt`, and `/model` has `/models`: an
 alias is a name for the same command, not a second row.
+
+`/shortcuts` (TUX-10) opens the same page as `?` on an empty prompt, see
+[Every key on one page](#every-key-on-one-page).
 
 `/release-notes` and `/resume` (TUX-03) are ordinary registry entries: the first
 is a `menu_factory` command that returns a `ReleaseNotesOverlay`, the second

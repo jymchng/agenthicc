@@ -591,6 +591,12 @@ trusted (`agenthicc trust add <file>`). See
 lines, and the mascot only on the first run on a machine), `"full"` (the mascot
 and tagline every time) or `"off"` (nothing before the composer, except a failed
 pre-flight notice); see [the start-up header](tui.md#the-start-up-header).
+`notify`, `window_title`, `hyperlinks` and `editor_links` (TUX-10) set how the
+TUI talks to the terminal: notifications when you are away (`"auto"`, `"osc"`,
+`"bell"` or `"off"`), the window title, `OSC 8` links on paths and URLs
+(`"auto"`, `"on"` or `"off"`) and the editor those links open in (`"vscode"`,
+`"cursor"`, `"idea"` or `"zed"`); see
+[terminal integration](tui.md#terminal-integration).
 `tool_detail` (TUX-06) sets how
 much of each tool call the transcript shows: `"compact"` (the default, one row
 per call; failures show their last lines), `"normal"` (plus a four-line preview

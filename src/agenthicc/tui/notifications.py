@@ -72,12 +72,12 @@ def session_label(app_state: AppState) -> str:
     return title or "agenthicc"
 
 
-def _setting(app_state: AppState, name: str, default: str) -> str:
+def _notify_setting(app_state: AppState) -> str:
+    """``[ui] notify``: ``auto``, ``osc``, ``bell`` or ``off``."""
     from agenthicc.tui.preferences import ui_settings
 
     ui = ui_settings(app_state)
-    value = getattr(ui, name, default) if ui is not None else default
-    return value if isinstance(value, str) else default
+    return ui.notify if ui is not None else "auto"
 
 
 class NotificationSink:
@@ -106,7 +106,7 @@ class NotificationSink:
         sent in the last 10 s, and when it is the same moment as a
         notification that outranks it.
         """
-        mode = osc.notify_mode(_setting(self._state, "notify", "auto"), self._env)
+        mode = osc.notify_mode(_notify_setting(self._state), self._env)
         sequence = osc.notification(mode, summary)
         if not sequence:
             return False
