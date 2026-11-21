@@ -18,7 +18,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Callable, Final
 
 from agenthicc.tui.conversation_store import ConversationEvent
@@ -151,6 +151,8 @@ _FAILURE_WORDS: dict[str, str] = {
     "orphaned": "orphaned",
 }
 _PATH_FAMILIES = frozenset({ToolFamily.READ, ToolFamily.WRITE, ToolFamily.LIST})
+#: A turn shorter than this that ran no tool is a quick answer: no closing row (TUX-10).
+_QUICK_ANSWER_S: Final = 5.0
 
 
 def _lang_for_path(path: str) -> str:
@@ -209,6 +211,23 @@ def _duration_label(ms: int | None) -> str:
 
 def _plural(count: int, word: str, plural: str = "") -> str:
     return f"{count:,} {word if count == 1 else plural or word + 's'}"
+
+
+@dataclass(slots=True)
+class _TurnWork:
+    """The tool calls, edits and failure of the turn being shown (TUX-10 §2.2)."""
+
+    tools: int = 0
+    #: Whether a write tool succeeded: a call that changed nothing is not "changed".
+    wrote: bool = False
+    failed: bool = False
+    #: Path → lines added and removed, over every edit of the turn.
+    files: dict[str, tuple[int, int]] = field(default_factory=dict)
+
+    def edited(self, path: str, added: int, removed: int) -> None:
+        before_added, before_removed = self.files.get(path, (0, 0))
+        self.files[path] = (before_added + added, before_removed + removed)
+        self.wrote = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -411,6 +430,10 @@ class ScrollBufferAppender:
         #: time, so the request's total is printed only when it adds something.
         self._activity_turns: int = 0
         self._last_turn_s: float = 0.0
+        #: The request ended in an interrupted or failed turn: it was not "done".
+        self._activity_stopped: bool = False
+        # What the current turn did, for its closing row (TUX-10 §2.2).
+        self._turn = _TurnWork()
         # The agent and model of the previous turn, for the header rule.
         self._turn_identity: tuple[str, str] | None = None
         self._last_event_ts: float | None = None
@@ -1015,6 +1038,7 @@ def _render_turn_start(self: ScrollBufferAppender, ev: ConversationEvent) -> Non
     from rich.text import Text
 
     self._group_count = 0
+    self._turn = _TurnWork()
     agent = _text(ev.payload, "agent", "default") or "default"
     model = _text(ev.payload, "model")
     identity = (agent, model)
@@ -1059,14 +1083,18 @@ def _render_user_message(self: ScrollBufferAppender, ev: ConversationEvent) -> N
 
 @register_renderer("tool_complete")
 def _render_tool_complete_ev(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
+    view = _ToolView.of(ev.payload)
+    self._turn.tools += 1
+    if view.family is ToolFamily.WRITE and not view.failed:
+        self._turn.wrote = True
     presentation = self._exploration_payload(ev.payload)
-    if presentation is not None and not _ToolView.of(ev.payload).failed:
+    if presentation is not None and not view.failed:
         self._add_exploration(ev.payload, presentation)
         return
     self._flush_exploration_group()
     self._group_count += 1
     shown = self._group_count - self._group_hidden
-    if shown <= self._max_tool_calls or _ToolView.of(ev.payload).failed:
+    if shown <= self._max_tool_calls or view.failed:
         self._print_pending_header()
         self._open_block("tool_complete")
         self._render_tool_complete(ev.payload)
@@ -1117,6 +1145,13 @@ def _render_file_modified(self: ScrollBufferAppender, ev: ConversationEvent) -> 
     tool = _text(ev.payload, "tool", "write_file")
     old_line_list = _string_list(old_lines)
     new_line_list = _string_list(new_lines)
+    self._turn.tools += 1
+    if old_lines is not None and new_lines is not None:
+        from agenthicc.tui.diff_renderer import diff_counts
+
+        self._turn.edited(path, *diff_counts(old_line_list, new_line_list))
+    else:
+        self._turn.wrote = True
     lang = _lang_for_path(path)
     operation = tool_presentation(tool).operation
     max_rows = None if self._tool_detail() == "verbose" else _DIFF_ROWS
@@ -1221,6 +1256,7 @@ def _render_error(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
     message.
     """
     self._flush_group_summary()
+    self._turn.failed = True
     message = _text(ev.payload, "message") or "The turn failed unexpectedly."
     action = ev.payload.get("action")
     hint = action.get("hint") if isinstance(action, Mapping) else None
@@ -1246,17 +1282,55 @@ def _timing_row(glyph: str, text: str, timestamp: float) -> Text:
     )
 
 
+def _turn_detail(work: _TurnWork, *, stopped: bool) -> str:
+    """``6 tools · edited 3 files +34 −8``; ``2 tools ran · nothing was changed`` when stopped."""
+    g = glyphs()
+    parts: list[str] = []
+    if work.tools:
+        parts.append(
+            f"{_plural(work.tools, 'tool')} ran" if stopped else _plural(work.tools, "tool")
+        )
+    if work.files:
+        added = sum(counts[0] for counts in work.files.values())
+        removed = sum(counts[1] for counts in work.files.values())
+        parts.append(f"edited {_plural(len(work.files), 'file')} +{added} {g.minus}{removed}")
+    elif stopped and not work.wrote:
+        parts.append("nothing was changed")
+    return f" {g.sep} ".join(parts)
+
+
 @register_renderer("turn_complete")
 def _render_turn_complete(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
-    """``✾ Worked for 37s | 10:20 AM`` under the turn's last output."""
+    """The turn's closing row (TUX-10 §2.2)::
+
+        ✾ Worked for 1m 12s | 10:20 AM
+          └ 6 tools · edited 3 files +34 −8
+
+        ✾ Interrupted after 22s | 10:20 AM
+          └ 2 tools ran · nothing was changed
+
+        ✾ Stopped after 8s | 10:20 AM          (the turn failed; the error is above)
+
+    A turn that finished in under 5 s without running a tool is a quick answer
+    and has no row. The second row says what the turn did, when it did anything.
+    """
     elapsed = _number(ev.payload, "elapsed_s")
+    interrupted = ev.payload.get("interrupted") is True
+    work = self._turn
+    self._turn = _TurnWork()
     self._activity_turns += 1
     self._last_turn_s = elapsed
-    if elapsed >= 1.0:
-        self._print(
-            _timing_row(glyphs().flower, f"Worked for {compact_duration(elapsed)}", ev.timestamp),
-            highlight=False,
-        )
+    stopped = interrupted or work.failed
+    self._activity_stopped = stopped
+    if not stopped and (elapsed < 1.0 or (elapsed < _QUICK_ANSWER_S and not work.tools)):
+        return
+    took = f" after {compact_duration(elapsed)}" if elapsed >= 1.0 else ""
+    word = "Interrupted" if interrupted else "Stopped" if work.failed else "Worked for"
+    text = f"{word}{took}" if stopped else f"{word} {compact_duration(elapsed)}"
+    self._print(_timing_row(glyphs().flower, text, ev.timestamp), highlight=False)
+    detail = _turn_detail(work, stopped=stopped)
+    if detail:
+        self._child(glyphs().elbow, detail, palette().muted)
 
 
 @register_renderer("activity_complete")
@@ -1268,8 +1342,12 @@ def _render_activity_complete(self: ScrollBufferAppender, ev: ConversationEvent)
     """
     elapsed = _number(ev.payload, "elapsed_s")
     turns, last = self._activity_turns, self._last_turn_s
-    self._activity_turns, self._last_turn_s = 0, 0.0
+    stopped = self._activity_stopped
+    self._activity_turns, self._last_turn_s, self._activity_stopped = 0, 0.0, False
     if elapsed < 1.0:
+        return
+    if stopped:
+        self._gap_pending = True
         return
     if turns <= 1 and abs(elapsed - last) < 1.0:
         self._gap_pending = True

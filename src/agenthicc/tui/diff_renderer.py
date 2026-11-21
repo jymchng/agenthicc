@@ -39,7 +39,7 @@ from agenthicc.tui.theme import current_theme, glyphs, palette
 
 Opcode = tuple[str, int, int, int, int]
 
-__all__ = ["render_file_diff", "render_file_create"]
+__all__ = ["diff_counts", "render_file_diff", "render_file_create"]
 
 #: Maximum lines shown in a file-creation preview (FR: show 10 lines).
 CREATE_PREVIEW_LINES: int = 10
@@ -437,6 +437,18 @@ def _build_hunks(
 
 
 # ── public API ────────────────────────────────────────────────────────────────
+
+
+def diff_counts(old_lines: Sequence[str], new_lines: Sequence[str]) -> tuple[int, int]:
+    """The lines added and removed between *old_lines* and *new_lines* (``+34 −8``)."""
+    matcher = difflib.SequenceMatcher(None, old_lines, new_lines, autojunk=False)
+    added = removed = 0
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag in ("insert", "replace"):
+            added += j2 - j1
+        if tag in ("delete", "replace"):
+            removed += i2 - i1
+    return added, removed
 
 
 def render_file_diff(

@@ -162,7 +162,8 @@ class TestCompletionRecapRenderers:
             ("activity_complete", {"elapsed_s": 3.0}),
         )
         assert " ✗ boom" in output
-        assert "✾ Worked for 2s | 10:20 AM" in output
+        assert "✾ Stopped after 2s | 10:20 AM" in output
+        assert "Worked for" not in output and "Done in" not in output
         assert "Completed" not in output
         assert "since last IDLE" not in output
 
