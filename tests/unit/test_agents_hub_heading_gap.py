@@ -1,4 +1,4 @@
-"""A blank line follows every heading in the agents hub, so a group never runs into its title.
+"""A blank line precedes every heading in the agents hub but the first, so groups do not run together.
 
 The blank line is a row of its own: the list scrolls and keeps the selected row in view by
 counting rows, so a line drawn only by the renderer would push the selection off the screen
@@ -34,22 +34,31 @@ def _row(key: str) -> HubRow:
 # ── the model ────────────────────────────────────────────────────────────────
 
 
-def test_every_heading_gets_one_blank_row_straight_after_it() -> None:
+def test_every_heading_but_the_first_gets_one_blank_row_straight_before_it() -> None:
     rows = [heading("Needs you"), _row("a"), _row("b"), heading("Running"), _row("c")]
     assert [row.key for row in spaced(rows)] == [
         "header:Needs you",
-        "spacer:Needs you",
         "a",
         "b",
-        "header:Running",
         "spacer:Running",
+        "header:Running",
         "c",
     ]
 
 
-def test_an_empty_groups_hint_comes_after_the_blank_row() -> None:
-    kinds = [row.kind for row in spaced([heading("Queued"), note("Queued", "Nothing waits")])]
-    assert kinds == [RowKind.HEADER, RowKind.SPACER, RowKind.NOTE]
+def test_the_first_heading_sits_right_under_the_tab_bar() -> None:
+    assert [row.kind for row in spaced([heading("Needs you"), _row("a")])][0] is RowKind.HEADER
+
+
+def test_an_empty_groups_hint_stays_with_its_heading() -> None:
+    rows = [heading("Queued"), note("Queued", "Nothing waits"), heading("Running"), _row("a")]
+    assert [row.kind for row in spaced(rows)] == [
+        RowKind.HEADER,
+        RowKind.NOTE,
+        RowKind.SPACER,
+        RowKind.HEADER,
+        RowKind.SESSION,
+    ]
 
 
 def test_rows_without_headings_are_left_alone() -> None:
@@ -59,7 +68,8 @@ def test_rows_without_headings_are_left_alone() -> None:
 
 
 def test_the_blank_row_is_not_something_to_select() -> None:
-    assert not spaced([heading("Running")])[1].selectable
+    rows = spaced([heading("Needs you"), _row("a"), heading("Running")])
+    assert [row.selectable for row in rows if row.kind is RowKind.SPACER] == [False]
     assert _row("a").selectable
 
 
@@ -79,16 +89,26 @@ def _headings(hub: AgentsHub) -> list[str]:
     return [row.text for row in hub.rows if row.kind is RowKind.HEADER]
 
 
-async def test_the_line_after_each_heading_is_blank(store: BackgroundStore, tmp_path: Path) -> None:
+async def test_the_line_before_each_heading_but_the_first_is_blank(
+    store: BackgroundStore, tmp_path: Path
+) -> None:
     hub = await _hub_with_groups(store, tmp_path)
     try:
         headings = _headings(hub)
         assert len(headings) >= 3
         lines = _text(hub, height=40).splitlines()
+        at = {
+            title: next(i for i, line in enumerate(lines) if line.strip() == title)
+            for title in headings
+        }
+        # The first heading follows the tab bar; every later one is set off from the group above.
+        assert lines[at[headings[0]] - 1].lstrip().startswith("Agents")
+        for title in headings[1:]:
+            assert lines[at[title] - 1].strip() == "", f"{title!r} runs into the group above it"
+            assert lines[at[title] - 2].strip() != ""
+        # And the first row of a group sits directly under its heading.
         for title in headings:
-            at = next(i for i, line in enumerate(lines) if line.strip() == title)
-            assert lines[at + 1].strip() == "", f"{title!r} runs into the row below it"
-            assert lines[at + 2].strip() != ""
+            assert lines[at[title] + 1].strip() != "", f"{title!r} has a gap under it"
     finally:
         await hub.stop()
 
@@ -168,9 +188,9 @@ async def test_a_screen_reader_is_not_read_blank_lines(
     hub = await _hub_with_groups(store, tmp_path)
     try:
         hub._state.ui.set(UISettings(screen_reader=True))
-        body = [line for line in _text(hub, height=40).splitlines()]
+        body = _text(hub, height=40).splitlines()
         at = next(i for i, line in enumerate(body) if line.strip().startswith("Running:"))
-        assert body[at + 1].strip() != ""
+        assert body[at - 1].strip() != ""
     finally:
         await hub.stop()
 

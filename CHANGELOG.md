@@ -9,13 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed — a blank line after each heading in the agents hub
+### Changed — a blank line before each heading in the agents hub
 
-- `Needs you`, `Running`, `Queued` and the other group headings in the hub list are
-  now followed by a blank line, so a group no longer runs into its title. The blank
-  line is a row of its own, which keeps scrolling and the selection in view correct
-  with several headings on screen. It cannot be selected or clicked, and screen
-  readers and the plain `agenthicc agents` listing do not get it.
+- Each group heading in the hub list (`Running`, `Queued`, …) after the first is now
+  preceded by a blank line, so a group no longer runs into the one above it; the
+  first heading stays directly under the tab bar. The blank line is a row of its own,
+  which keeps scrolling and the selection in view correct with several headings on
+  screen. It cannot be selected or clicked, and screen readers and the plain
+  `agenthicc agents` listing do not get it.
 
 ### Changed — `/background` says what is happening
 
