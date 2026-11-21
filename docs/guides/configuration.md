@@ -279,7 +279,7 @@ max_active_pools = 16       # process-wide active-pool ceiling
 max_workers = 32            # maximum workers admitted by one pool
 max_tool_calls = 256        # aggregate tool-call budget per pool
 max_iterations = 128        # aggregate model-iteration budget per pool
-max_tokens = 200000         # aggregate token budget per pool
+                            # (no token budget: subagents have no token limit)
 max_total_time_s = 600.0    # pool wall-clock budget
 on_budget_exceeded = "drain" # abort | drain
 stop_grace_s = 5.0          # cleanup grace for cancelled workers
@@ -577,7 +577,36 @@ resume_transcript_max_event_bytes = 16384
 
 `[ui]` holds accessibility and input preferences (AGX-13): `screen_reader`,
 `reduced_motion` and `mouse` (`"auto"`, `"on"` or `"off"`); see the
-[terminal workspace guide](tui.md#accessibility-and-the-mouse). Key bindings
+[terminal workspace guide](tui.md#accessibility-and-the-mouse). It also holds
+the colour theme and glyph set (TUX-01): `theme` (`"auto"`, `"dark"`,
+`"light"`, `"high-contrast"`, `"ansi"` or a custom theme name) and `glyphs`
+(`"auto"`, `"unicode"` or `"ascii"`); see
+[themes and glyphs](tui.md#themes-and-glyphs). The prompt's frame and the
+status line (TUX-02) are set by `composer_frame` (`"rules"`, the default,
+which looks like Claude Code's input panel, or `"box"`) and by `[ui.statusline] command`, a command whose output replaces
+part of the status line; a project file may set the command only once it is
+trusted (`agenthicc trust add <file>`). See
+[a user status line](tui.md#a-user-status-line).
+`banner` (TUX-03) sets the start-up header: `"compact"` (the default: three
+lines, and the mascot only on the first run on a machine), `"full"` (the mascot
+and tagline every time) or `"off"` (nothing before the composer, except a failed
+pre-flight notice); see [the start-up header](tui.md#the-start-up-header).
+`notify`, `window_title`, `hyperlinks` and `editor_links` (TUX-10) set how the
+TUI talks to the terminal: notifications when you are away (`"auto"`, `"osc"`,
+`"bell"` or `"off"`), the window title, `OSC 8` links on paths and URLs
+(`"auto"`, `"on"` or `"off"`) and the editor those links open in (`"vscode"`,
+`"cursor"`, `"idea"` or `"zed"`); see
+[terminal integration](tui.md#terminal-integration).
+`tool_detail` (TUX-06) sets how
+much of each tool call the transcript shows: `"compact"` (the default, one row
+per call; failures show their last lines), `"normal"` (plus a four-line preview
+of reads and commands) or `"verbose"` (the whole bounded output); `/details`
+changes it for the session, see [tool rows](tui.md#tool-rows). `layout` (TUX-09)
+is `"inline"` (the default: the conversation goes to the terminal's own
+scrollback) or `"fullscreen"` (the session runs in the alternate screen, with a
+scrolling transcript pane over the docked composer; `/fullscreen` switches it
+for a session, and `screen_reader` forces `inline`); see
+[the fullscreen layout](tui.md#fullscreen-layout). Key bindings
 live in their own file, `~/.agenthicc/keybindings.toml`
 ([key bindings](tui.md#key-bindings)).
 
@@ -594,9 +623,9 @@ Setting it to `0` removes only this turn-count limit; the hard page limits still
 apply. The defaults cap the preview at 128 events, 128 KiB of serialized event
 data, and 16 KiB per decoded event. Configured values are clamped to hard
 maximums of 1,024 events, 1 MiB per page, and 128 KiB per event. Older events
-remain available on demand with `/history`; `Enter` opens one event's full
-details. `[`/`PageUp` browse older pages and `]`/`PageDown` return toward newer
-pages. Browsing history never inserts old events into live scrollback.
+remain available on demand with `/history` (the transcript view, which expands
+an event to its full stored output with `Enter`). Browsing history never inserts
+old events into live scrollback.
 
 The limits affect only the visual preview and the input editor's accepted
 user-message history, which are projected from the same page. Provider

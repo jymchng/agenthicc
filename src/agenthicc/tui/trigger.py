@@ -34,20 +34,27 @@ class TriggerResult:
     buffer: list[str]  # new buffer content after selection
     submit: bool = False  # if True, dispatch SendMessageCommand immediately
     cursor: int | None = None  # explicit cursor position; None = end of buffer
+    keep_open: bool = False  # keep the picker open on the new text (argument completion)
 
 
 @dataclass
 class MatchItem:
-    """One row in the dropdown for any trigger type."""
+    """One row of a trigger picker, in structured fields (TUX-05).
 
-    display: str  # computed single-line fallback (backwards compat)
-    value: str  # text inserted into buffer on selection
-    hint: str = ""  # optional below-dropdown annotation
+    :class:`agenthicc.tui.workspace.picker.Picker` lays the fields out: the
+    *glyph* and *label* on the left, the *detail* beside them (wrapped with a
+    hanging indent, or on its own row in a narrow terminal), the *keys*
+    right-aligned, and a heading whenever *group* changes between rows.
+    """
 
-    # Structured fields (PRD-69) — set by handlers that want the overlay to
-    # render a two-column layout with description wrapping.
-    label: str = ""  # left column  (e.g. "/commands", "@docs/index.md")
-    detail: str = ""  # right column — full, untruncated description/path
+    value: str  # text inserted into the buffer on selection
+    label: str  # left column: "/compact", "src/a.py", "@agent:reviewer"
+    detail: str = ""  # description, size or entry count
+    group: str = ""  # heading this row belongs under; "" for a flat ranked list
+    glyph: str = ""  # kind marker drawn before the label (directory, file, agent)
+    keys: str = ""  # key binding shown right-aligned ("ctrl+g")
+    disabled: str = ""  # why the row cannot run now; the row is dimmed
+    path: bool = False  # the label is a path: directory muted, filename in text
 
 
 @dataclass
@@ -75,10 +82,9 @@ class TriggerHandler(Protocol):
 
     def get_matches(self, fragment: str, ctx: TriggerContext) -> list[MatchItem]: ...
     def on_select(self, item: MatchItem | None, fragment: str, buf: list[str]) -> TriggerResult: ...
-    def on_cancel(self, fragment: str, buf: list[str]) -> list[str]: ...
+    def on_enter(self, item: MatchItem | None, fragment: str, buf: list[str]) -> TriggerResult: ...
     def can_activate(self, buf: list[str]) -> bool: ...
     def get_hint(self, item: MatchItem | None) -> str | None: ...
-    def get_lines(self, item: MatchItem, available_width: int) -> list[str]: ...
 
 
 class TriggerHandlerBase:
@@ -87,10 +93,11 @@ class TriggerHandlerBase:
 
     In-tree handlers inherit this so that adding a new optional method with a
     sensible default never breaks existing subclasses.  External plugins that
-    satisfy TriggerHandler structurally (no explicit inheritance) are unaffected.
+    satisfy TriggerHandler structurally (no explicit inheritance) implement
+    every method themselves, including ``on_enter``.
 
-    Required abstract methods (get_matches, on_select, on_cancel) have no
-    defaults here — subclasses must implement them.
+    ``get_matches`` has no default and ``on_select`` raises until a subclass
+    implements it.
     """
 
     char: str = ""
@@ -101,12 +108,23 @@ class TriggerHandlerBase:
         return True
 
     def get_hint(self, item: MatchItem | None) -> str | None:
-        """No hint by default."""
+        """No hint: the picker shows a row's detail in the row itself (TUX-05)."""
         return None
 
-    def get_lines(self, item: MatchItem, available_width: int) -> list[str]:
-        """Single-line display, clipped to available_width."""
-        return [item.display[:available_width]]
+    def on_select(self, item: MatchItem | None, fragment: str, buf: list[str]) -> TriggerResult:
+        """Insert *item* (Tab, and Enter by default); every handler implements it."""
+        raise NotImplementedError(f"{type(self).__name__} must implement on_select")
+
+    def on_enter(self, item: MatchItem | None, fragment: str, buf: list[str]) -> TriggerResult:
+        """Enter in the picker: insert the selection, or submit when nothing matches.
+
+        Tab only ever calls :meth:`on_select`. A handler whose matches are
+        runnable (the ``/`` commands) overrides this to run them (TUX-04 §2.5).
+        """
+        result = self.on_select(item, fragment, buf)
+        if item is None:
+            return TriggerResult(buffer=result.buffer, submit=True, cursor=result.cursor)
+        return result
 
 
 class TriggerManager:

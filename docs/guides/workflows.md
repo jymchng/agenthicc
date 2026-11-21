@@ -413,12 +413,12 @@ Transition receipts store compact metadata and canonical paths so
 checkpoint/resume preserves progress without copying provider memory or large
 research bodies.
 
-When `code_plan` reaches its human plan review, the overlay offers
-`Approve - Safe` and `Approve - YOLO`. The selected mode is carried into the
+When `code_plan` reaches its human plan review, the dialog offers
+`Approve and run in Safe mode` and `Approve and run in Yolo mode`. The selected mode is carried into the
 execute phase and is preserved in phase metadata for resume; Safe retains
 per-action approval prompts, while Yolo runs the approved execution without
-those prompts. Design reviews for `create_workflow` keep their existing
-feedback/instructions options.
+those prompts. Design reviews for `create_workflow` offer `Approve`,
+`Keep planning` and `Reject, with feedback`; Tab adds a note to any choice.
 
 In the interactive input panel, type `/workflow` and press Space to switch the
 command picker to live workflow-name completion. The suggestions come from the
@@ -482,9 +482,8 @@ After a successful append or insert, the scroll appender renders the durable
 `goal_list_mutated` event as a presentation-only plan update:
 
 ```text
-  ⎿ Plan updated
-    Inserted a goal · position 8 of 13
-    ↳ Current goal continues
+◆ Plan updated · goal 8 of 13, inserted
+  └ the current goal continues
 ```
 
 The workflow API continues to use a zero-based `insert_goal(index=...)`

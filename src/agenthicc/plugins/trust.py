@@ -14,6 +14,12 @@ Records live in ``~/.agenthicc/trust.json`` — never in the repository, which
 could otherwise forge its own trust — and are managed with ``agenthicc trust``.
 An untrusted extension is reported and skipped; it is never imported.
 
+The same file remembers, per directory, the answer to the first-run question
+"Work in <directory>?" (TUX-03): ``allow``, or ``plan`` (work there, but start
+in Plan mode). That is a decision about a *directory*, not about extension
+code, so it is stored apart from the extension records and does not change
+what may be imported.
+
 Every loader asks :func:`current_extension_trust`, which returns the user's
 policy unless a caller installed another one with
 :func:`override_extension_trust` (the test suite installs a policy that also
@@ -38,6 +44,7 @@ __all__ = [
     "ExtensionTrust",
     "TrustRecord",
     "UntrustedExtension",
+    "WorkspaceDecision",
     "current_extension_trust",
     "override_extension_trust",
 ]
@@ -63,6 +70,19 @@ class TrustRecord:
     sha256: str
     kind: str
     trusted_at: str
+
+
+@dataclass(frozen=True)
+class WorkspaceDecision:
+    """The user's answer to "Work in this directory?" (TUX-03)."""
+
+    path: str
+    #: ``"allow"`` or ``"plan"`` (start in Plan mode).
+    decision: str
+    decided_at: str
+
+
+WORKSPACE_DECISIONS = ("allow", "plan")
 
 
 @dataclass(frozen=True)
@@ -173,7 +193,46 @@ class ExtensionTrust:
         """Every trust record, sorted by path."""
         return tuple(record for _path, record in sorted(self._records().items()))
 
-    def _records(self) -> dict[str, TrustRecord]:
+    # ── workspace decisions (TUX-03) ─────────────────────────────────────────
+
+    def workspace_decision(self, directory: Path) -> WorkspaceDecision | None:
+        """What the user decided about working in *directory*, if they were asked."""
+        return self._workspaces().get(str(directory.expanduser().resolve()))
+
+    def remember_workspace(self, directory: Path, decision: str) -> WorkspaceDecision:
+        """Record that the user chose *decision* (``allow`` or ``plan``) for *directory*."""
+        if decision not in WORKSPACE_DECISIONS:
+            raise ValueError(f"workspace decision must be one of: {', '.join(WORKSPACE_DECISIONS)}")
+        record = WorkspaceDecision(
+            path=str(directory.expanduser().resolve()),
+            decision=decision,
+            decided_at=datetime.now(timezone.utc).isoformat(),
+        )
+        workspaces = self._workspaces()
+        workspaces[record.path] = record
+        self._write(self._records(), workspaces)
+        return record
+
+    def _workspaces(self) -> dict[str, WorkspaceDecision]:
+        entries = self._document().get("workspaces")
+        decisions: dict[str, WorkspaceDecision] = {}
+        for entry in entries if isinstance(entries, list) else ():
+            if not isinstance(entry, dict):
+                continue
+            path, decision, decided_at = (
+                entry.get(key) for key in ("path", "decision", "decided_at")
+            )
+            if (
+                isinstance(path, str)
+                and isinstance(decided_at, str)
+                and isinstance(decision, str)
+                and decision in WORKSPACE_DECISIONS
+            ):
+                decisions[path] = WorkspaceDecision(path, decision, decided_at)
+        return decisions
+
+    def _document(self) -> dict[str, object]:
+        """The store's JSON object; empty when it is missing or unreadable."""
         try:
             raw = json.loads(self._store_path.read_text(encoding="utf-8"))
         except FileNotFoundError:
@@ -183,7 +242,10 @@ class ExtensionTrust:
             # and overwritten silently, so report it.
             log.error("Ignoring unreadable extension trust store %s: %s", self._store_path, exc)
             return {}
-        entries = raw.get("records") if isinstance(raw, dict) else None
+        return raw if isinstance(raw, dict) else {}
+
+    def _records(self) -> dict[str, TrustRecord]:
+        entries = self._document().get("records")
         records: dict[str, TrustRecord] = {}
         for entry in entries if isinstance(entries, list) else ():
             if not isinstance(entry, dict):
@@ -199,8 +261,13 @@ class ExtensionTrust:
                 records[record.path] = record
         return records
 
-    def _write(self, records: dict[str, TrustRecord]) -> None:
-        payload = {
+    def _write(
+        self,
+        records: dict[str, TrustRecord],
+        workspaces: dict[str, WorkspaceDecision] | None = None,
+    ) -> None:
+        kept = self._workspaces() if workspaces is None else workspaces
+        payload: dict[str, object] = {
             "version": _STORE_VERSION,
             "records": [
                 {
@@ -210,6 +277,14 @@ class ExtensionTrust:
                     "trusted_at": record.trusted_at,
                 }
                 for _path, record in sorted(records.items())
+            ],
+            "workspaces": [
+                {
+                    "path": decision.path,
+                    "decision": decision.decision,
+                    "decided_at": decision.decided_at,
+                }
+                for _path, decision in sorted(kept.items())
             ],
         }
         self._store_path.parent.mkdir(parents=True, exist_ok=True)

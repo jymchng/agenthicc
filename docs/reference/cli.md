@@ -297,9 +297,9 @@ environment.
 
 TUI commands are a separate registry from CLI subcommands. The built-ins are
 `/help`, `/commands`, `/tools [reload]`, `/workflows [runs|reload]`, `/status`,
-`/history [repair]`, `/mode`, `/workflow`, `/init`, `/model`, `/models`,
+`/history [repair]`, `/mode`, `/workflow`, `/init`, `/model` (alias `/models`),
 `/skills [reload]`, `/mcp`, `/config`, `/compact`, `/replay`, `/cancel`,
-`/loop`, `/loops`, `/clear`, and `/expand`.
+`/loop`, `/loops`, `/clear`, `/expand`, `/logs`, `/rewind`, and `/fullscreen`.
 
 `/loop [interval] <prompt-or-registered-command>` schedules a recurring local
 session prompt. `/loop status`, `/loop pause`, `/loop resume`, and `/loop stop`

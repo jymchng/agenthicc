@@ -11,7 +11,7 @@ so the three cannot disagree.
 
 Users rebind keys in ``~/.agenthicc/keybindings.toml`` (see
 :func:`load_keybindings`); ``"none"`` removes an action's keys. A leader key
-(``leader = "ctrl+t"``) enables two-step bindings such as ``"<leader>a"``.
+(``leader = "alt+x"``) enables two-step bindings such as ``"<leader>a"``.
 
 Within a context two actions may share a key only when their conditions are
 mutually exclusive; anything else is a :class:`KeymapError`. A context may
@@ -48,13 +48,18 @@ __all__ = [
 CONTEXTS = (
     "global",
     "composer",
+    "picker",
+    "search",
+    "queue",
     "agents",
     "agents.list",
     "agents.peek",
     "agents.detail",
     "transcript",
+    "transcript_view",
     "subagents",
     "overlay",
+    "dialog",
 )
 
 #: Contexts that inherit another context's actions (after their own): the
@@ -79,7 +84,6 @@ _ALIASES = {
     "pgdn": "pagedown",
     "pgdown": "pagedown",
     "page_down": "pagedown",
-    "ctrl+enter": "ctrl+j",
     "bs": "backspace",
     " ": "space",
 }
@@ -206,6 +210,9 @@ class Action:
     #: Another action whose first key is shown before this one's in its hint
     #: ("↑↓ select").
     paired: str = ""
+    #: Its default keys give way to a user binding of the same key (keys added
+    #: after users may already have bound them, TUX-04 §5).
+    yields: bool = False
 
     def applies(self, conditions: frozenset[str]) -> bool:
         return self.when <= conditions and not (self.unless & conditions)
@@ -229,6 +236,7 @@ class HelpEntry:
     keys: str
     label: str
     description: str
+    #: When the action applies, in words (``keymap_phrases``); ``""`` for always.
     conditions: str
     source: str
 
@@ -269,8 +277,17 @@ class Keymap:
                             f"{second.name} in {context}"
                         )
         if self.leader is not None:
+            # The leader shadows a plain binding of the same key only where a
+            # two-step binding can start: in a context with one, its parents
+            # and children, and everywhere when ``global`` has one. Elsewhere
+            # (a dialog's Ctrl+T, say) the key keeps its own action.
+            leading = {
+                action.context
+                for action in self.actions
+                if any(key.startswith(LEADER) for key in action.keys)
+            }
             for action in self.actions:
-                if self.leader in action.keys:
+                if self.leader in action.keys and _shadowed(action.context, leading):
                     raise KeymapError(
                         f"{action.name} uses the leader key {display_key(self.leader)}"
                     )
@@ -400,11 +417,12 @@ class Keymap:
 
     def help(self, context: str) -> list[HelpEntry]:
         """Return every action of *context* (and ``global``) for the help overlay."""
+        from agenthicc.tui.keymap_phrases import describe_conditions
+
         entries: list[HelpEntry] = []
         for action in self._in(context):
-            conditions = ", ".join(
-                [*sorted(action.when), *(f"not {flag}" for flag in sorted(action.unless))]
-            )
+            # TUX-08: help reads in phrases ("in Library"), never flag names.
+            conditions = describe_conditions(action.when, action.unless)
             entries.append(
                 HelpEntry(
                     action=action.name,
@@ -466,6 +484,8 @@ class KeymapLoad:
     errors: tuple[str, ...] = ()
     #: The file's (inode, size, mtime) when it was read; zeros when absent.
     fingerprint: tuple[int, int, int] = (0, 0, 0)
+    #: Default keys the file took over for another action (the file wins).
+    notices: tuple[str, ...] = ()
 
 
 def _fingerprint(path: Path) -> tuple[int, int, int]:
@@ -546,9 +566,10 @@ def load_keybindings(actions: Iterable[Action], path: Path | None = None) -> Key
                 except KeymapError as exc:
                     errors.append(str(exc))
     if not errors:
+        adjusted, notices = _yield_default_keys(defaults, overrides)
         try:
             keymap = Keymap.build(
-                defaults,
+                adjusted,
                 overrides=overrides,
                 leader=leader,
                 leader_timeout_s=timeout_s,
@@ -557,8 +578,43 @@ def load_keybindings(actions: Iterable[Action], path: Path | None = None) -> Key
         except KeymapError as exc:
             errors.append(str(exc))
         else:
-            return KeymapLoad(keymap, path, (), fingerprint)
+            return KeymapLoad(keymap, path, (), fingerprint, notices)
     return KeymapLoad(default_keymap, path, tuple(errors), fingerprint)
+
+
+def _yield_default_keys(
+    defaults: tuple[Action, ...], overrides: Mapping[str, tuple[str, ...]]
+) -> tuple[tuple[Action, ...], tuple[str, ...]]:
+    """Let the file's bindings take keys from default actions they conflict with.
+
+    A bindings file written before a default gained a key keeps working: the
+    action the user bound keeps the key, the default action loses it, and a
+    notice says so (TUX-04 §5). Only an action marked ``yields`` gives keys
+    up; any other conflict stays an error.
+    """
+    by_name = {action.name: action for action in defaults}
+    bound = [replace(by_name[name], keys=keys) for name, keys in overrides.items()]
+    adjusted: list[Action] = []
+    notices: list[str] = []
+    for action in defaults:
+        if action.name in overrides or not action.yields:
+            adjusted.append(action)
+            continue
+        keys = list(action.keys)
+        for user in bound:
+            if user.context != action.context or user.excludes(action):
+                continue
+            for key in user.keys:
+                if key in keys:
+                    keys.remove(key)
+                    notices.append(
+                        f"{display_key(key)}: your binding for {user.name} replaces "
+                        f"the default {action.name}"
+                    )
+        adjusted.append(
+            action if len(keys) == len(action.keys) else replace(action, keys=tuple(keys))
+        )
+    return tuple(adjusted), tuple(notices)
 
 
 def _tables(name: str, value: Mapping[str, object]) -> list[tuple[str, dict[str, object]]]:
@@ -573,6 +629,13 @@ def _tables(name: str, value: Mapping[str, object]) -> list[tuple[str, dict[str,
         if isinstance(item, dict):
             found.extend(_tables(f"{name}.{key}", item))
     return found
+
+
+def _shadowed(context: str, leading: set[str]) -> bool:
+    """Whether a two-step binding in *leading* contexts can take *context*'s keys."""
+    if "global" in leading or (context == "global" and leading):
+        return True
+    return any(context in _lineage(other) or other in _lineage(context) for other in leading)
 
 
 def _lineage(context: str) -> tuple[str, ...]:
@@ -591,7 +654,7 @@ def template(actions: Iterable[Action]) -> str:
         '# Keys: "y", "Y", "ctrl+g", "alt+x", "shift+up", "enter", "escape", "space",',
         '# "pageup", "f5", and "<leader>a" for two-step bindings.',
         "",
-        '# leader = "ctrl+t"',
+        '# leader = "alt+x"',
         "# leader_timeout_ms = 2000",
     ]
     by_context: dict[str, list[Action]] = {}

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 import uuid
 from collections.abc import Callable, Collection, Iterator
@@ -16,6 +17,7 @@ if TYPE_CHECKING:
     from agenthicc.tui.conversation_store import AppState
 
 from agenthicc.tui.conversation_store import ConversationEvent
+from agenthicc.tui.tool_summary import ToolSummary, bounded_args, summarize_call
 from agenthicc.runners.process_lease import InterProcessLock, atomic_replace
 
 _SESSIONS_DIR = Path.home() / ".agenthicc" / "sessions"
@@ -193,6 +195,16 @@ def update_session_mode(session_id: str, mode: str) -> None:
         _write_metadata(session_id, updated)
 
 
+def load_session_metadata(session_id: str) -> dict[str, object]:
+    """The session's recorded metadata (``cwd``, ``model``, ``mode`` …), ``{}`` when absent."""
+    path = _SESSIONS_DIR / session_id / "metadata.json"
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return cast(dict[str, object], value) if isinstance(value, dict) else {}
+
+
 def load_session_mode(session_id: str) -> str | None:
     """Read a persisted mode name, returning ``None`` for old/corrupt metadata."""
     path = _SESSIONS_DIR / session_id / "metadata.json"
@@ -254,6 +266,63 @@ def find_latest_session_for_cwd(cwd: str | None = None) -> str | None:
         key=lambda x: (_float_value(x[1].get("last_active")), x[0]),
     )
     return latest[0]
+
+
+def sessions_for_cwd(cwd: str | None = None, *, exclude: str = "") -> list[str]:
+    """Every recorded session of *cwd* but *exclude*, newest first (TUX-03)."""
+    canonical_cwd = str(Path(cwd or os.getcwd()).expanduser().resolve())
+    with _index_guard():
+        index = _load_index()
+    matching = [
+        (session_id, meta)
+        for session_id, meta in index.items()
+        if meta.get("cwd") == canonical_cwd and session_id != exclude
+    ]
+    matching.sort(
+        key=lambda item: (_float_value(item[1].get("last_active")), item[0]), reverse=True
+    )
+    return [session_id for session_id, _meta in matching]
+
+
+#: A log whose last of these events opens a turn ended before the turn finished.
+_TURN_OPENERS = frozenset({"user_message", "turn_start"})
+_TURN_CLOSERS = frozenset({"turn_complete", "activity_complete"})
+
+
+def session_ended_mid_turn(session_id: str) -> bool:
+    """Whether the session's log stops between a turn's start and its completion.
+
+    Only the log's tail is read. A session that was closed while idle, or one
+    with no turns at all, is not interrupted.
+    """
+    path = get_session_log_path(session_id)
+    try:
+        with path.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            size = handle.tell()
+            handle.seek(max(0, size - _TAIL_READ_BYTES))
+            tail = handle.read()
+    except OSError:
+        return False
+    for raw in reversed(tail.split(b"\n")):
+        try:
+            record = json.loads(raw)
+        except ValueError:
+            continue  # blank, or the partial first line of the tail
+        kind = record.get("kind") if isinstance(record, dict) else None
+        if kind in _TURN_OPENERS:
+            return True
+        if kind in _TURN_CLOSERS:
+            return False
+    return False
+
+
+def find_interrupted_session(cwd: str | None = None, *, exclude: str = "") -> str | None:
+    """The newest other session of *cwd*, when it ended in the middle of a turn."""
+    for session_id in sessions_for_cwd(cwd, exclude=exclude)[:1]:
+        if session_ended_mid_turn(session_id):
+            return session_id
+    return None
 
 
 def get_session_log_path(session_id: str) -> Path:
@@ -805,12 +874,129 @@ def _decode_event(raw: str | bytes, *, rendered: bool) -> ConversationEvent | No
         return ConversationEvent(
             event_id=event_id,
             kind=kind,
-            payload=cast(dict[str, object], payload),
+            payload=migrate_event_payload(kind, cast(dict[str, object], payload)),
             timestamp=float(timestamp),
             rendered=rendered,
         )
     except Exception:  # noqa: BLE001
         return None
+
+
+# ── One-way payload migration (TUX-06) ────────────────────────────────────────
+
+_MARKUP_TAG = re.compile(r"\[/?[a-z][a-z0-9 _#.-]*\]")
+_LEGACY_DURATION = re.compile(r"(\d+(?:\.\d+)?)\s*ms")
+_LEGACY_TURN_AGENT = re.compile(r"^assistant \((?P<model>[^()]*)\)$")
+
+
+def _legacy_summary(markup: str) -> str:
+    """The plain target inside a legacy ``[dim](…)[/dim]`` argument string."""
+    # Rich escapes a literal ``[`` as ``\\[``; keep those, drop real tags.
+    text = _MARKUP_TAG.sub("", markup.replace("\\[", "\x00")).replace("\x00", "[").strip()
+    if text.startswith("(") and text.endswith(")"):
+        text = text[1:-1]
+    return text
+
+
+_LEGACY_KWARG = re.compile(r"(?:^|, )([A-Za-z_][A-Za-z0-9_]*)=")
+#: The parameter a legacy single-argument repr belonged to.
+_LEGACY_FIRST_PARAMETER: dict[str, str] = {
+    "run_bash": "command",
+    "run_python": "code",
+    "read_file": "path",
+    "write_file": "path",
+    "patch_file": "path",
+    "apply_diff": "path",
+    "append_file": "path",
+    "delete_file": "path",
+    "list_directory": "path",
+    "grep_files": "pattern",
+    "search_files": "pattern",
+    "git_show": "ref",
+    "memory_read": "key",
+    "memory_write": "key",
+    "semantic_search": "query",
+    "fetch_page": "url",
+    "web_search": "query",
+}
+
+
+def _unquote(value: str) -> str:
+    value = value.strip()
+    if len(value) >= 2 and value[0] in "'\"" and value[-1] == value[0]:
+        return value[1:-1]
+    return value[1:] if value[:1] in "'\"" else value.rstrip("…")
+
+
+def _legacy_args(name: str, text: str) -> dict[str, object]:
+    """Best-effort arguments back from a legacy ``k='v', …`` or ``'v'`` string."""
+    if not text:
+        return {}
+    marks = list(_LEGACY_KWARG.finditer(text))
+    if marks and marks[0].start() == 0:
+        args: dict[str, object] = {}
+        for index, mark in enumerate(marks):
+            end = marks[index + 1].start() if index + 1 < len(marks) else len(text)
+            raw = text[mark.end() : end]
+            value = _unquote(raw)
+            args[mark.group(1)] = int(value) if value.isdigit() else value
+        return args
+    parameter = _LEGACY_FIRST_PARAMETER.get(name)
+    return {parameter: _unquote(text)} if parameter else {}
+
+
+def migrate_event_payload(kind: str, payload: dict[str, object]) -> dict[str, object]:
+    """Bring a payload written by an older release to the current shape.
+
+    Applied once, on read; nothing writes the old shape any more:
+
+    - ``tool_complete`` stored Rich markup in ``args_str``/``dur_str`` and a
+      four-line head with ``output_more``.  The markup becomes the plain
+      ``summary``, the duration ``duration_ms``, and the head
+      ``output_lines``/``output_head``/``output_total``.
+    - ``turn_start`` named the turn ``assistant (model)``; it gains the
+      ``agent`` and ``model`` fields the transcript header compares.
+    """
+    if kind == "tool_complete" and ("args_str" in payload or "dur_str" in payload):
+        migrated = dict(payload)
+        legacy_args = migrated.pop("args_str", "")
+        legacy_duration = migrated.pop("dur_str", "")
+        legacy_more = migrated.pop("output_more", 0)
+        lines = migrated.get("output_lines")
+        line_count = len(lines) if isinstance(lines, list) else 0
+        more = legacy_more if isinstance(legacy_more, int) and legacy_more > 0 else 0
+        duration = _LEGACY_DURATION.search(str(legacy_duration))
+        name = str(migrated.get("name", ""))
+        target = _legacy_summary(str(legacy_args))
+        args = _legacy_args(name, target)
+        summary = (
+            summarize_call(name, args, None, root=Path.cwd())
+            if args
+            else ToolSummary(" ".join(target.split()))
+        )
+        migrated.setdefault("summary", summary.target)
+        migrated.setdefault("summary_detail", summary.detail)
+        migrated.setdefault("args", bounded_args(args))
+        migrated.setdefault("duration_ms", round(float(duration.group(1))) if duration else None)
+        migrated.setdefault("output_head", line_count)
+        migrated.setdefault("output_total", line_count + more)
+        migrated.setdefault("exit_code", None)
+        migrated.setdefault("error_code", None)
+        return migrated
+    if kind == "turn_start" and "agent" not in payload:
+        migrated = dict(payload)
+        agent_name = migrated.get("agent_name")
+        match = _LEGACY_TURN_AGENT.match(agent_name) if isinstance(agent_name, str) else None
+        if match is not None:
+            migrated["agent"] = "default"
+            migrated["model"] = match.group("model")
+        else:
+            migrated["agent"] = (
+                agent_name if isinstance(agent_name, str) and agent_name else "default"
+            )
+            migrated["model"] = ""
+        return migrated
+    return payload
 
 
 def _load_recent_turns(

@@ -1,22 +1,19 @@
 # Exploratory tool-call presentation
 
-Agenthicc can compress contiguous, successful read-only discovery calls into a
-derived `Explored` block in the Rich TUI:
+Agenthicc can compress contiguous, successful read-only discovery calls into
+one derived `Explored` row in the Rich TUI (TUX-06):
 
 ```text
-● Explored
-  └ Read command.py
-  └ Search def _emit in _runner.py
+● Explored 9 files, 3 searches  command.py, "def _emit" in _runner.py, …
 ```
 
-When one read call contains several files, the first two are shown and the
-remaining count is explicit, for example `Read one.py, two.py, and 3 more
-files.`. This is presentation metadata only; every file result remains an
-individual tool event.
-
-Other exploratory rows retain their useful arguments as well: for example,
-`Search needle in src (recursive=False)` and `Log n=5`. Additional values are
-bounded and sensitive arguments are redacted.
+The row counts the files read (a `batch_read` of three files counts three),
+the searches, the listings and any other lookups, and lists each call's
+summary as muted detail, cut to the terminal width. With
+`[ui] tool_detail = "verbose"` (or `/details verbose`) the individual calls
+follow as `└ Read command.py` rows, at most 12 of them and then
+`└ …and N more calls`. This is presentation metadata only; every call remains
+an individual tool event.
 
 This is presentation-only. The executor still runs each call separately, the
 model receives each normal tool result, and the conversation store, session
@@ -60,11 +57,10 @@ async def inspect_manifest(path: str) -> dict[str, object]:
 Class-based tools may set `exploratory = True`. The marker is independent of
 security capability metadata; omitting it is the safe default.
 
-Targets displayed in the block are bounded and sensitive argument keys are
-redacted. A group is capped at 12 visible children with an explicit overflow
-count. Failures and all non-exploratory events flush the group and remain
-prominent. Old session logs without presentation metadata continue to render
-as individual tool rows.
+Targets displayed in the row are the calls' bounded summaries, and sensitive
+argument keys are redacted. Failures and all visible non-exploratory events
+close the group, and a failure prints as its own expanded row. Old session logs
+without presentation metadata continue to render as individual tool rows.
 
 ## Troubleshooting
 

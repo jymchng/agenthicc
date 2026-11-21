@@ -4,7 +4,7 @@
 The benchmark intentionally uses child processes and an isolated HOME. It
 reports process-spawn-inclusive timings for user-visible commands separately
 from the in-process SessionService constructor/list operation. It does not
-contact a provider, changelog endpoint, MCP server, or browser.
+contact a provider, MCP server, or browser.
 """
 
 from __future__ import annotations
@@ -128,8 +128,7 @@ def _child_environment(home: Path, root: Path) -> dict[str, str]:
     source_path = str(root / "src")
     existing = environment.get("PYTHONPATH", "")
     environment["PYTHONPATH"] = source_path + (os.pathsep + existing if existing else "")
-    for key in ("AGENTHICC_CONFIG", "AGENTHICC_CHANGELOG_CACHE"):
-        environment.pop(key, None)
+    environment.pop("AGENTHICC_CONFIG", None)
     return environment
 
 

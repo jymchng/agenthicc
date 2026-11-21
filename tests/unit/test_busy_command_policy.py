@@ -149,6 +149,5 @@ def test_busy_picker_labels_immediate_and_queued_commands() -> None:
 
     matches = {item.value: item for item in trigger.get_matches("", ctx)}
 
-    assert "runs now" in matches["/usage"].hint
-    assert "queues while busy" in matches["/workflow"].hint
     assert "[runs now]" in matches["/usage"].detail
+    assert "[queues while busy]" in matches["/workflow"].detail

@@ -921,6 +921,65 @@ def is_exploratory_tool(tool: object) -> bool: ...
 grouping in the TUI. It is independent of `ToolCapability` and never changes
 permission, approval, workflow filtering, or tool execution semantics.
 
+### Tool summaries — `agenthicc.tui.tool_summary`
+
+```python
+class ToolFamily(StrEnum):  # COMMAND, READ, WRITE, SEARCH, LIST, GIT, MEMORY, WEB, MCP, OTHER
+@dataclass(frozen=True, slots=True)
+class ToolSummary:
+    target: str
+    detail: str = ""
+@dataclass(frozen=True, slots=True)
+class SummaryInput:
+    name: str
+    args: Mapping[str, object]
+    result: object           # None when the tool raised
+    root: Path               # workspace root for relative paths
+Summarizer = Callable[[SummaryInput], ToolSummary | str]
+@dataclass(frozen=True, slots=True)
+class ToolPresentation:
+    operation: str
+    family: ToolFamily = ToolFamily.OTHER
+    summarize: Summarizer | None = None
+@dataclass(frozen=True, slots=True)
+class OutputProjection:
+    lines: tuple[str, ...]   # lines[:head] first lines, lines[head:] last lines
+    head: int
+    total: int
+
+def register_tool_summary(name: str, *, operation: str, family: ToolFamily = ..., summarize: Summarizer | None = None) -> None: ...
+def summarized_by(summarize: Summarizer, *, operation: str = "", family: ToolFamily = ...) -> Callable[[F], F]: ...
+def tool_presentation(name: str, override: ToolPresentation | None = None) -> ToolPresentation: ...
+def summarize_call(name: str, args: Mapping[str, object], result: object, *, root: Path | None = None, presentation: ToolPresentation | None = None) -> ToolSummary: ...
+def bounded_args(args: Mapping[str, object]) -> dict[str, ArgValue]: ...   # <= 8 keys, values <= 512 chars, redacted
+def output_projection(result: object) -> OutputProjection: ...             # first 8 + last 32 lines
+def command_summary(command: str, cwd: str = "") -> ToolSummary: ...
+def test_summary(lines: Sequence[str]) -> str | None: ...
+def middle_truncate(text: str, limit: int, *, path: bool = False, ellipsis: str = "…") -> str: ...
+def relative_path(path: str, root: Path) -> str: ...
+```
+
+The transcript's projection of a tool call (TUX-06). Each built-in tool is
+registered with its operation word and family (`run_bash` → `$`, `read_file`
+→ `Read`, `patch_file` → `Edit`, `grep_files` → `Search`, `git_*` → `Git`,
+`memory_read` → `Read memory: "key"`, `fetch_page` → host and path); an MCP
+tool `mcp:server:tool` is `server · tool`; anything else is its title-cased
+name and its first string argument. A plugin tool stacks
+`@summarized_by(fn, operation="Jira")` above `@tool()` (stored under the
+lauren-ai metadata key `SUMMARY_KEY = "summarize"`,
+`presentation_from_metadata(tool)` reads it); a summarizer that raises falls
+back to the first string argument. `summarize_call` never raises.
+
+`tool_complete` payload (data, never markup): `tool_use_id`, `name`,
+`success`, `state`, `ready`, `summary`, `summary_detail`, `args`
+(`bounded_args`), `duration_ms`, `output_lines`, `output_head`,
+`output_total`, `exit_code`, `error_code`, plus optional `workspace_access`
+and `presentation`. The appender formats it with `agenthicc.tui.theme` tokens
+at render time. `tui.runtime.session_log.migrate_event_payload(kind, payload)`
+is the one-way loader migration for logs written before TUX-06 (Rich markup
+`args_str`/`dur_str` and `output_more` become the fields above; a
+`turn_start` `agent_name = "assistant (model)"` gains `agent` and `model`).
+
 ### bash_executable — `agenthicc.tools.exec.outcome`
 
 ```python
@@ -938,8 +997,8 @@ The shell for shell-mode commands: `/bin/bash`, else `bash` on `PATH`, else
 @dataclass(frozen=True)
 class RuntimeMode:
     name: str
-    badge: str = "⏵⏵"
-    color: str = "white"
+    badge: str = field(default_factory=lambda: glyphs().prompt * 2)
+    color: str = "text"
     description: str = ""
     system_prompt_suffix: str = ""
     blocked_capabilities: frozenset[str] = frozenset()
@@ -949,7 +1008,11 @@ class RuntimeMode:
 ```
 
 Canonical immutable runtime mode state. The selectable built-ins are Safe,
-Plan, and Yolo in that order. Replay is internal-only.
+Plan, and Yolo in that order. Replay is internal-only. `color` is a theme
+token (`mode_safe`, `mode_plan`, `mode_yolo`; Replay uses `muted`) that
+`build_mode_str` resolves through `mode_style` each time the badge is drawn;
+a mode plugin's own Rich colour is used as given. Built-in badges come from the glyph set when the mode is
+built: Safe `✓`, Plan `◆`, Yolo `❯❯`, Replay `←` (`+`, `*`, `>>`, `<` in ASCII).
 
 ### ModeRegistry
 
@@ -1028,6 +1091,7 @@ class ApprovalRequest:
     mode_options: tuple[str, ...] = ()
     # … workspace_access, request_id, timeout_s, deadline_at, question_fingerprint
     requester: ApprovalRequester | None = None
+    reason: str = ""
 ```
 
 An approval request is the session-owned handoff from an agent-side wait to a
@@ -1035,7 +1099,16 @@ TUI or headless approval service. `kind="plan_review"` selects the plan review
 overlay. `mode_options` is used by code-plan approval to advertise the
 canonical `Safe` and `Yolo` execution choices; ordinary tool and legacy plan
 review requests leave it empty. `requester` names the subagent worker that
-asked (AGX-08); `None` means the session's own agent.
+asked (AGX-08); `None` means the session's own agent. `reason` is the one
+sentence the dialog shows for why approval is needed (TUX-07):
+`ApprovalGate` sets it from the mode and capabilities with
+`approval_reason(mode_name, capabilities)` ("Safe mode asks before running
+commands."), and `WorkspaceAccessPolicy` from the workspace boundary.
+
+A denied call's tool result is `denial_payload(tool_name, message)`: when the
+user chose "No, and tell the agent what to do instead", `error` ends with
+their text and `user_instructions` carries it. `capability_values(caps)`
+returns the plain capability names of a set that may hold enum members.
 
 ### ApprovalRequester
 
@@ -1051,9 +1124,9 @@ class ApprovalRequester:
 ```
 
 A worker's approvals reach the session's broker through a wrapper that fills
-`requester` and marks the worker's panel row as waiting. The TUI prompt reads
-"executor #1 (executor) wants to run bash", `o` opens the worker's transcript
-first and Esc denies only that call; a background worker stores
+`requester` and marks the worker's panel row as waiting. The TUI dialog's
+badge reads "executor #1 · o open transcript", `o` opens the worker's
+transcript first and Esc denies only that call; a background worker stores
 `requester.to_dict()` in the inbox item's target.
 
 ### ApprovalResponse
@@ -1781,8 +1854,11 @@ class Workspace:
 ```
 
 The root owns one live block at the bottom of the terminal for the application
-lifetime. It renders status, composer, footer, overlays, and the scroll-buffer
-bridge. Start it once before the input loop and stop it once during session
+lifetime. It renders the overflow bridge, the `ComposerFrame` (or an overlay in
+its place), the subagent panel, the `StatusLine` and at most one notice or
+contextual hint row: idle, four rows (TUX-02). An overlay whose
+`Overlay.owns_bottom_rows` is true (the agents hub) replaces the frame and the
+composer's hint row; any other overlay is drawn between the frame's rules. Start it once before the input loop and stop it once during session
 teardown; do not start or stop it per agent turn. `flush_scroll()` commits
 queued transcript events and collapsed tool-group summaries before an agent
 interruption can cancel the normal turn-boundary event.
@@ -1791,24 +1867,126 @@ Rendering (AGX-11): signals request frames from `frames`
 (`agenthicc.tui.workspace.frames.FrameScheduler`), which draws at most one
 frame per `frame_interval_s` and draws typed input, cursor and overlay changes
 on the next loop iteration. Each frame is a list of segment lines
-(`agenthicc.tui.workspace.live_region.Line`); status and footer rows are built
-as markup and rendered once per distinct row and width. The block is a
-`LiveRegion` that rewrites only changed rows (a full redraw after a resize or
-when more than half the rows changed), repaints itself below anything printed
+(`agenthicc.tui.workspace.live_region.Line`); status-line and frame rows are
+built as markup and rendered once per distinct row, width and theme. The block
+is a `LiveRegion` that rewrites only changed rows, and within a changed row only
+the segments that differ (a spinner frame overwrites one cell); a full redraw
+follows a resize or a frame in which more than half the rows changed. It repaints itself below anything printed
 while it is live (the scroll buffer, or stdout/stderr), and brackets each write
 with synchronized-output mode 2026 when the terminal reported support.
 `frame_stats()` returns counts and render/write percentiles, shown by `/perf`.
-The default assistant turn header reads `Assistant Turn`; custom agent labels
-remain intact. Headers include the local timezone abbreviation and numeric UTC
-offset and have one blank row before the next block, except when `mention_chips`
-follows: resolved read rows stay directly beneath the heading, with one blank row
-after the mention group. Level-1 subagent rows align with tool headings while
+Transcript (TUX-06): a user message is a `user_bg` band with a hanging indent
+(more than 12 lines show four and `[+N more lines]`); `mention_chips` follow it
+directly, resolved ones on one row and an unresolved one as a `warning` chip
+with its `reason` (never a failed tool row). An assistant turn prints no header
+for the default agent on an unchanged model; a change of agent (`turn_start`
+`agent`) or `model`, or a gap of more than 30 minutes, prints
+`◆ agent · model · HH:MM` (local time, no zone; `/status` shows the zone). One
+blank row precedes each block; consecutive tool rows have none. Each
+`tool_complete` is one row (see `agenthicc.tui.tool_summary` below):
+success is quiet (duration only from 1 s), commands add one result row (a
+pytest/jest/vitest/cargo/go test summary or the last line), failures show the
+exit or error code, the last 8 output lines and `ctrl+t to expand`, and
+running/waiting states keep their words. `file_modified` prints
+`● Edit path  +A −D` and at most 20 diff rows (`render_file_diff(...,
+max_rows=)`). Exploratory groups print one `● Explored N files, M searches`
+row. `[ui] tool_detail` (`compact` | `normal` | `verbose`) adds a four-line
+preview of reads and commands (`normal`) or the whole bounded output
+(`verbose`); `/details [level]` cycles or sets it for the session
+(`appender.set_session_tool_detail`, `session_tool_detail`,
+`TOOL_DETAIL_LEVELS`) and never re-renders printed rows. Replay draws every
+event with its stored timestamp (`ConversationStore.append_event(...,
+timestamp=)`) after a `── replayed from 2 Nov 05:04 · N events ──`
+separator: `ScrollBufferAppender.replay_boundary(since=, events=)`
+on resume, and `replay_separator` events from `/replay`'s
+`ConversationReplayer`, which loads through `SessionEventLog.load(...,
+rendered=False)`. Level-1 subagent rows align with tool headings while
 worker previews are indented children; completed `⎋ Compacted` notices are also
 indented. A pool that does not fully succeed is labeled `Subagents Failed`; its
 completion row is followed by one blank row before subsequent scrollback. The
-live status and footer use `|` between visual segments (screen-reader status
-retains comma-separated, spoken labels). Activity recaps use one separator before
-a next scrollback event or the persistent live status block.
+status line uses ` · ` between segments (the screen-reader status uses commas
+and words). Activity recaps use one separator before a next scrollback event or
+the persistent live block.
+
+### StatusLine
+
+```python
+class StatusLine:
+    def __init__(self, app_state: AppState, startup: StartupCoordinator | None = None) -> None: ...
+    def markup(self, cols: int) -> str: ...
+    def height(self, cols: int) -> int: ...  # always 1
+    def sentence(self) -> str: ...
+def status_sentence(app_state: AppState) -> str: ...
+def notice_rows(app_state: AppState, cols: int) -> tuple[str, ...]: ...
+```
+
+`agenthicc.tui.workspace.components`. One status row of prioritised segments
+(TUX-02): 1 state (`● Idle`, spinner + verb + elapsed, `◆ Waiting for you`),
+2 background sessions needing the user (`◆ N sessions need you ←`), 3 context
+meter (`ctx 42% ▰▰▱▱▱`; `success` < 60 % ≤ `warning` < 85 % ≤ `danger`), 4 short
+model (`opus-4.8`), 5 workers / workflow phase / background sessions / startup,
+6 tokens and cost (only when reported; `≈` partial, `~` estimated), 7 git
+branch (`main*`), then a right-aligned shortcuts hint at ≥ 60 columns. When the
+row is too narrow the lowest segments drop (from priority 4 first), then
+shorter forms are used; nothing is cut mid-word. Below 60 columns only
+segments 1–3 are allowed, below 40 only the state. "cost unknown",
+"usage unavailable" and the session ID never appear. Segments 2–7 are cached on
+the signal values they read; a spinner frame recomputes only the state.
+`sentence()` / `status_sentence()` is the screen-reader form ("Idle. Opus 4.8.
+Context 12 percent."), announced between turns only on change.
+`notice_rows()` is the notification, `/loop` status or attention toast,
+wrapped whole, shown in place of the hint row.
+
+### ComposerFrame
+
+```python
+class ComposerFrame:
+    def __init__(self, app_state: AppState, composer: ComposerComponent) -> None: ...
+    def form(self, cols: int) -> str: ...  # "box" | "rules" | "none"
+    def top(self, cols: int, form: str | None = None) -> str: ...
+    def body(self, cols: int, form: str | None = None) -> list[Line]: ...
+    def bottom(self, cols: int, form: str | None = None) -> str: ...
+    def hint_row(self, cols: int) -> str | None: ...
+    def height(self, cols: int) -> int: ...
+```
+
+The composer's rounded box (`[ui] composer_frame = "box"`; two rules with
+`"rules"` or below 60 columns; no frame with `screen_reader`). The top border
+carries the session title (`ConversationStore.session_title`, the first
+prompt cut to 80 characters, or `new session`) and the mode badge in its
+`mode_*` token. `hint_row()` returns only contextual hints — keymap actions
+with a `when` condition (a running turn, a condensed paste, a subagent pool)
+or the background-terminal wait keys — and `None` when idle.
+
+### User status line — `agenthicc.tui.statusline`
+
+```python
+class StatusLineCommand:
+    def __init__(self, command: str, app_state: AppState, cwd: str, *, timeout_s: float = 0.5, interval_s: float = 1.0) -> None: ...
+    def start(self) -> None: ...
+    def stop(self) -> None: ...
+    async def run_once(self) -> None: ...
+def statusline_input(app_state: AppState) -> dict[str, str | int | float | None]: ...
+def sanitize_status_output(raw: bytes) -> str: ...
+def read_git_branch(cwd: str | Path) -> str: ...
+async def refresh_git_status(app_state: AppState, cwd: str, *, timeout_s: float = 2.0) -> None: ...
+def status_report(app_state: AppState) -> list[tuple[str, str]]: ...
+```
+
+`[ui.statusline] command` (`UISettings.statusline_command`) runs after state
+changes, at most once a second, with a 500 ms timeout, in the working
+directory with `tools.exec.child.child_env()` and its resource limits. Its
+stdin is `statusline_input()` as JSON (`session_id`, `title`, `cwd`,
+`git_branch`, `model`, `provider`, `mode`, `state`, `context_used_pct`,
+`tokens_in`, `tokens_out`, `cost_usd`, `agents_need_you`, `workers_running`;
+unknown values are `null`). The first line of its stdout, with every control
+sequence except SGR removed, is published as `ConversationStore.statusline_text`
+and replaces segments 3–7. A failure clears it and posts one notice. A project
+configuration's command is dropped by `load_config` unless that file is trusted
+(`ExtensionTrust.permits(path, kind="statusline")`). `status_report()` is what
+`/status` prints (session, title, directory, branch, model, provider, mode,
+turns, tokens, cost or why it is absent, context, log and memory paths);
+`CommandContext.app_state` carries the TUI state to it.
 
 ### ComposerComponent
 
@@ -1824,13 +2002,20 @@ Folds each logical line of the prompt at the width (continuation rows indented
 under `❯`), caching the fold per line, and shows at most `max_rows` rows around
 the cursor with `↑ N more lines` / `↓ N more lines` for the rest. `render()`
 returns a renderable laid out at the width it is given (the agents screen
-embeds it); `StatusComponent.markup_lines(cols)` and
-`FooterComponent.markup_lines(cols)` return their rows as markup.
+embeds it). An empty prompt shows the muted, dimmed placeholder
+`ask, or type / for commands, @ for files` after the cursor (shorter forms when
+narrow; none for a screen reader).
 
 ### ConversationStore and reactive TUI AppState
 
 `tui.conversation_store` owns ephemeral turns, token/cost signals, input state,
-active mode, workflow progress, overlays, approvals, and notifications. This
+active mode, workflow progress, overlays, approvals, and notifications. TUX-02
+adds `session_title` (set by the first `user_message` event, also on replay,
+via `session_title_from(prompt)`), `context_tokens` (projected by
+`UsageLedger.bind_conversation_store` from `UsageLedger.context_tokens()`, the
+latest main-agent call's input plus cache tokens), `context_window` (set at
+session start from `ExecutionSettings.effective_context_window()`),
+`git_branch` / `git_dirty` and `statusline_text`. This
 `AppState` is intentionally distinct from `kernel.AppState`; it is not the
 durable domain model and must not replace event reduction.
 During `--continue` or `--resume SESSION_ID`, its `transcript_loading` signal
@@ -1848,6 +2033,87 @@ session.conditions())`); capabilities act on the action name, not the key.
 `request_exit()` ends the input loop from outside (the agents hub's session
 switch uses it).
 
+TUX-04 (composer ergonomics):
+
+```python
+@dataclass(frozen=True)
+class TerminalHooks:              # agenthicc.tui.input.unified_session
+    suspend: Callable[[], None] = ...; resume: Callable[[], None] = ...
+    repaint: Callable[[], None] = ...; runtime_dir: Path | None = None
+    handoff: Callable[[Callable[[], Awaitable[None]]], Awaitable[None]] | None = None
+
+class UnifiedInputSession:
+    def __init__(self, ..., terminal_hooks: TerminalHooks | None = None) -> None: ...
+    terminal_hooks: TerminalHooks
+    picker: TriggerPickerOverlay | None        # the open / $ @ picker
+    def open_external_editor(self) -> None: ...
+
+class SubmitReceipt: ok: bool                  # a target-bound composer's submit answer
+class Acceptance(Protocol): ok: bool           # anything with ``ok`` (runtime-checkable)
+CHORD_TIMEOUT_S = 0.3                          # Ctrl+X waits this long for Ctrl+E
+```
+
+- **Editing.** `tui.input.buffer.InputBuffer` adds `word_left`, `word_right`,
+  `delete_word_before`, `delete_word_after`, `kill_to_end`, `kill_to_start`,
+  `yank`, `delete_after`, `replace_range`, `undo`, `redo`, `forget_undo` and
+  `kill_ring`; words are Unicode letters, digits and `_` (`is_word_char`).
+  Undo groups: consecutive typed characters are one group; `UNDO_LIMIT = 200`.
+  `snapshot_hook` lets the session's `PasteState.memento()` restore a
+  condensed paste with the text. The keys are `composer.*` actions in
+  `tui.actions.COMPOSER_ACTIONS`; new composer conditions are `empty` and
+  `queued`.
+- **Pickers.** `tui.workspace.overlays.trigger_picker.TriggerPickerOverlay(buffer,
+  anchor, handler, *, cwd, keymap, busy=False, paste_state=None)` reads the
+  session's buffer: the trigger is the text from `anchor` to the cursor.
+  `refresh()` re-derives it (`False` when the trigger is gone); `choose(key,
+  ch)` handles the `picker` context (`PICKER_ACTIONS`) and returns a
+  `PickerOutcome` (`STAY`, `CLOSE`, `SUBMIT`) or `None` for a key the prompt
+  edits. `TriggerHandler` gains `on_enter(item, fragment, buf)`;
+  `TriggerHandlerBase.on_enter` inserts a match and submits without one;
+  `SlashCommandTrigger.on_enter` runs a command with no required argument and
+  completes one that needs an argument (`TriggerResult.keep_open=True`).
+  `on_cancel` is gone (Esc keeps the prompt as it is).
+- **History search.** `tui.input.history.HistorySearch(history)` (query,
+  `matches`, `current`, `older()`, `newer()`) and
+  `tui.input.history_search.HistorySearchOverlay` (the `search` context,
+  `SEARCH_ACTIONS`; `choose()` returns a `SearchOutcome`).
+- **Compaction.** `ConversationStore.begin_compaction()` starts the clock and
+  sets `compaction_active`; `end_compaction()` clears it and
+  `compaction_progress` (the elapsed time stays for the result row, read with
+  `compaction_elapsed()`); `compaction_seconds` changes once a second and
+  redraws the row in every motion mode. `report_compaction_progress(done,
+  total)` records `CompactionProgress(done, total, fraction)`, whose `fraction`
+  never decreases. Only a multi-call (map/reduce) summary reports progress:
+  `memory.compactor._summarize_text(..., on_progress=)` calls it after each
+  model call with the calls finished and known so far, and a one-call
+  compaction reports nothing. `tui.workspace.running_rows.compaction_row(state)`
+  draws `◜ Refreshing context · 2s` (`Glyphs.ring`, one turn per
+  `RING_FRAMES = 20` frames; `Glyphs.ring_still` under `reduced_motion` and
+  `screen_reader`) and `compaction_bar(state, cols)` the bar under it
+  (`Glyphs.progress_fill`/`progress_half`/`progress_track`, at most
+  `BAR_WIDTH = 30` cells) or `None` when nothing was measured. The result is a
+  `compaction_status` event with `elapsed_s` and `label`, printed as a `Notice`
+  (`✓ Context refreshed · 849 tokens · 3s` or `✗ Context refresh failed · 3s`);
+  the compactor no longer appends `system` text events.
+- **Queue.** `tui.conversation_store.MessageQueue` (`ConversationStore.queue`)
+  holds `QueuedMessage(id, text)` in the `items` signal and the selected id in
+  `focus`; `QueuedMessage.joins_turn` is true for an ordinary message and false
+  for a command or skill. `append(text)`, `insert`, `pop`, `remove(id)`,
+  `claim_message()` (the first message that joins a turn), `clear()`, `texts()`.
+  `tui.workspace.queue_rows.queue_rows(state, cols)` draws one row per entry
+  (`MAX_ROWS = 3`) above the prompt; the `queue` context
+  (`QUEUE_ACTIONS`) edits it. While a turn runs, Enter queues an ordinary message
+  and `TUISession._next_queued_message` claims one per completed tool call; a
+  command waits for the end of the turn. Alt+Enter and Ctrl+Enter are line
+  breaks (`composer.newline_alt`) in every state.
+- **Terminal.** `Key.SHIFT_ENTER`; `cbreak_reader.decode_csi_u(body)` maps
+  every CSI-u key to its legacy key (Ctrl+Enter is `"ctrl+enter"`);
+  `KITTY_KEYBOARD_PUSH` / `KITTY_KEYBOARD_POP` and
+  `kitty_keyboard_supported(env)`: the POSIX backend pushes the mode on
+  entering raw mode and pops it on leaving. `Workspace.repaint()` serves Ctrl+L.
+- **Rendering.** `tui.input.renderer.build_prompt(buf, cursor)` returns a Rich
+  `Text` in theme tokens.
+
 The composer's `agents.open_hub` action (Ctrl+G, or ← on an empty prompt)
 posts `tui.runtime.commands.OpenAgentsHubCommand(tab="", run_id="")` on the
 `CommandBus`; `/agents`, `/inbox` and `/workers` reach the same place through
@@ -1860,6 +2126,114 @@ the session with `TUISession.switch` set to a frozen
 driver runs the target in its own project directory and reopens the origin
 session when the target ends. A switch waits for a running turn to finish.
 
+### MatchItem — `agenthicc.tui.trigger`
+
+```python
+@dataclass
+class MatchItem:                       # one row of a trigger picker (TUX-05)
+    value: str                         # inserted into the prompt when chosen
+    label: str                         # left column: "/compact", "src/a.py"
+    detail: str = ""                   # description, size or entry count
+    group: str = ""                    # heading when it changes; "" = ranked list
+    glyph: str = ""                    # kind marker (directory, file, agent)
+    keys: str = ""                     # key binding, right-aligned ("ctrl+g")
+    disabled: str = ""                 # why the row cannot run now (row is dimmed)
+    path: bool = False                 # label is a path: directory muted, name plain
+```
+
+`MatchItem.display`, `TriggerHandler.get_lines` and the below-list hint line are
+gone: a trigger returns structured rows and `Picker` lays them out. Triggers
+(`AtMentionTrigger`, `SlashCommandTrigger`, `SkillTrigger` and plugin triggers)
+set `label`, `detail`, `group`, `glyph` and `keys`; `get_hint` stays on the
+protocol but nothing draws it. `mentions.matcher.filter_and_rank(query, items,
+*, boosted=())` ranks by `item.label` (boosted `value`s first within a tier);
+`match_positions(query, text)` and `fuzzy_positions(query, text)` give the
+characters a picker highlights.
+
+### Picker — `agenthicc.tui.workspace.picker`
+
+```python
+@dataclass(frozen=True)
+class PickerRow(Generic[T]):
+    value: T; label: str; detail: str = ""; group: str = ""; glyph: str = ""
+    keys: str = ""; disabled: str = ""; path: bool = False
+
+class Picker(Generic[T]):
+    def __init__(self, rows=(), *, query="", footer_keys="", empty="No matches") -> None: ...
+    rows: list[PickerRow[T]]; selected: int; scroll: int; visible: int
+    def set_rows(self, rows, *, query="") -> None: ...
+    def move(self, step: int) -> None: ...           # wraps around
+    current: PickerRow[T] | None
+    def render(self, width: int, height: int = 12) -> list[Text]: ...
+def rows_from_matches(items: Sequence[MatchItem]) -> list[PickerRow[MatchItem]]: ...
+def picker_height(terminal_rows: int) -> int: ...      # min(12, rows / 3), at least 3
+NARROW_WIDTH = 60                                      # below it a detail gets its own row
+```
+
+One component draws every list: the `/`, `$` and `@` pickers
+(`TriggerPickerOverlay`), the palette and the `/model`, `/mode` and `/agent`
+pickers. The selected row has an `accent` bar and bold text, with no background; matched
+characters are bold `accent`; a muted rule heads each group; keys are
+right-aligned; details wrap with a hanging indent (two rows at most); a
+`disabled` row is dimmed with its reason on a second row; the footer reads
+`N of M` and the keys. `render` lays out only the rows near the window, so a
+10,000-row listing costs the same as a short one, and no line is wider than
+`width`.
+
+TUX-05 (pickers and the palette):
+
+- **`/` ranking.** `UnifiedCommandRegistry.search(partial, usage)` returns
+  commands best first by `commands.registry.command_rank(cmd, partial)`:
+  `0` exact name, `1` exact alias, `2` name prefix, `3` alias prefix, `4`
+  fuzzy name, `5` a description word; ties by `usage` (name → `(count,
+  last_used)`), then name. `SlashCommandTrigger(registry, workflow_registry, *,
+  usage=None, keymap=None)`: with no fragment the rows are grouped (`Suggested`
+  = the five most used, then `Command.group`); aliases collapse into
+  `(alias /bg)` in their command's row; `record_use(text)` counts a submitted
+  command. `tui.input.command_usage.CommandUsage(project, path=None)`
+  (`counts()`, `most_used(limit)`, `record(name)`) keeps the counts per project
+  in `~/.agenthicc/state/command-usage.json` (`AGENTHICC_COMMAND_USAGE`).
+  `commands.command.COMMAND_GROUPS` lists the group headings; `Command.group`
+  defaults to `"Plugins"`. `/background` has the aliases `/bg` and `/detach`,
+  `/cancel` has `/interrupt`, `/model` has `/models`.
+  `tui.actions.COMMAND_ACTIONS` maps a command to the key action that does the
+  same, so its row shows the user's key (`SlashCommandTrigger` reads the
+  effective `Keymap`).
+- **`@` rows.** `AtMentionTrigger(agents=None, *, git=...)` gives directories
+  the glyph `Glyphs.folder` and an entry count, files `Glyphs.info` and a size
+  (the first `DETAIL_ROWS = 100` rows are measured; a listing holds at most
+  `MAX_MATCHES = 200`). `WorkingTreeStatus(cwd)` runs `git status` on a worker
+  thread (`refresh()` at most every `REFRESH_INTERVAL_S = 2.0`);
+  `AtMentionTrigger.warm(cwd)` starts it when the session starts;
+  `note_mention(value)` remembers recent mentions. Recent and changed files come
+  first; entries `.gitignore` ignores are left out unless named exactly.
+- **Palette.** Ctrl+P (`composer.palette`) on an empty prompt posts
+  `tui.runtime.commands.OpenPaletteCommand`; on a non-empty prompt it recalls
+  the previous prompt. `TUISession.open_palette()` mounts
+  `tui.workspace.overlays.palette.CommandPaletteOverlay(commands=, cwd=, keymap=,
+  actions=PALETTE_ACTIONS, themes=, run=, close=, busy=False)`: a search field
+  over every command, every key action in `tui.actions.PALETTE_ACTIONS` that has
+  a binding, and every theme; Enter calls `run(PaletteItem(kind, text))` with
+  `kind` `"command"`, `"action"`, `"theme"` or `"insert"` (a command that needs
+  an argument). `palette_width(columns)` is 60 % clamped to 60-100.
+- **Choice pickers.** `tui.workspace.overlays.choice_picker.ChoicePickerOverlay(title,
+  rows, *, choose, close, subtitle="", keep_open=False, extra_keys=None)`
+  serves `/model`, `/mode` and `/agent`; `AgentPickerOverlay` is removed.
+- **`/model` without a restart.** `runners.model_switch.model_choices(cfg,
+  environ=None)` lists `ModelChoice(provider, model, profile, context_window,
+  missing_env, current)` (`available`, `label`): each provider's default model
+  plus the current one, then the saved profiles; `missing_env` names the
+  variable to set and is never a value. `execution_for(cfg, choice)` derives the
+  `ExecutionSettings`. `TUISession.switch_model(choice)` forks the lazy runner
+  with `_LazyAgentRunner.for_execution`, sets `cfg.execution`, and appends one
+  `model_changed` conversation event (payload `provider`, `model`, `profile`,
+  `previous`; rendered `◆ model → name (from next turn)` by
+  `tui.workspace.notices`); during a turn the change waits for the turn to end.
+  `TUISession.save_model(choice)` writes `[execution] profile`, `provider` and
+  `model` with `tui.preferences.save_config_value(table, key, value)`.
+  `CommandContext.switch_model` and `save_model` carry both to the commands, and
+  `CommandDispatcher.dispatch` now passes the whole context to a handler.
+
 ### Keymap — `agenthicc.tui.keymap`
 
 ```python
@@ -1868,7 +2242,7 @@ class Action:
     name: str; context: str; keys: tuple[str, ...]; label: str
     hint_priority: int = 0; description: str = ""
     when: frozenset[str] = frozenset(); unless: frozenset[str] = frozenset()
-    rebindable: bool = True; paired: str = ""
+    rebindable: bool = True; paired: str = ""; yields: bool = False
 
 @dataclass(frozen=True)
 class Hint:
@@ -1886,8 +2260,10 @@ def load_keybindings(actions, path: Path | None = None) -> KeymapLoad: ...
 ```
 
 One registry of named actions per context (`CONTEXTS`: `global`, `composer`,
-`agents`, `agents.list`, `agents.peek`, `agents.detail`, `transcript`,
-`subagents`, `overlay`) drives dispatch, footer hints and help (AGX-13).
+`picker`, `search`, `queue`, `agents`, `agents.list`, `agents.peek`,
+`agents.detail`, `transcript`, `transcript_view`, `subagents`, `overlay`, `dialog`)
+drives dispatch, footer
+hints and help (AGX-13).
 `PARENTS` makes a context inherit another's actions after its own
 (`agents.list` and `agents.detail` inherit `agents`, `agents.peek` inherits
 `agents.list`); a key bound in a context shadows the same key inherited from a
@@ -1905,11 +2281,37 @@ ch)` gives a keystroke's canonical name. `Dispatcher` follows a leader key
 across two presses. `load_keybindings` reads `~/.agenthicc/keybindings.toml`
 (or `AGENTHICC_KEYBINDINGS`), one table per context (`[agents.list]` is the
 `agents.list` context): an invalid file is ignored as a whole and its
-problems returned in `KeymapLoad.errors`. The default actions are in
+problems returned in `KeymapLoad.errors`. A file binding a key that a
+`yields` default action holds keeps it: the default gives the key up and
+`KeymapLoad.notices` says so (TUX-04). The default actions are in
 `agenthicc.tui.actions`; `tui.keymap_service.KeymapService` keeps
 `AppState.keymap` current as the file changes, and `/keybindings` shows the
 effective bindings. `AppState.ui` holds `config.UISettings` (`[ui]`:
-`mouse`, `screen_reader`, `reduced_motion`).
+`mouse`, `screen_reader`, `reduced_motion`, `theme`, `glyphs`, `banner`,
+`tool_detail`, `layout`, `notify`, `window_title`, `hyperlinks`, `editor_links`). `Ctrl+T` is the composer's `composer.transcript`, so it
+cannot be the bindings file's `leader`.
+
+Themes (TUX-01): `agenthicc.tui.theme` owns every colour and chrome glyph.
+- **Types.** `Palette` is a frozen set of semantic tokens (`TOKENS`: `text`,
+  `muted`, `subtle`, `frame`, `accent`, `user_bg`, `success`,
+  `warning`, `danger`, `info`, `agent`, `diff_*`, `mode_safe|plan|yolo`). Each
+  token is a Rich style string. `Palette.on(token)` gives the background form.
+  `Glyphs` has `UNICODE_GLYPHS` and an all-ASCII `ASCII_GLYPHS`. `Theme`
+  combines a name, a palette, a `syntax_theme` and glyphs.
+- **Built-in themes.** `BUILTIN_THEMES` holds `dark`, `light`,
+  `high-contrast`, `ansi` and `no-color`.
+- **The active theme.** `current_theme()`, `palette()`, `glyphs()` and
+  `style(token)` return the active theme and its parts. `use_theme(theme)`
+  swaps it at runtime and calls `on_theme_change` listeners.
+- **Loading.** `load_theme(name, cwd)` loads built-in or `.agenthicc/themes/*.toml`
+  themes and raises `ThemeError`.
+- **Choosing.** `resolve_theme(name, glyphs, env=…, background=…)` applies
+  `NO_COLOR`, `auto` (OSC 11 background, then `COLORFGBG`) and glyph
+  selection.
+- **Terminal backends.** They add `query_background(timeout)`, an OSC 11
+  answer or `None`. `cbreak_reader.read_key` swallows late OSC answers.
+- **Commands.** `/theme [name] [--save]` switches without a restart, and
+  `tui.preferences.save_ui_preference(key, value)` writes one `[ui]` line.
 
 The decoder (`tui.cbreak_reader`) adds `Key.CTRL_A`–`CTRL_Z`, `DELETE`,
 `INSERT`, `FUNCTION` (`ch` `"f1"`…`"f12"`), `ALT` (`ch` the character),
@@ -1922,6 +2324,371 @@ an unbound sequence is never `ESC`. `decode_control`, `decode_csi`,
 The current overlay host maps approval request kinds to overlay classes in
 `runners.tui_session.TUISession`; `PlanApprovalOverlay` is the current plan
 review surface. See `docs/guides/tui.md` for rendering and resize contracts.
+
+### Dialog
+
+```python
+@dataclass(frozen=True)
+class DialogSettings:
+    keymap: Keymap | None = None
+    plain: bool = False                  # [ui] screen_reader: no box drawing
+    mode: str = ""                       # the badge
+    composer: ComposerContext | None = None
+    workspace: WorkspaceScope | None = None   # where approval diffs are read
+    redraw: Callable[[], None] = lambda: None # repaint after an in-dialog composer key
+    open_details: Callable[[str, Sequence[RenderableType]], None] | None = None  # Ctrl+T (TUX-09)
+
+class Dialog:
+    def __init__(self, title: str, *, settings: DialogSettings, badge: str | None = None,
+                 badge_token: str = "", cancel_label: str = "cancel") -> None: ...
+    title: str; reason: str; summary: str
+    options: list[DialogOption]; selected: int; scroll: int
+    conditions: frozenset[str]           # approval, note, details, requester, questions
+    def set_body(self, key: object, factory: Callable[[], list[RenderableType]]) -> None: ...
+    def set_details(self, factory: Callable[[], list[RenderableType]] | None) -> None: ...
+    def handle_key(self, key: Key, ch: str) -> DialogInput: ...
+    def render(self) -> RenderableType: ...
+    def announcement(self) -> str: ...
+```
+
+`agenthicc.tui.workspace.dialog` (TUX-07): the one frame every decision
+overlay composes — `ApprovalOverlay`, `PlanApprovalOverlay` and
+`QuestionsOverlay` keep their names and service contracts and expose it as
+`.dialog`. The title is a verb phrase on the top border ("Run a command",
+"Edit a file", "Approve the plan", "The agent asks"), the badge (the mode, or
+the asking worker) on its right; the body scrolls with `↑ N more`/`↓ N more`;
+one muted reason line; numbered `DialogOption`s; the key legend in the bottom
+border. Width `dialog_width(cols) = clamp(cols - 4, 60, 120)`, centred above
+124 columns; height at most the published overlay viewport (`rows - 6` before
+one). Keys come from the `dialog` keymap context (`DIALOG_ACTIONS` in
+`tui.actions`): `↑↓`/`j k` choose, Enter or `1`–`9` confirm, Esc the safe exit,
+Tab a note, `Ctrl+T` the full arguments or diff in the transcript view
+(`DialogSettings.open_details`; the key is offered only when it is set, and Esc
+in the view returns to the dialog), `[`/`]` and PgUp/PgDn scroll, and `y`/`a`/`A`/`n` stay as approval aliases.
+`handle_key` returns a `DialogInput` whose `DialogKey` the overlay acts on.
+`announcement(title, summary, reason, options)` is the screen-reader sentence;
+`render_lines(renderables, width)` renders to styled rows.
+
+`agenthicc.tui.workspace.overlays.approval_body.approval_content(req, scope)`
+returns the `ApprovalContent` (title, summary, body, details) that explains a
+tool call: the whole command (a `cd X &&` prefix shown as "in X"), a unified
+diff against the current file read inside `scope` with `+N -M` per file,
+paths and sizes for delete/move, method/host/path and the allow-list entry for
+network calls, the workspace-scope projection (never raw arguments), and a
+key/value table for anything else. `request_announcement(req)` is the
+sentence the announcer prints when a request opens a dialog.
+`approval_options(req)` lists the four approval choices: Yes; Yes, and allow
+<commands> for the rest of this turn; Yes, and allow <commands> this
+session; No, and tell the agent what to do instead (an `EmbeddedComposer`
+opens in the dialog). `plan_options(req)` lists the plan-review choices.
+
+### Failure kinds — `agenthicc.runners.failure_kinds`
+
+```python
+class FailureKind(StrEnum):
+    MISSING_CREDENTIALS = "missing_credentials"; REJECTED_CREDENTIALS = "rejected_credentials"
+    RATE_LIMITED = "rate_limited"; OVERLOADED = "overloaded"; CONTEXT_TOO_LONG = "context_too_long"
+    MODEL_NOT_FOUND = "model_not_found"; BILLING = "billing"; NETWORK = "network"
+    TIMEOUT = "timeout"; CANCELLED = "cancelled"; INTERNAL = "internal"
+
+@dataclass(frozen=True)
+class FailureAction:
+    hint: str; commands: tuple[str, ...] = ()
+    def to_payload(self) -> dict[str, object]: ...   # {"hint": ..., "commands": [...]}
+
+@dataclass(frozen=True)
+class FailureCopy:
+    kind: FailureKind; message: str; action: FailureAction
+
+MESSAGE_PREFIXES: Mapping[FailureKind, tuple[str, ...]]
+FAILURE_ATTRIBUTE = "_agenthicc_failure"
+def classify_turn_failure(exc: BaseException, provider: str = "") -> FailureKind: ...
+def failure_copy(kind, *, provider, model="", profile="", exception_type="", retries=0,
+                 retry_after_s=None, timeout_s=None, host="", log_path=None) -> FailureCopy: ...
+def failure_payload(copy: FailureCopy) -> dict[str, object]: ...  # kind, message, action
+def failure_host(exc: BaseException) -> str: ...
+def reported_failure(exc: BaseException) -> dict[str, object] | None: ...
+def failure_reason(exc: BaseException) -> str: ...
+```
+
+TUX-08. `classify_turn_failure` is pure over the exception chain: provider
+error `type`/`code` first, then the HTTP status, the SDK exception class
+(anthropic, openai, httpx and lauren-ai names), and last the fixed lower-case
+`MESSAGE_PREFIXES` (for a missing key, which the SDKs report without a type or
+code). The matched text is never kept. A failed agent turn's `error` event
+payload is the redacted metadata (`provider`, `model`, `profile`,
+`exception_type`, `http_status`, provider ids) plus `kind`, `message` and
+`action` (`{"hint": str, "commands": [str]}`); `message` and `action` are
+agenthicc's own copy, and `detail` is reserved for text agenthicc wrote. An
+event without `kind` (an older log) renders as `internal` with its stored
+message. The turn also stores the payload on the exception under
+`FAILURE_ATTRIBUTE`; `reported_failure` finds it through wrapping exceptions,
+and `failure_reason` returns its message (else `"Type: text"` for an
+exception agenthicc raised itself), which workflow runners, checkpoints,
+background workers and headless JSON use. Headless prints
+`{"type": "error", "kind", "message", "action", "session_id", "workflow",
+"run_id"}` before the `WorkflowRunCompleted` line, which gains `error_kind`
+(`WorkflowExecutionResult.failure` / `error_record()`).
+
+### Notice — `agenthicc.tui.workspace.notice`
+
+```python
+Severity = Literal["error", "warning", "info", "success"]
+SEVERITIES: tuple[Severity, ...]
+
+@dataclass(frozen=True)
+class Notice:
+    severity: Severity; title: str; body: str = ""; actions: tuple[str, ...] = ()
+    literal: bool = False; words: bool = False
+    def marker(self) -> str: ...   # glyphs().fail/warn/info/ok, or "Error:"… with words=True
+    def plain(self) -> str: ...
+    def content(self) -> Text: ...
+
+def severity_of(value: object, default: Severity = "info") -> Severity: ...
+```
+
+A Rich renderable: the marker in the severity's token (`danger`, `warning`,
+`muted`, `success`), the title wrapped under itself, the body in `muted`, the
+actions in `accent`. `literal=True` prints the title exactly (screen-reader
+announcements, BEAU-4). The scroll buffer's `error`, `system` (its optional
+`severity` payload field, default `info`), `announcement`, `tool_recovery`,
+`mcp_server_failure`, `network_retry` and `provider_recovery_retry` rows are
+notices; with `[ui] screen_reader` they use words. Transient notices:
+`ConversationStore.notify(severity, text, *, duration=None) -> Notice` sets
+`ConversationStore.transient_notice: Signal[Notice | None]` for
+`TRANSIENT_NOTICE_S` (4.0 s) for the status line; they never reach the scroll
+buffer or the session log, and the screen-reader `Announcer` speaks them.
+`CommandContext.notify(severity, text, *, body="", actions=())` reports a slash
+command's usage, error or result: a one-line `info`/`success` goes to
+`CommandContext.transient_notify` (the session's `notify`) when set, anything
+else is printed as a persistent notice.
+
+### Start-up header, pre-flight check and first run (TUX-03)
+
+```python
+# agenthicc.runners.preflight
+class PreflightCheck(StrEnum): CREDENTIALS; MODEL; WORKSPACE; TOOLS
+
+@dataclass(frozen=True, slots=True)
+class PreflightIssue:
+    check: PreflightCheck; message: str; fix: str
+    blocking: bool = False                       # only a missing credential blocks prompts
+    severity: Literal["warning", "info"] = "warning"
+    @property
+    def text(self) -> str: ...                   # f"{message} {fix}"
+
+def check_session(config: AgenthiccConfig, env: Mapping[str, str], *,
+                  cwd: Path | None = None, mode: str = "") -> tuple[PreflightIssue, ...]: ...
+def check_credentials(config: AgenthiccConfig, env: Mapping[str, str]) -> PreflightIssue | None: ...
+def credential_variable(config: AgenthiccConfig, provider: str, profile_name: str,
+                        env: Mapping[str, str]) -> str: ...   # "" when it resolves; else the variable to set
+
+# agenthicc.runners.first_run
+@dataclass(frozen=True, slots=True)
+class FirstRun:
+    version: str; first_run: bool; whats_new: bool; branch: str
+    issues: tuple[PreflightIssue, ...]; suggestion: Suggestion; tip_index: int
+    ask_workspace: bool; plan_mode: bool
+def prepare_first_run(*, config, env, cwd, mode, session_id, keymap,
+                      trust=None, home=None, state_file=None) -> FirstRun: ...
+def workspace_needs_decision(cwd: Path, *, home: Path, trust: ExtensionTrust, session_id: str) -> bool: ...
+
+# agenthicc.tui.welcome
+@dataclass(frozen=True, slots=True)
+class WelcomeInfo:
+    version: str; model: str; provider: str; mode: str; directory: Path; home: Path
+    branch: str = ""; whats_new: bool = False; mascot: bool = False
+def render_welcome(info: WelcomeInfo, width: int) -> Group: ...   # one Text per row
+def print_welcome(console: Console, info: WelcomeInfo) -> None: ...
+def home_relative(path: Path, home: Path) -> str: ...             # "~/work/app"
+def middle_truncate(text: str, room: int) -> str: ...             # "~/py…/agenthicc"
+
+# agenthicc.user_state
+@dataclass(frozen=True, slots=True)
+class UserState:
+    version: str = ""; release_notes_seen: str = ""; tip_index: int = 0
+    first_run: bool                              # property: no version recorded
+def load_user_state(path: Path | None = None) -> UserState: ...
+def save_user_state(state: UserState, path: Path | None = None) -> bool: ...
+def state_path() -> Path: ...                    # ~/.agenthicc/state.json
+
+# agenthicc.release_notes
+@dataclass(frozen=True, slots=True)
+class ReleaseEntry: version: str; date: str; body: str   # .unreleased, .title
+def parse_changelog(text: str) -> tuple[ReleaseEntry, ...]: ...
+def load_entries(path: Path | None = None) -> tuple[ReleaseEntry, ...]: ...
+def select(entries, *, installed: str, last_seen: str = "") -> tuple[ReleaseEntry, ...]: ...
+
+# agenthicc.tui.suggestions
+@dataclass(frozen=True, slots=True)
+class Suggestion: kind: Literal["init", "resume", "attention", "tip"]; text: str; command: str = ""
+TIPS: tuple[Tip, ...]                            # twenty; {key} is read from the keymap
+def static_suggestion(cwd: Path, *, session_id: str, tip_index: int, keymap: Keymap) -> Suggestion: ...
+def current_suggestion(static: Suggestion | None, needs_you: int, hub_key: str = "") -> Suggestion | None: ...
+def tip_for(index: int, keymap: Keymap) -> Suggestion: ...
+def agents_md_missing(cwd: Path) -> bool: ...
+```
+
+Right after the first frame `TUISession._show_welcome` runs the `preflight`
+start-up phase: `prepare_first_run` on a worker thread (the state file, the git
+branch from `HEAD`, `check_session`, the suggestion, whether to ask about the
+directory), then the header and one `Notice` per finding. Nothing is fetched.
+`check_session` is pure apart from reading `cwd` and `env["PATH"]`: a
+credential comes from the selected profile's `api_key`/`SecretReference`/
+`api_key_env`, the `[execution]` equivalents, or `PROVIDER_API_KEY_ENVVAR`
+(`ANTHROPIC_AUTH_TOKEN` also counts for anthropic; a provider with no variable,
+such as Ollama, needs none). `credential_variable` is the one resolver: the `/model`
+picker (`runners.model_switch.model_choice`) calls it for each choice, so a provider is
+offered exactly when a turn on it would pass the check. Only the credential finding is `blocking`:
+`TUISession._blocked_by_credentials` re-checks at each submission, refuses a
+non-slash prompt, prints the notice, puts the text back in the composer and runs
+`/model`. `agenthicc config show` and `/status` print `check_session` too.
+`[ui] banner = "compact" | "full" | "off"` (`UISettings.banner`) selects the
+header; the mascot shows on the first run on a machine (`UserState.first_run`),
+and `what's new: /release-notes` only when the version changed.
+`/release-notes` opens `tui.workspace.overlays.release_notes.ReleaseNotesOverlay`
+(a `Dialog` without options, so its arrows scroll) over `release_notes.select`;
+the changelog is `CHANGELOG.md` beside the docs tree (a checkout's root, or
+`share/agenthicc/docs`). `tui.workspace.overlays.workspace_trust.WorkspaceTrustOverlay`
+asks "Work in <directory>?" once; "Choose another directory…" ends the session
+with `SessionSwitch("directory", path, …)`, which `_run_tui_session` answers
+with a new session there. `/resume` opens the agents hub's History tab.
+`ConversationStore.suggestion: Signal[Suggestion | None]` holds the static
+suggestion; the composer's placeholder is `current_suggestion(...)`, and the
+`composer.accept_suggestion` action (Tab, condition `suggestion`) puts its
+`command` in an empty prompt while `agents.cycle` keeps Tab otherwise.
+
+### Diagnostics log — `agenthicc.tui.diagnostics`
+
+```python
+DIAGNOSTICS_NOTICE = "Diagnostics were written to the log · /logs"
+def diagnostics_log_path(session_id: str) -> Path: ...   # ~/.agenthicc/logs/<session>.log
+class DiagnosticsLog(io.TextIOBase):
+    def __init__(self, path: Path, on_first_write: Callable[[], None] | None = None) -> None: ...
+def install_stderr_sink(sink: DiagnosticsLog) -> None: ...
+def uninstall_stderr_sink() -> None: ...
+def stderr_sink() -> DiagnosticsLog | None: ...
+```
+
+Right after the first frame, `TUISession` installs a `DiagnosticsLog` (unless
+`--debug`, `CLIFlags.debug`): every `warnings.warn` goes to it, and
+`Workspace.redirect_stderr(stream)` / `LiveRegion(stderr=…)` make it
+`sys.stderr` while the live block is up (an external-editor handoff restores
+the real stderr and re-installs it after). The first non-blank write calls
+`on_first_write` once, which shows `DIAGNOSTICS_NOTICE` as a transient notice.
+`fileno()` is the log's, so a child given `sys.stderr` writes into it. `/logs`
+opens the log in the transcript view (TUX-09, below): lines, `WARNING`/`ERROR`
+lines flagged for `{`/`}`, search, copy; there is no turn structure.
+
+Key help: `tui.keymap_phrases.CONDITION_PHRASES` maps every condition in
+`DEFAULT_ACTIONS` to a phrase, `phrase(flag)` and
+`describe_conditions(when, unless)` give `"in Library, except when an agent
+needs approval"`; `HelpEntry.conditions` is that text (`""` for always), so
+the hub's `?` overlay and `/keybindings` never show flag names.
+
+### Transcript view, fullscreen layout and `/rewind` — `agenthicc.tui.transcript`
+
+```python
+# transcript/view.py
+class TranscriptView:
+    def __init__(self, source: TranscriptSource, keymap: Keymap, *, rewind: bool = False,
+                 subtitle: str = "", start: Literal["end", "start", "tool"] = "end") -> None: ...
+    selected: int; expanded: set[int]; job: SearchJob | None
+    def render(self, width: int, height: int) -> list[Text]: ...   # exactly `height` rows
+    def handle_key(self, key: Key, ch: str) -> Outcome: ...         # CLOSE | COPY | PAGER | REWIND
+    def tick(self) -> bool: ...                # picks up appended items and finished searches
+def to_lines(console: Console, rows: Sequence[Text], width: int) -> list[Line]: ...
+
+# transcript/sources.py
+class TranscriptSource(Protocol): ...   # count, rows(item, width, expanded), turn_items, ...
+class SessionLogSource:   def __init__(self, session_id: str, *, ui: UISettings | None = None, title: str = "") -> None: ...
+class TextFileSource:     def __init__(self, path: Path, title: str = "") -> None: ...
+class DocumentSource:     def __init__(self, title: str, renderables: Sequence[RenderableType]) -> None: ...
+
+# transcript/log.py
+class LogIndex:
+    def scan(self, cancel: Event | None = None, *, limit: int | None = None, pause_s: float = 0.0) -> int: ...
+    def search(self, query: str, cancel: Event | None = None, *, pause_s: float = 0.0) -> list[int]: ...
+
+# transcript/host.py
+class TranscriptHost:
+    def __init__(self, view: TranscriptView, console: Console, backend: TerminalBackend, *,
+                 ui: UISettings | None = None, pager: Callable[[str], str] | None = None) -> None: ...
+    async def run(self) -> HostResult: ...          # HostResult(kind="closed" | "rewind", text, turn)
+
+# transcript/controller.py
+class TranscriptController:
+    def open(self, kind: Literal["history", "tool", "logs", "rewind"]) -> None: ...
+    def open_document(self, title: str, renderables: Sequence[RenderableType]) -> None: ...
+
+# transcript/fullscreen.py
+class FullscreenLayout:
+    def rows(self, width: int, height: int) -> list[Text]: ...
+    def scroll(self, action: PaneAction) -> None: ...
+    def print_exit_transcript(self, console: Console) -> int: ...
+
+# transcript/fork.py
+def fork_session(session_id: str, turn: int) -> Fork: ...          # Fork(session_id, draft, turns, memory)
+def write_session_draft(session_id: str, text: str) -> None: ...
+def take_session_draft(session_id: str) -> str: ...
+
+# transcript/clipboard.py
+def osc52_sequence(text: str) -> str: ...
+def copy_text(text: str, *, write: Callable[[str], None], env: Mapping[str, str] | None = None, ...) -> CopyResult: ...
+def run_pager(text: str, env: Mapping[str, str] | None = None) -> str: ...
+```
+
+TUX-09. A full-screen alternate-screen view over the session log. Entered from
+the composer through the input session's terminal handoff (the external
+editor's mechanism), so the composer's text, cursor and history are exactly as
+they were when the view closes; the live block is suspended and the scrollback
+appender held (`ScrollBufferAppender.hold`/`release`) while it is up.
+
+- **Opening.** `Ctrl+T` (`composer.transcript`, also during a turn) opens it on
+  the last tool call, selected and expanded; `/history` opens it at the end;
+  `/logs` opens the diagnostics log (`TextFileSource`, no turns); `/rewind`
+  opens it selecting user turns only; a dialog's `Ctrl+T` opens its full
+  arguments or diff (`DocumentSource`). The imports are lazy: the first frame
+  loads none of it.
+- **Items.** `LogIndex` indexes the log once on a worker thread (1 MiB chunks,
+  four small arrays per item), then follows it as it grows. An item is a log
+  line the scrollback has a renderer for (`appender.has_renderer`); a
+  `compaction_status` item exists only for its result statuses. Events are
+  loaded a window at a time through `load_older_transcript_page`, and drawn by
+  the scrollback's own renderers through `EventRenderer` (`compact` for the
+  rest, `verbose` plus the call's arguments for an expanded item, output cut at
+  64 KiB with "output truncated at 64 KiB").
+- **Keys** (context `transcript_view`, `TRANSCRIPT_VIEW_ACTIONS`): `↑↓`/`j k`,
+  PgUp/PgDn, Home/End (`g`/`G`), `[` `]` previous and next user turn, `{` `}`
+  previous and next failure or error, Enter expand/collapse (or, in `/rewind`,
+  rewind here), `/` search, `n` `N` next and previous hit, `y` copy, `e` pager,
+  `q`/Esc/`Ctrl+T` close. Search is a substring, case-insensitive unless the
+  query has capitals, over user text, assistant text, tool summaries and
+  output, run on a worker thread in 1 MiB chunks (`pause_s` hands the
+  interpreter to the event loop between chunks).
+- **Copy and pager.** `y` writes OSC 52 (`osc52_sequence`, at most 74,994
+  bytes), or runs `pbcopy`/`wl-copy`/`xclip`/`xsel`/`clip.exe` when `TERM` is
+  `linux`/`dumb`; `e` leaves the alternate screen for `$PAGER`, else `$EDITOR`
+  (`-R` for the vi family, on a private read-only file), else `less`.
+- **`/rewind`.** Enter on turn N opens a TUX-07 `Dialog` ("Edit and resend from
+  here", "Copy the prompt"; "files are not restored"). Edit forks:
+  `fork_session` copies the log up to turn N's prompt and the conversation
+  journal up to the record that opened it, never touching the original, and
+  writes the prompt as a draft; the session ends with
+  `SessionSwitch("fork", new_id, …)`, `_run_tui_session` continues in the fork
+  without reopening the original, and the new composer starts with the draft
+  (`take_session_draft`).
+- **Fullscreen layout.** `[ui] layout = "inline" | "fullscreen"` (default
+  `inline`; `UISettings.fullscreen` is false under `screen_reader`) and
+  `/fullscreen`. `Workspace.enter_fullscreen`/`leave_fullscreen` take the
+  alternate screen; the pane (`PaneView`, the view's engine without chrome)
+  follows the session log over the docked composer and status line, and what is
+  printed to the console meanwhile (the welcome header first) is captured
+  (`ConsoleCapture`, `NotedSource`) and shown in order. PgUp/PgDn, Shift+↑/↓
+  and the wheel scroll it (`ScrollPaneCommand`); scrolling up stops following
+  and shows `↓ N new · End to follow`; End follows again. Leaving prints what
+  the normal screen has not seen in `compact` form. Conditions `fullscreen`,
+  `scrolled` come from `ConversationStore.fullscreen`/`pane_scrolled`.
 
 ### LoopLagMonitor
 
@@ -1968,7 +2735,8 @@ pickers, and a `UnifiedInputSession` with the main composer's capabilities.
   with no running loop it dispatches synchronously.
 - `on_submit(text)` returns whether to clear the prompt.
 - `ComposerContext(cwd, cfg, commands, workflows, keymap, history,
-  session_id, mode_name)` scopes the pickers;
+  session_id, mode_name, terminal_hooks)` scopes the pickers; its
+  `terminal_hooks.handoff` lends the host's terminal to Ctrl+X Ctrl+E;
   `load_composer_context(cwd, launch=...)` builds one for a directory
   (blocking).
 - `ANSWER_EXCLUDED()` lists the capabilities an answer leaves out: Ctrl+C,
@@ -2010,6 +2778,98 @@ class QuestionForm:
 In the agents hub, `i` on a question or input item opens `AnswerView`, which
 delivers `{"answers": {...}}` or `{"answer": text}` at the version shown. A
 failed send keeps the form open, and Esc keeps its progress.
+
+### Motion, feedback and terminal integration (TUX-10)
+
+```python
+# agenthicc.tui.activity — the state segment's words (pure)
+def tool_verb(presentation: ToolPresentation) -> str: ...        # "Reading", "Running", "Editing"…
+def activity_text(verb: str, target: str) -> str: ...            # "Reading src/app.py"
+def waiting_reason(kind: str, tool_name: str, *, workspace_access: bool = False) -> str: ...
+def retry_text(attempt: int, max_retries: int, seconds_left: int) -> str: ...  # "Retrying (2/5) in 8s"
+
+# agenthicc.tui.turn_summary — what a turn did, written on turn_complete
+def summarize_turn(events: Iterable[ConversationEvent]) -> dict[str, object]: ...
+#   tools, wrote, files, added, removed, failed
+
+# agenthicc.tui.terminal.osc — control-sequence builders (pure)
+class ProgressState(IntEnum): CLEAR = 0; DETERMINATE = 1; ERROR = 2; INDETERMINATE = 3
+def title(text: str) -> str: ...                       # OSC 2
+def progress(state: ProgressState, percent: int = 0) -> str: ...   # OSC 9;4
+def notification(mode: str, summary: str, heading: str = "agenthicc") -> str: ...
+def notify_mode(setting: str, env: Mapping[str, str]) -> str: ...   # osc9 | osc777 | bell | off
+def progress_supported(env: Mapping[str, str]) -> bool: ...
+def hyperlinks_supported(env: Mapping[str, str]) -> bool: ...
+def sanitize(text: str, limit: int = 240) -> str: ...
+TITLE_PUSH: str; TITLE_POP: str; BELL: str
+
+# agenthicc.tui.terminal.hyperlinks — the one OSC 8 helper
+@dataclass(frozen=True)
+class Hyperlinks:
+    enabled: bool; root: Path; editor: str = ""
+    @classmethod
+    def for_state(cls, app_state, *, backend: TerminalBackend | None = None) -> Hyperlinks: ...
+    def url(self, path: str | Path, line: int | None = None) -> str | None: ...
+    def style(self, path, line=None) -> Style | None: ...
+    def style_if_exists(self, path, line=None) -> Style | None: ...
+    def linkify(self, text: Text) -> Text: ...          # existing files and URLs
+def autolink_urls(markdown: str) -> str: ...
+def links_enabled(mode: str, *, supported: bool, screen_reader: bool = False) -> bool: ...
+EDITOR_SCHEMES: Mapping[str, str]                       # vscode, cursor, zed, idea
+
+# agenthicc.tui.notifications
+class NotificationSink:        # the one exit for terminal notifications
+    def __init__(self, backend, app_state, *, env=None, clock=time.monotonic) -> None: ...
+    def send(self, kind: str, summary: str) -> bool: ...
+    def background(self, kind: str, summary: str) -> None: ...   # AgentAttentionRouter's entry
+class TurnNotifier:            # an away user: a request over 10 s, a failure, an approval
+    def __init__(self, app_state, sink) -> None: ...
+    def start(self) -> None: ...; def stop(self) -> None: ...; def away(self, ran_for_s: float) -> bool: ...
+class TerminalPresence:        # window title + OSC 9;4 progress
+    def __init__(self, app_state, backend, *, clock=time.monotonic) -> None: ...
+    def start(self) -> None: ...; def update(self) -> None: ...; def stop(self) -> None: ...
+    def title_text(self) -> str: ...
+PRIORITY: Mapping[str, int]    # the routing table: approval/needs 3, failed 2, done/finished 1
+NOTIFY_AFTER_S = 10.0; UNKNOWN_FOCUS_AFTER_S = 30.0
+
+# agenthicc.tui.shortcuts and tui.workspace.overlays.shortcuts
+def shortcut_groups(keymap: Keymap) -> tuple[ShortcutGroup, ...]: ...
+class ShortcutsOverlay(Overlay): ...                    # /shortcuts, ? on an empty prompt
+```
+
+- **Backend.** `TerminalBackend` gains `write_control(sequence)` (writes only to
+  a terminal, never to a pipe or under `--headless`), `supports_progress()` and
+  `supports_hyperlinks()`; `PosixBackend` and `WindowsBackend` implement them.
+- **State segment.** `RunningTool.verb` carries the tool's verb; `StatusLine`
+  reads `Reading src/app.py`, `Running npm test`, `Editing …`, `Working with N
+  agents`, `Retrying (2/5) in 8s` (`ConversationStore.begin_retry`, the `retry`
+  signal and `RetryNotice`) or `◆ Waiting for you · approve a command`. The
+  elapsed time shows after 3 s and `↓ 2.1k tokens` after 10 s
+  (`ConversationStore.activity_tokens_out()`). The flower and the bold sweep
+  over `Thinking` are unchanged; compaction keeps its own row (`running_rows`).
+- **Turn end.** `ConversationStore.close_turn(error=None, interrupted=False)`
+  writes `summarize_turn(...)` and `interrupted` on `turn_complete`; the
+  appender prints `✾ Worked for 1m 12s | 10:20 AM` plus `└ 6 tools · edited 3
+  files +34 −8`, `✾ Interrupted after 22s | …` plus `└ 2 tools ran · nothing
+  was changed`, or `✾ Stopped after 8s | …`; no row for a turn under 5 s that
+  ran no tool, and no `Done in` for an interrupted or failed request.
+  `diff_renderer.diff_counts(old, new)` gives `(added, removed)`.
+- **Focus.** `ConversationStore.terminal_focus_known` is true once the terminal
+  has reported a focus change; `terminal_focused` is only the starting guess
+  until then.
+- **Attention router.** `AgentAttentionRouter(send_terminal_notification=
+  Callable[[kind, summary], None])` no longer sets the window title and
+  `_emit_terminal_notification` is gone: its notifications go through
+  `NotificationSink.background`.
+- **Settings.** `[ui] notify = "auto" | "osc" | "bell" | "off"`,
+  `window_title = true`, `hyperlinks = "auto" | "on" | "off"` and
+  `editor_links = "" | "vscode" | "cursor" | "idea" | "zed"` (`config.UISettings`).
+- **Keys.** `composer.shortcuts` (`?`, while the prompt is empty, rebindable)
+  and `OpenShortcutsCommand`; the hint row and the status line end with
+  `? shortcuts`.
+- **Hyperlinks.** `Notice(links=Hyperlinks | None)` links the files and URLs a
+  notice names; `render_file_diff(..., link=Style)`; `path_label(path, links)`
+  and `TranscriptView(..., links=)` link the transcript view's title.
 
 ## Historical TUI API — not in the current checkout
 
@@ -2951,12 +3811,13 @@ numeric string, and `default` otherwise.
 
 `ApprovalRequest.mode_options` advertises canonical execution modes to a
 plan-review overlay. The built-in `code_plan` planner sets it to
-`("Safe", "Yolo")`, so the overlay presents `Approve - Safe` and
-`Approve - YOLO`. `ApprovalResponse.mode` carries the selected mode back to
+`("Safe", "Yolo")`, so the dialog presents `Approve and run in Safe mode` and
+`Approve and run in Yolo mode` (TUX-07), then `Keep planning` and `Reject, with
+feedback`. `ApprovalResponse.mode` carries the selected mode back to
 the planner; the code-plan context stores it as `execute_mode` and applies it
 to every execute-phase turn. Missing or invalid mode values fail closed to
-`Safe`. Legacy plan-review requests omit `mode_options` and retain the
-original approval choices.
+`Safe`. Plan-review requests without `mode_options` offer `Approve`, `Keep planning`
+and `Reject, with feedback`; Tab adds a note to any choice.
 
 ## Workflow authoring — `agenthicc.workflows.create_workflow`
 
@@ -3590,7 +4451,6 @@ class SubagentSettings:
     max_workers: int = 32
     max_tool_calls: int = 256
     max_iterations: int = 128
-    max_tokens: int = 200_000
     max_total_time_s: float = 600.0
     on_budget_exceeded: Literal["abort", "drain"] = "drain"
     stop_grace_s: float = 5.0
@@ -3606,8 +4466,11 @@ class SubagentSettings:
     def limits_for_depth(self, depth: int) -> tuple[int, int, str, str]: ...
 ```
 
-`max_tool_calls`, `max_iterations`, `max_tokens` and `max_total_time_s` are
-*operator ceilings*: armed for every pool by default. `max_budget` caps what a
+`max_tool_calls`, `max_iterations` and `max_total_time_s` are *operator
+ceilings*: armed for every pool by default. There is no token ceiling:
+subagents may use as many tokens as their tasks need, and each worker reply may
+be as long as `[execution] max_output_tokens` allows (`subagents.max_tokens`
+and `max_budget.tokens` are refused at load). `max_budget` caps what a
 per-call `spawn_subagents(budget=...)` declaration may request.
 
 ### SubagentBudgetCeiling
@@ -3615,7 +4478,6 @@ per-call `spawn_subagents(budget=...)` declaration may request.
 ```python
 @dataclass(frozen=True)
 class SubagentBudgetCeiling:
-    tokens: int | None = None
     cost_usd: float | None = None
     wall_clock_s: float | None = None
 ```
@@ -3817,15 +4679,15 @@ AGI-02 adds two behaviours:
 - `close_expired(item_id, status, reason)` closes an expired question as
   `delivered` (answered late) or `rejected` (dismissed). The agents hub lists
   an expired question for a running session on the same attempt as
-  `◇ answer late`. Answering it enqueues one input message beginning
+  `◆ answer late` (not bold). Answering it enqueues one input message beginning
   "Late answers to your earlier questions…" and closes the item as
   delivered; `x` dismisses it.
 
 `BackgroundApprovalService(store, session_id, *, question_timeout_s=None,
 auto_approve_capabilities=False)`:
 - `question_timeout_s=None` (the default) makes `ask_user` wait for the
-  operator; the worker passes `[background] question_timeout_s` when it is
-  non-zero.
+  operator; the worker passes `[background] question_timeout_s` (300 s by
+  default) when it is non-zero.
 - `auto_approve_capabilities` (used for `--dangerously-skip-permissions`)
   grants tool approvals at once, still denies workspace access outside the
   project, and still publishes questions to the inbox.
@@ -3911,6 +4773,16 @@ mode, queries whose words are all at least three characters use quoted trigram
 against the stored lowercase text. `invalidate_index()` makes the next read
 re-check the log; `close()` closes the index connection; `cancel_rebuild()` stops
 a rebuild in progress, which raises `IndexRebuildCancelled` and rolls back.
+Several agenthicc processes share one registry. Every change to the log or the
+index, including a reader's catch-up, is made under the cross-process
+`registry.lock` (an `flock`, reentrant within one store), so instances queue
+for one another instead of timing out in SQLite with `database is locked`.
+`compact(*, force=False) -> bool` rewrites `events.jsonl` as one `created`
+event per session, deleted ones included, with sequence numbers continuing,
+and atomically replaces the file. Other processes see the new inode and rebuild
+from the small file. It runs by itself after an append once the log exceeds
+`COMPACT_THRESHOLD_BYTES` (64 MiB) and `COMPACT_GROWTH_FACTOR` (4) times its
+compacted size.
 A registry from before the index is
 migrated once by importing its `projection-v1.json` snapshot and replaying the
 log after it; the snapshot is then deleted. An append whose index update finds
@@ -4524,7 +5396,7 @@ Executes one SubagentTask using an isolated AgentRunnerBase instance.
 
 ```python
 class SubagentPool:
-    def __init__(self, tasks, parent_runner, parent_model, all_tools, max_concurrent=4, …, transcript_root: Path | None = None, max_workers: int = 32, max_tool_calls: int = 256, max_iterations: int = 128, max_tokens: int = 200_000, max_total_time_s: float = 600.0, on_budget_exceeded: WorkerStopMode = "drain", stop_grace_s: float = 5.0) -> None: ...
+    def __init__(self, tasks, parent_runner, parent_model, all_tools, max_concurrent=4, …, transcript_root: Path | None = None, max_workers: int = 32, max_tool_calls: int = 256, max_iterations: int = 128, max_total_time_s: float = 600.0, on_budget_exceeded: WorkerStopMode = "drain", stop_grace_s: float = 5.0) -> None: ...
     async def run(self) -> AggregatedResult: ...
     @property
     def state(self) -> SubagentPoolState: ...
@@ -4731,7 +5603,6 @@ class PoolUsage:
 
 @dataclass(frozen=True, slots=True)
 class PoolBudget:
-    tokens: int | None = None
     cost_usd: float | None = None
     wall_clock_s: float | None = None
 
@@ -4747,7 +5618,7 @@ def pool_usage(ledger: UsageLedger | None, pool_id: str) -> PoolUsage: ...
 def worker_usage(ledger: UsageLedger | None, pool_id: str, task_id: str) -> PoolUsage: ...
 def parse_budget(value: object) -> PoolBudget: ...  # raises BudgetError naming the field
 def resolve_budget(declared: PoolBudget, *, ceiling: PoolBudget,
-                   operator_tokens: int, operator_wall_clock_s: float) -> EffectiveBudget: ...
+                   operator_wall_clock_s: float) -> EffectiveBudget: ...
 def model_has_known_price(model: str) -> bool: ...
 def budget_report(usage: PoolUsage, budget: EffectiveBudget | None, *,
                   crossed_reason: str = "", stop_mode: str = "") -> dict[str, object]: ...
@@ -4776,7 +5647,9 @@ Completed ledger spend for one pool or worker.
 
 ### PoolBudget
 
-Per-pool limits; `None` leaves a unit unlimited at that layer.
+Per-pool limits (`cost_usd`, `wall_clock_s`); `None` leaves a unit unlimited
+at that layer. There is no token unit: subagents have no token limit, and a
+`tokens` budget key is refused (`BudgetError`).
 
 ### EffectiveBudget
 
@@ -5201,6 +6074,8 @@ class ExtensionTrust:
     def trust(self, path: Path, *, kind: str) -> TrustRecord: ...
     def revoke(self, path: Path) -> bool: ...
     def records(self) -> tuple[TrustRecord, ...]: ...
+    def workspace_decision(self, directory: Path) -> WorkspaceDecision | None: ...   # TUX-03
+    def remember_workspace(self, directory: Path, decision: str) -> WorkspaceDecision: ...
 ```
 
 Decides whether an extension file may be imported and records trust. `check`
@@ -5208,6 +6083,22 @@ returns why a file may not be imported (`"not trusted"`, `"changed since it was
 trusted"` or `"unreadable: ..."`); `permits` logs that reason and returns
 `False`. The store is written atomically with mode `0600`; an unreadable store
 trusts nothing.
+
+### WorkspaceDecision
+
+```python
+@dataclass(frozen=True)
+class WorkspaceDecision:
+    path: str          # the resolved directory
+    decision: str      # "allow" or "plan" (start in Plan mode)
+    decided_at: str
+```
+
+The user's answer to "Work in <directory>?" (TUX-03), stored per directory in
+the `workspaces` list of `~/.agenthicc/trust.json`, next to the extension
+records. `ExtensionTrust.remember_workspace(directory, decision)` raises
+`ValueError` for any other decision; rewriting the extension records keeps the
+workspace answers and the other way round.
 
 ### TrustRecord
 

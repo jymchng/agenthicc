@@ -67,11 +67,13 @@ async def test_an_editor_without_a_hub_ignores_the_gesture() -> None:
     assert state.input.buf() == []
 
 
-def test_the_footer_names_the_hub_key() -> None:
-    from agenthicc.tui.workspace.components import FooterComponent
+def test_the_attention_segment_names_the_hub_key() -> None:
+    from agenthicc.tui.workspace.components import StatusLine
 
-    hints = " ".join(FooterComponent(AppState.create()).markup_lines(200))
-    assert "Ctrl+G" in hints and "agents" in hints
+    state = AppState.create()
+    assert "←" not in StatusLine(state).markup(200)  # nothing needs the user
+    state.conversation.background_needs_you.set(1)
+    assert "1 session needs you ←" in StatusLine(state).markup(200)
 
 
 # ── the session ──────────────────────────────────────────────────────────────

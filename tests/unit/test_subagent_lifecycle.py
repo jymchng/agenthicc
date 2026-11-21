@@ -809,9 +809,9 @@ async def test_a_retry_is_refused_when_the_pool_budget_is_used_up(
     assert pool.retry_refusal("w") == ""
 
     before = pool.lifecycle("w")
-    pool._token_count = pool._max_tokens
+    pool._tool_call_count = pool._max_tool_calls
     refusal = pool.retry_refusal("w")
-    assert "budget is used up" in refusal and "max_tokens" in refusal
+    assert "budget is used up" in refusal and "max_tool_calls" in refusal
     assert await pool.retry_worker("w") is None
     assert pool.lifecycle("w") == before
 

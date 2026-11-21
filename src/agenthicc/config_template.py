@@ -241,6 +241,11 @@ def build_commented_config_template() -> str:
             _browser_section(lines, "cloakbrowser", value.cloakbrowser)
             _browser_section(lines, "playwright", value.playwright)
             _mcp_server(lines)
+        elif name == "ui":
+            _section(lines, "ui")
+            _dataclass_fields(lines, value, skip=frozenset({"statusline_command"}))
+            _section(lines, "ui.statusline")
+            _comment(lines, 'command = ""  # replaces the status line\'s segments 3-7 (TUX-02)')
         else:
             _section(lines, name)
             _dataclass_fields(lines, value)
@@ -262,7 +267,6 @@ def build_commented_config_template() -> str:
     _field(lines, "max_workers", 32, "maximum worker count in one pool")
     _field(lines, "max_tool_calls", 256, "maximum tool calls across one pool")
     _field(lines, "max_iterations", 128, "maximum worker iterations across one pool")
-    _field(lines, "max_tokens", 200_000, "maximum tokens across one pool")
     _field(lines, "max_total_time_s", 600.0, "wall-clock budget for one pool")
     _field(lines, "on_budget_exceeded", "drain", "abort or let active workers finish")
     _field(lines, "stop_grace_s", 5.0, "worker cleanup grace period")

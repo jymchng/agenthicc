@@ -55,10 +55,20 @@ class TestDecodeKeyEvent:
         assert _decode_key_event(_VK_RETURN, "\r", 0) == (Key.ENTER, "")
 
     def test_ctrl_enter_left(self) -> None:
-        assert _decode_key_event(_VK_RETURN, "", _LEFT_CTRL_PRESSED) == (Key.CTRL_ENTER, "")
+        assert _decode_key_event(_VK_RETURN, "", _LEFT_CTRL_PRESSED) == (
+            Key.MODIFIED,
+            "ctrl+enter",
+        )
 
     def test_ctrl_enter_right(self) -> None:
-        assert _decode_key_event(_VK_RETURN, "", _RIGHT_CTRL_PRESSED) == (Key.CTRL_ENTER, "")
+        assert _decode_key_event(_VK_RETURN, "", _RIGHT_CTRL_PRESSED) == (
+            Key.MODIFIED,
+            "ctrl+enter",
+        )
+
+    def test_shift_enter_is_its_own_key(self) -> None:
+        """TUX-04 §2.1: the console reports Shift+Enter, so it inserts a newline."""
+        assert _decode_key_event(_VK_RETURN, "\r", _SHIFT_PRESSED) == (Key.SHIFT_ENTER, "")
 
     def test_backspace_vk(self) -> None:
         assert _decode_key_event(_VK_BACK, "\x08", 0) == (Key.BACKSPACE, "")

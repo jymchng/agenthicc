@@ -1,6 +1,6 @@
 """Unit tests for the slash-command trigger (PRD-40).
 
-Covers SlashCommandTrigger (get_matches, on_select, on_cancel, get_hint) and
+Covers SlashCommandTrigger (get_matches, on_select, on_enter, get_hint) and
 CommandRegistry (register, dedup, groups, unregister, matches, len) including
 the build_default_registry factory.
 """
@@ -88,17 +88,16 @@ def test_get_matches_prefix_slash_included():
     assert matches[0].value == "/model"
 
 
-def test_get_matches_display_contains_name_and_description():
+def test_get_matches_rows_carry_name_and_description():
     reg = _reg(CommandSpec("/status", "Show running agents"))
     t = SlashCommandTrigger(reg)
     matches = t.get_matches("", CTX)
     assert matches
-    # display should contain both the command name and description
-    assert "/status" in matches[0].display
-    assert "Show running agents" in matches[0].display
+    assert matches[0].label == "/status"
+    assert matches[0].detail == "Show running agents"
 
 
-def test_get_matches_sorted_alphabetically():
+def test_get_matches_sorted_alphabetically_within_a_group():
     reg = _reg(
         CommandSpec("/zebra", "Z command"),
         CommandSpec("/alpha", "A command"),
@@ -117,7 +116,7 @@ def test_on_select_inserts_command():
     from agenthicc.tui.trigger import TriggerResult
 
     t = SlashCommandTrigger(_reg(CommandSpec("/model", "Switch")))
-    item = MatchItem(display="/model  Switch", value="/model")
+    item = MatchItem(value="/model", label="/model", detail="Switch")
     result = t.on_select(item, "mod", [])
     assert isinstance(result, TriggerResult)
     assert "".join(result.buffer) == "/model"
@@ -128,7 +127,7 @@ def test_on_select_inserts_into_existing_buf():
     from agenthicc.tui.trigger import TriggerResult
 
     t = SlashCommandTrigger(_reg(CommandSpec("/model", "Switch")))
-    item = MatchItem(display="/model  Switch", value="/model")
+    item = MatchItem(value="/model", label="/model", detail="Switch")
     result = t.on_select(item, "mod", list("run "))
     assert isinstance(result, TriggerResult)
     assert "".join(result.buffer) == "run /model"
@@ -161,71 +160,75 @@ def test_on_select_none_preserves_existing_buf():
     assert "".join(result.buffer) == "hello /foo"
 
 
-# ── SlashCommandTrigger.on_cancel ────────────────────────────────────────────
+# ── SlashCommandTrigger.on_enter (TUX-04 §2.5) ──────────────────────────────
 
 
-def test_on_cancel_restores_slash_fragment():
-    t = SlashCommandTrigger(CommandRegistry())
-    buf = t.on_cancel("mod", [])
-    assert "".join(buf) == "/mod"
+def _enter_registry():
+    from agenthicc.commands import Command, UnifiedCommandRegistry
+
+    registry = UnifiedCommandRegistry()
+    registry.register(Command("/status", "Show status"))
+    registry.register(Command("/help", "Help", argument_hint="[/command]"))
+    registry.register(Command("/open", "Open a thing", argument_hint="<name> | list"))
+    registry.register(
+        Command("/env", "Pick an environment", completions_factory=lambda _p: ["dev", "prod"])
+    )
+    return registry
 
 
-def test_on_cancel_empty_fragment():
-    t = SlashCommandTrigger(CommandRegistry())
-    buf = t.on_cancel("", [])
-    assert "".join(buf) == "/"
+@pytest.mark.parametrize("name", ["/status", "/help"])
+def test_on_enter_places_a_picked_command_without_running_it(name: str):
+    t = SlashCommandTrigger(_enter_registry())
+    result = t.on_enter(MatchItem(value=name, label=name), name[1:3], list("x\n"))
+    assert "".join(result.buffer) == f"x\n{name}"
+    assert result.submit is False and result.keep_open is False
 
 
-def test_on_cancel_preserves_existing_buf():
-    t = SlashCommandTrigger(CommandRegistry())
-    buf = t.on_cancel("cancel", list("please "))
-    assert "".join(buf) == "please /cancel"
+@pytest.mark.parametrize("name", ["/status", "/help"])
+def test_on_enter_sends_a_command_that_was_typed_in_full(name: str):
+    t = SlashCommandTrigger(_enter_registry())
+    result = t.on_enter(MatchItem(value=name, label=name), name[1:], [])
+    assert "".join(result.buffer) == name
+    assert result.submit is True
+
+
+@pytest.mark.parametrize("name", ["/open", "/env"])
+def test_on_enter_completes_a_command_that_needs_an_argument(name: str):
+    t = SlashCommandTrigger(_enter_registry())
+    result = t.on_enter(MatchItem(value=name, label=name), "", [])
+    assert "".join(result.buffer) == f"{name} "
+    assert result.keep_open is True and result.submit is False
+
+
+def test_on_enter_places_a_chosen_argument_completion_without_running_it():
+    t = SlashCommandTrigger(_enter_registry())
+    result = t.on_enter(MatchItem(value="/env dev", label="/env dev"), "env d", [])
+    assert "".join(result.buffer) == "/env dev"
+    assert result.submit is False and result.keep_open is False
+
+
+def test_on_enter_sends_an_argument_completion_typed_in_full():
+    t = SlashCommandTrigger(_enter_registry())
+    result = t.on_enter(MatchItem(value="/env dev", label="/env dev"), "env dev", [])
+    assert result.submit is True
+
+
+def test_on_enter_without_a_match_sends_the_literal_text():
+    t = SlashCommandTrigger(_enter_registry())
+    result = t.on_enter(None, "unknown", list("please "))
+    assert "".join(result.buffer) == "please /unknown"
+    assert result.submit is True
 
 
 # ── SlashCommandTrigger.get_hint ─────────────────────────────────────────────
 
 
-def test_get_hint_returns_argument_hint_when_set():
+def test_get_hint_is_none_the_row_shows_its_detail():
+    """TUX-05: the repeated hint line under the picker is gone."""
     reg = _reg(CommandSpec("/model", "Switch model", argument_hint="[provider] [model]"))
     t = SlashCommandTrigger(reg)
-    matches = t.get_matches("mod", CTX)
-    assert matches
-    hint = t.get_hint(matches[0])
-    assert hint is not None
-    assert "[provider]" in hint
-    assert "[model]" in hint
-
-
-def test_get_hint_contains_description():
-    reg = _reg(CommandSpec("/model", "Switch model", argument_hint="[provider] [model]"))
-    t = SlashCommandTrigger(reg)
-    matches = t.get_matches("mod", CTX)
-    assert matches
-    hint = t.get_hint(matches[0])
-    assert "Switch model" in hint
-
-
-def test_get_hint_no_argument_hint_still_returns_something():
-    """Commands without argument_hint still get a hint (just name + description)."""
-    reg = _reg(CommandSpec("/status", "Show status"))
-    t = SlashCommandTrigger(reg)
-    matches = t.get_matches("", CTX)
-    assert matches
-    hint = t.get_hint(matches[0])
-    assert hint is not None
-    assert "/status" in hint
-
-
-def test_get_hint_none_when_no_item():
-    t = SlashCommandTrigger(CommandRegistry())
+    assert t.get_hint(t.get_matches("mod", CTX)[0]) is None
     assert t.get_hint(None) is None
-
-
-def test_get_hint_none_when_item_hint_empty():
-    """An item with an empty hint string causes get_hint to return None."""
-    t = SlashCommandTrigger(CommandRegistry())
-    item = MatchItem(display="x", value="x", hint="")
-    assert t.get_hint(item) is None
 
 
 # ── CommandRegistry ───────────────────────────────────────────────────────────
@@ -254,25 +257,25 @@ def test_command_registry_dedup_last_wins():
 
 def test_command_registry_groups_order():
     reg = CommandRegistry()
-    reg.register(CommandSpec("/a", "A", group="Built-in"))
+    reg.register(CommandSpec("/a", "A", group="Session"))
     reg.register(CommandSpec("/b", "B", group="Skills"))
     reg.register(CommandSpec("/c", "C", group="MCP"))
     groups = reg.groups()
-    assert "Built-in" in groups
+    assert "Session" in groups
     assert "Skills" in groups
     assert "MCP" in groups
-    assert groups.index("Built-in") < groups.index("Skills")
+    assert groups.index("Session") < groups.index("Skills")
     assert groups.index("Skills") < groups.index("MCP")
 
 
 def test_command_registry_groups_only_present():
     """groups() only returns groups that actually have commands."""
     reg = CommandRegistry()
-    reg.register(CommandSpec("/a", "A", group="Built-in"))
+    reg.register(CommandSpec("/a", "A", group="Session"))
     groups = reg.groups()
     assert "Skills" not in groups
     assert "Plugins" not in groups
-    assert "Built-in" in groups
+    assert "Session" in groups
 
 
 def test_command_registry_unregister():
@@ -343,12 +346,12 @@ def test_command_registry_all_commands_sorted():
 
 def test_command_registry_commands_for_group():
     reg = CommandRegistry()
-    reg.register(CommandSpec("/a", "A", group="Built-in"))
+    reg.register(CommandSpec("/a", "A", group="Session"))
     reg.register(CommandSpec("/b", "B", group="Skills"))
-    reg.register(CommandSpec("/c", "C", group="Built-in"))
-    builtin = reg.commands_for_group("Built-in")
-    assert len(builtin) == 2
-    assert all(c.group == "Built-in" for c in builtin)
+    reg.register(CommandSpec("/c", "C", group="Session"))
+    session = reg.commands_for_group("Session")
+    assert len(session) == 2
+    assert all(c.group == "Session" for c in session)
 
 
 def test_command_registry_register_many():
@@ -393,7 +396,7 @@ def test_build_default_registry_mcp_group():
 def test_build_default_registry_groups_include_builtin():
     reg = build_default_registry()
     groups = reg.groups()
-    assert "Built-in" in groups
+    assert groups[:4] == ["Session", "Agents", "Workflows", "Configuration"]
 
 
 def test_legacy_completion_registry_uses_canonical_command_objects():

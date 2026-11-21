@@ -1,6 +1,6 @@
 ---
 title: "BEAU-3: Tool Activity, Exploratory Groups, and File Changes"
-status: Proposed
+status: "Proposed; visual blocks (§4) superseded by TUX-06"
 version: 2.0.0
 created: 2026-10-31
 scope: "specify render blocks for tool_complete, generic overflow, PRD-161 exploratory groups, and file_modified"

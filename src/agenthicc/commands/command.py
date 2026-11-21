@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Callable, TYPE_CHECKING
+from typing import Callable, Literal, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -30,9 +30,13 @@ if TYPE_CHECKING:
     from agenthicc.tui.loop_lag import LoopLagMonitor
     from agenthicc.tui.workspace.frames import FrameStats
     from agenthicc.schedules.manager import ScheduleManager
+    from agenthicc.tui.workspace.notice import Severity
     from agenthicc.memory.tool_history import ToolHistoryRecoveryState
+    from agenthicc.runners.model_switch import ModelChoice
+    from agenthicc.tui.conversation_store import AppState
 
 __all__ = [
+    "COMMAND_GROUPS",
     "Command",
     "CommandContext",
     "CommandHandler",
@@ -54,6 +58,19 @@ class BusyPolicy(StrEnum):
 
 
 BusyPolicyResolver = Callable[[str], BusyPolicy]
+
+#: Picker and help headings, in display order (TUX-05 §2.2). Built-in
+#: commands are assigned one of the first four in ``commands/builtins.py``;
+#: a command that names no group is an extension and shows under Plugins.
+COMMAND_GROUPS: tuple[str, ...] = (
+    "Session",
+    "Agents",
+    "Workflows",
+    "Configuration",
+    "Skills",
+    "Plugins",
+    "MCP",
+)
 
 
 @dataclass(frozen=True)
@@ -137,6 +154,42 @@ class CommandContext:
     select_agent: "Callable[[str], str] | None" = None
     #: Shows the primary-agent picker (AGX-09); TUI only.
     open_agent_picker: "Callable[[], None] | None" = None
+    #: Uses a provider/model from the next turn and says so (TUX-05); TUI only.
+    switch_model: "Callable[[ModelChoice], str] | None" = None
+    #: Saves a provider/model as the default in the user configuration (TUX-05).
+    save_model: "Callable[[ModelChoice], str] | None" = None
+    #: The TUI's presentation state, for ``/status`` (TUX-02); TUI only.
+    app_state: "AppState | None" = None
+    #: Opens the transcript view: ``history``, ``logs`` or ``rewind`` (TUX-09); TUI only.
+    open_transcript: Callable[[Literal["history", "logs", "rewind"]], None] | None = None
+    #: Switches the fullscreen layout for the session; returns whether it is now on (TUX-09).
+    toggle_fullscreen: Callable[[], bool] | None = None
+
+    #: Shows a transient status-line notice (TUX-08); TUI only.
+    transient_notify: "Callable[[Severity, str], object] | None" = None
+
+    def notify(
+        self,
+        severity: "Severity",
+        text: str,
+        *,
+        body: str = "",
+        actions: tuple[str, ...] = (),
+    ) -> None:
+        """Report a command's usage, error or result as one notice (TUX-08).
+
+        An ``error`` or ``warning`` — and anything with a *body* — is a
+        persistent notice printed with the command's output. A one-line
+        ``info`` or ``success`` confirmation goes to the status line for a
+        few seconds when the session offers one (``transient_notify``), and is
+        printed as a notice otherwise (headless, tests).
+        """
+        if severity in ("info", "success") and not body and self.transient_notify is not None:
+            self.transient_notify(severity, text)
+            return
+        from agenthicc.tui.workspace.notice import Notice
+
+        self.console.print(Notice(severity, text, body, actions), highlight=False)
 
 
 # A handler takes a CommandContext and returns True if it handled the command.
@@ -155,7 +208,7 @@ class Command:
 
     name: str  # canonical name, e.g. "/config" or "$review-code"
     description: str  # shown in dropdown right column
-    group: str = "Built-in"  # "Built-in" | "Skills" | "Plugins" | "MCP"
+    group: str = "Plugins"  # one of COMMAND_GROUPS
     aliases: tuple[str, ...] = field(default_factory=tuple)  # e.g. ("/cfg",) or ("$review",)
     argument_hint: str = ""  # e.g. "[section.key=value]"
 

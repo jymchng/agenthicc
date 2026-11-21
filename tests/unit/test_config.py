@@ -444,7 +444,7 @@ class TestSubagentLifecycleSettings:
         assert defaults.subagents.max_concurrent == 16
         assert defaults.subagents.max_tool_calls == 256
         assert defaults.subagents.max_iterations == 128
-        assert defaults.subagents.max_tokens == 200_000
+        assert not hasattr(defaults.subagents, "max_tokens")  # subagents have no token limit
         assert defaults.subagents.max_total_time_s == 600.0
         assert defaults.subagents.on_budget_exceeded == "drain"
         assert defaults.subagents.stop_grace_s == 5.0
@@ -458,7 +458,6 @@ class TestSubagentLifecycleSettings:
             max_concurrent = 3
             max_tool_calls = 48
             max_iterations = 24
-            max_tokens = 50000
             max_total_time_s = 90.0
             on_budget_exceeded = "abort"
             stop_grace_s = 2.5
@@ -470,7 +469,6 @@ class TestSubagentLifecycleSettings:
         assert config.subagents.max_concurrent == 3
         assert config.subagents.max_tool_calls == 48
         assert config.subagents.max_iterations == 24
-        assert config.subagents.max_tokens == 50_000
         assert config.subagents.max_total_time_s == 90.0
         assert config.subagents.on_budget_exceeded == "abort"
         assert config.subagents.stop_grace_s == 2.5
@@ -485,7 +483,7 @@ class TestSubagentLifecycleSettings:
             "max_workers = 0",
             "max_concurrent = 4\nmax_workers = 2",
             "max_iterations = 1.5",
-            "max_tokens = true",
+            "max_tokens = 200000",
             "max_total_time_s = inf",
         ),
     )
@@ -505,7 +503,7 @@ class TestSubagentLifecycleSettings:
         assert "# max_concurrent = 4" in template
         assert "# max_tool_calls = 256" in template
         assert "# max_iterations = 128" in template
-        assert "# max_tokens = 200000" in template
+        assert "max_tokens" not in template.split("[subagents]")[1].split("\n[")[0]
         assert "# max_total_time_s = 600.0" in template
         assert '# on_budget_exceeded = "drain"' in template
         assert "# stop_grace_s = 5.0" in template
@@ -564,13 +562,11 @@ def test_subagent_operator_ceilings_are_armed_and_match_the_guide() -> None:
     armed = {
         "max_tool_calls": settings.max_tool_calls,
         "max_iterations": settings.max_iterations,
-        "max_tokens": settings.max_tokens,
         "max_total_time_s": settings.max_total_time_s,
     }
     assert armed == {
         "max_tool_calls": 256,
         "max_iterations": 128,
-        "max_tokens": 200_000,
         "max_total_time_s": 600.0,
     }
     assert settings.on_budget_exceeded == "drain"
@@ -584,11 +580,10 @@ def test_subagent_operator_ceilings_are_armed_and_match_the_guide() -> None:
     }
     assert rows["subagents.max_tool_calls"] == "256"
     assert rows["subagents.max_iterations"] == "128"
-    assert rows["subagents.max_tokens"] == "200,000"
+    assert "subagents.max_tokens" not in rows  # subagents have no token limit
     assert rows["subagents.max_total_time_s"] == "600 seconds"
     prd = (root / "prds" / "SUBAGENT-06-pool-budgets-and-limits.md").read_text(encoding="utf-8")
     for documented in (
-        "`subagents.max_tokens = 200000`",
         "`subagents.max_total_time_s = 600.0`",
         "`subagents.max_tool_calls = 256`",
         "`subagents.max_iterations = 128`",
@@ -602,15 +597,12 @@ def test_subagent_max_budget_loads_validates_and_serializes(tmp_path: Path) -> N
 
     project = tmp_path / "agenthicc.toml"
     project.write_text(
-        "[subagents.max_budget]\ntokens = 50000\ncost_usd = 2\nwall_clock_s = 120\n",
+        "[subagents.max_budget]\ncost_usd = 2\nwall_clock_s = 120\n",
         encoding="utf-8",
     )
     config = load_config(project_path=project, user_path=tmp_path / "missing.toml")
-    assert config.subagents.max_budget == SubagentBudgetCeiling(
-        tokens=50_000, cost_usd=2.0, wall_clock_s=120.0
-    )
+    assert config.subagents.max_budget == SubagentBudgetCeiling(cost_usd=2.0, wall_clock_s=120.0)
     assert config.redacted_dict()["subagents"]["max_budget"] == {
-        "tokens": 50_000,
         "cost_usd": 2.0,
         "wall_clock_s": 120.0,
     }
@@ -621,7 +613,8 @@ def test_subagent_max_budget_loads_validates_and_serializes(tmp_path: Path) -> N
 
     for body, message in (
         ("[subagents.max_budget]\ndollars = 5\n", "max_budget.dollars is not a budget setting"),
-        ("[subagents.max_budget]\ntokens = 0\n", "max_budget.tokens must be a positive integer"),
+        ("[subagents.max_budget]\ntokens = 5\n", "subagents have no token limit"),
+        ("[subagents]\nmax_tokens = 200000\n", "subagents have no token limit"),
         ("[subagents.max_budget]\ncost_usd = -1\n", "max_budget.cost_usd must be a finite number"),
         ("[subagents]\nmax_budget = 5\n", "subagents.max_budget must be a table"),
     ):

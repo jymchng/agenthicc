@@ -22,7 +22,7 @@ async def test_overlay_host_scrolls_long_question_without_submitting(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        "agenthicc.tui.workspace.overlays.questions.shutil.get_terminal_size",
+        "agenthicc.tui.workspace.dialog.shutil.get_terminal_size",
         lambda _fallback=(80, 24): os.terminal_size((40, 24)),
     )
     app_state = AppState.create()
@@ -53,7 +53,7 @@ async def test_overlay_host_scrolls_long_question_without_submitting(
         host.render()
         for _ in range(100):
             host.handle_key(Key.CHAR, "]")
-        assert overlay._states[0].question_scroll > 0
+        assert overlay.dialog.scroll > 0
         assert not request_task.done()
 
         host.handle_key(Key.ENTER, "")

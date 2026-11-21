@@ -23,6 +23,7 @@ import uuid
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, TypedDict
 
+from agenthicc.runners.failure_kinds import failure_reason
 from agenthicc.workflows.base_runner import BaseWorkflowRunner
 from agenthicc.workflows.code_plan.state import CodePlanContext, CodePlanState
 from agenthicc.tools.base import ToolLike, tool_name
@@ -178,6 +179,10 @@ class CodePlanRunner(BaseWorkflowRunner):
         self._cfg: WorkflowConfig = config
         self._mode_manager: ModeManager | None = mode_manager
         self._run_id: str = ""
+        # The exception behind ctx.fail_reason: the reason is the turn's safe
+        # copy (TUX-08), while the workflow failure is classified from the
+        # exception's status and provider metadata.
+        self._turn_failure: BaseException | None = None
         # Tool schemas are immutable for a cache epoch.  Cache the canonical
         # session bundle, then apply the current mode's capability ceiling to
         # the cached bundle on each request.  This avoids rebuilding plugin,
@@ -193,6 +198,11 @@ class CodePlanRunner(BaseWorkflowRunner):
         self._model_id: str = (
             getattr(_transport_cfg, "model", None) or config.cfg.execution.effective_model()
         )
+
+    def _record_turn_failure(self, exc: BaseException) -> str:
+        """Remember *exc* for the failure checkpoint; return its safe reason."""
+        self._turn_failure = exc
+        return failure_reason(exc)
 
     # ── public entry points ───────────────────────────────────────────────────
 
@@ -321,7 +331,7 @@ class CodePlanRunner(BaseWorkflowRunner):
             if state == CodePlanState.FAILED and handle is not None:
                 from agenthicc.runners.workflow_handle import classify_workflow_failure
 
-                failure = ctx.fail_reason or "code_plan phase failed"
+                failure = self._turn_failure or ctx.fail_reason or "code_plan phase failed"
                 checkpoint = handle.finalize_failure(
                     failure,
                     kind=classify_workflow_failure(failure).kind,
@@ -467,7 +477,7 @@ class CodePlanRunner(BaseWorkflowRunner):
         if final == "failed" and handle is not None:
             from agenthicc.runners.workflow_handle import classify_workflow_failure
 
-            failure = ctx.fail_reason or "code_plan phase failed"
+            failure = self._turn_failure or ctx.fail_reason or "code_plan phase failed"
             checkpoint = handle.finalize_failure(
                 failure,
                 kind=classify_workflow_failure(failure).kind,
@@ -528,7 +538,7 @@ class CodePlanRunner(BaseWorkflowRunner):
                 # A turn error is already retry-exhausted at the provider-step
                 # boundary. Preserve its diagnostic and stop this phase so the
                 # session owner can checkpoint the active typed context.
-                ctx.fail_reason = f"{type(exc).__name__}: {exc}"
+                ctx.fail_reason = self._record_turn_failure(exc)
                 log.error("_plan turn error on attempt %d: %s", attempt, exc)
                 return CodePlanState.FAILED
 
@@ -600,7 +610,7 @@ class CodePlanRunner(BaseWorkflowRunner):
             except Exception as exc:
                 # Stop this phase after a retry-exhausted turn error. The
                 # session owner finalizes the already-attached context.
-                ctx.fail_reason = f"{type(exc).__name__}: {exc}"
+                ctx.fail_reason = self._record_turn_failure(exc)
                 log.error("_execute turn error on attempt %d: %s", attempt, exc)
                 return CodePlanState.FAILED
 
@@ -672,7 +682,7 @@ class CodePlanRunner(BaseWorkflowRunner):
             except Exception as exc:
                 # Stop this phase after a retry-exhausted turn error. The
                 # session owner finalizes the already-attached context.
-                ctx.fail_reason = f"{type(exc).__name__}: {exc}"
+                ctx.fail_reason = self._record_turn_failure(exc)
                 log.error("_review turn error on attempt %d: %s", attempt, exc)
                 return CodePlanState.FAILED
 
@@ -718,7 +728,7 @@ class CodePlanRunner(BaseWorkflowRunner):
             raise
         except Exception as exc:
             log.error("_summarize error: %s", exc)
-            ctx.fail_reason = f"{type(exc).__name__}: {exc}"
+            ctx.fail_reason = self._record_turn_failure(exc)
             return CodePlanState.FAILED
         return CodePlanState.COMPLETE
 

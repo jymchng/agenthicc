@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -108,3 +109,64 @@ def pool_status_counts(state: SubagentPoolState) -> PoolStatusCounts:
         failed=sum(worker.status == "failed" for worker in workers),
         stopped=sum(worker.status == "stopped" for worker in workers),
     )
+
+
+# ── status line (TUX-02) ──────────────────────────────────────────────────────
+
+_DATE_SUFFIX = re.compile(r"-\d{8}$")
+_VERSION_SUFFIX = re.compile(r"-(\d+)-(\d+)$")
+
+
+def short_model(label: str, default_provider: str = "anthropic") -> str:
+    """The status line's model name: ``anthropic/claude-opus-4-8`` → ``opus-4.8``.
+
+    The vendor prefix ``claude-`` and a date suffix go, and a trailing
+    ``-4-8`` version reads ``-4.8``. The provider is kept unless it is the
+    default one: ``openai/gpt-4o`` stays ``openai/gpt-4o``.
+    """
+    provider, separator, name = label.partition("/")
+    if not separator:
+        provider, name = "", label
+    name = _DATE_SUFFIX.sub("", name.rsplit("/", 1)[-1])
+    name = name.removeprefix("claude-")
+    name = _VERSION_SUFFIX.sub(r"-\1.\2", name)
+    return name if provider in ("", default_provider) else f"{provider}/{name}"
+
+
+def spoken_model(short: str) -> str:
+    """``opus-4.8`` → ``Opus 4.8``: the model as a screen reader says it."""
+    words = " ".join(short.replace("/", " ").replace("-", " ").split())
+    return words[:1].upper() + words[1:]
+
+
+def context_percent(tokens: int, window: int) -> int | None:
+    """How full the context window is, in whole percent; ``None`` if unknown."""
+    if tokens <= 0 or window <= 0:
+        return None
+    return max(0, round(tokens * 100 / window))
+
+
+def context_band(percent: int) -> str:
+    """The theme token for a context fill: ``success`` < 60 ≤ ``warning`` < 85 ≤ ``danger``."""
+    if percent < 60:
+        return "success"
+    if percent < 85:
+        return "warning"
+    return "danger"
+
+
+#: Cells in the context meter's bar.
+METER_CELLS = 5
+
+
+def meter_cells(percent: int) -> int:
+    """Filled cells of the context bar (any use fills at least one)."""
+    filled = min(METER_CELLS, round(percent * METER_CELLS / 100))
+    return max(1, filled) if percent > 0 else 0
+
+
+def cost_text(cost: float, status: str) -> str:
+    """``$0.42`` (``~$0.42`` when estimated), or ``""`` when no cost was reported."""
+    if status not in {"authoritative", "estimated"}:
+        return ""
+    return f"{'~' if status == 'estimated' else ''}${cost:.2f}"

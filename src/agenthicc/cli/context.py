@@ -18,6 +18,9 @@ class CLIFlags:
     """
 
     dangerously_skip_permissions: bool = False
+    #: ``--debug``: stray stderr and warnings stay on the screen instead of
+    #: going to the session's diagnostics log (TUX-08).
+    debug: bool = False
     # future: dry_run, offline, no_telemetry …
 
 

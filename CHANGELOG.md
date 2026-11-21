@@ -9,6 +9,171 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — a blank line before each heading in the agents hub
+
+- Each group heading in the hub list (`Running`, `Queued`, …) after the first is now
+  preceded by a blank line, so a group no longer runs into the one above it; the
+  first heading stays directly under the tab bar. The blank line is a row of its own,
+  which keeps scrolling and the selection in view correct with several headings on
+  screen. It cannot be selected or clicked, and screen readers and the plain
+  `agenthicc agents` listing do not get it.
+
+### Changed — `/background` says what is happening
+
+- **While it waits.** When `/background`, `/bg` or `/detach` is typed while a tool
+  call runs, a blinking blue `●` under the call reads
+  `Backgrounding after tool call ends…` (it replaces the status-line notice). The
+  dot holds still under `reduced_motion` and for screen readers, who are told once.
+- **Once it has happened.** The transcript ends with
+  `● Successfully backgrounded · 6b9f7614-8ca (running)` instead of `✗ cancelled`.
+  Handing a session over cancels the foreground turn, which used to be reported as
+  a cancelled (and, in a workflow, paused) run. That turn now closes as ordinary
+  work, with no error row, no `Interrupted after …` row and no `Workflow paused`
+  notice; the workflow run is recorded exactly as before, so the background worker
+  resumes from the same checkpoint. The confirmation comes after the turn's own
+  closing rows.
+
+### Fixed — the window title and taskbar progress no longer blank the screen
+
+- **Control sequences bypass the live block's text proxy.** While the live block
+  runs, `sys.stdout` is a Rich proxy that prints what it is given as text and
+  strips control characters, including the BEL that ends a title, progress or
+  notification sequence. The terminal title was therefore written unterminated,
+  and a terminal or emulator reads everything after an open `OSC 2` as part of
+  the title: the screen went blank. Title, progress and notification sequences
+  now go to the stream underneath (`terminal_stream()`), on POSIX and Windows.
+
+### Added — motion, feedback and terminal integration (TUX-10)
+
+- **A status line that says what is happening.** The state segment reads
+  `Reading src/app.py`, `Running npm test`, `Editing …`, `Working with 2 agents`,
+  `Retrying (2/5) in 8s` or `◆ Waiting for you · approve a command` instead of an
+  internal tool name, with the elapsed time after 3 s and `↓ 2.1k tokens`
+  after 10 s. The turning flower and the bold letter over `Thinking` stay, and
+  `reduced_motion` shows two identical frames half a second apart.
+- **Turn-end rows that say what the turn did.** `✾ Worked for 1m 12s | 10:20 AM`
+  gains `└ 6 tools · edited 3 files +34 −8`; an interrupted turn reads
+  `✾ Interrupted after 22s` with `nothing was changed` when no write succeeded,
+  a failed one `✾ Stopped after 8s`, and a quick answer has no row.
+- **The terminal knows.** When it is unfocused, one notification (OSC 9, OSC 777
+  or the bell, `[ui] notify`) when a request over 10 s ends, fails or needs an
+  approval; the window title (`✿ fix flaky test · agenthicc`, restored on exit,
+  `[ui] window_title`); and OSC 9;4 taskbar progress in Windows Terminal, ConEmu
+  and Ghostty, determinate only when a compaction reports measured progress.
+- **Clickable paths.** Paths in tool rows, diff headers, notices and the
+  transcript view, and URLs in the assistant's text, are OSC 8 links
+  (`[ui] hyperlinks`, `editor_links = "vscode" | "cursor" | "idea" | "zed"`).
+- **`/shortcuts` and `?`.** One page of every key in every context, generated
+  from the key map, saying which are yours (`composer.shortcuts`).
+
+### Changed
+
+- The background attention router no longer sets the window title; the title
+  adds `(2)` when other sessions need you. `_emit_terminal_notification` is
+  replaced by `tui.notifications.NotificationSink`.
+
+### Added — navigation (TUX-09)
+
+- **A transcript view.** `Ctrl+T` (also while a turn runs), `/history`, `/logs`
+  and `/rewind` open one full-screen view over the session log, entered from
+  the composer so the prompt is exactly as it was when `q` returns. It draws
+  every event with the scrollback's own renderers, numbers the user turns,
+  jumps with `[`/`]` (turns) and `{`/`}` (failures), expands a tool call to its
+  stored output with Enter, searches (`/`, `n`, `N`; case-insensitive unless
+  the query has capitals; on a worker thread, so a 100 MB log never stalls the
+  keys), copies an item with `y` (OSC 52, or the system clipboard where the
+  terminal cannot take it) and opens it in `$PAGER` with `e`. A decision
+  dialog's `Ctrl+T` opens its full arguments or diff here, and `Esc` returns to
+  the dialog. Text is wrapped, never cut with an ellipsis, and a long pasted
+  prompt expands with Enter.
+- **A fullscreen layout.** `[ui] layout = "fullscreen"` or `/fullscreen` runs
+  the session in the alternate screen: a scrolling transcript pane over the
+  docked composer and status line. PgUp/PgDn, Shift+↑/↓ and the wheel scroll
+  it; scrolling up shows `↓ N new · End to follow`. Leaving prints the
+  conversation to the normal screen in compact form. `screen_reader` forces
+  `inline`.
+- **`/rewind`.** Pick a user turn, then "Edit and resend from here" forks the
+  conversation (the log and the model's memory up to that turn) into a new
+  session with the prompt in the composer. The original session is never
+  changed, and files are not restored.
+
+### Removed — navigation (TUX-09)
+
+- `TranscriptHistoryOverlay` and the `/logs` pager (`LogTailOverlay`,
+  `diagnostics.log_tail`): the transcript view replaces both. The dialog's own
+  scrolling details body (`Dialog.showing_details`) is gone too; `Ctrl+T`
+  opens the transcript view. `Ctrl+T` can no longer be a keybindings `leader`.
+
+### Changed — selections have no background
+
+- **A selected row is the accent bar and bold text.** The answer form and the
+  `ask_user` options, the agents hub list, dialogs, the `/` `@` and Ctrl+P
+  pickers, `/help`, `/history`, the registry lists, the subagent panel and the
+  theme picker no longer draw a background behind the selected row. Reverse video
+  is gone from the `/config` menu and the hub's confirm choices too (the focused
+  row is bold in the accent colour). The `accent_bg` theme token is removed.
+
+### Changed — a message typed during a turn reaches the model during it
+
+- **Enter now sends into the running turn.** A message typed while a turn runs
+  waited for the turn to end, which for a long turn or a workflow run meant it
+  sat unread for minutes or hours. Now the running turn takes it at its next
+  tool call, one message per call in the order typed (the queue row says
+  `at next tool`), and if the turn ends first the rest is sent as the next turn.
+  This holds for a direct reply and for every workflow. Commands and skills
+  (`/…`, `$…`) are routed locally, so they still wait for the end of the turn.
+- **One key fewer.** `Alt+Enter` / `Ctrl+Enter` used to be "interject" while a
+  turn ran; Enter does that now, so they are a line break in every state and the
+  `composer.interject` action, its footer hint, `SendMessageCommand.interject`
+  and `QueuedMessage.interject` are gone (`claim_interjection` is
+  `claim_message`).
+- **One blank line, never two.** The scrollback prints a blank line only when the
+  previous output was not one, so a block's trailing blank, the gap owed before
+  the next block and the blank an event with nothing to show opened can no longer
+  stack up after `✾ Worked for …`.
+- **A real terminal's size wins over a stale `COLUMNS` / `LINES`.** Rich takes
+  those variables over the terminal's own answer, so a shell that had exported
+  them made the TUI wrap for one width and draw at another (cut lines, a live
+  block repainted over itself). On a terminal they are now ignored. `/status`
+  gained a `Terminal` row (the size the terminal reports, `TERM`, tmux or screen,
+  and a `$COLUMNS` that disagrees) to compare with output that looks cut off.
+
+### Fixed — the agents hub no longer cuts text off
+
+- **Answer form.** A long option (`A — One screen, interleaved (recommended): the
+  shell stays l…`) was cut at the panel's edge. Options now wrap under their own
+  text with the highlight on every row, and a short terminal scrolls the options
+  around the cursor (`↑ 3 more`, `↓ 2 more`) instead of pushing the hint and
+  footer off screen.
+- **Transcript.** The hub's transcript showed the first line of each reply, cut
+  at 240 characters, and tool calls the same way. A reply now keeps its
+  paragraphs (up to 8,000 characters) and tool calls their summary and first
+  output line; each entry wraps under its role and an entry beyond 40 lines ends
+  in `… N more lines`.
+- **Requests and details.** The command in an approval request was flattened to
+  one line and cut at 240 characters. It now keeps its lines, wraps, and the
+  detail view shows it whole (up to 4,000 characters). Errors, the latest
+  activity, the receipt, change stats, attempts, the status notice, the empty
+  state and the help screen's descriptions wrap the same way. A capped block says
+  how many lines it left out; nothing is cut without a marker.
+
+### Changed — compaction in the transcript
+
+- **A quieter compaction indicator.** While the conversation is compacted, a
+  row under the transcript reads `◜ Refreshing context · 2s`: a ring that turns
+  once a second in the theme's accent colour and a time that moves every
+  second. It replaces the `Compacting` word in the status line and the
+  `⎋ Compacting conversation…` line in the scrollback. The ring rests as `◌`
+  under `reduced_motion` and `screen_reader`. When the compaction ends the row
+  gives way to `✓ Context refreshed · 849 tokens · 3s`, or to
+  `✗ Context refresh failed · 3s` with the reason underneath. A thin bar
+  appears under the row only for a history long enough to be summarised in
+  several model calls, and follows the calls that have really finished; a
+  compaction that is one call shows the spinner alone. The `compaction_status`
+  event gained `elapsed_s` and `label`; the compactor no longer appends
+  `system` text events, and `/compact` no longer repeats the outcome as a
+  status-line notice.
+
 ### Changed — agents experience (AGX series)
 
 - **CLI start-up (AGX-01).** Built-in commands are declared in
@@ -160,6 +325,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   message references instead of deep copies. On the 510-step `goal_flow`
   replay, full-history copies fall from 2,245 to 35 and validation scans from
   2,935 to 1,771, with byte-identical provider requests and journal records.
+
+### Changed — the composer frame is yellow (TUX-01/TUX-02)
+
+- New theme token `frame` draws the composer's frame: both rules, or the rounded
+  box's corners and side edges. It is yellow, matching the welcome panel's
+  border (`#8a6d00` in the light theme, where yellow would be unreadable on
+  white; `#ffe066` in high-contrast). The title, mode badge and hint row keep
+  their own tokens, and every other rule and border stays `subtle`.
+- The `>` chevron of the prompt is `frame` too, in bold — in the composer and in
+  the `/` and `@` pickers that repeat the prompt above their matches. It was
+  `accent` before, so the panel's outline and its chevron now share one colour
+  instead of two.
+
+### Changed — the empty composer's placeholder is dimmed (TUX-02)
+
+- The hint after the caret, `ask, or type / for commands, @ for files` (and its
+  narrower forms), now renders in the `muted` token **plus** the `dim`
+  attribute instead of `muted` alone, so an empty prompt reads as a hint rather
+  than as content. Because `dim` is an attribute and not a colour, it still
+  distinguishes the placeholder under `--theme no-color`; every colour remains a
+  theme token (TUX-01).
+
+### Changed — the start-up header, a pre-flight check and first-run help (TUX-03)
+
+- The welcome panel is replaced by a three-line header: `◆ agenthicc 0.42.0`
+  (with `what's new: /release-notes` after an upgrade), the model, provider and
+  mode, and the directory with its git branch. The first run on a machine also
+  shows the mascot once. `[ui] banner = "compact" | "full" | "off"` chooses how
+  much of it prints. The panel's `No list` placeholder, its `Welcome back!`
+  greeting and its fixed `/init` tip are gone.
+- **Release notes are local.** The remote `changelog.json` fetch, its cache and
+  `AGENTHICC_CHANGELOG_CACHE` are deleted. `/release-notes` pages the
+  `CHANGELOG.md` that ships with the package: the installed version, everything
+  since the last version you read, and unreleased work.
+- **A pre-flight check** (`agenthicc.runners.preflight.check_session`) looks for
+  a credential, a model, a writable workspace and the tools agenthicc uses,
+  without a network call. A failed check prints one notice under the header
+  (`No API key for anthropic. Set ANTHROPIC_API_KEY, or run /model to pick
+  another provider.`); a prompt submitted while the credential check fails is
+  not sent: the notice shows again, the prompt stays in the composer and
+  `/model` runs. `/status` and `agenthicc config show` print the same findings.
+- **First run in a directory.** A directory that is not a git repository and has
+  no history with agenthicc, or the home directory, asks "Work in ~/Downloads?"
+  once (Yes, Yes in Plan mode, Choose another directory…). The answer is stored
+  per directory in `~/.agenthicc/trust.json`.
+- **Composer suggestions.** The empty composer suggests `/init` when the
+  repository has no `AGENTS.md`, `/resume` after an interrupted session,
+  `N sessions need you · press ←`, or one of twenty tips that name a key from
+  your key bindings or a command. Tab accepts a suggestion that is a command.
+  `/resume` is new: it opens the agents hub's History tab.
+- The command dispatcher passes every `CommandContext` field to a handler
+  instead of a copied subset, so `/resume` and `/status` can reach the session.
+
+### Changed — background questions have a five-minute deadline by default
+
+- `[background] question_timeout_s` now defaults to `300` seconds instead of
+  `0`. A hub/background agent's `ask_user` no longer waits indefinitely: after
+  five minutes the agent continues with its safest stated assumption and the
+  question stays in **Needs you** as `◆ answer late`, where a late answer still
+  reaches it as the session's next message. Set
+  `[background] question_timeout_s = 0` to restore the old unbounded wait. The
+  foreground `[tools] question_timeout_s` is unchanged and still governs only
+  the Questions overlay.
 
 ### Changed — required quality gates (PRD-250 WS-1)
 

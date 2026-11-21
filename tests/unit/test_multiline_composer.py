@@ -8,7 +8,6 @@ import pytest
 
 from agenthicc.tui.input.renderer import CURSOR_CHAR, PROMPT_CHAR
 from agenthicc.tui.workspace.components import ComposerComponent, _line_rows
-from agenthicc.tui.workspace.live_region import lines_text
 
 pytestmark = pytest.mark.unit
 
@@ -30,8 +29,26 @@ def _make_comp(
     return ComposerComponent(app_state, max_rows=max_rows)
 
 
+def _marked(line: tuple[object, ...]) -> str:
+    """A row's text with the block cursor shown as ``▌`` before its cell.
+
+    The cursor is Claude Code's reverse-video block; a reversed space at the
+    end of a line is the cursor alone.
+    """
+    from rich.segment import Segment
+
+    out = ""
+    for segment in line:
+        assert isinstance(segment, Segment)
+        if segment.style is not None and segment.style.reverse:
+            out += CURSOR_CHAR + segment.text.rstrip(" ")
+        else:
+            out += segment.text
+    return out.rstrip()
+
+
 def _rows(comp: ComposerComponent, cols: int = 80) -> list[str]:
-    return lines_text(comp.lines(cols))
+    return [_marked(line) for line in comp.lines(cols)]
 
 
 class TestLogicalLines:
@@ -65,9 +82,10 @@ class TestLogicalLines:
 
 class TestFolding:
     def test_a_long_line_folds_at_the_width_under_the_prompt(self) -> None:
+        # The block cursor sits on a character and takes no cell of its own.
         rows = _rows(_make_comp(list("x" * 25), 0), cols=12)
-        assert rows == [f"{PROMPT_CHAR} {CURSOR_CHAR}xxxxxxxxx", "  " + "x" * 10, "  " + "x" * 6]
-        assert all(len(row) <= 12 for row in rows)
+        assert rows == [f"{PROMPT_CHAR} {CURSOR_CHAR}" + "x" * 10, "  " + "x" * 10, "  " + "x" * 5]
+        assert all(len(row.replace(CURSOR_CHAR, "")) <= 12 for row in rows)
 
     def test_wide_characters_fold_by_cell_width(self) -> None:
         rows = _rows(_make_comp(list("界" * 7), 7), cols=8)

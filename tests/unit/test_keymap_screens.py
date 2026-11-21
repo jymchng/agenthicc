@@ -21,7 +21,7 @@ from agenthicc.tui.keymap import Action
 from agenthicc.tui.keymap_service import KeymapService
 from agenthicc.tui.runtime.commands import CommandBus
 from agenthicc.tui.workspace import Workspace
-from agenthicc.tui.workspace.components import FooterComponent
+from agenthicc.tui.workspace.components import ComposerComponent, ComposerFrame
 from tests.tui_frames import settle_frames
 
 pytestmark = pytest.mark.unit
@@ -30,6 +30,7 @@ _KEYS: dict[str, tuple[Key, str]] = {
     "enter": (Key.ENTER, ""),
     "ctrl+j": (Key.CTRL_ENTER, ""),
     "/": (Key.CHAR, "/"),
+    "?": (Key.CHAR, "?"),
     "@": (Key.AT, ""),
     "ctrl+v": (Key.CTRL_V, ""),
     "ctrl+b": (Key.CTRL_B, ""),
@@ -47,8 +48,28 @@ _KEYS: dict[str, tuple[Key, str]] = {
     "tab": (Key.TAB, ""),
     "shift+tab": (Key.SHIFT_TAB, ""),
     "alt+enter": (Key.MODIFIED, "alt+enter"),
+    "shift+enter": (Key.SHIFT_ENTER, ""),
+    "ctrl+enter": (Key.MODIFIED, "ctrl+enter"),
+    "delete": (Key.DELETE, ""),
+    "ctrl+k": (Key.CTRL_K, ""),
+    "ctrl+w": (Key.CTRL_W, ""),
+    "alt+d": (Key.ALT, "d"),
+    "ctrl+y": (Key.CTRL_Y, ""),
+    "alt+b": (Key.ALT, "b"),
+    "alt+f": (Key.ALT, "f"),
+    "ctrl+z": (Key.CTRL_Z, ""),
+    "ctrl+shift+z": (Key.MODIFIED, "ctrl+shift+z"),
+    "ctrl+r": (Key.CTRL_R, ""),
+    "ctrl+x": (Key.CTRL_X, ""),
+    "ctrl+l": (Key.CTRL_L, ""),
     "ctrl+g": (Key.CTRL_G, ""),
     "ctrl+o": (Key.CTRL_O, ""),
+    # TUX-09
+    "ctrl+t": (Key.CTRL_T, ""),
+    "pageup": (Key.PAGE_UP, ""),
+    "pagedown": (Key.PAGE_DOWN, ""),
+    "shift+up": (Key.MODIFIED, "shift+up"),
+    "shift+down": (Key.MODIFIED, "shift+down"),
 }
 
 
@@ -66,6 +87,18 @@ def _session(state: AppState, action: Action) -> UnifiedInputSession:
         session._buf.set(list("pasted"))
         session._paste.condensed = True
         session._paste.end = session._buf.cursor
+    if "empty" in action.unless:
+        session._buf.set(list("text"))
+    if "queued" in action.when:
+        state.conversation.queue.append("queued message")
+    if "fullscreen" in action.when:
+        state.conversation.fullscreen.set(True)
+    if "scrolled" in action.when:
+        state.conversation.pane_scrolled.set(True)
+    if "suggestion" in action.when:
+        from agenthicc.tui.suggestions import Suggestion
+
+        state.conversation.suggestion.set(Suggestion("init", "try /init", "/init"))
     return session
 
 
@@ -83,14 +116,15 @@ def test_every_composer_action_is_dispatchable_hinted_and_in_help(action: Action
     # In help.
     assert action.name in {entry.action for entry in keymap.help("composer")}
 
-    # In the footer whenever it applies and fits.
+    # In the hint row whenever it applies, if it is contextual (TUX-02): the
+    # always-available keys are in help, not repeated under every prompt.
     if action.hint_priority:
         if "running" in action.when:
             state.conversation.agent_state.set(AgentState.THINKING)
         if action.when & {"paste", "paste_at_cursor"}:
             state.input.paste_condensed.set(True)
-        footer = " ".join(FooterComponent(state).markup_lines(400))
-        assert action.label in footer
+        hint_row = ComposerFrame(state, ComposerComponent(state)).hint_row(400) or ""
+        assert (action.label in hint_row) is bool(action.when)
 
 
 async def test_typing_a_bound_key_runs_its_action() -> None:
@@ -101,6 +135,9 @@ async def test_typing_a_bound_key_runs_its_action() -> None:
     await session._dispatch(Key.CTRL_ENTER, "")
     await session._dispatch(Key.CHAR, "c")
     assert "".join(state.input.buf()) == "ab\nc"
+    # Ctrl+U kills to the line start; pressed there, it clears the prompt.
+    await session._dispatch(Key.CTRL_U, "")
+    assert "".join(state.input.buf()) == "ab\n"
     await session._dispatch(Key.CTRL_U, "")
     assert state.input.buf() == []
 
@@ -109,8 +146,8 @@ async def test_rebinding_applies_without_restart(tmp_path: Path) -> None:
     path = tmp_path / "keybindings.toml"
     state = AppState.create()
     service = KeymapService(state, path)
-    footer = FooterComponent(state)
-    assert "Ctrl+J" in " ".join(footer.markup_lines(200))
+    hint = state.keymap().hint("composer.newline")
+    assert hint is not None and hint.keys == "Ctrl+J"
 
     watch = asyncio.create_task(service.watch())
     try:
@@ -124,10 +161,13 @@ async def test_rebinding_applies_without_restart(tmp_path: Path) -> None:
         watch.cancel()
         await asyncio.gather(watch, return_exceptions=True)
 
-    assert "Key bindings reloaded" in str(state.conversation.notification())
+    # Alt+Enter was a default key of composer.newline_alt: the file wins.
+    notification = str(state.conversation.notification())
+    assert "Key bindings reloaded" in notification
+    assert "replaces the default composer.newline_alt" in notification
     state.conversation.notification.set(None)
-    hints = " ".join(footer.markup_lines(200))
-    assert "Alt+Enter" in hints and "Ctrl+J" not in hints
+    hint = state.keymap().hint("composer.newline")
+    assert hint is not None and hint.keys == "Alt+Enter"
     session = UnifiedInputSession(state, CommandBus())
     await session._dispatch(Key.CHAR, "x")
     await session._dispatch(Key.CTRL_ENTER, "")
@@ -250,9 +290,9 @@ async def test_screen_reader_mode_draws_no_spinner_and_says_each_change_once() -
 def test_reduced_motion_keeps_the_layout_without_animation() -> None:
     state, workspace, _output = _workspace(UISettings(reduced_motion=True))
     state.conversation.begin_turn("agent", "turn-1")
-    first = workspace.status.markup_lines(100)
+    first = workspace.status.markup(100)
     state.conversation.frame.set(state.conversation.frame() + 3)
-    assert workspace.status.markup_lines(100) == first
-    assert first[0].startswith("●")
+    assert workspace.status.markup(100) == first
+    assert first.lstrip().startswith("[") and "●" in first.split("Thinking")[0]
     rows = ["".join(segment.text for segment in line) for line in workspace._build_lines()]
-    assert any(set(row) == {"─"} for row in rows)  # borders stay
+    assert rows[0].endswith(" Safe ─") and set(rows[2]) == {"─"}  # the frame stays

@@ -18,6 +18,7 @@ from agenthicc.background import (
     SessionStatus,
 )
 from agenthicc.tui.cbreak_reader import Key
+from agenthicc.tui.theme import glyphs
 from agenthicc.tui.workspace.agents_hub import AgentsHub, HubResult
 from agenthicc.tui.workspace.agents_hub.prefs import HubPrefs
 
@@ -67,7 +68,7 @@ async def test_every_frame_fits_its_height_and_marks_the_selection(tmp_path: Pat
         for height in (6, 8, 10, 15, 25):
             lines = _text(hub, 140, height)
             assert len(lines) == height
-            assert any(line.startswith("▸") for line in lines)
+            assert any(line.startswith(glyphs().bar) for line in lines)
             assert lines[-1].rstrip().endswith("q quit")
     finally:
         await hub.stop()

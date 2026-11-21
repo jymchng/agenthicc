@@ -9,6 +9,7 @@ Architecture: PRD-58 §6, PRD-59 §3.
 
 from __future__ import annotations
 
+import math
 import os
 import time
 import uuid
@@ -21,9 +22,15 @@ from agenthicc.reactive import Signal, Computed
 if TYPE_CHECKING:
     import asyncio as _asyncio
     from agenthicc.tools.approval import ApprovalRequest
+    from agenthicc.tui.workspace.notice import Notice, Severity
+    from agenthicc.tui.suggestions import Suggestion
     from agenthicc.tui.runtime.mode_manager import RuntimeMode
     from agenthicc.workflows.plugin import WorkflowRun
     from agenthicc.subagents.pool import SubagentPoolState
+
+
+#: How long a transient status-line notice stays (TUX-02, TUX-08).
+TRANSIENT_NOTICE_S: float = 4.0
 
 
 # ── Agent state ───────────────────────────────────────────────────────────────
@@ -81,6 +88,8 @@ EventKind = Literal[
     "phase_control_requested",
     "phase_plan_mutated",
     "phase_control_rejected",
+    # The session was handed to the background service; it keeps running there.
+    "background_handoff",
 ]
 
 
@@ -113,6 +122,147 @@ class _NotificationEntry:
     handle: _asyncio.TimerHandle | None = field(default=None)
 
 
+# ── Running tools (operator request) ─────────────────────────────────────────
+
+
+@dataclass(frozen=True, slots=True)
+class RunningTool:
+    """A tool call or background terminal that is still running.
+
+    The live region draws one row per entry, under the transcript, with a
+    blinking ``●`` until the call completes and its permanent row is printed.
+    """
+
+    key: str
+    """The tool-use id, or ``terminal:<id>`` for a background terminal."""
+    operation: str
+    target: str
+    started_at: float
+    background: bool = False
+    verb: str = ""
+    """What the status line says it is doing (``Reading``, ``Running``); empty for a terminal."""
+
+
+@dataclass(frozen=True, slots=True)
+class CompactionProgress:
+    """How far a multi-call compaction has measurably got.
+
+    Only a compaction that summarises its history in several model calls
+    (map/reduce) can say so: each finished call is one real step. ``done`` of
+    ``total`` counts the calls known so far; ``fraction`` is the furthest the
+    bar has reached, so a late extra round of summaries never moves it back.
+    A compaction that is one call has no progress to report and none is shown.
+    """
+
+    done: int
+    total: int
+    fraction: float
+
+
+# ── Queued messages (TUX-04 §2.6) ─────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class QueuedMessage:
+    """One message typed while a turn runs."""
+
+    id: int
+    text: str
+
+    @property
+    def joins_turn(self) -> bool:
+        """Whether the running turn takes this message at its next tool call.
+
+        An ordinary message does. A command or skill (``/…``, ``$…``) is routed
+        locally, so it waits for the end of the turn and runs then.
+        """
+        text = self.text.strip()
+        return bool(text) and not text.startswith(("/", "$"))
+
+
+class MessageQueue:
+    """Messages waiting for the running turn, in order (TUX-04 §2.6).
+
+    The session owns the order (it queues, claims and drains); the composer
+    edits and removes entries while the user has focused the queue; the live
+    region draws one row per entry from :attr:`items`. ``focus`` is the id of
+    the entry the user has selected, or ``None`` while the prompt has focus.
+    """
+
+    def __init__(self) -> None:
+        self.items: Signal[tuple[QueuedMessage, ...]] = Signal((), name="queued_messages")
+        self.focus: Signal[int | None] = Signal(None, name="queue_focus")
+        self._next_id = 1
+
+    def _new(self, text: str) -> QueuedMessage:
+        message = QueuedMessage(self._next_id, text)
+        self._next_id += 1
+        return message
+
+    def _set(self, items: tuple[QueuedMessage, ...]) -> None:
+        self.items.set(items)
+        focus = self.focus()
+        if focus is not None and all(item.id != focus for item in items):
+            # The focused entry left the queue (claimed, sent or removed):
+            # select the first that is left, or give focus back to the prompt.
+            self.focus.set(items[0].id if items else None)
+
+    def __len__(self) -> int:
+        return len(self.items())
+
+    def __bool__(self) -> bool:
+        return bool(self.items())
+
+    def texts(self) -> list[str]:
+        return [item.text for item in self.items()]
+
+    def append(self, text: str) -> QueuedMessage:
+        message = self._new(text)
+        self._set((*self.items(), message))
+        return message
+
+    def insert(self, index: int, text: str) -> None:
+        """Put *text* back at *index* (a message whose release failed)."""
+        items = list(self.items())
+        items.insert(index, self._new(text))
+        self._set(tuple(items))
+
+    def pop(self, index: int = 0) -> str:
+        items = list(self.items())
+        message = items.pop(index)
+        self._set(tuple(items))
+        return message.text
+
+    def remove(self, message_id: int) -> QueuedMessage | None:
+        """Remove the entry with *message_id*; return it, or ``None``."""
+        items = self.items()
+        for item in items:
+            if item.id == message_id:
+                self._set(tuple(entry for entry in items if entry.id != message_id))
+                return item
+        return None
+
+    def claim_message(self) -> str | None:
+        """Take the first queued message that joins a running turn (not a command)."""
+        for item in self.items():
+            if item.joins_turn:
+                self.remove(item.id)
+                return item.text.strip()
+        return None
+
+    def clear(self) -> None:
+        self._set(())
+
+
+@dataclass(frozen=True, slots=True)
+class RetryNotice:
+    """A provider call that failed and is scheduled again (TUX-10 §2.1)."""
+
+    attempt: int
+    max_retries: int
+    seconds_left: int
+
+
 # ── Store ─────────────────────────────────────────────────────────────────────
 
 
@@ -128,6 +278,10 @@ class ConversationStore:
         self.turns: Signal[list[ConversationTurn]] = Signal([], name="turns")
         self.agent_state: Signal[AgentState] = Signal(AgentState.IDLE, name="agent_state")
         self.active_tool: Signal[str] = Signal("", name="active_tool")
+        #: Tool calls of the running turn that have not completed, oldest first.
+        self.running_tools: Signal[tuple[RunningTool, ...]] = Signal((), name="running_tools")
+        #: Background terminals still running (projected from the terminal manager).
+        self.background_tools: Signal[tuple[RunningTool, ...]] = Signal((), name="background_tools")
         self.frame: Signal[int] = Signal(0, name="frame")
         """Shared animation counter for active status surfaces (PRD-120/164).
 
@@ -147,7 +301,35 @@ class ConversationStore:
         self.session_id: Signal[str] = Signal("", name="session_id")
         self.current_directory: Signal[str] = Signal(os.getcwd(), name="current_directory")
         self.model_name: Signal[str] = Signal("", name="model_name")
+        # TUX-02: the composer frame's title and the status line's context meter.
+        self.session_title: Signal[str] = Signal("", name="session_title")
+        """The session's title: the first prompt, cut as AGX-05 cuts a
+        background session's intent; empty until the first prompt."""
+        self.suggestion: Signal[Suggestion | None] = Signal(None, name="suggestion")
+        """What the empty composer suggests: ``/init``, ``/resume`` or a tip
+        (TUX-03). ``None`` until the session has decided; the live
+        "N sessions need you" suggestion is not stored here."""
+        self.context_tokens: Signal[int] = Signal(0, name="context_tokens")
+        """Input tokens (cache reads and writes included) the provider reported
+        for the latest main-agent call: how full the context window is."""
+        self.context_window: Signal[int] = Signal(0, name="context_window")
+        """The model's context window in tokens; 0 when it is not known."""
+        # TUX-09: the fullscreen layout and whether its pane is scrolled up.
+        self.fullscreen: Signal[bool] = Signal(False, name="fullscreen")
+        self.pane_scrolled: Signal[bool] = Signal(False, name="pane_scrolled")
+        self.git_branch: Signal[str] = Signal("", name="git_branch")
+        """The working directory's branch, ``""`` outside a repository."""
+        self.git_dirty: Signal[bool] = Signal(False, name="git_dirty")
+        self.statusline_text: Signal[str] = Signal("", name="statusline_text")
+        """The user status-line command's last good output (one sanitized line)."""
         self.notification: Signal[str | None] = Signal(None, name="notification")
+        self.transient_notice: Signal[Notice | None] = Signal(None, name="transient_notice")
+        """A confirmation or FYI for the status line's right segment (TUX-08).
+
+        Set by :meth:`notify` and cleared after :data:`TRANSIENT_NOTICE_S`;
+        it never reaches the scrollback or the session log.
+        """
+        self._transient_notice_handle: _asyncio.TimerHandle | None = None
         self.loop_status: Signal[str | None] = Signal(None, name="loop_status")
         """Persistent footer projection for an active session ``/loop``."""
         self.workflow_override: Signal[str | None] = Signal(None, name="workflow_override")
@@ -156,6 +338,16 @@ class ConversationStore:
         """True while a resumed session transcript is being replayed."""
         self.compaction_active: Signal[bool] = Signal(False, name="compaction_active")
         """True while a compaction LLM call is in flight (PRD-119)."""
+        self.handoff_pending: Signal[bool] = Signal(False, name="handoff_pending")
+        """``/background`` waits for the running tool call to end before handing over."""
+        self.compaction_progress: Signal[CompactionProgress | None] = Signal(
+            None, name="compaction_progress"
+        )
+        """Measured progress of the running compaction, ``None`` when it has none."""
+        self.compaction_seconds: Signal[int] = Signal(0, name="compaction_seconds")
+        """Whole seconds the running compaction has taken: redraws its row once a second,
+        which keeps the elapsed time moving under ``reduced_motion`` too."""
+        self._compaction_started_at: float | None = None
         self.subagent_pool_state: Signal[SubagentPoolState | None] = Signal(
             None, name="subagent_pool_state"
         )
@@ -183,10 +375,18 @@ class ConversationStore:
             None, name="background_toast_kind"
         )
         self.terminal_focused: Signal[bool] = Signal(True, name="terminal_focused")
-        self.agents_hint: Signal[bool] = Signal(False, name="agents_hint")
+        self.terminal_focus_known: Signal[bool] = Signal(False, name="terminal_focus_known")
+        """True once the terminal has reported a focus change (TUX-10 §2.3): until then
+        ``terminal_focused`` is only the starting guess."""
+        self.retry: Signal[RetryNotice | None] = Signal(None, name="retry")
+        """The scheduled provider retry the status line counts down, or ``None``."""
+        self._retry_deadline: float | None = None
+        self._retry_attempt: tuple[int, int] = (0, 0)
         self.agents_target: Signal[str | None] = Signal(None, name="agents_target")
         self.agents_item_target: Signal[str | None] = Signal(None, name="agents_item_target")
         self.agents_toast_target: Signal[str | None] = Signal(None, name="agents_toast_target")
+        #: Messages typed during a turn, shown above the composer (TUX-04 §2.6).
+        self.queue = MessageQueue()
         # Internal: per-line notification stack.
         # notify_transient() appends; each dismiss closure removes only its own
         # entry by identity, leaving other lines untouched.
@@ -202,7 +402,7 @@ class ConversationStore:
         # Number of tool calls currently hidden above the scroll-buffer threshold.
         # Set live by ScrollBufferAppender as each overflow call arrives;
         # reset to 0 when the group closes (text/error event).
-        # FooterComponent renders this as a live "⎿ …and N more" footer row.
+        # The workspace renders this as a live "└ …and N more" bridge row.
         self.live_tool_overflow: Signal[int] = Signal(0, name="live_tool_overflow")
 
         # ── computed values ───────────────────────────────────────────────────
@@ -242,6 +442,7 @@ class ConversationStore:
         # to IDLE, including internal turn boundaries and user-owned waits.
         self.activity_elapsed_s: Signal[float] = Signal(0.0, name="activity_elapsed_s")
         self._activity_start_time: float = 0.0
+        self._activity_tokens_out_base: int = 0
         self._activity_active: bool = False
         self._activity_external_scope: bool = False
 
@@ -322,7 +523,12 @@ class ConversationStore:
         self._activity_active = True
         self._activity_external_scope = external
         self._activity_start_time = time.monotonic()
+        self._activity_tokens_out_base = self.tokens_out()
         self.activity_elapsed_s.set(0.0)
+
+    def activity_tokens_out(self) -> int:
+        """Output tokens the provider has reported since this activity began (TUX-10)."""
+        return max(0, self.tokens_out() - self._activity_tokens_out_base)
 
     @property
     def is_activity_active(self) -> bool:
@@ -381,6 +587,7 @@ class ConversationStore:
             self.set_display_paused(paused)
         now = time.monotonic()
         self._advance_display_clock(now)
+        self._advance_retry(now)
         pool = self.subagent_pool_state()
         if pool is not None:
             wall = time.time()
@@ -396,12 +603,55 @@ class ConversationStore:
         # the same frozen waiting modal on every session tick. Capture the
         # elapsed value again when the wait ends or the activity completes.
         self._advance_activity_clock(now)
+        if self.compaction_active():
+            self.compaction_seconds.set(int(self.compaction_elapsed(now)))
         # Idle/complete/error status is static. Publishing a frame on every
         # idle tick would cause Workspace to refresh the Live block at 20 Hz;
         # terminals or captured clients that do not interpret Rich's erase
         # controls would then display duplicate idle panels (PRD-164).
-        if self.is_running() or self.compaction_active():
+        if (
+            self.is_running()
+            or self.compaction_active()
+            or self.running_tools()
+            or self.background_tools()
+            or self.handoff_pending()
+        ):
+            # Running-tool rows blink their dot, so they keep the clock going.
             self.frame.set(self.frame() + 1)
+
+    def begin_compaction(self) -> None:
+        """Start the inline compaction row and its clock."""
+        self._compaction_started_at = time.monotonic()
+        self.compaction_progress.set(None)
+        self.compaction_seconds.set(0)
+        self.compaction_active.set(True)
+
+    def end_compaction(self) -> None:
+        """Take the compaction row down.
+
+        The start time stays until the next :meth:`begin_compaction`, so the
+        result row can still say how long the whole attempt took, including a
+        local fallback that runs after the summary call has returned.
+        """
+        self.compaction_active.set(False)
+        self.compaction_progress.set(None)
+
+    def compaction_elapsed(self, now: float | None = None) -> float:
+        """Seconds since :meth:`begin_compaction`; ``0.0`` when none has begun."""
+        started = self._compaction_started_at
+        if started is None:
+            return 0.0
+        return max(0.0, (time.monotonic() if now is None else now) - started)
+
+    def report_compaction_progress(self, done: int, total: int) -> None:
+        """Record that *done* of the *total* calls known so far have finished."""
+        if total <= 0:
+            return
+        previous = self.compaction_progress()
+        fraction = min(1.0, max(0, done) / total)
+        if previous is not None:
+            fraction = max(fraction, previous.fraction)
+        self.compaction_progress.set(CompactionProgress(done, total, fraction))
 
     def set_terminal_wait(
         self,
@@ -428,7 +678,66 @@ class ConversationStore:
         self.terminal_wait_elapsed_s.set(0.0)
         self.terminal_running_count.set(0)
 
+    def begin_retry(self, attempt: int, max_retries: int, delay_s: float) -> None:
+        """Count down a scheduled provider retry on the status line (TUX-10 §2.1)."""
+        self._retry_attempt = (attempt, max_retries)
+        self._retry_deadline = time.monotonic() + max(0.0, delay_s)
+        self._advance_retry(time.monotonic())
+
+    def _advance_retry(self, now: float) -> None:
+        """Publish the seconds left before the retry, and clear it once the delay is over."""
+        deadline = self._retry_deadline
+        if deadline is None:
+            return
+        left = math.ceil(deadline - now)
+        if left <= 0:
+            self._retry_deadline = None
+            self.retry.set(None)
+            return
+        attempt, limit = self._retry_attempt
+        current = self.retry()
+        if current is None or current.seconds_left != left or current.attempt != attempt:
+            self.retry.set(RetryNotice(attempt, limit, left))
+
     # ── turn lifecycle ────────────────────────────────────────────────────────
+
+    def notify(
+        self,
+        severity: Severity,
+        text: str,
+        *,
+        duration: float | None = None,
+    ) -> Notice:
+        """Show *text* on the status line for *duration* seconds (TUX-08).
+
+        A transient notice is for confirmations and FYIs ("Copied",
+        "Mode → Plan"): it replaces the previous one, never enters the
+        scrollback and is never persisted. With no running event loop
+        (headless, tests) it stays until the next :meth:`notify`.
+        """
+        import asyncio
+
+        from agenthicc.tui.workspace.notice import Notice
+
+        notice = Notice(severity, text)
+        if self._transient_notice_handle is not None:
+            self._transient_notice_handle.cancel()
+            self._transient_notice_handle = None
+        self.transient_notice.set(notice)
+
+        def _clear() -> None:
+            self._transient_notice_handle = None
+            if self.transient_notice() is notice:
+                self.transient_notice.set(None)
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return notice
+        self._transient_notice_handle = loop.call_later(
+            TRANSIENT_NOTICE_S if duration is None else duration, _clear
+        )
+        return notice
 
     def notify_transient(self, message: str, duration: float = 2.0) -> None:
         """Append a transient notification line that auto-dismisses after *duration* seconds.
@@ -509,7 +818,7 @@ class ConversationStore:
         """True when a turn is currently open (between begin_turn and close_turn)."""
         return self._current_turn is not None
 
-    def close_turn(self, *, error: str | None = None) -> None:
+    def close_turn(self, *, error: str | None = None, interrupted: bool = False) -> None:
         """Idempotent cleanup for one ConversationTurn.
 
         Safe to call multiple times; subsequent calls are no-ops.
@@ -526,6 +835,10 @@ class ConversationStore:
             When set, appends an ``error`` scroll-buffer event and marks the
             turn as ``AgentState.ERROR`` internally. An outer activity remains
             non-idle until its own ``end_activity()`` call.
+        interrupted:
+            The user stopped the turn (Esc or Ctrl+C). The ``turn_complete``
+            event says so, and the transcript ends the turn with
+            ``Interrupted after …`` (TUX-10 §2.2).
         """
         # Capture elapsed before clearing _start_time.
         elapsed = self.elapsed_s
@@ -537,7 +850,15 @@ class ConversationStore:
                 self._current_turn.state = AgentState.COMPLETE
             # Always emit turn_complete (with elapsed) so the scroll buffer can
             # print the turn duration regardless of success or error path.
-            self.append_event("turn_complete", {"elapsed_s": elapsed})
+            from agenthicc.tui.turn_summary import summarize_turn
+
+            ending: dict[str, object] = {
+                "elapsed_s": elapsed,
+                **summarize_turn(self._current_turn.events),
+            }
+            if interrupted:
+                ending["interrupted"] = True
+            self.append_event("turn_complete", ending)
         activity_active = self._activity_active
         external_activity = self._activity_external_scope
         self._current_turn = None
@@ -549,6 +870,9 @@ class ConversationStore:
         else:
             self.agent_state.set(AgentState.IDLE)
         self.active_tool.set("")
+        self.running_tools.set(())
+        self._retry_deadline = None
+        self.retry.set(None)
         self._start_time = 0.0
         self.display_elapsed_s.set(0.0)
         self._display_paused = False
@@ -570,6 +894,17 @@ class ConversationStore:
         self.active_tool.set(name)
         self.agent_state.set(AgentState.RUNNING)
 
+    def start_running_tool(self, tool: RunningTool) -> None:
+        """Show *tool* as running until :meth:`finish_running_tool` (by its key)."""
+        others = tuple(item for item in self.running_tools() if item.key != tool.key)
+        self.running_tools.set((*others, tool))
+
+    def finish_running_tool(self, key: str) -> None:
+        current = self.running_tools()
+        remaining = tuple(item for item in current if item.key != key)
+        if len(remaining) != len(current):
+            self.running_tools.set(remaining)
+
     def clear_tool(self, success: bool = True) -> None:
         self.active_tool.set("")
         if self.agent_state() == AgentState.RUNNING:
@@ -579,6 +914,9 @@ class ConversationStore:
     # ── metrics ───────────────────────────────────────────────────────────────
 
     def add_tokens(self, inp: int, out: int, cost: float) -> None:
+        if inp > 0:
+            # One call's input is the context it sent (TUX-02 context meter).
+            self.context_tokens.set(inp)
         self.tokens_in.set(self.tokens_in() + inp)
         self.tokens_out.set(self.tokens_out() + out)
         self.cost_usd.set(self.cost_usd() + cost)
@@ -606,7 +944,9 @@ class ConversationStore:
         kind: str,
         payload: dict[str, object],
         event_id: str | None = None,
+        timestamp: float | None = None,
     ) -> ConversationEvent:
+        """Record one event; *timestamp* keeps a replayed event's original time."""
         if event_id:
             existing = self._events_by_id.get(event_id)
             if existing is not None:
@@ -616,6 +956,8 @@ class ConversationStore:
             kind=kind,
             payload=payload,
         )
+        if timestamp is not None:
+            ev.timestamp = timestamp
         if self._current_turn is not None:
             self._current_turn.events.append(ev)
         self._events_by_id[ev.event_id] = ev
@@ -625,6 +967,8 @@ class ConversationStore:
             self.tool_group_count.set(self.tool_group_count.get() + 1)
         elif kind in ("text", "turn_start"):
             self.tool_group_count.set(0)
+        elif kind == "user_message":
+            self._title_from(ev)
         for sub in list(self._event_subscribers):
             try:
                 sub(ev)
@@ -636,6 +980,16 @@ class ConversationStore:
         """Seed replayed event IDs without re-emitting or persisting them."""
         for event in events:
             self._events_by_id[event.event_id] = event
+            if event.kind == "user_message":
+                self._title_from(event)
+
+    def _title_from(self, event: ConversationEvent) -> None:
+        """Title the session after its first prompt, once (TUX-02)."""
+        if self.session_title():
+            return
+        text = event.payload.get("text")
+        if isinstance(text, str):
+            self.session_title.set(session_title_from(text))
 
     def _has_event_id(self, event_id: str) -> bool:
         """Return whether an event ID is already present in this projection."""
@@ -654,6 +1008,24 @@ class ConversationStore:
             self._event_subscribers.remove(fn)
         except ValueError:
             pass
+
+
+#: The longest title kept: AGX-05 titles a background session ``intent[:80]``.
+SESSION_TITLE_MAX = 80
+
+
+def session_title_from(prompt: str) -> str:
+    """The title a prompt gives its session, or ``""`` (a slash command).
+
+    The first non-empty line, with runs of whitespace collapsed and cut to
+    :data:`SESSION_TITLE_MAX` characters, as AGX-05 titles a background
+    session after its intent.
+    """
+    line = next((line for line in prompt.splitlines() if line.strip()), "")
+    title = " ".join(line.split())
+    if title.startswith("/"):
+        return ""
+    return title[:SESSION_TITLE_MAX]
 
 
 # ── Input state ───────────────────────────────────────────────────────────────

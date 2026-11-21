@@ -8,10 +8,12 @@ Flow for a side-effecting or unclassified tool in Safe mode:
 3. If the tool's capabilities intersect approval_required, ApprovalService
    .request_approval() is called.  The calling coroutine suspends on
    asyncio.Event.wait() — the event loop remains free.
-4. ApprovalOverlay is shown; user presses y/a/A/n.
+4. ApprovalOverlay is shown (TUX-07): the user picks a numbered option.
 5. ApprovalOverlay.handle_key() calls ApprovalService.respond(), which
    sets the event.  The suspended coroutine resumes.
-6. ApprovalGate returns proceed() or abort() based on the response.
+6. ApprovalGate returns proceed() or abort() based on the response.  A denial
+   carries what the user typed in "No, and tell the agent what to do
+   instead", so the model reads it in the tool result.
 """
 
 from __future__ import annotations
@@ -21,6 +23,7 @@ import logging
 import math
 import time
 import uuid
+from enum import Enum
 from dataclasses import dataclass, field
 from dataclasses import replace
 from collections.abc import Callable, Mapping, Sequence
@@ -43,6 +46,9 @@ __all__ = [
     "ApprovalService",
     "ApprovalGate",
     "InteractiveApprovals",
+    "approval_reason",
+    "capability_values",
+    "denial_payload",
 ]
 
 
@@ -93,6 +99,10 @@ class ApprovalRequest:
     """Bounded non-sensitive identity for repeated-timeout protection."""
     requester: ApprovalRequester | None = None
     """The subagent worker that asked, or ``None`` for the session's agent."""
+    reason: str = ""
+    """One sentence saying why approval is needed: the mode rule, capability or
+    workspace boundary that triggered it (TUX-07). Empty for plan reviews and
+    questions, which are asked for by the agent rather than by a rule."""
 
 
 @dataclass(frozen=True)
@@ -686,14 +696,55 @@ class ApprovalGate(FailClosedGate):
             tool_input=dict(ctx.tool_input or {}),
             capabilities=frozenset(needs_approval),
             event=asyncio.Event(),
+            reason=approval_reason(mode.name, frozenset(needs_approval)),
         )
         response = await self._service.request_approval(req)
         if response.allowed:
             return BeforeToolHookDecision.proceed()
-        return BeforeToolHookDecision.abort(
-            {
-                "ok": False,
-                "error_code": "approval_denied",
-                "error": f"User denied permission to run '{ctx.tool_name}'.",
-            }
+        return BeforeToolHookDecision.abort(denial_payload(ctx.tool_name, response.message))
+
+
+#: What each capability that needs approval asks before, in reading order.
+_CAPABILITY_ACTIVITIES: tuple[tuple[str, str], ...] = (
+    ("execute", "running commands"),
+    ("write", "changing files"),
+    ("git_write", "changing the git repository"),
+    ("network", "using the network"),
+    ("undeclared", "running tools that declare no capabilities"),
+)
+
+
+def _join_phrases(phrases: Sequence[str]) -> str:
+    if len(phrases) <= 1:
+        return "".join(phrases)
+    return ", ".join(phrases[:-1]) + " and " + phrases[-1]
+
+
+def capability_values(capabilities: frozenset[str]) -> frozenset[str]:
+    """The plain capability names (``"execute"``) of a set that may hold enum members."""
+    return frozenset(item.value if isinstance(item, Enum) else str(item) for item in capabilities)
+
+
+def approval_reason(mode_name: str, capabilities: frozenset[str]) -> str:
+    """The one-line reason an approval is shown: "Safe mode asks before running commands."."""
+    values = capability_values(capabilities)
+    phrases = [phrase for name, phrase in _CAPABILITY_ACTIVITIES if name in values]
+    activity = _join_phrases(phrases) if phrases else "running this tool"
+    return f"{mode_name} mode asks before {activity}."
+
+
+def denial_payload(tool_name: str, message: str) -> dict[str, object]:
+    """The tool result of a denied call; the user's instructions reach the model."""
+    payload: dict[str, object] = {
+        "ok": False,
+        "error_code": "approval_denied",
+        "error": f"User denied permission to run '{tool_name}'.",
+    }
+    instructions = message.strip()
+    if instructions:
+        payload["error"] = (
+            f"User denied permission to run '{tool_name}' and said what to do instead: "
+            f"{instructions}"
         )
+        payload["user_instructions"] = instructions
+    return payload

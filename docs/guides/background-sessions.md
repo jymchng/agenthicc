@@ -32,6 +32,14 @@ The path through the runtime is:
    busy policy, so the command can be handled while an agent turn is running
    instead of waiting in the ordinary message queue. The integration bridge
    intercepts the command before it is treated as a new user request.
+   **While a tool call is running, the handoff waits for it to finish.** A
+   blinking blue `●` under the running call says
+   `Backgrounding after tool call ends…` until it does. The
+   handoff then happens at the next tool boundary, once the call's result is
+   committed to the conversation, so the worker continues from a complete tool
+   exchange instead of an interrupted one. If the turn ends first, the handoff
+   happens when it ends. Repeating the command does not queue a second
+   handoff. With no tool running, the handoff is immediate.
 2. **The handoff chooses the work to continue.** It uses the most recently
    accepted user text as the worker intent—not the literal `/detach` command.
    It also carries the active or configured workflow name. If there is no
@@ -43,7 +51,8 @@ The path through the runtime is:
    the session; it does not copy the transcript or create a second workflow
    run.
 4. **Foreground execution is asked to stop.** If the TUI owns an active agent
-   task, `/detach` calls `task.cancel()`. This is an asynchronous cancellation
+   task, `/detach` calls `task.cancel()`; a running tool call has already
+   finished by this point (step 1). This is an asynchronous cancellation
    request, not proof that the task has already finished unwinding.
 5. **Ownership is handed over and the worker is launched.** The prepared path
    releases the foreground session-owner lease, then starts the supervisor.
@@ -57,8 +66,11 @@ The path through the runtime is:
    resumes a valid checkpoint if present and otherwise exits without replaying
    the historical intent or making a model request. Progress and terminal
    status are written to the background store.
-7. **The foreground input loop exits.** The TUI shows a transient
-   `Backgrounded session …` notice and signals its input loop to exit. During
+7. **The foreground input loop exits.** The transcript ends with
+   `● Successfully backgrounded · <session id> (running)`, after the closing
+   rows of the turn the handoff stopped (that turn is not reported as
+   cancelled, failed or interrupted: the work continues in the background), and
+   the TUI signals its input loop to exit. During
    TUI shutdown, it awaits the foreground agent task while closing its other
    resources; after cleanup, control returns to the shell. The background
    worker is independent of that terminal shutdown.
@@ -96,8 +108,8 @@ When the cancelled foreground task belongs to a running workflow, its
 cancellation handler currently records a workflow failure with reason
 `cancelled` and closes the foreground turn. The scroll appender can therefore
 show `ERROR cancelled` even though the background worker has been launched.
-The subsequent indented `Total · …` recap row is emitted when the foreground
-activity ends. Its duration describes the entire outer activity, not necessarily
+The subsequent `✾ Done in …` recap row is emitted when the foreground
+activity ends (when it adds to the turn's own `✾ Worked for …` row). Its duration describes the entire outer activity, not necessarily
 additional work after cancellation. A plain non-workflow turn can take this path
 without emitting the same workflow failure.
 
@@ -172,7 +184,9 @@ The TUI lists the oldest pending requests first.
 open the answer form. It works like the foreground Questions overlay:
 
 - it shows one question at a time, with its options and "Other — type your
-  answer";
+  answer"; a long option wraps under its own text instead of being cut at the
+  panel's edge, and on a short terminal the options scroll around the cursor
+  (`↑ 3 more`, `↓ 2 more`) so the hint line and footer stay on screen;
 - ↑/↓ choose an option and ←/→ move between questions;
 - Enter confirms an answer; on the last unanswered question it sends them
   all, and Ctrl+S sends once every question is answered;
@@ -211,14 +225,15 @@ rejected or expired by an operator.
 
 ### Questions wait for you
 
-A background agent is unattended, so its `ask_user` questions have no
-deadline by default. A waiting question stays in Needs you until you answer
-it, expire it (`x`), or stop the session. The row's age shows how long the
-agent has waited.
+A background agent is unattended, so its `ask_user` questions have a bounded
+wait. By default it is 300 seconds (five minutes), the same as the foreground
+overlay. The question stays in Needs you until you answer it; if the deadline
+passes first, the agent continues with its safest assumption (below).
 
-`[background] question_timeout_s` sets a deadline (seconds; `0`, the
-default, means none). When it passes, the agent continues with its safest
-assumption, and the question stays listed as `◇ answer late` while the
+`[background] question_timeout_s` sets that deadline in seconds. The default is
+`300`; `0` means wait until you answer it, expire it (`x`), or stop the session.
+When the deadline passes, the agent continues with its safest
+assumption, and the question stays listed as `◆ answer late` (not bold) while the
 session runs. Answering it sends your answers to the agent as its next
 message, beginning "Late answers to your earlier questions…". `x` dismisses
 it. `[tools] question_timeout_s` governs only the foreground Questions
@@ -384,8 +399,9 @@ One vocabulary is used by the hub, `agenthicc agents list` and these docs:
 | `cancelled` | `⊘` | cancelled | Recently finished |
 | `archived` | `▫` | archived | History |
 
-The list fills the terminal and scrolls; the selection is marked by `▸` and
-stays on the same agent when an update moves it to another group. A `•` marks
+The list fills the terminal and scrolls; the selection is marked by an accent
+bar (`▌`) on the selected-row background and stays on the same agent when an
+update moves it to another group. A `●` marks
 an agent whose state or report changed since you last opened it (remembered in
 `~/.agenthicc/state/agents-hub.json`). `s` cycles the order within the Running
 tab's groups (attention, recent activity, created, title), `g` groups it by
@@ -418,10 +434,18 @@ sections answer four questions:
 |---|---|---|
 | Needs you | The agent waits or its worker was lost | The inbox request's canonical target — tool, input, workspace paths, mode — redacted; `y`/`n` resolve that exact item |
 | Now | The agent is active | Phase progress, queue position, the latest activity |
-| Transcript | Always | The last 50 journal events, redacted with the export redactor, one line each; `f` toggles following new events, `t` the whole transcript |
+| Transcript | Always | The last 50 journal events, redacted with the export redactor, each wrapped under its role: a reply keeps its paragraphs (up to 8,000 characters), a tool call its summary and first output line; an entry longer than 40 lines ends in `… N more lines`; `f` toggles following new events, `t` the whole transcript |
 | Changes | A worktree agent | `git diff --stat` from its base commit including uncommitted work; `d` shows the full diff |
 | Attempts | More than one attempt | Each attempt's outcome and error |
 | Details | Always | Only fields that have a value |
+
+Content is wrapped, never cropped. A command, path, reply, error or option longer
+than the panel continues on the lines below it, in the same column, and a block
+that is capped says how many lines it left out (`… 5 more lines`). The peek
+panel keeps at most six lines of a request value, and the detail view shows it
+whole (up to 4,000 characters, with a marker beyond that), so Enter always opens
+the complete request. Only fixed-column chrome (the list rows, headings, the key
+hints) is shortened with an ellipsis.
 
 The title and the Needs you card stay at the top while the rest scrolls.
 The header shows the agent's tokens and cost across all its attempts. The
@@ -956,6 +980,7 @@ Its subcommands are `list`, `status`, `cancel`, `resume`, `retry`, `priority`,
 | Killing the parent session left child processes alive | Detached terminals are owned by the session's terminal manager | Cancelling a detached parent asks the terminal registry to stop its exact child groups. Inspect with `/ps` and stop with `/stop <terminal-id>` |
 | Background state disappeared after a restart | The store holds only the rebuildable lifecycle index | The index is rebuilt from durable owners (kernel events, conversation events, workflow phase state), so a lost index is recoverable |
 | Archiving lost the audit trail | Archive moves the listing entry | Workflow phase state, approvals, and memory keep their own owners; the index was never the audit trail |
+| `Unable to background session: OperationalError: database is locked` with several agenthicc instances running | Before the fix, the registry log grew without bound (19.6 GB on one machine). One instance's index catch-up then held SQLite's write lock past the others' 30-second wait | Fixed: every index write waits on the cross-process `registry.lock` instead of failing in SQLite, and the log compacts itself once it exceeds 64 MiB. The first append after upgrading compacts an existing large log |
 
 ### A job is a control-plane record, not a runtime
 
@@ -967,6 +992,14 @@ wedged" is usually one of three distinct things: a lease problem, a control
 request that was never answered, or a turn that is genuinely running.
 
 ### Manage the index, not the state
+
+The registry log `events.jsonl` is compacted automatically. Once it is larger
+than 64 MiB and four times the size of a compacted copy, the next append
+rewrites it as one record per session (deleted sessions included) and atomically
+replaces the file. No session's state changes; only the history of heartbeats
+and superseded updates is dropped. Every instance that shares the registry waits
+on `registry.lock` while another one changes the log or the index, so a running
+`agenthicc` never makes another one fail with `database is locked`.
 
 `purge` and `delete` remove listing entries. If you need the history for
 forensics, export or inspect before purging — the lifecycle index is explicitly

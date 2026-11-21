@@ -105,6 +105,60 @@ def test_diffed_frames_leave_the_same_screen_as_full_redraws(seed: int) -> None:
     assert _play(script, columns, rows, 0.5) == _play(script, columns, rows, -1.0)
 
 
+def _segmented(text: str, rng: random.Random) -> Line:
+    """*text* split into styled segments at random points."""
+    styles = (None, Style(bold=True), Style(dim=True))
+    parts: list[Segment] = []
+    start = 0
+    while start < len(text):
+        end = min(len(text), start + rng.randint(1, 4))
+        parts.append(Segment(text[start:end], rng.choice(styles)))
+        start = end
+    return tuple(parts)
+
+
+@pytest.mark.parametrize("seed", range(60))
+def test_patched_rows_leave_the_same_screen_as_full_redraws(seed: int) -> None:
+    """Rows of many segments, edited in the middle, as the status line is (TUX-02)."""
+    rng = random.Random(seed)
+    columns, rows = rng.randint(12, 40), rng.randint(6, 12)
+    alphabet = "abcdefgh  ─│▌❯⠋⠙"
+    height = rng.randint(1, rows - 2)
+    current = [
+        _segmented("".join(rng.choices(alphabet, k=rng.randint(0, columns))), rng)
+        for _ in range(height)
+    ]
+    script = [list(current)]
+    for _ in range(rng.randint(5, 20)):
+        row = rng.randrange(len(current))
+        line = list(current[row])
+        if line:
+            index = rng.randrange(len(line))
+            width = rng.choice((len(line[index].text), rng.randint(1, 4)))
+            text = "".join(rng.choices(alphabet, k=width))
+            line[index] = Segment(text, line[index].style)
+        candidate = tuple(line)
+        if sum(len(segment.text) for segment in candidate) <= columns:
+            current[row] = candidate
+        script.append(list(current))
+
+    def play(ratio: float) -> list[str]:
+        terminal = _Terminal(columns, rows)
+        region = LiveRegion(terminal.console, full_redraw_ratio=ratio)
+        region.start()
+        try:
+            for frame in script:
+                region.update(frame)
+                terminal.flush()
+                expected = ["".join(seg.text for seg in line).rstrip() for line in frame]
+                assert terminal.block(len(frame)) == expected
+            return [row.rstrip() for row in terminal.screen.display]
+        finally:
+            region.stop()
+
+    assert play(0.5) == play(-1.0)
+
+
 def test_an_unchanged_frame_writes_nothing_and_one_change_rewrites_one_row() -> None:
     terminal = _Terminal(40, 10)
     region = LiveRegion(terminal.console)
@@ -197,6 +251,8 @@ async def test_a_spinner_frame_rewrites_only_the_status_row() -> None:
     workspace.start()
     try:
         state.conversation.begin_turn("agent", "turn-1")
+        if workspace._git_task is not None:
+            await workspace._git_task  # the branch's dirty mark is read once at start
         await settle_frames(workspace)
         output.seek(0)
         output.truncate(0)
@@ -205,10 +261,20 @@ async def test_a_spinner_frame_rewrites_only_the_status_row() -> None:
         await settle_frames(workspace)
 
         written = output.getvalue()
-        assert 0 < len(written.encode()) <= 200
-        # One row rewritten: a single erase-line, no other block rows.
-        assert written.count("\x1b[2K") == 1
-        assert "claude-sonnet-5-5" not in written
+        status = next(row for row in lines_text(workspace._live.lines) if "Thinking" in row)
+        # Only the state segment changes: the turning flower and the bold letter
+        # sweeping across "Thinking" (TUX-02). It is patched in place — the
+        # cursor steps up to the status row and forward over the one unchanged
+        # cell before it — so nothing is erased and nothing right of the
+        # animated word is rewritten.
+        assert written.startswith("\x1b[1A\r\x1b[1C")
+        assert "\x1b[2K" not in written
+        assert status.lstrip()[:1] in written  # the flower itself is drawn
+        # The elapsed time shows only after 3 s (TUX-10), so a first frame has none.
+        for untouched in ("sonnet", "? shortcuts"):
+            assert untouched in status
+            assert untouched not in written
+        assert len(written.encode()) < len(status)  # far short of the whole row
     finally:
         workspace.stop()
 
@@ -222,7 +288,7 @@ async def test_typing_echoes_without_waiting_for_the_frame_interval() -> None:
         state.input.buf.set(list("hi"))
         state.input.cursor.set(2)
         await asyncio.sleep(0)
-        assert any("hi▌" in row for row in lines_text(workspace._live.lines))  # type: ignore[union-attr]
+        assert any("❯ hi" in row for row in lines_text(workspace._live.lines))  # type: ignore[union-attr]
     finally:
         workspace.stop()
 

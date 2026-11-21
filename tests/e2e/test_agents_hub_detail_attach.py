@@ -646,3 +646,38 @@ async def test_stop_as_the_whole_reply_from_the_peek_panel_stops_the_agent(
     assert store.get("peek-stop").status is SessionStatus.CANCELLING
     assert BackgroundInputInbox(store).receipts("peek-stop") == ()  # nothing was delivered
     await hub.stop()
+
+
+@pytest.mark.asyncio
+async def test_an_open_composer_shows_its_receipt_once(tmp_path: Path) -> None:
+    """The receipt under the input is not repeated in the hub's notice row."""
+    store = BackgroundStore(tmp_path / "background")
+    session = BackgroundSession.create(
+        "composer-receipt",
+        title="Live target",
+        cwd=str(tmp_path),
+        workflow_name="code_plan",
+        intent="keep working",
+    ).evolve(
+        status=SessionStatus.RUNNING,
+        worker_pid=os.getpid(),
+        lease_token="live-owner-token",
+        attempt=1,
+    )
+    store.create(session)
+    supervisor = BackgroundSupervisor(store)
+    from agenthicc.background.supervisor import _WorkerProcessState
+
+    supervisor._worker_process_state = lambda _session: _WorkerProcessState.LIVE  # type: ignore[method-assign]
+    manager = await _hub(store, tmp_path, supervisor=supervisor, detail=session)
+    manager.handle_key(Key.CHAR, "i")
+    await manager.settle()
+    assert manager._composer_open
+
+    receipt = "Queued for composer-rec · 6b9f7614-8ca"
+    manager._composer_receipt = receipt
+    manager._notice = receipt
+
+    manager.console.print(manager.render(100, 40))
+    assert manager.console.export_text().count(receipt) == 1
+    await manager.stop()

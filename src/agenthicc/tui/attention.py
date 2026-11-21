@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -18,8 +17,6 @@ from agenthicc.background.attention import (
 )
 
 if TYPE_CHECKING:
-    from rich.console import Console
-
     from agenthicc.background.agents_service import AgentsService
     from agenthicc.background.settings import BackgroundSettings
     from agenthicc.tui.conversation_store import AppState
@@ -44,15 +41,13 @@ class AgentAttentionRouter:
         settings: BackgroundSettings,
         app_state: AppState,
         *,
-        set_terminal_title: Callable[[str], None] | None = None,
-        send_terminal_notification: Callable[[str], None] | None = None,
+        send_terminal_notification: Callable[[str, str], None] | None = None,
         monotonic: Callable[[], float] = time.monotonic,
         now: Callable[[], datetime] = lambda: datetime.now().astimezone(),
     ) -> None:
         self._service = service
         self._settings = settings
         self._app_state = app_state
-        self._set_terminal_title = set_terminal_title
         self._send_terminal_notification = send_terminal_notification
         self._monotonic = monotonic
         self._now = now
@@ -60,7 +55,6 @@ class AgentAttentionRouter:
         self._notices: list[_AttentionNotice] = []
         self._coalesce_deadline: float | None = None
         self._toast_deadline: float | None = None
-        self._hint_deadline: float | None = None
         self._notification_tasks: set[asyncio.Task[None]] = set()
 
     async def run(self) -> None:
@@ -83,8 +77,6 @@ class AgentAttentionRouter:
         try:
             previous = await _load_attention_snapshot(self._service)
             self._publish_counts(previous)
-            conversation.agents_hint.set(True)
-            self._hint_deadline = self._monotonic() + 10.0
             while True:
                 now = self._monotonic()
                 timeout = self._next_timeout(now)
@@ -117,7 +109,6 @@ class AgentAttentionRouter:
                 now = self._monotonic()
                 self._flush_if_ready(now)
                 self._expire_toast(now)
-                self._expire_hint(now)
         finally:
             for unsubscribe in unsubscribers:
                 unsubscribe()
@@ -128,11 +119,7 @@ class AgentAttentionRouter:
 
     def _next_timeout(self, now: float) -> float | None:
         conversation = self._app_state.conversation
-        deadlines = [
-            deadline
-            for deadline in (self._toast_deadline, self._hint_deadline)
-            if deadline is not None
-        ]
+        deadlines = [self._toast_deadline] if self._toast_deadline is not None else []
         if (
             not conversation.background_dnd()
             and not self._app_state.modal_open()
@@ -174,15 +161,6 @@ class AgentAttentionRouter:
             )
             conversation.agents_target.set(target.session_id if target is not None else None)
             conversation.agents_item_target.set(None)
-        if self._set_terminal_title is not None:
-            from agenthicc.tui.attention_labels import sessions_need_you, sessions_running
-
-            parts = ["Agenthicc"]
-            if snapshot.needs_you_count:
-                parts.append(sessions_need_you(snapshot.needs_you_count))
-            if snapshot.running_count:
-                parts.append(sessions_running(snapshot.running_count))
-            self._set_terminal_title(" · ".join(parts))
 
     def _observe(
         self,
@@ -227,9 +205,6 @@ class AgentAttentionRouter:
                         oldest.project_root,
                         item_id=oldest.item_id,
                     )
-        if needs_notified or new_items:
-            self._app_state.conversation.agents_hint.set(True)
-            self._hint_deadline = self._monotonic() + 10.0
 
     def _queue_notice(
         self,
@@ -309,13 +284,15 @@ class AgentAttentionRouter:
                 "summary": summary[:240],
             }
             task = asyncio.create_task(
-                self._send_system_notification(payload),
+                self._send_system_notification(payload, target.kind),
                 name="background-attention-system-notification",
             )
             self._notification_tasks.add(task)
             task.add_done_callback(self._notification_tasks.discard)
 
-    async def _send_system_notification(self, payload: dict[str, object]) -> None:
+    async def _send_system_notification(
+        self, payload: dict[str, object], kind: Literal["needs", "finished", "failed"]
+    ) -> None:
         from agenthicc.background.notifications import _send_local_notification
 
         backend = self._settings.notifications.local_backend
@@ -323,7 +300,7 @@ class AgentAttentionRouter:
         try:
             if backend == "terminal":
                 if self._send_terminal_notification is not None:
-                    self._send_terminal_notification(summary)
+                    self._send_terminal_notification(kind, summary)
                 return
             result = await asyncio.to_thread(_send_local_notification, payload, "desktop")
             if (
@@ -331,7 +308,7 @@ class AgentAttentionRouter:
                 and backend == "auto"
                 and self._send_terminal_notification is not None
             ):
-                self._send_terminal_notification(summary)
+                self._send_terminal_notification(kind, summary)
         except Exception:  # noqa: BLE001 - system notifications cannot stop the TUI
             log.debug("background attention system notification failed", exc_info=True)
 
@@ -339,12 +316,10 @@ class AgentAttentionRouter:
         self._notices.clear()
         self._coalesce_deadline = None
         self._toast_deadline = None
-        self._hint_deadline = None
         conversation = self._app_state.conversation
         conversation.background_toast.set(None)
         conversation.background_toast_kind.set(None)
         conversation.agents_toast_target.set(None)
-        conversation.agents_hint.set(False)
 
     def _expire_toast(self, now: float) -> None:
         if self._toast_deadline is None or now < self._toast_deadline:
@@ -354,24 +329,3 @@ class AgentAttentionRouter:
         conversation.background_toast.set(None)
         conversation.background_toast_kind.set(None)
         conversation.agents_toast_target.set(None)
-
-    def _expire_hint(self, now: float) -> None:
-        if self._hint_deadline is None or now < self._hint_deadline:
-            return
-        self._hint_deadline = None
-        self._app_state.conversation.agents_hint.set(False)
-
-
-def _emit_terminal_notification(console: Console, summary: str) -> None:
-    """Write a supported notification OSC, never visible text, to the TUI stream."""
-    terminal = os.environ.get("TERM", "").casefold()
-    if not console.is_terminal or terminal in {"", "dumb"}:
-        return
-    safe_summary = "".join(
-        character
-        for character in summary[:240]
-        if ord(character) >= 0x20 and not 0x7F <= ord(character) <= 0x9F
-    )
-    if safe_summary:
-        console.file.write(f"\x1b]9;{safe_summary}\x07")
-        console.file.flush()

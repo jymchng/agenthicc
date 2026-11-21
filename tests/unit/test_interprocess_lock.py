@@ -91,7 +91,16 @@ def test_every_store_locks_with_the_shared_primitive(
     tmp_path: Path, make_store: type[BackgroundStore | TerminalStore | RunStore | ManifestStore]
 ) -> None:
     store = make_store(tmp_path / "store")
-    lock = store._lock()
+    if isinstance(store, BackgroundStore):
+        # The registry lock is reentrant within one store (a writer that holds
+        # it can still sync the index); the flock underneath is the primitive.
+        with store._lock():
+            lock = store._registry_flock
+            with store._lock():
+                assert store._registry_flock is lock
+        assert store._registry_flock is None
+    else:
+        lock = store._lock()
 
     assert isinstance(lock, InterProcessLock)
     assert lock.path == store.lock_path

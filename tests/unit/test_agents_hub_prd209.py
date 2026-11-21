@@ -50,21 +50,13 @@ def _session(tmp_path: Path, session_id: str, last_active: float) -> BackgroundS
     )
 
 
-@pytest.mark.asyncio
-async def test_a_long_multiline_message_stays_one_line_under_a_pinned_title(tmp_path: Path) -> None:
+async def _detail_text(tmp_path: Path, message: str, *, height: int = 25) -> str:
     import time as clock
 
     session = _session(tmp_path, "long-activity", clock.time() - 60)
     journal = Path(session.artifact_dir) / "conversation.jsonl"
     journal.write_text(
-        json.dumps(
-            {
-                "kind": "text",
-                "payload": {"text": "first line\n" + ("agent response " * 400)},
-            }
-        )
-        + "\n",
-        encoding="utf-8",
+        json.dumps({"kind": "text", "payload": {"text": message}}) + "\n", encoding="utf-8"
     )
     store = BackgroundStore(tmp_path / "background")
     store.create(session)
@@ -74,15 +66,35 @@ async def test_a_long_multiline_message_stays_one_line_under_a_pinned_title(tmp_
         await hub.settle()
         hub._open_detail(session.session_id)
         await hub.settle()
-        console = Console(width=100, height=25, record=True)
-        console.print(hub.render(100, 25))
+        console = Console(width=100, height=height, record=True)
+        console.print(hub.render(100, height))
         text = console.export_text()
         assert text.splitlines()[1].strip().endswith(session.title)  # pinned title
-        assert "first line" in text
-        assert "agent response" not in text  # only the first line of a message
         assert all(len(line) <= 100 for line in text.splitlines())
+        return text
     finally:
         await hub.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_multiline_message_wraps_under_a_pinned_title_and_loses_no_word(
+    tmp_path: Path,
+) -> None:
+    """The reply used to show its first line only, cut at 240 characters and the panel's edge."""
+    message = "first line\n\n" + ("agent response " * 60) + "\nlast line of the reply"
+    text = await _detail_text(tmp_path, message)
+    assert "first line" in text and "last line of the reply" in text
+    assert text.count("response") == 60  # every word of the reply, wrapped
+    assert "more lines" not in text
+
+
+@pytest.mark.asyncio
+async def test_a_message_longer_than_the_entry_cap_says_how_much_it_left_out(
+    tmp_path: Path,
+) -> None:
+    text = await _detail_text(tmp_path, "first line\n" + ("agent response " * 400))
+    assert "agent response" in text
+    assert "… 34 more lines" in text  # 400 words wrap to 74 lines at this width; 40 are kept
 
 
 def test_index_reopens_without_replaying_and_applies_external_appends(

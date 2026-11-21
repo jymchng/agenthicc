@@ -15,14 +15,12 @@ from agenthicc.tui.cbreak_reader import Key
 from agenthicc.tui.conversation_store import AppState, ConversationEvent
 from agenthicc.tui.runtime.session_log import (
     SessionEventLog,
-    TranscriptEntry,
-    TranscriptPage,
     load_older_transcript_page,
     load_recent_transcript_page,
     load_transcript_entry,
     user_message_history_from_events,
 )
-from agenthicc.tui.workspace.overlays.transcript_history import TranscriptHistoryOverlay
+from agenthicc.tui.transcript.sources import SessionLogSource
 
 pytestmark = pytest.mark.unit
 
@@ -184,7 +182,7 @@ def test_exceptionally_large_single_line_never_reads_an_unbounded_preview_and_ca
     assert [entry.event.event_id for entry in older.entries] == ["older-1", "older-2"]
 
 
-def test_corrupt_trailing_jsonl_is_skipped_and_history_overlay_pages_without_live_replay(
+def test_corrupt_trailing_jsonl_is_skipped_by_the_pages_and_the_transcript_index(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import agenthicc.tui.runtime.session_log as session_log
@@ -200,23 +198,15 @@ def test_corrupt_trailing_jsonl_is_skipped_and_history_overlay_pages_without_liv
 
     page = load_recent_transcript_page("overlay", max_events=3)
     assert [entry.event.event_id for entry in page.entries] == ["old-4", "old-5", "old-6"]
-    closed: list[bool] = []
-    overlay = TranscriptHistoryOverlay("overlay", page, lambda: closed.append(True))
-    overlay.set_viewport(100, 20)
-    overlay.handle_key(Key.PAGE_UP, "")
-    assert overlay._page_index == 1
-    assert [entry.event.event_id for entry in overlay._pages[1].entries] == [
-        "old-0",
-        "old-1",
-        "old-2",
-        "old-3",
-    ]
-    overlay.handle_key(Key.ENTER, "")
-    assert overlay._detail is not None
-    overlay.handle_key(Key.ESC, "")
-    assert overlay._detail is None
-    overlay.handle_key(Key.ESC, "")
-    assert closed == [True]
+    older = load_older_transcript_page("overlay", page.older_cursor, max_events=10)  # type: ignore[arg-type]
+    assert [entry.event.event_id for entry in older.entries] == [f"old-{i}" for i in range(4)]
+
+    source = SessionLogSource("overlay")
+    assert source.wait_ready(5)
+    # The view indexes the same seven events and none of the malformed record.
+    assert source.count() == 7
+    assert [source.plain_text(i) for i in range(7)] == [f"event {i}" for i in range(7)]
+    source.close()
 
 
 @pytest.mark.asyncio
@@ -260,29 +250,6 @@ async def test_history_input_ready_callback_marks_noninteractive_and_interactive
     assert backend.reporting == [{"focus": True, "mouse": False}]
 
 
-def test_transcript_history_detail_serializes_event_without_hidden_or_private_fields() -> None:
-    event = ConversationEvent(
-        "event",
-        "text",
-        {
-            "text": "visible",
-            "reasoning_content": "hidden",
-            "_private": "private",
-            "nested": {"analysis": "nested secret", "public": "nested visible"},
-        },
-    )
-    page = TranscriptPage((TranscriptEntry(event, 0, 1),), None)
-    overlay = TranscriptHistoryOverlay("session", page, lambda: None)
-    overlay.handle_key(Key.ENTER, "")
-    assert overlay._detail is not None
-    detail = "\n".join(overlay._detail)
-    assert "visible" in detail
-    assert "hidden" not in detail
-    assert "private" not in detail
-    assert "nested secret" not in detail
-    assert "nested visible" in detail
-
-
 def test_oversized_event_detail_is_hard_bounded(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -297,26 +264,18 @@ def test_oversized_event_detail_is_hard_bounded(
         "hard-detail-limit", max_events=2, max_bytes=1024, max_event_bytes=256
     )
     assert len(page.entries) == 1
-    overlay = TranscriptHistoryOverlay("hard-detail-limit", page, lambda: None)
-    overlay.handle_key(Key.ENTER, "")
-    assert overlay._detail is not None
-    detail = "\n".join(overlay._detail)
+    # The view shows the inspection limit, not 256 KiB of text (TUX-09 reads it
+    # through the same bounded loader).
+    source = SessionLogSource("hard-detail-limit")
+    assert source.wait_ready(5)
+    detail = source.plain_text(0)
     assert "inspection limit" in detail
     assert len(detail) < 1_000
+    source.close()
 
 
-def test_history_command_opens_bounded_overlay_for_the_active_session(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    import agenthicc.tui.runtime.session_log as session_log
-
-    monkeypatch.setattr(session_log, "_SESSIONS_DIR", tmp_path / "sessions")
-    log = SessionEventLog("history-command")
-    for index in range(200):
-        _append(log, f"event-{index}", "text", {"text": f"text {index}"})
-    log.close()
-
-    overlays: list[object] = []
+def test_history_command_opens_the_transcript_view_for_the_active_session() -> None:
+    opened: list[str] = []
     context = CommandContext(
         text="/history",
         args="",
@@ -324,11 +283,7 @@ def test_history_command_opens_bounded_overlay_for_the_active_session(
         console=Console(record=True, force_terminal=False),
         config=AgenthiccConfig(),
         session_id="history-command",
-        set_pending_menu=overlays.append,
+        open_transcript=opened.append,
     )
     assert _cmd_history(context)
-    assert len(overlays) == 1
-    assert isinstance(overlays[0], TranscriptHistoryOverlay)
-    assert (
-        len(overlays[0]._pages[0].entries) <= context.config.behaviour.resume_transcript_max_events
-    )
+    assert opened == ["history"]

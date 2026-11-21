@@ -9,8 +9,20 @@ Key properties (AGX-11):
 - Signals request frames from a :class:`FrameScheduler`, which draws at most
   one frame per ``frame_interval_s`` and echoes keys at once.
 - The block is a :class:`LiveRegion`: rows are rendered to segment lines,
-  status and footer rows are cached by their markup, and only the rows that
-  changed are rewritten. The block is cleared cleanly during shutdown.
+  status and frame rows are cached by their markup and the theme, and only
+  the rows that changed are rewritten. The block is cleared cleanly during
+  shutdown.
+
+The block's layout (TUX-02), top to bottom:
+
+1. the overflow bridge row, while a tool group is collapsed;
+2. the composer in its frame (an overlay takes its place: the agents hub
+   without a frame, any other overlay between the frame's two rules);
+3. the subagent panel, while a pool has rows;
+4. the status line;
+5. one notice (wrapped whole) or one contextual hint row, or nothing.
+
+Idle, that is four rows: three for the framed composer and the status line.
 """
 
 from __future__ import annotations
@@ -20,20 +32,30 @@ import sys
 import time
 from collections import OrderedDict
 from collections.abc import Callable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TextIO
 
 from agenthicc.tui.preferences import ui_settings as _ui
 from agenthicc.tui.workspace.appender import ScrollBufferAppender
-from agenthicc.tui.workspace.components import ComposerComponent, FooterComponent, StatusComponent
+from agenthicc.tui.workspace.components import (
+    ComposerComponent,
+    ComposerFrame,
+    StatusLine,
+    notice_rows,
+)
 from agenthicc.tui.workspace.frames import FrameScheduler, FrameStats
 from agenthicc.tui.workspace.live_region import Line, LiveRegion
 from agenthicc.tui.workspace.overlay import OverlayHost
+from agenthicc.tui.workspace.queue_rows import queue_rows
+from agenthicc.tui.workspace.running_rows import running_rows
 
 if TYPE_CHECKING:
     from rich.console import Console, RenderableType
 
     from agenthicc.runners.startup import StartupCoordinator
     from agenthicc.tui.conversation_store import AppState, ConversationEvent
+    from agenthicc.tui.statusline import StatusLineCommand
+    from agenthicc.tui.theme import Theme
+    from agenthicc.tui.transcript.fullscreen import FullscreenLayout, PaneAction
     from agenthicc.tui.workspace.announcer import Announcer
 
 # Rendered markup rows kept for reuse: a few frames' worth of distinct rows.
@@ -72,9 +94,9 @@ class Workspace:
         self._console = console
         self._startup = startup
 
-        self.status = StatusComponent(app_state, startup)
+        self.status = StatusLine(app_state, startup)
         self.composer = ComposerComponent(app_state, max_rows=composer_max_rows)
-        self.footer = FooterComponent(app_state)
+        self.frame = ComposerFrame(app_state, self.composer)
         self.overlays = OverlayHost(app_state)
         self.scroll = ScrollBufferAppender(
             app_state,
@@ -84,14 +106,20 @@ class Workspace:
         )
 
         self._live: LiveRegion | None = None
+        self._stderr: TextIO | None = None
         self.frames = FrameScheduler(self._flush_redraw, interval_s=frame_interval_s)
-        self._markup_rows: OrderedDict[tuple[str, int], tuple[Line, ...]] = OrderedDict()
+        self._markup_rows: OrderedDict[tuple[str, int, Theme], tuple[Line, ...]] = OrderedDict()
         self._unsubs: list[Callable[[], None]] = []
         if startup is not None:
             self._unsubs.append(startup.subscribe(self._redraw))
         self._resize_pending: bool = False
         self._resize_handle: asyncio.TimerHandle | None = None
         self._announcer: Announcer | None = None
+        self._statusline: StatusLineCommand | None = None
+        self._git_task: asyncio.Task[None] | None = None
+        self._was_running = False
+        # TUX-09: the fullscreen layout, while it is on.
+        self._fullscreen: FullscreenLayout | None = None
 
     # ── lifecycle ─────────────────────────────────────────────────────────────
 
@@ -102,6 +130,9 @@ class Workspace:
         # Overlay key handling echoes like typing does.
         self.overlays.set_redraw_callback(self._redraw_input)
         self.scroll.mount()
+        ui = _ui(self._state)
+        if ui is not None and ui.fullscreen:
+            self._begin_fullscreen()
 
         # Transient, so the block leaves no copy in the scroll buffer. Rows
         # past the terminal height are cropped.
@@ -109,10 +140,14 @@ class Workspace:
             self._console,
             transient=True,
             synchronized_output=lambda: capabilities.synchronized_output,
+            stderr=self._stderr,
         )
         self._live.start()
         self._flush_redraw()
-        ui = _ui(self._state)
+        from agenthicc.tui.theme import on_theme_change
+
+        # TUX-01: /theme applies at once; repaint every row with the new tokens.
+        self._unsubs.append(on_theme_change(lambda _theme: self._repaint_for_theme()))
         if ui is not None and ui.screen_reader:
             from agenthicc.tui.workspace.announcer import Announcer
 
@@ -131,9 +166,14 @@ class Workspace:
         ):
             self._unsubs.append(input_signal.subscribe(self._redraw_input))
         conv = self._state.conversation
+        # TUX-04 §2.6: the queued-message rows follow the queue and its focus.
+        self._unsubs.append(conv.queue.items.subscribe(self._redraw_input))
+        self._unsubs.append(conv.queue.focus.subscribe(self._redraw_input))
         for sig in (
             conv.agent_state,
             conv.active_tool,
+            conv.running_tools,  # running calls' live rows
+            conv.background_tools,
             conv.model_name,
             conv.display_elapsed_s,
             conv.tokens_in,
@@ -151,6 +191,8 @@ class Workspace:
             conv.live_tool_overflow,  # overflow bridge row
             conv.workflow_override,  # PRD-114: /workflow indicator
             conv.compaction_active,  # PRD-119: compaction on/off toggle
+            conv.compaction_progress,  # a multi-call compaction's measured steps
+            conv.handoff_pending,  # /background waiting for the running tool call
             conv.subagent_pool_state,  # PRD-124: subagent pool progress
             conv.subagent_rows,  # AGX-08: finished panel rows expire
             conv.terminal_waiting,  # PRD-149: owned terminal wait
@@ -161,14 +203,26 @@ class Workspace:
             conv.background_running,
             conv.background_dnd,
             conv.background_toast,
-            conv.agents_hint,
+            conv.session_title,  # TUX-02: frame title
+            conv.suggestion,  # TUX-03: the empty composer's suggestion
+            conv.context_tokens,  # TUX-02: context meter
+            conv.context_window,
+            conv.git_branch,
+            conv.git_dirty,
+            conv.statusline_text,  # TUX-02: the user status-line command
+            self._state.agent,
+            self._state.keymap,
         ):
             self._unsubs.append(sig.subscribe(self._redraw))
+        self._unsubs.append(conv.agent_state.subscribe(self._on_agent_state))
+        self._start_status_sources()
         # Activity timing is a visible signal during active work, but its
         # wall-clock value is intentionally not rendered while approval or
         # question input owns the terminal. Keep this callback separate so a
         # compatibility writer cannot repaint an unchanged waiting modal.
         self._unsubs.append(conv.activity_elapsed_s.subscribe(self._redraw_activity))
+        # The compaction row's seconds change once a second, in every motion mode.
+        self._unsubs.append(conv.compaction_seconds.subscribe(self._redraw_activity))
         # Frame is an animation-only signal. Keep it behind an activity guard
         # so compatibility code that writes it while idle cannot repaint an
         # unchanged Live block into clients that do not interpret ANSI erase
@@ -182,6 +236,16 @@ class Workspace:
             signal.signal(signal.SIGWINCH, self._on_sigwinch)
         except (AttributeError, OSError):
             pass
+
+    def redirect_stderr(self, stream: TextIO | None) -> None:
+        """Send stray stderr to *stream* while the block is live (TUX-08 §2.3).
+
+        The session passes its diagnostics log; ``None`` (``--debug``) prints
+        stderr above the block. The choice survives an external-editor handoff.
+        """
+        self._stderr = stream
+        if self._live is not None:
+            self._live.redirect_stderr(stream)
 
     def suspend_for_external_process(self) -> None:
         """Leave the terminal available while a foreground editor runs."""
@@ -202,6 +266,7 @@ class Workspace:
             self._console,
             transient=True,
             synchronized_output=lambda: capabilities.synchronized_output,
+            stderr=self._stderr,
         )
         self._live.start()
         self._flush_redraw()
@@ -214,6 +279,8 @@ class Workspace:
             signal.signal(signal.SIGWINCH, signal.SIG_DFL)
         except (AttributeError, OSError):
             pass
+        # The conversation is printed to the normal screen before it ends (TUX-09).
+        self.leave_fullscreen(resume=False)
 
         for unsub in self._unsubs:
             try:
@@ -234,6 +301,12 @@ class Workspace:
         if self._announcer is not None:
             self._announcer.stop()
             self._announcer = None
+        if self._statusline is not None:
+            self._statusline.stop()
+            self._statusline = None
+        if self._git_task is not None:
+            self._git_task.cancel()
+            self._git_task = None
         self.scroll.unmount()
 
         if self._live is not None:
@@ -278,6 +351,9 @@ class Workspace:
             # Let the Live block render the loading state before the first
             # historical event is queued.
             await asyncio.sleep(0)
+            if events:
+                # Original timestamps after ``replayed from …`` (TUX-06).
+                self.scroll.replay_boundary(since=events[0].timestamp, events=len(events))
             for start in range(0, len(events), chunk_size):
                 self.scroll.replay(
                     events[start : start + chunk_size],
@@ -293,11 +369,77 @@ class Workspace:
             # before input is accepted.
             await asyncio.sleep(0)
 
+    # ── fullscreen layout (TUX-09 §2.3) ───────────────────────────────────────
+
+    @property
+    def fullscreen(self) -> bool:
+        return self._fullscreen is not None
+
+    def _begin_fullscreen(self) -> None:
+        """Take the alternate screen and hold the scrollback appender."""
+        from agenthicc.tui.transcript.fullscreen import FullscreenLayout
+
+        conv = self._state.conversation
+        layout = FullscreenLayout(
+            conv.session_id(),
+            self._state.keymap,
+            ui=_ui(self._state),
+            on_scrolled=conv.pane_scrolled.set,
+        )
+        self._console.set_alt_screen(True)
+        # What is printed to the console now goes to the pane, not past it.
+        self._console.push_render_hook(layout.capture)
+        self.scroll.hold()
+        self._fullscreen = layout
+        conv.fullscreen.set(True)
+
+    def enter_fullscreen(self) -> None:
+        """``/fullscreen``: move the running session into the alternate screen."""
+        if self._fullscreen is not None:
+            return
+        running = self._live is not None
+        if running:
+            self.suspend_for_external_process()
+        self._begin_fullscreen()
+        if running:
+            self.resume_after_external_process()
+
+    def leave_fullscreen(self, *, resume: bool = True) -> None:
+        """Return to the normal screen and print the conversation there, compact."""
+        layout = self._fullscreen
+        if layout is None:
+            return
+        running = self._live is not None
+        if running:
+            self.suspend_for_external_process()
+        self._console.pop_render_hook()
+        self._console.set_alt_screen(False)
+        try:
+            layout.print_exit_transcript(self._console)
+        finally:
+            layout.close()
+            self._fullscreen = None
+            self.scroll.release(discard=True)
+            conv = self._state.conversation
+            conv.fullscreen.set(False)
+            conv.pane_scrolled.set(False)
+        if running and resume:
+            self.resume_after_external_process()
+
+    def scroll_pane(self, action: PaneAction) -> None:
+        """PageUp/PageDown, Shift+↑/↓, the wheel and End, in the fullscreen layout."""
+        layout = self._fullscreen
+        if layout is not None:
+            layout.scroll(action)
+            self._redraw_input()
+
     # ── rendering ─────────────────────────────────────────────────────────────
 
     def _markup(self, markup: str, cols: int) -> tuple[Line, ...]:
         """Render one markup row, reusing the result while the row is unchanged."""
-        key = (markup, cols)
+        from agenthicc.tui.theme import current_theme
+
+        key = (markup, cols, current_theme())
         cached = self._markup_rows.get(key)
         if cached is not None:
             self._markup_rows.move_to_end(key)
@@ -316,64 +458,108 @@ class Workspace:
             tuple(line) for line in self._console.render_lines(renderable, options, pad=False)
         )
 
-    def _build_lines(self) -> list[Line]:
-        """Return the live block's rows at the console's current width."""
-        cols = max(1, self._console.width)
-        ui = _ui(self._state)
-        # A screen reader reads box drawing aloud; it gets no border rows.
-        reader = ui is not None and ui.screen_reader
-
-        if self.overlays.active:
-            # Workspace owns the complete Live layout.  Publish only the
-            # remaining overlay region so responsive overlays do not count
-            # status, borders, or the permanent footer as available rows.
-            fixed_rows = (
-                self.status.height(cols) + self.footer.height(cols) + 1 + (0 if reader else 2)
-            )
-            self.overlays.set_viewport(cols, max(1, _get_rows(self._console) - fixed_rows))
-
-        lines: list[Line] = []
-
-        # Overflow bridge — flush against the scroll-buffer tool-call sequence
-        # when a group exceeds the threshold.  The blank separator follows it so
-        # there is no gap between the last printed tool call and this line.
+    def _overflow_rows(self, cols: int) -> list[Line]:
+        """The bridge row under a collapsed tool group (``└ …and N more tool calls``)."""
         try:
-            _ov = self._state.conversation.live_tool_overflow()
-            if _ov > 0:
-                _ov_word = "call" if _ov == 1 else "calls"
-                lines += self._markup(f"  [dim]⎿ ...and {_ov} more tool {_ov_word}[/dim]", cols)
+            count = self._state.conversation.live_tool_overflow()
         except Exception:  # noqa: BLE001 - the overflow row is best-effort
-            pass
+            return []
+        if not isinstance(count, int) or count <= 0:
+            return []
+        from agenthicc.tui.theme import glyphs, palette
 
-        # Blank separator between the scroll buffer (or overflow bridge) and
-        # the status bar.  Stays inside the block so it never leaks to stdout.
-        lines.append(())
-        for row in self.status.markup_lines(cols):
+        word = "call" if count == 1 else "calls"
+        g = glyphs()
+        muted = palette().muted
+        text = f"  {g.elbow} {g.ellipsis}and {count} more tool {word}"
+        markup = f"[{muted}]{text}[/]" if muted not in ("", "none") else text
+        return list(self._markup(markup, cols))
+
+    def _build_lines(self) -> list[Line]:
+        """The live block's rows; in the fullscreen layout, the pane over them (TUX-09)."""
+        lines = self._inline_lines()
+        layout = self._fullscreen
+        if layout is None:
+            return lines
+        from agenthicc.tui.transcript.view import to_lines
+
+        cols, rows = max(1, self._console.width), _get_rows(self._console)
+        if len(lines) >= rows:
+            return lines
+        pane = to_lines(self._console, layout.rows(cols, rows - len(lines)), cols)
+        return [*pane, *lines]
+
+    def _inline_lines(self) -> list[Line]:
+        """Return the composer, status line and overlays at the console's width (TUX-02)."""
+        cols = max(1, self._console.width)
+        overlay = self.overlays.widget
+        lines: list[Line] = self._overflow_rows(cols)
+        # Calls still running, under the transcript, with a blinking dot.
+        for row in running_rows(self._state, cols):
+            if row:
+                lines += self._markup(row, cols)
+            else:
+                lines.append(())
+
+        # The framed composer, or an overlay in its place.
+        if overlay is not None and overlay.owns_bottom_rows is True:
+            # The agents hub owns the bottom rows and its hint row is the only
+            # one: the frame and the composer's hints are hidden (§2.4).
+            notices = self._notice_lines(cols)
+            fixed = len(lines) + self.status.height(cols) + len(notices)
+            self.overlays.set_viewport(cols, max(1, _get_rows(self._console) - fixed))
+            lines += self._markup(self.status.markup(cols), cols)
+            lines += notices
+            rendered = self.overlays.render()
+            if rendered is not None:
+                lines += self._render(rendered, cols)
+            return lines
+
+        if overlay is not None:
+            form = "none" if self.frame.form(cols) == "none" else "rules"
+            notices = self._notice_lines(cols)
+            fixed = len(lines) + (2 if form == "rules" else 0) + self.status.height(cols)
+            self.overlays.set_viewport(
+                cols, max(1, _get_rows(self._console) - fixed - len(notices))
+            )
+            if form == "rules":
+                lines += self._markup(self.frame.top(cols, form), cols)
+            rendered = self.overlays.render()
+            if rendered is not None:
+                lines += self._render(rendered, cols)
+            if form == "rules":
+                lines += self._markup(self.frame.bottom(cols, form), cols)
+            lines += self._markup(self.status.markup(cols), cols)
+            lines += notices
+            return lines
+
+        # TUX-04 §2.6: queued messages, one row each, above the prompt.
+        for row in queue_rows(self._state, cols):
             lines += self._markup(row, cols)
-        border = None if reader else f"[yellow dim]{'─' * cols}[/yellow dim]"
-        if border is not None:
-            lines += self._markup(border, cols)
 
-        # When an overlay is active it REPLACES the composer area: overlays
-        # render their own prompt / content lines.
-        if self.overlays.active:
-            overlay_renderable = self.overlays.render()
-            if overlay_renderable is not None:
-                lines += self._render(overlay_renderable, cols)
+        form = self.frame.form(cols)
+        if form != "none":
+            lines += self._markup(self.frame.top(cols, form), cols)
+        lines += self.frame.body(cols, form)
+        if form != "none":
+            lines += self._markup(self.frame.bottom(cols, form), cols)
+        lines += self._subagent_rows(cols, form == "none")
+
+        lines += self._markup(self.status.markup(cols), cols)
+        notices = self._notice_lines(cols)
+        if notices:
+            lines += notices
         else:
-            lines += self.composer.lines(cols)
-            subagent_rows = self._subagent_rows(cols, reader)
-            if subagent_rows and border is not None:
-                # Close the bordered input panel before showing pool activity.
-                lines += self._markup(border, cols)
-            lines += subagent_rows
-
-        if border is not None:
-            lines += self._markup(border, cols)
-        for row in self.footer.markup_lines(cols):
-            lines += self._markup(row, cols)
-        lines.append(())  # 1-row bottom margin — always visible
+            hint = self.frame.hint_row(cols)
+            if hint is not None:
+                lines += self._markup(hint, cols)
         return lines
+
+    def _notice_lines(self, cols: int) -> list[Line]:
+        rows: list[Line] = []
+        for row in notice_rows(self._state, cols):
+            rows += self._markup(row, cols)
+        return rows
 
     def _subagent_rows(self, cols: int, plain: bool) -> list[Line]:
         """The subagent panel below the bordered input area while a pool has rows."""
@@ -394,6 +580,46 @@ class Workspace:
         ):
             lines += self._markup(row, cols)
         return lines
+
+    # ── status sources (TUX-02) ───────────────────────────────────────────────
+
+    def _start_status_sources(self) -> None:
+        """Read the git branch now and start the user's status-line command."""
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return  # no loop (a synchronous test): nothing to run in the background
+        self._refresh_git()
+        ui = _ui(self._state)
+        command = ui.statusline_command if ui is not None else ""
+        if command:
+            from agenthicc.tui.statusline import StatusLineCommand
+
+            cwd = self._state.conversation.current_directory()
+            self._statusline = StatusLineCommand(command, self._state, cwd)
+            self._statusline.start()
+
+    def _refresh_git(self) -> None:
+        if self._git_task is not None and not self._git_task.done():
+            return
+        cwd = self._state.conversation.current_directory()
+        if not isinstance(cwd, str) or not cwd:
+            return
+        from agenthicc.tui.statusline import refresh_git_status
+
+        self._git_task = asyncio.get_running_loop().create_task(
+            refresh_git_status(self._state, cwd), name="agenthicc-git-status"
+        )
+
+    def _on_agent_state(self) -> None:
+        """After a turn the branch or the dirty mark may have changed."""
+        running = self._state.conversation.is_running() is True
+        if self._was_running and not running:
+            try:
+                self._refresh_git()
+            except RuntimeError:
+                pass
+        self._was_running = running
 
     def _redraw(self) -> None:
         """Request a frame; requests made before it is drawn are merged.
@@ -445,6 +671,17 @@ class Workspace:
         if self._state.pending_approval() is not None:
             return
         self._redraw()
+
+    def repaint(self) -> None:
+        """Repaint every row of the live region from scratch (Ctrl+L, TUX-04)."""
+        self._repaint_for_theme()
+
+    def _repaint_for_theme(self) -> None:
+        """Drop cached rows and repaint the whole block (a theme changed)."""
+        self._markup_rows.clear()
+        if self._live is not None:
+            self._live.invalidate()
+        self._flush_redraw()
 
     def _reset_live_after_resize(self) -> None:
         """Repaint the whole block in the next frame.

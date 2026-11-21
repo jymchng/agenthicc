@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Iterator
 
-from .command import Command
+from .command import COMMAND_GROUPS, Command
 
-__all__ = ["UnifiedCommandRegistry"]
+__all__ = ["UnifiedCommandRegistry", "command_rank"]
 
 
 class UnifiedCommandRegistry:
@@ -72,9 +72,8 @@ class UnifiedCommandRegistry:
         )
 
     def groups(self) -> list[str]:
-        order = ["Built-in", "Skills", "Plugins", "MCP"]
         seen = {c.group for c in self._commands.values()}
-        return [g for g in order if g in seen] + sorted(seen - set(order))
+        return [g for g in COMMAND_GROUPS if g in seen] + sorted(seen - set(COMMAND_GROUPS))
 
     def matches(self, partial: str) -> list[Command]:
         """Return commands whose name or alias starts with *partial*."""
@@ -85,6 +84,29 @@ class UnifiedCommandRegistry:
                     result.append(cmd)
                     break
         return sorted(result, key=lambda c: c.name)
+
+    def search(
+        self,
+        partial: str,
+        usage: Mapping[str, tuple[int, float]] | None = None,
+    ) -> list[Command]:
+        """Commands matching *partial*, best first (TUX-05 §2.2).
+
+        The tiers are: exact name or alias, name prefix, alias prefix, fuzzy
+        name (its characters in order), then a description word starting
+        with the fragment. Ties go to the command run most often, then most
+        recently (*usage*: name → ``(count, last_used)``), then by name.
+        """
+        ranked: list[tuple[int, int, float, str, Command]] = []
+        counts = usage or {}
+        for cmd in self._commands.values():
+            tier = command_rank(cmd, partial)
+            if tier is None:
+                continue
+            count, last = counts.get(cmd.name, (0, 0.0))
+            ranked.append((tier, -count, -last, cmd.name, cmd))
+        ranked.sort(key=lambda entry: entry[:4])
+        return [entry[4] for entry in ranked]
 
     # ── PRD-45: source namespacing ────────────────────────────────────────────
 
@@ -106,3 +128,34 @@ class UnifiedCommandRegistry:
 
     def __len__(self) -> int:
         return len(self._commands)
+
+
+def command_rank(cmd: Command, partial: str) -> int | None:
+    """The tier of *cmd* for the typed *partial* (``"/comp"``), or ``None``.
+
+    ``0`` exact name, ``1`` exact alias, ``2`` name prefix, ``3`` alias
+    prefix, ``4`` fuzzy name, ``5`` a description word starts with the
+    fragment. A lone trigger character matches every command at tier ``2``.
+    """
+    from agenthicc.mentions.matcher import fuzzy_positions
+
+    query = partial.casefold()
+    name = cmd.name.casefold()
+    aliases = [alias.casefold() for alias in cmd.aliases]
+    if name == query:
+        return 0
+    if query in aliases:
+        return 1
+    if name.startswith(query):
+        return 2
+    if any(alias.startswith(query) for alias in aliases):
+        return 3
+    fragment = query[1:] if query[:1] in ("/", "$") else query
+    if not fragment:
+        return 2
+    if fuzzy_positions(fragment, name[1:]) is not None:
+        return 4
+    words = "".join(ch if ch.isalnum() else " " for ch in cmd.description.casefold()).split()
+    if any(word.startswith(fragment) for word in words):
+        return 5
+    return None

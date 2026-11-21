@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -389,13 +390,20 @@ def pool_module_active() -> list[str]:
     return list(pool_module._ACTIVE_POOLS)
 
 
+def _without_durations(text: str) -> str:
+    """Replace each rendered wall-clock duration (``0.1s``) so two runs compare equal."""
+    return re.sub(r"\d+\.\d+s", "<elapsed>s", text)
+
+
 @pytest.mark.asyncio
 async def test_a_backgrounded_pool_produces_the_same_aggregate_events_and_records(
     tmp_path,
 ) -> None:
     fg_text, fg_journal, fg_scroll = await _run_pool_both_ways(tmp_path, background=False)
     bg_text, bg_journal, bg_scroll = await _run_pool_both_ways(tmp_path, background=True)
-    assert bg_text == fg_text and "answer for alpha" in fg_text
+    # The elapsed time in each worker header is wall-clock, so two runs differ by it.
+    assert _without_durations(bg_text) == _without_durations(fg_text)
+    assert "answer for alpha" in fg_text
     # Both paths keep the records and kinds they had before SUBAGENT-11. The
     # background path adds its receipt and, having already returned to the
     # parent, writes no resume cache (subagent_pool_result) for the turn.

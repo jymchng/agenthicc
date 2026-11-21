@@ -400,9 +400,6 @@ class SubagentPoolState:
     depth: int = 1
     parent_pool_id: str = ""
     lifecycles: tuple[WorkerLifecycle, ...] = ()
-    #: A declared ``budget:`` token limit, or ``None`` when only the operator
-    #: ceiling applies (SUBAGENT-06). The panel shows usage against it.
-    budget_tokens: int | None = None
     #: A declared ``budget:`` cost limit in USD, or ``None``.
     budget_cost_usd: float | None = None
     #: Cost metered so far; maintained only while a cost limit is declared.
@@ -468,10 +465,8 @@ class SubagentPoolState:
         }
 
     def budget_ratio(self) -> float | None:
-        """The larger share consumed of a declared token or cost budget, if any."""
+        """The share consumed of a declared cost budget, if any (tokens are unlimited)."""
         ratios: list[float] = []
-        if self.budget_tokens:
-            ratios.append(self.tokens / self.budget_tokens)
         if self.budget_cost_usd:
             ratios.append(self.cost_usd / self.budget_cost_usd)
         return max(ratios) if ratios else None
@@ -587,6 +582,15 @@ def _worker_context_window(
     from agenthicc.config import _context_window_for
 
     return _context_window_for(model)
+
+
+def _worker_output_tokens(execution_settings: "ExecutionSettings | None") -> int:
+    """The output tokens a worker may write in one reply: the main agent's."""
+    from agenthicc.config import _DEFAULT_MAX_OUTPUT_TOKENS
+
+    if execution_settings is not None and execution_settings.max_output_tokens:
+        return int(execution_settings.max_output_tokens)
+    return _DEFAULT_MAX_OUTPUT_TOKENS
 
 
 def _worker_model_allowed(
@@ -919,9 +923,8 @@ class _WorkerProgress:
         self._pool._record_iteration()
 
     def usage(self, tokens: int) -> None:
-        tokens_used = max(0, tokens)
-        self._tokens += tokens_used
-        self._pool._record_tokens(tokens_used)
+        # Counted for the panel and the report; never limited (no token budget).
+        self._tokens += max(0, tokens)
         self._pool._update(self.worker_id, tokens=self._tokens)
 
     def cost(self, cost_usd: float) -> None:
@@ -1527,7 +1530,6 @@ class SubagentWorker:
         from lauren_ai._memory import ShortTermMemory
         from lauren_ai._signals import (
             ModelCallComplete,
-            ModelCallStarted,
             SignalBus,
             ToolCallComplete,
             ToolCallStarted,
@@ -1730,10 +1732,6 @@ class SubagentWorker:
 
         if progress is not None:
 
-            @signals.on(ModelCallStarted)
-            async def _record_iteration(_event: ModelCallStarted) -> None:
-                progress.iteration_started()
-
             @signals.on(ToolCallComplete)
             async def _record_tool_finished(event: ToolCallComplete) -> None:
                 progress.tool_finished(
@@ -1747,6 +1745,10 @@ class SubagentWorker:
             async def _record_usage(event: ModelCallComplete) -> None:
                 from agenthicc.runners.usage_ledger import reported_call_cost
 
+                # One provider model call: lauren-ai emits ModelCallStarted once
+                # per run but ModelCallComplete once per call, so this is what
+                # ``subagents.max_iterations`` counts (it counted runs before).
+                progress.iteration_started()
                 usage = event.usage
                 progress.usage(
                     _token_count(_usage_field(usage, "input_tokens"))
@@ -1814,6 +1816,10 @@ class SubagentWorker:
             "temperature": self._provider_options.get("temperature"),
             "top_p": self._provider_options.get("top_p"),
             "max_completion_tokens": self._provider_options.get("max_completion_tokens"),
+            # A worker may answer as fully as the main agent: the session's
+            # output allowance, never lauren-ai's 4096-token default
+            # (subagents have no token limit; operator decision 2026-11-07).
+            "max_tokens_per_turn": _worker_output_tokens(self._execution_settings),
             "request_options": request_options,
             "memory_window_tokens": self._memory_tokens,
             "context_window": self._context_window,
@@ -2075,7 +2081,6 @@ class SubagentPool:
         max_workers: int = 32,
         max_tool_calls: int = 256,
         max_iterations: int = 128,
-        max_tokens: int = 200_000,
         max_total_time_s: float = 600.0,
         on_budget_exceeded: WorkerStopMode = "drain",
         stop_grace_s: float = 5.0,
@@ -2131,11 +2136,9 @@ class SubagentPool:
             raise ValueError("max_concurrent cannot exceed max_workers")
         self._max_tool_calls = _validate_budget_limit("max_tool_calls", max_tool_calls)
         self._max_iterations = _validate_budget_limit("max_iterations", max_iterations)
-        self._max_tokens = _validate_budget_limit("max_tokens", max_tokens)
         self._max_total_time_s = _validate_timeout_s(max_total_time_s)
         self._tool_call_count = 0
         self._iteration_count = 0
-        self._token_count = 0
         self._cost_spent = 0.0
         self._budget = budget
         self._max_cost_usd = budget.limits.cost_usd if budget is not None else None
@@ -2197,7 +2200,6 @@ class SubagentPool:
             limit=self._max_concurrent,
             depth=depth,
             parent_pool_id=parent_pool_id,
-            budget_tokens=self._declared_token_limit(),
             budget_cost_usd=self._max_cost_usd,
         )
         self._worker_tasks: dict[str, asyncio.Task[SubagentResult]] = {}
@@ -2344,11 +2346,6 @@ class SubagentPool:
         if self._tool_call_count > self._max_tool_calls:
             self.budget_exceeded("max_tool_calls_exceeded")
 
-    def _record_tokens(self, tokens: int) -> None:
-        self._token_count += max(0, tokens)
-        if self._token_count > self._max_tokens:
-            self.budget_exceeded("max_tokens_exceeded")
-
     def _with_usage(self, aggregate: AggregatedResult) -> AggregatedResult:
         """Attach completed ledger spend to every worker result and to the pool.
 
@@ -2373,13 +2370,6 @@ class SubagentPool:
             crossed_reason=aggregate.budget_exceeded_reason,
             stop_mode=self._on_budget_exceeded,
         )
-
-    def _declared_token_limit(self) -> int | None:
-        """A token limit that came from a declaration, for the pool snapshot."""
-        budget = self._budget
-        if budget is None or budget.sources.get("tokens") == "operator":
-            return None
-        return budget.limits.tokens
 
     def _record_cost(self, cost_usd: float) -> None:
         self._cost_spent += max(0.0, cost_usd)
@@ -2696,7 +2686,6 @@ class SubagentPool:
     def _exhausted_budget(self) -> str:
         """The aggregate pool budget a new attempt would start past, or ``""``."""
         for name, used, limit in (
-            ("max_tokens", self._token_count, self._max_tokens),
             ("max_tool_calls", self._tool_call_count, self._max_tool_calls),
             ("max_iterations", self._iteration_count, self._max_iterations),
         ):
@@ -2807,7 +2796,6 @@ class SubagentPool:
             parent_pool_id=self._parent_pool_id,
             transcripts=self._transcripts.directory if self._transcripts is not None else None,
             lifecycles=tuple(self._lifecycles.values()),
-            budget_tokens=self._declared_token_limit(),
             budget_cost_usd=self._max_cost_usd,
             started_at=time.time(),
         )

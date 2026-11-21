@@ -11,7 +11,7 @@ from rich.console import Console
 
 from agenthicc.tui.conversation_store import AppState
 from agenthicc.tui.workspace import Workspace
-from tests.tui_frames import settle_frames
+from tests.tui_frames import settle_frames, settle_startup
 
 pytestmark = pytest.mark.integration
 
@@ -27,6 +27,11 @@ async def test_idle_ticks_do_not_reach_live_update() -> None:
     live.update = MagicMock(wraps=live.update)  # type: ignore[method-assign]
 
     try:
+        # The startup frames (the first paint, the git branch mark arriving)
+        # are not idle ticks: settle them, then watch only the idle ones.
+        await settle_startup(workspace)
+        live.update.reset_mock()
+
         for _ in range(7):
             state.conversation.tick()
             await asyncio.sleep(0)
@@ -49,7 +54,7 @@ async def test_active_animation_ticks_reach_live_update() -> None:
 
     try:
         state.conversation.begin_turn("agent", "turn-1")
-        await settle_frames(workspace)
+        await settle_startup(workspace)
         live.update.reset_mock()
 
         state.conversation.tick()

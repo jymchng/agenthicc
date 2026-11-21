@@ -249,7 +249,9 @@ def test_killed_worker_continue_then_detach_uses_same_session_and_updated_config
         console=Console(record=True),
     )
     input_session = SimpleNamespace()
+    announced: list[tuple[str, str]] = []
     foreground = SimpleNamespace(
+        announce_backgrounded=lambda sid, status: announced.append((sid, status)),
         _ctx=ctx,
         _workflow_override="",
         _input_session=input_session,
@@ -263,6 +265,7 @@ def test_killed_worker_continue_then_detach_uses_same_session_and_updated_config
     )
 
     assert _handoff(foreground) is True
+    assert [sid for sid, _status in announced] == [session_id]  # the foreground says it handed over
     _wait_for_status(store, session_id, SessionStatus.RUNNING)
     resumed = store.get(session_id)
     request = json.loads(

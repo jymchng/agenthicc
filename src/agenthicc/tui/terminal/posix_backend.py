@@ -8,7 +8,13 @@ from contextlib import contextmanager
 from typing import Generator
 
 from agenthicc.tui.cbreak_reader import Key, raw_mode as _raw_mode, read_key as _read_key
+from agenthicc.tui.cbreak_reader import query_background_color as _query_background
 from agenthicc.tui.cbreak_reader import set_reporting as _set_reporting
+from agenthicc.tui.cbreak_reader import (
+    KITTY_KEYBOARD_POP,
+    KITTY_KEYBOARD_PUSH,
+    kitty_keyboard_supported,
+)
 
 __all__ = ["PosixBackend"]
 
@@ -54,6 +60,10 @@ class PosixBackend:
         # executor task can start, so restore() cannot race its initialization.
         self._ensure_cancel_pipe()
         with _raw_mode(fd):
+            kitty = kitty_keyboard_supported(os.environ)
+            if kitty:
+                # TUX-04: Shift+Enter and Ctrl+Enter arrive as distinct keys.
+                self._write(KITTY_KEYBOARD_PUSH)
             try:
                 yield
             finally:
@@ -61,7 +71,16 @@ class PosixBackend:
                     focus=False if self._focus_reporting else None,
                     mouse=False if self._mouse_reporting else None,
                 )
+                if kitty:
+                    self._write(KITTY_KEYBOARD_POP)
                 self.restore()
+
+    def query_background(self, timeout: float) -> tuple[int, int, int] | None:
+        """Ask the terminal for its background colour (OSC 11, TUX-01)."""
+        fd = self._resolve_fd()
+        if fd is None or not self.is_interactive() or not sys.stdout.isatty():
+            return None
+        return _query_background(fd, timeout)
 
     def set_reporting(self, *, focus: bool | None = None, mouse: bool | None = None) -> None:
         """Turn focus and/or mouse reporting on or off (AGX-13)."""
@@ -70,6 +89,37 @@ class PosixBackend:
         if mouse is not None:
             self._mouse_reporting = mouse
         _set_reporting(focus=focus, mouse=mouse)
+
+    def write_control(self, sequence: str) -> None:
+        """Write *sequence* (title, progress, notification) to a terminal, never to a pipe."""
+        if sequence and self._stdout_is_terminal():
+            from agenthicc.tui.terminal.backend import terminal_stream
+
+            try:
+                stream = terminal_stream()
+                stream.write(sequence)
+                stream.flush()
+            except (OSError, ValueError):
+                pass  # stdout closed during shutdown
+
+    def supports_progress(self) -> bool:
+        """Whether this terminal draws ``OSC 9;4`` progress (TUX-10)."""
+        from agenthicc.tui.terminal.osc import progress_supported
+
+        return self._stdout_is_terminal() and progress_supported(os.environ)
+
+    def supports_hyperlinks(self) -> bool:
+        """Whether this terminal opens ``OSC 8`` hyperlinks (TUX-10)."""
+        from agenthicc.tui.terminal.osc import hyperlinks_supported
+
+        return self._stdout_is_terminal() and hyperlinks_supported(os.environ)
+
+    @staticmethod
+    def _stdout_is_terminal() -> bool:
+        try:
+            return sys.stdout.isatty()
+        except (OSError, ValueError):
+            return False
 
     def restore(self) -> None:
         """Wake a worker blocked in :meth:`read_key` during shutdown."""
@@ -102,6 +152,14 @@ class PosixBackend:
         self.close()
 
     # ── internals ─────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _write(codes: str) -> None:
+        try:
+            sys.stdout.write(codes)
+            sys.stdout.flush()
+        except (OSError, ValueError):
+            pass  # stdout closed during shutdown
 
     def _resolve_fd(self) -> int | None:
         if self._fd is not None:

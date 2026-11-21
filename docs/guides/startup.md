@@ -81,7 +81,7 @@ The important boundaries are:
 | Shell | built-in commands, triggers, workspace, input panel | project command/skill/tool discovery |
 | Agent runtime | conversation journal opened | provider configuration and runner, journal fold into provider memory, account tier |
 | Agent operation | selected workflow/agent, required MCP | none of the selected operation's dependencies |
-| Optional integrations | validated configuration and policy | MCP connections, browser runtime, semantic index, changelog refresh |
+| Optional integrations | validated configuration and policy | MCP connections, browser runtime, semantic index |
 
 Deferred tasks belong to the same session coordinator and are cancelled and
 awaited during shutdown. They cannot publish into a closed session.
@@ -108,16 +108,18 @@ existing tolerant replay policy, sequence/cursor and compaction semantics are
 unchanged, and a selected session's conversation id/journal remains owned by
 the normal session-conversation layer.
 
-## Changelog and optional backends
+## The header, the pre-flight check and optional backends
 
-The welcome panel is rendered from local static content and a bounded,
-last-known-good cache. The remote JSON changelog at
-https://agenthicc.dev/changelog.json refreshes in the background after the
-session coordinator exists. Timeout, HTTP, malformed JSON, and schema errors
-produce No list under the persistent What's new heading. The cache is bounded,
-age-checked, atomically written with mode 600, and never used as an instruction
-or tool source. AGENTHICC_CHANGELOG_CACHE can select an isolated cache path in
-tests.
+The first frame is the composer and the status line. Right after it, still
+before the prompt reads a key, the session prints the start-up header and runs
+the pre-flight check (TUX-03) as one `preflight` phase of `/startup`. It reads
+`~/.agenthicc/state.json`, the git branch (from `HEAD`, with no process) and the
+configuration and environment; it makes no network request and starts no
+process. The header, its notices and `/release-notes` are described in the
+[terminal workspace guide](tui.md#the-start-up-header). Release notes are the
+`CHANGELOG.md` that ships with the package: nothing is fetched, cached or
+refreshed in the background. A failure in this phase degrades `preflight` and
+never the session.
 
 Playwright and CloakBrowser configuration/policy are still validated by the
 normal security boundary, but their optional modules and browser processes are
@@ -207,13 +209,13 @@ when a project extension is broken.
 |---|---|---|
 | `agenthicc --version` is slow | A project extension or durable store is being loaded | It should not be: `--version` and `--help` are answered before command discovery (`src/agenthicc/cli/parser.py:100-108`). Check for a shell alias or wrapper that runs something else first |
 | A new TUI shows a `Startup` indicator that never clears | A deferred phase is still `loading`, or one reached `failed` | Run `/startup` for the bounded phase report; a failed *optional* phase renders as `degraded` and does not block local work |
-| A message shows `Queued #1 … — loading agent runtime…` right after launch | The conversation memory and provider load after the first frame | Expected; it runs as soon as `agent_runtime` is ready. If `provider_journal_restore` or `provider` failed, `/startup` shows why |
+| A message waits in the queue rows above the prompt and the footer says `Queued until loading agent runtime finishes…` right after launch | The conversation memory and provider load after the first frame | Expected; it runs as soon as `agent_runtime` is ready. If `provider_journal_restore` or `provider` failed, `/startup` shows why |
 | An operation blocks waiting for a dependency | It declared a required-resource dependency, such as the MCP catalogue | That is correct fail-closed behavior. Fix the dependency rather than retrying the operation |
 | A project tool or slash command is missing right after launch | Project extension discovery is deferred until after the first frame | Wait for the shell phase to become `ready`, then `/tools reload` or `/commands reload` |
 | Listing sessions replays a large history | A missing, stale, or incompatible `index.json` forced a rebuild | Expected after an upgrade. The index is a projection, never a second source of truth; the JSONL files stay authoritative |
 | Two processes fight over the session index | Writes use a short cross-process advisory lock | Retry; a failed index update still lets the event append succeed and repairs on next access |
 | Browser or MCP work fails while everything else is fine | Optional modules and processes are lazy by design | Missing optional dependencies should affect only the browser/MCP operation. Install the relevant extra if you need it |
-| `What's new` says `No list` | The remote changelog fetch timed out, returned non-JSON, or failed schema validation | Local static content plus the last-known-good cache still render. Check network reachability or set `AGENTHICC_CHANGELOG_CACHE` for an isolated cache path |
+| The header shows a notice such as `No API key for anthropic` | The pre-flight check found nothing the provider could authenticate with | Set the variable it names, or run `/model`; `/status` and `agenthicc config show` print the same findings |
 
 ### Measure before blaming the runtime
 

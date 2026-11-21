@@ -30,14 +30,15 @@ class EchoTrigger:
 
     def get_matches(self, fragment, ctx):
         if fragment:
-            return [MatchItem(display=fragment, value=fragment)]
+            return [MatchItem(value=fragment, label=fragment)]
         return []
 
     def on_select(self, item, fragment, buf):
         return TriggerResult(buffer=buf + list("!" + (item.value if item else "")))
 
-    def on_cancel(self, fragment, buf):
-        return buf + ["!"] + list(fragment)
+    def on_enter(self, item, fragment, buf):
+        result = self.on_select(item, fragment, buf)
+        return TriggerResult(buffer=result.buffer, submit=item is None)
 
     def get_hint(self, item):
         return f"echo: {item.value}" if item else None
@@ -69,7 +70,7 @@ def test_registry_rejects_multi_char_trigger():
 
         def get_matches(self, fragment, ctx): ...
         def on_select(self, item, fragment, buf): ...
-        def on_cancel(self, fragment, buf): ...
+        def on_enter(self, item, fragment, buf): ...
         def get_hint(self, item): ...
 
     with pytest.raises(ValueError):
@@ -82,7 +83,7 @@ def test_registry_rejects_empty_char():
 
         def get_matches(self, fragment, ctx): ...
         def on_select(self, item, fragment, buf): ...
-        def on_cancel(self, fragment, buf): ...
+        def on_enter(self, item, fragment, buf): ...
         def get_hint(self, item): ...
 
     with pytest.raises(ValueError):
@@ -96,12 +97,12 @@ def test_registry_overwrite_same_char():
         char = "!"
 
         def get_matches(self, fragment, ctx):
-            return [MatchItem(display="first", value="first")]
+            return [MatchItem(value="first", label="first")]
 
         def on_select(self, item, fragment, buf):
             return buf
 
-        def on_cancel(self, fragment, buf):
+        def on_enter(self, item, fragment, buf):
             return buf
 
         def get_hint(self, item):
@@ -111,12 +112,12 @@ def test_registry_overwrite_same_char():
         char = "!"
 
         def get_matches(self, fragment, ctx):
-            return [MatchItem(display="second", value="second")]
+            return [MatchItem(value="second", label="second")]
 
         def on_select(self, item, fragment, buf):
             return buf
 
-        def on_cancel(self, fragment, buf):
+        def on_enter(self, item, fragment, buf):
             return buf
 
         def get_hint(self, item):
@@ -147,7 +148,7 @@ def test_registry_len():
         def on_select(self, item, fragment, buf):
             return buf
 
-        def on_cancel(self, fragment, buf):
+        def on_enter(self, item, fragment, buf):
             return buf
 
         def get_hint(self, item):
@@ -171,20 +172,23 @@ def test_registry_get_unregistered_returns_none():
 
 
 def test_match_item_defaults():
-    item = MatchItem(display="src/auth.py", value="src/auth.py")
-    assert item.display == "src/auth.py"
+    item = MatchItem(value="src/auth.py", label="src/auth.py")
+    assert item.label == "src/auth.py"
     assert item.value == "src/auth.py"
-    assert item.hint == ""
+    assert (item.detail, item.group, item.glyph, item.keys, item.disabled) == ("",) * 5
+    assert item.path is False
 
 
-def test_match_item_hint_set():
-    item = MatchItem(display="x", value="x", hint="some hint")
-    assert item.hint == "some hint"
+def test_match_item_structured_fields_set():
+    item = MatchItem(
+        value="/agents", label="/agents", detail="Open the hub", group="Agents", keys="ctrl+g"
+    )
+    assert (item.detail, item.group, item.keys) == ("Open the hub", "Agents", "ctrl+g")
 
 
-def test_match_item_display_differs_from_value():
-    item = MatchItem(display="+ src/auth.py", value="src/auth.py")
-    assert item.display != item.value
+def test_match_item_label_differs_from_value():
+    item = MatchItem(value="docs/", label="docs", glyph="▸", path=True)
+    assert item.label != item.value
 
 
 # ── TriggerContext ────────────────────────────────────────────────────────────
@@ -217,7 +221,7 @@ def test_handler_protocol_satisfied():
     assert hasattr(t, "label")
     assert hasattr(t, "get_matches")
     assert hasattr(t, "on_select")
-    assert hasattr(t, "on_cancel")
+    assert hasattr(t, "on_enter")
     assert hasattr(t, "get_hint")
 
 
@@ -231,7 +235,7 @@ def test_echo_trigger_matches_with_fragment():
     result = t.get_matches("hello", ctx)
     assert len(result) == 1
     assert result[0].value == "hello"
-    assert result[0].display == "hello"
+    assert result[0].label == "hello"
 
 
 def test_echo_trigger_no_matches_empty_fragment():
@@ -243,7 +247,7 @@ def test_echo_trigger_no_matches_empty_fragment():
 
 def test_echo_trigger_on_select_with_item():
     t = EchoTrigger()
-    item = MatchItem(display="world", value="world")
+    item = MatchItem(value="world", label="world")
     result = t.on_select(item, "world", list("say "))
     assert isinstance(result, TriggerResult)
     assert "".join(result.buffer) == "say !world"
@@ -257,21 +261,23 @@ def test_echo_trigger_on_select_no_item():
     assert "".join(result.buffer) == "hi !"
 
 
-def test_echo_trigger_on_cancel_restores_literal():
+def test_echo_trigger_on_enter_inserts_a_match():
     t = EchoTrigger()
-    buf = t.on_cancel("part", [])
-    assert "".join(buf) == "!part"
+    result = t.on_enter(MatchItem(value="part", label="part"), "part", [])
+    assert "".join(result.buffer) == "!part"
+    assert result.submit is False
 
 
-def test_echo_trigger_on_cancel_empty_fragment():
+def test_echo_trigger_on_enter_without_a_match_submits():
     t = EchoTrigger()
-    buf = t.on_cancel("", [])
-    assert "".join(buf) == "!"
+    result = t.on_enter(None, "", [])
+    assert "".join(result.buffer) == "!"
+    assert result.submit is True
 
 
 def test_echo_trigger_get_hint_with_item():
     t = EchoTrigger()
-    item = MatchItem(display="x", value="x")
+    item = MatchItem(value="x", label="x")
     hint = t.get_hint(item)
     assert hint is not None
     assert "echo" in hint
@@ -296,7 +302,7 @@ def test_registry_multiple_chars():
         def on_select(self, item, fragment, buf):
             return buf
 
-        def on_cancel(self, fragment, buf):
+        def on_enter(self, item, fragment, buf):
             return buf
 
         def get_hint(self, item):

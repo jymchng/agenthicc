@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import ctypes
 import importlib
+import os
 import threading
 from types import ModuleType
 from typing import cast
@@ -235,9 +236,11 @@ def _decode_key_event(
             return (Key.MODIFIED, _modifier_prefix(ctrl_state) + "tab")
         return (Key.SHIFT_TAB, "") if shift else (Key.TAB, "")
     if vk == _VK_RETURN:
-        if alt:
+        # The console reports Enter's modifiers, so Shift+Enter and Ctrl+Enter
+        # are distinct keys here, as under the kitty protocol (TUX-04).
+        if ctrl or alt:
             return (Key.MODIFIED, _modifier_prefix(ctrl_state) + "enter")
-        return (Key.CTRL_ENTER, "") if ctrl else (Key.ENTER, "")
+        return (Key.SHIFT_ENTER, "") if shift else (Key.ENTER, "")
     mapped = _VK_KEYS.get(vk)
     if mapped is not None:
         prefix = _modifier_prefix(ctrl_state)
@@ -537,6 +540,11 @@ class WindowsBackend:
             return (raw | _ENABLE_MOUSE_INPUT | _ENABLE_EXTENDED_FLAGS) & ~_ENABLE_QUICK_EDIT_MODE
         return raw
 
+    def query_background(self, timeout: float) -> tuple[int, int, int] | None:
+        """The console reads input records, where an OSC answer would surface
+        as typed characters, so it is never asked (TUX-01)."""
+        return None
+
     def set_reporting(self, *, focus: bool | None = None, mouse: bool | None = None) -> None:
         """Turn mouse input on or off (AGX-13); focus records always arrive."""
         del focus
@@ -552,6 +560,42 @@ class WindowsBackend:
             k32.SetConsoleMode(handle, self._raw_mode_flags(self._orig_mode))
         except (AttributeError, OSError):
             pass
+
+    def write_control(self, sequence: str) -> None:
+        """Write *sequence* (title, progress, notification) to a terminal, never to a pipe.
+
+        Windows Terminal and the modern console read escape sequences from the
+        output stream; a redirected stream never receives one (TUX-10).
+        """
+        if not sequence or not self._stdout_is_terminal():
+            return
+        from agenthicc.tui.terminal.backend import terminal_stream
+
+        try:
+            stream = terminal_stream()
+            stream.write(sequence)
+            stream.flush()
+        except (OSError, ValueError):
+            pass  # stdout closed during shutdown
+
+    def supports_progress(self) -> bool:
+        """Whether this console draws ``OSC 9;4`` progress: Windows Terminal and ConEmu."""
+        from agenthicc.tui.terminal.osc import progress_supported
+
+        return self._stdout_is_terminal() and progress_supported(os.environ)
+
+    def supports_hyperlinks(self) -> bool:
+        """Whether this console opens ``OSC 8`` hyperlinks (Windows Terminal, VS Code)."""
+        from agenthicc.tui.terminal.osc import hyperlinks_supported
+
+        return self._stdout_is_terminal() and hyperlinks_supported(os.environ)
+
+    @staticmethod
+    def _stdout_is_terminal() -> bool:
+        try:
+            return sys.stdout.isatty()
+        except (OSError, ValueError):
+            return False
 
     def _restore_input_mode(self) -> None:
         """Restore the saved console input mode, if one was captured."""

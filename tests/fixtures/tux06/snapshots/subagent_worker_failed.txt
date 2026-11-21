@@ -1,0 +1,8 @@
+── compact ──
+✗ [2/2] Reviewer 2  test failed
+
+── normal ──
+✗ [2/2] Reviewer 2  test failed
+
+── verbose ──
+✗ [2/2] Reviewer 2  test failed

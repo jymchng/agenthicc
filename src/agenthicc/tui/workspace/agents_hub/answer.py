@@ -26,10 +26,13 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from agenthicc.tui.cbreak_reader import Key
+from agenthicc.tui.theme import glyphs, palette, style
+from agenthicc.tui.workspace.agents_hub.wrapping import hanging
 from agenthicc.tui.workspace.question_form import Question, QuestionForm
 
 if TYPE_CHECKING:
     from rich.console import RenderableType
+    from rich.text import Text
 
     from agenthicc.background.inbox import BackgroundInboxItem
     from agenthicc.tui.input.embedded import ComposerContext, EmbeddedComposer
@@ -38,6 +41,10 @@ __all__ = ["AnswerView", "form_for_item", "late_answer_message"]
 
 #: Question lines shown above the options; longer questions scroll with [ and ].
 _QUESTION_ROWS = 6
+#: Characters of a typed answer shown in its "Other" row (the rest is wrapped, not cut).
+_TYPED_PREVIEW_CHARS = 300
+#: Rows kept for the header, a question's lines and scroll note, and the hint.
+_FIXED_ROWS = 1 + _QUESTION_ROWS + 1 + 1
 
 
 def form_for_item(item: BackgroundInboxItem) -> QuestionForm:
@@ -163,20 +170,35 @@ class AnswerView:
 
     # ── rendering ─────────────────────────────────────────────────────────
 
-    def render(self, width: int, *, plain: bool = False) -> list[RenderableType]:
+    @staticmethod
+    def _option_budget(rows: int | None, used: int) -> int | None:
+        """Rows left for the options, or ``None`` when the panel has no limit."""
+        if rows is None:
+            return None
+        return max(1, rows - used - 1)  # the hint takes the last row
+
+    def render(
+        self, width: int, *, plain: bool = False, rows: int | None = None
+    ) -> list[RenderableType]:
         from rich.console import Console
         from rich.text import Text
 
+        p, g = palette(), glyphs()
         form = self.form
         count = len(form.questions)
         answered = sum(state.answered for state in form.states)
         lines: list[RenderableType] = []
         header = Text(no_wrap=True, overflow="ellipsis")
-        header.append(f" Answer · {self.title or self.item.session_id}", style="bold cyan")
+        header.append(
+            f" Answer · {self.title or self.item.session_id}", style=style("accent", bold=True)
+        )
         if count > 1:
             header.append(f"   question {form.current + 1} of {count}", style="bold")
             header.append(
-                "   " + " ".join("●" if state.answered else "○" for state in form.states),
+                "   "
+                + " ".join(
+                    g.meter_full if state.answered else g.meter_empty for state in form.states
+                ),
                 style="dim",
             )
             header.append(f"  ({answered} answered)", style="dim")
@@ -203,10 +225,11 @@ class AnswerView:
             if self.composer is not None:
                 lines.extend(self.composer.render())
             else:
-                lines.append(Text("   Loading the agent's commands and mentions…", style="yellow"))
+                lines.append(Text("   Loading the agent's commands and mentions…", style=p.info))
             hint = " Enter confirm · Ctrl+J newline · @ mention · / command · Esc back"
         else:
             state = form.state
+            blocks: list[list[Text]] = []
             for index, option in enumerate(form.options()):
                 cursor = index == state.cursor
                 chosen = state.answered and (
@@ -215,10 +238,26 @@ class AnswerView:
                 )
                 if index == len(form.options()) - 1 and form.typed():
                     preview = " ".join(state.label.split())
-                    option = f'Other: "{preview[:40]}{"…" if len(preview) > 40 else ""}"'
-                marker = "▶" if cursor else ("✓" if chosen else " ")
-                style = "reverse" if cursor and not plain else ("" if chosen else "dim")
-                lines.append(Text(f"   {marker} {option}", style=style, no_wrap=True))
+                    clipped = "…" if len(preview) > _TYPED_PREVIEW_CHARS else ""
+                    option = f'Other: "{preview[:_TYPED_PREVIEW_CHARS]}{clipped}"'
+                # The cursor row: an accent bar and bold text, no background.
+                lead = Text("   ", no_wrap=True)
+                if cursor:
+                    lead.append(g.bar, style=p.accent)
+                else:
+                    lead.append(g.ok if chosen else " ")
+                lead.append(" ")
+                # A long option wraps under its own text; none is cut at the edge.
+                block = hanging(lead, option, width)
+                for row in block:
+                    if cursor and not plain:
+                        row.stylize("bold")
+                    elif not chosen:
+                        row.stylize("dim")
+                blocks.append(block)
+            lines.extend(
+                _visible_options(blocks, state.cursor, self._option_budget(rows, len(lines)))
+            )
             hint = (
                 " ↑↓ option · ←→ question · Enter choose · Ctrl+S send · Esc close"
                 if form.complete
@@ -228,6 +267,50 @@ class AnswerView:
             hint = " Sending your answers…"
         lines.append(Text(hint, style="dim", no_wrap=True, overflow="ellipsis"))
         return lines
+
+
+def _visible_options(blocks: list[list[Text]], cursor: int, budget: int | None) -> list[Text]:
+    """The option rows that fit *budget*, around the cursor, with what is hidden said.
+
+    Every option is a block of wrapped rows. When they do not all fit, whole
+    options are shown, widening from the one under the cursor, and the rows
+    above and below say how many options are out of view.
+    """
+    from rich.text import Text as RichText
+
+    g = glyphs()
+    if budget is None or sum(len(block) for block in blocks) <= budget:
+        return [row for block in blocks for row in block]
+    last = len(blocks) - 1
+    cursor = max(0, min(cursor, last))
+    low = high = cursor
+    used = min(len(blocks[cursor]), max(1, budget - 2))
+
+    def needed(lo: int, hi: int, rows: int) -> int:
+        return rows + (1 if lo > 0 else 0) + (1 if hi < last else 0)
+
+    grew = True
+    while grew:
+        grew = False
+        if high < last and needed(low, high + 1, used + len(blocks[high + 1])) <= budget:
+            high += 1
+            used += len(blocks[high])
+            grew = True
+        if low > 0 and needed(low - 1, high, used + len(blocks[low - 1])) <= budget:
+            low -= 1
+            used += len(blocks[low])
+            grew = True
+    visible: list[Text] = []
+    if low > 0:
+        visible.append(RichText(f"   {g.up} {low} more", style="dim"))
+    for index in range(low, high + 1):
+        block = blocks[index]
+        if index == cursor and len(block) > budget - 2:
+            block = block[: max(1, budget - 2)]  # one option taller than the panel
+        visible.extend(block)
+    if high < last:
+        visible.append(RichText(f"   {g.down} {last - high} more", style="dim"))
+    return visible
 
 
 def late_answer_message(view: AnswerView) -> str:

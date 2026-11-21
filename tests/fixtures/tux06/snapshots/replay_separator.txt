@@ -1,0 +1,8 @@
+── compact ──
+── replayed from 1 Jan 05:04 · 827 events ──────────────────────────────────────
+
+── normal ──
+── replayed from 1 Jan 05:04 · 827 events ──────────────────────────────────────
+
+── verbose ──
+── replayed from 1 Jan 05:04 · 827 events ──────────────────────────────────────

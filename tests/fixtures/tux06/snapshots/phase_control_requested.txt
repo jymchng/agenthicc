@@ -1,0 +1,13 @@
+── compact ──
+  ⎿ Postponed phase build at safe boundary
+    waiting
+
+
+── normal ──
+  ⎿ Postponed phase build at safe boundary
+    waiting
+
+
+── verbose ──
+  ⎿ Postponed phase build at safe boundary
+    waiting

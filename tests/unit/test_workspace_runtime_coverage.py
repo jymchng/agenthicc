@@ -34,7 +34,9 @@ def _state() -> MagicMock:
     conv.notification.return_value = None
     conv.workflow_override.return_value = None
     conv.compaction_active.return_value = False
+    conv.handoff_pending.return_value = False  # no /background waiting on a tool call
     conv.subagent_pool_state.return_value = None
+    conv.queue.items.return_value = ()  # TUX-04: nothing queued
     state.overlay.return_value = None
     state.pending_approval.return_value = None
     state.workflow_run.return_value = None
@@ -79,7 +81,7 @@ def test_build_handles_overflow_failure_and_plain_composer() -> None:
     workspace = Workspace(state, _console())
     workspace.overlays._overlay = None
     rows = lines_text(workspace._build_lines())
-    assert len(rows) >= 5
+    assert len(rows) == 4  # the framed composer and the status line (TUX-02)
     assert not any("more tool" in row for row in rows)
 
 

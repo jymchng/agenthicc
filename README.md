@@ -155,8 +155,8 @@ See the [goal-runs guide](./docs/guides/goal-runs.md) for run identity,
 worker correlation, recovery, and JSON control output.
 
 Startup is progressive: the TUI renders its first frame from the local
-session/configuration boundary while optional extensions, remote changelog,
-MCP connections, and browser integrations report readiness in the background.
+session/configuration boundary while optional extensions, MCP connections,
+and browser integrations report readiness in the background.
 Use `/startup` to inspect phase timings. Session listing uses a bounded index
 and restores only the selected session; see the [startup guide](./docs/guides/startup.md).
 
@@ -205,12 +205,16 @@ The current TUI is implemented by `tui/workspace/Workspace` and consists of:
 3. Overlays for help, command and skill listings, configuration, approvals, questions, plans, and trigger completion
 4. A single lifetime input session with POSIX and Windows terminal backends
 
-The workspace treats terminal resizing as one settled repaint, clearing Rich's previous geometry before redrawing so an active Plan Review is not duplicated in the scrollback. While approvals, plan reviews, or questions are waiting, the status animation and cached active-work timer stay fixed; the wall-clock duration is retained for turn telemetry.
+The workspace treats terminal resizing as one settled repaint, clearing Rich's previous geometry before redrawing so an active plan review is not duplicated in the scrollback. While approvals, plan reviews, or questions are waiting, the status animation and cached active-work timer stay fixed; the wall-clock duration is retained for turn telemetry.
 
-Long `ask_user` questions wrap inside a fixed-height viewport. In the
-selection view, `[` and `]` scroll the question text while `↑`/`↓` continue to
-navigate options; free-text answers use Page Up/Page Down for question scrolling
-so literal brackets remain available in the answer.
+Approvals, plan reviews and `ask_user` questions share one dialog: a verb
+phrase as the title, the whole command or the diff in the body, one line saying
+why it asks, and numbered options (`1`–`9` choose and confirm; `y`/`a`/`A`/`n`
+still work for approvals). "No, and tell the agent what to do instead" sends
+what you type back to the model with the denial. A long body scrolls inside the
+dialog: in the selection view `[` and `]` move one line while `↑`/`↓` continue
+to navigate options; free-text answers use Page Up/Page Down so literal
+brackets remain available in the answer.
 
 Idle sessions do not publish animation frames or repaint the unchanged Live status at the session tick rate, preventing duplicate idle panels in captured terminal output. Approval, plan-review, and question waits likewise retain their wall-clock telemetry without repainting an unchanged prompt every tick.
 
@@ -236,9 +240,9 @@ Transient provider failures are rendered as compact retry notices showing the at
 | `/loops` | Open the table of all persisted schedule jobs; Enter runs the selected job and `d` deletes it after confirmation |
 | `/inbox [filters]` | Review and answer exact background approvals, questions, and input requests |
 | `/ps [terminal-id]`, `/stop [terminal-id\|all]` | Inspect or stop owned background terminals; `/ps` is paginated and `/ps --json` returns all records; `/stop` stops all |
-| `/mode [name]` | Show or change the operating mode |
+| `/mode [name]` | Choose or change the operating mode (a picker without a name) |
 | `/workflow <name> \| resume [run-id] \| reset [run-id]` | Select a workflow, resume the latest eligible run when `run-id` is omitted, or reset a workflow; use `/workflow create_workflow` to author one directly in `.agenthicc/workflows/` |
-| `/model [provider] [model]` | Inspect or switch the model selection |
+| `/model [provider] [model]` | Choose the provider and model from a picker (or directly); applies from the next turn, no restart |
 | `/config` | Open the configuration overlay |
 | `/init` | Preview or explicitly write managed project `AGENTS.md` guidance |
 | `/compact` | Compact conversation memory |

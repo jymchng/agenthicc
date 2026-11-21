@@ -13,7 +13,11 @@ from agenthicc.tui.runtime.commands import (
     InterruptAgentCommand,
     BackgroundSubagentsCommand,
     OpenAgentsHubCommand,
+    OpenPaletteCommand,
+    OpenShortcutsCommand,
     OpenSubagentsCommand,
+    OpenTranscriptCommand,
+    ScrollPaneCommand,
     CycleAgentCommand,
 )
 from agenthicc.tui.runtime.mode_manager import (
@@ -37,7 +41,11 @@ __all__ = [
     "InterruptAgentCommand",
     "BackgroundSubagentsCommand",
     "OpenAgentsHubCommand",
+    "OpenPaletteCommand",
+    "OpenShortcutsCommand",
     "OpenSubagentsCommand",
+    "OpenTranscriptCommand",
+    "ScrollPaneCommand",
     "CycleAgentCommand",
     "ModeManager",
     "ModeRegistry",

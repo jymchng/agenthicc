@@ -5,7 +5,8 @@ from __future__ import annotations
 import hashlib
 import re
 import time
-from collections.abc import Mapping
+import logging
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Literal
@@ -22,6 +23,8 @@ from agenthicc.workflows.checkpoint import (
     resolve_workflow_checkpoint_topology,
     workflow_fingerprint,
 )
+
+log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from agenthicc.workflows.plugin import WorkflowPlugin
@@ -331,6 +334,11 @@ class WorkflowRunHandle:
     topology_profile: str = ""
     topology_phase_names: tuple[str, ...] = ()
     claim_owner_id: str | None = field(default=None, repr=False)
+    #: Called after the phase or lifecycle changes, so presentation can follow
+    #: (the TUI status line's workflow segment). Never persisted.
+    on_change: Callable[[WorkflowRunHandle], None] | None = field(
+        default=None, repr=False, compare=False
+    )
 
     @classmethod
     def create(
@@ -489,6 +497,16 @@ class WorkflowRunHandle:
             self.phase_iteration = iteration
         return changed
 
+    def _announce(self) -> None:
+        """Tell the presentation listener, if any, that phase or lifecycle moved."""
+        listener = self.on_change
+        if listener is None:
+            return
+        try:
+            listener(self)
+        except Exception:  # noqa: BLE001 - presentation never breaks a workflow
+            log.exception("workflow presentation listener failed")
+
     def update_phase(
         self,
         phase: str | None,
@@ -516,6 +534,7 @@ class WorkflowRunHandle:
                 self.phase_index = topology.index_for(phase)
         if persist and self.context is not None and self.checkpoint_supported:
             self.persist_checkpoint(reason="phase_started")
+        self._announce()
 
     def claim(self, owner_id: str) -> None:
         """Acquire the durable run lease for this process."""
@@ -573,6 +592,7 @@ class WorkflowRunHandle:
         self.pause_requested = True
         self.last_error = reason
         self.pause_reason = reason
+        self._announce()
 
     def mark_resuming(self) -> None:
         """Move a paused run into active continuation."""
@@ -580,6 +600,7 @@ class WorkflowRunHandle:
             raise RuntimeError(f"workflow {self.run_id} is not paused")
         self.lifecycle = "resuming"
         self.pause_requested = False
+        self._announce()
 
     def mark_terminal(self, status: WorkflowLifecycle, *, error: str = "") -> None:
         """Set a terminal workflow lifecycle."""
@@ -600,11 +621,17 @@ class WorkflowRunHandle:
             self.failure_model = None
             self.failure_status_code = None
             self.last_safe_boundary = None
+        self._announce()
 
     @staticmethod
     def _safe_failure_message(error: object) -> str:
         """Return a bounded, single-line diagnostic safe for persistence/UI."""
-        text = re.sub(r"\s+", " ", str(error)).strip()
+        from agenthicc.runners.failure_kinds import reported_failure
+
+        # A failed agent turn's exception carries agenthicc's own copy for its
+        # failure kind; the provider's text never reaches a checkpoint (TUX-08).
+        reported = reported_failure(error) if isinstance(error, BaseException) else None
+        text = re.sub(r"\s+", " ", str(reported["message"] if reported else error)).strip()
         # Do not retain common credential-bearing fields if an exception
         # includes a provider request dump. The full exception remains a log
         # concern, never a checkpoint concern.
@@ -780,12 +807,15 @@ class WorkflowRunHandle:
                     error=self.failure_message,
                     kind=checkpoint_failure_kind,
                 )
+                self._announce()
                 return None
+            self._announce()
             return checkpoint
 
         self.lifecycle = "failed"
         self.pause_requested = False
         self._save_failure_diagnostic(error=safe_error, kind=normalized_kind)
+        self._announce()
         return None
 
     def append_continuation(self, text: str) -> None:

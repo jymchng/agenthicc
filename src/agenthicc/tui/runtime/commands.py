@@ -62,6 +62,30 @@ class CycleAgentCommand(Command):
     """Talk to the next primary agent from the next turn (Tab; AGX-09 §5.3)."""
 
 
+@dataclass(frozen=True)
+class OpenPaletteCommand(Command):
+    """Open the command palette over the conversation (Ctrl+P; TUX-05 §2.4)."""
+
+
+@dataclass(frozen=True)
+class OpenTranscriptCommand(Command):
+    """Open the transcript view on the last tool call (Ctrl+T; TUX-09 §2.1)."""
+
+
+@dataclass(frozen=True)
+class ScrollPaneCommand(Command):
+    """Scroll the fullscreen layout's transcript pane (TUX-09 §2.3)."""
+
+    action: Literal[
+        "page_up", "page_down", "line_up", "line_down", "wheel_up", "wheel_down", "follow"
+    ] = "page_up"
+
+
+@dataclass(frozen=True)
+class OpenShortcutsCommand(Command):
+    """Open the page of every key (``?`` on an empty prompt, ``/shortcuts``; TUX-10 §2.6)."""
+
+
 C = TypeVar("C", bound=Command)
 
 

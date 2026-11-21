@@ -10,12 +10,12 @@ import os
 import sys
 import threading
 import uuid
-from collections.abc import Awaitable, Callable, Iterable, Iterator
+from collections.abc import Awaitable, Callable, Iterable, Iterator, MutableMapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, NoReturn, cast
+from typing import TYPE_CHECKING, Literal, NoReturn, TextIO, cast
 
 from agenthicc.supervised_tasks import SupervisedTasks
 
@@ -69,9 +69,11 @@ if TYPE_CHECKING:
     from lauren_ai._config import LLMConfig
     from lauren_ai._memory import ShortTermMemory
     from lauren_ai._signals import SignalBus
+    from rich.console import Console
 
     from agenthicc.agents.registry import AgentsRegistry
     from agenthicc.background.agents_service import AgentsService
+    from agenthicc.tui.notifications import NotificationSink, TerminalPresence, TurnNotifier
     from agenthicc.background.attention import TUIAttentionLease
     from agenthicc.background.settings import BackgroundSettings
     from agenthicc.background.supervisor import BackgroundSupervisor
@@ -89,6 +91,8 @@ if TYPE_CHECKING:
     from agenthicc.memory.tool_history import ToolHistoryRecoveryState
     from agenthicc.memory.vector import SemanticIndex
     from agenthicc.plugins.discovery import PluginToolSet
+    from agenthicc.runners.first_run import FirstRun
+    from agenthicc.runners.preflight import PreflightIssue
     from agenthicc.runners.session_context import SessionContext
     from agenthicc.runners.startup import StartupCoordinator
     from agenthicc.runners.workflow_handle import WorkflowRunHandle
@@ -97,6 +101,8 @@ if TYPE_CHECKING:
     from agenthicc.skills.loader import SkillDef, SkillDiscoveryResult
     from agenthicc.subagents.pool import SubagentPool
     from agenthicc.tools.approval import ApprovalRequest, ApprovalRequester
+    from agenthicc.tui.conversation_store import MessageQueue
+    from agenthicc.tui.input.unified_session import TerminalHooks
     from agenthicc.tools.base import ToolLike
     from agenthicc.tools.cloakbrowser.session import BrowserSessionManager
     from agenthicc.tui.input.unified_session import UnifiedInputSession
@@ -105,11 +111,20 @@ if TYPE_CHECKING:
         CycleAgentCommand,
         InterruptAgentCommand,
         OpenAgentsHubCommand,
+        OpenPaletteCommand,
+        OpenShortcutsCommand,
         OpenSubagentsCommand,
+        OpenTranscriptCommand,
+        ScrollPaneCommand,
         SendMessageCommand,
     )
+    from agenthicc.runners.model_switch import ModelChoice
+    from agenthicc.tui.transcript.controller import TranscriptController, ViewKind
     from agenthicc.tui.workspace import Workspace
+    from agenthicc.tui.workspace.overlays.palette import PaletteItem
     from agenthicc.tui.workspace.agents_hub import HubResult
+    from agenthicc.tui.workspace.dialog import DialogSettings
+    from rich.console import RenderableType
     from agenthicc.tui.workspace.overlay import Overlay
     from agenthicc.tui.workspace.overlays.questions import AnswerContext
     from agenthicc.tui.workspace.overlays.subagents import TranscriptTarget
@@ -519,7 +534,15 @@ def _fmt_exc(exc: BaseException) -> str:
 
     Never returns a bare ``str(exc)`` — the exception class name is always
     included so users can identify the failure type (e.g. ``ReadTimeout``).
+    A failed agent turn's exception is reported by its own copy instead
+    ("No API key for anthropic."), so provider text never reaches the
+    transcript or a checkpoint (TUX-08).
     """
+    from agenthicc.runners.failure_kinds import reported_failure
+
+    reported = reported_failure(exc)
+    if reported is not None:
+        return str(reported.get("message", ""))
     name = type(exc).__name__
     msg = str(exc).strip()
     return f"{name}: {msg}" if msg else name
@@ -784,6 +807,56 @@ def _discover_workflow_registry_sync() -> WorkflowRegistry:
 
 
 # ── session construction ──────────────────────────────────────────────────────
+
+
+def _trust_the_terminal_size(environ: MutableMapping[str, str], *, is_terminal: bool) -> None:
+    """Drop a stale ``COLUMNS`` / ``LINES`` so the live block uses the real size.
+
+    Rich, like :func:`shutil.get_terminal_size`, takes ``$COLUMNS`` and
+    ``$LINES`` over what the terminal reports. A shell that exports them (a
+    login script, a multiplexer, an IDE) leaves the size it started with in the
+    environment for good, so after a resize or in a narrower pane the text is
+    wrapped for one width and drawn at another: lines are cut and the live block
+    is repainted over itself. On a real terminal the kernel's answer is the only
+    right one; without one (a pipe, a test) the variables stay in force.
+    """
+    if not is_terminal:
+        return
+    environ.pop("COLUMNS", None)
+    environ.pop("LINES", None)
+
+
+def _apply_startup_theme(console: Console, cfg: AgenthiccConfig) -> None:
+    """Choose the session's theme and glyphs before anything is drawn (TUX-01).
+
+    ``auto`` asks the terminal for its background (OSC 11 followed by a DA1
+    sentinel, only on an interactive terminal; it returns as soon as the
+    terminal answers DA1, at most 500 ms). A theme that cannot be loaded falls back to
+    ``auto`` and says so once.
+    """
+    from rich.markup import escape
+
+    from agenthicc.tui.terminal.backend import get_backend
+    from agenthicc.tui.theme import resolve_theme, use_theme
+
+    ui = cfg.ui
+    background: tuple[int, int, int] | None = None
+    if ui.theme == "auto" and "NO_COLOR" not in os.environ and console.is_terminal:
+        backend = get_backend()
+        if backend.is_interactive():
+            background = backend.query_background(0.5)
+    theme, notices = resolve_theme(
+        ui.theme,
+        ui.glyphs,
+        env=os.environ,
+        screen_reader=ui.screen_reader,
+        background=background,
+        cwd=Path.cwd(),
+        encoding=console.encoding,
+    )
+    use_theme(theme)
+    for notice in notices:
+        console.print(f"[{theme.palette.warning}]! {escape(notice)}[/]")
 
 
 async def _build_session_context(
@@ -1064,6 +1137,7 @@ async def _build_session_context_impl(
 
     configure_walk_limit(cfg.tools.max_fs_walks)
 
+    _trust_the_terminal_size(os.environ, is_terminal=not headless and sys.stdout.isatty())
     console = Console(
         highlight=False,
         markup=True,
@@ -1073,6 +1147,8 @@ async def _build_session_context_impl(
         force_terminal=not headless,
         quiet=headless,
     )
+    if not headless:
+        _apply_startup_theme(console, cfg)
     llm_config_error: str | None = None
     llm_config: Callable[[], LLMConfig] | None
     try:
@@ -1091,12 +1167,8 @@ async def _build_session_context_impl(
             # its agent runtime after the first frame instead (AGX-02).
             llm_config()
     except ValueError as exc:
+        # Reported under the header as a notice (TUISession._show_welcome).
         llm_config_error = str(exc)
-        console.print(
-            f"[red]LLM config error: {exc}[/red]\n"
-            "[dim]Set ANTHROPIC_API_KEY or OPENAI_API_KEY, or --set execution.provider=...[/dim]",
-            markup=True,
-        )
         llm_config = None
 
     model_label = f"{cfg.execution.provider}/{cfg.execution.effective_model()}"
@@ -1514,9 +1586,17 @@ async def _build_session_context_impl(
     _register_skill_commands(cmd_registry, skills)
 
     trigger_registry = TriggerManager()
+    from agenthicc.tui.input.command_usage import CommandUsage
+
+    # TUX-05: one per-project usage record ranks both pickers and the palette.
+    command_usage = CommandUsage(Path.cwd())
     trigger_registry.register(AtMentionTrigger(agents=agents_registry.subagents))
-    trigger_registry.register(SlashCommandTrigger(cmd_registry, workflow_registry))
-    trigger_registry.register(SkillTrigger(cmd_registry))
+    trigger_registry.register(
+        SlashCommandTrigger(
+            cmd_registry, workflow_registry, usage=command_usage, keymap=app_state.keymap
+        )
+    )
+    trigger_registry.register(SkillTrigger(cmd_registry, usage=command_usage))
 
     # ── agent runner ──────────────────────────────────────────────────────────
     agent_runner = _build_agent_runner(
@@ -1601,10 +1681,13 @@ class SessionSwitch:
     ``attach`` continues a background agent in the foreground and
     ``open_saved`` resumes a saved session; when that session ends, the
     *origin* session reopens. ``hub`` follows ``/background``: the agents hub
-    opens with the new background agent selected.
+    opens with the new background agent selected. ``directory`` (TUX-03) starts
+    a new session in the directory *target*; the origin does not reopen.
+    ``fork`` (TUX-09's ``/rewind``) continues in the session forked from the
+    origin, in the same directory; the origin is kept but does not reopen.
     """
 
-    action: Literal["attach", "open_saved", "hub"]
+    action: Literal["attach", "open_saved", "hub", "directory", "fork"]
     target: str
     origin: str
     origin_cwd: str
@@ -1615,6 +1698,82 @@ class SessionSwitch:
 
 class TUISession:
     """All TUI session behaviour — methods correspond to the former nested closures."""
+
+    #: The active workflow run; set through ``_workflow_handle`` (see below).
+    _workflow_handle_value: WorkflowRunHandle | None = None
+    #: ``/bg`` arrived while a tool ran: hand off at the next tool boundary.
+    _handoff_pending: bool = False
+    #: A successful hand-off to say once the turn it cancelled has finished unwinding.
+    _backgrounded: tuple[str, str] | None = None
+    #: The pre-flight finding that stops prompts from being sent (TUX-03).
+    _credential_issue: PreflightIssue | None = None
+    #: This session's place in the tip rotation (TUX-03).
+    _tip_index: int = 0
+    #: Opens the transcript view; built on first use (TUX-09).
+    _transcript: TranscriptController | None = None
+
+    @property
+    def _workflow_handle(self) -> WorkflowRunHandle | None:
+        return self._workflow_handle_value
+
+    @_workflow_handle.setter
+    def _workflow_handle(self, handle: WorkflowRunHandle | None) -> None:
+        """Track *handle* and let its phase changes drive the status line.
+
+        Every runner reports its phase through the handle; only some also
+        publish ``AppState.workflow_run``. Listening here shows the running
+        workflow and phase for all of them (operator request; TUX-02).
+        """
+        self._workflow_handle_value = handle
+        if handle is not None:
+            handle.on_change = self._publish_workflow_progress
+
+    def _publish_workflow_progress(self, handle: WorkflowRunHandle) -> None:
+        """Mirror *handle*'s workflow, phase and lifecycle into presentation state."""
+        import dataclasses as _dc
+
+        from agenthicc.workflows.plugin import WorkflowRun
+
+        app_state = self._ctx.app_state
+        lifecycle = handle.lifecycle
+        status = {
+            "running": "running",
+            "resuming": "running",
+            "pausing": "running",
+            "paused": "paused",
+            "complete": "complete",
+            "discarded": "complete",
+            "failed": "failed",
+        }.get(lifecycle, "running")
+        phase = handle.current_phase
+        names = handle.topology_phase_names or (
+            tuple(handle.workflow.phase_names()) if handle.workflow is not None else ()
+        )
+        total = max(len(names), handle.phase_index + 1)
+        current = app_state.workflow_run()
+        if isinstance(current, WorkflowRun) and current.run_id == handle.run_id:
+            updated = _dc.replace(
+                current,
+                workflow_name=handle.workflow_name,
+                current_phase=phase if phase is not None else current.current_phase,
+                current_phase_index=handle.phase_index,
+                total_phases=total,
+                status=status,
+            )
+        else:
+            if phase is None:
+                return
+            updated = WorkflowRun(
+                run_id=handle.run_id,
+                workflow_name=handle.workflow_name,
+                intent=handle.original_intent,
+                current_phase=phase,
+                current_phase_index=handle.phase_index,
+                total_phases=total,
+                status=status,
+            )
+        if updated != current:
+            app_state.workflow_run.set(updated)
 
     def __init__(
         self,
@@ -1630,8 +1789,12 @@ class TUISession:
 
         # Mutable session state
         self._pending_skill_body: list[str] = []
-        self._msg_queue: list[str] = []
+        # Messages typed during a turn; the composer shows, edits and removes
+        # them through the same queue (TUX-04 §2.6).
+        self._msg_queue: MessageQueue = ctx.app_state.conversation.queue
         self._agent_task: asyncio.Task[object] | None = None
+        # TUX-05: a model chosen while a turn runs, applied when it ends.
+        self._pending_model: ModelChoice | None = None
         self._deferred_startup_task: asyncio.Task[object] | None = None
         self._last_submitted_text: str = ""
         # Foreground /background handoff state (agenthicc.background.integration).
@@ -1645,6 +1808,10 @@ class TUISession:
         self._agents_settings: BackgroundSettings | None = None
         self._attention_lease: TUIAttentionLease | None = None
         self._attention_task: asyncio.Task[None] | None = None
+        # TUX-10: notifications for an away user, and the window title and progress.
+        self._notification_sink: NotificationSink | None = None
+        self._turn_notifier: TurnNotifier | None = None
+        self._presence: TerminalPresence | None = None
         self._background_prepared_supervisor: BackgroundSupervisor | None = None
         self._background_prepared_session_id: str | None = None
         self._turn_count: int = 0
@@ -1652,7 +1819,7 @@ class TUISession:
         self._workflow_override: str | None = ctx.initial_workflow  # PRD-114: /workflow command
         if self._workflow_override is not None:
             self._set_workflow_override(self._workflow_override)
-        self._workflow_handle: WorkflowRunHandle | None = None
+        self._workflow_handle = None
         # Commands that run in the background (for example /compact).
         self._tasks = SupervisedTasks("tui session")
         from agenthicc.runners.workflow_recovery import WorkflowRecoveryCoordinator
@@ -2086,6 +2253,7 @@ class TUISession:
         kind: str = "workflow_error",
         recoverable: bool = True,
         error_event_id: str | None = None,
+        announce: bool = True,
     ) -> None:
         """Publish and finalize a workflow failure that escaped its runner.
 
@@ -2097,7 +2265,11 @@ class TUISession:
         cannot be accidentally reused by the next message.
         """
         conv = self._ctx.app_state.conversation
-        if conv.is_turn_active:
+        if not announce:
+            # The run is recorded as failed below, but nothing went wrong that the
+            # user should read: close the turn without an error row.
+            conv.close_turn()
+        elif conv.is_turn_active:
             conv.close_turn(error=error)
         else:
             conv.append_event("error", {"message": error}, event_id=error_event_id)
@@ -2128,7 +2300,10 @@ class TUISession:
                     )
                 )
         if checkpoint is not None:
-            self._ctx.app_state.conversation.notify_transient(self._workflow_pause_notice(handle))
+            if announce:
+                self._ctx.app_state.conversation.notify_transient(
+                    self._workflow_pause_notice(handle)
+                )
             self._publish_session_event(
                 "workflow_paused_after_error",
                 {
@@ -2407,15 +2582,36 @@ class TUISession:
         if not isinstance(approval_svc, InteractiveApprovals):
             raise TypeError("the TUI needs an approval service its overlays can answer")
         hide = self._workspace.overlays.hide
+        answers = self._answer_context()
+        settings = self._dialog_settings(answers)
         if req.kind == "plan_review":
-            return PlanApprovalOverlay(req, approval_svc, hide)
+            return PlanApprovalOverlay(req, approval_svc, hide, settings=settings)
         if req.kind == "questions":
-            return QuestionsOverlay(req, approval_svc, hide, answers=self._answer_context())
+            return QuestionsOverlay(req, approval_svc, hide, answers=answers, settings=settings)
         return ApprovalOverlay(
             req,
             approval_svc,
             hide,
             open_requester=lambda requester: self._open_requester_transcript(requester, req),
+            settings=settings,
+        )
+
+    def _dialog_settings(self, answers: AnswerContext) -> DialogSettings:
+        """The session's keymap, screen-reader setting, mode and workspace for a dialog (TUX-07)."""
+        from agenthicc.tui.preferences import ui_settings
+        from agenthicc.tui.workspace.dialog import DialogSettings as Settings
+
+        app_state = self._ctx.app_state
+        ui = ui_settings(app_state)
+        workspace_access = self._ctx.workspace_access
+        return Settings(
+            keymap=app_state.keymap(),
+            plain=ui is not None and ui.screen_reader,
+            mode=app_state.active_mode().name,
+            composer=answers.composer,
+            workspace=workspace_access.scope if workspace_access is not None else None,
+            redraw=answers.redraw,
+            open_details=self.open_details,
         )
 
     def _answer_context(self) -> AnswerContext:
@@ -2444,6 +2640,7 @@ class TUISession:
             history=self._answer_history,
             session_id=str(ctx.session_id),
             mode_name=ctx.app_state.active_mode().name,
+            terminal_hooks=self._embedded_terminal_hooks(),
         )
 
         def run_command(text: str) -> bool:
@@ -2474,16 +2671,7 @@ class TUISession:
             if injected:
                 ctx.app_state.conversation.append_event(
                     "mention_chips",
-                    {
-                        "chips": [
-                            {
-                                "raw": item.mention.raw,
-                                "kind": item.mention.kind.value,
-                                "ok": vars(item).get("ok", True),
-                            }
-                            for item in injected
-                        ]
-                    },
+                    {"chips": [item.chip() for item in injected]},
                 )
             return prefix + text if prefix else text
 
@@ -2517,6 +2705,34 @@ class TUISession:
 
         app_state.pending_approval.subscribe(_on_approval_change)
 
+    def _project_background_terminals(self, terminal_manager: TerminalManager) -> None:
+        """Running background terminals become live rows with a blinking dot.
+
+        A terminal that a running tool call owns is already shown by that
+        call's own row, so only the ones running on their own are listed.
+        """
+        from agenthicc.tui.conversation_store import RunningTool
+        from agenthicc.tui.tool_summary import command_summary
+
+        conversation = self._ctx.app_state.conversation
+        owned = {item.key for item in conversation.running_tools()}
+        rows: list[RunningTool] = []
+        for record in reversed(terminal_manager.list_records()):
+            if not record.active or (record.tool_call_id and record.tool_call_id in owned):
+                continue
+            target = record.label or command_summary(record.command).target
+            rows.append(
+                RunningTool(
+                    key=f"terminal:{record.terminal_id}",
+                    operation="$",
+                    target=target,
+                    started_at=record.started_at or record.created_at,
+                    background=True,
+                )
+            )
+        if tuple(rows) != conversation.background_tools():
+            conversation.background_tools.set(tuple(rows))
+
     def _sync_terminal_status(self) -> None:
         """Project the current terminal wait into the reactive status bar."""
 
@@ -2525,6 +2741,7 @@ class TUISession:
             return
         snapshot = terminal_manager.wait_snapshot()
         conversation = self._ctx.app_state.conversation
+        self._project_background_terminals(terminal_manager)
         if snapshot is None:
             conversation.clear_terminal_wait()
             redraw = getattr(self._workspace, "_redraw", None)
@@ -2631,6 +2848,7 @@ class TUISession:
         Queued input drains even when loading failed, so each queued turn
         reports the failed dependency instead of waiting forever.
         """
+        self._warm_mention_picker()
         failure: Exception | None = None
         try:
             await self._prepare_agent_runtime()
@@ -2644,6 +2862,14 @@ class TUISession:
             raise failure
         self._tasks.start(self._prewarm_agents_hub(), name="agents-hub-prewarm")
         return None
+
+    def _warm_mention_picker(self) -> None:
+        """Ask git what changed now, off the loop, so the first ``@`` already shows it."""
+        from agenthicc.tui.triggers.at_mention import AtMentionTrigger
+
+        handler = self._ctx.trigger_registry.get("@")
+        if isinstance(handler, AtMentionTrigger):
+            handler.warm(Path.cwd())
 
     async def _prewarm_agents_hub(self) -> None:
         """Import the agents hub on a worker thread once the session is idle.
@@ -2691,6 +2917,10 @@ class TUISession:
             except Exception as exc:  # noqa: BLE001 - the failed phase blocks turns
                 ctx.llm_config_error = str(exc)
                 ctx.app_state.conversation.notify_transient(f"⚠ LLM config error: {exc}")
+        # TUX-02: the status line's context meter divides by this window. The
+        # lookup reads lauren-ai's model registry, which the first frame may
+        # not import, so the meter appears once the runtime has loaded.
+        ctx.app_state.conversation.context_window.set(ctx.cfg.execution.effective_context_window())
         # PRD-129 Phase 3: auto-resume a direct turn the prior session left
         # interrupted (no-op on a clean start or when a workflow was in progress).
         self._maybe_resume_interrupted_turn()
@@ -2752,7 +2982,6 @@ class TUISession:
         from agenthicc.tui.workspace.agents_hub.sources import HubSources
 
         ctx = self._ctx
-        ctx.app_state.conversation.agents_hint.set(False)
         overlays = self._workspace.overlays
         current = overlays.widget
         if isinstance(current, AgentsHubOverlay):
@@ -2922,11 +3151,37 @@ class TUISession:
         )
         return self._agents_service, settings
 
+    def _start_terminal_feedback(self) -> None:
+        """The window title, the taskbar progress and notifications for an away user (TUX-10).
+
+        Imported here, after the first frame, so the start-up module budget
+        does not count them.
+        """
+        from agenthicc.tui.notifications import NotificationSink, TerminalPresence, TurnNotifier
+        from agenthicc.tui.terminal.backend import get_backend
+
+        backend = get_backend()
+        app_state = self._ctx.app_state
+        self._notification_sink = NotificationSink(backend, app_state)
+        self._turn_notifier = TurnNotifier(app_state, self._notification_sink)
+        self._turn_notifier.start()
+        self._presence = TerminalPresence(app_state, backend)
+        self._presence.start()
+
+    def _stop_terminal_feedback(self) -> None:
+        """Clear the progress and put the user's window title back."""
+        notifier, self._turn_notifier = self._turn_notifier, None
+        if notifier is not None:
+            notifier.stop()
+        presence, self._presence = self._presence, None
+        if presence is not None:
+            presence.stop()
+
     def _start_attention_routing(self) -> None:
         """Publish TUI presence and start the event-driven attention projection."""
         from agenthicc.background.attention import TUIAttentionLease
         from agenthicc.background.store import default_background_root
-        from agenthicc.tui.attention import AgentAttentionRouter, _emit_terminal_notification
+        from agenthicc.tui.attention import AgentAttentionRouter
 
         service, settings = self._agents_hub_service()
         if settings is None:
@@ -2943,17 +3198,12 @@ class TUISession:
         if service is None:
             return
 
-        def set_title(title: str) -> None:
-            self._ctx.console.set_window_title(title)
-
+        sink = self._notification_sink
         router = AgentAttentionRouter(
             service,
             settings,
             self._ctx.app_state,
-            set_terminal_title=set_title,
-            send_terminal_notification=lambda summary: _emit_terminal_notification(
-                self._ctx.console, summary
-            ),
+            send_terminal_notification=sink.background if sink is not None else None,
         )
         self._attention_task = self._tasks.start(router.run(), name="background-attention-router")
 
@@ -3000,6 +3250,153 @@ class TUISession:
     async def _open_agents_hub_command(self, command: OpenAgentsHubCommand) -> None:
         self.open_agents_hub(command.tab, command.run_id)
 
+    # ── welcome and first run (TUX-03) ───────────────────────────────────────
+
+    async def _show_welcome(self) -> None:
+        """Print the header and any pre-flight notice, then ask about a new directory.
+
+        The facts are gathered on a worker thread (the state file, the git
+        branch, the pre-flight check, the suggestion); the loop only prints.
+        Nothing is fetched: the check reads configuration and the environment.
+        A failure degrades the ``preflight`` start-up phase, never the session.
+        """
+        startup = self._ctx.startup
+        if startup is None:
+            await self._welcome()
+        else:
+            await startup.run("preflight", self._welcome, degrade_on_error=True)
+
+    async def _welcome(self) -> None:
+        from agenthicc.runners.first_run import prepare_first_run
+
+        ctx = self._ctx
+        app_state = ctx.app_state
+        cwd = Path(os.getcwd())
+        report = await asyncio.to_thread(
+            prepare_first_run,
+            config=ctx.cfg,
+            env=os.environ,
+            cwd=cwd,
+            mode=app_state.active_mode().name,
+            session_id=ctx.session_id,
+            keymap=app_state.keymap(),
+        )
+        self._tip_index = report.tip_index
+        self._print_welcome(report)
+        app_state.conversation.suggestion.set(report.suggestion)
+        # A turn may write AGENTS.md; the suggestion follows when it ends.
+        app_state.conversation.agent_state.subscribe(self._refresh_suggestion)
+        if report.plan_mode and app_state.active_mode().name == "Safe":
+            ctx.mode_manager.set_by_name("Plan")
+        if report.ask_workspace:
+            self._ask_workspace(cwd)
+
+    def _print_welcome(self, report: FirstRun) -> None:
+        """The header (unless ``[ui] banner = "off"``), then one notice per failed check."""
+        from agenthicc.tui.workspace.formatters import short_model
+        from agenthicc.tui.workspace.notice import Notice
+
+        ctx = self._ctx
+        console = ctx.console
+        ui = ctx.cfg.ui
+        provider = ctx.cfg.execution.provider
+        if ui.banner != "off":
+            from agenthicc.tui.welcome import WelcomeInfo, print_welcome
+
+            print_welcome(
+                console,
+                WelcomeInfo(
+                    version=report.version,
+                    model=short_model(ctx.model_label, default_provider=provider),
+                    provider=provider,
+                    mode=ctx.app_state.active_mode().name,
+                    directory=Path(os.getcwd()),
+                    home=Path.home(),
+                    branch=report.branch,
+                    whats_new=report.whats_new,
+                    # A screen reader would read the mascot's characters out.
+                    mascot=(report.first_run or ui.banner == "full") and not ui.screen_reader,
+                ),
+            )
+        for issue in report.issues:
+            console.print(
+                Notice(issue.severity, issue.text, words=ui.screen_reader), highlight=False
+            )
+        blocking = next((issue for issue in report.issues if issue.blocking), None)
+        self._credential_issue = blocking
+        if blocking is None and ctx.llm_config_error:
+            console.print(
+                Notice(
+                    "error", f"LLM config error: {ctx.llm_config_error}", words=ui.screen_reader
+                ),
+                highlight=False,
+            )
+
+    def _ask_workspace(self, directory: Path) -> None:
+        """Ask "Work in <directory>?" once, in a dialog over the composer (TUX-03 §2.4)."""
+        from agenthicc.tui.workspace.overlays.workspace_trust import WorkspaceTrustOverlay
+
+        overlays = self._workspace.overlays
+        overlays.show(
+            WorkspaceTrustOverlay(
+                directory,
+                on_decision=lambda decision: self._remember_workspace(directory, decision),
+                on_choose_directory=self._switch_directory,
+                on_dismiss=overlays.hide,
+                settings=self._dialog_settings(self._answer_context()),
+            )
+        )
+
+    def _remember_workspace(self, directory: Path, decision: str) -> None:
+        from agenthicc.plugins.trust import current_extension_trust
+
+        current_extension_trust().remember_workspace(directory, decision)
+        if decision == "plan":
+            self._ctx.mode_manager.set_by_name("Plan")
+        self._workspace.overlays.hide()
+
+    def _switch_directory(self, directory: Path) -> None:
+        """Leave this session for a new one in *directory*."""
+        self._switch = SessionSwitch(
+            "directory", str(directory), origin=self._ctx.session_id, origin_cwd=os.getcwd()
+        )
+        self._workspace.overlays.hide()
+        self._input_session.request_exit()
+
+    def _refresh_suggestion(self) -> None:
+        """Replace a stale ``/init`` suggestion once ``AGENTS.md`` exists."""
+        from agenthicc.tui.suggestions import agents_md_missing, tip_for
+
+        conversation = self._ctx.app_state.conversation
+        current = conversation.suggestion()
+        if current is not None and current.kind == "init" and not agents_md_missing(Path.cwd()):
+            conversation.suggestion.set(tip_for(self._tip_index, self._ctx.app_state.keymap()))
+
+    def _blocked_by_credentials(self, text: str) -> bool:
+        """Refuse a prompt the provider cannot accept; say why and open ``/model``.
+
+        Only a failed credential check blocks (TUX-03 §2.3), and it is checked
+        again here, so a ``/model`` switch or a key exported since start-up
+        unblocks it. Slash commands never reach the provider and are not held.
+        """
+        issue = self._credential_issue
+        if issue is None or text.startswith("/"):
+            return False
+        from agenthicc.runners.preflight import check_credentials
+        from agenthicc.tui.workspace.notice import Notice
+
+        current = check_credentials(self._ctx.cfg, os.environ)
+        self._credential_issue = current
+        if current is None:
+            return False
+        ui = self._ctx.cfg.ui
+        self._ctx.console.print(
+            Notice(current.severity, current.text, words=ui.screen_reader), highlight=False
+        )
+        self._set_input_text(text)  # keep what was typed, ready to send again
+        self.dispatch_slash("/model")
+        return True
+
     # ── the primary agent (AGX-09) ───────────────────────────────────────────
 
     async def _cycle_agent_command(self, _command: CycleAgentCommand) -> None:
@@ -3026,20 +3423,263 @@ class TUISession:
         return message
 
     def open_agent_picker(self) -> None:
-        """``/agent``: choose among the primary agents."""
+        """``/agent``: choose among the primary agents (AGX-09's library list)."""
         from agenthicc.agents.selection import DEFAULT_AGENT, project_default
-        from agenthicc.tui.workspace.overlays.agent_picker import AgentPickerOverlay
+        from agenthicc.tui.workspace.overlays.choice_picker import ChoicePickerOverlay
+        from agenthicc.tui.workspace.picker import PickerRow
 
         overlays = self._workspace.overlays
+        current = self._ctx.app_state.agent()
+        default = project_default(Path.cwd()) or DEFAULT_AGENT
+        rows = [
+            PickerRow(
+                value=spec.name,
+                label=spec.name,
+                detail=spec.description
+                + (" (project default)" if spec.name == default else "")
+                + (" (current)" if spec.name == current else ""),
+            )
+            for spec in self._ctx.agents_registry.primary()
+        ]
+        overlay: ChoicePickerOverlay[str] = ChoicePickerOverlay(
+            "Agent",
+            rows,
+            subtitle="the next turn talks to the one you choose",
+            choose=self.select_agent,
+            close=overlays.hide,
+        )
+        overlay.picker.empty = "No primary agents are defined."
+        overlay.select_value(current)
+        overlays.show(overlay)
+
+    # ── command palette (TUX-05 §2.4) ────────────────────────────────────────
+
+    async def _open_shortcuts_command(self, _command: OpenShortcutsCommand) -> None:
+        """``?`` on an empty prompt: the same page as ``/shortcuts`` (TUX-10 §2.6)."""
+        self.dispatch_slash("/shortcuts")
+
+    async def _open_palette_command(self, _command: OpenPaletteCommand) -> None:
+        self.open_palette()
+
+    def open_palette(self) -> None:
+        """Ctrl+P on an empty prompt: every command, key action and theme."""
+        from agenthicc.tui.actions import PALETTE_ACTIONS
+        from agenthicc.tui.theme import available_themes
+        from agenthicc.tui.triggers.slash_command import SlashCommandTrigger as _Slash
+        from agenthicc.tui.workspace.overlays.palette import CommandPaletteOverlay
+
+        handler = self._ctx.trigger_registry.get("/")
+        commands = (
+            handler
+            if isinstance(handler, _Slash)
+            else _Slash(self._ctx.cmd_registry, self._ctx.workflow_registry)
+        )
+        overlays = self._workspace.overlays
+        task = self._agent_task
         overlays.show(
-            AgentPickerOverlay(
-                self._ctx.agents_registry.primary(),
-                current=self._ctx.app_state.agent(),
-                default=project_default(Path.cwd()) or DEFAULT_AGENT,
-                choose=self.select_agent,
+            CommandPaletteOverlay(
+                commands=commands,
+                cwd=Path.cwd(),
+                keymap=self._ctx.app_state.keymap(),
+                actions=PALETTE_ACTIONS,
+                themes=available_themes(Path.cwd()),
+                run=self._run_palette_item,
                 close=overlays.hide,
+                busy=task is not None and not task.done(),
             )
         )
+
+    def _run_palette_item(self, item: PaletteItem) -> None:
+        """Run what the palette chose, the way its key or command would."""
+        from agenthicc.tui.runtime import (
+            BackgroundSubagentsCommand,
+            CycleAgentCommand,
+            SendMessageCommand,
+        )
+
+        bus = self._ctx.command_bus
+        if item.kind == "insert":
+            self._set_input_text(item.text)
+            return
+        if item.kind in ("command", "theme"):
+            text = item.text if item.kind == "command" else f"/theme {item.text}"
+            self._tasks.start(
+                bus.dispatch_async(SendMessageCommand(text=text)), name="palette-command"
+            )
+            return
+        match item.text:
+            case "agents.open_hub":
+                self.open_agents_hub("")
+            case "subagents.focus":
+                self.open_subagents()
+            case "composer.mode_cycle":
+                mode = self._ctx.mode_manager.cycle()
+                self._ctx.app_state.conversation.notify_transient(f"Switched to {mode.name} mode")
+            case "agents.cycle":
+                self._tasks.start(bus.dispatch_async(CycleAgentCommand()), name="palette-agent")
+            case "subagents.background":
+                self._tasks.start(
+                    bus.dispatch_async(BackgroundSubagentsCommand()), name="palette-background"
+                )
+
+    # ── model switching (TUX-05 §2.5) ────────────────────────────────────────
+
+    def switch_model(self, choice: ModelChoice) -> str:
+        """Use *choice* from the next turn; while a turn runs, after it ends."""
+        if not choice.available:
+            return f"{choice.missing_env} is not set"
+        task = self._agent_task
+        if task is not None and not task.done():
+            self._pending_model = choice
+            message = f"model {choice.label} after this turn"
+            self._ctx.app_state.conversation.notify_transient(message)
+            return message
+        return self._apply_model(choice)
+
+    def _apply_model(self, choice: ModelChoice) -> str:
+        """Fork the runner for *choice* through the start-up factory and say so."""
+        from agenthicc.runners.model_switch import execution_for, short_model
+        from agenthicc.tui.workspace.notices import MODEL_CHANGED
+
+        ctx = self._ctx
+        try:
+            execution = execution_for(ctx.cfg, choice)
+        except ValueError as exc:
+            return f"Cannot use {choice.label}: {exc}"
+        previous = ctx.model_label
+        runner = ctx.agent_runner
+        if isinstance(runner, _LazyAgentRunner):
+            forked = runner.for_execution(execution, conversation_id=ctx.session_id)
+        else:
+            from functools import partial
+
+            from agenthicc.config import build_llm_config
+
+            forked = _LazyAgentRunner(
+                partial(build_llm_config, execution, conversation_id=ctx.session_id),
+                cassette_dir=None,
+            )
+        ctx.agent_runner = cast("AgentRunnerBase", forked)
+        # Workflow runs are built from this session-owned base, not from ctx.
+        self._wf_config_base = replace(self._wf_config_base, agent_runner=ctx.agent_runner)
+        ctx.cfg.execution = execution
+        ctx.llm_config_error = None
+        label = f"{execution.provider}/{execution.effective_model()}"
+        ctx.model_label = label
+        ctx.app_state.conversation.model_name.set(label)
+        ctx.app_state.conversation.append_event(
+            MODEL_CHANGED,
+            {
+                "provider": execution.provider,
+                "model": execution.effective_model(),
+                "profile": choice.profile,
+                "previous": previous,
+            },
+        )
+        return f"model {short_model(execution.effective_model())} from the next turn"
+
+    def save_model(self, choice: ModelChoice) -> str:
+        """Save *choice* as ``[execution]`` provider/model (or profile) in the user config."""
+        from agenthicc.tui.preferences import save_config_value
+
+        try:
+            save_config_value("execution", "profile", choice.profile)
+            save_config_value("execution", "provider", choice.provider)
+            path = save_config_value("execution", "model", choice.model)
+        except (OSError, ValueError) as exc:
+            return f"Could not save the model: {exc}"
+        return f"Saved {choice.profile or choice.label} as the default in {path}"
+
+    def _apply_pending_model(self) -> None:
+        """A model chosen during the turn applies once the turn has ended."""
+        choice = self._pending_model
+        if choice is None:
+            return
+        self._pending_model = None
+        self._apply_model(choice)
+
+    # ── transcript view, fullscreen and /rewind (TUX-09) ─────────────────────
+
+    def _transcript_controller(self) -> TranscriptController:
+        """The one controller that opens the transcript view (built on first use)."""
+        if self._transcript is not None:
+            return self._transcript
+        from agenthicc.tui.diagnostics import diagnostics_log_path
+        from agenthicc.tui.terminal.backend import get_backend
+        from agenthicc.tui.transcript.controller import TranscriptController
+
+        ctx = self._ctx
+        workspace = self._workspace
+        controller = TranscriptController(
+            session_id=ctx.session_id,
+            console=ctx.console,
+            state=ctx.app_state,
+            handoff=self._input_session.run_terminal_handoff,
+            spawn=lambda coroutine, name: self._tasks.start(coroutine, name=name),
+            suspend=workspace.suspend_for_external_process,
+            resume=workspace.resume_after_external_process,
+            hold=workspace.scroll.hold,
+            release=workspace.scroll.release,
+            notify=ctx.app_state.conversation.notify,
+            rewind=self._rewind_to,
+            busy=lambda: self._agent_task is not None and not self._agent_task.done(),
+            backend=get_backend,
+            log_path=lambda: diagnostics_log_path(ctx.session_id),
+        )
+        self._transcript = controller
+        return controller
+
+    def open_transcript(self, kind: Literal["history", "logs", "rewind"]) -> None:
+        """``/history``, ``/logs`` and ``/rewind``: the transcript view."""
+        view_kind: ViewKind = kind
+        self._transcript_controller().open(view_kind)
+
+    def open_details(self, title: str, renderables: Sequence[RenderableType]) -> None:
+        """A dialog's ``Ctrl+T``: its full arguments or diff, in the transcript view."""
+        self._transcript_controller().open_document(title, renderables)
+
+    async def _open_transcript_command(self, _command: OpenTranscriptCommand) -> None:
+        """Ctrl+T: the view, with the last tool call selected and expanded."""
+        self._transcript_controller().open("tool")
+
+    async def _scroll_pane_command(self, command: ScrollPaneCommand) -> None:
+        self._workspace.scroll_pane(command.action)
+
+    def toggle_fullscreen(self) -> bool:
+        """``/fullscreen``: switch the layout for this session; return whether it is on."""
+        ui = self._ctx.cfg.ui
+        if self._workspace.fullscreen:
+            self._workspace.leave_fullscreen()
+        elif ui.screen_reader:
+            self._ctx.app_state.conversation.notify(
+                "warning", "A screen reader follows the scrollback better: staying inline."
+            )
+        else:
+            self._workspace.enter_fullscreen()
+        self._input_session.sync_reporting()
+        return self._workspace.fullscreen
+
+    def _rewind_to(self, prompt: str, turn: int) -> None:
+        """Fork the conversation before user turn *turn* and continue in the fork."""
+        self._tasks.start(self._fork_and_switch(turn), name="rewind")
+
+    async def _fork_and_switch(self, turn: int) -> None:
+        from agenthicc.tui.transcript.fork import fork_session
+
+        conversation = self._ctx.app_state.conversation
+        try:
+            fork = await asyncio.to_thread(fork_session, self._ctx.session_id, turn)
+        except (OSError, ValueError) as exc:
+            conversation.notify("error", f"Could not rewind: {exc}")
+            return
+        if not fork.memory:
+            conversation.notify_transient(
+                "The model does not remember the earlier turns of this fork", duration=6.0
+            )
+        self._switch = SessionSwitch(
+            "fork", fork.session_id, origin=self._ctx.session_id, origin_cwd=os.getcwd()
+        )
+        self._input_session.request_exit()
 
     # ── subagents (AGX-08) ───────────────────────────────────────────────────
 
@@ -3203,11 +3843,7 @@ class TUISession:
         """Dispatch a registered command or skill trigger."""
         command_name = text.strip().split(None, 1)[0] if text.strip() else ""
         if command_name in _BACKGROUND_HANDOFF_COMMANDS:
-            # The background service owns the lifecycle; the session only
-            # hands its conversation over (PRD-141).
-            from agenthicc.background import integration
-
-            return integration._handoff(self)
+            return self._request_background_handoff()
 
         from agenthicc.commands import CommandContext
         from agenthicc.plugins.registry import build_registry
@@ -3277,8 +3913,16 @@ class TUISession:
             open_subagents=self.open_subagents,
             select_agent=self.select_agent,
             open_agent_picker=self.open_agent_picker,
+            switch_model=self.switch_model,
+            save_model=self.save_model,
+            app_state=ctx.app_state,
+            transient_notify=ctx.app_state.conversation.notify,
+            open_transcript=self.open_transcript,
+            toggle_fullscreen=self.toggle_fullscreen,
         )
-        return bool(self._cmd_dispatcher.dispatch(text, context))
+        handled = bool(self._cmd_dispatcher.dispatch(text, context))
+        self._refresh_suggestion()  # /init write may have created AGENTS.md
+        return handled
 
     def _toggle_dnd(self) -> bool:
         conversation = self._ctx.app_state.conversation
@@ -3289,6 +3933,19 @@ class TUISession:
             conversation.background_toast_kind.set(None)
             conversation.agents_toast_target.set(None)
         return enabled
+
+    def _embedded_terminal_hooks(self) -> TerminalHooks:
+        """Ctrl+X Ctrl+E and Ctrl+L in an answer composer use this session's terminal."""
+        from agenthicc.tui.input.unified_session import TerminalHooks
+
+        main = self._input_session.terminal_hooks
+        return TerminalHooks(
+            suspend=main.suspend,
+            resume=main.resume,
+            repaint=main.repaint,
+            runtime_dir=main.runtime_dir,
+            handoff=self._input_session.run_terminal_handoff,
+        )
 
     def _set_input_text(self, text: str) -> None:
         """Put a registry selection in the composer without submitting it."""
@@ -3356,35 +4013,80 @@ class TUISession:
 
         return classify_busy_command(text, self._ctx.cmd_registry)
 
-    def _notify_queued(self, text: str) -> None:
-        label = text[:40] + ("…" if len(text) > 40 else "")
-        position = len(self._msg_queue)
-        waiting = " — loading agent runtime…" if self._runtime_loading() else ""
-        self._ctx.app_state.conversation.notification.set(
-            f"⌛ Queued #{position}: {label}{waiting}"
+    def _request_background_handoff(self) -> bool:
+        """``/bg``, ``/background``, ``/detach``: hand the session over.
+
+        While a tool call runs, the handoff waits for it to finish: it happens
+        at the next tool boundary, once the call's result is committed to the
+        conversation, so the background worker continues from a complete
+        exchange instead of an interrupted one (operator request). Otherwise
+        the background service takes over at once (PRD-141).
+        """
+        conversation = self._ctx.app_state.conversation
+        task = self._agent_task
+        running = conversation.running_tools()
+        if running and task is not None and not task.done():
+            if not self._handoff_pending:
+                self._handoff_pending = True
+                # A blinking row in the live region says so until the call ends.
+                conversation.handoff_pending.set(True)
+            return True
+        return self._run_background_handoff()
+
+    def _run_background_handoff(self) -> bool:
+        from agenthicc.background import integration
+
+        if self._handoff_pending:
+            self._handoff_pending = False
+            self._ctx.app_state.conversation.handoff_pending.set(False)
+        return integration._handoff(self)
+
+    @property
+    def _handed_off(self) -> bool:
+        """Whether this session now runs in the background service."""
+        return self._background_handoff_state == "started"
+
+    def announce_backgrounded(self, session_id: str, status: str) -> None:
+        """Say that the session was handed to the background service.
+
+        The hand-off cancels the foreground turn, which is still unwinding and writes
+        its own closing rows: the confirmation waits for it, so it comes last.
+        """
+        self._backgrounded = (session_id, status)
+        self._flush_backgrounded()
+
+    def _flush_backgrounded(self) -> None:
+        task = self._agent_task
+        pending = self._backgrounded
+        if pending is None or (task is not None and not task.done()):
+            return
+        self._backgrounded = None
+        self._ctx.app_state.conversation.append_event(
+            "background_handoff", {"session_id": pending[0], "status": pending[1]}
         )
 
     def _next_queued_message(self) -> str | None:
-        """Claim the next plain-text message at a completed tool boundary.
+        """Claim the next queued message at a completed tool boundary (TUX-04 §2.6).
 
-        The active agent loop owns the shared memory, so a queued message can
-        be appended safely only after its tool results have been committed and
-        before the loop's next model request. Slash commands and skills stay at
-        the head of the FIFO until the turn is idle, where ``advance()`` can
-        route them locally instead of sending their command spelling to the
-        model.
+        The active agent loop owns the shared memory, so a message can be
+        appended safely only after its tool results have been committed and
+        before the loop's next model request. Every ordinary message typed
+        while a turn runs, in a workflow or not, is taken here, one per tool
+        call, in the order it was typed; if the turn ends first, ``advance()``
+        sends what is left as the next turn. Slash commands and skills are
+        routed locally instead of being sent to the model, so they always wait
+        for the end of the run.
         """
-        if not self._msg_queue:
+        if self._handoff_pending:
+            # The tool results are committed synchronously after this call
+            # returns, before the loop next awaits; a handoff scheduled now
+            # cancels the turn only once the exchange is complete.
+            asyncio.get_running_loop().call_soon(self._run_background_handoff)
             return None
-        text = self._msg_queue[0].strip()
-        if not text or text.startswith(("/", "$")):
+        text = self._msg_queue.claim_message()
+        if text is None:
             return None
-        self._msg_queue.pop(0)
         self._ctx.app_state.conversation.append_event("user_message", {"text": text})
-        if self._msg_queue:
-            self._notify_queued(self._msg_queue[0])
-        else:
-            self._ctx.app_state.conversation.notification.set(None)
         return text
 
     def _notify_busy_rejected(self, text: str, reason: str) -> None:
@@ -4133,7 +4835,7 @@ class TUISession:
         mem = ctx.session_memory
 
         if mem is None or not mem._messages:
-            conv.notify_transient("⎋ Nothing to compact")
+            conv.notify_transient("Nothing to compact")
             return
 
         transport = getattr(ctx.agent_runner, "_transport", None)
@@ -4144,7 +4846,9 @@ class TUISession:
         model = ctx.cfg.execution.effective_model()
         # Bound each summariser call to the model window so compacting a history
         # larger than the window map-reduces instead of overflowing (PRD-135 B).
-        outcome = await compact_memory_with_result(
+        # The outcome is the transcript's result row (``✓ Context refreshed``
+        # or ``✗ Context refresh failed``), drawn from the compaction_status event.
+        await compact_memory_with_result(
             mem,
             transport,
             model=model,
@@ -4156,24 +4860,14 @@ class TUISession:
             max_completion_tokens=ctx.cfg.execution.max_completion_tokens,
             request_options=ctx.cfg.execution.request_options,
         )
-        if outcome.applied:
-            conv.notify_transient(
-                "⎋ Compacted"
-                if outcome.status == "compacted_summary"
-                else "⎋ Compaction fallback: retained recent complete exchanges"
-            )
-        elif outcome.status == "blocked_durability_error":
-            conv.notify_transient(
-                "⚠ Compaction was not committed; conversation history is preserved"
-            )
-        elif outcome.status == "skipped_concurrent_update":
-            conv.notify_transient(
-                "⎋ Compaction skipped because the conversation changed; newer history was kept"
-            )
-        else:
-            conv.notify_transient(
-                "⚠ Compaction did not change the conversation; history is preserved"
-            )
+
+    def _record_command_use(self, text: str) -> None:
+        """Count a submitted command toward the ``/`` and ``$`` pickers' ranking."""
+        from agenthicc.tui.triggers.slash_command import SlashCommandTrigger
+
+        handler = self._ctx.trigger_registry.get(text[0])
+        if isinstance(handler, SlashCommandTrigger):
+            handler.record_use(text)
 
     def route(self, msg: str) -> bool:
         """Return True if command routing consumes *msg* locally."""
@@ -4182,6 +4876,8 @@ class TUISession:
         # PRD-114: /workflow is handled locally — not via the command registry.
         # PRD-119: /compact likewise — needs access to session memory.
         parts = msg.split(None, 1)
+        # TUX-05: the pickers rank by how often and how recently a command ran.
+        self._record_command_use(msg)
         if parts[0] == "/workflow":
             return self._handle_workflow_command(parts[1] if len(parts) > 1 else "")
         if parts[0] == "/compact":
@@ -4348,6 +5044,13 @@ class TUISession:
 
     def advance(self) -> None:
         """Drain _msg_queue: dispatch slash commands, start next agent task."""
+        self._flush_backgrounded()
+        if self._agent_task is None or self._agent_task.done():
+            self._apply_pending_model()
+        if self._handoff_pending:
+            # The turn ended before another tool boundary: hand off now.
+            self._run_background_handoff()
+            return
         notice_kept = False
         while self._msg_queue:
             msg = self._msg_queue.pop(0).strip()
@@ -4760,9 +5463,13 @@ class TUISession:
                 workflow_paused = True
                 await self._finalize_workflow_pause(handle)
             elif handle is not None and handle.lifecycle in {"running", "resuming", "pausing"}:
-                self._fail_workflow_run("cancelled", kind="user_cancelled")
+                self._fail_workflow_run(
+                    "cancelled", kind="user_cancelled", announce=not self._handed_off
+                )
             # close_turn() is idempotent — inner layers may have already called it.
-            conv.close_turn()
+            # A turn cancelled by a successful hand-off was not interrupted: the
+            # work goes on in the background (it says so after this turn's rows).
+            conv.close_turn(interrupted=not self._handed_off)
             self._input_session.set_mode(InputMode.IDLE)
         except Exception as exc:  # noqa: BLE001 - surface unexpected turn failures in the UI
             turn_failed = True
@@ -4886,6 +5593,12 @@ class TUISession:
             # A handoff must run even while a turn is active.
             self.dispatch_slash(text)
             return
+        # A prompt the user types and the provider cannot accept is refused before
+        # it can be queued behind the loading runtime (TUX-03 §2.3). A scheduled
+        # ``/loop`` prompt is not: it fails as a turn, without opening a picker
+        # every interval.
+        if source == "user" and self._blocked_by_credentials(text):
+            return
         # TUISession emits user_message before opening the agent turn, so the
         # event is not owned by a ConversationTurn; remember the accepted input
         # for /background.
@@ -4905,8 +5618,20 @@ class TUISession:
             if decision.policy.value == "reject":
                 self._notify_busy_rejected(text, decision.reason)
                 return
+            # Shown above the composer. A message joins the running turn at its
+            # next tool call, as in Claude Code, or starts the next turn if this
+            # one ends first; a turn (and a workflow run) can last for hours, so
+            # waiting for its end would leave the message unread all that time.
+            # A command or skill is routed locally and waits for the end.
             self._msg_queue.append(text)
-            self._notify_queued(text)
+            if self._runtime_loading():
+                from agenthicc.tui.theme import glyphs
+
+                # The queue row shows the message; say why it is waiting.
+                self._ctx.app_state.conversation.notify_transient(
+                    f"Queued until loading agent runtime finishes{glyphs().ellipsis}",
+                    duration=4.0,
+                )
             return
 
         if (
@@ -5273,8 +5998,10 @@ class TUISession:
             if handle is not None and handle.is_pause_requested():
                 await self._finalize_workflow_pause(handle)
             elif handle is not None and handle.lifecycle in {"resuming", "running", "pausing"}:
-                self._fail_workflow_run("cancelled", kind="user_cancelled")
-            ctx.app_state.conversation.close_turn()
+                self._fail_workflow_run(
+                    "cancelled", kind="user_cancelled", announce=not self._handed_off
+                )
+            ctx.app_state.conversation.close_turn(interrupted=not self._handed_off)
             self._input_session.set_mode(InputMode.IDLE)
         except Exception as exc:  # noqa: BLE001 - route unexpected workflow failures to the UI
             conv = ctx.app_state.conversation
@@ -5323,6 +6050,37 @@ class TUISession:
                 self._workflow_handle = None
             self.advance()
 
+    # ── diagnostics (TUX-08 §2.3) ─────────────────────────────────────────────
+
+    def _install_diagnostics_log(self) -> None:
+        """Send stray stderr and warnings to the session log, unless ``--debug``.
+
+        Called right after the first frame (which loads no diagnostics code),
+        before any post-frame task runs. The first stray write shows one
+        transient notice pointing at /logs.
+        """
+        if self._ctx.app_state.cli_flags.debug:
+            return
+        from agenthicc.tui.diagnostics import (
+            DIAGNOSTICS_NOTICE,
+            DiagnosticsLog,
+            diagnostics_log_path,
+            install_stderr_sink,
+        )
+
+        conversation = self._ctx.app_state.conversation
+        loop = asyncio.get_running_loop()
+
+        def first_write() -> None:
+            # A library may write from any thread; the notice is set on the loop.
+            loop.call_soon_threadsafe(conversation.notify, "info", DIAGNOSTICS_NOTICE)
+
+        sink = DiagnosticsLog(diagnostics_log_path(self._ctx.session_id), first_write)
+        install_stderr_sink(sink)
+        # A text stream with a real file descriptor, so a child given
+        # sys.stderr writes into the log too.
+        self._workspace.redirect_stderr(cast("TextIO", sink))
+
     # ── main loop ─────────────────────────────────────────────────────────────
 
     async def run(self) -> None:
@@ -5332,18 +6090,26 @@ class TUISession:
             CycleAgentCommand,
             InterruptAgentCommand,
             OpenAgentsHubCommand,
+            OpenPaletteCommand,
+            OpenShortcutsCommand,
             OpenSubagentsCommand,
+            OpenTranscriptCommand,
+            ScrollPaneCommand,
             SendMessageCommand,
         )
 
         ctx = self._ctx
 
         ctx.command_bus.register(SendMessageCommand, self.handle_send)
+        ctx.command_bus.register(OpenTranscriptCommand, self._open_transcript_command)
+        ctx.command_bus.register(ScrollPaneCommand, self._scroll_pane_command)
         ctx.command_bus.register(CycleAgentCommand, self._cycle_agent_command)
         ctx.command_bus.register(InterruptAgentCommand, self.handle_interrupt)
         ctx.command_bus.register(OpenAgentsHubCommand, self._open_agents_hub_command)
         ctx.command_bus.register(OpenSubagentsCommand, self._open_subagents_command)
         ctx.command_bus.register(BackgroundSubagentsCommand, self._background_subagents_command)
+        ctx.command_bus.register(OpenPaletteCommand, self._open_palette_command)
+        ctx.command_bus.register(OpenShortcutsCommand, self._open_shortcuts_command)
 
         startup = ctx.startup
         if startup is not None:
@@ -5363,6 +6129,8 @@ class TUISession:
         if startup is not None:
             startup.finish("first_frame")
             startup.record_first_frame_modules(len(sys.modules))
+        self._install_diagnostics_log()
+        self._start_terminal_feedback()
         self._wire_approval_overlay()
         # AGX-13: the user's key bindings, hot-reloaded while the session runs.
         # They load right after the first frame (whose hints use the defaults)
@@ -5382,6 +6150,7 @@ class TUISession:
         self._start_deferred_startup()
         self._tasks.start(self._watch_agent_definitions(), name="agent-definitions-watch")
         self._start_agent_runtime()
+        await self._show_welcome()
         if ctx.resumed:
             from agenthicc.runners.startup import ReadinessState
             from agenthicc.tui.runtime.session_log import (
@@ -5456,6 +6225,12 @@ class TUISession:
                     startup.finish("transcript_preview_render")
             if preview is not None and preview.notice:
                 ctx.app_state.conversation.notify_transient(preview.notice, duration=8.0)
+        # ``/rewind`` leaves the prompt it forked at for the new session's composer.
+        from agenthicc.tui.transcript.fork import take_session_draft
+
+        draft = take_session_draft(ctx.session_id)
+        if draft:
+            self._input_session.set_text(draft)
         proc_task = asyncio.create_task(ctx.processor.run())
         loop_manager = vars(self).get("_loop_manager")
         if loop_manager is not None:
@@ -5472,6 +6247,8 @@ class TUISession:
                 # wait so SIGWINCH redraws do not race a changing status bar.
                 pending = ctx.app_state.pending_approval()
                 ctx.app_state.conversation.tick(paused=pending is not None)
+                if self._presence is not None:
+                    self._presence.update()
                 if _optional_field(pending, "kind") == "questions":
                     deadline = _optional_field(pending, "deadline_at")
                     if isinstance(deadline, (int, float)):
@@ -5528,7 +6305,20 @@ class TUISession:
                 *owned,
                 return_exceptions=True,
             )
-            self._workspace.stop()
+            self._stop_terminal_feedback()
+            try:
+                self._workspace.stop()
+            finally:
+                # After the live region has given sys.stderr back.
+                from agenthicc.tui.diagnostics import uninstall_stderr_sink
+
+                uninstall_stderr_sink()
+            # The fullscreen layout could not show the hint; the normal screen can.
+            resume_hint = self._input_session.deferred_exit_hint
+            if resume_hint:
+                from agenthicc.tui.input.renderer import show_exit_hint
+
+                show_exit_hint(resume_hint)
             agents_service, self._agents_service = self._agents_service, None
             if agents_service is not None:
                 await agents_service.close()
@@ -5572,6 +6362,7 @@ async def _run_tui_session(
         *,
         session_id: str | None,
         first: bool = False,
+        reload_config: bool = False,
     ) -> SessionSwitch | None:
         return await _run_tui_session_in(
             directory,
@@ -5585,7 +6376,8 @@ async def _run_tui_session(
             workflow_name=workflow_name if first else None,
             agent_name=agent_name if first else None,
             owner_lease=owner_lease if first else None,
-            config=config,
+            # A new project directory has its own project configuration.
+            config=None if reload_config else config,
         )
 
     async def run_target(action: str, target: str) -> SessionSwitch | None:
@@ -5604,6 +6396,10 @@ async def _run_tui_session(
                 return
             origin, origin_cwd = returns.pop()
             switch = await run_once(origin_cwd, session_id=origin)
+        elif switch.action == "directory":
+            switch = await run_once(switch.target, session_id=None, reload_config=True)
+        elif switch.action == "fork":
+            switch = await run_once(switch.origin_cwd, session_id=switch.target)
         elif switch.action == "hub":
             result = await _agents_hub_after_background(
                 switch.target,
@@ -5769,19 +6565,12 @@ async def _run_tui_session_impl(
 
     Returns where to go when the session ends (:class:`SessionSwitch`).
     """
-    from agenthicc.tui.input.unified_session import UnifiedInputSession
-    from agenthicc.tui.welcome import (
-        fetch_changelog,
-        load_cached_changelog,
-        print_welcome,
-    )
+    from agenthicc.tui.input.unified_session import TerminalHooks, UnifiedInputSession
     from agenthicc.tui.workspace import Workspace
 
     cassette_base: Path | None = Path(record_cassette) if record_cassette else None
-    cached_changelog = load_cached_changelog()
 
     ctx = None
-    changelog_task: asyncio.Task[object] | None = None
     try:
         ctx = await _build_session_context(
             resume_id,
@@ -5795,15 +6584,7 @@ async def _run_tui_session_impl(
             owner_lease=owner_lease,
             config=config,
         )
-        # Welcome metadata is non-essential startup UI. It starts after the
-        # session coordinator exists and is never awaited before the first
-        # frame; the static panel uses the bounded last-known-good cache.
         assert ctx.startup is not None
-        changelog_task = ctx.startup.start_background(
-            "welcome",
-            lambda: fetch_changelog(),
-            degrade_on_error=True,
-        )
         ctx.startup.begin("tui_shell")
         # PRD-79: stamp CLIFlags onto AppState immediately after creation; frozen for session lifetime.
         if cli_flags is not None:
@@ -5841,6 +6622,13 @@ async def _run_tui_session_impl(
             cfg=ctx.cfg,
             history=[] if ctx.resumed else None,
             on_ready=_input_ready,
+            terminal_hooks=TerminalHooks(
+                # TUX-04 §2.4: the editor gets the screen while it runs.
+                suspend=workspace.suspend_for_external_process,
+                resume=workspace.resume_after_external_process,
+                repaint=workspace.repaint,
+                runtime_dir=_SESSIONS_DIR / str(ctx.session_id),
+            ),
         )
         session = TUISession(ctx, workspace, input_session)
         ctx.startup.finish("tui_shell")
@@ -5855,27 +6643,14 @@ async def _run_tui_session_impl(
         # tasks.  Run the same idempotent close boundary used by a live TUI so
         # partial startup cannot strand the session owner or its handles.
         try:
-            if changelog_task is not None and not changelog_task.done():
-                changelog_task.cancel()
-            if changelog_task is not None:
-                await asyncio.gather(changelog_task, return_exceptions=True)
             if ctx is not None:
                 await _close_tui_session_resources(ctx, None, None, None)
         except BaseException:  # noqa: BLE001 - preserve the startup failure
             pass
         raise
     try:
-        print_welcome(
-            ctx.console,
-            model=ctx.model_label,
-            cwd=os.getcwd(),
-            changelog=cached_changelog,
-        )
         await session.run()
     finally:
-        if not changelog_task.done():
-            changelog_task.cancel()
-        await asyncio.gather(changelog_task, return_exceptions=True)
         await _close_tui_session_resources(ctx, session, terminal_context_token, cassette_base)
     return session.switch
 

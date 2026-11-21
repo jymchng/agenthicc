@@ -7,7 +7,8 @@ built-in registry, and SlashCommandTrigger integration.
 from __future__ import annotations
 
 import pytest
-from unittest.mock import MagicMock
+
+from agenthicc.commands.command import CommandContext
 
 pytestmark = pytest.mark.unit
 
@@ -15,6 +16,23 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 # Command dataclass
 # ---------------------------------------------------------------------------
+
+
+def _context(**fields: object) -> "CommandContext":
+    """A real command context: the dispatcher copies every field of it (TUX-05)."""
+    from rich.console import Console
+
+    from agenthicc.commands import CommandContext
+    from agenthicc.config import AgenthiccConfig
+
+    return CommandContext(
+        text="",
+        args="",
+        model="m",
+        console=Console(record=True),
+        config=AgenthiccConfig(),
+        **fields,  # type: ignore[arg-type]
+    )
 
 
 def test_command_register_and_get():
@@ -48,7 +66,8 @@ def test_command_default_group():
     from agenthicc.commands import Command
 
     cmd = Command("/x", "X")
-    assert cmd.group == "Built-in"
+    # A command that names no group is an extension (TUX-05).
+    assert cmd.group == "Plugins"
 
 
 def test_command_default_source_id():
@@ -150,24 +169,24 @@ def test_registry_commands_for_group():
     from agenthicc.commands import UnifiedCommandRegistry, Command
 
     reg = UnifiedCommandRegistry()
-    reg.register(Command("/a", "A", group="Built-in"))
+    reg.register(Command("/a", "A", group="Session"))
     reg.register(Command("/b", "B", group="Skills"))
-    reg.register(Command("/c", "C", group="Built-in"))
-    builtins = reg.commands_for_group("Built-in")
+    reg.register(Command("/c", "C", group="Session"))
+    builtins = reg.commands_for_group("Session")
     assert len(builtins) == 2
-    assert all(c.group == "Built-in" for c in builtins)
+    assert all(c.group == "Session" for c in builtins)
 
 
 def test_registry_groups_order():
-    """groups() returns Built-in before Skills before Plugins before MCP."""
+    """groups() returns the built-in groups before Skills, Plugins and MCP."""
     from agenthicc.commands import UnifiedCommandRegistry, Command
 
     reg = UnifiedCommandRegistry()
     reg.register(Command("/a", "A", group="MCP"))
     reg.register(Command("/b", "B", group="Skills"))
-    reg.register(Command("/c", "C", group="Built-in"))
+    reg.register(Command("/c", "C", group="Session"))
     groups = reg.groups()
-    order = ["Built-in", "Skills", "MCP"]
+    order = ["Session", "Skills", "MCP"]
     # Only groups that are present should appear; order must respect the defined ordering
     present = [g for g in order if g in groups]
     assert groups[: len(present)] == present
@@ -407,8 +426,7 @@ def test_dispatcher_calls_handler():
     reg = UnifiedCommandRegistry()
     reg.register(Command("/ping", "Ping", handler=lambda ctx: called.append(ctx) or True))
     disp = CommandDispatcher(reg)
-    ctx = MagicMock()
-    ctx.renderer = None
+    ctx = _context()
     result = disp.dispatch("/ping", ctx)
     assert result is True
     assert len(called) == 1
@@ -423,9 +441,7 @@ def test_dispatcher_opens_menu_on_no_args():
     reg.register(Command("/cfg", "Config", menu_factory=lambda ctx: widget))
     disp = CommandDispatcher(reg)
     received = []
-    ctx = MagicMock()
-    ctx.set_pending_menu = received.append
-    ctx.args = ""
+    ctx = _context(set_pending_menu=received.append)
     disp.dispatch("/cfg", ctx)
     assert received == [widget]
 
@@ -452,8 +468,7 @@ def test_dispatcher_menu_factory_wins_with_args():
     reg = UnifiedCommandRegistry()
     reg.register(Command("/model", "Model", handler=_handler, menu_factory=_menu))
     disp = CommandDispatcher(reg)
-    ctx = MagicMock()
-    ctx.args = ""
+    ctx = _context()
     disp.dispatch("/model openai", ctx)
     # menu_factory received the args; handler was never called
     assert menu_args == ["openai"]
@@ -464,7 +479,7 @@ def test_dispatcher_returns_false_unknown():
     from agenthicc.commands import UnifiedCommandRegistry, CommandDispatcher
 
     disp = CommandDispatcher(UnifiedCommandRegistry())
-    assert disp.dispatch("/unknown", MagicMock()) is False
+    assert disp.dispatch("/unknown", _context()) is False
 
 
 def test_dispatcher_opens_menu():
@@ -475,9 +490,7 @@ def test_dispatcher_opens_menu():
     reg.register(Command("/cfg", "Config", menu_factory=lambda ctx: widget))
     disp = CommandDispatcher(reg)
     received = []
-    ctx = MagicMock()
-    ctx.set_pending_menu = received.append
-    ctx.args = ""
+    ctx = _context(set_pending_menu=received.append)
     disp.dispatch("/cfg", ctx)
     assert received == [widget]
 
@@ -486,4 +499,4 @@ def test_dispatcher_returns_false_for_unknown():
     from agenthicc.commands import UnifiedCommandRegistry, CommandDispatcher
 
     disp = CommandDispatcher(UnifiedCommandRegistry())
-    assert disp.dispatch("/unknown", MagicMock()) is False
+    assert disp.dispatch("/unknown", _context()) is False

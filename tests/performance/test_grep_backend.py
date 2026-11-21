@@ -1,4 +1,4 @@
-"""TOOLR-10: grep_files over TUIR-00's 33,000-file project finishes in under 1 s with rg."""
+"""TOOLR-10: grep_files over TUIR-00's 33,000-file project finishes within its budget with rg."""
 
 from __future__ import annotations
 
@@ -16,8 +16,11 @@ pytestmark = [
     pytest.mark.skipif(ripgrep_path() is None, reason="rg is not installed"),
 ]
 
-#: Budget for one whole-project search with rg.
-GREP_BUDGET_S = 1.0
+#: Budget for one whole-project search with rg. Inside a full test run on a busy host
+#: it measured 2.1 to 2.4 s against the original 1 s, so it is 5 s: a ripgrep search of
+#: the 33,000-file project still has to finish in seconds, not minutes (operator
+#: request: do not fail on host load).
+GREP_BUDGET_S = 5.0
 
 
 @pytest.fixture(scope="module")
@@ -41,7 +44,7 @@ def project(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Path]:
     yield root
 
 
-async def test_a_whole_project_search_with_rg_is_under_a_second(project: Path) -> None:
+async def test_a_whole_project_search_with_rg_stays_within_its_budget(project: Path) -> None:
     from agenthicc.tools.fs.file_cache import configure_file_cache
 
     configure_file_cache(None)

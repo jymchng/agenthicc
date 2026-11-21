@@ -43,6 +43,20 @@ for _git_variable in (
     os.environ.pop(_git_variable, None)
 
 
+# ── terminal environment: the suite always runs on a capable terminal ──────
+
+# Rich reads TERM when a Console is built: ``dumb`` (and an unset TERM in some
+# images) marks the terminal as one that must receive no cursor controls, so
+# ``LiveRegion.interactive`` is False and a frame writes nothing at all. Tests
+# build consoles with ``force_terminal=True`` and then assert on the frames they
+# receive, so a hook, an IDE, a container or a CI image that exports TERM=dumb
+# would fail dozens of them with empty output rather than with a bug. The TUI
+# tests model a capable terminal; nothing here exercises the dumb one (that path
+# takes an explicit ``env=`` mapping, as in ``test_theme.py``).
+if os.environ.get("TERM", "").strip().lower() in {"", "dumb", "unknown"}:
+    os.environ["TERM"] = "xterm-256color"
+
+
 # ── coverage: never combine an empty data file ─────────────────────────────────
 
 
@@ -247,6 +261,62 @@ def _trust_test_extensions(
         yield trust
 
 
+def _clear_rich_style_caches() -> None:
+    """Drop the ``Style`` objects Rich shares between consoles."""
+    from rich.style import Style
+
+    Style.parse.cache_clear()
+    Style.normalize.cache_clear()
+    Style._add.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _fresh_rich_style_cache() -> Iterator[None]:
+    """Keep one test's terminal colour depth out of the next test's output.
+
+    Rich caches a style's ANSI codes on the ``Style`` object, whichever colour
+    system first rendered it, and ``Style.parse`` and ``Style.__add__`` hand out
+    shared instances. A test that renders a hex palette token to a 16-colour
+    console would otherwise make a later truecolor console print 16-colour codes
+    for the same token. A process has one terminal in production, so only tests
+    need this.
+    """
+    _clear_rich_style_caches()
+    yield
+    _clear_rich_style_caches()
+
+
+@pytest.fixture(autouse=True)
+def _restore_active_theme() -> Iterator[None]:
+    """Give every test the theme it started with.
+
+    ``use_theme`` swaps a process-wide theme. A test that starts a real TUI
+    session installs the one resolved from its (non-terminal) environment, and
+    without this the next test would render in that theme.
+    """
+    from agenthicc.tui.theme import current_theme, use_theme
+
+    before = current_theme()
+    try:
+        yield
+    finally:
+        if current_theme() is not before:
+            use_theme(before)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_user_state(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Keep ``~/.agenthicc/state.json`` (TUX-03) out of the developer's home.
+
+    A test that starts a session reads and rewrites it (first run, upgrade,
+    tip rotation), so every test gets a file of its own.
+    """
+    path = tmp_path_factory.mktemp("user-state") / "state.json"
+    monkeypatch.setattr("agenthicc.user_state.state_path", lambda: path)
+
+
 @pytest.fixture(scope="session")
 def _signed_out_account_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """A token-store directory whose cached account tier is a fresh ``signed_out``."""
@@ -270,6 +340,10 @@ def _isolate_keybindings(
     # The agents hub's remembered sort, grouping and seen marks (AGX-06).
     monkeypatch.setenv(
         "AGENTHICC_AGENTS_HUB_STATE", str(tmp_path_factory.mktemp("hub") / "agents-hub.json")
+    )
+    # How often each command ran, which ranks the pickers (TUX-05).
+    monkeypatch.setenv(
+        "AGENTHICC_COMMAND_USAGE", str(tmp_path_factory.mktemp("usage") / "command-usage.json")
     )
 
 

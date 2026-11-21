@@ -1,0 +1,8 @@
+── compact ──
+  → Comparing the recovery flow
+
+── normal ──
+  → Comparing the recovery flow
+
+── verbose ──
+  → Comparing the recovery flow

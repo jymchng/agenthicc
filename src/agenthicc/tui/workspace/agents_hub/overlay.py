@@ -28,6 +28,7 @@ class AgentsHubOverlay(Overlay):
     """An overlay that shows and drives an :class:`AgentsHub`."""
 
     name = "agents"
+    owns_bottom_rows = True
 
     def __init__(
         self,

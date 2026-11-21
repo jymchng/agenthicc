@@ -112,7 +112,7 @@ async def test_answer_before_deadline_wins_and_is_returned_once() -> None:
 
 
 @pytest.mark.asyncio
-async def test_question_overlay_renders_remaining_deadline_without_transcript_content() -> None:
+async def test_question_overlay_states_the_deadline_without_a_countdown() -> None:
     app = AppState.create()
     service = ApprovalService(app, question_timeout_s=0.2)
     request = _request("countdown", "countdown-fingerprint")
@@ -129,7 +129,9 @@ async def test_question_overlay_renders_remaining_deadline_without_transcript_co
     console.print(overlay.render())
 
     rendered = console.export_text()
-    assert "remaining" in rendered
+    # TUX-07: a configured deadline is one muted line, not a ticking countdown.
+    assert "Answer within 1 s." in rendered
+    assert "remaining" not in rendered
     assert "Choose" in rendered
     service.respond_for_request("countdown", False, outcome="cancelled")
     await task
@@ -204,8 +206,8 @@ async def test_make_questions_tool_exposes_timeout_without_fabricating_answers()
 def test_question_timeout_configuration_defaults_and_loads_from_toml(tmp_path) -> None:
     assert ToolSettings().question_timeout_s == 300.0
     assert ApprovalService(AppState.create())._question_timeout_s == 300.0
-    # AGI-02: a background question waits for the operator unless
-    # [background] question_timeout_s sets a deadline.
+    # AGI-02: the service itself waits without a deadline unless the worker
+    # passes [background] question_timeout_s (300 s by default).
     assert (
         BackgroundApprovalService(
             BackgroundStore(tmp_path / "background"), "session"

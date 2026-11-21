@@ -6,14 +6,15 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from rich.console import Console
 
 from agenthicc.runners.session_conversation import SessionConversation
 from agenthicc.runners.workflow_checkpoint_store import WorkflowCheckpointStore
 from agenthicc.runners.workflow_handle import WorkflowRunHandle
 from agenthicc.runners.workflow_recovery import WorkflowRecoveryCoordinator
 from agenthicc.tui.runtime import RuntimeMode
-from agenthicc.tui.workspace.components import FooterComponent
+from rich.text import Text
+
+from agenthicc.tui.workspace.components import StatusLine
 from agenthicc.workflows.plugin import PhaseSpec, WorkflowContext, WorkflowPlugin
 
 from tests.unit.test_tui_session_coverage import _make_session
@@ -96,9 +97,9 @@ async def test_resume_selects_footer_and_next_turn_until_explicit_reset(
         assert session._workflow_override == ResumedWorkflow.name
         assert ctx.app_state.conversation.workflow_override() == ResumedWorkflow.name
 
-        footer = Console(record=True, width=120)
-        footer.print(FooterComponent(ctx.app_state).render())
-        assert f"⬡ {ResumedWorkflow.name}" in footer.export_text()
+        status = Text.from_markup(StatusLine(ctx.app_state).markup(200)).plain
+
+        assert f"workflow {ResumedWorkflow.name}" in status
 
         resume_task = session._agent_task
         assert resume_task is not None

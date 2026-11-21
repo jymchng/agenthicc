@@ -96,11 +96,11 @@ class _SpawnBudgetInput(TypedDict):
     """Optional per-pool limits accepted by ``spawn_subagents`` (SUBAGENT-06).
 
     Each field is ``Optional`` so the provider schema marks it non-required;
-    any subset may be given. A declaration can only lower the operator's
-    limits, never raise them.
+    either may be given. A declaration can only lower the operator's limits,
+    never raise them. There is no token limit: a worker uses as many tokens
+    as its task needs.
     """
 
-    tokens: int | None
     cost_usd: float | None
     wall_clock_s: float | None
 
@@ -264,8 +264,8 @@ def make_spawn_subagents_tool(
                        (default 3600, or one hour).
             model: Optional model override; available only when the operator enables it.
             effort: Optional reasoning-effort override; available only when enabled.
-            budget: Optional limits for the whole pool: tokens (input plus output),
-                    cost_usd, wall_clock_s — any subset. A limit can only lower
+            budget: Optional limits for the whole pool: cost_usd, wall_clock_s —
+                    either or both. Workers have no token limit. A limit can only lower
                     the configured ones; a larger request is clamped and reported.
                     When a limit is crossed the pool's stop policy drains or
                     aborts it, and the result says which limit was crossed.
@@ -520,12 +520,7 @@ def make_spawn_subagents_tool(
         ceiling = _settings.max_budget
         effective_budget = resolve_budget(
             declared_budget,
-            ceiling=PoolBudget(
-                tokens=ceiling.tokens,
-                cost_usd=ceiling.cost_usd,
-                wall_clock_s=ceiling.wall_clock_s,
-            ),
-            operator_tokens=_settings.max_tokens,
+            ceiling=PoolBudget(cost_usd=ceiling.cost_usd, wall_clock_s=ceiling.wall_clock_s),
             operator_wall_clock_s=_settings.max_total_time_s,
         )
 
@@ -718,7 +713,6 @@ def make_spawn_subagents_tool(
             max_workers=_settings.max_workers,
             max_tool_calls=_settings.max_tool_calls,
             max_iterations=_settings.max_iterations,
-            max_tokens=int(effective_budget.limits.tokens or _settings.max_tokens),
             max_total_time_s=float(
                 effective_budget.limits.wall_clock_s or _settings.max_total_time_s
             ),

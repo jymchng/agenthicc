@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Sequence
 import json
 import os
 from typing import Any
@@ -14,7 +15,7 @@ from agenthicc.tools.approval import ApprovalRequest, ApprovalService
 from agenthicc.tui.cbreak_reader import Key
 from agenthicc.tui.conversation_store import AppState
 from agenthicc.tui.workspace import Workspace
-from agenthicc.tui.workspace.live_region import lines_text
+from agenthicc.tui.workspace.live_region import Line, lines_text
 from agenthicc.tui.workspace.overlays.approval import ApprovalOverlay
 from agenthicc.tui.workspace.overlays.plan_approval import PlanApprovalOverlay
 from agenthicc.tui.workspace.overlays.questions import QuestionsOverlay
@@ -75,9 +76,9 @@ def _render_text(console: Console, renderable: object) -> str:
 @pytest.mark.parametrize(
     ("kind", "header"),
     [
-        ("tool", "Tool Approval Required"),
-        ("plan_review", "Plan Review"),
-        ("questions", "Questions"),
+        ("tool", "Use tool"),
+        ("plan_review", "Approve the plan"),
+        ("questions", "The agent asks"),
     ],
 )
 async def test_resize_storm_repaints_one_current_waiting_modal(
@@ -105,14 +106,22 @@ async def test_resize_storm_repaints_one_current_waiting_modal(
             workspace.overlays.handle_key(Key.DOWN, "")
             await asyncio.sleep(0)
 
+        # The workspace reads the git branch on a worker thread when it starts, and the
+        # result repaints the block. That is a real frame but not part of this resize, and
+        # on a busy host it could land inside the window below: let it finish and draw first.
+        git_task = workspace._git_task
+        if git_task is not None:
+            await git_task
+        await asyncio.sleep(0.1)
+
         live = workspace._live
         assert live is not None
         updates: list[object] = []
         original_update = live.update
 
-        def _record_update(renderable: object, *, refresh: bool = False) -> None:
+        def _record_update(renderable: Sequence[Line]) -> None:
             updates.append(renderable)
-            original_update(renderable, refresh=refresh)
+            original_update(renderable)
 
         live.update = _record_update  # type: ignore[method-assign]
         updates.clear()
@@ -127,7 +136,7 @@ async def test_resize_storm_repaints_one_current_waiting_modal(
         assert rendered.count(header) == 1
         assert rendered.count(header) != 2
         if kind == "questions":
-            assert "▶ Plain text" in rendered
+            assert "▌ 2  Plain text" in "\n".join(lines_text(updates[0]))  # type: ignore[arg-type]
             question_overlay = workspace.overlays.widget
             assert isinstance(question_overlay, QuestionsOverlay)
             assert question_overlay._current == 1
@@ -145,7 +154,7 @@ async def test_long_question_can_be_scrolled_and_answered_through_workspace(
 ) -> None:
     """The real workspace exposes the full question without changing its answer."""
     monkeypatch.setattr(
-        "agenthicc.tui.workspace.overlays.questions.shutil.get_terminal_size",
+        "agenthicc.tui.workspace.dialog.shutil.get_terminal_size",
         lambda _fallback=(80, 24): os.terminal_size((40, 24)),
     )
     app_state = AppState.create()
@@ -179,7 +188,7 @@ async def test_long_question_can_be_scrolled_and_answered_through_workspace(
             workspace.overlays.handle_key(Key.CHAR, "]")
         rendered = "\n".join(lines_text(workspace._build_lines()))
         assert "requirement-79" in rendered
-        assert "[/] scroll" in rendered
+        assert "more" in rendered  # the dialog marks the rows scrolled away
         assert not request_task.done()
 
         workspace.overlays.handle_key(Key.ENTER, "")

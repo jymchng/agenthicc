@@ -23,6 +23,7 @@ from agenthicc.subagents.transcripts import (
 )
 from agenthicc.tools.approval import ApprovalRequest, ApprovalRequester
 from agenthicc.tui.cbreak_reader import Key
+from agenthicc.tui.theme import BUILTIN_THEMES, current_theme, use_theme
 from agenthicc.tui.conversation_store import AppState
 from agenthicc.tui.workspace.subagent_panel import panel_lines, summary_line, tokens
 from agenthicc.tui.workspace.overlays.subagents import (
@@ -210,9 +211,15 @@ def test_the_panel_lists_each_workers_status_activity_time_and_tokens() -> None:
     ]
     assert rows[0].startswith("  Subagents · 1 needs input · 1 running · 1/3 done")
     assert rows[0].rstrip().endswith("Ctrl+O focus")
-    assert summary_line(state, 100) == (
-        "  [bold magenta]Subagents[/bold magenta] · 1 needs input · 1 running · 1/3 done"
-    )
+    before = current_theme()
+    use_theme(BUILTIN_THEMES["dark"])
+    try:
+        # The panel's name is in the theme's agent colour (dark: #bb9af7).
+        assert summary_line(state, 100) == (
+            "  [bold][#bb9af7]Subagents[/][/bold] · 1 needs input · 1 running · 1/3 done"
+        )
+    finally:
+        use_theme(before)
     assert "● Explorer 1" in rows[1] and "read src/store.py" in rows[1]
     assert "0:42" in rows[1] and "3.1k" in rows[1]
     assert "◆ Explorer 2" in rows[2] and "Needs approval: bash pytest" in rows[2]
@@ -465,8 +472,9 @@ def test_a_workers_approval_names_it_and_o_opens_its_transcript() -> None:
         open_requester=opened.append,  # type: ignore[arg-type]
     )
     text = _render(overlay)
-    assert "tester #1 (tester) wants to run bash" in text
-    assert "o open tester #1's transcript" in text
+    # TUX-07: the asking worker is the dialog's badge, with its transcript key.
+    assert "tester #1 · o open transcript" in text
+    assert "Use bash" in text
     overlay.handle_key(Key.CHAR, "o")
     assert opened == [requester] and responses == []
     overlay.handle_key(Key.ESC, "")
@@ -631,19 +639,17 @@ def test_the_in_session_hub_lists_the_turns_subagents() -> None:
 
 
 def test_a_declared_budget_is_shown_as_usage_against_it() -> None:
-    """SUBAGENT-06 criterion 9: tokens and cost against declared limits."""
+    """SUBAGENT-06 criterion 9: cost against a declared limit; tokens are unlimited."""
     workers = (
         _worker("task-1", "running", tokens=1_200),
         _worker("task-2", "done", tokens=800),
     )
-    budgeted = SubagentPoolState(
-        "pool", 2, workers, budget_tokens=10_000, budget_cost_usd=0.5, cost_usd=0.12
-    )
+    budgeted = SubagentPoolState("pool", 2, workers, budget_cost_usd=0.5, cost_usd=0.12)
 
     summary = _plain(summary_line(budgeted, 120))
 
     assert budgeted.tokens == 2_000
-    assert "2.0k/10.0k tok" in summary
+    assert " tok" not in summary  # subagents have no token limit to show against
     assert "$0.12/$0.50" in summary
 
 
@@ -661,9 +667,7 @@ def test_budget_usage_is_the_first_thing_dropped_at_narrow_widths() -> None:
         _worker("task-1", "failed"),
         _worker("task-2", "running", tokens=1_200),
     )
-    budgeted = SubagentPoolState(
-        "pool", 2, workers, budget_tokens=10_000, budget_cost_usd=0.5, cost_usd=0.12
-    )
+    budgeted = SubagentPoolState("pool", 2, workers, budget_cost_usd=0.5, cost_usd=0.12)
 
     narrow = _plain(summary_line(budgeted, 34))
 

@@ -11,6 +11,9 @@ requires-python = ">=3.11"
 dependencies = [
     # PRD-169 requires the canonical transaction-safe tool exchange API.
     "lauren-ai[anthropic,openai,ollama,litellm]>=1.6.1,<2",
+    # lauren-ai 1.6.x passes ``temperature`` to ``AsyncMessages.stream()``, which
+    # anthropic 1.x removed; lauren-ai itself only requires ``anthropic>=0.35``.
+    "anthropic>=0.35,<1",
     "anyio>=4.0",
     "typing-extensions>=4.11",
     "rich>=13.0",
@@ -75,6 +78,8 @@ where = ["src"]
     "llms.txt",
     "llms-full.txt",
     "README.md",
+    # ``/release-notes`` reads this file; nothing is fetched (TUX-03).
+    "CHANGELOG.md",
 ]
 "share/agenthicc/docs/guides" = ["docs/guides/*.md"]
 "share/agenthicc/docs/reference" = ["docs/reference/*.md", "docs/reference/*.json"]

@@ -1,0 +1,10 @@
+── compact ──
+ ! MCP server github is unavailable.   /mcp
+
+
+── normal ──
+ ! MCP server github is unavailable.   /mcp
+
+
+── verbose ──
+ ! MCP server github is unavailable.   /mcp

@@ -9,6 +9,7 @@ import time
 import uuid
 from typing import TYPE_CHECKING
 
+from agenthicc.runners.failure_kinds import reported_failure
 from agenthicc.workflows.base_runner import BaseWorkflowRunner
 
 if TYPE_CHECKING:
@@ -439,9 +440,13 @@ class WorkflowRunner(BaseWorkflowRunner):
             log.error("WorkflowRunner error: %s", exc, exc_info=True)
             wf_run = dataclasses.replace(wf_run, status="failed", current_phase=None)
             self._cfg.app_state.workflow_run.set(wf_run)
-            self._cfg.conv_store.append_event(
-                "error", {"message": f"Workflow '{self._plugin.name}' failed: {exc}"}
-            )
+            # A failed agent turn has already published its own redacted,
+            # classified error (TUX-08); repeating it here would persist the
+            # provider's exception text.
+            if reported_failure(exc) is None:
+                self._cfg.conv_store.append_event(
+                    "error", {"message": f"Workflow '{self._plugin.name}' failed: {exc}"}
+                )
             # The session owner is the single failure boundary. Re-raising
             # preserves the original exception category and lets it checkpoint
             # the already-attached typed context instead of treating this as a
