@@ -10,7 +10,7 @@ import os
 import sys
 import threading
 import uuid
-from collections.abc import Awaitable, Callable, Iterable, Iterator, MutableMapping
+from collections.abc import Awaitable, Callable, Iterable, Iterator, MutableMapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC
 from functools import partial
@@ -112,13 +112,17 @@ if TYPE_CHECKING:
         OpenAgentsHubCommand,
         OpenPaletteCommand,
         OpenSubagentsCommand,
+        OpenTranscriptCommand,
+        ScrollPaneCommand,
         SendMessageCommand,
     )
     from agenthicc.runners.model_switch import ModelChoice
+    from agenthicc.tui.transcript.controller import TranscriptController, ViewKind
     from agenthicc.tui.workspace import Workspace
     from agenthicc.tui.workspace.overlays.palette import PaletteItem
     from agenthicc.tui.workspace.agents_hub import HubResult
     from agenthicc.tui.workspace.dialog import DialogSettings
+    from rich.console import RenderableType
     from agenthicc.tui.workspace.overlay import Overlay
     from agenthicc.tui.workspace.overlays.questions import AnswerContext
     from agenthicc.tui.workspace.overlays.subagents import TranscriptTarget
@@ -1677,9 +1681,11 @@ class SessionSwitch:
     *origin* session reopens. ``hub`` follows ``/background``: the agents hub
     opens with the new background agent selected. ``directory`` (TUX-03) starts
     a new session in the directory *target*; the origin does not reopen.
+    ``fork`` (TUX-09's ``/rewind``) continues in the session forked from the
+    origin, in the same directory; the origin is kept but does not reopen.
     """
 
-    action: Literal["attach", "open_saved", "hub", "directory"]
+    action: Literal["attach", "open_saved", "hub", "directory", "fork"]
     target: str
     origin: str
     origin_cwd: str
@@ -1699,6 +1705,8 @@ class TUISession:
     _credential_issue: PreflightIssue | None = None
     #: This session's place in the tip rotation (TUX-03).
     _tip_index: int = 0
+    #: Opens the transcript view; built on first use (TUX-09).
+    _transcript: TranscriptController | None = None
 
     @property
     def _workflow_handle(self) -> WorkflowRunHandle | None:
@@ -2587,6 +2595,7 @@ class TUISession:
             composer=answers.composer,
             workspace=workspace_access.scope if workspace_access is not None else None,
             redraw=answers.redraw,
+            open_details=self.open_details,
         )
 
     def _answer_context(self) -> AnswerContext:
@@ -3548,6 +3557,89 @@ class TUISession:
         self._pending_model = None
         self._apply_model(choice)
 
+    # ── transcript view, fullscreen and /rewind (TUX-09) ─────────────────────
+
+    def _transcript_controller(self) -> TranscriptController:
+        """The one controller that opens the transcript view (built on first use)."""
+        if self._transcript is not None:
+            return self._transcript
+        from agenthicc.tui.diagnostics import diagnostics_log_path
+        from agenthicc.tui.terminal.backend import get_backend
+        from agenthicc.tui.transcript.controller import TranscriptController
+
+        ctx = self._ctx
+        workspace = self._workspace
+        controller = TranscriptController(
+            session_id=ctx.session_id,
+            console=ctx.console,
+            state=ctx.app_state,
+            handoff=self._input_session.run_terminal_handoff,
+            spawn=lambda coroutine, name: self._tasks.start(coroutine, name=name),
+            suspend=workspace.suspend_for_external_process,
+            resume=workspace.resume_after_external_process,
+            hold=workspace.scroll.hold,
+            release=workspace.scroll.release,
+            notify=ctx.app_state.conversation.notify,
+            rewind=self._rewind_to,
+            busy=lambda: self._agent_task is not None and not self._agent_task.done(),
+            backend=get_backend,
+            log_path=lambda: diagnostics_log_path(ctx.session_id),
+        )
+        self._transcript = controller
+        return controller
+
+    def open_transcript(self, kind: Literal["history", "logs", "rewind"]) -> None:
+        """``/history``, ``/logs`` and ``/rewind``: the transcript view."""
+        view_kind: ViewKind = kind
+        self._transcript_controller().open(view_kind)
+
+    def open_details(self, title: str, renderables: Sequence[RenderableType]) -> None:
+        """A dialog's ``Ctrl+T``: its full arguments or diff, in the transcript view."""
+        self._transcript_controller().open_document(title, renderables)
+
+    async def _open_transcript_command(self, _command: OpenTranscriptCommand) -> None:
+        """Ctrl+T: the view, with the last tool call selected and expanded."""
+        self._transcript_controller().open("tool")
+
+    async def _scroll_pane_command(self, command: ScrollPaneCommand) -> None:
+        self._workspace.scroll_pane(command.action)
+
+    def toggle_fullscreen(self) -> bool:
+        """``/fullscreen``: switch the layout for this session; return whether it is on."""
+        ui = self._ctx.cfg.ui
+        if self._workspace.fullscreen:
+            self._workspace.leave_fullscreen()
+        elif ui.screen_reader:
+            self._ctx.app_state.conversation.notify(
+                "warning", "A screen reader follows the scrollback better: staying inline."
+            )
+        else:
+            self._workspace.enter_fullscreen()
+        self._input_session.sync_reporting()
+        return self._workspace.fullscreen
+
+    def _rewind_to(self, prompt: str, turn: int) -> None:
+        """Fork the conversation before user turn *turn* and continue in the fork."""
+        self._tasks.start(self._fork_and_switch(turn), name="rewind")
+
+    async def _fork_and_switch(self, turn: int) -> None:
+        from agenthicc.tui.transcript.fork import fork_session
+
+        conversation = self._ctx.app_state.conversation
+        try:
+            fork = await asyncio.to_thread(fork_session, self._ctx.session_id, turn)
+        except (OSError, ValueError) as exc:
+            conversation.notify("error", f"Could not rewind: {exc}")
+            return
+        if not fork.memory:
+            conversation.notify_transient(
+                "The model does not remember the earlier turns of this fork", duration=6.0
+            )
+        self._switch = SessionSwitch(
+            "fork", fork.session_id, origin=self._ctx.session_id, origin_cwd=os.getcwd()
+        )
+        self._input_session.request_exit()
+
     # ── subagents (AGX-08) ───────────────────────────────────────────────────
 
     async def _open_subagents_command(self, _command: OpenSubagentsCommand) -> None:
@@ -3784,6 +3876,8 @@ class TUISession:
             save_model=self.save_model,
             app_state=ctx.app_state,
             transient_notify=ctx.app_state.conversation.notify,
+            open_transcript=self.open_transcript,
+            toggle_fullscreen=self.toggle_fullscreen,
         )
         handled = bool(self._cmd_dispatcher.dispatch(text, context))
         self._refresh_suggestion()  # /init write may have created AGENTS.md
@@ -5928,12 +6022,16 @@ class TUISession:
             OpenAgentsHubCommand,
             OpenPaletteCommand,
             OpenSubagentsCommand,
+            OpenTranscriptCommand,
+            ScrollPaneCommand,
             SendMessageCommand,
         )
 
         ctx = self._ctx
 
         ctx.command_bus.register(SendMessageCommand, self.handle_send)
+        ctx.command_bus.register(OpenTranscriptCommand, self._open_transcript_command)
+        ctx.command_bus.register(ScrollPaneCommand, self._scroll_pane_command)
         ctx.command_bus.register(CycleAgentCommand, self._cycle_agent_command)
         ctx.command_bus.register(InterruptAgentCommand, self.handle_interrupt)
         ctx.command_bus.register(OpenAgentsHubCommand, self._open_agents_hub_command)
@@ -6054,6 +6152,12 @@ class TUISession:
                     startup.finish("transcript_preview_render")
             if preview is not None and preview.notice:
                 ctx.app_state.conversation.notify_transient(preview.notice, duration=8.0)
+        # ``/rewind`` leaves the prompt it forked at for the new session's composer.
+        from agenthicc.tui.transcript.fork import take_session_draft
+
+        draft = take_session_draft(ctx.session_id)
+        if draft:
+            self._input_session.set_text(draft)
         proc_task = asyncio.create_task(ctx.processor.run())
         loop_manager = vars(self).get("_loop_manager")
         if loop_manager is not None:
@@ -6133,6 +6237,12 @@ class TUISession:
                 from agenthicc.tui.diagnostics import uninstall_stderr_sink
 
                 uninstall_stderr_sink()
+            # The fullscreen layout could not show the hint; the normal screen can.
+            resume_hint = self._input_session.deferred_exit_hint
+            if resume_hint:
+                from agenthicc.tui.input.renderer import show_exit_hint
+
+                show_exit_hint(resume_hint)
             agents_service, self._agents_service = self._agents_service, None
             if agents_service is not None:
                 await agents_service.close()
@@ -6212,6 +6322,8 @@ async def _run_tui_session(
             switch = await run_once(origin_cwd, session_id=origin)
         elif switch.action == "directory":
             switch = await run_once(switch.target, session_id=None, reload_config=True)
+        elif switch.action == "fork":
+            switch = await run_once(switch.origin_cwd, session_id=switch.target)
         elif switch.action == "hub":
             result = await _agents_hub_after_background(
                 switch.target,

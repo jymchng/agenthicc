@@ -25,6 +25,13 @@ CONDITION_PHRASES: Mapping[str, str] = {
     "empty": "when the prompt is empty",
     "queued": "when messages are queued",
     "suggestion": "when the empty prompt suggests a command",
+    "fullscreen": "in the fullscreen layout",
+    "scrolled": "when the pane is scrolled up",
+    # transcript view
+    "turns": "when the transcript has user turns",
+    "expandable": "on a tool call or an edit",
+    "rewind": "when rewinding",
+    "hits": "when a search has hits",
     # decision dialogs
     "approval": "on an approval request",
     "details": "when there are full details to show",

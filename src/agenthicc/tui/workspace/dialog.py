@@ -18,8 +18,8 @@ The width is ``clamp(cols - 4, 60, 120)`` (never wider than the terminal),
 centred when the terminal is wider than 124 columns; the height is at most
 the overlay viewport the workspace publishes, or ``rows - 6`` before one is.
 
-``Ctrl+T`` swaps the body for the full arguments or diff, scrollable inside
-the dialog. TUX-09 will move that view to its transcript view.
+``Ctrl+T`` opens the full arguments or diff in the transcript view (TUX-09),
+through ``DialogSettings.open_details``; Esc there returns to the dialog.
 
 With ``screen_reader`` the dialog draws no box at all, and
 :func:`announcement` gives the sentence the announcer prints when it opens.
@@ -42,7 +42,7 @@ from rich.console import Console, Group
 from rich.text import Text
 
 from agenthicc.tui.cbreak_reader import Key, key_name
-from agenthicc.tui.theme import glyphs, palette, style
+from agenthicc.tui.theme import glyphs, key_arrows, palette, style
 
 if TYPE_CHECKING:
     from rich.console import RenderableType
@@ -136,6 +136,10 @@ class DialogSettings:
     #: Repaints the dialog after an in-dialog composer dispatched a key, which
     #: it does in a task after the overlay host's own repaint.
     redraw: Callable[[], None] = field(default=lambda: None)
+    #: Shows an approval's full arguments or diff in the transcript view
+    #: (``Ctrl+T``, TUX-09): ``(title, renderables)``. ``None`` when the host has
+    #: no such view; the dialog then does not offer the key.
+    open_details: Callable[[str, Sequence[RenderableType]], None] | None = None
 
 
 #: The settings of a dialog nothing configured (tests, plugins): default keys,
@@ -182,12 +186,6 @@ def _keymap(settings: DialogSettings) -> Keymap:
     return _default_keymap
 
 
-def _ascii_arrows(text: str) -> str:
-    """Keymap key names use arrows; draw them with the active glyph set."""
-    g = glyphs()
-    return text.replace("↑", g.up).replace("↓", g.down).replace("←", g.left).replace("→", g.right)
-
-
 @dataclass
 class _BodyCache:
     key: object = None
@@ -220,7 +218,6 @@ class Dialog:
         self.options: list[DialogOption] = []
         self.selected = 0
         self.scroll = 0
-        self.showing_details = False
         #: Flags for the keymap: approval, note, details, requester, questions.
         self.conditions: frozenset[str] = frozenset()
         #: Extra legend entries before the keymap's (``"enter send"``).
@@ -230,7 +227,6 @@ class Dialog:
         self._body_factory: Callable[[], list[RenderableType]] = list
         self._details_factory: Callable[[], list[RenderableType]] | None = None
         self._body = _BodyCache()
-        self._details = _BodyCache()
         self._viewport: tuple[int, int] | None = None
         self._dispatcher = Dispatcher(_keymap(settings))
         #: Body rows shown by the last render; a page scroll moves this far.
@@ -249,11 +245,10 @@ class Dialog:
     def set_details(self, factory: Callable[[], list[RenderableType]] | None) -> None:
         """The full arguments or diff that ``Ctrl+T`` shows; ``None`` disables it."""
         self._details_factory = factory
-        self._details = _BodyCache()
 
     @property
     def has_details(self) -> bool:
-        return self._details_factory is not None
+        return self._details_factory is not None and self.settings.open_details is not None
 
     # ── geometry ─────────────────────────────────────────────────────────────
 
@@ -274,20 +269,6 @@ class Dialog:
         conditions = self.conditions | ({"details"} if self.has_details else set())
         action = self._dispatcher.dispatch("dialog", key_name(key, ch), frozenset(conditions))
         name = action.name if action is not None else ""
-        if self.showing_details:
-            match name:
-                case "dialog.up":
-                    self.scroll = max(0, self.scroll - 1)
-                case "dialog.down":
-                    self.scroll += 1
-                case "dialog.scroll_up":
-                    self.scroll = max(0, self.scroll - self._step(ch))
-                case "dialog.scroll_down":
-                    self.scroll += self._step(ch)
-                case "dialog.details" | "dialog.cancel":
-                    self.showing_details = False
-                    self.scroll = 0
-            return _NOTHING
         count = len(self.options)
         match name:
             case "dialog.up" if count:
@@ -308,9 +289,8 @@ class Dialog:
                 return DialogInput(DialogKey.CANCEL)
             case "dialog.note" if count:
                 return DialogInput(DialogKey.NOTE, self.selected)
-            case "dialog.details":
-                self.showing_details = True
-                self.scroll = 0
+            case "dialog.details" if self.has_details:
+                self._show_details()
             case "dialog.scroll_up":
                 self.scroll = max(0, self.scroll - self._step(ch))
             case "dialog.scroll_down":
@@ -324,6 +304,12 @@ class Dialog:
             case "dialog.allow_once" | "dialog.allow_turn" | "dialog.allow_session" | "dialog.deny":
                 return DialogInput(DialogKey.ALIAS, action=name)
         return _NOTHING
+
+    def _show_details(self) -> None:
+        """Hand the full arguments or diff to the transcript view."""
+        opener, factory = self.settings.open_details, self._details_factory
+        if opener is not None and factory is not None:
+            opener(self.title, factory())
 
     def _step(self, ch: str) -> int:
         """``[``/``]`` move one row; Page Up/Down a page."""
@@ -362,14 +348,11 @@ class Dialog:
     def legend(self) -> str:
         """The key legend: overrides first, then the keymap's hints."""
         conditions = self.conditions | ({"details"} if self.has_details else set())
-        if self.showing_details:
-            g = glyphs()
-            return f"{g.up}{g.down} scroll {g.sep} Ctrl+T back"
         entries = list(self.legend_override)
         if not entries:
             for hint in _keymap(self.settings).hints("dialog", frozenset(conditions)):
                 label = self.cancel_label if hint.action == "dialog.cancel" else hint.label
-                entries.append(f"{_ascii_arrows(hint.keys)} {label}")
+                entries.append(f"{key_arrows(hint.keys)} {label}")
         return f" {glyphs().sep} ".join(entries)
 
     def render(self) -> RenderableType:
@@ -462,25 +445,19 @@ class Dialog:
         top = self._top_border(width, left)
         reason = self._reason_rows(body_width)
         footer = self.footer(inner) if self.footer is not None else []
-        if self.showing_details and self._details_factory is not None:
-            details = self._lines(self._details, self._details_factory, body_width)
-            body_rows = max(1, budget - 4)
-            body = self._windowed_body(details, body_rows)
-            middle = [frame(Text()), *(frame(indent(line)) for line in body), frame(Text())]
-        else:
-            options = self._option_rows(inner)
-            # top, blank, blank after body, [reason, blank], options, [footer], blank, bottom
-            chrome = 5 + (len(reason) + 1 if reason else 0) + len(options) + len(footer)
-            body = self._windowed_body(self.body_lines(body_width), budget - chrome)
-            middle = [frame(Text())]
-            middle += [frame(indent(line)) for line in body]
+        options = self._option_rows(inner)
+        # top, blank, blank after body, [reason, blank], options, [footer], blank, bottom
+        chrome = 5 + (len(reason) + 1 if reason else 0) + len(options) + len(footer)
+        body = self._windowed_body(self.body_lines(body_width), budget - chrome)
+        middle = [frame(Text())]
+        middle += [frame(indent(line)) for line in body]
+        middle.append(frame(Text()))
+        if reason:
+            middle += [frame(indent(line)) for line in reason]
             middle.append(frame(Text()))
-            if reason:
-                middle += [frame(indent(line)) for line in reason]
-                middle.append(frame(Text()))
-            middle += [frame(line) for line in options]
-            middle += [frame(line) for line in footer]
-            middle.append(frame(Text()))
+        middle += [frame(line) for line in options]
+        middle += [frame(line) for line in footer]
+        middle.append(frame(Text()))
         bottom = self._bottom_border(width, left)
         return [top, *middle, bottom]
 
@@ -522,17 +499,13 @@ class Dialog:
             title.append(f" ({self.badge})", p.muted)
         rows = [title]
         reason = self._reason_rows(width)
-        if self.showing_details and self._details_factory is not None:
-            details = self._lines(self._details, self._details_factory, width)
-            rows += self._windowed_body(details, budget - 2)
-        else:
-            options = self._option_rows(width)
-            footer = self.footer(width) if self.footer is not None else []
-            chrome = 2 + len(reason) + len(options) + len(footer)
-            rows += self._windowed_body(self.body_lines(width), budget - chrome)
-            rows += reason
-            rows += options
-            rows += footer
+        options = self._option_rows(width)
+        footer = self.footer(width) if self.footer is not None else []
+        chrome = 2 + len(reason) + len(options) + len(footer)
+        rows += self._windowed_body(self.body_lines(width), budget - chrome)
+        rows += reason
+        rows += options
+        rows += footer
         rows.append(Text(self.legend(), style=p.muted))
         return rows
 

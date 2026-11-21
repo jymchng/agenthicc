@@ -9,6 +9,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — navigation (TUX-09)
+
+- **A transcript view.** `Ctrl+T` (also while a turn runs), `/history`, `/logs`
+  and `/rewind` open one full-screen view over the session log, entered from
+  the composer so the prompt is exactly as it was when `q` returns. It draws
+  every event with the scrollback's own renderers, numbers the user turns,
+  jumps with `[`/`]` (turns) and `{`/`}` (failures), expands a tool call to its
+  stored output with Enter, searches (`/`, `n`, `N`; case-insensitive unless
+  the query has capitals; on a worker thread, so a 100 MB log never stalls the
+  keys), copies an item with `y` (OSC 52, or the system clipboard where the
+  terminal cannot take it) and opens it in `$PAGER` with `e`. A decision
+  dialog's `Ctrl+T` opens its full arguments or diff here, and `Esc` returns to
+  the dialog. Text is wrapped, never cut with an ellipsis, and a long pasted
+  prompt expands with Enter.
+- **A fullscreen layout.** `[ui] layout = "fullscreen"` or `/fullscreen` runs
+  the session in the alternate screen: a scrolling transcript pane over the
+  docked composer and status line. PgUp/PgDn, Shift+↑/↓ and the wheel scroll
+  it; scrolling up shows `↓ N new · End to follow`. Leaving prints the
+  conversation to the normal screen in compact form. `screen_reader` forces
+  `inline`.
+- **`/rewind`.** Pick a user turn, then "Edit and resend from here" forks the
+  conversation (the log and the model's memory up to that turn) into a new
+  session with the prompt in the composer. The original session is never
+  changed, and files are not restored.
+
+### Removed — navigation (TUX-09)
+
+- `TranscriptHistoryOverlay` and the `/logs` pager (`LogTailOverlay`,
+  `diagnostics.log_tail`): the transcript view replaces both. The dialog's own
+  scrolling details body (`Dialog.showing_details`) is gone too; `Ctrl+T`
+  opens the transcript view. `Ctrl+T` can no longer be a keybindings `leader`.
+
 ### Changed — selections have no background
 
 - **A selected row is the accent bar and bold text.** The answer form and the

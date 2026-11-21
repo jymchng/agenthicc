@@ -1700,6 +1700,7 @@ _GLYPH_MODES = ("auto", "unicode", "ascii")
 _COMPOSER_FRAMES = ("box", "rules")
 _BANNERS = ("full", "compact", "off")
 _TOOL_DETAIL_LEVELS = ("compact", "normal", "verbose")
+_LAYOUTS = ("inline", "fullscreen")
 
 
 @dataclass(frozen=True)
@@ -1743,6 +1744,12 @@ class UISettings:
     (one row; failures show their last lines), ``normal`` (plus a four-line
     preview of reads and commands) or ``verbose`` (the whole bounded output).
     ``/details`` changes it for the session."""
+    layout: str = "inline"
+    """``inline`` (the default) prints the conversation to the terminal's own
+    scrollback; ``fullscreen`` runs the session in the alternate screen, with a
+    scrolling transcript pane over the docked composer and status line (TUX-09).
+    ``/fullscreen`` switches it for the session; ``screen_reader`` forces
+    ``inline``."""
 
     def __post_init__(self) -> None:
         if self.mouse not in _MOUSE_MODES:
@@ -1757,11 +1764,18 @@ class UISettings:
             raise ValueError("ui.theme must not be empty")
         if self.tool_detail not in _TOOL_DETAIL_LEVELS:
             raise ValueError(f"ui.tool_detail must be one of: {', '.join(_TOOL_DETAIL_LEVELS)}")
+        if self.layout not in _LAYOUTS:
+            raise ValueError(f"ui.layout must be one of: {', '.join(_LAYOUTS)}")
 
     @property
     def animated(self) -> bool:
         """Whether spinners and other animation may run."""
         return not (self.screen_reader or self.reduced_motion)
+
+    @property
+    def fullscreen(self) -> bool:
+        """Whether the session starts in the fullscreen layout (never with a screen reader)."""
+        return self.layout == "fullscreen" and not self.screen_reader
 
     def mouse_enabled(self, *, fullscreen: bool) -> bool:
         """Whether a screen should turn on mouse reporting."""
@@ -2807,6 +2821,7 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
         banner=_as_str(ui_data.get("banner"), "compact").strip().lower(),
         statusline_command=_as_str(_section(ui_data.get("statusline")).get("command"), "").strip(),
         tool_detail=_as_str(ui_data.get("tool_detail"), "compact").strip().lower(),
+        layout=_as_str(ui_data.get("layout"), "inline").strip().lower(),
     )
 
     subagent_data = _section(data.get("subagents"))

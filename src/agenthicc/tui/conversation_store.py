@@ -300,6 +300,9 @@ class ConversationStore:
         for the latest main-agent call: how full the context window is."""
         self.context_window: Signal[int] = Signal(0, name="context_window")
         """The model's context window in tokens; 0 when it is not known."""
+        # TUX-09: the fullscreen layout and whether its pane is scrolled up.
+        self.fullscreen: Signal[bool] = Signal(False, name="fullscreen")
+        self.pane_scrolled: Signal[bool] = Signal(False, name="pane_scrolled")
         self.git_branch: Signal[str] = Signal("", name="git_branch")
         """The working directory's branch, ``""`` outside a repository."""
         self.git_dirty: Signal[bool] = Signal(False, name="git_dirty")

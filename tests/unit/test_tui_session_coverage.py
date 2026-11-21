@@ -55,6 +55,7 @@ class _Input:
         # What a dialog's embedded composer takes from the real input session.
         self.terminal_hooks = TerminalHooks()
         self.exit_requested = False
+        self.deferred_exit_hint = ""
 
     def set_mode(self, mode: object) -> None:
         self.modes.append(mode)

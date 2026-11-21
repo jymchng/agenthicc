@@ -195,6 +195,7 @@ async def test_resumed_tui_replays_transcript_before_accepting_input(
     class Input:
         history: list[str] = []
         on_ready = None
+        deferred_exit_hint = ""
 
         def set_history(self, messages: list[str]) -> None:
             self.history = messages

@@ -2261,7 +2261,8 @@ def load_keybindings(actions, path: Path | None = None) -> KeymapLoad: ...
 
 One registry of named actions per context (`CONTEXTS`: `global`, `composer`,
 `picker`, `search`, `queue`, `agents`, `agents.list`, `agents.peek`,
-`agents.detail`, `transcript`, `subagents`, `overlay`) drives dispatch, footer
+`agents.detail`, `transcript`, `transcript_view`, `subagents`, `overlay`, `dialog`)
+drives dispatch, footer
 hints and help (AGX-13).
 `PARENTS` makes a context inherit another's actions after its own
 (`agents.list` and `agents.detail` inherit `agents`, `agents.peek` inherits
@@ -2287,7 +2288,8 @@ problems returned in `KeymapLoad.errors`. A file binding a key that a
 `AppState.keymap` current as the file changes, and `/keybindings` shows the
 effective bindings. `AppState.ui` holds `config.UISettings` (`[ui]`:
 `mouse`, `screen_reader`, `reduced_motion`, `theme`, `glyphs`, `banner`,
-`tool_detail`).
+`tool_detail`, `layout`). `Ctrl+T` is the composer's `composer.transcript`, so it
+cannot be the bindings file's `leader`.
 
 Themes (TUX-01): `agenthicc.tui.theme` owns every colour and chrome glyph.
 - **Types.** `Palette` is a frozen set of semantic tokens (`TOKENS`: `text`,
@@ -2334,6 +2336,7 @@ class DialogSettings:
     composer: ComposerContext | None = None
     workspace: WorkspaceScope | None = None   # where approval diffs are read
     redraw: Callable[[], None] = lambda: None # repaint after an in-dialog composer key
+    open_details: Callable[[str, Sequence[RenderableType]], None] | None = None  # Ctrl+T (TUX-09)
 
 class Dialog:
     def __init__(self, title: str, *, settings: DialogSettings, badge: str | None = None,
@@ -2359,8 +2362,9 @@ border. Width `dialog_width(cols) = clamp(cols - 4, 60, 120)`, centred above
 124 columns; height at most the published overlay viewport (`rows - 6` before
 one). Keys come from the `dialog` keymap context (`DIALOG_ACTIONS` in
 `tui.actions`): `↑↓`/`j k` choose, Enter or `1`–`9` confirm, Esc the safe exit,
-Tab a note, `Ctrl+T` the full details inside the dialog, `[`/`]` and
-PgUp/PgDn scroll, and `y`/`a`/`A`/`n` stay as approval aliases.
+Tab a note, `Ctrl+T` the full arguments or diff in the transcript view
+(`DialogSettings.open_details`; the key is offered only when it is set, and Esc
+in the view returns to the dialog), `[`/`]` and PgUp/PgDn scroll, and `y`/`a`/`A`/`n` stay as approval aliases.
 `handle_key` returns a `DialogInput` whose `DialogKey` the overlay acts on.
 `announcement(title, summary, reason, options)` is the screen-reader sentence;
 `render_lines(renderables, width)` renders to styled rows.
@@ -2564,7 +2568,6 @@ class DiagnosticsLog(io.TextIOBase):
 def install_stderr_sink(sink: DiagnosticsLog) -> None: ...
 def uninstall_stderr_sink() -> None: ...
 def stderr_sink() -> DiagnosticsLog | None: ...
-def log_tail(path: Path, *, max_lines: int = 200, max_bytes: int = 256_000) -> list[str]: ...
 ```
 
 Right after the first frame, `TUISession` installs a `DiagnosticsLog` (unless
@@ -2574,13 +2577,118 @@ Right after the first frame, `TUISession` installs a `DiagnosticsLog` (unless
 the real stderr and re-installs it after). The first non-blank write calls
 `on_first_write` once, which shows `DIAGNOSTICS_NOTICE` as a transient notice.
 `fileno()` is the log's, so a child given `sys.stderr` writes into it. `/logs`
-shows `log_tail` in `tui.workspace.overlays.log_tail.LogTailOverlay`.
+opens the log in the transcript view (TUX-09, below): lines, `WARNING`/`ERROR`
+lines flagged for `{`/`}`, search, copy; there is no turn structure.
 
 Key help: `tui.keymap_phrases.CONDITION_PHRASES` maps every condition in
 `DEFAULT_ACTIONS` to a phrase, `phrase(flag)` and
 `describe_conditions(when, unless)` give `"in Library, except when an agent
 needs approval"`; `HelpEntry.conditions` is that text (`""` for always), so
 the hub's `?` overlay and `/keybindings` never show flag names.
+
+### Transcript view, fullscreen layout and `/rewind` — `agenthicc.tui.transcript`
+
+```python
+# transcript/view.py
+class TranscriptView:
+    def __init__(self, source: TranscriptSource, keymap: Keymap, *, rewind: bool = False,
+                 subtitle: str = "", start: Literal["end", "start", "tool"] = "end") -> None: ...
+    selected: int; expanded: set[int]; job: SearchJob | None
+    def render(self, width: int, height: int) -> list[Text]: ...   # exactly `height` rows
+    def handle_key(self, key: Key, ch: str) -> Outcome: ...         # CLOSE | COPY | PAGER | REWIND
+    def tick(self) -> bool: ...                # picks up appended items and finished searches
+def to_lines(console: Console, rows: Sequence[Text], width: int) -> list[Line]: ...
+
+# transcript/sources.py
+class TranscriptSource(Protocol): ...   # count, rows(item, width, expanded), turn_items, ...
+class SessionLogSource:   def __init__(self, session_id: str, *, ui: UISettings | None = None, title: str = "") -> None: ...
+class TextFileSource:     def __init__(self, path: Path, title: str = "") -> None: ...
+class DocumentSource:     def __init__(self, title: str, renderables: Sequence[RenderableType]) -> None: ...
+
+# transcript/log.py
+class LogIndex:
+    def scan(self, cancel: Event | None = None, *, limit: int | None = None, pause_s: float = 0.0) -> int: ...
+    def search(self, query: str, cancel: Event | None = None, *, pause_s: float = 0.0) -> list[int]: ...
+
+# transcript/host.py
+class TranscriptHost:
+    def __init__(self, view: TranscriptView, console: Console, backend: TerminalBackend, *,
+                 ui: UISettings | None = None, pager: Callable[[str], str] | None = None) -> None: ...
+    async def run(self) -> HostResult: ...          # HostResult(kind="closed" | "rewind", text, turn)
+
+# transcript/controller.py
+class TranscriptController:
+    def open(self, kind: Literal["history", "tool", "logs", "rewind"]) -> None: ...
+    def open_document(self, title: str, renderables: Sequence[RenderableType]) -> None: ...
+
+# transcript/fullscreen.py
+class FullscreenLayout:
+    def rows(self, width: int, height: int) -> list[Text]: ...
+    def scroll(self, action: PaneAction) -> None: ...
+    def print_exit_transcript(self, console: Console) -> int: ...
+
+# transcript/fork.py
+def fork_session(session_id: str, turn: int) -> Fork: ...          # Fork(session_id, draft, turns, memory)
+def write_session_draft(session_id: str, text: str) -> None: ...
+def take_session_draft(session_id: str) -> str: ...
+
+# transcript/clipboard.py
+def osc52_sequence(text: str) -> str: ...
+def copy_text(text: str, *, write: Callable[[str], None], env: Mapping[str, str] | None = None, ...) -> CopyResult: ...
+def run_pager(text: str, env: Mapping[str, str] | None = None) -> str: ...
+```
+
+TUX-09. A full-screen alternate-screen view over the session log. Entered from
+the composer through the input session's terminal handoff (the external
+editor's mechanism), so the composer's text, cursor and history are exactly as
+they were when the view closes; the live block is suspended and the scrollback
+appender held (`ScrollBufferAppender.hold`/`release`) while it is up.
+
+- **Opening.** `Ctrl+T` (`composer.transcript`, also during a turn) opens it on
+  the last tool call, selected and expanded; `/history` opens it at the end;
+  `/logs` opens the diagnostics log (`TextFileSource`, no turns); `/rewind`
+  opens it selecting user turns only; a dialog's `Ctrl+T` opens its full
+  arguments or diff (`DocumentSource`). The imports are lazy: the first frame
+  loads none of it.
+- **Items.** `LogIndex` indexes the log once on a worker thread (1 MiB chunks,
+  four small arrays per item), then follows it as it grows. An item is a log
+  line the scrollback has a renderer for (`appender.has_renderer`); a
+  `compaction_status` item exists only for its result statuses. Events are
+  loaded a window at a time through `load_older_transcript_page`, and drawn by
+  the scrollback's own renderers through `EventRenderer` (`compact` for the
+  rest, `verbose` plus the call's arguments for an expanded item, output cut at
+  64 KiB with "output truncated at 64 KiB").
+- **Keys** (context `transcript_view`, `TRANSCRIPT_VIEW_ACTIONS`): `↑↓`/`j k`,
+  PgUp/PgDn, Home/End (`g`/`G`), `[` `]` previous and next user turn, `{` `}`
+  previous and next failure or error, Enter expand/collapse (or, in `/rewind`,
+  rewind here), `/` search, `n` `N` next and previous hit, `y` copy, `e` pager,
+  `q`/Esc/`Ctrl+T` close. Search is a substring, case-insensitive unless the
+  query has capitals, over user text, assistant text, tool summaries and
+  output, run on a worker thread in 1 MiB chunks (`pause_s` hands the
+  interpreter to the event loop between chunks).
+- **Copy and pager.** `y` writes OSC 52 (`osc52_sequence`, at most 74,994
+  bytes), or runs `pbcopy`/`wl-copy`/`xclip`/`xsel`/`clip.exe` when `TERM` is
+  `linux`/`dumb`; `e` leaves the alternate screen for `$PAGER`, else `$EDITOR`
+  (`-R` for the vi family, on a private read-only file), else `less`.
+- **`/rewind`.** Enter on turn N opens a TUX-07 `Dialog` ("Edit and resend from
+  here", "Copy the prompt"; "files are not restored"). Edit forks:
+  `fork_session` copies the log up to turn N's prompt and the conversation
+  journal up to the record that opened it, never touching the original, and
+  writes the prompt as a draft; the session ends with
+  `SessionSwitch("fork", new_id, …)`, `_run_tui_session` continues in the fork
+  without reopening the original, and the new composer starts with the draft
+  (`take_session_draft`).
+- **Fullscreen layout.** `[ui] layout = "inline" | "fullscreen"` (default
+  `inline`; `UISettings.fullscreen` is false under `screen_reader`) and
+  `/fullscreen`. `Workspace.enter_fullscreen`/`leave_fullscreen` take the
+  alternate screen; the pane (`PaneView`, the view's engine without chrome)
+  follows the session log over the docked composer and status line, and what is
+  printed to the console meanwhile (the welcome header first) is captured
+  (`ConsoleCapture`, `NotedSource`) and shown in order. PgUp/PgDn, Shift+↑/↓
+  and the wheel scroll it (`ScrollPaneCommand`); scrolling up stops following
+  and shows `↓ N new · End to follow`; End follows again. Leaving prints what
+  the normal screen has not seen in `compact` form. Conditions `fullscreen`,
+  `scrolled` come from `ConversationStore.fullscreen`/`pane_scrolled`.
 
 ### LoopLagMonitor
 

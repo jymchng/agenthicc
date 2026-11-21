@@ -55,6 +55,11 @@ def register_renderer(kind: str) -> Callable[[_EventRenderer], _EventRenderer]:
     return decorator
 
 
+def has_renderer(kind: str) -> bool:
+    """Whether *kind* events print anything; other kinds are invisible."""
+    return kind in _RENDERERS
+
+
 if TYPE_CHECKING:
     from rich.console import Console, RenderableType
     from rich.console import OverflowMethod
@@ -128,7 +133,9 @@ _PREVIEW_LINES = 4
 _DIFF_ROWS = 20
 #: A turn header is printed again after this much quiet time.
 _HEADER_GAP_S = 30 * 60
-_EXPAND_HINT = "ctrl+t to expand"
+EXPAND_HINT = "ctrl+t to expand"
+#: A user message longer than this many lines is condensed in the scrollback.
+USER_BAND_LINES = 12
 
 _LIVE_WORDS: dict[str, tuple[str, str]] = {
     "ready": ("ready", "info"),
@@ -367,9 +374,19 @@ class ScrollBufferAppender:
         console: Console,
         max_live_tool_calls: int = 5,
         group_exploratory_calls: bool = True,
+        fixed_detail: str | None = None,
+        wrap: bool = False,
     ) -> None:
         self._state: AppState = app_state
         self._console: Console = console
+        #: A tool detail level this appender always uses (the transcript view
+        #: renders one event at the level it chooses); ``None`` follows ``/details``.
+        self._fixed_detail = fixed_detail
+        #: Wrap long rows under a hanging indent instead of cutting them with an
+        #: ellipsis. The scrollback keeps its one-row-per-call density (TUX-06);
+        #: the transcript view, whose job is to show what the scrollback cut,
+        #: wraps (TUX-09).
+        self._wrap = wrap
         self._unsub: Callable[[], None] | None = None
         self._max_tool_calls: int = max_live_tool_calls
         self._group_exploratory_calls: bool = group_exploratory_calls
@@ -399,8 +416,12 @@ class ScrollBufferAppender:
         self._last_event_ts: float | None = None
         # A turn header waits for the mention chips that belong to the user.
         self._pending_header: Text | None = None
+        #: While held (the transcript view or the fullscreen pane owns the
+        #: screen) events queue instead of printing (TUX-09).
+        self._held = False
         # ``/details`` lasts for the session that owns this appender.
-        set_session_tool_detail(None)
+        if fixed_detail is None:
+            set_session_tool_detail(None)
 
     def mount(self) -> None:
         self._unsub = self._state.conversation.on_event(self._queue_event)
@@ -414,6 +435,20 @@ class ScrollBufferAppender:
             self._unsub()
             self._unsub = None
 
+    def hold(self) -> None:
+        """Stop printing: new events wait until :meth:`release` (TUX-09)."""
+        self._held = True
+
+    def release(self, *, discard: bool = False) -> None:
+        """Print what waited while held; with *discard* drop it (it was shown elsewhere)."""
+        self._held = False
+        if discard:
+            self._pending = []
+            self._flush_scheduled = False
+            return
+        if self._pending:
+            self._flush_batch()
+
     def flush(self) -> None:
         """Render queued events and persist any open tool-group summary.
 
@@ -423,6 +458,8 @@ class ScrollBufferAppender:
         scroll buffer instead of remaining in the live footer.  It is safe to
         call repeatedly; both group counters are reset after flushing.
         """
+        if self._held:
+            return
         if self._pending or self._flush_scheduled:
             self._flush_batch()
         with self._console:
@@ -460,6 +497,18 @@ class ScrollBufferAppender:
         payload: dict[str, object] = {"edge": "start", "since": since, "events": events}
         self._queue_event(ConversationEvent(event_id="", kind="replay_separator", payload=payload))
 
+    def print_events(self, events: Iterable[ConversationEvent]) -> None:
+        """Render *events* now, in order, and close any open group (TUX-09).
+
+        The transcript view renders each event through the same renderers as
+        the live scrollback; nothing is persisted and nothing waits for the
+        next loop turn.
+        """
+        for event in events:
+            event.rendered = False
+            self._pending.append(event)
+        self.flush()
+
     def announce(self, text: str) -> None:
         """Print a plain sentence in order with the transcript (AGX-13).
 
@@ -483,6 +532,8 @@ class ScrollBufferAppender:
 
     def _flush_batch(self) -> None:
         self._flush_scheduled = False
+        if self._held:
+            return
         pending, self._pending = self._pending, []
         # Wrap the entire batch in one console context so all console.print()
         # calls share a single write() + flush().  Without this, each print
@@ -572,6 +623,8 @@ class ScrollBufferAppender:
             self._print(header, highlight=False, soft_wrap=True)
 
     def _tool_detail(self) -> str:
+        if self._fixed_detail is not None:
+            return self._fixed_detail
         if _session_detail is not None:
             return _session_detail
         from agenthicc.tui.preferences import ui_settings
@@ -600,6 +653,11 @@ class ScrollBufferAppender:
         width = max(20, self._console.width)
         meta_width = meta.cell_len + 2 if meta is not None and meta.cell_len else 0
         fixed = cell_len(f"{marker} {operation} ") + meta_width
+        if self._wrap:
+            natural = fixed + cell_len(target) + (cell_len(detail) + 2 if detail else 0)
+            if natural > width:
+                self._wrapped_tool_row(marker, marker_style, operation, target, detail, meta)
+                return
         # The target keeps priority. The quiet detail ("in objective-create-a/")
         # is shown whole, cut only when a readable part fits, else dropped: a
         # sliver of it reads as noise ("  i").
@@ -634,9 +692,55 @@ class ScrollBufferAppender:
         row.truncate(width, overflow="ellipsis")
         self._print(row, highlight=False, no_wrap=True, overflow="ellipsis")
 
+    def _wrapped_tool_row(
+        self,
+        marker: str,
+        marker_style: str | Style,
+        operation: str,
+        target: str,
+        detail: str,
+        meta: Text | None,
+    ) -> None:
+        """A row too long for one line: the words wrap under the operation, meta on the first line."""
+        from rich.cells import cell_len
+        from rich.table import Table
+        from rich.text import Text
+
+        p = palette()
+        body = Text.assemble(
+            (operation, f"bold {p.text}"),
+            " " if target else "",
+            (target, p.text),
+            (f"  {detail}" if detail else "", p.muted),
+        )
+        body.overflow = "fold"
+        grid = Table.grid(expand=True)
+        grid.add_column(width=cell_len(marker) + 1, no_wrap=True)
+        grid.add_column(ratio=1, overflow="fold")
+        marker_cell = Text(marker, style=marker_style)
+        if meta is not None and meta.cell_len:
+            grid.add_column(justify="right", no_wrap=True)
+            grid.add_row(marker_cell, body, Text.assemble("  ", meta))
+        else:
+            grid.add_row(marker_cell, body)
+        self._print(grid, highlight=False)
+
     def _child(self, glyph: str, text: str, style: str) -> None:
         from rich.text import Text
 
+        if self._wrap:
+            from rich.cells import cell_len
+            from rich.table import Table
+
+            gutter = f"  {glyph} "
+            grid = Table.grid(expand=True)
+            grid.add_column(width=cell_len(gutter), no_wrap=True)
+            grid.add_column(ratio=1, overflow="fold")
+            grid.add_row(
+                Text(gutter, style=palette().muted), Text(text, style=style, overflow="fold")
+            )
+            self._print(grid, highlight=False)
+            return
         width = max(20, self._console.width)
         row = Text.assemble((f"  {glyph} ", palette().muted), (text, style))
         row.truncate(width, overflow="ellipsis")
@@ -695,9 +799,7 @@ class ScrollBufferAppender:
                 self._child(g.pipe, line, p.text)
             shown = len(lines)
         hidden = view.total - shown
-        footer = (
-            f"{_plural(hidden, 'more line')} {g.sep} {_EXPAND_HINT}" if hidden else _EXPAND_HINT
-        )
+        footer = f"{_plural(hidden, 'more line')} {g.sep} {EXPAND_HINT}" if hidden else EXPAND_HINT
         self._child(g.elbow, footer, p.muted)
 
     def _render_success_output(self, view: _ToolView, level: str) -> None:
@@ -939,7 +1041,8 @@ def _render_user_message(self: ScrollBufferAppender, ev: ConversationEvent) -> N
 
     p, g = palette(), glyphs()
     lines = _text(ev.payload, "text").splitlines() or [""]
-    if len(lines) > 12:
+    whole = self._wrap and self._tool_detail() == "verbose"  # the transcript view, expanded
+    if len(lines) > USER_BAND_LINES and not whole:
         # A long paste is condensed; the full text stays in the event.
         lines = [*lines[:4], f"[+{len(lines) - 4} more lines]"]
     body = Text("\n".join(lines), style=p.text)
