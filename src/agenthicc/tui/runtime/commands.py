@@ -81,6 +81,11 @@ class ScrollPaneCommand(Command):
     ] = "page_up"
 
 
+@dataclass(frozen=True)
+class OpenShortcutsCommand(Command):
+    """Open the page of every key (``?`` on an empty prompt, ``/shortcuts``; TUX-10 §2.6)."""
+
+
 C = TypeVar("C", bound=Command)
 
 

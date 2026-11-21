@@ -271,7 +271,7 @@ async def test_a_spinner_frame_rewrites_only_the_status_row() -> None:
         assert "\x1b[2K" not in written
         assert status.lstrip()[:1] in written  # the flower itself is drawn
         # The elapsed time shows only after 3 s (TUX-10), so a first frame has none.
-        for untouched in ("sonnet", "/help"):
+        for untouched in ("sonnet", "? shortcuts"):
             assert untouched in status
             assert untouched not in written
         assert len(written.encode()) < len(status)  # far short of the whole row

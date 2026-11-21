@@ -335,6 +335,21 @@ def _release_notes_menu(ctx: CommandContext) -> Overlay:
     )
 
 
+def _shortcuts_menu(ctx: CommandContext) -> Overlay:
+    """Every key in every context, with the user's own bindings (TUX-10 §2.6)."""
+    from agenthicc.tui.actions import DEFAULT_ACTIONS
+    from agenthicc.tui.keymap import Keymap
+    from agenthicc.tui.workspace.overlays.shortcuts import ShortcutsOverlay
+
+    app_state = ctx.app_state
+    keymap = app_state.keymap() if app_state is not None else Keymap.build(DEFAULT_ACTIONS)
+    return ShortcutsOverlay(
+        keymap,
+        on_close=ctx.close_overlay if ctx.close_overlay is not None else (lambda: None),
+        settings=_dialog_settings(ctx),
+    )
+
+
 def _cmd_dnd(ctx: CommandContext) -> bool:
     """Toggle attention notifications without hiding the status badge (AGX-10)."""
 
@@ -1643,6 +1658,13 @@ BUILTIN_COMMANDS: list[Command] = [
         description="Resume a saved session: the agents hub's History tab",
         busy_policy=BusyPolicy.IMMEDIATE_CONTROL,
         handler=_cmd_resume,
+    ),
+    Command(
+        name="/shortcuts",
+        group="Session",
+        description="Show every key in every context (? on an empty prompt)",
+        busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
+        menu_factory=_shortcuts_menu,
     ),
     Command(
         name="/release-notes",

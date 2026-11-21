@@ -112,6 +112,7 @@ if TYPE_CHECKING:
         InterruptAgentCommand,
         OpenAgentsHubCommand,
         OpenPaletteCommand,
+        OpenShortcutsCommand,
         OpenSubagentsCommand,
         OpenTranscriptCommand,
         ScrollPaneCommand,
@@ -3443,6 +3444,10 @@ class TUISession:
 
     # ── command palette (TUX-05 §2.4) ────────────────────────────────────────
 
+    async def _open_shortcuts_command(self, _command: OpenShortcutsCommand) -> None:
+        """``?`` on an empty prompt: the same page as ``/shortcuts`` (TUX-10 §2.6)."""
+        self.dispatch_slash("/shortcuts")
+
     async def _open_palette_command(self, _command: OpenPaletteCommand) -> None:
         self.open_palette()
 
@@ -6047,6 +6052,7 @@ class TUISession:
             InterruptAgentCommand,
             OpenAgentsHubCommand,
             OpenPaletteCommand,
+            OpenShortcutsCommand,
             OpenSubagentsCommand,
             OpenTranscriptCommand,
             ScrollPaneCommand,
@@ -6064,6 +6070,7 @@ class TUISession:
         ctx.command_bus.register(OpenSubagentsCommand, self._open_subagents_command)
         ctx.command_bus.register(BackgroundSubagentsCommand, self._background_subagents_command)
         ctx.command_bus.register(OpenPaletteCommand, self._open_palette_command)
+        ctx.command_bus.register(OpenShortcutsCommand, self._open_shortcuts_command)
 
         startup = ctx.startup
         if startup is not None:

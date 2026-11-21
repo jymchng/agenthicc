@@ -1172,7 +1172,15 @@ class ComposerFrame:
             for hint in keymap.hints("composer", frozenset(conditions))
             if keymap.action(hint.action).when
         )
-        return _hint_row(found, cols, reader, current_theme()) if found else None
+        if not found:
+            return None
+        # The row ends with ``? shortcuts`` while the prompt is empty (TUX-10 §2.6).
+        tail: tuple[tuple[str, str], ...] = ()
+        if not app.input.buf():
+            shortcuts = keymap.hint("composer.shortcuts")
+            if shortcuts is not None:
+                tail = ((shortcuts.keys, shortcuts.label),)
+        return _hint_row(found, cols, reader, current_theme(), tail)
 
 
 def _cut(text: str, width: int) -> str:
@@ -1191,14 +1199,29 @@ def _cut(text: str, width: int) -> str:
 
 
 @functools.lru_cache(maxsize=256)
-def _hint_row(hints: tuple[tuple[str, str], ...], cols: int, plain: bool, theme: Theme) -> str:
-    """Render ``(keys, label)`` hints in priority order, dropping the last to fit."""
-    segs = [f"[bold]{escape(keys)}[/bold] {_tint('muted', escape(label))}" for keys, label in hints]
+def _hint_row(
+    hints: tuple[tuple[str, str], ...],
+    cols: int,
+    plain: bool,
+    theme: Theme,
+    tail: tuple[tuple[str, str], ...] = (),
+) -> str:
+    """Render ``(keys, label)`` hints in priority order, dropping the last to fit.
+
+    The *tail* hints (``? shortcuts``) always end the row: the others give way first.
+    """
+
+    def render(pairs: tuple[tuple[str, str], ...]) -> list[str]:
+        return [
+            f"[bold]{escape(keys)}[/bold] {_tint('muted', escape(label))}" for keys, label in pairs
+        ]
+
+    segs, ends = render(hints), render(tail)
     sep = ", " if plain else f" {_tint('muted', theme.glyphs.sep)} "
     lead = "" if plain else " "
-    while len(segs) > 1 and _vlen(lead + sep.join(segs)) > cols:
+    while len(segs) > 1 and _vlen(lead + sep.join([*segs, *ends])) > cols:
         segs.pop()
-    return _fit(lead + sep.join(segs), cols)
+    return _fit(lead + sep.join([*segs, *ends]), cols)
 
 
 def notice_rows(app_state: AppState, cols: int) -> tuple[str, ...]:

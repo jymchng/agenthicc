@@ -30,6 +30,7 @@ _KEYS: dict[str, tuple[Key, str]] = {
     "enter": (Key.ENTER, ""),
     "ctrl+j": (Key.CTRL_ENTER, ""),
     "/": (Key.CHAR, "/"),
+    "?": (Key.CHAR, "?"),
     "@": (Key.AT, ""),
     "ctrl+v": (Key.CTRL_V, ""),
     "ctrl+b": (Key.CTRL_B, ""),
