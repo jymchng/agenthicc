@@ -76,7 +76,7 @@ async def test_parent_provider_history_contains_complete_subagent_aggregate(tmp_
         {
             "tasks": [
                 {
-                    "type": "executor",
+                    "type": "documenter",
                     "task": "Return the complete rewritten chapter content.",
                 }
             ]

@@ -788,6 +788,8 @@ class TestSubagentWorkerRetry:
 
             class _Resp:
                 content = "found 3 files"
+                turns = 1
+                stop_reason = "end_turn"
 
             return _Resp()
 

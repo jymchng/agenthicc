@@ -1997,9 +1997,16 @@ class AgentTurnRunner:
                 except ValueError as exc:
                     self._definition_agent_errors[definition.name] = str(exc)
                     continue
+            # An override of a built-in type keeps that type's evidence rule, so
+            # ``override: true`` on ``implementer`` cannot drop the mutation
+            # requirement; any other definition defaults to ``none``.
+            overridden = result.get(definition.name)
             result.register(
                 SubagentTypeSpec(
                     name=definition.name,
+                    completion_evidence=(
+                        overridden.completion_evidence if overridden is not None else "none"
+                    ),
                     allowed_tools=allowed_names,
                     max_turns=min(
                         ctx.max_agent_turns,

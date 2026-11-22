@@ -549,6 +549,9 @@ def make_spawn_subagents_tool(
                 else 8_000
             )
             tier = resolve_depth_tier(_settings, pool_depth, agent_type)
+            declared_tools = (
+                tier.allowed_tools if tier.allowed_tools is not None else spec.allowed_tools
+            )
             effective_routing[agent_type] = {
                 "model": worker_model,
                 "effort": _worker_effort(
@@ -560,7 +563,8 @@ def make_spawn_subagents_tool(
                 "context": min(max(1, requested_context), context_window),
                 "context_window": context_window,
                 "output_schema": spec.output_schema,
-                "allowed_tools": sorted(tier.allowed_tools or spec.allowed_tools),
+                # ``None`` is "inherit every tool the parent exposes".
+                "allowed_tools": sorted(declared_tools) if declared_tools is not None else None,
                 "allowed_models": sorted(tier.allowed_models or _allowed_models or ()),
             }
         routing_policy: dict[str, object] = {

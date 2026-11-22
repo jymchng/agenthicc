@@ -4,17 +4,27 @@ from __future__ import annotations
 
 import pytest
 from lauren_ai._agents._runner import AgentRunnerBase
+from lauren_ai._tools import tool
 from lauren_ai._transport import Completion, TokenUsage
 from lauren_ai._transport._mock import MockTransport
 
 from agenthicc.subagents.tool import make_spawn_subagents_tool
+from agenthicc.tools.capabilities import tool_execute
 
 pytestmark = pytest.mark.e2e
+
+
+@tool_execute
+@tool()
+async def run_bash(command: str) -> dict[str, object]:
+    """Run a deterministic build command for the test."""
+    return {"ok": True, "exit_code": 0, "stdout": command}
 
 
 async def test_executor_delegation_returns_a_successful_aggregate() -> None:
     """A user-facing spawn request can use the same role as workflow phases."""
     transport = MockTransport()
+    transport.queue_tool_use("run_bash", {"command": "make artifact"}, tool_use_id="e2e-build")
     transport.queue_response(
         Completion(
             id="e2e-executor",
@@ -26,7 +36,7 @@ async def test_executor_delegation_returns_a_successful_aggregate() -> None:
         )
     )
     runner = AgentRunnerBase(transport=transport)
-    spawn = make_spawn_subagents_tool(runner, "mock-model", [])
+    spawn = make_spawn_subagents_tool(runner, "mock-model", [run_bash])
 
     result = await spawn(tasks=[{"type": "executor", "task": "Build the artifact."}])
 

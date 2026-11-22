@@ -5325,7 +5325,14 @@ class SubagentTypeSpec
 
 Fields: `name`, `allowed_tools`, `max_turns`, `system_prompt`,
 `max_turn_time_s`, `model`, `policy`, `description` (defaults to an empty string
-for plugin compatibility), `effort`, `context`, `output_schema`, and `permissions`.
+for plugin compatibility), `effort`, `context`, `output_schema`, `permissions`,
+and `completion_evidence`. `allowed_tools=None` means the worker inherits every
+tool its parent session exposes (mode, phase and capability policy still apply);
+`max_turns=None` means the session's `execution.max_agent_turns`.
+`completion_evidence` is `"none"` (default; the text is the product),
+`"mutation"` (a successful workspace-mutating tool call is required) or
+`"action"` (a successful mutating or command-running call is required); the
+runtime observes it, the model's prose never satisfies it.
 `effort` is provider reasoning effort, `context` is the optional worker memory
 token budget, `output_schema` is a bounded JSON Schema contract required from
 workers of that type, and `permissions` narrows the inherited execution policy.
@@ -5371,7 +5378,12 @@ class SubagentResult
 Fields: `task_id`, `agent_type`, `label`, `ok`, `text`, `error`,
 `duration_ms`, `tool_calls`, `changed_paths`, `error_code`, and `value` (optional
 validated structured JSON object), plus lifecycle fields `partial`, `stop_reason`,
-`undelivered_messages`, and `not_started`.
+`undelivered_messages`, and `not_started`. `blocked_calls` lists mutating or
+command calls the runtime refused by policy (`"write_file: approval_denied"`),
+and `turns` is the provider turns the worker used. A worker that was refused and
+made no successful change fails with `error_code="mutation_refused"`; one cut off
+by its turn limit or the output-token limit fails with `stop_reason` `max_turns`
+or `output_truncated`.
 
 ### AggregatedResult
 

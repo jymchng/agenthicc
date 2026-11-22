@@ -151,7 +151,8 @@ def test_run_bash_is_the_one_shell_tool() -> None:
     assert "shell" not in _REGISTRY
     for name in DEFAULT_REGISTRY.names():
         spec = DEFAULT_REGISTRY.get(name)
-        assert spec is not None and "shell" not in spec.allowed_tools
+        assert spec is not None
+        assert spec.allowed_tools is None or "shell" not in spec.allowed_tools
 
 
 def test_outlook_is_left_out_and_named_when_it_cannot_work(

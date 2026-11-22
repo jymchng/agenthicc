@@ -214,25 +214,35 @@ prompts, integrations, and tests.
 
 ## Built-in worker roles
 
-The role is a prompt plus a static tool allow-list. The parent session's actual
-visible tools are a second ceiling, so naming a tool in a role does not make a
-tool available if the current phase or mode removed it.
+A role is a prompt plus a tool rule. The working roles (`implementer`,
+`executor`, `tester`, `documenter`) behave like the main agent: they **inherit
+every tool the parent session exposes** and run under the session's agent turn
+limit (`execution.max_agent_turns`). The investigative roles (`explorer`,
+`planner`, `reviewer`, `verifier`, `researcher`) keep a static read-only
+allow-list, because "this role cannot write" must not rest on a prompt. "Every
+tool" excludes the parent's session control plane — workflow phase transitions,
+`spawn_worker_agents` and `ask_user` (the `control` capability) and the parent's
+own `spawn_subagents`: a worker reaches the parent through `ask_parent` and
+`send_parent_message`, and gets a nested `spawn_subagents` only when
+`subagents.max_depth` allows one. In both
+cases the parent session's actual visible tools, mode and capability policy are
+the ceiling, so a role never gains a tool the current phase or mode removed.
 
 | Role | Intended work | Mutation / execution |
 |---|---|---|
 | `explorer` | Read files, search, inspect git history, report evidence | Read-only |
 | `planner` | Produce a numbered implementation plan from repository facts | Read-only |
-| `implementer` | Make one focused file change and verify it | File writes/patches, no shell |
-| `executor` | Carry out an implementation/build/compile task end to end | File writes plus shell/commands/tests |
-| `tester` | Write and run focused tests | File writes plus test/command tools |
+| `implementer` | Make one focused file change and verify it | Every parent tool |
+| `executor` | Carry out an implementation/build/compile task end to end | Every parent tool |
+| `tester` | Write and run focused tests | Every parent tool |
 | `reviewer` | Inspect a change for correctness, security, and regressions | Read-only, including git read |
-| `documenter` | Update scoped documentation and report changed files | Documentation/file writes |
+| `documenter` | Update scoped documentation and report changed files | Every parent tool |
 | `verifier` | Adversarially check an invariant or acceptance criterion | Read and test tools; no writes |
 | `researcher` | Answer a technical question from local source and docs | Read/search-oriented |
 
 The provider schema's enum contains the registered type names, and the tool
-description lists each name with its description. Names are exact: `research` can
-be registered as a custom type and is not an alias for `researcher`.
+description lists each name with its description. Names are exact: `research` can be registered as a custom type and is
+not an alias for `researcher`.
 
 User and project Markdown agent definitions with `mode: subagent` (or `mode: all`)
 are projected into a session-owned registry alongside built-ins and trusted
@@ -243,11 +253,41 @@ for the format and trust rules.
 
 ### Role-specific success rules
 
-Most roles succeed when they return non-empty final prose. `implementer` and
-other write-capable roles should be instructed to make the change, but the
-strict mutation-evidence rule currently applies to the built-in
-`implementer`: it must successfully invoke at least one mutating tool. A prose
-claim such as “I would update the file” is reported as a failed implementer.
+A worker's success is decided from what the runtime **observed**, never from its
+prose. Each type declares `completion_evidence`:
+
+| Value | A worker succeeds only if it made… | Built-in types |
+|---|---|---|
+| `none` | no requirement; its text is the product | explorer, planner, reviewer, verifier, researcher, documenter |
+| `mutation` | at least one successful workspace-mutating tool call | `implementer` |
+| `action` | at least one successful mutating **or** command-running tool call | `executor`, `tester` |
+
+A call counts only if its result is not `ok: false`, and only tools that change
+the **workspace** count (`send_email` and `create_event` do not). A claim such as
+"I would update the file" fails an `implementer` with
+`stop_reason="missing_mutation"` (`missing_action` for the other two), after one
+provider call and no hidden retry. A custom type defaults to `none`; a Markdown
+definition that overrides a built-in name keeps that built-in's rule.
+
+**A refused change is reported with its cause.** When a mutating or command call
+is refused by policy — `approval_denied`, `blocked_by_mode`, `outside_workspace`
+or `permission_denied` — and the worker made no successful change, it fails with
+`error_code="mutation_refused"` and the message
+`write_file was refused (approval_denied); no change was made`, for **every**
+type. The refusal is also in `SubagentResult.blocked_calls`. The worker's own
+account ("I wrote out.txt") is kept only as partial output.
+
+**A cut-off run is a failure.** A worker that uses its whole turn limit ends with
+`stop_reason="max_turns"` (message `reached its N-turn limit before finishing`),
+and a reply stopped by the output-token limit with `output_truncated`. Neither
+starts another provider run; the text so far is partial output.
+
+**An empty answer is not a result.** If a worker returns no final prose, it gets
+one finalisation turn. If it is still empty and it changed or ran something, the
+tool-call summary (`Executed tool call(s): write_file. Affected path(s): a.txt.`)
+is its result, because the work was the product. If it changed nothing, it fails
+with `stop_reason="empty_response"` and the tool inventory is kept as partial
+output, so a `verifier` with no verdict is never shown as `✓`.
 
 A tool call the model writes as *text* is never executed. Some gateways return
 their own call markup in the assistant text when they fail to parse it — for
@@ -259,11 +299,6 @@ the worker fails with `stop_reason` / `error_code` `unexecuted_tool_call` and
 the error `the model wrote a write_file call as text instead of calling the
 tool; it was not executed`. The markup is never passed to the parent as a
 result. Detection lives in `agenthicc.subagents.textual_tool_calls`.
-
-If a provider returns no final prose after tool calls, the worker synthesizes a
-bounded summary such as `Executed tool call(s): read_file.`. If it returns no
-prose and calls no tools, the worker fails with
-`agent returned no final summary and executed no tools`.
 
 ### Structured result contracts
 
@@ -1071,17 +1106,21 @@ phase-specific `allowed_tool_names` set can still exclude it.
 
 ### An implementer says it completed but `ok` is false
 
-The implementer must make a successful mutating tool call. Check that the
-parent phase exposed `write_file`, `patch_file`, or another write-capable
-tool, that the active mode permits it, and that the provider actually emitted
-the tool call instead of prose-only output.
+Read `stop_reason` and `error_code`. `missing_mutation` means the model never
+made a successful mutating call (it described the change instead).
+`mutation_refused` means it tried and the runtime refused: the message names the
+tool and the code (`approval_denied` — a person or broker said no;
+`blocked_by_mode` — Plan mode; `outside_workspace`). `max_turns` and
+`output_truncated` mean the run was cut off. The `blocked_calls` field lists each
+refusal.
 
 ### A worker fails immediately with no available tools
 
-The role allow-list and parent-visible list have an empty intersection. This
-is expected for an implementer in a read-only phase. Choose a read-only role
-for investigation, or run the implementation phase with the intended mode
-and tools exposed.
+A type that must change files (`implementer`) or act (`executor`, `tester`)
+fails before any provider call when the session has no usable tool that could
+do so — for example `implementer needs a file-changing tool but the Plan policy
+blocks it`. Choose a read-only role for investigation, or run the implementation
+phase with the intended mode and tools exposed.
 
 ### Safe mode does not show an approval
 
