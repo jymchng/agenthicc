@@ -97,6 +97,11 @@ requests unless a caller supplies an explicit scope-aware approval adapter.
 Recorded approvals include the canonical target and operation; cassette replay
 matches those fields exactly and rejects a different outside target.
 
+In Safe mode, the `workflow_enter` approval shows the workflow name, intent,
+parameters, whether it is interactive, and the capability ceiling inherited
+by the child. An approval applies to the requested handoff. The child runs
+under the inherited restrictions and follows its own phase approval rules.
+
 ## Plugin trust
 
 Project-local tools, agents, modes, workflows, commands and CLI plugins are

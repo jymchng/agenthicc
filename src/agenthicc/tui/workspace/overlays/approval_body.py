@@ -531,6 +531,11 @@ def approval_content(req: ApprovalRequest, scope: WorkspaceScope | None) -> Appr
         return _scope(req)
     tool = req.tool_name
     args = req.tool_input or {}
+    if req.kind == "workflow_enter":
+        data = _generic(tool, args)
+        return ApprovalContent(
+            "Start a workflow", _text_arg(args, "workflow"), data.body, data.details
+        )
     if tool in _EXECUTE_TOOLS:
         return _execute(tool, args)
     if tool in _WRITE_TOOLS:

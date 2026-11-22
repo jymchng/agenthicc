@@ -1404,6 +1404,10 @@ class AgentTurnRunner:
 
     async def _inject_mentions(self) -> str:
         """Resolve file mentions and collect ``@agent:NAME`` invocations."""
+        from agenthicc.runners.workflow_execution_context import current_workflow_request
+
+        if current_workflow_request():
+            return self._ctx.text
         from agenthicc.mentions.injector import (
             InjectionConfig,
             build_context_prefix,
@@ -1445,6 +1449,10 @@ class AgentTurnRunner:
 
     def _inject_skills(self) -> None:
         """Find matching skills and build self._skill_suffix."""
+        from agenthicc.runners.workflow_execution_context import current_workflow_request
+
+        if current_workflow_request():
+            return
         from agenthicc.skills.loader import filter_skills_for_agent
         from agenthicc.skills.runner import (
             find_matching_skills,
@@ -1479,7 +1487,10 @@ class AgentTurnRunner:
         from agenthicc.runners.prompt_contract import PromptBlock
         from agenthicc.runners.skill_runner import SkillAwareRunner
         from agenthicc.runners.tool_populator import populate_agent_tools as _populate
-        from agenthicc.runners.workflow_execution_context import current_workflow_policy
+        from agenthicc.runners.workflow_execution_context import (
+            current_workflow_policy,
+            current_workflow_request,
+        )
         from agenthicc.skills.tools import (
             SKILL_CONTEXT_GUIDANCE,
             SKILL_TOOL_NAMES,
@@ -1489,6 +1500,13 @@ class AgentTurnRunner:
         from agenthicc.tools.capabilities import (
             get_tool_capabilities,
             is_exploratory_tool,
+        )
+
+        from agenthicc.workflows.stack_tools import (
+            current_workflow_tools,
+            enter_workflow,
+            list_workflows,
+            workflow_status,
         )
 
         published_failures: set[str] = set()
@@ -1517,6 +1535,10 @@ class AgentTurnRunner:
         if self._skill_state is not None:
             registry.register(list_skills, source="builtin")
             registry.register(use_skill, source="builtin")
+        if current_workflow_tools() is not None:
+            registry.register(list_workflows, source="builtin")
+            registry.register(workflow_status, source="builtin")
+            registry.register(enter_workflow, source="builtin")
         excluded_capabilities = ctx.excluded_capabilities
         workflow_policy = current_workflow_policy()
         if workflow_policy is not None:
@@ -1608,6 +1630,13 @@ class AgentTurnRunner:
                         "write_file, provide both required arguments: path and complete content.",
                     )
                 )
+
+        model_request = current_workflow_request()
+        if model_request:
+            if prompt_contract is not None:
+                self._runtime_dynamic_blocks.append(PromptBlock("WORKFLOW CALL", model_request))
+            else:
+                system += f"\n\n## WORKFLOW CALL\n{model_request}"
 
         @agent_decorator(model=self._model_id, system=system)
         @use_tools(*visible_tools)
@@ -3536,3 +3565,10 @@ async def _run_agent_turn(
         provider_diagnostic_context=provider_diagnostic_context,
     )
     await AgentTurnRunner(ctx).run()
+
+    from agenthicc.runners.workflow_execution_context import current_workflow_run_id
+    from agenthicc.workflows.stack_tools import WorkflowHandoff, current_workflow_tools
+
+    scope = current_workflow_tools()
+    if scope is not None and scope.pending is not None and current_workflow_run_id() is not None:
+        raise WorkflowHandoff()

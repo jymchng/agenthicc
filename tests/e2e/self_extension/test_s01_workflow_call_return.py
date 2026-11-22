@@ -6,10 +6,9 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from agenthicc.runners.workflow_stack import WorkflowCall
-from agenthicc.workflows.plugin import PhaseSpec, WorkflowPlugin
+from agenthicc.workflows.plugin import PhaseSpec, WorkflowInvocation, WorkflowPlugin
 
-from .harness import reply
+from .harness import reply, tool_call
 
 if TYPE_CHECKING:
     from .harness import AuthoredSession, ModelRequest, ScriptedTransport
@@ -22,6 +21,7 @@ async def test_two_child_phases_return_once_to_the_parent(
 ) -> None:
     class InspectAndReport(WorkflowPlugin):
         name = "inspect_and_report"
+        invocation = WorkflowInvocation(agent_callable=True)
         phases = [
             PhaseSpec(
                 "inspect",
@@ -38,7 +38,25 @@ async def test_two_child_phases_return_once_to_the_parent(
     context.workflow_registry.register(InspectAndReport)
     stack = context.workflow_stack
     parent = stack.base
-    child = stack.push(WorkflowCall(InspectAndReport, "Inspect the sample.", "user"))
+    script.expect(
+        "list available workflows",
+        lambda request: "list_workflows" in request.tools,
+        tool_call("list_workflows", {}),
+    )
+    script.expect(
+        "request the child workflow",
+        lambda request: (
+            request.contains(InspectAndReport.name) and "enter_workflow" in request.tools
+        ),
+        tool_call(
+            "enter_workflow", {"workflow": InspectAndReport.name, "intent": "Inspect the sample."}
+        ),
+    )
+    script.expect(
+        "finish before the child starts",
+        lambda request: request.contains("handoff_accepted") and stack.depth == 0,
+        reply("I’ll wait for the workflow result."),
+    )
     script.expect(
         "child inspection",
         lambda request: request.contains("Inspect the sample."),
@@ -55,11 +73,10 @@ async def test_two_child_phases_return_once_to_the_parent(
         reply("I received the report."),
     )
 
-    result = await authored_session.run(child.workflow_name, child.intent)
+    result = await authored_session.run("default", "Inspect and report on the sample.")
 
     assert result.status == "complete", result.error
-    assert result.phases == ("inspect", "report")
     assert stack.depth == 0 and stack.top.frame_id == parent.frame_id
-    assert len(request_log) == 3
-    assert request_log[2].contains("Final report.")
-    assert repr(request_log[2].messages).count("[WORKFLOW RETURN]") == 1
+    assert len(request_log) == 6
+    assert request_log[-1].contains("Final report.")
+    assert repr(request_log[-1].messages).count("[WORKFLOW RETURN]") == 1

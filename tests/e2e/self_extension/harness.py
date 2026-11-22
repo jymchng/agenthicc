@@ -7,7 +7,7 @@ from copy import deepcopy
 from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING
 
-from lauren_ai._transport import Completion, Message, TokenUsage
+from lauren_ai._transport import Completion, Message, TokenUsage, ToolCall
 from lauren_ai._transport._mock import MockTransport
 
 from agenthicc.runners.headless import WorkflowExecutionResult, execute_workflow
@@ -136,6 +136,19 @@ def reply(text: str) -> Completion:
         content=text,
         tool_calls=[],
         stop_reason="end_turn",
+        usage=TokenUsage(input_tokens=1, output_tokens=1),
+    )
+
+
+def tool_call(name: str, arguments: dict[str, object], *, use_id: str = "") -> Completion:
+    """Construct a scripted model response containing one tool call."""
+    identity = use_id or f"wfc-{name}"
+    return Completion(
+        id=identity,
+        model="offline",
+        content="",
+        tool_calls=[ToolCall(tool_use_id=identity, name=name, input=arguments)],
+        stop_reason="tool_use",
         usage=TokenUsage(input_tokens=1, output_tokens=1),
     )
 

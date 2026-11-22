@@ -3268,6 +3268,39 @@ status, depth, intent and effective policy. A child retains its resolved plugin.
 and publication receipts for the synthetic parent turn. Delivery uses the
 stable key `return:<parent_frame_id>:<child_run_id>`.
 
+### WorkflowInvocation
+
+`agenthicc.workflows.plugin.WorkflowInvocation` is a frozen declaration on
+`WorkflowPlugin.invocation`. It describes discovery copy, model callability,
+subagent eligibility, interaction requirements, reentrancy, child-call
+permission and published artifact kinds. The default opts out of model entry.
+Changes to the declaration affect checkpoint compatibility.
+
+### list_workflows
+
+`agenthicc.workflows.stack_tools.list_workflows()` lists eligible workflows by
+name with bounded discovery text, parameter names, interactivity and source.
+Eligibility depends on the current frame, capability ceiling and headless mode.
+
+### enter_workflow
+
+`agenthicc.workflows.stack_tools.enter_workflow(workflow, intent, params=None)`
+validates a request and brokers entry approval in Safe mode. The optional map
+contains string values. A refusal supplies a stable error code and fix hint.
+An accepted request starts after the current agent turn closes successfully.
+
+### EntryReceipt
+
+`agenthicc.workflows.stack_tools.EntryReceipt` has the status
+`handoff_accepted`, the reserved child frame ID and a handoff note. Repeated
+requests for the accepted workflow and intent return the same receipt in the
+current turn.
+
+### workflow_status
+
+`agenthicc.workflows.stack_tools.workflow_status()` lists stack frames with
+their current phases and recent returns. A worker sees only its own frame.
+
 ### PhaseSpec
 
 Declarative phase metadata for generic `WorkflowRunner` execution. It carries

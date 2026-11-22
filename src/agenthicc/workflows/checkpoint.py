@@ -570,14 +570,17 @@ def context_from_payload(
 
 
 def workflow_fingerprint(plugin: type[WorkflowPlugin]) -> str:
-    """Return a stable fingerprint for the declared workflow topology."""
+    """Return a stable fingerprint for the workflow topology and invocation."""
+    from agenthicc.workflows.plugin import WorkflowInvocation
+
     topology = [
         {"name": phase.name, "next": phase.next, "on_reject": phase.on_reject}
         for phase in plugin.phases
     ]
-    raw = json.dumps(
-        {"name": plugin.name, "phases": topology}, sort_keys=True, separators=(",", ":")
-    )
+    shape: dict[str, object] = {"name": plugin.name, "phases": topology}
+    if plugin.invocation != WorkflowInvocation():
+        shape["invocation"] = dataclasses.asdict(plugin.invocation)
+    raw = json.dumps(shape, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 

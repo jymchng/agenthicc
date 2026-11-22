@@ -58,6 +58,19 @@ with the source and the full body’s digest. A skill can narrow the tools for
 the rest of the turn. See the [skills guide](plugins.md#skills) for activation
 options and permissions.
 
+## Workflow tools
+
+| Tool | Purpose |
+| --- | --- |
+| `list_workflows()` | List up to 40 agent-callable workflows available from the current frame. |
+| `enter_workflow(workflow, intent, params=None)` | Request a child workflow using a string intent and optional string-valued parameters. |
+| `workflow_status()` | Inspect the current workflow stack and recent returns. |
+
+`enter_workflow` returns a handoff receipt after admission. The session starts
+the child when the provider turn ends normally. Rejected requests return a
+stable code and a fix hint. Workers receive the inspection tools and see their
+own frame in workflow status. See the [workflow guide](workflows.md#let-the-agent-call-a-workflow).
+
 ## The shortest working path
 
 Create `.agenthicc/tools/project_status.py`:

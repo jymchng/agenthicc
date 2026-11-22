@@ -489,6 +489,8 @@ In a registry overlay, press Enter on an entry to open its details. Press Enter 
 
 Use `/workflow call <name> <intent>` to run a workflow for one task and return its result to the current agent. See the [workflow guide](./docs/guides/workflows.md#call-a-workflow-and-return).
 
+Agents can discover and request workflows that opt in to model entry. Safe mode asks for approval before starting the child. See [agent workflow calls](./docs/guides/workflows.md#let-the-agent-call-a-workflow).
+
 ### Installing skills
 
 Install validated skills from a local path, direct HTTPS `SKILL.md` URL, or a generic GitHub repository with `agenthicc skills add SOURCE`. Both `https://github.com/owner/repo.git` and `owner/repo` sources are supported; repository sources discover and install all valid skills by default. Use `--skill NAME[,NAME]` to select specific skills, `--all` to make full installation explicit, and `--global` for user-global scope. Existing skill directories are never overwritten. Review downloaded instructions before invoking a newly installed skill.

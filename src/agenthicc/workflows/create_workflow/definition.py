@@ -22,7 +22,7 @@ if TYPE_CHECKING:
     from agenthicc.workflows.config import WorkflowConfig
     from agenthicc.workflows.create_workflow.runner import CreateWorkflowRunner
 
-from agenthicc.workflows.plugin import PhaseSpec, WorkflowParams, WorkflowPlugin
+from agenthicc.workflows.plugin import PhaseSpec, WorkflowInvocation, WorkflowParams, WorkflowPlugin
 
 #: TOML keys accepted under ``[workflows.create_workflow]``.
 _PARAM_FIELDS: tuple[str, ...] = (
@@ -75,8 +75,15 @@ class CreateWorkflow(WorkflowPlugin):
     """
 
     name = "create_workflow"
+    invocation = WorkflowInvocation(
+        when_to_use="Author a reusable workflow for a repeated task.",
+        returns="The validated workflow package and its publication receipt.",
+        agent_callable=True,
+        subagent_eligible=True,
+        publishes=("workflow",),
+    )
     description = "Design → Generate → Validate → Summary  (author a new custom workflow)"
-    mode_bindings: list[str] = []  # manual only — invoke with /workflow create_workflow
+    mode_bindings: list[str] = []
     phases = [
         PhaseSpec(
             name="design",

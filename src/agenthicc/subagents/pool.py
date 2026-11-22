@@ -1981,7 +1981,7 @@ class SubagentWorker:
             tool
             for tool in self._all_tools
             if self._capability_scope.is_tool_allowed(tool_name(tool))
-            and tool_name(tool) != "spawn_subagents"
+            and tool_name(tool) not in {"spawn_subagents", "enter_workflow"}
             and not (inherits_all and _is_control_tool(tool))
         ]
 
@@ -2007,11 +2007,20 @@ class SubagentWorker:
             bind_skill_use,
             current_skill_use,
         )
+        from agenthicc.workflows.stack_tools import bind_workflow_tools, current_workflow_tools
 
         # Filter the full tool list to the expanded effective scope. Communication
         # tools are session-bound control-plane tools and are added separately;
         # they never expand the file/command/network tool surface.
         filtered = self._filtered_tools()
+        parent_workflow_tools = current_workflow_tools()
+        workflow_tools = (
+            parent_workflow_tools.for_worker(
+                f"{self._pool_id}:{self._task.task_id}", self._task.agent_type
+            )
+            if parent_workflow_tools is not None
+            else None
+        )
         if (
             self._depth < self._max_depth
             and _declares(self._effective_allowed, "spawn_subagents")
@@ -2360,7 +2369,12 @@ class SubagentWorker:
             )
 
         async def _run_once(message: str, config_override: AgentConfig) -> None:
-            with bind_skill_use(skill_use) if skill_use is not None else nullcontext():
+            with (
+                bind_skill_use(skill_use) if skill_use is not None else nullcontext(),
+                bind_workflow_tools(workflow_tools)
+                if workflow_tools is not None
+                else nullcontext(),
+            ):
                 await _run_provider(message, config_override)
 
         async def _run_provider(message: str, config_override: AgentConfig) -> None:

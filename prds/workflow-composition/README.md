@@ -10,8 +10,8 @@ the architecture, the dependency table and the delivery order.
 | PRD | Title | Outcome | Priority |
 |---|---|---|---|
 | [WFC-00](WFC-00-programme-and-study.md) | Programme and study | all (evidence, order, cross-cutting rules) | P0 |
-| [WFC-01](WFC-01-workflow-call-stack.md) | A workflow call stack — enter a workflow, then return to the one you left | 1 | P0 |
-| [WFC-02](WFC-02-model-facing-workflow-tools.md) | Model-facing workflow tools — list, enter, inspect; `WorkflowInvocation` | 1 | P0 |
+| [WFC-01](WFC-01-workflow-call-stack.md) | A workflow call stack — enter a workflow, then return to the one you left (implemented) | 1 | P0 |
+| [WFC-02](WFC-02-model-facing-workflow-tools.md) | Model-facing workflow tools and `WorkflowInvocation` (implemented) | 1 | P0 |
 | [WFC-03](WFC-03-durable-stack-events-and-resume.md) | A durable stack — kernel events, checkpoint links, exactly-once return | 1, 6 | P1 |
 | [WFC-04](WFC-04-workflow-running-subagents.md) | Subagents that run a workflow | 2 | P1 |
 | [WFC-05](WFC-05-session-reload-service.md) | One session reload service for tools, skills, workflows and commands (implemented) | 3, 4, 5 | P0 |

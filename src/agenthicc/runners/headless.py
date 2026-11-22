@@ -7,6 +7,7 @@ import json
 import os
 import sys
 import uuid
+from contextlib import nullcontext
 from dataclasses import dataclass, field, is_dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -224,18 +225,59 @@ async def execute_workflow(
     resume_plan: ResumePlan | None = None,
     profile_override: str | None = None,
 ) -> WorkflowExecutionResult:
-    """Execute a registered workflow and deliver any child return in order."""
+    """Execute a named workflow or default agent turn, including child returns."""
+    return await _execute_workflow_turn(
+        session,
+        workflow_name,
+        intent,
+        completed_turns=completed_turns,
+        resume_run_id=resume_run_id,
+        continuation=continuation,
+        resume_plan=resume_plan,
+        profile_override=profile_override,
+    )
+
+
+async def _execute_workflow_turn(
+    session: SessionContext,
+    workflow_name: str,
+    intent: str,
+    *,
+    completed_turns: int,
+    resume_run_id: str | None = None,
+    continuation: str | None = None,
+    resume_plan: ResumePlan | None = None,
+    profile_override: str | None = None,
+    deliver_parent: bool = True,
+) -> WorkflowExecutionResult:
     from agenthicc.runners.workflow_stack import (
         WorkflowDelivery,
         WorkflowStackError,
         workflow_return,
     )
     from agenthicc.workflows.checkpoint import workflow_fingerprint
+    from agenthicc.workflows.stack_tools import WorkflowToolScope, bind_workflow_tools
 
     stack = session.workflow_stack
     frame = stack.top
     registered = session.workflow_registry.get(workflow_name)
-    workflow = frame.definition if frame.depth else registered
+    if (
+        workflow_name == "default"
+        and registered is None
+        and not frame.depth
+        and not frame.awaiting_child
+        and resume_run_id is None
+    ):
+        if session.agent_runner is None:
+            raise RuntimeError("No LLM configured for the default turn.")
+        if not intent.strip():
+            raise ValueError("Workflow intent must not be empty")
+        stack.set_base("default")
+        session.app_state.conversation.workflow_stack.set(stack.summaries())
+        await _run_headless_agent_turn(session, intent, completed_turns)
+        return WorkflowExecutionResult(session.session_id, "default", "", "complete", ())
+    pinned = bool(frame.depth or frame.awaiting_child)
+    workflow = frame.definition if pinned else registered
     if workflow is None:
         available = ", ".join(sorted(session.workflow_registry.names())) or "none"
         raise ValueError(f"Unknown workflow: {workflow_name!r}. Available: {available}")
@@ -247,7 +289,7 @@ async def execute_workflow(
         raise ValueError("Workflow intent must not be empty")
     if resume_run_id is not None and session.session_conversation is None:
         raise ValueError("workflow resume requires the durable session conversation")
-    if frame.depth:
+    if pinned:
         if frame.workflow_name != workflow_name:
             raise WorkflowStackError("frame_not_current", "The called workflow must finish first.")
         if resume_run_id is not None and resume_run_id != frame.run_id:
@@ -262,6 +304,11 @@ async def execute_workflow(
             raise ValueError(
                 f"PLUGIN_INCOMPATIBLE: Workflow {workflow_name!r} changed since it paused."
             )
+        if frame.awaiting_child:
+            if resume_run_id != frame.run_id:
+                raise WorkflowStackError(
+                    "frame_not_running", "Resume the suspended workflow first."
+                )
         if frame.status == "paused":
             if resume_run_id != frame.run_id:
                 raise WorkflowStackError(
@@ -274,24 +321,65 @@ async def execute_workflow(
 
     conversation = session.app_state.conversation
     conversation.workflow_stack.set(stack.summaries())
+    tools = WorkflowToolScope(
+        stack,
+        session.workflow_registry,
+        session.cfg,
+        active_mode=lambda: session.app_state.active_mode(),
+        approval=session.approval_svc,
+        headless=True,
+    )
     try:
-        result, outcome = await _execute_registered_workflow(
-            session,
-            workflow,
-            workflow_name,
-            intent,
-            frame,
-            completed_turns=completed_turns,
-            resume_run_id=resume_run_id,
-            continuation=continuation,
-            resume_plan=resume_plan,
-            profile_override=profile_override,
-        )
+        with bind_workflow_tools(tools):
+            result, outcome = await _execute_registered_workflow(
+                session,
+                workflow,
+                workflow_name,
+                intent,
+                frame,
+                completed_turns=completed_turns,
+                resume_run_id=resume_run_id,
+                continuation=continuation,
+                resume_plan=resume_plan,
+                profile_override=profile_override,
+            )
     except BaseException:
+        if tools.take_pending() is not None:
+            conversation.append_event(
+                "system", {"text": "The pending workflow call was dropped when the turn ended."}
+            )
         if frame.depth:
             stack.pause(frame.frame_id)
             conversation.workflow_stack.set(stack.summaries())
         raise
+    pending = tools.take_pending()
+    if pending is not None:
+        if result.status == "suspended":
+            stack.park_current_run(workflow)
+            child = stack.push(pending)
+            child_result = await _execute_workflow_turn(
+                session,
+                child.workflow_name,
+                child.intent,
+                completed_turns=completed_turns + 1,
+                deliver_parent=False,
+            )
+            delivery = stack.take_return()
+            if delivery is None:
+                return child_result
+            resumed = await _deliver_headless_return(
+                session,
+                delivery,
+                completed_turns + 2,
+                deliver_parent=deliver_parent,
+            )
+            return resumed if resumed is not None else child_result
+        conversation.append_event(
+            "system", {"text": "The pending workflow call was dropped when the turn ended."}
+        )
+    if frame.awaiting_child and result.status == "complete":
+        stack.resume_parked_run()
+        conversation.workflow_stack.set(stack.summaries())
     if frame.depth:
         if result.status == "complete":
             returned = workflow_return(frame, outcome, session.app_state.workflow_run())
@@ -299,9 +387,10 @@ async def execute_workflow(
             conversation.workflow_stack.set(stack.summaries())
             returned = await session.authored.publish_return(returned, outcome)
             stack.queue_return(WorkflowDelivery(parent.frame_id, frame.run_id, returned))
-            delivery = stack.take_return()
-            if delivery is not None:
-                await _deliver_headless_return(session, delivery, completed_turns + 1)
+            if deliver_parent:
+                delivery = stack.take_return()
+                if delivery is not None:
+                    await _deliver_headless_return(session, delivery, completed_turns + 1)
         else:
             stack.pause(frame.frame_id)
             conversation.workflow_stack.set(stack.summaries())
@@ -309,15 +398,18 @@ async def execute_workflow(
 
 
 async def _deliver_headless_return(
-    session: SessionContext, delivery: WorkflowDelivery, completed_turns: int
-) -> None:
+    session: SessionContext,
+    delivery: WorkflowDelivery,
+    completed_turns: int,
+    *,
+    deliver_parent: bool = True,
+) -> WorkflowExecutionResult | None:
     """Give the now-current parent one turn carrying its child's result."""
-    from agenthicc.agents.selection import turn_agent
-    from agenthicc.runners.agent_turn import _run_agent_turn
-    from agenthicc.runners.session_tools import session_tools
-
     stack = session.workflow_stack
-    name = stack.top.workflow_name if stack.depth else stack.base_dispatch_name
+    parent = stack.top
+    name = (
+        parent.workflow_name if stack.depth or parent.awaiting_child else stack.base_dispatch_name
+    )
     text = delivery.result.as_system_block()
     service = session.session_service
     if service is not None:
@@ -329,33 +421,92 @@ async def _deliver_headless_return(
             turn_id=delivery.key,
         )
     if name is not None:
-        await execute_workflow(session, name, text, completed_turns=completed_turns)
-        return
+        return await _execute_workflow_turn(
+            session,
+            name,
+            (parent.intent or text) if parent.awaiting_child else text,
+            completed_turns=completed_turns,
+            resume_run_id=parent.run_id if parent.awaiting_child else None,
+            continuation=text if parent.awaiting_child else None,
+            deliver_parent=deliver_parent,
+        )
+    await _run_headless_agent_turn(session, text, completed_turns)
+    return None
+
+
+async def _run_headless_agent_turn(
+    session: SessionContext, text: str, completed_turns: int
+) -> None:
+    from agenthicc.agents.selection import turn_agent
+    from agenthicc.memory.tool_history import ToolHistoryRecoveryRequired
+    from agenthicc.runners.agent_turn import _run_agent_turn
+    from agenthicc.runners.session_tools import session_tools
+    from agenthicc.workflows.stack_tools import WorkflowToolScope, bind_workflow_tools
 
     agent = turn_agent(session.agents_registry, session.app_state.agent(), session.cfg)
-    await _run_agent_turn(
-        text,
-        session.agent_runner,
-        session.processor,
-        session_memory=session.session_memory,
-        conversation_id=session.session_id,
-        max_agent_turns=agent.max_agent_turns,
-        conv_store=session.app_state.conversation,
-        app_state=session.app_state,
-        exec_cfg=agent.exec_cfg,
-        skills=session.reload.skills,
-        skill_permissions=session.cfg.agents.skill_permissions_for(agent.spec.name),
-        mention_cache=session.mention_cache,
-        project_plugin_tools=[*session.reload.tools.current().value, *session_tools(session)],
-        mcp_registry=session.mcp_registry,
-        subagent_registry=session.subagent_registry,
-        active_agent=agent.spec.name,
-        completed_turns=completed_turns,
-        approval_svc=session.approval_svc,
-        agent_spec=agent.spec,
-        agent_config=session.cfg,
-        workspace_access=session.workspace_access,
+    tools = WorkflowToolScope(
+        session.workflow_stack,
+        session.workflow_registry,
+        session.cfg,
+        active_mode=session.app_state.active_mode,
+        approval=session.approval_svc,
+        headless=True,
     )
+    conversation = session.session_conversation
+    owner = (
+        conversation.owned(f"headless-turn:{uuid.uuid4().hex}") if conversation else nullcontext()
+    )
+    async with owner:
+        if conversation is not None:
+            recovery = conversation.retry_tool_history_recovery()
+            if not recovery.provider_ready:
+                raise ToolHistoryRecoveryRequired(recovery)
+        session.approval_svc.reset_turn_memory()
+        try:
+            with bind_workflow_tools(tools):
+                await _run_agent_turn(
+                    text,
+                    session.agent_runner,
+                    session.processor,
+                    session_memory=session.session_memory,
+                    conversation_id=session.session_id,
+                    max_agent_turns=agent.max_agent_turns,
+                    conv_store=session.app_state.conversation,
+                    app_state=session.app_state,
+                    exec_cfg=agent.exec_cfg,
+                    skills=session.reload.skills,
+                    skill_permissions=session.cfg.agents.skill_permissions_for(agent.spec.name),
+                    mention_cache=session.mention_cache,
+                    project_plugin_tools=[
+                        *session.reload.tools.current().value,
+                        *session_tools(session),
+                    ],
+                    mcp_registry=session.mcp_registry,
+                    agents_registry=session.agents_registry,
+                    subagent_registry=session.subagent_registry,
+                    active_agent=agent.spec.name,
+                    completed_turns=completed_turns,
+                    approval_svc=session.approval_svc,
+                    agent_spec=agent.spec,
+                    agent_config=session.cfg,
+                    workspace_access=session.workspace_access,
+                    memory_router=session.memory_router,
+                    semantic_index=session.semantic_index,
+                    usage_ledger=session.usage_ledger,
+                    browser_manager=session.browser_manager,
+                )
+        except BaseException:
+            if tools.take_pending() is not None:
+                session.app_state.conversation.append_event(
+                    "system", {"text": "The pending workflow call was dropped when the turn ended."}
+                )
+            raise
+    pending = tools.take_pending()
+    if pending is not None:
+        child = session.workflow_stack.push(pending)
+        await execute_workflow(
+            session, child.workflow_name, child.intent, completed_turns=completed_turns + 1
+        )
 
 
 async def _execute_registered_workflow(
@@ -384,6 +535,7 @@ async def _execute_registered_workflow(
     from agenthicc.workflows.config import WorkflowConfig
     from agenthicc.runners.workflow_checkpoint_store import WorkflowCheckpointStore
     from agenthicc.runners.workflow_handle import WorkflowRunHandle
+    from agenthicc.workflows.stack_tools import WorkflowHandoff
 
     workflow_handle = None
     resuming = resume_run_id is not None
@@ -425,7 +577,7 @@ async def _execute_registered_workflow(
                 checkpoint_store=checkpoint_store,
             )
             resume_registry = session.workflow_registry
-            if frame.depth:
+            if frame.depth or frame.awaiting_child:
                 resume_registry = WorkflowRegistry()
                 resume_registry.register(workflow_cls)
             records = coordinator.inspect(
@@ -528,6 +680,7 @@ async def _execute_registered_workflow(
     error: str | None = None
     failure_category = ""
     runner_result: object | None = None
+    suspended_for_child = False
     completed_phases: list[Event] = []
 
     def _record_completed_phase(event: Event) -> None:
@@ -668,7 +821,8 @@ async def _execute_registered_workflow(
             browser_tools=list(session.browser_tools),
             workspace_scope=workspace_scope,
             workspace_access=workspace_access,
-            params=workflow_cls.build_params(selected_config.workflows.get(workflow_name, {})),
+            params=frame.params
+            or workflow_cls.build_params(selected_config.workflows.get(workflow_name, {})),
             terminal_wait_policies={
                 phase.name: phase.terminal_wait_policy for phase in workflow_cls.phases
             },
@@ -690,6 +844,7 @@ async def _execute_registered_workflow(
                 workflow_handle.run_id,
                 resume_plan=resume_plan,
                 policy=frame.policy if frame.depth else None,
+                model_request=frame.model_request(),
             ):
                 runner_result = (
                     await runner.resume(workflow_handle.context)
@@ -744,6 +899,16 @@ async def _execute_registered_workflow(
                 workflow_handle.mark_terminal("complete")
                 if workflow_handle.checkpoint_supported:
                     workflow_handle.save_checkpoint(reason="complete")
+    except WorkflowHandoff:
+        assert workflow_handle is not None
+        try:
+            workflow_handle.suspend_for_child()
+        except (OSError, ValueError) as exc:
+            error = "The parent workflow could not save its handoff checkpoint."
+            workflow_handle.finalize_failure(exc, kind="checkpoint_storage")
+            failure_category = "checkpoint_storage"
+        else:
+            suspended_for_child = True
     except (asyncio.CancelledError, KeyboardInterrupt):
         remove_phase_sink()
         remove_failure_subscription()
@@ -831,11 +996,15 @@ async def _execute_registered_workflow(
                     )
                 )
     if workflow_handle is not None and workflow_handle.lifecycle == "paused":
-        status = "paused"
+        status = "suspended" if suspended_for_child else "paused"
         # The handle owns the redacted, bounded diagnostic. Do not expose a
         # provider exception's raw request dump in the JSON result. A failed
         # resume transition is not checkpointed, so keep its immediate error.
-        if workflow_handle.last_error and failure_category != "workflow_resume_transition_failed":
+        if (
+            not suspended_for_child
+            and workflow_handle.last_error
+            and failure_category != "workflow_resume_transition_failed"
+        ):
             error = workflow_handle.last_error
     run_id = (workflow_run.run_id if workflow_run is not None else "") or (
         workflow_handle.run_id if workflow_handle is not None else ""
@@ -869,7 +1038,7 @@ async def _execute_registered_workflow(
     )
     handle_phase = (workflow_handle.current_phase if workflow_handle is not None else None) or ""
     handle_failure_kind = workflow_handle.failure_kind if workflow_handle is not None else None
-    if session_service is not None:
+    if session_service is not None and not suspended_for_child:
         try:
             if result.status == "paused":
                 await session_service.publish(

@@ -163,8 +163,9 @@ def _reserved_names(kind: ArtifactKind) -> frozenset[str]:
         from agenthicc.agent_tools import AGENT_TOOLS
         from agenthicc.skills.tools import SKILL_TOOL_NAMES
         from agenthicc.tools.base import tool_name
+        from agenthicc.workflows.stack_tools import WORKFLOW_TOOL_NAMES
 
-        return frozenset(map(tool_name, AGENT_TOOLS)) | SKILL_TOOL_NAMES
+        return frozenset(map(tool_name, AGENT_TOOLS)) | SKILL_TOOL_NAMES | WORKFLOW_TOOL_NAMES
     if kind == "workflow":
         from agenthicc.workflows.loader import builtin_workflow_descriptors
 

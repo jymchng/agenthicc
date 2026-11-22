@@ -1,6 +1,6 @@
 ---
 title: "WFC-02: Model-facing workflow tools — list, enter, and inspect"
-status: Proposed
+status: Implemented
 version: 1.0.0
 date: 2026-11-22
 repository: jymchng/agenthicc
@@ -203,3 +203,24 @@ optional object with string-valued additional properties. Omitting the
 argument selects the Python default. Keep the mapping in §5.2. The JSON
 string fallback is unnecessary. A5 retains its typed-schema requirement.
 Evidence is `test_direct_workflow_params_schema_supports_optional_string_mapping`.
+
+## Implementation status
+
+The session binds an entry request to the active agent turn. A completed turn
+hands it back to the session owner. An opted-in workflow saves its current run
+before the child starts and continues that run when the child returns. A
+cancelled or timed-out turn drops the request.
+
+| Criteria | Verification |
+|---|---|
+| A1 | `test_parent_turn_closes_before_model_requested_child_starts` uses a registered `create_tools` fixture and the production workflow-entry and approval paths. `test_two_child_phases_return_once_to_the_parent` uses the scripted headless session. WFC-07 supplies the actual tool-authoring implementation. |
+| A2, A3 | `test_enter_workflow_returns_typed_refusals_before_creating_a_run` checks unknown and private workflows, depth, the Plan ceiling, and headless refusal of interactive workflows. `test_a_frame_must_opt_in_before_it_can_call_another_workflow` checks frame admission and cycles. |
+| A4 | `test_interrupted_turn_after_accepted_receipt_starts_no_child` covers explicit cancellation and timeout after acceptance. |
+| A5 | `test_enter_workflow_exposes_typed_optional_parameters` checks the Lauren tool schema. |
+| A6 | `test_workflow_listing_is_ordered_and_bounded` checks sorted discovery and the JSON size bound. |
+| FR-2, FR-3 | `test_parameter_validation_precedes_approval_and_acceptance_is_idempotent`, `test_denied_approval_leaves_the_turn_available_for_other_tools`, and `test_approval_happens_once_and_receipt_does_not_start_a_frame`. |
+| FR-4, FR-5 | `test_worker_inherits_workflow_status_without_the_entry_tool` and `test_unmarked_workflows_keep_their_topology_fingerprint`. |
+
+`test_opted_in_parent_resumes_the_same_checkpoint_after_child` runs the
+handoff through both TUI and headless execution and removes the parent's
+definition from the live registry while the child runs.

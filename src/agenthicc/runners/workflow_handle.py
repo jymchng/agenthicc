@@ -602,6 +602,14 @@ class WorkflowRunHandle:
         self.pause_requested = False
         self._announce()
 
+    def suspend_for_child(self) -> None:
+        """Persist a completed agent turn boundary before a child starts."""
+        if not self.checkpoint_supported:
+            raise ValueError("This workflow has no resumable checkpoint context.")
+        self.mark_paused(reason="workflow_call")
+        self.save_checkpoint(reason="workflow_call")
+        self.release_claim()
+
     def mark_terminal(self, status: WorkflowLifecycle, *, error: str = "") -> None:
         """Set a terminal workflow lifecycle."""
         if status not in {"complete", "failed", "discarded"}:

@@ -27,6 +27,30 @@ child is active, the base selection is locked. If the child pauses, use
 to the parent with an abandoned result. The default depth is four child
 frames. Set `workflows.max_stack_depth` to change it.
 
+### Let the agent call a workflow
+
+The agent can use `list_workflows` to find callable workflows that fit its
+current frame and permissions. It can then use
+`enter_workflow(workflow, intent, params=None)` to request one. The optional
+parameters are a map of strings validated by the target workflow. The session
+starts the child after the current agent turn finishes successfully and
+delivers the result to the parent when the child returns. `workflow_status`
+shows the current phase and recent returns.
+
+Safe mode asks the operator before accepting the entry. Plan mode allows
+workflows whose declared phases stay within its read-only ceiling. Headless
+agent entry excludes workflows that declare an interactive human gate.
+Workers can inspect their own workflow status.
+
+Set `WorkflowPlugin.invocation` to a `WorkflowInvocation` declaration to opt
+in. Supply `when_to_use` and `returns` for discovery, set
+`agent_callable=True` for model entry, and set `interactive=True` when the
+workflow needs a human decision. `allows_child_workflows=True` lets an active
+workflow call another workflow. Its runner needs checkpoint support so the
+session can resume the same run. Use `reentrant=True` only for workflows that
+support repeated frames on the same stack. Changes to this declaration affect
+checkpoint compatibility.
+
 ### Outer session ownership
 
 The workflow lease is nested inside the durable session owner lease. The TUI,

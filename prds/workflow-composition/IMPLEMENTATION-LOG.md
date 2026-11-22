@@ -8,9 +8,9 @@ Branch `feat/workflow-composition` starts at `5100c8c` from fetched
 | Setup | Complete | `4deacb1` adds the series and its index block. Parsed all 15 front-matter blocks and resolved the series links. `2b9902a` applies the separate guidance patch. Hooks installed. Strict MkDocs, Ruff and mypy passed. |
 | 0 | M0 pushed | `a04bfb4` records three spikes and four amendments. The tool-surface follow-up also demonstrates dispatch after a same-turn schema refresh. See milestone gate results below. |
 | 1 | M1 pushed | WFC-14 foundation, WFC-05 and the WFC-13 harness landed. Full local gate and pre-push checks passed. The remote tip matched `aa2bac1`. |
-| 2 | In progress | WFC-11 publication service, operator controls and lease handling implemented. WFC-10 is next. |
-| 3 | Pending | WFC-01 and the publish connection. |
-| 4 | Pending | WFC-02. |
+| 2 | M2 pushed | WFC-11 publication service and WFC-10 live skills. The remote tip matched `7ca93be`. |
+| 3 | M3 pushed | WFC-01 and the publish connection. The remote tip matched `f0eb339`. |
+| 4 | M4 verified locally | WFC-02 workflow entry and inspection. See M4 verification below. |
 | 5 | Pending | WFC-06. |
 | 6 | Pending | WFC-08 and WFC-07. |
 | 7 | Pending | WFC-09. |
@@ -19,8 +19,8 @@ Branch `feat/workflow-composition` starts at `5100c8c` from fetched
 
 | PRD | Status | Commit and evidence |
 |---|---|---|
-| WFC-01 | Pending | — |
-| WFC-02 | Spike complete | Optional string mapping confirmed. |
+| WFC-01 | Implemented | `f0eb339`. See the PRD for stack, child resume and return-delivery evidence. |
+| WFC-02 | Implemented | Model entry, pending handoff, and status in the TUI and headless workflow owner. See the PRD for A1–A6 evidence. |
 | WFC-03 | Pending | — |
 | WFC-04 | Spike complete | Nested mapping confirmed with a correction to optional keys in the published schema. |
 | WFC-05 | Implemented | `c757516`, `7bd642c`. Both runners use the service. See the PRD for A1–A7 evidence. |
@@ -28,7 +28,7 @@ Branch `feat/workflow-composition` starts at `5100c8c` from fetched
 | WFC-07 | Pending | — |
 | WFC-08 | Spike complete | Same-turn refresh verified by updating the provider schema list and the dispatch map together. |
 | WFC-09 | Pending | — |
-| WFC-10 | Pending | — |
+| WFC-10 | Implemented | `ed01cf0`. Provider discovery and use share the live skill registry. |
 | WFC-11 | Runtime ready | `6958a4b` isolates validation and smoke. `59e893a` adds publication, operator controls and recovery. The canonical lease uses the same store. The workflow return connection and downstream authoring scenarios remain in their scheduled steps. |
 | WFC-12 | Pending | — |
 | WFC-13 | Harness ready | `7536d33` adds a scripted provider, request snapshots, isolated real sessions, and a test-only failure trigger. S1–S9 remain to be integrated. |
@@ -230,3 +230,29 @@ During the serial recheck, the transcript E2E test observed a collapsed
 command while expecting the expanded view. The individual test and the
 isolated full E2E suite passed with no source or assertion changes. The
 verification logs are `/var/tmp/agenthicc-wfc-m3-*.log`.
+
+## M4 verification
+
+The parent closes its provider turn before starting an accepted workflow.
+The TUI and headless session also park an opted-in workflow and resume the same
+run on return. The scripted S1 scenario exercises model discovery, entry,
+two child phases and one return. Entry into the actual `create_tools` authoring
+workflow is exercised at WFC-07.
+
+The first full runs found five unit tests and one integration test failing
+with `AttributeError: 'Handle' object has no attribute 'pause_reason'` or the
+same error on a test handle subclass. The workflow stack now owns the pinned
+definition in both runners. Focused resume and approval tests passed, including
+a registry reload that removes an active parent while its child runs.
+
+The checks after the source fix passed on Python 3.13:
+
+- 6,278 unit tests with 15 skips, 425 integration tests, and 239 E2E tests
+  with two skips.
+- Nine performance tests, Ruff check and format, mypy on 425 source files,
+  the type audit against `origin/main`, strict MkDocs, and `llms_check`.
+- No `Any` annotations in the new implementation or test files. The
+  repository coverage floor remains 81.5% and the aggregate coverage run
+  is scheduled for CI.
+
+The verification logs are `/var/tmp/agenthicc-wfc-m4-*.log`.

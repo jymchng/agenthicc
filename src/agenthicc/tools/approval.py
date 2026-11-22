@@ -84,7 +84,7 @@ class ApprovalRequest:
     tool_input: dict[str, object]
     capabilities: frozenset[str]  # capability values that triggered the approval
     event: asyncio.Event = field(compare=False, hash=False)
-    kind: str = "tool"  # "tool" | "plan_review" — controls which overlay is shown
+    kind: str = "tool"  # "tool", "plan_review", "questions", or "workflow_enter"
     mode_options: tuple[str, ...] = ()
     """Canonical execution modes offered by a plan-review overlay, if any."""
     workspace_access: tuple["WorkspaceAccessRequest", ...] = ()

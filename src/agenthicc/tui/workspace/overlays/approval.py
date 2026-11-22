@@ -73,6 +73,11 @@ _TELL = "No, and tell the agent what to do instead"
 
 def approval_options(req: ApprovalRequest) -> list[ApprovalChoice]:
     """The four choices, worded for what the grant covers."""
+    if req.kind == "workflow_enter":
+        return [
+            ApprovalChoice("Start the workflow", _Grant.ONCE),
+            ApprovalChoice(_TELL, _Grant.DENY),
+        ]
     if req.workspace_access:
         return [
             ApprovalChoice("Yes, this target once", _Grant.ONCE),
