@@ -195,3 +195,11 @@ agent-callability from `mode_bindings`.
 | Model loops entering workflows. | Depth/re-entrancy guards (WFC-01), approval prompt, `handoff_already_pending`. |
 | Over-broad `agent_callable` on user workflows. | Default false; `create_workflow` templates require an explicit, reviewed `when_to_use` before it can set true (WFC-06). |
 | Approval fatigue in Safe mode. | One prompt per entry; the child's own phases keep their existing approval behaviour. |
+
+## Amendment — 2026-11-22
+
+Lauren-ai 1.6.2 publishes `params: dict[str, str] | None = None` as an
+optional object with string-valued additional properties. Omitting the
+argument selects the Python default. Keep the mapping in §5.2. The JSON
+string fallback is unnecessary. A5 retains its typed-schema requirement.
+Evidence is `test_direct_workflow_params_schema_supports_optional_string_mapping`.

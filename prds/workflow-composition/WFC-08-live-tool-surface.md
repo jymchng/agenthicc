@@ -153,3 +153,13 @@ and their callers updated in the same change.
 | A tool list change invalidates a provider prompt cache. | Tool lists change only on reload, at the turn boundary; cost is one cache miss per reload. |
 | A removed tool is called by an in-flight worker. | Workers keep their generation; the call executes against the object they hold, which remains valid. |
 | The lauren-ai loop cannot swap tools mid-turn. | The spike has a defined fallback; the primary guarantee does not depend on it. |
+
+## Amendment — 2026-11-22
+
+Lauren-ai 1.6.2 computes provider schemas once before the loop in both
+`run` and `run_stream`. In the spike a tool replaced the agent's registered
+tool map. The next request in the same run still advertised the earlier map.
+The first request in the next run advertised the replacement. Apply the
+fallback in §5.2 and omit the tool-boundary refresh. A7 is inapplicable.
+The first request after a return is still covered by §5.3 and A1.
+Evidence is `test_lauren_snapshots_tool_schemas_at_start_of_run`.

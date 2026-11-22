@@ -175,3 +175,13 @@ spawn with `ceiling_denied`, not mid-run.
 | Workflow assumptions about a live TUI (overlays, input). | `interactive` flag plus a headless smoke test for every `subagent_eligible` built-in. |
 | Staged output left behind by crashed workers. | Staging is inside the worktree lifecycle and reaped with it; publish removes consumed staging. |
 | Digest size growth. | Existing digest bounds; summaries truncated with a marker. |
+
+## Amendment — 2026-11-22
+
+The raw Lauren-ai 1.6.2 schema preserves the string mapping when the
+`TypedDict` gives it concrete runtime field types. It marks every nested
+key required. Use concrete runtime field types and extend the existing
+`spawn_subagents` schema normalization from `context` to `workflow`
+and `params`. This preserves the mapping encoding shared with WFC-02
+and allows existing callers to omit new fields. Evidence is
+`test_nested_workflow_params_schema_requires_optional_keys_in_raw_schema`.

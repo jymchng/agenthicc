@@ -308,3 +308,16 @@ from `store.commit`).
 | Validator false negatives let unsafe code through. | Findings are conservative and stable-coded; the sandboxed would-load preview; capability checks at call time are independent of the validator. |
 | Sandbox unavailable on a platform. | `static_only` is recorded and shown; `stage_only` remains available. |
 | Silent publication surprises the operator. | A non-blocking notice on every publish and `/authored list`; headless emits a JSON line. |
+
+## Amendment — 2026-11-22
+
+The Linux import spike passed with Bubblewrap. The existing Bubblewrap
+process isolation and bounded execution live in
+`src/agenthicc/worktrees/environment.py`. `tools/sandbox.py` owns workspace
+path policy. The worktree command entry point mounts its worktree writable,
+so the import harness needs a read-only mount with its own limited runtime
+paths and a cleared environment. The spike verified an import, denial of a
+write, a private network namespace with only loopback, a 4 KiB output limit,
+and wall-clock termination. Keep the AST-only fallback and `static_only`
+notice for platforms without the subprocess sandbox. Evidence is in
+`tests/integration/test_authored_import_spike.py`.
