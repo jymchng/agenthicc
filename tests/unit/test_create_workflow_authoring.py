@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from functools import partial
 from pathlib import Path
 from typing import cast
 
 import pytest
 
 from agenthicc.plugins.trust import ExtensionTrust, override_extension_trust
+from agenthicc.workflows.authoring.scoped_tools import make_scoped_writer_tools
 from agenthicc.workflows.create_workflow.authoring import (
     AuthoringError,
     AuthoringLease,
@@ -21,8 +23,8 @@ from agenthicc.workflows.create_workflow.authoring import (
     restore_authoring,
     scan_committed_package,
     scan_package,
+    verify_authoring,
 )
-from agenthicc.workflows.create_workflow.generation_tools import make_generation_writer_tools
 
 pytestmark = pytest.mark.unit
 
@@ -133,7 +135,13 @@ def test_same_name_run_cannot_claim_an_active_package(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_generation_writers_allow_only_package_relative_paths(tmp_path: Path) -> None:
     lease = _active_lease(tmp_path)
-    tools = make_generation_writer_tools(lease)
+    tools = make_scoped_writer_tools(
+        Path(lease.target_path),
+        suffixes=frozenset({".py"}),
+        max_file_bytes=1_000_000,
+        max_files=128,
+        verify_owner=partial(verify_authoring, lease),
+    )
     target = Path(lease.target_path)
 
     invalid_paths = (
@@ -162,7 +170,13 @@ async def test_generation_writers_allow_only_package_relative_paths(tmp_path: Pa
 @pytest.mark.asyncio
 async def test_generation_writer_rejects_symlinked_package_file(tmp_path: Path) -> None:
     lease = _active_lease(tmp_path)
-    tools = make_generation_writer_tools(lease)
+    tools = make_scoped_writer_tools(
+        Path(lease.target_path),
+        suffixes=frozenset({".py"}),
+        max_file_bytes=1_000_000,
+        max_files=128,
+        verify_owner=partial(verify_authoring, lease),
+    )
     outside = tmp_path / "outside.py"
     outside.write_text("original = True\n", encoding="utf-8")
     try:

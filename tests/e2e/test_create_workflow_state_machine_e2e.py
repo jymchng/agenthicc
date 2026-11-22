@@ -233,7 +233,7 @@ async def test_e2e_authors_a_workflow_end_to_end(app_state, processor, tmp_path,
     assert ctx.artifacts["validate"].metadata["ok"] is True
     assert ctx.artifacts["validate"].metadata["phase_names"] == ["draft", "review"]
     assert ctx.validation_summary == "it imports and matches the design"
-    assert ctx.repair_cycles == 0
+    assert ctx.repair_budget.used == 0
 
 
 async def test_e2e_generated_workflow_is_immediately_loadable(
@@ -395,7 +395,7 @@ async def test_e2e_broken_file_is_rejected_regenerated_and_accepted(
     ctx = await runner.run("create a doc_review workflow")
     await processor.drain()
 
-    assert ctx.repair_cycles == 1
+    assert ctx.repair_budget.used == 1
     assert app_state.workflow_run().status == "complete"
     assert ctx.artifacts["validate"].metadata["ok"] is True
     written = (tmp_path / ".agenthicc" / "workflows" / "doc_review" / "runner.py").read_text(
@@ -422,7 +422,7 @@ async def test_e2e_a_wrong_approval_cannot_finish_the_run(
     ctx = await runner.run("create a doc_review workflow")
     await processor.drain()
 
-    assert ctx.repair_cycles == 1
+    assert ctx.repair_budget.used == 1
     assert ctx.artifacts["generate"].metadata["repair_cycle"] == 1
     assert app_state.workflow_run().status == "complete"
     assert ctx.artifacts["validate"].metadata["ok"] is True
@@ -433,20 +433,21 @@ async def test_e2e_run_fails_when_the_repair_budget_is_exhausted(
 ):
     monkeypatch.chdir(tmp_path)
     steps: list[tuple[str, dict] | str] = list(_DESIGN_STEPS)
-    # attempts = 1 → one generate, one reject, and the second rejection fails.
+    # The default budget admits three repairs. The fourth rejection ends the run.
     for _ in range(4):
         steps.extend(_generate_steps(_BROKEN_SOURCE))
         steps.extend(_REJECT_STEPS)
     mock = _script(*steps)
     runner = _runner(app_state, processor, mock)
-    runner._max_repair_cycles = 1
 
     ctx = await runner.run("create a doc_review workflow")
     await processor.drain()
 
     assert app_state.workflow_run().status == "failed"
-    assert "limit 1" in ctx.fail_reason
-    assert ctx.repair_cycles == 2
+    assert "limit 3" in ctx.fail_reason
+    assert ctx.validation_report in ctx.fail_reason
+    assert ctx.repair_budget.used == 3
+    assert len(mock.calls) == len(steps)
 
 
 # ── exit path ─────────────────────────────────────────────────────────────────
@@ -591,4 +592,4 @@ async def test_e2e_artifacts_record_what_each_phase_produced(
         tmp_path / ".agenthicc" / "workflows" / "doc_review"
     )
     assert ctx.artifacts["validate"].metadata["errors"] == []
-    assert ctx.artifacts["summarize"].metadata["repair_cycles"] == 0
+    assert ctx.artifacts["summarize"].metadata["repair_count"] == 0

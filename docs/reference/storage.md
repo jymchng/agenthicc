@@ -421,6 +421,10 @@ open files, callbacks, and credentials. Resume attaches the already-open
 session memory and preserves its conversation ID; persistence never copies the
 conversation and does not guarantee a provider cache hit.
 
+`create_workflow` checkpoints require a repair budget with the original
+cycle allowance and usage. The workflow records an exhausted budget as a
+terminal failure. A checkpoint missing the budget cannot resume.
+
 The session's existing `ConversationJournal` also records a redacted
 `workflow_phase_boundary` index after a completed checkpoint is durable.
 `fold_workflow_phase_boundaries(run_id, workflow_name)` exposes only validated

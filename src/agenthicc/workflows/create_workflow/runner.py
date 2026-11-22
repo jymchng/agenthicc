@@ -37,11 +37,19 @@ import logging
 import os
 import uuid
 from collections.abc import Iterable
+from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from agenthicc.tools.base import ToolLike
+from agenthicc.workflows.authoring.budget import RepairBudget, RepairBudgetExhausted
+from agenthicc.workflows.authoring.scoped_tools import (
+    make_scoped_reader_tools,
+    make_scoped_writer_tools,
+)
+from agenthicc.workflows.authoring.verdict import Finding, ValidationReport, decide
 from agenthicc.workflows.base_runner import BaseWorkflowRunner
+from agenthicc.workflows.create_workflow.authoring import _MAX_FILE_BYTES, _MAX_FILES
 from agenthicc.workflows.phase_lifecycle import (
     PhaseAnnotation,
     PhaseBoundaryError,
@@ -58,8 +66,11 @@ from agenthicc.workflows.create_workflow.state import (
 if TYPE_CHECKING:
     from agenthicc.tui.runtime.mode_manager import ModeManager, RuntimeMode
     from agenthicc.workflows.config import WorkflowConfig
+    from agenthicc.workflows.create_workflow.authoring import PackageManifest
     from agenthicc.workflows.create_workflow.catalog import AuthoringSnapshot
-    from agenthicc.workflows.create_workflow.validation import ValidationReport
+    from agenthicc.workflows.create_workflow.validation import (
+        ValidationReport as PackageValidationReport,
+    )
     from agenthicc.workflows.plugin import WorkflowRun
 
 log = logging.getLogger(__name__)
@@ -83,6 +94,7 @@ _PHASE_MODEL_ATTR: dict[str, str] = {
 
 #: Conventional directory for project-local workflow plugins.
 _WORKFLOW_DIR: str = ".agenthicc/workflows"
+_PACKAGE_SUFFIXES = frozenset({".py", ".md", ".txt", ".json", ".toml", ".yaml", ".yml"})
 
 
 def _evidence_fingerprint(value: object) -> str:
@@ -527,8 +539,9 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
         execution = config.cfg.execution
         self._max_attempts: int = max(1, int(execution.authoring_max_generation_attempts))
         self._max_phase_turns: int = max(1, int(execution.authoring_max_phase_turns))
-        #: Bound on VALIDATE → GENERATE repair round-trips.
-        self._max_repair_cycles: int = self._max_attempts
+        self._initial_repair_budget = RepairBudget.from_settings(
+            config.cfg.workflows.get("authoring", {})
+        )
 
     # ── public entry points ───────────────────────────────────────────────────
 
@@ -552,6 +565,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             intent=intent,
             run_id=run_id,
             shared_memory=session_memory,
+            repair_budget=self._initial_repair_budget,
         )
         if handle is not None:
             handle.attach_context(ctx)
@@ -636,15 +650,8 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 log.info("create_workflow: %s → %s", phase_name, state.name)
 
             final_status: str = self._final_status(state)
-            if state == CreateWorkflowState.FAILED and handle is not None:
-                from agenthicc.runners.workflow_handle import classify_workflow_failure
-
-                failure = ctx.fail_reason or "create_workflow phase failed"
-                checkpoint = handle.finalize_failure(
-                    failure,
-                    kind=classify_workflow_failure(failure).kind,
-                )
-                final_status = "paused" if checkpoint is not None else "failed"
+            if final_status == "failed":
+                final_status = self._finalize_unsuccessful_run(ctx)
             wf_run = dataclasses.replace(wf_run, status=final_status, current_phase=None)
             self._cfg.app_state.workflow_run.set(wf_run)
 
@@ -782,15 +789,8 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 self._checkpoint_boundary(ctx, phase_name, state)
 
             final_status = self._final_status(state)
-            if final_status == "failed" and handle is not None:
-                from agenthicc.runners.workflow_handle import classify_workflow_failure
-
-                failure = ctx.fail_reason or "create_workflow phase failed"
-                checkpoint = handle.finalize_failure(
-                    failure,
-                    kind=classify_workflow_failure(failure).kind,
-                )
-                final_status = "paused" if checkpoint is not None else "failed"
+            if final_status == "failed":
+                final_status = self._finalize_unsuccessful_run(ctx)
             wf_run = dataclasses.replace(wf_run, status=final_status, current_phase=None)
             self._cfg.app_state.workflow_run.set(wf_run)
             await self._cfg.processor.emit(
@@ -1039,18 +1039,19 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             scan_package,
             verify_authoring,
         )
-        from agenthicc.workflows.create_workflow.generation_tools import (
-            make_generation_writer_tools,
-        )
+        from agenthicc.tools.capabilities import ToolCapability, get_tool_capabilities
         from agenthicc.workflows.create_workflow.inspection_tools import (
             make_inspection_tools,
         )
         from agenthicc.workflows.create_workflow.phase_tools import (
             make_generation_tools,
         )
-        from agenthicc.workflows.code_plan.phase_tools import make_questions_tool
 
         self._set_phase("generate", _PHASE_INDEX["generate"], ctx)
+        mode = self._declared_mode("generate")
+        if ToolCapability.WRITE in self._phase_mode(mode).blocked_capabilities:
+            ctx.fail_reason = "The active mode blocks workflow authoring writes."
+            return CreateWorkflowState.FAILED
         ctx.command_outcomes.clear()
         root = self._workspace_root()
         run_id = ctx.run_id or self._run_id
@@ -1220,15 +1221,24 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             )
         )
 
-        mode = self._declared_mode("generate")
+        writers = make_scoped_writer_tools(
+            Path(lease.target_path),
+            suffixes=_PACKAGE_SUFFIXES,
+            max_file_bytes=_MAX_FILE_BYTES,
+            max_files=_MAX_FILES,
+            verify_owner=partial(verify_authoring, lease),
+        )
+        discovery = [
+            item
+            for item in make_inspection_tools()
+            if get_tool_capabilities(item) == {ToolCapability.READ}
+        ]
         for attempt in range(1, self._max_attempts + 1):
             ctx.command_outcomes.clear()
             generate_event = asyncio.Event()
             generate_data: dict[str, object] = {}
-            tools: _ToolList = list(make_inspection_tools())
-            tools.extend(make_generation_writer_tools(lease))
+            tools: _ToolList = [*discovery, *writers]
             tools.extend(make_generation_tools(generate_event, generate_data, lease))
-            tools.extend(make_questions_tool(self._cfg.approval_svc, ctx.question_metadata))
             authoring_snapshot = self._authoring_snapshot(
                 phase_name="generate",
                 phase_role="auto",
@@ -1281,7 +1291,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                             "file_count": len(manifest.files),
                             "workflow_name": ctx.workflow_name,
                             "attempts": attempt,
-                            "repair_cycle": ctx.repair_cycles,
+                            "repair_cycle": ctx.repair_budget.used,
                         },
                     )
                 )
@@ -1305,14 +1315,12 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             read_authoring_lease,
             scan_committed_package,
             scan_package,
+            verify_authoring,
         )
         from agenthicc.workflows.create_workflow.phase_tools import (
             make_validation_tools,
         )
         from agenthicc.workflows.code_plan.phase_tools import make_questions_tool
-        from agenthicc.workflows.create_workflow.generation_tools import (
-            make_package_read_tools,
-        )
         from agenthicc.workflows.create_workflow.smoke import (
             run_generated_workflow_smoke,
         )
@@ -1387,11 +1395,13 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             )
             return CreateWorkflowState.FAILED
         if manifest.fingerprint != expected_manifest.fingerprint:
+            if ctx.validation_summary and not committed:
+                return self._revalidate_changed_package(ctx, manifest)
             ctx.fail_reason = "Canonical package changed after generation was marked complete."
             return CreateWorkflowState.FAILED
 
         root = Path(lease.workspace_root)
-        report: ValidationReport = validate_workflow_file(
+        report: PackageValidationReport = validate_workflow_file(
             lease.target_path,
             expected_name=ctx.workflow_name,
             root=root,
@@ -1436,6 +1446,38 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 report,
                 categories={**report.categories, "smoke": "pass"},
             )
+        findings = tuple(
+            Finding(
+                f"workflow.{category}",
+                "error",
+                ".",
+                None,
+                f"The package failed the {category} check.",
+            )
+            for category, outcome in sorted(report.categories.items())
+            if outcome == "fail" and category != "result"
+        )
+        if (report.errors or not report.ok) and not findings:
+            findings = (
+                Finding(
+                    "workflow.validation_failed",
+                    "error",
+                    ".",
+                    None,
+                    "The package failed validation.",
+                ),
+            )
+        if report.warnings:
+            findings += (
+                Finding(
+                    "workflow.validation_warning",
+                    "warning",
+                    ".",
+                    None,
+                    "See the detailed deterministic report for advisories.",
+                ),
+            )
+        verdict = ValidationReport(manifest.fingerprint, findings)
         ctx.package_manifest = manifest
         ctx.validation_evidence = {
             "categories": dict(report.categories),
@@ -1443,7 +1485,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             "errors": list(report.errors),
             "warnings": list(report.warnings),
             "smoke": smoke.to_dict(),
-            "package_fingerprint": manifest.fingerprint,
+            "package_fingerprint": verdict.digest,
         }
         ctx.validation_evidence["evidence_id"] = _evidence_fingerprint(ctx.validation_evidence)
         ctx.validation_report = report.render()
@@ -1502,9 +1544,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 if isinstance(raw_categories, dict)
                 else {}
             )
-            if await self._finalize_approved_package(ctx, validation_categories):
-                return CreateWorkflowState.SUMMARIZE
-            return CreateWorkflowState.FAILED
+            return await self._finalize_approved_package(ctx, validation_categories)
 
         system_prompt: str = (
             _VALIDATE_PROMPT
@@ -1517,8 +1557,14 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             validate_event: asyncio.Event = asyncio.Event()
             validate_data: dict[str, object] = {}
 
-            tools: _ToolList = []
-            tools.extend(make_package_read_tools(lease))
+            tools: _ToolList = list(
+                make_scoped_reader_tools(
+                    Path(lease.target_path),
+                    suffixes=_PACKAGE_SUFFIXES,
+                    max_file_bytes=_MAX_FILE_BYTES,
+                    verify_owner=partial(verify_authoring, lease),
+                )
+            )
             tools.extend(make_validation_tools(validate_event, validate_data))
             tools.extend(make_questions_tool(self._cfg.approval_svc, ctx.question_metadata))
             text: str = (
@@ -1552,10 +1598,11 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             if not validate_event.is_set():
                 continue
 
-            action_value = validate_data.get("action", "reject")
-            action: str = action_value if isinstance(action_value, str) else "reject"
+            action: Literal["approve", "reject"] = (
+                "approve" if validate_data.get("action") == "approve" else "reject"
+            )
 
-            if action == "approve" and report.ok:
+            if decide(verdict, action) == "approve":
                 summary = validate_data.get("summary", "")
                 ctx.validation_summary = summary if isinstance(summary, str) else ""
                 ctx.rejection_reason = ""
@@ -1565,9 +1612,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                     if isinstance(raw_categories, dict)
                     else {}
                 )
-                if await self._finalize_approved_package(ctx, validation_categories):
-                    return CreateWorkflowState.SUMMARIZE
-                return CreateWorkflowState.FAILED
+                return await self._finalize_approved_package(ctx, validation_categories)
 
             if action == "approve":
                 # Ground truth wins: the agent approved a file that does not load.
@@ -1594,7 +1639,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
         self,
         ctx: CreateWorkflowContext,
         validation_categories: dict[str, str],
-    ) -> bool:
+    ) -> CreateWorkflowState:
         """Commit the exact checkpointed and approved package fingerprint."""
         from agenthicc.workflows.create_workflow.authoring import (
             AuthoringError,
@@ -1619,14 +1664,15 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             ctx.fail_reason = (
                 "Validation approval is not bound to a complete canonical package manifest."
             )
-            return False
+            return CreateWorkflowState.FAILED
         try:
             current = await asyncio.to_thread(scan_package, lease)
-            if current.fingerprint != raw_fingerprint:
-                raise AuthoringError("workflow package changed after validation approval")
         except (AuthoringError, OSError, ValueError) as exc:
             ctx.fail_reason = f"Cannot finalize canonical workflow: {type(exc).__name__}: {exc}"
-            return False
+            return CreateWorkflowState.FAILED
+
+        if current.fingerprint != raw_fingerprint:
+            return self._revalidate_changed_package(ctx, current)
 
         handle = self._cfg.workflow_handle
         if handle is not None:
@@ -1653,7 +1699,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 "package_fingerprint": raw_fingerprint,
                 "validation_evidence_id": evidence_id,
             }
-            return False
+            return CreateWorkflowState.FAILED
 
         ctx.package_manifest = committed
         ctx.generated_path = lease.target_path
@@ -1672,7 +1718,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
         validation_artifact = ctx.artifacts.get("validate")
         if validation_artifact is not None:
             validation_artifact.metadata["publication"] = dict(ctx.publication)
-        return True
+        return CreateWorkflowState.SUMMARIZE
 
     async def _summarize(self, ctx: CreateWorkflowContext) -> CreateWorkflowState:
         """Run a read-only summary turn, returning FAILED if that turn errors."""
@@ -1714,7 +1760,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                     "workflow_name": ctx.workflow_name,
                     "path": ctx.publication.get("published_path", ctx.generated_path),
                     "publication": dict(ctx.publication),
-                    "repair_cycles": ctx.repair_cycles,
+                    "repair_count": ctx.repair_budget.used,
                 },
             )
         )
@@ -1722,16 +1768,50 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
 
     # ── phase helpers ─────────────────────────────────────────────────────────
 
+    def _finalize_unsuccessful_run(self, ctx: CreateWorkflowContext) -> Literal["failed", "paused"]:
+        handle = self._cfg.workflow_handle
+        if handle is None:
+            return "failed"
+        if ctx.repair_exhausted:
+            handle.failure_kind = "repair_budget_exhausted"
+            handle.mark_terminal("failed", error="Authoring repair budget exhausted")
+            if handle.checkpoint_supported:
+                handle.save_checkpoint(reason="repair_budget_exhausted")
+            return "failed"
+
+        from agenthicc.runners.workflow_handle import classify_workflow_failure
+
+        failure = ctx.fail_reason or "create_workflow phase failed"
+        checkpoint = handle.finalize_failure(
+            failure,
+            kind=classify_workflow_failure(failure).kind,
+        )
+        return "paused" if checkpoint is not None else "failed"
+
+    def _revalidate_changed_package(
+        self, ctx: CreateWorkflowContext, manifest: PackageManifest
+    ) -> CreateWorkflowState:
+        """Discard an approval tied to different bytes and validate the new candidate."""
+        ctx.package_manifest = manifest
+        ctx.validation_evidence.clear()
+        ctx.artifacts.pop("validate", None)
+        next_state = self._route_repair(ctx, "Workflow package changed after validation approval.")
+        if next_state is CreateWorkflowState.FAILED:
+            return next_state
+        return CreateWorkflowState.VALIDATE
+
     def _route_repair(self, ctx: CreateWorkflowContext, reason: str) -> CreateWorkflowState:
         """Send the run back to GENERATE, or FAIL when the repair budget is spent."""
-        ctx.repair_cycles += 1
         ctx.rejection_reason = reason.strip()
         ctx.validation_summary = ""
         ctx.publication.clear()
-        if ctx.repair_cycles > self._max_repair_cycles:
+        try:
+            ctx.repair_budget = ctx.repair_budget.charge()
+        except RepairBudgetExhausted as exc:
+            ctx.repair_exhausted = True
             ctx.fail_reason = (
-                f"Validation rejected the generated workflow {ctx.repair_cycles} times "
-                f"(limit {self._max_repair_cycles}). Last reason: {ctx.rejection_reason}"
+                f"{exc}. {ctx.rejection_reason}\n{ctx.validation_report}\n"
+                "Review the candidate and start a new authoring run."
             )
             return CreateWorkflowState.FAILED
         return CreateWorkflowState.GENERATE
@@ -1818,7 +1898,10 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
         outcome = "failed" if next_state is CreateWorkflowState.FAILED else "completed"
         if next_state.is_terminal and next_state is not CreateWorkflowState.FAILED:
             outcome = "terminal"
-        elif ctx.rejection_reason and next_state is CreateWorkflowState.GENERATE:
+        elif ctx.rejection_reason and next_state in {
+            CreateWorkflowState.GENERATE,
+            CreateWorkflowState.VALIDATE,
+        }:
             outcome = "rejected"
         existing = ctx.last_boundary
         boundary_key = "|".join(
@@ -1979,6 +2062,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 skill_permissions=self._cfg.cfg.agents.skill_permissions_for("auto"),
                 mention_cache=self._cfg.mention_cache,
                 project_plugin_tools=tools,
+                allowed_tool_names=frozenset(tool_name(item) for item in tools),
                 mcp_registry=self._cfg.mcp_registry,
                 subagent_registry=self._cfg.subagent_registry,
                 active_agent="auto",

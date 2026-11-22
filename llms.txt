@@ -321,7 +321,9 @@ are skipped after insertion, and completion is rejected while work remains.
 | make_inspection_tools | agenthicc.workflows.create_workflow.inspection_tools | Read-only authoring-surface inspection read live from `PhaseSpec`, `ToolCapability`, `PhaseRole`; with a snapshot, also exposes effective catalog/decision tools |
 | build_authoring_snapshot | agenthicc.workflows.create_workflow.catalog | Bounded, redacted live tool/dependency/policy snapshot used by authoring turns and checkpoint provenance |
 | AuthoringLease / PackageManifest / begin_authoring / prepare_authoring / scan_package / finalize_authoring / restore_authoring | agenthicc.workflows.create_workflow.authoring | Run-owned canonical package lease, exact manifest, pending lifecycle, fingerprint-bound finalization, and replacement recovery |
-| make_generation_writer_tools / make_package_read_tools | agenthicc.workflows.create_workflow.generation_tools | Package-scoped read/write tools for the exact leased canonical workflow directory |
+| make_scoped_writer_tools / make_scoped_reader_tools | agenthicc.workflows.authoring.scoped_tools | Bounded tools scoped to a runner-selected candidate root |
+| RepairBudget / RepairBudgetExhausted | agenthicc.workflows.authoring.budget | Checkpointed repair allowance and usage |
+| Finding / ValidationReport / decide | agenthicc.workflows.authoring.verdict | Runner-owned and digest-bound authoring approval |
 | run_generated_workflow_smoke | agenthicc.workflows.create_workflow.smoke | Bounded fake-provider contract smoke for generated custom runners; not a sandbox for generated imports |
 
 A generated workflow is expected to ship its own state-machine runner in

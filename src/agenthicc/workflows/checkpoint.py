@@ -400,6 +400,8 @@ def context_from_payload(
             phase_iteration=payload_int(fields.get("phase_iteration"), 0),
         )
     if kind == "CreateWorkflowContext":
+        from agenthicc.workflows.authoring.budget import RepairBudget
+
         if (
             "state" not in fields
             or "authoring_lease" not in fields
@@ -408,6 +410,10 @@ def context_from_payload(
             raise CheckpointValidationError(
                 "create_workflow checkpoint is missing canonical authoring state; start a new run"
             )
+        try:
+            repair_budget = RepairBudget.from_payload(fields.get("repair_budget"))
+        except ValueError as exc:
+            raise CheckpointValidationError(f"{exc}; start a new run") from exc
         raw_state = fields.get("state")
         try:
             state = _decode_enum(raw_state, CreateWorkflowState)
@@ -527,13 +533,14 @@ def context_from_payload(
             rejection_reason=str(fields.get("rejection_reason", "")),
             suggestion=str(fields.get("suggestion", "")),
             fail_reason=str(fields.get("fail_reason", "")),
-            repair_cycles=payload_int(fields.get("repair_cycles"), 0),
+            repair_budget=repair_budget,
+            repair_exhausted=fields.get("repair_exhausted") is True,
             artifacts=artifacts,
             command_outcomes=(payload_mappings(fields.get("command_outcomes"))),
             shared_memory=memory,
             state=state,
             phase_iteration=payload_int(fields.get("phase_iteration"), 0),
-            plan_version=str(fields.get("plan_version", "create_workflow.v1")),
+            plan_version=str(fields.get("plan_version", "create_workflow.v2")),
             phase_attempts={
                 str(key): payload_int(value, 0)
                 for key, value in payload_mapping(fields.get("phase_attempts")).items()

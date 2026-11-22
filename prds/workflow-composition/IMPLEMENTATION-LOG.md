@@ -6,8 +6,8 @@ Branch `feat/workflow-composition` starts at `5100c8c` from fetched
 | Step | Status | Commit and evidence |
 |---|---|---|
 | Setup | Complete | `4deacb1` adds the series and its index block. Parsed all 15 front-matter blocks and resolved the series links. `2b9902a` applies the separate guidance patch. Hooks installed. Strict MkDocs, Ruff and mypy passed. |
-| 0 | Spikes pass | `a04bfb4` records three spikes and four amendments. The tool-surface follow-up also demonstrates dispatch after a same-turn schema refresh. See milestone gate results below. |
-| 1 | Pending | WFC-14, WFC-05 and WFC-13 harness. |
+| 0 | M0 pushed | `a04bfb4` records three spikes and four amendments. The tool-surface follow-up also demonstrates dispatch after a same-turn schema refresh. See milestone gate results below. |
+| 1 | In progress | WFC-14 foundation landed. WFC-05 and the WFC-13 harness are pending. |
 | 2 | Pending | WFC-11 and WFC-10. |
 | 3 | Pending | WFC-01 and the publish connection. |
 | 4 | Pending | WFC-02. |
@@ -32,7 +32,7 @@ Branch `feat/workflow-composition` starts at `5100c8c` from fetched
 | WFC-11 | Spike complete | Sandboxed import, read-only workspace, network isolation and bounds confirmed. |
 | WFC-12 | Pending | — |
 | WFC-13 | Pending | — |
-| WFC-14 | Pending | — |
+| WFC-14 | Foundation | Shared scoped tools, deterministic verdict and persisted budget adopted by `create_workflow`. Sandbox validation and tool and skill adoption follow WFC-11, WFC-07 and WFC-09. |
 
 ## M0 verification
 
@@ -56,3 +56,24 @@ Lauren required-key behavior now captured by the schema spike.
   `test_provider_requests_and_the_result_are_the_same_without_the_panel`
   in isolation on 3.13. It passed. The full Python 3.14 integration recheck
   passed after the provider-schema follow-up test was added.
+
+The first branch push ended at `8580289`. Its pre-push hygiene, mypy, type-audit
+and unit checks passed. The remote tracking ref matched the local commit.
+
+## WFC-14 foundation
+
+- A1 uses `test_e2e_a_wrong_approval_cannot_finish_the_run` and
+  `test_runner_verdict_requires_a_clean_report_and_agent_approval`.
+- A2 uses `test_scoped_writer_reports_each_rejection`,
+  `test_scoped_writer_rejects_symlink` and
+  `test_concurrent_scoped_writes_share_the_file_limit`.
+- A3 uses `test_e2e_run_fails_when_the_repair_budget_is_exhausted`.
+- A4 uses `test_checkpoint_restart_preserves_repairs_and_exhausts_the_original_budget`
+  and `test_authoring_checkpoint_requires_persisted_budget`.
+- A5 uses `test_edits_after_approval_require_a_fresh_workflow_verdict`.
+- A6 is pending the WFC-11 importer. A7 and A8 need the WFC-07 and WFC-09
+  workflows for their cross-workflow checks.
+- The targeted authoring, checkpoint, integration and E2E selection passed
+  277 tests. Ruff check and format, mypy (414 files), the type-safety audit,
+  strict MkDocs and `llms_check` passed. Searches found no previous scoped
+  writer symbols or private repair counter in active code and documentation.

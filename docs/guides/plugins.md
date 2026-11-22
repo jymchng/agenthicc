@@ -199,6 +199,11 @@ tool convention and unified command registry. They do not establish trust or
 replace review of executable project code, and they do not replace capability,
 approval, testing, or documentation work.
 
+The `create_workflow` runner gives its authoring agent a bounded package
+writer scoped to the run’s pending candidate. Deterministic validation
+and model review must both approve the same content digest. See the
+[workflow authoring guide](workflows.md#budgets) for repair and resume.
+
 ## MCP servers
 
 Configure MCP servers with `[[tools.mcp_servers]]`. A session owns one

@@ -38,6 +38,7 @@ import time
 from enum import Enum, auto
 from typing import TYPE_CHECKING
 
+from agenthicc.workflows.authoring.budget import RepairBudget
 from agenthicc.workflows.create_workflow.authoring import AuthoringLease, PackageManifest
 
 if TYPE_CHECKING:
@@ -108,12 +109,13 @@ class CreateWorkflowContext:
     rejection_reason: str = ""  # set when VALIDATE routes back to GENERATE
     suggestion: str = ""  # set on EXITED — what the agent suggests instead
     fail_reason: str = ""  # set on FAILED
-    repair_cycles: int = 0  # times VALIDATE routed back to GENERATE (bounds the repair loop)
+    repair_budget: RepairBudget = dataclasses.field(default_factory=RepairBudget)
+    repair_exhausted: bool = False
     artifacts: dict[str, PhaseArtifact] = dataclasses.field(default_factory=dict)
     command_outcomes: list[dict[str, object]] = dataclasses.field(default_factory=list)
     shared_memory: ShortTermMemory | None = None  # shared across all phases
     state: CreateWorkflowState = CreateWorkflowState.DESIGN
-    plan_version: str = "create_workflow.v1"
+    plan_version: str = "create_workflow.v2"
     phase_iteration: int = 0
     # Durable execution journal projected into the typed context.  The
     # checkpoint codec stores these values, while the session ConversationStore

@@ -17,6 +17,14 @@
 **Scope:** Original audit of 17 source files; current package contains 21 Python files
 **Findings:** 9 architectural issues · 10 code quality issues · 9 bugs · 5 integration gaps
 
+## WFC-14 authoring contract
+
+`create_workflow` uses the shared scoped file tools, digest-bound verdict
+and persisted repair budget. Generation preserves the session mode and
+offers only its scoped writers, read-only discovery and handoff. The
+typed context stores the repair allowance and usage, and loading an
+authoring checkpoint requires both values.
+
 ## PRD-179 generated-runner lifecycle audit — 2026-08-28
 
 The generated-workflow contract now has one shared lifecycle surface in

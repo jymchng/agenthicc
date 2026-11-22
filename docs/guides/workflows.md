@@ -750,8 +750,9 @@ no prompt text, conversation content, secrets, or tool arguments.
 
 ### Generation writes directly to the canonical package under a pending marker
 
-`generate` runs with `mode_override="Yolo"` so the package-scoped writer tools
-are available, but their root is the runner-derived canonical directory
+`generate` keeps the active session mode. Safe applies its normal write
+approvals. Plan blocks authoring writes. The scoped writers use the
+runner-derived canonical directory
 `.agenthicc/workflows/<name>/`. The agent writes `runner.py` and workflow-local
 helpers there from the first write, then calls
 `mark_generation_complete(summary)`; the runner does not accept an agent-selected
@@ -842,27 +843,28 @@ idle with a running workflow indicator.
 
 ### Budgets
 
-Two previously advisory settings drive the loops:
+`[execution].authoring_max_generation_attempts` limits the attempts to
+complete each phase, and `[execution].authoring_max_phase_turns` limits the
+model calls per attempt. Both default to 20 and have a minimum of one.
 
-- `[execution].authoring_max_generation_attempts` (20 by default) bounds the
-  inner-loop attempts of every phase *and* the number of `validate → generate`
-  repair cycles;
-- `[execution].authoring_max_phase_turns` (20 by default) bounds the LLM
-  sub-turns inside one agent turn.
+`[workflows.authoring].max_repair_cycles` separately limits repair after a
+rejected validation or an edit that invalidates an approval. It defaults
+to three. The checkpoint stores the limit and the cycles already spent,
+so resuming preserves the budget. When the next repair would exceed the
+limit, the run ends with the last validation report.
 
-Both are clamped to at least 1. Exhausting either budget ends the run in `FAILED`
-with a reason naming the missing handoff, and the failure is reported in the
-transcript.
+The shared authoring verdict requires a clean deterministic report and
+an approval tied to the validated digest. Editing those bytes clears that
+approval and sends the updated candidate through validation again.
 
 ### Shared context and tools
 
 The session's `ShortTermMemory` is shared by all four phases, so the generating
 agent already has the design in context and can also see prior direct or
-workflow conversation subject to compaction. Every
-phase also receives `memory_write`, `memory_read`, and `semantic_search`, and the
-project tool set filtered by the active mode's blocked capabilities. The built-in
-tool registry supplies the workspace-guarded canonical `write_file` tool even when
-no project tool plugin exports it, so `generate` can always write its file.
+workflow conversation subject to compaction. Each phase has an explicit
+tool set. Generation and repair expose the package-scoped file tools,
+read-only inspection and the generation handoff. Validation reads the
+candidate through a scoped reader and records its decision.
 
 The authoring workflow receives read-only inspection tools whose content is read
 live from the running code, so the guidance cannot drift from the API. Each

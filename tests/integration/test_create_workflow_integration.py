@@ -242,7 +242,7 @@ async def test_full_run_against_a_real_processor(tmp_path: Path, processor) -> N
     await processor.drain()
 
     assert ctx.workflow_name == "doc_review"
-    assert ctx.repair_cycles == 0
+    assert ctx.repair_budget.used == 0
     assert set(ctx.artifacts) == {"design", "generate", "validate", "summarize"}
     assert runner._cfg.app_state.workflow_run().status == "complete"
     published = tmp_path / ".agenthicc" / "workflows" / "doc_review" / "runner.py"
@@ -268,7 +268,7 @@ async def test_repair_loop_against_a_real_processor(tmp_path: Path, processor) -
     ctx = await runner.run("build me a doc review workflow")
     await processor.drain()
 
-    assert ctx.repair_cycles == 1
+    assert ctx.repair_budget.used == 1
     assert ctx.validation_summary == "imports and matches the design"
     assert runner._cfg.app_state.workflow_run().status == "complete"
     assert ctx.artifacts["validate"].metadata["ok"] is True
@@ -286,7 +286,7 @@ async def test_deterministic_check_overrides_a_wrong_approval(tmp_path: Path, pr
     ctx = await runner.run("build me a doc review workflow")
     await processor.drain()
 
-    assert ctx.repair_cycles == 1
+    assert ctx.repair_budget.used == 1
     # The second generation ran inside repair cycle 1, i.e. the wrong approval
     # was re-routed instead of finishing the run.
     assert ctx.artifacts["generate"].metadata["repair_cycle"] == 1
@@ -459,7 +459,8 @@ async def test_denied_design_blocks_the_handoff_with_the_real_service(
 def test_authoring_budgets_come_from_real_toml(tmp_path: Path) -> None:
     toml = tmp_path / "agenthicc.toml"
     toml.write_text(
-        "[execution]\nauthoring_max_generation_attempts = 6\nauthoring_max_phase_turns = 9\n",
+        "[execution]\nauthoring_max_generation_attempts = 6\nauthoring_max_phase_turns = 9\n"
+        "[workflows.authoring]\nmax_repair_cycles = 2\n",
         encoding="utf-8",
     )
     cfg = load_config(project_path=toml, user_path=tmp_path / "missing.toml")
@@ -483,7 +484,7 @@ def test_authoring_budgets_come_from_real_toml(tmp_path: Path) -> None:
     runner = CreateWorkflowRunner(config)
     assert runner._max_attempts == 6
     assert runner._max_phase_turns == 9
-    assert runner._max_repair_cycles == 6
+    assert runner._initial_repair_budget.max_cycles == 2
 
 
 def test_phase_models_come_from_real_toml(tmp_path: Path) -> None:

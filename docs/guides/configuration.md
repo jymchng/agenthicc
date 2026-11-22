@@ -213,6 +213,20 @@ Environment variables are safer for credentials:
 Current provider defaults are defined by `PROVIDER_DEFAULT_MODELS`; consult
 the code rather than hard-coding them in support material.
 
+## Workflow authoring
+
+Set the repair budget for new authoring runs in the workflow settings.
+
+```toml
+[workflows.authoring]
+max_repair_cycles = 3
+```
+
+Use a non-negative integer. Zero ends the run on the first rejected
+validation. Resumed runs keep the limit and the usage saved in their
+checkpoint. The phase attempt and turn limits are set separately under
+`[execution]`.
+
 ## Execution
 
 | Key | Default | Meaning |

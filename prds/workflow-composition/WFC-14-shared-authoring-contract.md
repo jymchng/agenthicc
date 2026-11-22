@@ -210,3 +210,16 @@ The removals in §5.6 land in the same change as the adoption.
 | Moving `create_workflow`'s repair counter bumps its checkpoint schema. | Deliberate and pre-release; stale checkpoints fail validation with the existing message path. |
 | A strict verdict rejects reasonable code. | Findings are specific and the repair loop is the remedy; severity `warning` exists for advisory rules. |
 | Scoped writers hinder legitimate multi-file packages. | `max_files`/`max_file_bytes` are per-kind parameters chosen in each workflow's PRD. |
+
+## Amendment — 2026-11-22
+
+The shared authoring contract lands before the sandboxed importer and the
+tool and skill workflows, following WFC-00 §5. The existing workflow package
+keeps its canonical lease. Its versioned authoring context requires
+`RepairBudget` on load, while the outer checkpoint format remains the same
+for unrelated workflows. A change that invalidates a prior approval also
+spends one repair cycle before the candidate returns to validation. Exhaustion
+writes a terminal checkpoint.
+
+A6 will be verified when WFC-11 wires the sandboxed importer. The adoption and
+conformance checks across all three authoring workflows follow WFC-07 and WFC-09.

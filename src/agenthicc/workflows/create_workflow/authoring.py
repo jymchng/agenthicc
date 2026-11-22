@@ -19,6 +19,8 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Final
 
+from agenthicc.workflows.authoring.scoped_tools import _NOFOLLOW
+
 __all__ = [
     "PENDING_MARKER_NAME",
     "AuthoringError",
@@ -49,12 +51,6 @@ _MAX_FILES = 128
 _MAX_FILE_BYTES = 1_000_000
 _MAX_TOTAL_BYTES = 4_000_000
 _MAX_METADATA_BYTES = 16_384
-
-
-def _optional_os_flag(name: str) -> int:
-    """Return an available integer open flag or zero on unsupported platforms."""
-    value = getattr(os, name, 0)
-    return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
 class AuthoringError(ValueError):
@@ -406,6 +402,9 @@ def canonical_workflow_path(root: Path, workflow_name: str) -> Path:
     if not target.is_relative_to(workspace):
         raise AuthoringError("canonical workflow target escapes the authorized workspace")
     _reject_symlink_components(target, workspace)
+    user_root = Path.home().resolve() / ".agenthicc"
+    if target.is_relative_to(user_root) or target.is_relative_to(user_root.resolve()):
+        raise AuthoringError("workflow authoring cannot target the user-global directory")
     return target
 
 
@@ -419,7 +418,7 @@ def _read_json(path: Path, *, label: str) -> dict[str, object]:
         before = os.stat(path, follow_symlinks=False)
         if not stat.S_ISREG(before.st_mode) or before.st_size > _MAX_METADATA_BYTES:
             raise AuthoringError(f"{label} is not a bounded regular file")
-        fd = os.open(path, os.O_RDONLY | _optional_os_flag("O_NOFOLLOW"))
+        fd = os.open(path, os.O_RDONLY | _NOFOLLOW)
     except FileNotFoundError:
         raise
     except OSError as exc:
@@ -490,7 +489,7 @@ def _file_entry(path: Path, relative: str) -> PackageFile:
     if before.st_size > _MAX_FILE_BYTES:
         raise AuthoringError(f"workflow file {relative} exceeds {_MAX_FILE_BYTES} bytes")
     try:
-        fd = os.open(path, os.O_RDONLY | _optional_os_flag("O_NOFOLLOW"))
+        fd = os.open(path, os.O_RDONLY | _NOFOLLOW)
     except OSError as exc:
         raise AuthoringError(f"workflow file {relative} could not be read: {exc}") from exc
     chunks: list[bytes] = []

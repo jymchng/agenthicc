@@ -3845,8 +3845,8 @@ graph after the turn.
 
 Design is read-only and human-gated: `request_design_approval(design,
 workflow_name)` raises the plan-review overlay and `finalize_design(design,
-workflow_name)` refuses until it returned `approved=True`. Generate runs with
-`mode_override="Yolo"` and writes directly to the runner-derived canonical
+workflow_name)` refuses until it returned `approved=True`. Generate keeps the
+current session mode and writes to the runner-derived canonical
 package `.agenthicc/workflows/<name>/` with optional workflow-local tools and
 helpers beside `runner.py`. The runner creates a run-owned pending marker before
 exposing package-scoped writers; `mark_generation_complete(summary)` has no path
@@ -3906,12 +3906,11 @@ inner retry loop that runs agent turns until its transition tool sets an
 `asyncio.Event`. Assistant prose is never parsed for a transition, so a phase
 that ends without a tool call is retried and then reported as a failure.
 
-Retry budgets come from `execution.authoring_max_generation_attempts` (inner-loop
-attempts per phase, and the ceiling on `validate → generate` repair cycles) and
-`execution.authoring_max_phase_turns` (sub-turns per agent turn); both are
-clamped to at least 1. `resume()` accepts a typed `CreateWorkflowContext`
-checkpoint for in-place continuation; a legacy generic `WorkflowContext`
-retains its restart contract, and unrelated objects raise `TypeError`.
+The phase uses separate attempt and turn bounds from
+`execution.authoring_max_generation_attempts` and
+`execution.authoring_max_phase_turns`. The run’s repair budget comes from
+`workflows.authoring.max_repair_cycles` and defaults to three. `resume()`
+takes a typed `CreateWorkflowContext` with its persisted repair budget.
 
 `_validate` calls `validate_workflow_file` before the agent votes and **overrides
 an `approve_workflow` call when the report failed**, routing back to generate, so
@@ -3972,7 +3971,8 @@ class CreateWorkflowContext:
     rejection_reason: str = ""
     suggestion: str = ""
     fail_reason: str = ""
-    repair_cycles: int = 0
+    repair_budget: RepairBudget = field(default_factory=RepairBudget)
+    repair_exhausted: bool = False
     artifacts: dict[str, PhaseArtifact] = field(default_factory=dict)
     command_outcomes: list[dict[str, object]] = field(default_factory=list)
     shared_memory: ShortTermMemory | None = None
@@ -4223,17 +4223,46 @@ Restores an approved original package and exact prior trust records, or discards
 a first-generation pending candidate. It refuses mismatched leases, markers, or
 backups.
 
-### make_generation_writer_tools
+### make_scoped_writer_tools
 
-Builds the package-scoped `make_directory`, `read_file`, `write_file`, and
-`append_file` tools for one lease. Paths are package-relative; traversal,
-absolute paths, symlinks, marker edits, and writes outside the leased package
-are rejected at the tool boundary.
+`agenthicc.workflows.authoring.scoped_tools` builds `make_directory`,
+`read_file`, `write_file`, and `append_file` bound to a runner-selected
+root, approved suffixes, and per-file and file-count bounds. An optional
+ownership check verifies the run still owns the root.
 
-### make_package_read_tools
+### make_scoped_reader_tools
 
-Builds read-only package tools whose only addressable root is one leased
-canonical package.
+Builds the read-only variant with the same root, suffix and size checks.
+
+### RepairBudget
+
+A frozen record of `max_cycles` and `used` in
+`agenthicc.workflows.authoring.budget`. `charge()` returns an updated
+record and `from_payload()` requires both values in a checkpoint.
+
+### RepairBudgetExhausted
+
+Raised when `RepairBudget.charge()` would exceed the run’s allowance.
+
+### FindingSeverity
+
+Authoring evidence severity, either `"error"` or `"warning"`.
+
+### Finding
+
+An authoring diagnostic with a stable code, severity, candidate-relative
+path, optional line and bounded description.
+
+### authoring.verdict.ValidationReport
+
+A frozen record of the validated digest and runner findings in
+`agenthicc.workflows.authoring.verdict`. Its `errors` property counts
+blocking findings.
+
+### decide
+
+The shared authoring verdict accepts only an approval paired with a
+deterministic report that has no errors.
 
 ### build_authoring_snapshot
 
