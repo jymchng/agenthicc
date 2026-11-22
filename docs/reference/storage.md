@@ -631,6 +631,10 @@ clarification/INIT run.
 | Project memory | `.agenthicc/memory/project.db` | Namespaced KV and artifacts |
 | Workspace file cache | `.agenthicc/cache/file-cache.db` | Freshness-validated file contents |
 | Extension trust | `~/.agenthicc/trust.json` | Resolved path → SHA-256 records for trusted project extensions (`agenthicc trust`); owner-only, written atomically, never stored in a repository |
+| Authored staging | `.agenthicc/.staging/<run-id>/` | Candidate files kept out of discovery until publication |
+| Authored provenance | `.agenthicc/authored.json` | The project's view of installed artifacts and their validated digests |
+| Authored versions | `.agenthicc/authored/versions/<name>/<digest>/` | Up to five previous approved versions per artifact |
+| Authored authorization | `~/.agenthicc/authored/<workspace-digest>/` | Operator-owned approval tickets, version identities, and pending-install recovery snapshots |
 | Global memory | `~/.agenthicc/global.db` | User-wide KV values |
 
 These locations are fixed; no setting relocates them. An unreadable trust

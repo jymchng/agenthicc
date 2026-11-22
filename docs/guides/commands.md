@@ -68,6 +68,15 @@ supported by the same command-specific loader. Both forms are discovered at
 startup and by `/commands reload`; do not add a second command registry in a
 plugin.
 
+## Inspect and undo authored extensions
+
+`/authored list` displays published and staged sets. Use
+`/authored diff <name>` to inspect the change and `/authored rollback <name> [digest]`
+to activate an earlier version. `/authored remove <name>` removes the extension
+and reloads its surface. `/authored approve <run-id>` and
+`/authored reject <run-id>` resolve a set staged by the operator's publication
+policy. [Authored extensions](plugins.md#authored-extensions)
+
 ## Writing a trigger
 
 A trigger handler (a `TriggerHandlerBase` subclass registered with

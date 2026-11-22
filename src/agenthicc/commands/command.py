@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from agenthicc.commands.registry import UnifiedCommandRegistry
     from agenthicc.skills.loader import SkillDef
     from agenthicc.runners.reload import ReloadReport, ReloadSurface
+    from agenthicc.runners.authored import AuthoredPublisher
     from agenthicc.tools.base import ToolLike
     from agenthicc.tui.workspace.overlay import Overlay
     from agenthicc.tui.runtime.mode_manager import ModeManager
@@ -130,6 +131,7 @@ class CommandContext:
     close_overlay: "Callable[[], None] | None" = None
     set_pending_replay: "Callable[[str], None] | None" = None
     reload: "Callable[[frozenset[ReloadSurface]], Awaitable[ReloadReport]] | None" = None
+    authored: "AuthoredPublisher | None" = None
     start_task: "Callable[[Coroutine[object, object, None]], object] | None" = None
     set_input_text: "Callable[[str], None] | None" = None
     usage_snapshot: "Callable[[], UsageSnapshot] | None" = None

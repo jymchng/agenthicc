@@ -153,3 +153,25 @@ async def test_tool_reload_uses_source_even_when_timestamp_and_size_match(
     assert new.value[0]() == "later"
     assert old.value[0]() == "first"
     await reloader.close()
+
+
+async def test_reload_removes_the_only_tool_if_its_trusted_bytes_changed(
+    tmp_path: Path, reloader: ReloadService
+) -> None:
+    plugin = tmp_path / ".agenthicc" / "tools" / "label.py"
+    plugin.parent.mkdir(parents=True)
+    plugin.write_text(_tool_source("label"), encoding="utf-8")
+    trust = ExtensionTrust(store_path=tmp_path / "trust.json", trusted_roots=())
+    trust.trust(plugin, kind="tool")
+
+    with override_extension_trust(trust):
+        assert (await reloader.reload(frozenset({"tools"}), reason="api")).ok
+        assert tuple(map(tool_name, reloader.tools.current().value)) == ("label",)
+        plugin.write_text(_tool_source("changed"), encoding="utf-8")
+        result = await reloader.reload(frozenset({"tools"}), reason="api")
+
+    assert result.ok
+    assert result.diagnostics[0].code == "untrusted_modified"
+    assert result.changes[0].kind == "removed"
+    assert reloader.tools.current().value == ()
+    await reloader.close()

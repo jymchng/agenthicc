@@ -1254,6 +1254,16 @@ def _render_compaction_status(self: ScrollBufferAppender, ev: ConversationEvent)
     self._gap_pending = True
 
 
+@register_renderer("authored_published")
+def _render_authored_publication(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
+    self._flush_group_summary()
+    self._open_block("authored_published")
+    _print_notice(
+        self, "success", "Extensions published", _text(ev.payload, "summary"), literal=True
+    )
+    self._gap_pending = True
+
+
 @register_renderer("background_handoff")
 def _render_background_handoff(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
     """``● Successfully backgrounded · 6b9f7614-8ca (running)``.

@@ -2,9 +2,9 @@
 
 Extensions are discovered from project-local `.agenthicc/` directories and
 user-global `~/.agenthicc/` directories. Project definitions generally shadow
-user definitions with the same name. Python extensions are executable code, so
-a project extension is imported only after you have reviewed and trusted its
-exact content — see [Trust and dependencies](#trust-and-dependencies).
+user definitions with the same name. Project Python extensions execute only
+when the trust store records their exact content. Operators and the
+authored-extension publisher use that same trust store.
 
 ## Trust and dependencies
 
@@ -43,6 +43,29 @@ literal `DEPENDENCIES = ["package>=1.0"]` or a `<stem>.requirements.txt` file
 beside it. Agenthicc reads both without executing the plugin, never installs
 them, and skips a plugin whose requirements are missing — so a trusted plugin is
 imported exactly once, after its dependencies are known to be present.
+
+## Authored extensions
+
+An authoring workflow submits a complete set with a runner-owned validation
+verdict. Under the default `auto` policy, the session checks the exact bytes,
+installs the set in the project, records trust for Python files, and reloads
+the affected surfaces. The session announces the published set and its digest.
+The same capability checks and call-time approvals apply when an authored
+tool runs. See [Security](security.md#authored-publication).
+
+Discovery in other sessions skips provisional installs. A later publication
+reconciles any interrupted install using the last committed provenance and
+trust records.
+
+Set `security.authored_extension_policy = "stage_only"` to approve the exact
+staged bytes yourself. `/authored list` shows the run ID. Use
+`/authored approve <run-id>` to publish it or `/authored reject <run-id>` to discard
+it. The CLI has the same actions under `agenthicc authored`.
+
+`/authored diff <name>` shows the changed lines. Use
+`/authored rollback <name> [digest]` to recover an approved version or
+`/authored remove <name>` to remove an extension. Tools that share a module
+are updated and rolled back together.
 
 ## Tools
 

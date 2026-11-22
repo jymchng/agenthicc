@@ -920,6 +920,67 @@ def _cmd_reload(ctx: CommandContext) -> bool:
     return _request_reload(ctx, surfaces, "Reload")
 
 
+def _authored_action_matches(prefix: str) -> list[str]:
+    return [
+        action
+        for action in ("list", "diff", "approve", "reject", "rollback", "remove")
+        if action.startswith(prefix.casefold())
+    ]
+
+
+def _cmd_authored(ctx: CommandContext) -> bool:
+    import asyncio
+
+    from agenthicc.plugins.authored import AuthoredError
+
+    publisher = ctx.authored
+    start = ctx.start_task
+    if publisher is None or start is None:
+        _present_registry_result(ctx, "Authored extensions", "An active session is required.")
+        return True
+    action, *arguments = ctx.args.split() or ["list"]
+    lengths = {
+        "list": {0},
+        "diff": {1},
+        "approve": {1},
+        "reject": {1},
+        "rollback": {1, 2},
+        "remove": {1},
+    }
+    if len(arguments) not in lengths.get(action, ()):
+        _present_registry_result(
+            ctx,
+            "Authored extensions",
+            "Use /authored list, diff <name>, approve|reject <run-id>, "
+            "rollback <name> [digest], or remove <name>.",
+        )
+        return True
+
+    async def run() -> None:
+        try:
+            if action == "list":
+                message = await asyncio.to_thread(publisher.store().describe)
+            elif action == "diff":
+                message = await asyncio.to_thread(publisher.store().diff, arguments[0])
+            elif action == "approve":
+                message = (await publisher.approve(arguments[0])).summary()
+            elif action == "reject":
+                message = (await publisher.reject(arguments[0])).summary()
+            else:
+                digest = arguments[1] if len(arguments) == 2 else None
+                message = await publisher.change_version(
+                    "rollback" if action == "rollback" else "remove", arguments[0], digest
+                )
+        except AuthoredError as exc:
+            message = str(exc)
+        except (OSError, ValueError):
+            message = "The authored extension operation failed."
+        _present_registry_result(ctx, "Authored extensions", message or "No changed lines.")
+
+    start(run())
+    return True
+
+
 def _cmd_skills(ctx: CommandContext) -> bool:
     requested = ctx.args.strip().lower()
     if requested:
@@ -1701,6 +1762,14 @@ BUILTIN_COMMANDS: list[Command] = [
         argument_hint="[skills tools workflows commands]",
         busy_policy=BusyPolicy.IMMEDIATE_CONTROL,
         handler=_cmd_reload,
+    ),
+    Command(
+        name="/authored",
+        group="Configuration",
+        description="Inspect, approve, or restore authored extensions",
+        argument_hint="[list|diff|approve|reject|rollback|remove]",
+        completions_factory=_authored_action_matches,
+        handler=_cmd_authored,
     ),
     Command(
         name="/commands",

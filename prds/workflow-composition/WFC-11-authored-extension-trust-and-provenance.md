@@ -321,3 +321,19 @@ write, a private network namespace with only loopback, a 4 KiB output limit,
 and wall-clock termination. Keep the AST-only fallback and `static_only`
 notice for platforms without the subprocess sandbox. Evidence is in
 `tests/integration/test_authored_import_spike.py`.
+
+## Amendment — 2026-11-22
+
+The trust store authorizes one resolved file at a time, so authored trust
+records keep their original file SHA-256 and also carry the complete artifact
+digest. Each file hash is checked against the verified byte set before the
+record is written. The project provenance file is a view. Approval tickets,
+rollback identities and recovery snapshots live in the operator-owned
+directory beside the trust store.
+
+Publication uses atomic replacement into the live directory and retains staging
+until the commit is durable. This works when a worker stages files on another
+filesystem. A pending journal entry hides the provisional files from other
+loaders. The next store operation can recover a process that exits during
+installation. Tests cover a process exit, real reload rollback, and a modified
+archived version.

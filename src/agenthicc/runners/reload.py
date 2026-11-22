@@ -14,7 +14,7 @@ from agenthicc.kernel.events import Event
 from agenthicc.tools.base import tool_name
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping, Sequence
+    from collections.abc import Awaitable, Callable, Mapping, Sequence
 
     from agenthicc.commands.command import Command
     from agenthicc.commands.plugin_loader import CommandLoadResult
@@ -173,6 +173,7 @@ class _Candidate:
     versions: dict[str, str | None]
     diagnostics: tuple[ReloadDiagnostic, ...]
     apply: Callable[[int], None] | None
+    skills: Mapping[str, SkillDef] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -214,6 +215,10 @@ def _source_diagnostic(
 
     if result.untrusted:
         refusal = current_extension_trust().check(result.path, kind=kind)
+        if refusal is not None and refusal.reason == "authored publication pending":
+            return ReloadDiagnostic(
+                surface, str(result.path), "pending_marker", "Authored publication is pending."
+            )
         modified = refusal is not None and refusal.reason == "changed since it was trusted"
         return ReloadDiagnostic(
             surface,
@@ -333,8 +338,22 @@ class ReloadService:
             self._versions["workflows"] = dict.fromkeys(workflows.names())
 
     async def reload(
-        self, surfaces: frozenset[ReloadSurface], *, reason: ReloadReason
+        self,
+        surfaces: frozenset[ReloadSurface],
+        *,
+        reason: ReloadReason,
+        prepare: Callable[[], Awaitable[None]] | None = None,
+        before_publish: Callable[[ReloadReport], Awaitable[bool]] | None = None,
     ) -> ReloadReport:
+        if prepare is not None or before_publish is not None:
+            async with self._discovery_lock:
+                if self._closed:
+                    raise RuntimeError("session reload service is closed")
+                if prepare is not None:
+                    await prepare()
+                return await self._collect(
+                    surfaces, reason, preview=False, before_publish=before_publish
+                )
         while not self._closed:
             flight = self._flight
             if flight is None:
@@ -372,17 +391,22 @@ class ReloadService:
             self._flight = None
 
     async def _collect(
-        self, surfaces: frozenset[ReloadSurface], reason: ReloadReason, *, preview: bool
+        self,
+        surfaces: frozenset[ReloadSurface],
+        reason: ReloadReason,
+        *,
+        preview: bool,
+        before_publish: Callable[[ReloadReport], Awaitable[bool]] | None = None,
     ) -> ReloadReport:
         generation = self._generation + 1
-        published: set[ReloadSurface] = set()
+        ready: dict[ReloadSurface, _Candidate] = {}
         diagnostics: list[ReloadDiagnostic] = []
         changes: list[ReloadChange] = []
+        commands = tuple(self._command_registry.all_commands())
+        skill_snapshot = self._skills.current().value
         for surface in RELOAD_SURFACES:
             if surface not in surfaces:
                 continue
-            commands = tuple(self._command_registry.all_commands())
-            skill_snapshot = self._skills.current().value
             try:
                 candidate = await self._discover_off_loop(surface, commands, skill_snapshot)
             except Exception:  # noqa: BLE001 - a failed discovery keeps the surface intact
@@ -403,25 +427,32 @@ class ReloadService:
             if surface == "workflows":
                 before = {name: before.get(name) for name in self._workflow_registry.names()}
             changes.extend(_changes(surface, before, candidate.versions))
-            if not preview:
-                candidate.apply(generation)
-                self._versions[surface] = candidate.versions
-                published.add(surface)
+            ready[surface] = candidate
+            if candidate.skills is not None:
+                skill_snapshot = candidate.skills
 
-        if published:
-            self._published.update(published)
-            self._generation = generation
-        report = ReloadReport(
-            self._generation,
+        proposed = ReloadReport(
+            generation if ready else self._generation,
             reason,
             surfaces,
-            frozenset(published),
+            frozenset(ready),
             tuple(changes),
             tuple(diagnostics),
         )
-        if published:
-            self._processor.emit_nowait(Event.create("SessionReloaded", report.to_dict()))
-        return report
+        if preview or (before_publish is not None and not await before_publish(proposed)):
+            return ReloadReport(
+                self._generation, reason, surfaces, frozenset(), tuple(changes), tuple(diagnostics)
+            )
+        for surface, candidate in ready.items():
+            apply = candidate.apply
+            assert apply is not None
+            apply(generation)
+            self._versions[surface] = candidate.versions
+        if ready:
+            self._published.update(ready)
+            self._generation = generation
+            self._processor.emit_nowait(Event.create("SessionReloaded", proposed.to_dict()))
+        return proposed
 
     async def _discover_off_loop(
         self,
@@ -486,7 +517,7 @@ class ReloadService:
             self._command_registry.replace_with(registry)
             self._skills._publish(generation, skills)
 
-        return _Candidate(versions, tuple(diagnostics), apply)
+        return _Candidate(versions, tuple(diagnostics), apply, skills=skills)
 
     def _scan_tools(self) -> _Candidate:
         from agenthicc.agent_tools import AGENT_TOOLS
@@ -499,7 +530,7 @@ class ReloadService:
         )
         tools = tuple(found.all_tools)
         diagnostics = [_source_diagnostic("tools", item, kind="tool") for item in found.failed]
-        if diagnostics and not tools:
+        if diagnostics and not tools and not any(item.untrusted for item in found.failed):
             return _Candidate({}, tuple(diagnostics), None)
 
         versions: dict[str, str | None] = {}
@@ -572,7 +603,7 @@ class ReloadService:
         from agenthicc.commands.plugin_loader import discover_command_plugins
 
         found = discover_command_plugins(project_dir=self._project_dir, user_dir=self._user_dir)
-        if found.failed:
+        if found.failed and not any(item.untrusted for item in found.failed):
             return _Candidate(
                 {},
                 tuple(
@@ -591,7 +622,9 @@ class ReloadService:
                 and not command.is_skill
             ]
         )
-        diagnostics: list[ReloadDiagnostic] = []
+        diagnostics = [
+            _source_diagnostic("commands", item, kind="command") for item in found.failed
+        ]
         versions: dict[str, str | None] = {}
         for item in found.results:
             if not item.commands:

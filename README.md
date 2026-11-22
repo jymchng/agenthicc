@@ -315,6 +315,10 @@ goals. See the [workflow guide](./docs/guides/workflows.md#goal_flow-adding-work
 
 ### Workflow inspection tools
 
+Use `/authored list` to inspect authored extensions. Set
+`[security].authored_extension_policy = "stage_only"` to review staged sets
+before publication. [Authored extensions](./docs/guides/plugins.md#authored-extensions)
+
 Each authoring phase has its own prompt and bounded multi-turn budget. Set the phase caps with `[execution].authoring_max_phase_turns` and `[execution].authoring_max_generation_attempts`. For `create_workflow`, `[workflows.authoring].max_repair_cycles` sets the persisted repair budget, with a default of three. Generation uses package-scoped writers under the session’s active mode. The agent inspects the authoring API with built-in tools:
 
 - `describe_phasespec`

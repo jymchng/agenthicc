@@ -583,11 +583,13 @@ def discover_skills_with_diagnostics(
     user_dir: Path | None = None,
 ) -> SkillDiscoveryResult:
     """Discover skills and return diagnostics instead of silently dropping them."""
+    from agenthicc.plugins.trust import current_extension_trust
 
     personal_root = (user_dir or Path.home() / ".agenthicc") / "skills"
     project_root = (project_dir or Path(".agenthicc")) / "skills"
     skills: dict[str, SkillDef] = {}
     diagnostics: list[SkillDiagnostic] = []
+    trust = current_extension_trust()
 
     for root, source in ((personal_root, "user"), (project_root, "project")):
         if not root.exists():
@@ -613,6 +615,8 @@ def discover_skills_with_diagnostics(
                         entry, "ignored-entry", "skill root entry is not a directory", "info"
                     )
                 )
+                continue
+            if source == "project" and trust.publication_pending(entry / "SKILL.md"):
                 continue
             skill, entry_diagnostics = _parse_skill_detailed(entry, source)
             diagnostics.extend(entry_diagnostics)

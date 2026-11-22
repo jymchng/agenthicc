@@ -154,8 +154,13 @@ def load_python_workflows(
         if on_skip is not None:
             for source_file in untrusted:
                 refusal = trust.check(source_file, kind="workflow")
-                modified = refusal is not None and refusal.reason == "changed since it was trusted"
-                on_skip(source_file, "untrusted_modified" if modified else "untrusted")
+                code: WorkflowLoadCode = "untrusted"
+                if refusal is not None:
+                    if refusal.reason == "changed since it was trusted":
+                        code = "untrusted_modified"
+                    elif refusal.reason == "authored publication pending":
+                        code = "pending_marker"
+                on_skip(source_file, code)
         return []
     try:
         from agenthicc.workflows.plugin import WorkflowPlugin

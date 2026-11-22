@@ -31,6 +31,10 @@ __all__ = [
 #: type must have a reducer handler, or the processor rejects it.
 PROJECTION_EVENT_TYPES: frozenset[str] = frozenset(
     {
+        # AuthoredArtifactStateChanged carries run_id and one artifact receipt.
+        # AuthoredPublished carries that run_id, every loaded receipt, and the reload report.
+        "AuthoredArtifactStateChanged",
+        "AuthoredPublished",
         # The processor's own report of an event the reducer refused.
         "KernelEventRejected",
         "McpCatalogPublished",

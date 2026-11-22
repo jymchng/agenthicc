@@ -44,6 +44,7 @@ if TYPE_CHECKING:
     from agenthicc.runners.startup import StartupCoordinator
     from agenthicc.runners.run_coordinator import ResumePlan
     from agenthicc.runners.reload import ReloadService
+    from agenthicc.runners.authored import AuthoredPublisher
     from asyncio import Task
 
 
@@ -108,6 +109,7 @@ class SessionContext:
     #: separately so a reload can restore built-ins after a plugin is removed.
     command_plugin_names: InitVar[tuple[str, ...]] = ()
     reload: ReloadService = field(init=False)
+    authored: AuthoredPublisher = field(init=False)
 
     # ── client-neutral session boundary (PRD-150) ───────────────────────────
     session_service: "SessionService | None" = None
@@ -159,6 +161,7 @@ class SessionContext:
         project_plugins: PluginToolSet,
         command_plugin_names: tuple[str, ...],
     ) -> None:
+        from agenthicc.runners.authored import AuthoredPublisher
         from agenthicc.runners.reload import ReloadService
 
         root = self.workspace_scope.primary_root if self.workspace_scope is not None else Path.cwd()
@@ -177,6 +180,7 @@ class SessionContext:
             tools=project_plugins.all_tools,
             command_plugin_names=command_plugin_names,
         )
+        self.authored = AuthoredPublisher(root, self.reload, self.processor)
 
     @property
     def session_memory(self) -> "JournaledShortTermMemory":

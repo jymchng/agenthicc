@@ -256,6 +256,43 @@ async def test_scope_policy_handles_batch_and_command_arguments(tmp_path: Path) 
     assert result.code == "outside_workspace"
 
 
+@pytest.mark.parametrize("mode", ["Safe", "Yolo"])
+async def test_direct_extension_edit_uses_one_code_path_approval(tmp_path: Path, mode: str) -> None:
+    from agenthicc.tools.approval import ApprovalRequest
+
+    workspace, _, scope = _scope(tmp_path)
+    approval = _Approval()
+    policy = WorkspaceAccessPolicy(
+        scope, mode_provider=lambda: _Mode(mode), approval_service=approval
+    )
+    target = ".agenthicc/tools/extension.py"
+    assert (await policy.authorize_tool("read_file", {"path": target})).allowed
+    assert approval.requests == []
+
+    access = await policy.authorize_tool("write_file", {"path": target})
+    assert access.allowed and access.approval_handled
+    request = approval.requests[0]
+    assert isinstance(request, ApprovalRequest)
+    assert "This path runs as code" in request.reason
+    assert request.workspace_access[0].status == "protected_code"
+    assert (
+        await policy.authorize(target, operation="write", tool_name="write_file")
+        == workspace / target
+    )
+    assert len(approval.requests) == 1
+
+
+async def test_plan_mode_refuses_direct_extension_edits(tmp_path: Path) -> None:
+    _, _, scope = _scope(tmp_path)
+    approval = _Approval()
+    policy = WorkspaceAccessPolicy(
+        scope, mode_provider=lambda: _Mode("Plan"), approval_service=approval
+    )
+    denied = await policy.authorize_tool("delete_file", {"path": ".agenthicc/workflows/example.py"})
+    assert denied.code == "protected_code" and not denied.allowed
+    assert approval.requests == []
+
+
 @pytest.mark.asyncio
 async def test_git_adapter_executes_canonical_root_and_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

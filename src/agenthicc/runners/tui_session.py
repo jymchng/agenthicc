@@ -1029,6 +1029,14 @@ async def _build_session_context_impl(
         while True:
             kernel_event = await kernel_event_queue.get()
             await session_service.publish_kernel_event(session_id, kernel_event)
+            if not headless and kernel_event.event_type == "AuthoredPublished":
+                summary = kernel_event.payload.get("summary")
+                if isinstance(summary, str):
+                    app_state.conversation.append_event(
+                        "authored_published",
+                        {"summary": summary},
+                        event_id=kernel_event.event_id,
+                    )
 
     kernel_projection_task = asyncio.create_task(
         _project_kernel_events(), name=f"session-kernel-projection-{session_id}"
@@ -1463,6 +1471,7 @@ async def _build_session_context_impl(
     # One browser manager and one opaque browser context per stable session
     # conversation.  Both the backend module and its tool closures are lazy so
     # creating a TUI never imports optional browser code.
+    browser_manager: _LazyBrowserSession | None
     browser_tools: Iterable[object]
     if cfg.tools.browser_backend in {"playwright", "cloakbrowser"}:
         browser_settings = (
@@ -3861,7 +3870,8 @@ class TUISession:
             close_overlay=self._workspace.overlays.hide,
             set_pending_replay=self._set_pending_replay,
             reload=self._request_extension_reload,
-            start_task=lambda coro: self._tasks.start(coro, name="reload-command"),
+            authored=ctx.authored if command_name == "/authored" else None,
+            start_task=lambda coro: self._tasks.start(coro, name="extension-command"),
             set_input_text=self._set_input_text,
             usage_snapshot=self._usage_snapshot,
             cancel_active=self._cancel_active_task,

@@ -40,6 +40,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from agenthicc.runners.process_lease import InterProcessLock, read_json_object
+
 __all__ = [
     "ExtensionTrust",
     "TrustRecord",
@@ -62,6 +64,11 @@ def _digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _authored_state_directory(workspace: Path, trust_path: Path) -> Path:
+    identity = hashlib.sha256(os.fsencode(workspace)).hexdigest()
+    return trust_path.parent / "authored" / identity
+
+
 @dataclass(frozen=True)
 class TrustRecord:
     """One trusted extension file, bound to the content that was reviewed."""
@@ -70,6 +77,37 @@ class TrustRecord:
     sha256: str
     kind: str
     trusted_at: str
+    artifact_digest: str | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        data: dict[str, object] = {
+            "path": self.path,
+            "sha256": self.sha256,
+            "kind": self.kind,
+            "trusted_at": self.trusted_at,
+        }
+        if self.artifact_digest is not None:
+            data["artifact_digest"] = self.artifact_digest
+        return data
+
+    @classmethod
+    def from_payload(cls, raw: object) -> TrustRecord:
+        if not isinstance(raw, dict):
+            raise ValueError("Invalid trust record.")
+        path = raw.get("path")
+        digest = raw.get("sha256")
+        kind = raw.get("kind")
+        recorded_at = raw.get("trusted_at")
+        artifact = raw.get("artifact_digest")
+        if (
+            not isinstance(path, str)
+            or not isinstance(digest, str)
+            or not isinstance(kind, str)
+            or not isinstance(recorded_at, str)
+            or (artifact is not None and not isinstance(artifact, str))
+        ):
+            raise ValueError("Invalid trust record.")
+        return cls(path, digest, kind, recorded_at, artifact)
 
 
 @dataclass(frozen=True)
@@ -116,6 +154,22 @@ class ExtensionTrust:
     def trusted_roots(self) -> tuple[Path, ...]:
         return self._trusted_roots
 
+    def publication_pending(self, path: Path) -> bool:
+        """Keep provisional project files private to the publishing session."""
+        resolved = path.resolve()
+        for prefix in resolved.parents:
+            if prefix.name != ".agenthicc" or prefix.parent in _PUBLISHING.get():
+                continue
+            pending = _authored_state_directory(prefix.parent, self.store_path) / "pending.json"
+            document = read_json_object(pending)
+            if document is None:
+                continue
+            files = document.get("files")
+            relative = resolved.relative_to(prefix.parent).as_posix()
+            if not isinstance(files, list) or relative in files:
+                return True
+        return False
+
     # ── decisions ────────────────────────────────────────────────────────────
 
     def check(self, path: Path, *, kind: str) -> UntrustedExtension | None:
@@ -126,6 +180,8 @@ class ExtensionTrust:
         record = self._records().get(str(resolved))
         if record is None:
             return UntrustedExtension(resolved, kind, "not trusted")
+        if record.artifact_digest is not None and self.publication_pending(resolved):
+            return UntrustedExtension(resolved, kind, "authored publication pending")
         try:
             current = _digest(resolved)
         except OSError as exc:
@@ -150,26 +206,43 @@ class ExtensionTrust:
 
     # ── records ──────────────────────────────────────────────────────────────
 
-    def trust(self, path: Path, *, kind: str) -> TrustRecord:
-        """Trust the current content of *path*."""
+    def trust(
+        self,
+        path: Path,
+        *,
+        kind: str,
+        expected_sha256: str | None = None,
+        artifact_digest: str | None = None,
+    ) -> TrustRecord:
+        """Record a file's digest, checking approved bytes for authored artifacts."""
         resolved = path.expanduser().resolve()
+        if expected_sha256 is not None and path.expanduser().absolute() != resolved:
+            raise ValueError("Authored trust requires a canonical extension path.")
+        if artifact_digest is not None and expected_sha256 is None:
+            raise ValueError("Authored trust requires an approved file digest.")
+        sha256 = _digest(resolved)
+        if expected_sha256 is not None and sha256 != expected_sha256:
+            raise ValueError("The extension changed before its trust record was written.")
         record = TrustRecord(
             path=str(resolved),
-            sha256=_digest(resolved),
+            sha256=sha256,
             kind=kind,
             trusted_at=datetime.now(timezone.utc).isoformat(),
+            artifact_digest=artifact_digest,
         )
-        records = self._records()
-        records[record.path] = record
-        self._write(records)
+        with self._lock():
+            records = self._records()
+            records[record.path] = record
+            self._write(records)
         return record
 
     def revoke(self, path: Path) -> bool:
         """Forget the record for *path*; return whether one existed."""
-        records = self._records()
-        removed = records.pop(str(path.expanduser().resolve()), None)
-        if removed is not None:
-            self._write(records)
+        with self._lock():
+            records = self._records()
+            removed = records.pop(str(path.expanduser().resolve()), None)
+            if removed is not None:
+                self._write(records)
         return removed is not None
 
     def restore_records(self, paths: Sequence[Path], records: Sequence[TrustRecord]) -> None:
@@ -183,11 +256,12 @@ class ExtensionTrust:
             if resolved not in scoped_paths or record.path != resolved:
                 raise ValueError("trust snapshot record is outside the requested path scope")
             replacements[resolved] = record
-        current = self._records()
-        for path in scoped_paths:
-            current.pop(path, None)
-        current.update(replacements)
-        self._write(current)
+        with self._lock():
+            current = self._records()
+            for path in scoped_paths:
+                current.pop(path, None)
+            current.update(replacements)
+            self._write(current)
 
     def records(self) -> tuple[TrustRecord, ...]:
         """Every trust record, sorted by path."""
@@ -208,10 +282,14 @@ class ExtensionTrust:
             decision=decision,
             decided_at=datetime.now(timezone.utc).isoformat(),
         )
-        workspaces = self._workspaces()
-        workspaces[record.path] = record
-        self._write(self._records(), workspaces)
+        with self._lock():
+            workspaces = self._workspaces()
+            workspaces[record.path] = record
+            self._write(self._records(), workspaces)
         return record
+
+    def _lock(self) -> InterProcessLock:
+        return InterProcessLock(self._store_path.with_suffix(".lock"))
 
     def _workspaces(self) -> dict[str, WorkspaceDecision]:
         entries = self._document().get("workspaces")
@@ -248,17 +326,11 @@ class ExtensionTrust:
         entries = self._document().get("records")
         records: dict[str, TrustRecord] = {}
         for entry in entries if isinstance(entries, list) else ():
-            if not isinstance(entry, dict):
+            try:
+                record = TrustRecord.from_payload(entry)
+            except ValueError:
                 continue
-            fields = {key: entry.get(key) for key in ("path", "sha256", "kind", "trusted_at")}
-            if all(isinstance(value, str) for value in fields.values()):
-                record = TrustRecord(
-                    path=str(fields["path"]),
-                    sha256=str(fields["sha256"]),
-                    kind=str(fields["kind"]),
-                    trusted_at=str(fields["trusted_at"]),
-                )
-                records[record.path] = record
+            records[record.path] = record
         return records
 
     def _write(
@@ -269,15 +341,7 @@ class ExtensionTrust:
         kept = self._workspaces() if workspaces is None else workspaces
         payload: dict[str, object] = {
             "version": _STORE_VERSION,
-            "records": [
-                {
-                    "path": record.path,
-                    "sha256": record.sha256,
-                    "kind": record.kind,
-                    "trusted_at": record.trusted_at,
-                }
-                for _path, record in sorted(records.items())
-            ],
+            "records": [record.to_dict() for _path, record in sorted(records.items())],
             "workspaces": [
                 {
                     "path": decision.path,
@@ -305,6 +369,19 @@ class ExtensionTrust:
 _CURRENT: contextvars.ContextVar[ExtensionTrust | None] = contextvars.ContextVar(
     "agenthicc_extension_trust", default=None
 )
+_PUBLISHING: contextvars.ContextVar[frozenset[Path]] = contextvars.ContextVar(
+    "agenthicc_publishing_projects", default=frozenset()
+)
+
+
+@contextmanager
+def inspect_pending_publication(workspace: Path) -> Iterator[None]:
+    """Let the authorized publish step discover its provisional installation."""
+    token = _PUBLISHING.set(_PUBLISHING.get() | {workspace.resolve()})
+    try:
+        yield
+    finally:
+        _PUBLISHING.reset(token)
 
 
 def current_extension_trust() -> ExtensionTrust:

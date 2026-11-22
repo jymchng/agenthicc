@@ -52,6 +52,11 @@ class _WorkflowResumeTransitionError(RuntimeError):
     """A resume could not durably transition before dispatch."""
 
 
+def _emit_authored_json(event: Event) -> None:
+    if event.event_type == "AuthoredPublished":
+        print(json.dumps({**event.payload, "event": "authored_published"}), flush=True)
+
+
 @dataclass(frozen=True)
 class WorkflowExecutionResult:
     """Small, JSON-safe outcome returned by one headless workflow run."""
@@ -787,6 +792,7 @@ async def run_headless_workflow(
     )
     terminal_token = None
     processor_task: asyncio.Task[object] | None = None
+    remove_authored_sink = session.processor.add_sink(_emit_authored_json)
     try:
         session.app_state.cli_flags = ctx.flags
         session.approval_svc = _HeadlessApprovalService(ctx.flags.dangerously_skip_permissions)
@@ -824,11 +830,10 @@ async def run_headless_workflow(
     finally:
         if terminal_token is not None:
             reset_current_terminal_manager(terminal_token)
-        await _close_headless_session(
-            session,
-            processor_task,
-            cassette_base,
-        )
+        try:
+            await _close_headless_session(session, processor_task, cassette_base)
+        finally:
+            remove_authored_sink()
 
 
 async def _run_headless_workflow_stream(ctx: "CLIContext") -> None:
@@ -855,6 +860,7 @@ async def _run_headless_workflow_stream(ctx: "CLIContext") -> None:
     )
     terminal_token = None
     processor_task: asyncio.Task[object] | None = None
+    remove_authored_sink = session.processor.add_sink(_emit_authored_json)
     try:
         session.app_state.cli_flags = ctx.flags
         session.approval_svc = _HeadlessApprovalService(ctx.flags.dangerously_skip_permissions)
@@ -968,11 +974,10 @@ async def _run_headless_workflow_stream(ctx: "CLIContext") -> None:
     finally:
         if terminal_token is not None:
             reset_current_terminal_manager(terminal_token)
-        await _close_headless_session(
-            session,
-            processor_task,
-            cassette_base,
-        )
+        try:
+            await _close_headless_session(session, processor_task, cassette_base)
+        finally:
+            remove_authored_sink()
 
 
 async def _close_headless_session(

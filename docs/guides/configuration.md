@@ -643,6 +643,7 @@ including transcript text.
 [security]
 allowed_paths = ["/absolute/path/to/project"]
 network_allow_list = ["api.example.com"]
+authored_extension_policy = "auto"
 ```
 
 `WorkspaceView` resolves real paths, so `..` traversal, absolute escapes, and
@@ -650,6 +651,12 @@ symlink escapes are rejected. `NetworkGuard` permits exact hosts and
 subdomains of an allow-listed domain. An empty network list blocks outbound
 hosts when an explicit guard is used. The ordinary project-tool path does not
 currently inject these boundaries into user callables automatically.
+
+`authored_extension_policy` controls publication of runner-approved
+extensions. The default `auto` publishes the validated set and reloads it
+without a trust prompt. `stage_only` keeps the set for operator approval.
+A user-global `stage_only` setting takes precedence over project configuration.
+An explicit environment or CLI override can change the policy for an invocation.
 
 Security-bypassing flags such as `--dangerously-skip-permissions` are CLI-only
 and are intentionally not persisted in TOML.

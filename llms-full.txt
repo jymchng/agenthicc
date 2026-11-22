@@ -6061,7 +6061,8 @@ class ExtensionTrust:
     trusted_roots: tuple[Path, ...]   # property; default (~/.agenthicc,)
     def check(self, path: Path, *, kind: str) -> UntrustedExtension | None: ...
     def permits(self, path: Path, *, kind: str) -> bool: ...
-    def trust(self, path: Path, *, kind: str) -> TrustRecord: ...
+    def trust(self, path: Path, *, kind: str, expected_sha256: str | None = None,
+              artifact_digest: str | None = None) -> TrustRecord: ...
     def revoke(self, path: Path) -> bool: ...
     def records(self) -> tuple[TrustRecord, ...]: ...
     def workspace_decision(self, directory: Path) -> WorkspaceDecision | None: ...   # TUX-03
@@ -6072,7 +6073,9 @@ Decides whether an extension file may be imported and records trust. `check`
 returns why a file may not be imported (`"not trusted"`, `"changed since it was
 trusted"` or `"unreadable: ..."`); `permits` logs that reason and returns
 `False`. The store is written atomically with mode `0600`; an unreadable store
-trusts nothing.
+trusts nothing. Runtime callers supply `expected_sha256` to bind an authored
+trust record to the approved file bytes. `artifact_digest` binds the file to
+its complete artifact. Trust mutations take the same cross-process lock.
 
 ### WorkspaceDecision
 
@@ -6099,9 +6102,46 @@ class TrustRecord:
     sha256: str
     kind: str
     trusted_at: str
+    artifact_digest: str | None = None
 ```
 
 One trusted extension file, bound to the content that was reviewed.
+
+### PublishedArtifact
+
+The immutable identity, inventory, validation status, and publication state of
+an authored tool, skill, workflow, or command. `files` contains canonical
+workspace-relative paths in sorted order. `content_digest()` hashes those names
+and their exact bytes with length prefixes. The same digest identifies the
+artifact in provenance and authored trust records.
+
+### StagedArtifact
+
+A `PublishedArtifact` paired with the runner's `ValidationReport`.
+
+### AuthoredRun
+
+The distinct staged artifacts produced by one run, with its session and model
+identifiers.
+
+### AuthoredArtifactStore
+
+Installs a validated set inside its project and binds authored Python trust to
+the checked bytes. The installation context rolls back files and trust if the
+caller reports a loader failure. The store keeps approval tickets and version
+identities under the operator's trust directory. The project manifest is a
+provenance view and archived files are checked against the operator's digest
+before a rollback.
+
+### AuthoredPublisher
+
+The session-owned publisher stages a set under `stage_only` policy or installs
+and reloads it under `auto`. It returns an `AuthoredPublication` with a state
+for every artifact. Loader verification runs before any requested live surface
+is replaced.
+
+`AuthoredArtifactStateChanged` journals the run ID and one receipt.
+`AuthoredPublished` carries the complete successful set and its reload report.
 
 ### UntrustedExtension
 

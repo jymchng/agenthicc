@@ -119,6 +119,23 @@ context placeholders. The loader never executes them: each becomes an
 instruction for the agent to run the command through its command tool, so the
 approval policy, the active mode's ceiling and the workspace sandbox all apply.
 
+### Authored publication
+
+The default `auto` policy trusts runner-validated authored Python automatically.
+The validation harness checks generated imports in a bounded read-only
+subprocess and reports `static_only` when the OS sandbox is unavailable.
+The publish step checks the approved bytes again at commit and records their
+digest. A later file edit invalidates trust and discovery skips the edited code.
+Skills pass through the same publication step and are loaded as text.
+Direct changes through file tools ask for approval on executable extension
+paths and explain that the path runs as code.
+
+Loaded Python executes with your privileges. Content the agent reads can
+influence what it authors. Set `security.authored_extension_policy = "stage_only"`
+to review a staged set before it loads. The session shows provenance, declared
+capabilities, and an undo command after publication. Call-time capability
+checks and approvals still apply. [Authored extensions](plugins.md#authored-extensions)
+
 ## Security checklist for a new integration
 
 - What files, commands, hosts, credentials, and subprocesses can it reach?
