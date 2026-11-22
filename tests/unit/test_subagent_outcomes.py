@@ -163,32 +163,28 @@ async def test_an_allowed_write_in_safe_mode_still_succeeds(tmp_path: Path) -> N
     assert (tmp_path / "out.txt").exists()
 
 
-# ── criteria 4 and 5: turn and output limits are failures ────────────────────
+# ── criteria 4 and 5: no turn limit; an output cut-off is a failure ──────────
 
 
-async def test_exhausting_the_turn_limit_is_a_failure_without_a_finalisation_turn(
-    tmp_path: Path,
-) -> None:
+async def test_a_worker_is_not_cut_off_by_a_turn_limit(tmp_path: Path) -> None:
     registry = SubagentTypeRegistry()
     registry.register(
         SubagentTypeSpec(
             name="scout",
             allowed_tools=frozenset({"list_directory"}),
-            max_turns=3,
             system_prompt="Look around.",
         )
     )
     transport = MockTransport()
-    for index in range(6):
+    for index in range(40):
         transport.queue_tool_use("list_directory", {"path": "."}, tool_use_id=f"l{index}")
+    transport.queue_response(_final("Surveyed the whole tree.", "done"))
 
     result = await _spawn("scout", transport, tmp_path, registry=registry, task="Survey it.")
 
-    assert result["ok"] is False
-    text = _results(result)
-    assert "3-turn limit" in text
-    assert "[partial output; stop reason: max_turns]" in text
-    assert len(transport.calls) == 3  # exactly max_turns, no recovery run
+    assert result["ok"] is True
+    assert "Surveyed the whole tree." in _results(result)
+    assert len(transport.calls) == 41  # forty tool turns and the answer; nothing cut it short
 
 
 async def test_a_reply_cut_off_by_the_output_limit_is_a_failure(tmp_path: Path) -> None:
@@ -259,7 +255,6 @@ async def test_a_custom_type_defaults_to_no_evidence_requirement(tmp_path: Path)
         SubagentTypeSpec(
             name="implementer",  # the name alone no longer implies a rule
             allowed_tools=frozenset({"write_file"}),
-            max_turns=3,
             system_prompt="Describe changes.",
         )
     )
@@ -288,11 +283,10 @@ async def test_a_type_that_needs_a_write_tool_is_refused_when_policy_blocks_it(
 
 
 @pytest.mark.parametrize("agent_type", ["implementer", "executor", "tester", "documenter"])
-def test_working_roles_inherit_every_tool_and_the_session_turn_limit(agent_type: str) -> None:
+def test_working_roles_inherit_every_tool(agent_type: str) -> None:
     spec = DEFAULT_REGISTRY.get(agent_type)
     assert spec is not None
     assert spec.allowed_tools is None
-    assert spec.max_turns is None
 
 
 async def test_a_working_role_receives_every_tool_the_parent_exposes(tmp_path: Path) -> None:
@@ -400,7 +394,7 @@ async def test_a_working_role_does_not_inherit_the_parents_control_plane(
     assert not shown & {"close_phase", "ask_user", "spawn_subagents"}
 
 
-async def test_a_working_role_runs_under_the_session_turn_limit(tmp_path: Path) -> None:
+async def test_a_working_role_is_not_held_to_the_session_turn_limit(tmp_path: Path) -> None:
     from agenthicc.config import ExecutionSettings
 
     registry = SubagentTypeRegistry()
@@ -408,13 +402,13 @@ async def test_a_working_role_runs_under_the_session_turn_limit(tmp_path: Path) 
         SubagentTypeSpec(
             name="builder",
             allowed_tools=None,
-            max_turns=None,
             system_prompt="Build it.",
         )
     )
     transport = MockTransport()
     for index in range(12):
         transport.queue_tool_use("list_directory", {"path": "."}, tool_use_id=f"l{index}")
+    transport.queue_response(_final("Built it.", "built"))
     state = AppState.create()
     state.active_mode.set(build_default_registry().get("Yolo"))
     policy = WorkspaceAccessPolicy(WorkspaceScope.create(tmp_path), mode_provider=state.active_mode)
@@ -433,9 +427,9 @@ async def test_a_working_role_runs_under_the_session_turn_limit(tmp_path: Path) 
     finally:
         reset_current_workspace_access(token)
 
-    assert result["ok"] is False
-    assert "5-turn limit" in _results(result)
-    assert len(transport.calls) == 5
+    assert result["ok"] is True
+    assert "Built it." in _results(result)
+    assert len(transport.calls) == 13  # twelve tool turns past the session's limit of five
 
 
 def test_no_worker_logic_keys_on_the_implementer_name() -> None:

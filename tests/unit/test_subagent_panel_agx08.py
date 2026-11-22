@@ -638,41 +638,13 @@ def test_the_in_session_hub_lists_the_turns_subagents() -> None:
     assert rows[0].text == SUBAGENTS_GROUP and rows[1].key == "subagent:pool:task-0"
 
 
-def test_a_declared_budget_is_shown_as_usage_against_it() -> None:
-    """SUBAGENT-06 criterion 9: cost against a declared limit; tokens are unlimited."""
-    workers = (
-        _worker("task-1", "running", tokens=1_200),
-        _worker("task-2", "done", tokens=800),
-    )
-    budgeted = SubagentPoolState("pool", 2, workers, budget_cost_usd=0.5, cost_usd=0.12)
-
-    summary = _plain(summary_line(budgeted, 120))
-
-    assert budgeted.tokens == 2_000
-    assert " tok" not in summary  # subagents have no token limit to show against
-    assert "$0.12/$0.50" in summary
-
-
-def test_a_pool_without_a_declared_budget_renders_as_before() -> None:
+def test_a_pool_summary_shows_no_tokens_or_cost() -> None:
     workers = (_worker("task-1", "running", tokens=1_200),)
     plain_state = SubagentPoolState("pool", 1, workers)
 
     summary = _plain(summary_line(plain_state, 120))
 
     assert " tok" not in summary and "$" not in summary
-
-
-def test_budget_usage_is_the_first_thing_dropped_at_narrow_widths() -> None:
-    workers = (
-        _worker("task-1", "failed"),
-        _worker("task-2", "running", tokens=1_200),
-    )
-    budgeted = SubagentPoolState("pool", 2, workers, budget_cost_usd=0.5, cost_usd=0.12)
-
-    narrow = _plain(summary_line(budgeted, 34))
-
-    assert "1 fail" in narrow
-    assert "$" not in narrow and " tok" not in narrow
 
 
 # ── SUBAGENT-09: correlation, idempotent redaction, replay, degradation ─────

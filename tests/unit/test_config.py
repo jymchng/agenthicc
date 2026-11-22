@@ -442,11 +442,15 @@ class TestSubagentLifecycleSettings:
 
         assert defaults.subagents.max_workers == 32
         assert defaults.subagents.max_concurrent == 16
-        assert defaults.subagents.max_tool_calls == 256
-        assert defaults.subagents.max_iterations == 128
-        assert not hasattr(defaults.subagents, "max_tokens")  # subagents have no token limit
-        assert defaults.subagents.max_total_time_s == 600.0
-        assert defaults.subagents.on_budget_exceeded == "drain"
+        for removed in (
+            "max_tokens",
+            "max_tool_calls",
+            "max_iterations",
+            "max_total_time_s",
+            "max_budget",
+            "on_budget_exceeded",
+        ):
+            assert not hasattr(defaults.subagents, removed)  # subagents have no such limit
         assert defaults.subagents.stop_grace_s == 5.0
 
         project = tmp_path / "agenthicc.toml"
@@ -456,10 +460,6 @@ class TestSubagentLifecycleSettings:
             [subagents]
             max_workers = 12
             max_concurrent = 3
-            max_tool_calls = 48
-            max_iterations = 24
-            max_total_time_s = 90.0
-            on_budget_exceeded = "abort"
             stop_grace_s = 2.5
             """,
         )
@@ -467,24 +467,16 @@ class TestSubagentLifecycleSettings:
 
         assert config.subagents.max_workers == 12
         assert config.subagents.max_concurrent == 3
-        assert config.subagents.max_tool_calls == 48
-        assert config.subagents.max_iterations == 24
-        assert config.subagents.max_total_time_s == 90.0
-        assert config.subagents.on_budget_exceeded == "abort"
         assert config.subagents.stop_grace_s == 2.5
 
     @pytest.mark.parametrize(
         "settings",
         (
-            'on_budget_exceeded = "ignore"',
             "stop_grace_s = -1.0",
             "stop_grace_s = true",
             "stop_grace_s = nan",
             "max_workers = 0",
             "max_concurrent = 4\nmax_workers = 2",
-            "max_iterations = 1.5",
-            "max_tokens = 200000",
-            "max_total_time_s = inf",
         ),
     )
     def test_invalid_lifecycle_settings_are_rejected(self, tmp_path: Path, settings: str) -> None:
@@ -501,11 +493,16 @@ class TestSubagentLifecycleSettings:
 
         assert "# max_workers = 32" in template
         assert "# max_concurrent = 4" in template
-        assert "# max_tool_calls = 256" in template
-        assert "# max_iterations = 128" in template
-        assert "max_tokens" not in template.split("[subagents]")[1].split("\n[")[0]
-        assert "# max_total_time_s = 600.0" in template
-        assert '# on_budget_exceeded = "drain"' in template
+        subagents = template.split("[subagents]")[1].split("\n[")[0]
+        for removed in (
+            "max_tokens",
+            "max_tool_calls",
+            "max_iterations",
+            "max_total_time_s",
+            "max_budget",
+            "on_budget_exceeded",
+        ):
+            assert removed not in subagents
         assert "# stop_grace_s = 5.0" in template
 
 
@@ -552,129 +549,26 @@ class TestConverters:
         assert checker.check("unrelated_tool") == "deny"
 
 
-def test_subagent_operator_ceilings_are_armed_and_match_the_guide() -> None:
-    """SUBAGENT-10 D-2: the default pool ceilings are armed and documented as such."""
-    from pathlib import Path
-
-    from agenthicc.config import SubagentSettings
-
-    settings = SubagentSettings()
-    armed = {
-        "max_tool_calls": settings.max_tool_calls,
-        "max_iterations": settings.max_iterations,
-        "max_total_time_s": settings.max_total_time_s,
-    }
-    assert armed == {
-        "max_tool_calls": 256,
-        "max_iterations": 128,
-        "max_total_time_s": 600.0,
-    }
-    assert settings.on_budget_exceeded == "drain"
-
-    root = Path(__file__).resolve().parents[2]
-    guide = (root / "docs" / "guides" / "subagents.md").read_text(encoding="utf-8")
-    rows = {
-        line.split("|")[1].strip().strip("`"): line.split("|")[2].strip()
-        for line in guide.splitlines()
-        if line.startswith("| `subagents.max_")
-    }
-    assert rows["subagents.max_tool_calls"] == "256"
-    assert rows["subagents.max_iterations"] == "128"
-    assert "subagents.max_tokens" not in rows  # subagents have no token limit
-    assert rows["subagents.max_total_time_s"] == "600 seconds"
-    prd = (root / "prds" / "SUBAGENT-06-pool-budgets-and-limits.md").read_text(encoding="utf-8")
-    for documented in (
-        "`subagents.max_total_time_s = 600.0`",
-        "`subagents.max_tool_calls = 256`",
-        "`subagents.max_iterations = 128`",
-    ):
-        assert documented in prd
-
-
-def test_subagent_max_budget_loads_validates_and_serializes(tmp_path: Path) -> None:
-    """SUBAGENT-06: the settings ceiling a per-call budget may not exceed."""
-    from agenthicc.config import SubagentBudgetCeiling
-
+@pytest.mark.parametrize(
+    ("body", "message"),
+    [
+        ("[subagents]\nmax_tokens = 200000\n", "subagents.max_tokens was removed"),
+        ("[subagents]\nmax_tool_calls = 48\n", "subagents.max_tool_calls was removed"),
+        ("[subagents]\nmax_iterations = 24\n", "subagents.max_iterations was removed"),
+        ("[subagents]\nmax_total_time_s = 90.0\n", "subagents.max_total_time_s was removed"),
+        ("[subagents]\non_budget_exceeded = 'abort'\n", "on_budget_exceeded was removed"),
+        ("[subagents.max_budget]\ncost_usd = 2\n", "subagents.max_budget was removed"),
+        ("[subagents]\nmax_budget = 5\n", "subagents.max_budget was removed"),
+    ],
+)
+def test_subagent_limit_settings_were_removed(tmp_path: Path, body: str, message: str) -> None:
+    """Subagents have no turn, tool-call, iteration, time or budget limit to configure."""
     project = tmp_path / "agenthicc.toml"
-    project.write_text(
-        "[subagents.max_budget]\ncost_usd = 2\nwall_clock_s = 120\n",
-        encoding="utf-8",
-    )
-    config = load_config(project_path=project, user_path=tmp_path / "missing.toml")
-    assert config.subagents.max_budget == SubagentBudgetCeiling(cost_usd=2.0, wall_clock_s=120.0)
-    assert config.redacted_dict()["subagents"]["max_budget"] == {
-        "cost_usd": 2.0,
-        "wall_clock_s": 120.0,
-    }
+    project.write_text(body, encoding="utf-8")
+    with pytest.raises(ValueError, match=message):
+        load_config(project_path=project, user_path=tmp_path / "missing.toml")
 
-    unset = load_config(project_path=tmp_path / "none.toml", user_path=tmp_path / "missing.toml")
-    assert unset.subagents.max_budget == SubagentBudgetCeiling()
-    assert unset.redacted_dict()["subagents"]["max_budget"] == {}
-
-    for body, message in (
-        ("[subagents.max_budget]\ndollars = 5\n", "max_budget.dollars is not a budget setting"),
-        ("[subagents.max_budget]\ntokens = 5\n", "subagents have no token limit"),
-        ("[subagents]\nmax_tokens = 200000\n", "subagents have no token limit"),
-        ("[subagents.max_budget]\ncost_usd = -1\n", "max_budget.cost_usd must be a finite number"),
-        ("[subagents]\nmax_budget = 5\n", "subagents.max_budget must be a table"),
-    ):
-        project.write_text(body, encoding="utf-8")
-        with pytest.raises(ValueError, match=message):
-            load_config(project_path=project, user_path=tmp_path / "missing.toml")
-
-
-def test_subagent_collect_wait_bound_loads_and_validates(tmp_path: Path) -> None:
-    """SUBAGENT-11: the cap on collect_subagent_results(wait=True)."""
-    from agenthicc.config import SubagentSettings
-
-    assert SubagentSettings().collect_wait_max_s == 60.0
-    project = tmp_path / "agenthicc.toml"
-    project.write_text("[subagents]\ncollect_wait_max_s = 15\n", encoding="utf-8")
-    config = load_config(project_path=project, user_path=tmp_path / "missing.toml")
-    assert config.subagents.collect_wait_max_s == 15.0
-    assert config.redacted_dict()["subagents"]["collect_wait_max_s"] == 15.0
-    for value in ("0", "-1", "3601", "true"):
-        project.write_text(f"[subagents]\ncollect_wait_max_s = {value}\n", encoding="utf-8")
-        with pytest.raises(ValueError, match="collect_wait_max_s"):
-            load_config(project_path=project, user_path=tmp_path / "missing.toml")
-
-
-def test_subagent_background_controls_load_validate_and_serialize(tmp_path: Path) -> None:
-    """SUBAGENT-11: the model background switch and the clarification policy."""
-    from agenthicc.config import SubagentSettings
-
-    defaults = SubagentSettings()
-    assert defaults.background_enabled is True and defaults.on_clarification is None
-    project = tmp_path / "agenthicc.toml"
-    project.write_text(
-        '[subagents]\nbackground_enabled = false\non_clarification = "fail"\n', encoding="utf-8"
-    )
-    config = load_config(project_path=project, user_path=tmp_path / "missing.toml")
-    assert config.subagents.background_enabled is False
-    assert config.subagents.on_clarification == "fail"
-    redacted = config.redacted_dict()["subagents"]
-    assert redacted["background_enabled"] is False and redacted["on_clarification"] == "fail"
-    for line, key in (
-        ('background_enabled = "no"', "background_enabled"),
-        ("background_enabled = 1", "background_enabled"),
-        ('on_clarification = "ask"', "on_clarification"),
-        ("on_clarification = 1", "on_clarification"),
-    ):
-        project.write_text(f"[subagents]\n{line}\n", encoding="utf-8")
-        with pytest.raises(ValueError, match=key):
-            load_config(project_path=project, user_path=tmp_path / "missing.toml")
-    with pytest.raises(ValueError, match="on_clarification"):
-        SubagentSettings(on_clarification="ask")  # type: ignore[arg-type]
-
-
-def test_on_clarification_defaults_follow_the_session_kind() -> None:
-    """SUBAGENT-11 criterion 11: headless sessions fail, interactive ones queue."""
-    from agenthicc.config import SubagentSettings
-
-    unset = SubagentSettings()
-    assert unset.on_clarification_for(interactive=False) == "fail"
-    assert unset.on_clarification_for(interactive=True) == "queue"
-    for explicit in ("queue", "fail"):
-        settings = SubagentSettings(on_clarification=explicit)  # type: ignore[arg-type]
-        assert settings.on_clarification_for(interactive=False) == explicit
-        assert settings.on_clarification_for(interactive=True) == explicit
+    redacted = load_config(
+        project_path=tmp_path / "none.toml", user_path=tmp_path / "missing.toml"
+    ).redacted_dict()["subagents"]
+    assert "max_budget" not in redacted

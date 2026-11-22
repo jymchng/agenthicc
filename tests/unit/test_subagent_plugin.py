@@ -293,7 +293,6 @@ class TestPluginSubagentTypesLoading:
             "    SubagentTypeSpec(\n"
             "        name='test_plugin_type_unique_xyz',\n"
             "        allowed_tools=frozenset({'read_file'}),\n"
-            "        max_turns=5,\n"
             "        system_prompt='You are a test agent.',\n"
             "    )\n"
             "]\n"
@@ -314,7 +313,6 @@ class TestPluginSubagentTypesLoading:
             "SUBAGENT_TYPES = [SubagentTypeSpec(\n"
             "    name='session_scoped_type_unique_xyz',\n"
             "    allowed_tools=frozenset(),\n"
-            "    max_turns=2,\n"
             "    system_prompt='Session scoped.',\n"
             ")]\n",
             encoding="utf-8",
@@ -352,7 +350,6 @@ from agenthicc.subagents.types import SubagentAggregator, SubagentTypeSpec
 security_checker_spec = SubagentTypeSpec(
     name="security_checker",
     allowed_tools=frozenset({"read_file", "grep_files", "read_lines", "file_exists"}),
-    max_turns=8,
     system_prompt="Review the code for security issues.",
     max_turn_time_s=90.0,
 )
@@ -409,7 +406,7 @@ class TestExampleSecurityCheckerPlugin:
             ")\n"
             "SUBAGENT_TYPES = [SubagentTypeSpec(\n"
             "    name='session_aggregator_unique_xyz',\n"
-            "    allowed_tools=frozenset(), max_turns=2, system_prompt='Review.'\n"
+            "    allowed_tools=frozenset(), system_prompt='Review.'\n"
             ")]\n"
             "class Aggregator(SubagentAggregator):\n"
             "    agent_type = 'session_aggregator_unique_xyz'\n"
@@ -440,7 +437,6 @@ def test_depth_tier_narrowing_is_accepted_and_widening_is_rejected() -> None:
         SubagentTypeSpec(
             name="tiered_worker",
             allowed_tools=frozenset({"read_file", "write_file"}),
-            max_turns=1,
             system_prompt="Work within the configured tier.",
             model="inherit",
         )
@@ -522,7 +518,6 @@ def test_a_plugin_spec_without_a_description_defaults_to_empty() -> None:
     spec = SubagentTypeSpec(
         name="legacy_plugin_type",
         allowed_tools=frozenset({"read_file"}),
-        max_turns=2,
         system_prompt="Read.",
     )
     assert spec.description == ""

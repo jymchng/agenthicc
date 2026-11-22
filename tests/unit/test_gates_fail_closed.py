@@ -113,7 +113,6 @@ async def test_a_worker_never_writes_when_its_approval_gate_fails() -> None:
         SubagentTypeSpec(
             name="implementer",
             allowed_tools=frozenset({"write_thing"}),
-            max_turns=3,
             system_prompt="Write.",
             max_turn_time_s=10.0,
             completion_evidence="mutation",

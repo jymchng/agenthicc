@@ -9,6 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed — subagents have no limits
+
+A subagent pool died after ten minutes, and eight of its nine workers ran out of
+turns or budget, because pools and worker types capped what a worker could do.
+Subagents now run until they finish.
+
+- **No turn limit.** `SubagentTypeSpec.max_turns` is gone, so no built-in or plugin
+  type is capped (`explorer` 15, `planner` 10, `reviewer` 10, `verifier` 12 and
+  `researcher` 8 were), and the session's `max_agent_turns` no longer applies to
+  workers. A worker's reply is still bounded by the output-token limit and ends as
+  `output_truncated`.
+- **No pool budget.** `subagents.max_tool_calls`, `subagents.max_iterations`,
+  `subagents.max_total_time_s`, `subagents.max_budget`, `subagents.on_budget_exceeded`
+  and the `budget` argument of `spawn_subagents` are removed. A config that still
+  sets one is refused at load and names the key. `SubagentPool` takes none of them,
+  `budget_exceeded()` and the `max_*_exceeded` stop reasons are gone, and a pool is
+  stopped only on purpose.
+- **Usage is still reported.** `subagents/budget.py` is now `subagents/usage.py`
+  and keeps only `PoolUsage`, `pool_usage`, `worker_usage` and `worker_run_id`. The
+  spawn result and `SubagentPoolCompleted` carry `usage`; `budget` and
+  `budget_exceeded_reason` are gone, and the panel no longer shows a cost budget.
+- **No `stopped` pool status.** Nothing writes `subagent_pool_stopped` any more, so
+  journal folding, background notices and `collect_subagent_results` report only
+  `completed`, `cancelled` and `interrupted`.
+- Still bounded on purpose: `max_workers`, `max_concurrent`, `max_tasks`,
+  `max_active_pools`, `max_depth`, and the per-call `timeout_s` (default one hour).
+
 ### Changed — `make_book` chapters speak to the reader as "you"
 
 - **One shared voice.** The new `agenthicc.workflows.make_book.voice` module owns the

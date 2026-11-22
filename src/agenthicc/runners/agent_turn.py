@@ -2008,12 +2008,6 @@ class AgentTurnRunner:
                         overridden.completion_evidence if overridden is not None else "none"
                     ),
                     allowed_tools=allowed_names,
-                    max_turns=min(
-                        ctx.max_agent_turns,
-                        definition.max_steps
-                        if definition.max_steps is not None
-                        else ctx.max_agent_turns,
-                    ),
                     system_prompt=prompt or definition.description,
                     description=definition.description,
                     model=model,

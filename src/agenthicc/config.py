@@ -1233,35 +1233,6 @@ class SubagentDepthTier:
 
 
 @dataclass(frozen=True)
-class SubagentBudgetCeiling:
-    """The most a ``spawn_subagents(budget=...)`` declaration may ask for.
-
-    Unset fields leave that unit unlimited by this ceiling. A larger
-    declaration is clamped down to the ceiling and the clamp is reported; the
-    operator ceiling ``max_total_time_s`` still applies. There is no token
-    ceiling: subagents have no token limit.
-    """
-
-    cost_usd: float | None = None
-    wall_clock_s: float | None = None
-
-    def __post_init__(self) -> None:
-        for name, value in (("cost_usd", self.cost_usd), ("wall_clock_s", self.wall_clock_s)):
-            if value is None:
-                continue
-            if (
-                isinstance(value, bool)
-                or not isinstance(value, (int, float))
-                or not math.isfinite(value)
-                or value <= 0
-            ):
-                raise ValueError(
-                    f"subagents.max_budget.{name} must be a finite number greater than zero"
-                )
-            object.__setattr__(self, name, float(value))
-
-
-@dataclass(frozen=True)
 class SubagentSettings:
     """Operator defaults, model-selection policy, and pool governance."""
 
@@ -1275,12 +1246,7 @@ class SubagentSettings:
     max_concurrent: int = 16
     max_active_pools: int = 16
     max_workers: int = 32
-    max_tool_calls: int = 256
-    max_iterations: int = 128
-    max_total_time_s: float = 600.0
-    on_budget_exceeded: Literal["abort", "drain"] = "drain"
     stop_grace_s: float = 5.0
-    max_budget: SubagentBudgetCeiling = field(default_factory=SubagentBudgetCeiling)
     #: Upper bound in seconds for ``collect_subagent_results(wait=True)``.
     collect_wait_max_s: float = 60.0
     #: Whether the model may request ``spawn_subagents(background=True)``.
@@ -1331,23 +1297,14 @@ class SubagentSettings:
             if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= maximum:
                 raise ValueError(f"subagents.{name} must be from 1 to {maximum}")
 
-        for name, value in (
-            ("max_workers", self.max_workers),
-            ("max_tool_calls", self.max_tool_calls),
-            ("max_iterations", self.max_iterations),
+        if (
+            isinstance(self.max_workers, bool)
+            or not isinstance(self.max_workers, int)
+            or self.max_workers < 1
         ):
-            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-                raise ValueError(f"subagents.{name} must be a positive integer")
+            raise ValueError("subagents.max_workers must be a positive integer")
         if self.max_concurrent > self.max_workers:
             raise ValueError("subagents.max_concurrent cannot exceed subagents.max_workers")
-        if (
-            isinstance(self.max_total_time_s, bool)
-            or not isinstance(self.max_total_time_s, (int, float))
-            or not math.isfinite(self.max_total_time_s)
-            or self.max_total_time_s <= 0
-        ):
-            raise ValueError("subagents.max_total_time_s must be a finite number greater than zero")
-        object.__setattr__(self, "max_total_time_s", float(self.max_total_time_s))
         if (
             isinstance(self.collect_wait_max_s, bool)
             or not isinstance(self.collect_wait_max_s, (int, float))
@@ -1360,8 +1317,6 @@ class SubagentSettings:
             raise ValueError("subagents.background_enabled must be true or false")
         if self.on_clarification not in {None, "queue", "fail"}:
             raise ValueError("subagents.on_clarification must be 'queue' or 'fail'")
-        if self.on_budget_exceeded not in {"abort", "drain"}:
-            raise ValueError("subagents.on_budget_exceeded must be 'abort' or 'drain'")
         if self.isolation not in {"auto", "worktree", "shared"}:
             raise ValueError("subagents.isolation must be 'auto', 'worktree' or 'shared'")
         if (
@@ -2167,14 +2122,6 @@ class AgenthiccConfig:
                 "background_enabled": self.subagents.background_enabled,
                 "on_clarification": self.subagents.on_clarification,
                 "isolation": self.subagents.isolation,
-                "max_budget": {
-                    key: value
-                    for key, value in (
-                        ("cost_usd", self.subagents.max_budget.cost_usd),
-                        ("wall_clock_s", self.subagents.max_budget.wall_clock_s),
-                    )
-                    if value is not None
-                },
                 "depth_limits": {
                     str(depth): {
                         key: value
@@ -2953,6 +2900,15 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
 
     if "max_tokens" in subagent_data:
         raise ValueError("subagents.max_tokens was removed: subagents have no token limit")
+    for removed, unit in (
+        ("max_tool_calls", "tool-call"),
+        ("max_iterations", "iteration"),
+        ("max_total_time_s", "total-time"),
+        ("max_budget", "budget"),
+        ("on_budget_exceeded", "budget"),
+    ):
+        if removed in subagent_data:
+            raise ValueError(f"subagents.{removed} was removed: subagents have no {unit} limit")
 
     def _subagent_int(name: str, default: int) -> int:
         raw = subagent_data.get(name, default)
@@ -2960,25 +2916,9 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
             raise ValueError(f"subagents.{name} must be a positive integer")
         return raw
 
-    on_budget_exceeded = subagent_data.get("on_budget_exceeded", "drain")
-    if not isinstance(on_budget_exceeded, str) or on_budget_exceeded not in {"abort", "drain"}:
-        raise ValueError("subagents.on_budget_exceeded must be 'abort' or 'drain'")
     stop_grace_s = subagent_data.get("stop_grace_s", 5.0)
     if isinstance(stop_grace_s, bool) or not isinstance(stop_grace_s, (int, float)):
         raise ValueError("subagents.stop_grace_s must be a finite non-negative number")
-    max_total_time_s = subagent_data.get("max_total_time_s", 600.0)
-    if isinstance(max_total_time_s, bool) or not isinstance(max_total_time_s, (int, float)):
-        raise ValueError("subagents.max_total_time_s must be a finite number greater than zero")
-    raw_max_budget = subagent_data.get("max_budget", {})
-    if not isinstance(raw_max_budget, Mapping):
-        raise ValueError("subagents.max_budget must be a table")
-    if "tokens" in raw_max_budget:
-        raise ValueError("subagents.max_budget.tokens was removed: subagents have no token limit")
-    unknown_budget_keys = sorted(
-        str(key) for key in raw_max_budget if key not in {"cost_usd", "wall_clock_s"}
-    )
-    if unknown_budget_keys:
-        raise ValueError(f"subagents.max_budget.{unknown_budget_keys[0]} is not a budget setting")
     background_enabled = subagent_data.get("background_enabled", True)
     if not isinstance(background_enabled, bool):
         raise ValueError("subagents.background_enabled must be true or false")
@@ -2991,10 +2931,6 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
     collect_wait_max_s = subagent_data.get("collect_wait_max_s", 60.0)
     if isinstance(collect_wait_max_s, bool) or not isinstance(collect_wait_max_s, (int, float)):
         raise ValueError("subagents.collect_wait_max_s must be a number")
-    max_budget = SubagentBudgetCeiling(
-        cost_usd=raw_max_budget.get("cost_usd"),
-        wall_clock_s=raw_max_budget.get("wall_clock_s"),
-    )
 
     subagents = SubagentSettings(
         default_model=_as_str(subagent_data.get("default_model"), "").strip(),
@@ -3009,12 +2945,7 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
         depth_limits=depth_limits,
         depth_tiers=depth_tiers,
         max_workers=_subagent_int("max_workers", 32),
-        max_tool_calls=_subagent_int("max_tool_calls", 256),
-        max_iterations=_subagent_int("max_iterations", 128),
-        max_total_time_s=float(max_total_time_s),
-        on_budget_exceeded=cast(Literal["abort", "drain"], on_budget_exceeded),
         stop_grace_s=float(stop_grace_s),
-        max_budget=max_budget,
         collect_wait_max_s=float(collect_wait_max_s),
         background_enabled=background_enabled,
         on_clarification=cast(Literal["queue", "fail"] | None, on_clarification),

@@ -36,15 +36,6 @@ from agenthicc.subagents.communication import (
     registry_for_session,
 )
 from agenthicc.subagents.policy import SubagentExecutionPolicy
-from agenthicc.subagents.budget import (
-    BudgetError,
-    PoolBudget,
-    budget_digest,
-    budget_report,
-    model_has_known_price,
-    parse_budget,
-    resolve_budget,
-)
 from agenthicc.subagents.pool import (
     SubagentTask,
     _redact_result_value,
@@ -106,19 +97,6 @@ class _SpawnTaskInput(TypedDict):
     # while its current TypedDict walker does not yet understand PEP 655's
     # ``NotRequired`` marker.
     context: str | None
-
-
-class _SpawnBudgetInput(TypedDict):
-    """Optional per-pool limits accepted by ``spawn_subagents`` (SUBAGENT-06).
-
-    Each field is ``Optional`` so the provider schema marks it non-required;
-    either may be given. A declaration can only lower the operator's limits,
-    never raise them. There is no token limit: a worker uses as many tokens
-    as its task needs.
-    """
-
-    cost_usd: float | None
-    wall_clock_s: float | None
 
 
 def make_spawn_subagents_tool(
@@ -295,7 +273,6 @@ def make_spawn_subagents_tool(
         timeout_s: float = DEFAULT_SUBAGENT_TIMEOUT_S,
         model: str | None = None,
         effort: str | None = None,
-        budget: _SpawnBudgetInput | None = None,
         background: bool = False,
     ) -> dict[str, object]:
         """Spawn multiple specialized subagents concurrently and return their aggregated results.
@@ -313,11 +290,6 @@ def make_spawn_subagents_tool(
                        (default 3600, or one hour).
             model: Optional model override; available only when the operator enables it.
             effort: Optional reasoning-effort override; available only when enabled.
-            budget: Optional limits for the whole pool: cost_usd, wall_clock_s —
-                    either or both. Workers have no token limit. A limit can only lower
-                    the configured ones; a larger request is clamped and reported.
-                    When a limit is crossed the pool's stop policy drains or
-                    aborts it, and the result says which limit was crossed.
             background: Return at once and let the pool run in the background. You
                     are notified when it finishes; then call
                     collect_subagent_results(pool_id). Do not sleep, poll for
@@ -510,56 +482,6 @@ def make_spawn_subagents_tool(
 
         pool_metadata["tasks_used"] = len(subagent_tasks)
 
-        # SUBAGENT-06: validate a declared budget before any worker exists.
-        try:
-            declared_budget = parse_budget(budget)
-        except BudgetError as exc:
-            return {
-                "ok": False,
-                "status": "refused",
-                "error": str(exc),
-                "budget_field": exc.field,
-                **pool_metadata,
-            }
-        if declared_budget.cost_usd is not None:
-            if usage_ledger is None:
-                return {
-                    "ok": False,
-                    "status": "refused",
-                    "error": (
-                        "budget.cost_usd: this session has no usage ledger, so cost "
-                        "cannot be metered"
-                    ),
-                    "budget_field": "cost_usd",
-                    **pool_metadata,
-                }
-            unpriced = sorted(
-                {
-                    worker_model
-                    for task in subagent_tasks
-                    if (spec := _registry.get(task.agent_type)) is not None
-                    and not model_has_known_price(
-                        worker_model := _worker_model(
-                            spec,
-                            parent_model=parent_model,
-                            default_model=default_model,
-                            call_model=call_model,
-                        )
-                    )
-                }
-            )
-            if unpriced:
-                return {
-                    "ok": False,
-                    "status": "refused",
-                    "error": (
-                        "budget.cost_usd: no known price for "
-                        + ", ".join(repr(name) for name in unpriced)
-                        + "; its cost would be a guess, so a cost limit cannot be enforced"
-                    ),
-                    "budget_field": "cost_usd",
-                    **pool_metadata,
-                }
         if not isinstance(background, bool):
             return {"ok": False, "error": "background must be true or false", **pool_metadata}
         if background:
@@ -582,13 +504,6 @@ def make_spawn_subagents_tool(
                     ),
                     **pool_metadata,
                 }
-        ceiling = _settings.max_budget
-        effective_budget = resolve_budget(
-            declared_budget,
-            ceiling=PoolBudget(cost_usd=ceiling.cost_usd, wall_clock_s=ceiling.wall_clock_s),
-            operator_wall_clock_s=_settings.max_total_time_s,
-        )
-
         # PRD-124 Phase 4: check resume cache before spawning. The fingerprint
         # includes type, task, and context, while remaining order-insensitive.
         # Routing and permission changes invalidate cached worker results.
@@ -674,9 +589,6 @@ def make_spawn_subagents_tool(
                     failed = failed_value if isinstance(failed_value, int) else len(subagent_tasks)
                     text = previous.get("text", "")
                     values = _validated_cached_values(previous.get("values"), _registry)
-                    reason_value = previous.get("reason")
-                    reason = reason_value if isinstance(reason_value, str) else ""
-                    budget_exceeded_reason = reason if reason.startswith("max_") else ""
                     if status != "completed" or failed != 0 or len(values) == expected_values:
                         return {
                             "ok": status == "completed" and failed == 0,
@@ -685,14 +597,7 @@ def make_spawn_subagents_tool(
                             "total": total,
                             "succeeded": succeeded,
                             "failed": failed,
-                            "error": (
-                                reason
-                                if reason
-                                else ""
-                                if failed == 0
-                                else f"{failed} subagent(s) failed"
-                            ),
-                            "budget_exceeded_reason": budget_exceeded_reason,
+                            "error": ("" if failed == 0 else f"{failed} subagent(s) failed"),
                             "results": text if isinstance(text, str) else "",
                             "values": values,
                             **pool_metadata,
@@ -780,14 +685,7 @@ def make_spawn_subagents_tool(
             owner_lineage=owner_lineage,
             subagent_settings=_settings,
             max_workers=_settings.max_workers,
-            max_tool_calls=_settings.max_tool_calls,
-            max_iterations=_settings.max_iterations,
-            max_total_time_s=float(
-                effective_budget.limits.wall_clock_s or _settings.max_total_time_s
-            ),
-            on_budget_exceeded=_settings.on_budget_exceeded,
             stop_grace_s=_settings.stop_grace_s,
-            budget=effective_budget,
         )
         from agenthicc.runners.agent_turn_context import current_background_task_owner
 
@@ -959,11 +857,7 @@ def make_spawn_subagents_tool(
         # Only a completely successful pool is a safe resume cache entry.
         # Caching a partial result would make a resumed call silently reuse a
         # failed/timeout outcome and report it as successful.
-        if (
-            conversation_journal is not None
-            and result.failed == 0
-            and not result.budget_exceeded_reason
-        ):
+        if conversation_journal is not None and result.failed == 0:
             # This write is deliberately separate from the parent tool
             # exchange. The parent runner commits that exchange after this
             # callable returns; persisting here closes the cancellation window
@@ -977,7 +871,7 @@ def make_spawn_subagents_tool(
                 text=result.text,
                 values=structured_values,
             )
-        if conv_store is not None and result.failed == 0 and not result.budget_exceeded_reason:
+        if conv_store is not None and result.failed == 0:
             conv_store.append_event(
                 "subagent_pool_result",
                 {
@@ -990,43 +884,17 @@ def make_spawn_subagents_tool(
                 },
             )
 
-        budget_exceeded_reason = result.budget_exceeded_reason
-        digest = budget_digest(
-            result.usage,
-            result.budget,
-            crossed_reason=budget_exceeded_reason,
-            stop_mode=_settings.on_budget_exceeded,
-        )
         return {
-            "ok": result.failed == 0 and not budget_exceeded_reason,
-            "status": (
-                "budget_exceeded"
-                if budget_exceeded_reason
-                else "completed"
-                if result.failed == 0
-                else "failed"
-            ),
+            "ok": result.failed == 0,
+            "status": "completed" if result.failed == 0 else "failed",
             "pool_id": result.pool_id,
             "total": result.total,
             "succeeded": result.succeeded,
             "failed": result.failed,
-            "error": (
-                budget_exceeded_reason
-                if budget_exceeded_reason
-                else ""
-                if result.failed == 0
-                else f"{result.failed} subagent(s) failed"
-            ),
-            "budget_exceeded_reason": budget_exceeded_reason,
-            "results": f"{result.text}\n\n{digest}" if digest else result.text,
+            "error": "" if result.failed == 0 else f"{result.failed} subagent(s) failed",
+            "results": result.text,
             "values": structured_values,
             "usage": result.usage.to_dict(),
-            "budget": budget_report(
-                result.usage,
-                result.budget,
-                crossed_reason=budget_exceeded_reason,
-                stop_mode=_settings.on_budget_exceeded,
-            ),
             **pool_metadata,
         }
 

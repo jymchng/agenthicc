@@ -262,7 +262,7 @@ For project workflow definitions and per-phase model overrides, see the
 
 ## Subagents
 
-Operator defaults, routing restrictions, and pool budgets for `spawn_subagents`
+Operator defaults, routing restrictions, and admission ceilings for `spawn_subagents`
 live under `[subagents]`:
 
 ```toml
@@ -277,24 +277,14 @@ max_tasks = 64              # finite task-list ceiling at every depth
 max_concurrent = 16         # default concurrency and hard ceiling
 max_active_pools = 16       # process-wide active-pool ceiling
 max_workers = 32            # maximum workers admitted by one pool
-max_tool_calls = 256        # aggregate tool-call budget per pool
-max_iterations = 128        # aggregate model-iteration budget per pool
-                            # (no token budget: subagents have no token limit)
-max_total_time_s = 600.0    # pool wall-clock budget
-on_budget_exceeded = "drain" # abort | drain
+                            # (subagents have no turn, tool-call, iteration, token,
+                            # time or cost limit)
 stop_grace_s = 5.0          # cleanup grace for cancelled workers
 collect_wait_max_s = 60.0   # cap for collect_subagent_results(wait=true), at most 3600
 background_enabled = true   # allow spawn_subagents(background=true)
 isolation = "auto"          # auto | worktree | shared: give each file-changing worker its own git worktree
 # on_clarification = "queue" # backgrounded worker questions: queue | fail;
                             # unset: queue in the TUI, fail when headless/background
-
-# The most a spawn_subagents(budget=...) declaration may ask for. Unset means
-# no per-call ceiling; the operator ceilings above still apply to every pool.
-# [subagents.max_budget]
-# tokens = 100000
-# cost_usd = 1.0
-# wall_clock_s = 300
 
 # Nesting is opt-in: raise max_depth and add spawn_subagents to a type's
 # allowed_tools before workers of that type can delegate.
@@ -329,18 +319,15 @@ widening or unknown type is a configuration error. See
 examples and reporting details. See [subagent routing](subagents.md#memory-and-provider-calls)
 for the complete precedence rules.
 
-The pool limits bound each invocation: worker count and concurrency control
-admission, while tool-call, model-iteration, and aggregate-token ceilings are
-counted across all workers. `max_total_time_s` triggers the stop policy after
-the elapsed wall-clock threshold; it is not a hard completion deadline because
-`drain` lets active workers wind down and `abort` may use the configured cleanup
-grace period. Count limits are crossed when an event would exceed them (the
-configured number is permitted). When a budget is crossed, `on_budget_exceeded`
-applies the pool's stop policy: `drain` lets active workers finish and prevents
-queued work from starting; `abort` cancels active workers. A budget-limited
-result is not stored as a successful resume-cache entry. `stop_grace_s` bounds
-how long the pool waits for cancelled-worker cleanup before recording an
-overrun; zero requests immediate cancellation. See the
+The pool limits bound admission only: worker count and concurrency decide how
+many workers may exist and run at once. Once admitted, a worker has no turn,
+tool-call, iteration, token, wall-clock or cost limit and runs until it
+finishes, fails, times out on its own per-call `timeout_s`, or is stopped on
+purpose. `subagents.max_tool_calls`, `max_iterations`, `max_total_time_s`,
+`max_tokens`, `max_budget` and `on_budget_exceeded` were removed and a
+configuration that sets one is refused at load. `stop_grace_s` bounds how long
+the pool waits for cancelled-worker cleanup before recording an overrun; zero
+requests immediate cancellation. See the
 [subagent guide](subagents.md#concurrency-timeout-and-failure-semantics) for
 partial-result, retry, and reporting behavior.
 

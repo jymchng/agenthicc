@@ -1359,22 +1359,20 @@ def _finished_pool_payload(handle: PoolHandle) -> dict[str, object]:
     result = task.result()
     if not isinstance(result, AggregatedResult):
         return {"ok": True, "status": "completed", "pool_id": handle.pool_id, "results": result}
-    stopped = bool(result.budget_exceeded_reason)
     return {
-        "ok": result.failed == 0 and not stopped,
-        "status": "stopped" if stopped else "completed",
+        "ok": result.failed == 0,
+        "status": "completed",
         "pool_id": handle.pool_id,
         "total": result.total,
         "succeeded": result.succeeded,
         "failed": result.failed,
-        "budget_exceeded_reason": result.budget_exceeded_reason,
         "results": result.text,
         "values": [dict(value) for value in result.values],
         "usage": result.usage.to_dict(),
     }
 
 
-_TERMINAL_POOL_STATUSES = frozenset({"completed", "stopped", "interrupted", "cancelled"})
+_TERMINAL_POOL_STATUSES = frozenset({"completed", "interrupted", "cancelled"})
 
 
 def _journaled_pool_payload(
@@ -1412,8 +1410,6 @@ def _journaled_pool_payload(
         value = record.get(key, 0)
         return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
-    reason_value = record.get("reason", "")
-    reason = reason_value if isinstance(reason_value, str) else ""
     text = record.get("text", "")
     values = record.get("values", [])
     failed = count("failed")
@@ -1424,7 +1420,6 @@ def _journaled_pool_payload(
         "total": count("total"),
         "succeeded": count("succeeded"),
         "failed": failed,
-        "budget_exceeded_reason": reason if reason.startswith("max_") else "",
         "results": text if isinstance(text, str) else "",
         "values": [dict(value) for value in values if isinstance(value, Mapping)]
         if isinstance(values, list)

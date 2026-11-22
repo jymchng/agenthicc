@@ -35,7 +35,6 @@ def _registry(tool_name: str) -> SubagentTypeRegistry:
         SubagentTypeSpec(
             name="researcher",
             allowed_tools=frozenset({tool_name}),
-            max_turns=3,
             system_prompt="Use the research tool and report its result.",
             max_turn_time_s=10.0,
         )
@@ -49,7 +48,6 @@ def _implementer_registry(*tool_names: str) -> SubagentTypeRegistry:
         SubagentTypeSpec(
             name="implementer",
             allowed_tools=frozenset(tool_names),
-            max_turns=3,
             system_prompt="Make the requested change with the available tools.",
             max_turn_time_s=10.0,
             completion_evidence="mutation",
@@ -87,7 +85,6 @@ def _contract_registry() -> SubagentTypeRegistry:
         SubagentTypeSpec(
             name="reporter",
             allowed_tools=frozenset(),
-            max_turns=3,
             system_prompt="Return the requested report.",
             max_turn_time_s=10.0,
             output_schema={
@@ -1006,7 +1003,6 @@ async def test_synthetic_delegating_type_cannot_spawn_past_max_depth() -> None:
         SubagentTypeSpec(
             name="delegator",
             allowed_tools=frozenset({"spawn_subagents"}),
-            max_turns=1,
             system_prompt="Delegate work.",
         )
     )
@@ -1030,14 +1026,11 @@ async def test_synthetic_delegating_type_cannot_spawn_past_max_depth() -> None:
     assert "subagents.max_depth" in result["error"]
 
 
-async def test_redriven_turn_replays_a_budget_stopped_pool_with_its_results(
+async def test_redriven_turn_replays_a_finished_pool_with_its_results(
     tmp_path: Path,
 ) -> None:
-    """SUBAGENT-10 B-1: turn-resume reads the stopped record's real counts and text."""
-    from agenthicc.config import SubagentSettings
-
+    """SUBAGENT-10 B-1: turn-resume reads the journaled record's real counts and text."""
     transport = MockTransport()
-    # Two model calls against a one-iteration pool budget (tokens are unlimited).
     transport.queue_tool_use("not_a_tool", {}, tool_use_id="probe", model="mock-model")
     transport.queue_response(_final("Compatible with the old API.", "final"))
     journal = ConversationJournal(tmp_path / "conversation-journal.jsonl")
@@ -1046,8 +1039,7 @@ async def test_redriven_turn_replays_a_budget_stopped_pool_with_its_results(
         "mock-model",
         [],
         registry=_registry("not-a-parent-tool"),
-        subagent_settings=SubagentSettings(max_iterations=1),
-        parent_run_id="parent-run-budget",
+        parent_run_id="parent-run-replay",
         conversation_journal=journal,
     )
     tasks = [{"type": "researcher", "task": "Check API compatibility."}]
@@ -1055,11 +1047,9 @@ async def test_redriven_turn_replays_a_budget_stopped_pool_with_its_results(
     first = await spawn(tasks=tasks, timeout_s=30)
     replayed = await spawn(tasks=tasks, timeout_s=30)
 
-    assert first["status"] == "budget_exceeded"
-    assert first["budget_exceeded_reason"] == "max_iterations_exceeded"
-    assert replayed["status"] == "stopped"
-    assert replayed["ok"] is False
-    assert replayed["budget_exceeded_reason"] == "max_iterations_exceeded"
+    assert first["status"] == "completed"
+    assert replayed["status"] == "completed"
+    assert replayed["ok"] is True
     assert (replayed["total"], replayed["succeeded"], replayed["failed"]) == (1, 1, 0)
     assert "Compatible with the old API." in replayed["results"]
     # The replay came from the journal: no further provider call was made.
@@ -1067,118 +1057,50 @@ async def test_redriven_turn_replays_a_budget_stopped_pool_with_its_results(
     journal.close()
 
 
-# ── SUBAGENT-06 declared budgets through the spawn tool ───────────────────────
+# ── usage is counted and reported, never limited ──────────────────────────────
 
 
-def _budget_spawn(
-    transport: MockTransport,
-    *,
-    ledger: object | None = None,
-    settings: object | None = None,
-    model: str = "mock-model",
-) -> object:
-    from agenthicc.config import SubagentSettings
-
+def _usage_spawn(transport: MockTransport, *, ledger: object | None = None) -> object:
     return make_spawn_subagents_tool(
         AgentRunnerBase(transport=transport),
-        model,
+        "mock-model",
         [],
         registry=_registry("not-a-parent-tool"),
-        subagent_settings=settings if settings is not None else SubagentSettings(),
         usage_ledger=ledger,  # type: ignore[arg-type]
-        parent_run_id="turn-budget",
+        parent_run_id="turn-usage",
     )
 
 
 _TASKS = [{"type": "researcher", "task": "Check API compatibility."}]
 
 
-async def test_malformed_budget_is_refused_before_any_provider_call() -> None:
-    transport = MockTransport()
-    spawn = _budget_spawn(transport)
-
-    result = await spawn(tasks=_TASKS, timeout_s=30, budget={"wall_clock_s": -1})  # type: ignore[operator]
-
-    assert result["ok"] is False
-    assert result["status"] == "refused"
-    assert result["budget_field"] == "wall_clock_s"
-    assert result["error"].startswith("budget.wall_clock_s:")
-    assert transport.calls == []
-
-
-async def test_a_token_budget_is_refused_because_subagents_have_no_token_limit() -> None:
-    transport = MockTransport()
-    spawn = _budget_spawn(transport)
-
-    result = await spawn(tasks=_TASKS, timeout_s=30, budget={"tokens": 5})  # type: ignore[operator]
-
-    assert result["status"] == "refused"
-    assert result["budget_field"] == "tokens"
-    assert "subagents have no token limit" in result["error"]
-    assert transport.calls == []
-
-
-async def test_no_budget_keeps_the_digest_unchanged_and_still_reports_usage() -> None:
+async def test_usage_is_reported_and_nothing_limits_it() -> None:
     from agenthicc.runners.usage_ledger import UsageLedger
 
     transport = MockTransport()
     transport.queue_response(_final("Compatible.", "final"))
     ledger = UsageLedger("session")
-    spawn = _budget_spawn(transport, ledger=ledger)
+    spawn = _usage_spawn(transport, ledger=ledger)
 
     result = await spawn(tasks=_TASKS, timeout_s=30)  # type: ignore[operator]
 
     assert result["ok"] is True
     assert "[pool usage]" not in result["results"]
     assert result["usage"]["total_tokens"] == 8  # _final reports 3 in / 5 out
-    assert "crossed" not in result["budget"]
-    assert result["budget"]["sources"] == {"wall_clock_s": "operator"}
-    assert "tokens" not in result["budget"]["limits"]  # counted, never limited
+    assert "budget" not in result
+    assert "budget_exceeded_reason" not in result
 
 
-async def test_a_declaration_above_the_settings_ceiling_is_clamped_and_reported() -> None:
-    from agenthicc.config import SubagentBudgetCeiling, SubagentSettings
-    from agenthicc.runners.usage_ledger import UsageLedger
-
+async def test_a_budget_argument_is_no_longer_accepted() -> None:
     transport = MockTransport()
-    transport.queue_response(_final("Compatible.", "final"))
-    spawn = _budget_spawn(
-        transport,
-        ledger=UsageLedger("session"),
-        settings=SubagentSettings(max_budget=SubagentBudgetCeiling(wall_clock_s=60.0)),
-    )
+    spawn = _usage_spawn(transport)
 
-    result = await spawn(tasks=_TASKS, timeout_s=30, budget={"wall_clock_s": 900})  # type: ignore[operator]
-
-    assert result["ok"] is True
-    assert result["budget"]["limits"]["wall_clock_s"] == 60.0
-    assert result["budget"]["clamped_from"] == {"wall_clock_s": 900.0}
-    assert result["budget"]["sources"]["wall_clock_s"] == "settings_ceiling"
-    assert "clamped to subagents.max_budget: wall_clock_s requested 900" in result["results"]
+    with pytest.raises(TypeError, match="budget"):
+        await spawn(tasks=_TASKS, timeout_s=30, budget={"cost_usd": 1.0})  # type: ignore[operator]
+    assert transport.calls == []
 
 
-async def test_a_cost_budget_is_refused_for_an_unpriced_model_or_without_a_ledger() -> None:
-    from agenthicc.runners.usage_ledger import UsageLedger
-
-    unpriced = MockTransport()
-    result = await _budget_spawn(unpriced, ledger=UsageLedger("session"))(  # type: ignore[operator]
-        tasks=_TASKS, timeout_s=30, budget={"cost_usd": 1.0}
-    )
-    assert result["status"] == "refused"
-    assert result["budget_field"] == "cost_usd"
-    assert "no known price for 'mock-model'" in result["error"]
-    assert unpriced.calls == []
-
-    no_ledger = MockTransport()
-    result = await _budget_spawn(no_ledger, model="claude-sonnet-4-5")(  # type: ignore[operator]
-        tasks=_TASKS, timeout_s=30, budget={"cost_usd": 1.0}
-    )
-    assert result["status"] == "refused"
-    assert "no usage ledger" in result["error"]
-    assert no_ledger.calls == []
-
-
-async def test_pool_completed_event_carries_usage_against_limits() -> None:
+async def test_pool_completed_event_carries_usage() -> None:
     from agenthicc.runners.usage_ledger import UsageLedger
 
     transport = MockTransport()
@@ -1198,20 +1120,20 @@ async def test_pool_completed_event_carries_usage_against_limits() -> None:
         [],
         registry=_registry("not-a-parent-tool"),
         usage_ledger=UsageLedger("session"),
-        parent_run_id="turn-budget",
+        parent_run_id="turn-usage",
         processor=_Processor(),  # type: ignore[arg-type]
     )
 
-    await spawn(tasks=_TASKS, timeout_s=30, budget={"wall_clock_s": 120})  # type: ignore[operator]
+    await spawn(tasks=_TASKS, timeout_s=30)  # type: ignore[operator]
 
     completed = next(
         event.payload  # type: ignore[attr-defined]
         for event in emitted
         if event.event_type == "SubagentPoolCompleted"  # type: ignore[attr-defined]
     )
-    assert completed["budget"]["usage"]["total_tokens"] == 8
-    assert completed["budget"]["limits"]["wall_clock_s"] == 120.0
-    assert completed["budget"]["sources"]["wall_clock_s"] == "declared"
+    assert completed["usage"]["total_tokens"] == 8
+    assert "budget" not in completed
+    assert "budget_exceeded_reason" not in completed
 
 
 async def test_backgrounding_without_a_supervisor_is_refused_and_stops_the_pool(
@@ -1547,7 +1469,6 @@ async def test_a_nested_worker_retries_its_own_pool_and_is_refused_elsewhere(
         SubagentTypeSpec(
             name="delegator",
             allowed_tools=frozenset({"spawn_subagents"}),
-            max_turns=8,
             system_prompt="Delegate work.",
             max_turn_time_s=20.0,
         )
@@ -1556,7 +1477,6 @@ async def test_a_nested_worker_retries_its_own_pool_and_is_refused_elsewhere(
         SubagentTypeSpec(
             name="researcher",
             allowed_tools=frozenset(),
-            max_turns=2,
             system_prompt="Research.",
             max_turn_time_s=20.0,
         )

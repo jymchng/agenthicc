@@ -103,7 +103,6 @@ def test_worker_excludes_later_tools_matching_type_deny(tmp_path: Path) -> None:
     spec = SubagentTypeSpec(
         name="reviewer",
         allowed_tools=frozenset({"outlook_*", "read_file"}),
-        max_turns=1,
         system_prompt="Review.",
         permissions=SubagentPermissionConstraints(deny_tools=frozenset({"outlook_*"})),
     )
@@ -180,7 +179,6 @@ def test_worker_fails_closed_when_type_approval_has_no_service() -> None:
     spec = SubagentTypeSpec(
         name="executor",
         allowed_tools=frozenset({"run_bash"}),
-        max_turns=1,
         system_prompt="Execute.",
         permissions=SubagentPermissionConstraints(require_approval=frozenset({"execute"})),
     )
@@ -223,7 +221,6 @@ def _worker(tmp_path: Path, workspace_paths: tuple[str, ...]) -> SubagentWorker:
     spec = SubagentTypeSpec(
         name="reviewer",
         allowed_tools=frozenset(),
-        max_turns=1,
         system_prompt="Review.",
         permissions=SubagentPermissionConstraints(workspace_paths=workspace_paths),
     )

@@ -32,6 +32,7 @@ import json
 import logging
 import math
 import os
+import sys
 import time
 import uuid
 from copy import deepcopy
@@ -57,9 +58,7 @@ from agenthicc.subagents.policy import (
     child_workspace_access,
     restrict_workspace_scope,
 )
-from agenthicc.subagents.budget import (
-    EffectiveBudget,
-    budget_report,
+from agenthicc.subagents.usage import (
     PoolUsage,
     pool_usage,
     worker_run_id,
@@ -402,10 +401,6 @@ class SubagentPoolState:
     depth: int = 1
     parent_pool_id: str = ""
     lifecycles: tuple[WorkerLifecycle, ...] = ()
-    #: A declared ``budget:`` cost limit in USD, or ``None``.
-    budget_cost_usd: float | None = None
-    #: Cost metered so far; maintained only while a cost limit is declared.
-    cost_usd: float = 0.0
     #: When the pool started running workers.
     started_at: float | None = None
     #: Transcript writes that failed; a non-zero value means a partial transcript.
@@ -466,20 +461,12 @@ class SubagentPoolState:
             for agent_type, count in finished.items()
         }
 
-    def budget_ratio(self) -> float | None:
-        """The share consumed of a declared cost budget, if any (tokens are unlimited)."""
-        ratios: list[float] = []
-        if self.budget_cost_usd:
-            ratios.append(self.cost_usd / self.budget_cost_usd)
-        return max(ratios) if ratios else None
-
     def diagnostics(self, now: float) -> dict[str, object]:
         """Every derived counter at *now*, for a report or a test."""
         return {
             "wall_clock_s": self.wall_clock_s(now),
             "stuck_workers": self.stuck_workers(now),
             "success_rate_by_type": self.success_rate_by_type(),
-            "budget_ratio": self.budget_ratio(),
             "transcript_write_failures": self.transcript_write_failures,
             "workers": {
                 worker.worker_id: {
@@ -764,11 +751,8 @@ class AggregatedResult:
     text: str  # labelled concatenation delivered to parent as tool result
     values: tuple[Mapping[str, JSONValue], ...] = ()
     not_started_workers: tuple[str, ...] = ()
-    budget_exceeded_reason: str = ""
     #: The pool's completed ledger spend (SUBAGENT-06).
     usage: PoolUsage = field(default_factory=PoolUsage)
-    #: The limits the pool ran under, when a budget was resolved for it.
-    budget: EffectiveBudget | None = None
 
 
 _MUTATING_TOOL_NAMES = frozenset(
@@ -800,8 +784,9 @@ _REFUSAL_ERROR_CODES = frozenset(
 #: How many distinct refusals one worker records.
 _MAX_BLOCKED_CALLS = 8
 
-#: The session turn limit when no execution settings were supplied.
-_DEFAULT_SESSION_TURNS = 200
+#: lauren-ai wants an integer turn bound. Subagents are not turn-limited, so
+#: this is the largest one it can iterate; a worker ends when its model stops.
+_UNBOUNDED_TURNS = sys.maxsize
 
 #: Added to the system prompt of a worker running in its own git worktree.
 _WORKSPACE_SECTION = (
@@ -936,16 +921,13 @@ def tool_tags(
     return tuple(tags) if tags else ("read-only",)
 
 
-def _limit_stop_reason(stop_reason: str, turns: int, max_turns: int) -> str:
+def _limit_stop_reason(stop_reason: str) -> str:
     """Name why a run was cut off, or ``""`` when it ended on its own.
 
-    lauren-ai reports ``"max_turns"`` both when the loop used every turn and
-    when one reply stopped at the output-token limit; the turn count tells them
-    apart.
+    A worker has no turn limit, so lauren-ai's ``"max_turns"`` stop reason can
+    only mean that one reply stopped at the output-token limit.
     """
-    if stop_reason != "max_turns":
-        return ""
-    return "max_turns" if turns >= max_turns else "output_truncated"
+    return "output_truncated" if stop_reason == "max_turns" else ""
 
 
 def _workspace_relative(path: str, root: Path | None) -> str:
@@ -1127,7 +1109,6 @@ class _WorkerProgress:
         )
 
     def tool_started(self, tool: str, tool_input: Mapping[str, object]) -> None:
-        self._pool._record_tool_call()
         target = self._pool._redact(_tool_target(tool_input))
         self._tool = tool
         self._pool._update(self.worker_id, activity=f"{tool} {target}".strip())
@@ -1161,16 +1142,10 @@ class _WorkerProgress:
             TranscriptEvent("text", time.time(), text=text, attempt=self.attempt),
         )
 
-    def iteration_started(self) -> None:
-        self._pool._record_iteration()
-
     def usage(self, tokens: int) -> None:
         # Counted for the panel and the report; never limited (no token budget).
         self._tokens += max(0, tokens)
         self._pool._update(self.worker_id, tokens=self._tokens)
-
-    def cost(self, cost_usd: float) -> None:
-        self._pool._record_cost(cost_usd)
 
     def approval_requested(self, tool: str, tool_input: Mapping[str, object]) -> None:
         target = self._pool._redact(_tool_target(tool_input))
@@ -1574,7 +1549,7 @@ class SubagentWorker:
         self._changed_paths: list[str] = []
         #: Provider turns used across every run this worker made.
         self._turns = 0
-        #: ``"max_turns"`` or ``"output_truncated"`` when the last run was cut off.
+        #: ``"output_truncated"`` when the last run was cut off.
         self._limit_stop = ""
         self._result_value: JSONMapping | None = None
         self._result_text = ""
@@ -1585,16 +1560,6 @@ class SubagentWorker:
         self._unexecuted_tool_call = ""
         # Expand glob patterns once at construction time.
         self._effective_allowed = declared_allowed
-        #: The turn limit this worker runs under: its type's, else the session's.
-        self._max_turns = (
-            spec.max_turns
-            if spec.max_turns is not None
-            else (
-                execution_settings.max_agent_turns
-                if execution_settings is not None
-                else _DEFAULT_SESSION_TURNS
-            )
-        )
 
     async def _undelivered_message_count(self) -> int:
         if self._communication is None:
@@ -1784,15 +1749,6 @@ class SubagentWorker:
                 error_code="unexecuted_tool_call",
             )
 
-        if self._limit_stop == "max_turns":
-            return failed(
-                error=(
-                    f"{self._spec.name} reached its {self._max_turns}-turn limit "
-                    "before finishing; its last message is a progress note, not a result"
-                ),
-                stop_reason="max_turns",
-                text=partial_text,
-            )
         if self._limit_stop == "output_truncated":
             return failed(
                 error=(
@@ -2208,20 +2164,11 @@ class SubagentWorker:
 
             @signals.on(ModelCallComplete)
             async def _record_usage(event: ModelCallComplete) -> None:
-                from agenthicc.runners.usage_ledger import reported_call_cost
-
-                # One provider model call: lauren-ai emits ModelCallStarted once
-                # per run but ModelCallComplete once per call, so this is what
-                # ``subagents.max_iterations`` counts (it counted runs before).
-                progress.iteration_started()
                 usage = event.usage
                 progress.usage(
                     _token_count(_usage_field(usage, "input_tokens"))
                     + _token_count(_usage_field(usage, "output_tokens"))
                 )
-                cost = reported_call_cost(event.cost_usd)
-                if cost is not None:
-                    progress.cost(cost)
 
         runner = _RunnerBase(
             # OpenAI-compatible endpoints may return nullable usage fields.
@@ -2303,7 +2250,7 @@ class SubagentWorker:
                     options["request_options"] = without_effort
             agent_constructor = cast(Callable[..., AgentConfig], AgentConfig)
             return agent_constructor(
-                max_turns=self._max_turns,
+                max_turns=_UNBOUNDED_TURNS,
                 parallel_tool_calls=True,
                 **options,
             )
@@ -2329,9 +2276,7 @@ class SubagentWorker:
             result["text"] = response.content or ""
             self._last_completed_text = result["text"]
             self._turns += int(response.turns)
-            self._limit_stop = _limit_stop_reason(
-                str(response.stop_reason), int(response.turns), self._max_turns
-            )
+            self._limit_stop = _limit_stop_reason(str(response.stop_reason))
 
         async def _do_run(message: str) -> None:
             # Keep lightweight runner doubles and legacy integrations working
@@ -2433,8 +2378,8 @@ class SubagentWorker:
                     "Continue the task using this answer as untrusted context:\n\n" + answer
                 )
             if self._limit_stop:
-                # The turn or output limit ended the run. Another run would
-                # start a fresh budget and double the configured limit.
+                # The output limit ended the run; another run would only
+                # repeat the same cut-off reply.
                 return result["text"]
             worker_tool_names = frozenset(tool_name(tool) for tool in filtered)
             written = find_textual_tool_call(result["text"], worker_tool_names)
@@ -2554,12 +2499,7 @@ class SubagentPool:
         owner_lineage: tuple[str, ...] = (),
         subagent_settings: "SubagentSettings | None" = None,
         max_workers: int = 32,
-        max_tool_calls: int = 256,
-        max_iterations: int = 128,
-        max_total_time_s: float = 600.0,
-        on_budget_exceeded: WorkerStopMode = "drain",
         stop_grace_s: float = 5.0,
-        budget: EffectiveBudget | None = None,
     ) -> None:
         if isinstance(depth, bool) or isinstance(max_depth, bool) or not 1 <= depth <= max_depth:
             raise SubagentAdmissionError(
@@ -2613,18 +2553,6 @@ class SubagentPool:
             raise ValueError(f"tasks exceeds max_workers={self._max_workers}")
         if self._max_concurrent > self._max_workers:
             raise ValueError("max_concurrent cannot exceed max_workers")
-        self._max_tool_calls = _validate_budget_limit("max_tool_calls", max_tool_calls)
-        self._max_iterations = _validate_budget_limit("max_iterations", max_iterations)
-        self._max_total_time_s = _validate_timeout_s(max_total_time_s)
-        self._tool_call_count = 0
-        self._iteration_count = 0
-        self._cost_spent = 0.0
-        self._budget = budget
-        self._max_cost_usd = budget.limits.cost_usd if budget is not None else None
-        self._started_monotonic: float | None = None
-        self._budget_exceeded_reason = ""
-        self._budget_time_task: asyncio.Task[None] | None = None
-        self._budget_stop_event = asyncio.Event()
         self._depth = depth
         self._parent_pool_id = parent_pool_id
         self._max_depth = max_depth
@@ -2669,9 +2597,6 @@ class SubagentPool:
         self._transcripts: TranscriptWriter | None = None
         self._transcript_created_at: float | None = None
         self._transcript_degraded_reported = False
-        if on_budget_exceeded not in {"abort", "drain"}:
-            raise ValueError("on_budget_exceeded must be 'abort' or 'drain'")
-        self._on_budget_exceeded = on_budget_exceeded
         self._stop_grace_s = _validate_stop_grace_s(stop_grace_s)
         self._state = SubagentPoolState(
             self.pool_id,
@@ -2679,7 +2604,6 @@ class SubagentPool:
             limit=self._max_concurrent,
             depth=depth,
             parent_pool_id=parent_pool_id,
-            budget_cost_usd=self._max_cost_usd,
         )
         self._worker_tasks: dict[str, asyncio.Task[SubagentResult]] = {}
         self._stop_events: dict[str, asyncio.Event] = {}
@@ -2800,31 +2724,6 @@ class SubagentPool:
             self.request_stop(worker_id, mode=mode, source=source, reason=reason)
         return tuple(self._lifecycles.values())
 
-    def budget_exceeded(self, reason: str) -> tuple[WorkerLifecycle, ...]:
-        """Apply the configured stop policy once when a pool budget is crossed."""
-        reason_value = reason.strip()
-        if not reason_value or len(reason_value) > 240:
-            raise ValueError("reason must contain 1 to 240 characters")
-        if self._budget_exceeded_reason:
-            return tuple(self._lifecycles.values())
-        self._budget_exceeded_reason = reason_value
-        self._budget_stop_event.set()
-        return self.request_pool_stop(
-            mode=self._on_budget_exceeded,
-            source="budget",
-            reason=reason_value,
-        )
-
-    def _record_iteration(self) -> None:
-        self._iteration_count += 1
-        if self._iteration_count > self._max_iterations:
-            self.budget_exceeded("max_iterations_exceeded")
-
-    def _record_tool_call(self) -> None:
-        self._tool_call_count += 1
-        if self._tool_call_count > self._max_tool_calls:
-            self.budget_exceeded("max_tool_calls_exceeded")
-
     def _with_usage(self, aggregate: AggregatedResult) -> AggregatedResult:
         """Attach completed ledger spend to every worker result and to the pool.
 
@@ -2835,53 +2734,7 @@ class SubagentPool:
             self._results[task_id] = replace(
                 result, usage=worker_usage(self._usage_ledger, self.pool_id, task_id)
             )
-        return replace(
-            aggregate,
-            usage=pool_usage(self._usage_ledger, self.pool_id),
-            budget=self._budget,
-        )
-
-    def _budget_report(self, aggregate: AggregatedResult) -> dict[str, object]:
-        """Usage against limits for completion events; counts only, no text."""
-        return budget_report(
-            aggregate.usage,
-            aggregate.budget,
-            crossed_reason=aggregate.budget_exceeded_reason,
-            stop_mode=self._on_budget_exceeded,
-        )
-
-    def _record_cost(self, cost_usd: float) -> None:
-        self._cost_spent += max(0.0, cost_usd)
-        if self._max_cost_usd is None:
-            return
-        self._state = replace(self._state, cost_usd=self._cost_spent)
-        self._publish()
-        if self._cost_spent > self._max_cost_usd:
-            self.budget_exceeded("max_cost_usd_exceeded")
-
-    async def _watch_total_time(self) -> None:
-        started = self._started_monotonic
-        if started is None:
-            return
-        remaining = max(0.0, self._max_total_time_s - (time.monotonic() - started))
-        await asyncio.sleep(remaining)
-        self.budget_exceeded("max_total_time_s_exceeded")
-
-    def _start_budget_watcher(self) -> None:
-        if self._started_monotonic is None:
-            self._started_monotonic = time.monotonic()
-        self._budget_time_task = asyncio.create_task(
-            self._watch_total_time(), name=f"subagent-budget-{self.pool_id}"
-        )
-
-    async def _stop_budget_watcher(self) -> None:
-        task = self._budget_time_task
-        if task is None:
-            return
-        if not task.done():
-            task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
-        self._budget_time_task = None
+        return replace(aggregate, usage=pool_usage(self._usage_ledger, self.pool_id))
 
     def stop_worker(self, worker_id: str) -> bool:
         """Compatibility entry point for the panel's abort action."""
@@ -2987,16 +2840,6 @@ class SubagentPool:
         """
         if self.pool_id in _ACTIVE_POOLS or self._state.active:
             return "the pool is still running; a worker can be retried after it finishes"
-        if self._budget_exceeded_reason:
-            return f"the pool was stopped by its budget ({self._budget_exceeded_reason})"
-        if (
-            self._started_monotonic is not None
-            and time.monotonic() - self._started_monotonic >= self._max_total_time_s
-        ):
-            return (
-                f"the pool's wall-clock limit of {self._max_total_time_s:g}s since it "
-                "started has elapsed"
-            )
         lifecycle = self._lifecycles.get(worker_id)
         previous = self._results.get(worker_id)
         if lifecycle is None or previous is None:
@@ -3013,9 +2856,6 @@ class SubagentPool:
             or not any(item.task_id == worker_id for item in self._tasks)
         ):
             return "the worker never started, so there is no attempt to repeat"
-        exhausted = self._exhausted_budget()
-        if exhausted:
-            return f"the pool's budget is used up: {exhausted}; a new attempt would exceed it"
         admission = self._admission_refusal()
         if admission:
             return f"a retry would exceed the active-pool limit: {admission}"
@@ -3024,13 +2864,6 @@ class SubagentPool:
     async def retry_worker(self, worker_id: str) -> SubagentResult | None:
         """Retry one failed or cancelled worker without rerunning its siblings."""
         if self.retry_refusal(worker_id):
-            if (
-                not self._budget_exceeded_reason
-                and not self._state.active
-                and self._started_monotonic is not None
-                and time.monotonic() - self._started_monotonic >= self._max_total_time_s
-            ):
-                self.budget_exceeded("max_total_time_s_exceeded")
             return None
         lifecycle = self._lifecycles[worker_id]
         previous = self._results[worker_id]
@@ -3083,7 +2916,6 @@ class SubagentPool:
         _ACTIVE_POOLS[self.pool_id] = self
         self._state = replace(self._state, finished_at=None)
         self._publish()
-        self._start_budget_watcher()
         was_cancelled = False
 
         async def _run_retry_attempt() -> SubagentResult:
@@ -3108,40 +2940,23 @@ class SubagentPool:
             ordered_results = [
                 self._results[item.task_id] for item in self._tasks if item.task_id in self._results
             ]
-            aggregate = self._with_usage(
-                replace(
-                    _aggregate(self.pool_id, ordered_results, self._registry),
-                    budget_exceeded_reason=self._budget_exceeded_reason,
-                )
-            )
+            aggregate = self._with_usage(_aggregate(self.pool_id, ordered_results, self._registry))
             self._state = replace(self._state, finished_at=time.time())
             self._publish()
             await self._emit_pool_completed(aggregate)
             if self._journal is not None:
-                if aggregate.budget_exceeded_reason:
-                    self._journal.subagent_pool_stopped(
-                        pool_id=aggregate.pool_id,
-                        total=aggregate.total,
-                        succeeded=aggregate.succeeded,
-                        failed=aggregate.failed,
-                        text=aggregate.text,
-                        reason=aggregate.budget_exceeded_reason,
-                        values=[dict(value) for value in aggregate.values],
-                    )
-                else:
-                    self._journal.subagent_pool_finished(
-                        pool_id=aggregate.pool_id,
-                        total=aggregate.total,
-                        succeeded=aggregate.succeeded,
-                        failed=aggregate.failed,
-                        text=aggregate.text,
-                        values=[dict(value) for value in aggregate.values],
-                    )
+                self._journal.subagent_pool_finished(
+                    pool_id=aggregate.pool_id,
+                    total=aggregate.total,
+                    succeeded=aggregate.succeeded,
+                    failed=aggregate.failed,
+                    text=aggregate.text,
+                    values=[dict(value) for value in aggregate.values],
+                )
             if was_cancelled:
                 raise asyncio.CancelledError
             return result
         finally:
-            await self._stop_budget_watcher()
             if self._transcripts is not None:
                 self._transcripts.finish(time.time())
                 await self._transcripts.aclose()
@@ -3165,18 +2980,6 @@ class SubagentPool:
             f"Active subagent pool limit {active_limit} reached; running pools: {active_ids}. "
             "Raise subagents.max_active_pools to admit another pool."
         )
-
-    def _exhausted_budget(self) -> str:
-        """The aggregate pool budget a new attempt would start past, or ``""``."""
-        for name, used, limit in (
-            ("max_tool_calls", self._tool_call_count, self._max_tool_calls),
-            ("max_iterations", self._iteration_count, self._max_iterations),
-        ):
-            if used >= limit:
-                return f"{name} ({used}/{limit})"
-        if self._max_cost_usd is not None and self._cost_spent >= self._max_cost_usd:
-            return f"max_cost_usd ({self._cost_spent:g}/{self._max_cost_usd:g})"
-        return ""
 
     async def run(self) -> AggregatedResult:
         """Admit the pool process-wide, then execute its workers."""
@@ -3354,41 +3157,21 @@ class SubagentPool:
             parent_pool_id=self._parent_pool_id,
             transcripts=self._transcripts.directory if self._transcripts is not None else None,
             lifecycles=tuple(self._lifecycles.values()),
-            budget_cost_usd=self._max_cost_usd,
             started_at=time.time(),
         )
         self._publish()
         self._running.set()
         try:
-            if self._budget_exceeded_reason:
-                self.request_pool_stop(
-                    mode=self._on_budget_exceeded,
-                    source="budget",
-                    reason=self._budget_exceeded_reason,
-                )
-            else:
-                self._start_budget_watcher()
             result = await self._run(workers, worker_states, progress)
             if self._journal is not None:
-                if result.budget_exceeded_reason:
-                    self._journal.subagent_pool_stopped(
-                        pool_id=result.pool_id,
-                        total=result.total,
-                        succeeded=result.succeeded,
-                        failed=result.failed,
-                        text=result.text,
-                        reason=result.budget_exceeded_reason,
-                        values=[dict(value) for value in result.values],
-                    )
-                else:
-                    self._journal.subagent_pool_finished(
-                        pool_id=result.pool_id,
-                        total=result.total,
-                        succeeded=result.succeeded,
-                        failed=result.failed,
-                        text=result.text,
-                        values=[dict(value) for value in result.values],
-                    )
+                self._journal.subagent_pool_finished(
+                    pool_id=result.pool_id,
+                    total=result.total,
+                    succeeded=result.succeeded,
+                    failed=result.failed,
+                    text=result.text,
+                    values=[dict(value) for value in result.values],
+                )
             return result
         except asyncio.CancelledError:
             if self._journal is not None:
@@ -3401,7 +3184,6 @@ class SubagentPool:
                     )
             raise
         finally:
-            await self._stop_budget_watcher()
             if self._transcripts is not None:
                 self._transcripts.finish(time.time())
                 await self._transcripts.aclose()
@@ -3653,9 +3435,7 @@ class SubagentPool:
         digest = _aggregate(self.pool_id, results, self._registry)
         if self._isolation_note:
             digest = replace(digest, text=f"{digest.text}\n\n=== Note ===\n{self._isolation_note}")
-        aggregated = self._with_usage(
-            replace(digest, budget_exceeded_reason=self._budget_exceeded_reason)
-        )
+        aggregated = self._with_usage(digest)
         await self._emit_pool_completed(aggregated)
         # The finished pool stays on the panel while it has rows to show.
         self._state = replace(self._state, finished_at=time.time())
@@ -4028,14 +3808,13 @@ class SubagentPool:
     async def _emit_pool_completed(self, agg: AggregatedResult) -> None:
         event = self._event(
             SubagentEventKind.POOL_FINISHED,
-            ok=agg.failed == 0 and not agg.budget_exceeded_reason,
+            ok=agg.failed == 0,
             fields={
                 "total": agg.total,
                 "succeeded": agg.succeeded,
                 "failed": agg.failed,
                 **self._display_fields("text", agg.text, _MAX_EVENT_AGGREGATE_CHARS),
-                "budget_exceeded_reason": agg.budget_exceeded_reason,
-                "budget": self._budget_report(agg),
+                "usage": agg.usage.to_dict(),
                 "stuck_workers": self._state.stuck_workers(time.time()),
                 "transcript_write_failures": self._state.transcript_write_failures,
             },

@@ -21,7 +21,7 @@ Use this skill when you need to:
 
 - Understand what `spawn_subagents` can and cannot do
 - Pick the right built-in subagent type for a task
-- Register a custom type with its own prompt, tool ceiling, and budget
+- Register a custom type with its own prompt and tool ceiling
 - Interpret a failed or partial aggregate
 - Reason about why a worker could not see a file the parent just wrote
 
@@ -37,22 +37,25 @@ Types are declared as `SubagentTypeSpec` instances
 (`src/agenthicc/subagents/types.py:61`) and preloaded into a process-level
 `DEFAULT_REGISTRY` (`subagents/types.py:385`). The registry contains exactly nine types:
 
-| Type | `max_turns` | `max_turn_time_s` | Intended work |
-|---|---|---|---|
-| `explorer` | 15 | 3600 | Read-only repository investigation and fact gathering |
-| `planner` | 10 | 3600 | Read-only production of a numbered implementation plan |
-| `implementer` | 20 | 180 | A single scoped code change |
-| `executor` | 24 | 300 | End-to-end build or implementation with commands |
-| `tester` | 20 | 180 | Write or run tests for a described component |
-| `reviewer` | 10 | 3600 | Review a change for correctness |
-| `documenter` | 15 | 150 | Write or update documentation |
-| `verifier` | 12 | 150 | Adversarially check a specific requirement or invariant |
-| `researcher` | 8 | 3600 | Answer specific technical questions by searching |
+| Type | `max_turn_time_s` | Intended work |
+|---|---|---|
+| `explorer` | 3600 | Read-only repository investigation and fact gathering |
+| `planner` | 3600 | Read-only production of a numbered implementation plan |
+| `implementer` | 180 | A single scoped code change |
+| `executor` | 300 | End-to-end build or implementation with commands |
+| `tester` | 180 | Write or run tests for a described component |
+| `reviewer` | 3600 | Review a change for correctness |
+| `documenter` | 150 | Write or update documentation |
+| `verifier` | 150 | Adversarially check a specific requirement or invariant |
+| `researcher` | 3600 | Answer specific technical questions by searching |
+
+No type has a turn limit, and a pool has no tool-call, iteration, total-time or
+cost limit: a worker runs until it finishes.
 
 The default per-worker timeout constant is one hour
-(`DEFAULT_SUBAGENT_TIMEOUT_S = 3_600.0`, `subagents/types.py:31`), but only the read-only
-types actually use it. The write-capable types are deliberately given tight
-wall-clock budgets — an `implementer` gets 180 seconds, a `documenter` 150.
+(`DEFAULT_SUBAGENT_TIMEOUT_S = 3_600.0`, `subagents/types.py:31`). `spawn_subagents`
+always passes its own `timeout_s` (default one hour), which overrides each type's
+`max_turn_time_s`; the shorter values apply only to direct `SubagentWorker` callers.
 
 ### Tool ceilings
 
@@ -194,7 +197,6 @@ from agenthicc.subagents import (
 SPELUNKER = SubagentTypeSpec(
     name="spelunker",
     allowed_tools=frozenset({"read_file", "grep_files", "search_files"}),
-    max_turns=6,
     system_prompt=(
         "You trace one symbol to its origin. Read only what you need, then "
         "report the defining file and line."
@@ -235,7 +237,7 @@ soon as it is registered.
 | `tasks list is empty` | No work to do | Omit the call instead of sending `[]` |
 | Worker reports it cannot find a file the parent just created | Workers get a fresh memory and no parent transcript | Put the path in `task` or `context` |
 | Worker failed with no useful text | Failure is reported per worker, not raised | Inspect `AggregatedResult.failed` and each result's `error` |
-| Worker exceeded its budget | Per-type wall clock is tight for write-capable types | Split the work or raise `max_turn_time_s` on your type |
+| Worker timed out | The per-call `timeout_s` (default one hour) elapsed | Split the work or pass a larger `timeout_s` |
 | Worker wrote files you did not expect | Children run with an isolated Yolo policy | Read `changed_paths`; do not infer worker permissions from the parent mode |
 
 ---

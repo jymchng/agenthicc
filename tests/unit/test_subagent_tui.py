@@ -250,19 +250,6 @@ class TestScrollBufferRenderers:
         )
         assert "failed" in out.lower() or "1" in out
 
-    def test_pool_done_shows_budget_exceeded_reason(self) -> None:
-        out = self._render_event(
-            "subagent_pool_done",
-            {
-                "succeeded": 2,
-                "total": 2,
-                "failed": 0,
-                "budget_exceeded_reason": "max_tokens_exceeded",
-            },
-        )
-        assert out.splitlines()[0].startswith("◈ Subagents Failed")
-        assert "budget exceeded: max tokens exceeded" in out.lower()
-
 
 # ── StatusLine N/M counter and the composer's subagent hint (TUX-02) ─────────
 

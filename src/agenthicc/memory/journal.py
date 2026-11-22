@@ -290,7 +290,6 @@ RECORD_DURABILITY: Final[Mapping[str, Durability]] = {
     "subagent_pool_notification_delivered": "durable",
     "subagent_pool_result": "durable",
     "subagent_pool_started": "durable",
-    "subagent_pool_stopped": "durable",
     "subagent_worker_result": "durable",
     "tool_exchange_aborted": "durable",
     "tool_exchange_committed": "durable",
@@ -1223,53 +1222,6 @@ class ConversationJournal:
             entry["values"] = [dict(value) for value in values]
         self._write(entry)
 
-    def subagent_pool_stopped(
-        self,
-        *,
-        pool_id: str,
-        total: int,
-        succeeded: int,
-        failed: int,
-        text: str,
-        reason: str,
-        values: list[Mapping[str, object]] | None = None,
-    ) -> None:
-        """Persist a pool ended by a stop policy, with its counts, text and cause.
-
-        A budget crossing drains or aborts the pool through SUBAGENT-08's stop
-        path; the workers that ran keep their results. Unlike a session-close
-        cancellation, the record carries the aggregate and the reason so a
-        delivery or a resumed turn reports what actually happened.
-        """
-        lifecycle = next(
-            (
-                record
-                for record in self.fold_subagent_pool_lifecycle()
-                if record.get("pool_id") == pool_id
-            ),
-            None,
-        )
-        if lifecycle is None or lifecycle.get("status") not in {"running", "backgrounded"}:
-            return
-        self._record_unfinished_subagent_workers(
-            lifecycle, f"cancelled: stopped by pool budget ({reason})"
-        )
-        entry: dict[str, object] = {
-            "seq": self._seq,
-            "kind": "subagent_pool_stopped",
-            "at": time.time(),
-            "schema_version": 1,
-            "pool_id": str(pool_id)[:128],
-            "total": max(0, int(total)),
-            "succeeded": max(0, int(succeeded)),
-            "failed": max(0, int(failed)),
-            "text": str(text),
-            "reason": str(reason)[:256],
-        }
-        if values is not None:
-            entry["values"] = [dict(value) for value in values]
-        self._write(entry)
-
     def subagent_pool_cancelled(self, *, pool_id: str, reason: str = "session closed") -> None:
         """Persist a graceful session cancellation and terminalize unfinished workers."""
         lifecycle = next(
@@ -1396,7 +1348,6 @@ class ConversationJournal:
             "subagent_pool_finished",
             "subagent_pool_interrupted",
             "subagent_pool_cancelled",
-            "subagent_pool_stopped",
         }
         records = [record for kind in kinds for record in self._subagent_kind(kind)]
 
@@ -1410,7 +1361,6 @@ class ConversationJournal:
             "subagent_pool_finished": "completed",
             "subagent_pool_interrupted": "interrupted",
             "subagent_pool_cancelled": "cancelled",
-            "subagent_pool_stopped": "stopped",
         }
         for record in records:
             kind = record.get("kind")
@@ -1477,7 +1427,7 @@ class ConversationJournal:
             for record in self.fold_subagent_pool_lifecycle()
             if record.get("pool_id") not in delivered
             and record.get("backgrounded") is True
-            and record.get("status") in {"completed", "stopped", "interrupted", "cancelled"}
+            and record.get("status") in {"completed", "interrupted", "cancelled"}
         ]
 
     def agent_message_event(

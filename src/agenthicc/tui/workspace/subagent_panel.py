@@ -110,10 +110,6 @@ def summary_line(
         parts.append(f"{counts.done}/{state.total} done")
     if counts.queued and state.limit > 0:
         parts.append(f"limit {state.limit}")
-    # A declared budget (SUBAGENT-06) is shown as usage against it; a pool that
-    # declared none renders exactly as before.
-    if state.budget_cost_usd is not None:
-        parts.append(f"${state.cost_usd:.2f}/${state.budget_cost_usd:.2f}")
 
     name = "Subagents" if plain else f"  [bold][{palette().agent}]Subagents[/][/bold]"
     if not parts:

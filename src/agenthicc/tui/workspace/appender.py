@@ -1750,19 +1750,15 @@ def _render_subagent_transcript_degraded(self: ScrollBufferAppender, ev: Convers
 
 @register_renderer("subagent_pool_done")
 def _render_subagent_pool_done(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
-    from rich.markup import escape as _e
 
     succeeded = _nonnegative_int(ev.payload, "succeeded")
     total = _nonnegative_int(ev.payload, "total")
     failed = _nonnegative_int(ev.payload, "failed")
-    reason = ev.payload.get("budget_exceeded_reason", "")
-    status = "complete" if succeeded == total and failed == 0 and not reason else "Failed"
+    status = "complete" if succeeded == total and failed == 0 else "Failed"
     parts = [f"{succeeded}/{total} done"]
     if failed:
         parts.append(f"{failed} unsuccessful (failed or stopped)")
     suffix = " · ".join(parts)
-    if isinstance(reason, str) and reason:
-        suffix += f" · budget exceeded: {_e(reason.replace('_', ' '))}"
     self._print(
         f"[bold]◈ Subagents {status} · {suffix}[/bold]",
         markup=True,
