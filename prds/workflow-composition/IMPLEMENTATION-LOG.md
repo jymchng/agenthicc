@@ -7,7 +7,7 @@ Branch `feat/workflow-composition` starts at `5100c8c` from fetched
 |---|---|---|
 | Setup | Complete | `4deacb1` adds the series and its index block. Parsed all 15 front-matter blocks and resolved the series links. `2b9902a` applies the separate guidance patch. Hooks installed. Strict MkDocs, Ruff and mypy passed. |
 | 0 | M0 pushed | `a04bfb4` records three spikes and four amendments. The tool-surface follow-up also demonstrates dispatch after a same-turn schema refresh. See milestone gate results below. |
-| 1 | In progress | WFC-14 foundation and WFC-05 landed. WFC-13 harness in progress. |
+| 1 | Verification pending | WFC-14 foundation, WFC-05 and the WFC-13 harness landed. |
 | 2 | Pending | WFC-11 and WFC-10. |
 | 3 | Pending | WFC-01 and the publish connection. |
 | 4 | Pending | WFC-02. |
@@ -31,7 +31,7 @@ Branch `feat/workflow-composition` starts at `5100c8c` from fetched
 | WFC-10 | Pending | — |
 | WFC-11 | Spike complete | Sandboxed import, read-only workspace, network isolation and bounds confirmed. |
 | WFC-12 | Pending | — |
-| WFC-13 | Pending | — |
+| WFC-13 | Harness ready | Scripted provider, request snapshots, isolated real sessions, and a test-only failure trigger. S1–S9 remain to be integrated. |
 | WFC-14 | Foundation | Shared scoped tools, deterministic verdict and persisted budget adopted by `create_workflow`. Sandbox validation and tool and skill adoption follow WFC-11, WFC-07 and WFC-09. |
 
 ## M0 verification
@@ -98,3 +98,16 @@ The legacy names test, Ruff, mypy, the type-safety audit, strict MkDocs and
 Whole-repository combined line and branch coverage must stay above 80%.
 The existing 81.5% CI floor is kept. Series-wide coverage evidence is pending
 the full run.
+
+## WFC-13 harness
+
+The harness exercises the real headless execution path and copies provider
+requests before tools change. It handles both message forms sent through the
+provider interface. These three tests passed on Python 3.13:
+
+- `test_harness_captures_the_real_headless_workflow_request`
+- `test_harness_only_stops_at_the_armed_boundary`
+- `test_script_refuses_an_unexpected_request`
+
+Ruff and mypy passed across the source and harness. The failure trigger is
+test-only. S7 still needs a real subprocess crash and restart scenario.
