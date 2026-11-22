@@ -165,3 +165,34 @@ The canonical lease selection passed 59 tests covering stage-only approval,
 reload failure and retry, trust mutation ownership, protected-path approvals,
 and the Safe gate for a published execute-capable tool. The workflow return
 connection still lands in WFC-01.
+
+## M2 verification
+
+`ed01cf0` added the live skill tools and their worker scope. The scripted
+provider test publishes a skill during the first request, then verifies the
+inventory, rendered instructions, provenance and remaining tool schemas.
+The reload stress test pairs each skill's instructions with its template and
+reference through successive generations. The real `create_skills` entry and
+its headless scenario remain WFC-09 and WFC-13 work.
+
+The first integration run exposed a test assertion that expected JSON text
+for the inventory. The provider carried a list. The first full unit run also
+exposed a missing renderer snapshot and an unread publication-policy
+setting. `5d514e6` reads the configured policy when constructing the session
+publisher and renders the artifact receipt in the scrollback. A later
+integration run failed on the subagent panel equality check because one
+elapsed duration rounded to 0.1 seconds and the other to 0.0 seconds. The
+individual test and an isolated full integration run passed with no change
+to the duration check.
+
+The verified M2 gate on Python 3.13 passed:
+
+- 6,260 unit tests with 15 skips, 413 integration tests, and 238 E2E tests
+  with two skips.
+- Nine performance tests, including the reload lag benchmark.
+- Ruff check and format, mypy on 423 files, the 10-metric type audit, strict
+  MkDocs, and the public-symbol documentation check.
+
+The logs are `/var/tmp/agenthicc-wfc-m2-*.log`. Windows and combined
+line and branch coverage remain CI gates. The whole-repository coverage
+floor in CI is 81.5%.
