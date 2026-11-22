@@ -16,6 +16,7 @@ from lauren_ai._tools import tool
 from lauren_ai._transport import Completion, TokenUsage
 from lauren_ai._transport._mock import MockTransport
 
+from agenthicc.tools.surface import ToolSurface
 from agenthicc.subagents.pool import SubagentPool, SubagentTask, active_pool
 from agenthicc.subagents.transcripts import list_pools, read_transcript
 from agenthicc.subagents.types import SubagentTypeRegistry, SubagentTypeSpec
@@ -94,7 +95,7 @@ async def test_each_row_shows_its_workers_tool_before_the_tool_runs(tmp_path: Pa
         [SubagentTask(f"task-{i}", "explorer", f"Read file {i}") for i in range(4)],
         parent_runner=AgentRunnerBase(transport=transport),
         parent_model="mock-model",
-        all_tools=[reader],
+        tool_surface=ToolSurface(0, tuple([reader])),
         max_concurrent=4,
         conv_store=conversation,
         registry=_registry("explorer", "read_source"),
@@ -135,7 +136,7 @@ async def test_transcripts_outlive_the_turn_and_hide_secrets(tmp_path: Path) -> 
         [SubagentTask("task-0", "explorer", "Check config/.env, token=abcd1234efgh5678")],
         parent_runner=AgentRunnerBase(transport=transport),
         parent_model="mock-model",
-        all_tools=[reader],
+        tool_surface=ToolSurface(0, tuple([reader])),
         registry=_registry("explorer", "read_source"),
         transcript_root=tmp_path / "subagents",
     )
@@ -174,7 +175,7 @@ async def test_stopping_one_worker_leaves_the_others_running(tmp_path: Path) -> 
         [SubagentTask(f"task-{i}", "explorer", f"Read f{i}") for i in range(3)],
         parent_runner=AgentRunnerBase(transport=transport),
         parent_model="mock-model",
-        all_tools=[reader],
+        tool_surface=ToolSurface(0, tuple([reader])),
         conv_store=conversation,
         registry=_registry("explorer", "read_source"),
         transcript_root=tmp_path / "subagents",
@@ -228,7 +229,7 @@ async def test_a_workers_approval_names_it_and_waits_on_its_row(tmp_path: Path) 
         [SubagentTask("task-0", "writer", "Write the note")],
         parent_runner=AgentRunnerBase(transport=transport),
         parent_model="mock-model",
-        all_tools=[write_note],
+        tool_surface=ToolSurface(0, tuple([write_note])),
         app_state=app_state,
         conv_store=conversation,
         registry=_registry("writer", "write_note"),
@@ -265,7 +266,7 @@ async def _fan_out(
         [SubagentTask(f"task-{i}", "explorer", f"Read f{i}") for i in range(2)],
         parent_runner=AgentRunnerBase(transport=transport),
         parent_model="mock-model",
-        all_tools=[_blocking_reader(release, {})],
+        tool_surface=ToolSurface(0, tuple([_blocking_reader(release, {})])),
         max_concurrent=1,
         conv_store=conversation,
         registry=_registry("explorer", "read_source"),

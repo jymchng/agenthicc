@@ -8,6 +8,8 @@ from lauren_ai._tools import tool
 from lauren_ai._transport import Completion, TokenUsage
 from lauren_ai._transport._mock import MockTransport
 
+from agenthicc.subagents.tool import SubagentToolSelection
+from agenthicc.tools.surface import ToolSurface
 from agenthicc.subagents.tool import make_spawn_subagents_tool
 from agenthicc.tools.capabilities import tool_execute
 
@@ -36,7 +38,9 @@ async def test_executor_delegation_returns_a_successful_aggregate() -> None:
         )
     )
     runner = AgentRunnerBase(transport=transport)
-    spawn = make_spawn_subagents_tool(runner, "mock-model", [run_bash])
+    spawn = make_spawn_subagents_tool(
+        runner, "mock-model", SubagentToolSelection(ToolSurface(0, tuple([run_bash])))
+    )
 
     result = await spawn(tasks=[{"type": "executor", "task": "Build the artifact."}])
 

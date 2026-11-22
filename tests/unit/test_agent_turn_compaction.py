@@ -63,7 +63,7 @@ def _make_context(memory: ShortTermMemory) -> AgentTurnContext:
         exec_cfg=_SmallExecutionConfig(),
         skills=None,
         mention_cache=MagicMock(),
-        project_plugin_tools=[],
+        extra_tools=[],
         mcp_registry=None,
         active_agent="default",
         completed_turns=0,

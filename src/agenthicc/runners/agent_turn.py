@@ -594,6 +594,7 @@ if TYPE_CHECKING:
     from agenthicc.subagents.types import SubagentTypeRegistry
     from agenthicc.tools.approval import ApprovalBroker
     from agenthicc.tools.base import ToolLike
+    from agenthicc.tools.surface import ToolSurface, ToolSurfaceHolder
     from agenthicc.tools.mcp import McpToolRegistry
     from agenthicc.tools.mcp_manager import McpSessionManager
     from agenthicc.tools.workspace_access import WorkspaceAccessPolicy
@@ -999,7 +1000,7 @@ class AgentTurnRunner:
         self._spawn_tool: Callable[..., Awaitable[dict[str, object]]] | None = None
         self._definition_agent_errors: dict[str, str] = {}
         self._visible_tools: list[ToolLike] = []
-        self._tool_registry: object | None = None
+        self._tool_registry: ToolRegistry | None = None
 
     # ── public entry point ────────────────────────────────────────────────────
 
@@ -1501,6 +1502,7 @@ class AgentTurnRunner:
             get_tool_capabilities,
             is_exploratory_tool,
         )
+        from agenthicc.tools.surface import ToolSurface
 
         from agenthicc.workflows.stack_tools import (
             current_workflow_tools,
@@ -1525,20 +1527,30 @@ class AgentTurnRunner:
 
         ctx = self._ctx
 
-        # Tool registry
         mcp_tools = ctx.mcp_registry.all_tools() if ctx.mcp_registry is not None else []
-        project_tools: list[ToolLike] = [*(ctx.project_plugin_tools or []), *mcp_tools]
-        registry = build_registry(
-            agent_name=ctx.active_agent or "default",
-            project_plugin_tools=project_tools,
-        )
-        if self._skill_state is not None:
-            registry.register(list_skills, source="builtin")
-            registry.register(use_skill, source="builtin")
-        if current_workflow_tools() is not None:
-            registry.register(list_workflows, source="builtin")
-            registry.register(workflow_status, source="builtin")
-            registry.register(enter_workflow, source="builtin")
+        # A phase supplies its already restricted tool list. Direct turns
+        # read the shared catalog and can observe a reload between requests.
+        holder = ctx.tool_surface
+        catalog = holder.current() if holder is not None else None
+        session_controls: list[ToolLike] = []
+
+        def registry_for(surface: ToolSurface | None) -> ToolRegistry:
+            discovered = surface.tools if surface is not None else ()
+            result = build_registry(
+                agent_name=ctx.active_agent or "default",
+                extra_tools=[*discovered, *(ctx.extra_tools or []), *mcp_tools],
+            )
+            if self._skill_state is not None:
+                result.register(list_skills, source="builtin")
+                result.register(use_skill, source="builtin")
+            if current_workflow_tools() is not None:
+                result.register(list_workflows, source="builtin")
+                result.register(workflow_status, source="builtin")
+                result.register(enter_workflow, source="builtin")
+            result.register_many(session_controls, source="builtin")
+            return result
+
+        registry = registry_for(catalog)
         excluded_capabilities = ctx.excluded_capabilities
         workflow_policy = current_workflow_policy()
         if workflow_policy is not None:
@@ -1557,6 +1569,22 @@ class AgentTurnRunner:
                     ctx.app_state,
                 )
             )
+
+        def resolve_surface(
+            surface: ToolSurface,
+        ) -> tuple[ToolRegistry, list[ToolLike], AppState | None]:
+            updated = registry_for(surface)
+            allowed = ctx.allowed_tool_names
+            blocked = ctx.excluded_capabilities
+            mode_state = ctx.app_state
+            if workflow_policy is not None:
+                blocked |= workflow_policy.blocked_capabilities
+            if ctx.agent_spec is not None:
+                allowed, blocked, mode_state, _ = _agent_restrictions(
+                    ctx.agent_spec, updated, allowed, blocked, ctx.app_state
+                )
+            return updated, _visible_tools_for_agent(updated, allowed, blocked), mode_state
+
         visible_tools = _visible_tools_for_agent(
             registry,
             allowed_tool_names,
@@ -1659,17 +1687,21 @@ class AgentTurnRunner:
                 self._workspace_root(),
             )
         ]
-        self._tool_presentations.clear()
-        self._tool_presentations.update(
-            {
-                tool_name(tool): presentation
-                for tool in visible_tools
-                if (presentation := presentation_from_metadata(tool)) is not None
+
+        def update_tool_presentations(tools: Sequence[ToolLike]) -> None:
+            self._tool_presentations.clear()
+            self._tool_presentations.update(
+                {
+                    tool_name(tool): presentation
+                    for tool in tools
+                    if (presentation := presentation_from_metadata(tool)) is not None
+                }
+            )
+            self._exploratory_tools = {
+                tool_name(tool) for tool in tools if is_exploratory_tool(tool)
             }
-        )
-        self._exploratory_tools = {
-            tool_name(tool) for tool in visible_tools if is_exploratory_tool(tool)
-        }
+
+        update_tool_presentations(visible_tools)
         if gate_state is not None:
             from agenthicc.tools.capability_gate import ToolCapabilityGate
 
@@ -1683,7 +1715,11 @@ class AgentTurnRunner:
         hooks = order_global_hooks(hooks)
 
         runner_class: type[AgentRunnerBase] = (
-            SkillAwareRunner if self._skill_state is not None else _RunnerBase
+            SkillAwareRunner
+            if self._skill_state is not None
+            or holder is not None
+            or ctx.tool_surface_generation is not None
+            else _RunnerBase
         )
         next_queued_message = ctx.next_queued_message
         if next_queued_message is not None:
@@ -1753,7 +1789,7 @@ class AgentTurnRunner:
         if ctx.runner is not None:
             from agenthicc.runners.retry import RetryConfig
             from agenthicc.subagents.policy import SubagentExecutionPolicy
-            from agenthicc.subagents.tool import make_spawn_subagents_tool
+            from agenthicc.subagents.tool import SubagentToolSelection, make_spawn_subagents_tool
 
             _ec = _execution(ctx.exec_cfg)
             _subagent_retry = RetryConfig(
@@ -1762,16 +1798,35 @@ class AgentTurnRunner:
                 base_delay_s=_ec.transport_retry_base_delay_s,
                 max_total_duration_s=_ec.transport_retry_max_total_s,
             )
-            _subagent_policy = SubagentExecutionPolicy.from_app_state(
-                gate_state,
-                visible_tool_names=frozenset(tool_name(item) for item in visible_tools),
-                system_prompt_suffix=ctx.system_prompt_suffix,
-                workspace_scope_identity=(
-                    str(ctx.workspace_access.scope.primary_root)
-                    if ctx.workspace_access is not None
-                    else ""
-                ),
-            )
+
+            def select_subagent_tools() -> SubagentToolSelection:
+                source = holder.current() if holder is not None else None
+                if holder is not None and source is not None and source is not catalog:
+                    selected_registry, selected, selected_state = resolve_surface(source)
+                else:
+                    selected_registry = self._tool_registry or registry
+                    selected = (
+                        self._visible_tools if self._tool_registry is not None else visible_tools
+                    )
+                    selected_state = gate_state
+                pinned = tuple(tool for tool in selected if tool not in session_controls)
+                surface = ToolSurface(
+                    source.generation if source is not None else ctx.tool_surface_generation or 0,
+                    pinned,
+                    selected_registry.sources,
+                )
+                policy = SubagentExecutionPolicy.from_app_state(
+                    selected_state,
+                    visible_tool_names=frozenset(map(tool_name, pinned)),
+                    system_prompt_suffix=ctx.system_prompt_suffix,
+                    workspace_scope_identity=(
+                        str(ctx.workspace_access.scope.primary_root)
+                        if ctx.workspace_access is not None
+                        else ""
+                    ),
+                )
+                return SubagentToolSelection(surface, selected_registry, policy)
+
             definition_registry = self._build_definition_subagent_registry(
                 registry,
                 visible_tools,
@@ -1812,7 +1867,7 @@ class AgentTurnRunner:
             spawn_tool = make_spawn_subagents_tool(
                 parent_runner=ctx.runner,
                 parent_model=self._model_id,
-                all_tools=list(visible_tools),
+                tool_source=select_subagent_tools,
                 app_state=ctx.app_state,
                 processor=ctx.processor,
                 conv_store=ctx.conv_store,
@@ -1820,7 +1875,6 @@ class AgentTurnRunner:
                 conversation_id=ctx.conversation_id,
                 parent_run_id=self._intent_id,
                 conversation_journal=getattr(ctx.session_memory, "journal", None),
-                tool_registry=registry,
                 registry=definition_registry,
                 retry_config=_subagent_retry,
                 provider_options={
@@ -1831,7 +1885,6 @@ class AgentTurnRunner:
                 },
                 approval_svc=ctx.approval_svc,
                 workspace_access=ctx.workspace_access,
-                policy=_subagent_policy,
                 provider=_provider,
                 execution_settings=_ec,
                 subagent_settings=_subagent_settings,
@@ -1839,6 +1892,7 @@ class AgentTurnRunner:
                 allowed_models=_allowed_models,
             )
             registry.register(spawn_tool, source="builtin")
+            session_controls.append(spawn_tool)
             spawn_name = tool_name(spawn_tool)
             if (allowed_tool_names is None or spawn_name in allowed_tool_names) and not (
                 get_tool_capabilities(spawn_tool) & excluded_capabilities
@@ -1852,6 +1906,7 @@ class AgentTurnRunner:
                 )
                 for communication_tool in communication_tools:
                     registry.register(communication_tool, source="builtin")
+                    session_controls.append(communication_tool)
                     communication_name = tool_name(communication_tool)
                     if (
                         allowed_tool_names is None or communication_name in allowed_tool_names
@@ -1903,6 +1958,64 @@ class AgentTurnRunner:
         if self._skill_state is not None:
             self._skill_state.configure_tools(map(tool_name, visible_tools))
         self._tool_registry = registry
+        if holder is not None and isinstance(active_runner, SkillAwareRunner):
+            live_tools = holder
+
+            def refresh(meta: AgentMeta) -> bool:
+                nonlocal catalog
+                surface = live_tools.current()
+                if surface is catalog:
+                    return False
+                updated, visible, _ = resolve_surface(surface)
+                visible_names = {tool_name(item) for item in visible}
+                description = updated.describe(
+                    excluded_names=[name for name in updated.names if name not in visible_names]
+                )
+                meta.tools = {}
+                populate_agent_tools(agent_instance, visible)
+                meta.system = (
+                    effective_base
+                    + (f"\n\n{agent_section}" if agent_section else "")
+                    + (f"\n\n{ctx.system_prompt_suffix}" if ctx.system_prompt_suffix else "")
+                    + (self._skill_suffix or "")
+                    + (f"\n\n{description}" if description else "")
+                )
+                self._visible_tools = visible
+                self._tool_registry = updated
+                update_tool_presentations(visible)
+                if self._skill_state is not None:
+                    self._skill_state.configure_tools(visible_names)
+                catalog = surface
+                return True
+
+            active_runner.refresh_tool_meta = refresh
+        recorded_generation = ctx.tool_surface_generation or 0
+        if (catalog is not None or ctx.tool_surface_generation is not None) and isinstance(
+            active_runner, SkillAwareRunner
+        ):
+            from agenthicc.kernel import Event
+
+            last_selection: tuple[int, tuple[str, ...]] | None = None
+
+            def observe(meta: AgentMeta) -> None:
+                nonlocal last_selection
+                generation = catalog.generation if catalog is not None else recorded_generation
+                selection = (generation, tuple(meta.tools))
+                if selection == last_selection:
+                    return
+                last_selection = selection
+                ctx.processor.emit_nowait(
+                    Event.create(
+                        "TurnToolSurfaceSelected",
+                        {
+                            "intent_id": self._intent_id,
+                            "tool_surface_generation": generation,
+                            "tool_names": list(selection[1]),
+                        },
+                    )
+                )
+
+            active_runner.observe_tool_meta = observe
         return agent_instance, active_runner
 
     def _build_definition_subagent_registry(
@@ -3472,7 +3585,7 @@ async def _run_agent_turn(
     exec_cfg: ExecutionSettings | None = None,
     skills: SurfaceHolder[Mapping[str, SkillDef]] | None = None,
     mention_cache: MentionCache | None = None,
-    project_plugin_tools: list[ToolLike] | None = None,
+    extra_tools: list[ToolLike] | None = None,
     mcp_registry: McpToolRegistry | McpSessionManager | None = None,
     active_agent: str | None = None,
     subagent_registry: "SubagentTypeRegistry | None" = None,
@@ -3498,6 +3611,8 @@ async def _run_agent_turn(
     browser_manager: object | None = None,
     workspace_access: WorkspaceAccessPolicy | None = None,
     provider_diagnostic_context: dict[str, str | int] | None = None,
+    tool_surface: ToolSurfaceHolder | None = None,
+    tool_surface_generation: int | None = None,
 ) -> None:
     """Thin shim — constructs AgentTurnContext and delegates to AgentTurnRunner.
 
@@ -3538,7 +3653,9 @@ async def _run_agent_turn(
         skills=skills,
         skill_permissions=skill_permissions,
         mention_cache=mention_cache,
-        project_plugin_tools=project_plugin_tools,
+        extra_tools=extra_tools,
+        tool_surface=tool_surface,
+        tool_surface_generation=tool_surface_generation,
         mcp_registry=mcp_registry,
         active_agent=active_agent,
         agent_spec=agent_spec,

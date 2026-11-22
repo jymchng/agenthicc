@@ -26,6 +26,8 @@ from lauren_ai._transport import Completion, TokenUsage, ToolCall
 from lauren_ai._transport._mock import MockTransport
 from lauren_ai.testing import _build_runner_for_agent
 
+from agenthicc.subagents.tool import SubagentToolSelection
+from agenthicc.tools.surface import ToolSurface
 from agenthicc.kernel import (
     AppState,
     Event,
@@ -90,7 +92,7 @@ async def test_parent_provider_history_contains_complete_subagent_aggregate(tmp_
     spawn = make_spawn_subagents_tool(
         parent_runner,
         "mock-model",
-        [],
+        SubagentToolSelection(ToolSurface(0, tuple([]))),
         conversation_journal=journal,
     )
 
@@ -200,7 +202,7 @@ async def test_queued_message_is_sent_after_tool_results_before_next_model_call(
         "initial request",
         runner,
         kernel,
-        project_plugin_tools=[inspect_item],
+        extra_tools=[inspect_item],
         next_queued_message=lambda: next(queued, None),
     )
 
@@ -304,7 +306,7 @@ async def test_two_parallel_reads_are_serialized_as_one_valid_exchange(kernel):
         runner,
         kernel,
         session_memory=memory,
-        project_plugin_tools=[Read],
+        extra_tools=[Read],
     )
 
     assert reads == ["cover.png", "back.png"]

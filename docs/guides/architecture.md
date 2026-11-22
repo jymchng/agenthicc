@@ -109,6 +109,13 @@ discovery diagnostics. The pure kernel reducer advances
 generation sequence. Extension discovery runs off the loop, and the session
 publishes each candidate at a single event-loop boundary.
 
+`ReloadService` publishes each tool generation through the session's
+`ToolSurfaceHolder`. Direct turns read it before the first provider request
+and after a completed tool batch. Phases read it at phase entry, and workers
+pin it at spawn. `TurnToolSurfaceSelected` records the exact provider tool
+names and generation for an intent, including changes between requests, so
+replay can recover the effective list after role and skill filtering.
+
 ## State boundary
 
 The TUI has a second `AppState` in `tui/conversation_store.py`. It is a reactive

@@ -11,6 +11,7 @@ inspects annotations at decoration time.
 """
 
 from types import MappingProxyType
+from agenthicc.tools.surface import ToolSurface, ToolSurfaceHolder
 from agenthicc.runners.reload import SurfaceHolder
 import asyncio
 from pathlib import Path
@@ -201,7 +202,7 @@ def _runner(app_state, processor, mock: MockTransport) -> CreateWorkflowRunner:
         approval_svc=None,  # headless: design approval auto-grants
         cfg=cfg,
         skills=SurfaceHolder(MappingProxyType({})),
-        tool_surface=SurfaceHolder(()),
+        tool_surface=ToolSurfaceHolder(ToolSurface(0, ())),
         mcp_registry=None,
         mention_cache=MagicMock(),
         agents_registry=build_agents_registry(),

@@ -11,6 +11,8 @@ from typing import ClassVar, cast
 import pytest
 
 import agenthicc.subagents.pool as pool_module
+from agenthicc.subagents.tool import SubagentToolSelection
+from agenthicc.tools.surface import ToolSurface
 from agenthicc.config import SubagentSettings
 from agenthicc.memory.journal import ConversationJournal
 from agenthicc.subagents.pool import (
@@ -53,11 +55,11 @@ def _pool(**kwargs: object) -> SubagentPool:
         [SubagentTask("worker-1", "researcher", "research")],
         parent_runner=SimpleNamespace(_transport=None),
         parent_model="model",
-        all_tools=[],
+        tool_surface=ToolSurface(0, tuple([])),
         max_concurrent=1,
         registry=DEFAULT_REGISTRY,
         max_workers=1,
-        **kwargs,  # type: ignore[arg-type]
+        **kwargs,
     )
 
 
@@ -122,7 +124,9 @@ def test_no_limit_survives_in_the_pool_contracts() -> None:
 
 
 def test_spawn_subagents_takes_no_budget() -> None:
-    fn = make_spawn_subagents_tool(SimpleNamespace(_transport=None), "model", [])
+    fn = make_spawn_subagents_tool(
+        SimpleNamespace(_transport=None), "model", SubagentToolSelection(ToolSurface(0, tuple([])))
+    )
     assert "budget" not in inspect.signature(fn).parameters
 
 
@@ -140,7 +144,7 @@ async def test_spawn_tool_rejects_task_lists_over_worker_limit() -> None:
     fn = make_spawn_subagents_tool(
         SimpleNamespace(_transport=None),
         "model",
-        [],
+        SubagentToolSelection(ToolSurface(0, tuple([]))),
         subagent_settings=SubagentSettings(max_workers=1, max_concurrent=1),
     )
 
@@ -159,7 +163,7 @@ async def test_spawn_tool_rejects_concurrency_over_configured_limit() -> None:
     fn = make_spawn_subagents_tool(
         SimpleNamespace(_transport=None),
         "model",
-        [],
+        SubagentToolSelection(ToolSurface(0, tuple([]))),
         subagent_settings=SubagentSettings(max_workers=2, max_concurrent=1),
     )
 

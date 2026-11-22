@@ -44,7 +44,7 @@ def _config(*, browser: object | None = None, mcp: object | None = None) -> Simp
     app = AppState.create()
     return SimpleNamespace(
         app_state=app,
-        all_plugin_tools=lambda: [write_edge, network_edge],
+        extension_tools=lambda: [write_edge, network_edge],
         mcp_registry=mcp,
         browser_tools=[],
         browser_manager=browser,

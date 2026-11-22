@@ -495,10 +495,8 @@ async def _run_headless_agent_turn(
                     skills=session.reload.skills,
                     skill_permissions=session.cfg.agents.skill_permissions_for(agent.spec.name),
                     mention_cache=session.mention_cache,
-                    project_plugin_tools=[
-                        *session.reload.tools.current().value,
-                        *session_tools(session),
-                    ],
+                    extra_tools=list(session_tools(session)),
+                    tool_surface=session.reload.tools,
                     mcp_registry=session.mcp_registry,
                     agents_registry=session.agents_registry,
                     subagent_registry=session.subagent_registry,

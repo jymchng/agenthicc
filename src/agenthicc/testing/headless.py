@@ -40,6 +40,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
 
+from agenthicc.tools.surface import ToolSurface, ToolSurfaceHolder
 from agenthicc.runners.reload import SurfaceHolder
 from typing import TYPE_CHECKING, cast
 
@@ -373,7 +374,7 @@ async def run_headless_replay(
             approval_svc=approvals,
             cfg=run_cfg,
             skills=SurfaceHolder(MappingProxyType({})),
-            tool_surface=SurfaceHolder(()),
+            tool_surface=ToolSurfaceHolder(ToolSurface(0, ())),
             mcp_registry=None,
             mention_cache=MentionCache(),
             agents_registry=agents_registry,  # type: ignore[arg-type]

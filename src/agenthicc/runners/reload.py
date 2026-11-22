@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Generic, Literal, TypeVar
 
 from agenthicc.kernel.events import Event
 from agenthicc.tools.base import tool_name
+from agenthicc.tools.surface import ToolSurface, ToolSurfaceHolder
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -52,6 +53,7 @@ _DiagnosticCode = Literal[
     "name_conflict",
     "pending_marker",
     "invalid_manifest",
+    "capability_denied",
 ]
 
 _T = TypeVar("_T")
@@ -211,6 +213,7 @@ def _changes(
 def _source_diagnostic(
     surface: ReloadSurface, result: LoadResult | CommandLoadResult, *, kind: str
 ) -> ReloadDiagnostic:
+    from agenthicc.plugins.discovery import LoadResult
     from agenthicc.plugins.trust import current_extension_trust
 
     if result.untrusted:
@@ -231,6 +234,20 @@ def _source_diagnostic(
         return ReloadDiagnostic(
             surface, str(result.path), "missing_dependency", "A required dependency is missing."
         )
+    if isinstance(result, LoadResult):
+        if result.reserved_tool_names:
+            names = ", ".join(result.reserved_tool_names)
+            return ReloadDiagnostic(
+                surface, str(result.path), "name_conflict", f"Reserved tool names: {names}."
+            )
+        if result.denied_capabilities:
+            names = ", ".join(result.denied_capabilities)
+            return ReloadDiagnostic(
+                surface,
+                str(result.path),
+                "capability_denied",
+                f"Invalid authored capability declaration: {names}.",
+            )
     return ReloadDiagnostic(
         surface, str(result.path), "import_error", "The extension could not be imported."
     )
@@ -273,6 +290,7 @@ class ReloadService:
         skill_user_dir: Path | None = None,
         skills: Mapping[str, SkillDef] | None = None,
         tools: Sequence[ToolLike] = (),
+        tool_sources: Mapping[str, str] | None = None,
         command_plugin_names: Sequence[str] = (),
     ) -> None:
         self._processor = processor
@@ -286,14 +304,16 @@ class ReloadService:
         self._skills: SurfaceHolder[Mapping[str, SkillDef]] = SurfaceHolder(
             MappingProxyType(dict(skills or {}))
         )
-        self._tools: SurfaceHolder[tuple[ToolLike, ...]] = SurfaceHolder(tuple(tools))
+        self._generation = processor.get_state().reload_generation
+        self._tools = ToolSurfaceHolder(
+            ToolSurface(self._generation, tuple(tools), tool_sources or {})
+        )
         self._versions: dict[ReloadSurface, dict[str, str | None]] = {
             "skills": dict.fromkeys(self._skills.current().value),
             "tools": dict.fromkeys(map(tool_name, tools)),
             "workflows": dict.fromkeys(workflow_registry.names()),
             "commands": dict.fromkeys(command_plugin_names),
         }
-        self._generation = processor.get_state().reload_generation
         self._discovery_lock = asyncio.Lock()
         self._flight: _Flight | None = None
         self._published: set[ReloadSurface] = set()
@@ -304,7 +324,7 @@ class ReloadService:
         return self._skills
 
     @property
-    def tools(self) -> SurfaceHolder[tuple[ToolLike, ...]]:
+    def tools(self) -> ToolSurfaceHolder:
         return self._tools
 
     @property
@@ -316,6 +336,7 @@ class ReloadService:
         *,
         skills: Mapping[str, SkillDef],
         tools: Sequence[ToolLike],
+        tool_sources: Mapping[str, str] | None = None,
         commands: Sequence[Command],
         workflows: WorkflowRegistry,
     ) -> None:
@@ -326,7 +347,7 @@ class ReloadService:
             self._skills._publish(self._generation, MappingProxyType(dict(skills)))
             self._versions["skills"] = dict.fromkeys(skills)
         if "tools" not in self._published:
-            self._tools._publish(self._generation, tuple(tools))
+            self._tools.publish(ToolSurface(self._generation, tuple(tools), tool_sources or {}))
             self._versions["tools"] = dict.fromkeys(map(tool_name, tools))
         if "commands" not in self._published:
             self._command_registry.register_many(commands)
@@ -529,8 +550,16 @@ class ReloadService:
             subagent_registry=self._subagent_registry.copy(),
         )
         tools = tuple(found.all_tools)
+        sources = found.tool_sources(self._project_dir)
         diagnostics = [_source_diagnostic("tools", item, kind="tool") for item in found.failed]
-        if diagnostics and not tools and not any(item.untrusted for item in found.failed):
+        refused = {
+            "untrusted",
+            "untrusted_modified",
+            "pending_marker",
+            "capability_denied",
+            "name_conflict",
+        }
+        if diagnostics and not tools and not any(item.code in refused for item in diagnostics):
             return _Candidate({}, tuple(diagnostics), None)
 
         versions: dict[str, str | None] = {}
@@ -553,7 +582,7 @@ class ReloadService:
                     versions[name] = digest
 
         def apply(generation: int) -> None:
-            self._tools._publish(generation, tools)
+            self._tools.publish(ToolSurface(generation, tools, sources))
 
         return _Candidate(versions, tuple(diagnostics), apply)
 

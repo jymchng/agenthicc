@@ -11,6 +11,11 @@ SkillUsed payload:
     turn_id: Agent turn identifier or worker task identifier.
     ok, slug, source, digest, narrowed_tools, truncated: Skill load receipt.
     pool_id: Set for worker tasks so their turn identifiers are unambiguous.
+
+TurnToolSurfaceSelected payload:
+    intent_id: Agent turn's kernel intent.
+    tool_surface_generation: Generation used for the selected schemas.
+    tool_names: Provider-visible tool names in schema order.
 """
 
 from __future__ import annotations

@@ -98,7 +98,7 @@ def workflow_config(**fields: object) -> SimpleNamespace:
     """Return a ``WorkflowConfig`` stand-in that carries every field.
 
     Runners read ``WorkflowConfig`` fields directly, so a fake must have all of
-    them; methods such as ``all_plugin_tools`` are the test's to supply.
+    them; methods such as ``extension_tools`` are the test's to supply.
     """
     skills = cast("Mapping[str, SkillDef]", fields.pop("skills", {}))
     return _stand_in(

@@ -123,7 +123,7 @@ async def _turn(processor, app_state, cfg: AgenthiccConfig, mock: MockTransport)
         exec_cfg=cfg.execution,
         skills=None,
         mention_cache=MagicMock(),
-        project_plugin_tools=[],
+        extra_tools=[],
         mcp_registry=None,
         active_agent="auto",
         approval_svc=None,

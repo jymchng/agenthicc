@@ -11,7 +11,7 @@ Branch `feat/workflow-composition` starts at `5100c8c` from fetched
 | 2 | M2 pushed | WFC-11 publication service and WFC-10 live skills. The remote tip matched `7ca93be`. |
 | 3 | M3 pushed | WFC-01 and the publish connection. The remote tip matched `f0eb339`. |
 | 4 | M4 pushed | WFC-02 workflow entry and inspection. The remote tip matched `4c5e0cc`. |
-| 5 | M5 verified locally | WFC-06 authoring, publication, and immediate use. See M5 verification below. |
+| 5 | M5 pushed | WFC-06 authoring, publication, and immediate use. Pre-push checks passed and the remote tip matched `35165f3`. |
 | 6 | Pending | WFC-08 and WFC-07. |
 | 7 | Pending | WFC-09. |
 | 8 | Pending | WFC-04 and WFC-03. |
@@ -26,7 +26,7 @@ Branch `feat/workflow-composition` starts at `5100c8c` from fetched
 | WFC-05 | Implemented | `c757516`, `7bd642c`. Both runners use the service. See the PRD for A1–A7 evidence. |
 | WFC-06 | Implemented | Session-owned publication, exact predecessor checks, and the S3 acceptance scenario. WFC-04 exercises the workflow-worker integration. |
 | WFC-07 | Pending | — |
-| WFC-08 | Spike complete | Same-turn refresh verified by updating the provider schema list and the dispatch map together. |
+| WFC-08 | Implemented | Direct requests, phase entry, and worker spawn read the shared tool generation. WFC-07 exercises the author-and-call scenario. |
 | WFC-09 | Pending | — |
 | WFC-10 | Implemented | `ed01cf0`. Provider discovery and use share the live skill registry. |
 | WFC-11 | Runtime ready | `6958a4b` isolates validation and smoke. `59e893a` adds publication, operator controls and recovery. The canonical lease uses the same store. The workflow return connection and downstream authoring scenarios remain in their scheduled steps. |
@@ -284,3 +284,14 @@ The final checks passed on Python 3.13:
   The full coverage report remains a CI gate at 81.5%.
 
 The verification logs are `/var/tmp/agenthicc-wfc-m5-*.log`.
+
+## WFC-08 verification
+
+- The focused suite passed 497 tests on Python 3.13. It includes the actual
+  provider requests before and after a reload, generation pinning for workers,
+  the next phase of the same CodePlan runner, replayed tool names, revoked
+  plugin bytes, missing authored capability declarations, and reload latency.
+- Ruff check and format, mypy, the type-audit ratchet, strict MkDocs, and
+  the public-symbol check passed. The four superseded snapshot names are
+  absent from active source and tests.
+- WFC-07 supplies the remaining end-to-end author-and-call scenario.

@@ -77,7 +77,8 @@ from agenthicc.subagents.types import (
     SubagentTypeRegistry,
     SubagentTypeSpec,
 )
-from agenthicc.tools.base import tool_name
+from agenthicc.tools.base import ToolLike, tool_name
+from agenthicc.tools.surface import ToolSurface
 
 if TYPE_CHECKING:
     from lauren_ai._agents._runner import AgentRunnerBase
@@ -1339,7 +1340,7 @@ class SubagentWorker:
         index: int,
         parent_runner: AgentRunnerBase,
         parent_model: str,
-        all_tools: list[object],
+        tool_surface: ToolSurface,
         app_state: AppState | None = None,
         registry: ToolRegistry | None = None,
         retry_config: "RetryConfig | None" = None,
@@ -1460,7 +1461,7 @@ class SubagentWorker:
             or (self._effective_effort and self._model_id != self._parent_model)
         )
         self._effort_fallback_used = False
-        self._all_tools = all_tools
+        self._tool_surface = tool_surface
         permissions = spec.permissions
         parent_workspace_scope = workspace_access.scope if workspace_access is not None else None
         workspace_paths = permissions.workspace_paths if permissions is not None else None
@@ -1468,7 +1469,7 @@ class SubagentWorker:
 
         inherited_policy = policy or SubagentExecutionPolicy.from_app_state(
             app_state,
-            visible_tool_names=frozenset(tool_name(item) for item in all_tools),
+            visible_tool_names=frozenset(tool_name(item) for item in tool_surface.tools),
         )
         workspace_identity = (
             self._workspace_scope.scope_id
@@ -1518,7 +1519,7 @@ class SubagentWorker:
         if approval_svc is not None and progress is not None:
             approvals = _RequesterApprovals(approval_svc, progress)
         self._approval_svc = approvals
-        inherited_names = frozenset(tool_name(item) for item in all_tools)
+        inherited_names = frozenset(tool_name(item) for item in tool_surface.tools)
         inherited_scope = (
             self._policy.capability_scope
             if self._policy is not None
@@ -1531,7 +1532,7 @@ class SubagentWorker:
                 )
             )
         )
-        inherited_names = frozenset(tool_name(item) for item in all_tools)
+        inherited_names = frozenset(tool_name(item) for item in tool_surface.tools)
         nested_spawn_allowed = (
             depth < max_depth
             and _declares(_expand_allowed(spec.allowed_tools, registry), "spawn_subagents")
@@ -1968,7 +1969,7 @@ class SubagentWorker:
                 undelivered_messages=await self._undelivered_message_count(),
             )
 
-    def _filtered_tools(self) -> list[object]:
+    def _filtered_tools(self) -> list[ToolLike]:
         """Return the concrete tools allowed by this worker's effective scope.
 
         A worker that inherits every parent tool (``allowed_tools=None``) never
@@ -1979,9 +1980,9 @@ class SubagentWorker:
         inherits_all = self._effective_allowed is None
         return [
             tool
-            for tool in self._all_tools
+            for tool in self._tool_surface.tools
             if self._capability_scope.is_tool_allowed(tool_name(tool))
-            and tool_name(tool) not in {"spawn_subagents", "enter_workflow"}
+            and tool_name(tool) not in {"spawn_subagents", "enter_workflow", "reload_tools"}
             and not (inherits_all and _is_control_tool(tool))
         ]
 
@@ -2012,7 +2013,8 @@ class SubagentWorker:
         # Filter the full tool list to the expanded effective scope. Communication
         # tools are session-bound control-plane tools and are added separately;
         # they never expand the file/command/network tool surface.
-        filtered = self._filtered_tools()
+        inherited_tools = self._filtered_tools()
+        filtered: list[object] = list(inherited_tools)
         parent_workflow_tools = current_workflow_tools()
         workflow_tools = (
             parent_workflow_tools.for_worker(
@@ -2026,17 +2028,24 @@ class SubagentWorker:
             and _declares(self._effective_allowed, "spawn_subagents")
             and self._capability_scope.is_tool_allowed("spawn_subagents")
         ):
-            from agenthicc.subagents.tool import make_spawn_subagents_tool
+            from agenthicc.subagents.tool import SubagentToolSelection, make_spawn_subagents_tool
 
             nested_spawn = make_spawn_subagents_tool(
                 parent_runner=self._parent_runner,
                 parent_model=self._model_id,
-                all_tools=list(filtered),
+                tool_source=SubagentToolSelection(
+                    ToolSurface(
+                        self._tool_surface.generation,
+                        tuple(inherited_tools),
+                        self._tool_surface.sources,
+                    ),
+                    self._registry,
+                    self._policy,
+                ),
                 app_state=self._app_state,
                 processor=self._processor,
                 conv_store=self._conv_store,
                 registry=self._subagent_registry,
-                tool_registry=self._registry,
                 retry_config=self._retry_config,
                 usage_ledger=self._usage_ledger,
                 conversation_id=self._conversation_id,
@@ -2045,7 +2054,6 @@ class SubagentWorker:
                 approval_svc=self._approval_svc,
                 workspace_access=self._workspace_access,
                 conversation_journal=self._conversation_journal,
-                policy=self._policy,
                 provider=self._provider,
                 execution_settings=self._execution_settings,
                 subagent_settings=self._subagent_settings,
@@ -2583,7 +2591,7 @@ class SubagentPool:
         tasks: list[SubagentTask],
         parent_runner: AgentRunnerBase,
         parent_model: str,
-        all_tools: list[object],
+        tool_surface: ToolSurface,
         max_concurrent: int = 4,
         app_state: AppState | None = None,
         processor: EventProcessor | None = None,
@@ -2660,7 +2668,7 @@ class SubagentPool:
         self._tasks = tasks
         self._parent_runner = parent_runner
         self._parent_model = parent_model
-        self._all_tools = all_tools
+        self._tool_surface = tool_surface
         self._provider = provider
         self._default_model = default_model
         self._default_effort = default_effort
@@ -2908,7 +2916,7 @@ class SubagentPool:
             index=index,
             parent_runner=self._parent_runner,
             parent_model=self._parent_model,
-            all_tools=self._all_tools,
+            tool_surface=self._tool_surface,
             app_state=self._app_state,
             registry=self._tool_registry,
             retry_config=self._retry_config,
@@ -3020,6 +3028,7 @@ class SubagentPool:
                         state.label,
                         state.agent_type,
                         task_item.task_description,
+                        self._tool_surface.generation,
                     )
                     for state, task_item in zip(self._state.workers, self._tasks, strict=True)
                 ],
@@ -3140,7 +3149,7 @@ class SubagentPool:
         if permissions is not None and permissions.workspace_paths is not None:
             return False  # a narrowed path scope is not reproducible in a worktree
         tools, blocked = type_surface(
-            spec, self._all_tools, self._tool_registry, (self._policy, spec.policy)
+            spec, self._tool_surface.tools, self._tool_registry, (self._policy, spec.policy)
         )
         return any(_is_mutating_tool(tool) and not _policy_blocks(tool, blocked) for tool in tools)
 
@@ -3263,7 +3272,11 @@ class SubagentPool:
             self._transcripts.start(
                 [
                     WorkerRecord(
-                        state.worker_id, state.label, state.agent_type, task.task_description
+                        state.worker_id,
+                        state.label,
+                        state.agent_type,
+                        task.task_description,
+                        self._tool_surface.generation,
                     )
                     for state, task in zip(worker_states, self._tasks, strict=True)
                 ],
@@ -3866,6 +3879,7 @@ class SubagentPool:
                 fields={
                     "type": worker._task.agent_type,
                     "label": worker.label,
+                    "tool_surface_generation": self._tool_surface.generation,
                     **self._display_fields(
                         "task", worker._task.task_description, _MAX_DISPLAY_TASK_CHARS
                     ),
@@ -4058,7 +4072,7 @@ async def run_pool(
     tasks: list[SubagentTask],
     parent_runner: AgentRunnerBase,
     parent_model: str,
-    all_tools: list[object],
+    tool_surface: ToolSurface,
     max_concurrent: int = 4,
     app_state: AppState | None = None,
     processor: EventProcessor | None = None,
@@ -4090,7 +4104,7 @@ async def run_pool(
         tasks=tasks,
         parent_runner=parent_runner,
         parent_model=parent_model,
-        all_tools=all_tools,
+        tool_surface=tool_surface,
         max_concurrent=max_concurrent,
         app_state=app_state,
         processor=processor,

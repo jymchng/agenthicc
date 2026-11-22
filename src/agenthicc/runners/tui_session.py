@@ -734,6 +734,7 @@ def _apply_extension_discovery(
     ctx.reload.install_initial(
         skills=discovery.skills,
         tools=discovery.project_plugins.all_tools,
+        tool_sources=discovery.project_plugins.tool_sources(Path(".agenthicc")),
         commands=discovery.project_commands,
         workflows=workflows,
     )
@@ -3253,13 +3254,13 @@ class TUISession:
 
             mcp_tools = ctx.mcp_registry.all_tools() if ctx.mcp_registry is not None else []
             project_tools: list[ToolLike] = [
-                *ctx.reload.tools.current().value,
+                *ctx.reload.tools.current().tools,
                 *session_tools(ctx),
                 *mcp_tools,
             ]
             registry = build_registry(
                 agent_name=spec.name,
-                project_plugin_tools=project_tools,
+                extra_tools=project_tools,
             )
             return _effective_agent_tool_names(spec, registry, policy_state)
 
@@ -4064,7 +4065,7 @@ class TUISession:
         from agenthicc.plugins.registry import build_registry
 
         ctx = self._ctx
-        project_tools: list[ToolLike] = list(ctx.reload.tools.current().value)
+        project_tools: list[ToolLike] = list(ctx.reload.tools.current().tools)
         # Most slash commands are local/read-only and do not need browser
         # tool schemas. Iterating the session proxy here would import an
         # optional browser package merely to run /status or /startup. The
@@ -4084,7 +4085,7 @@ class TUISession:
             project_tools.extend(ctx.browser_tools)
         if ctx.mcp_registry is not None:
             project_tools.extend(ctx.mcp_registry.all_tools())
-        tool_registry = build_registry(project_plugin_tools=project_tools)
+        tool_registry = build_registry(extra_tools=project_tools)
         context = CommandContext(
             text=text,
             args=" ".join(text.split()[1:]),
@@ -5384,7 +5385,8 @@ class TUISession:
                     skills=ctx.reload.skills,
                     skill_permissions=ctx.cfg.agents.skill_permissions_for(agent.spec.name),
                     mention_cache=ctx.mention_cache,
-                    project_plugin_tools=([*ctx.reload.tools.current().value, *session_tools(ctx)]),
+                    extra_tools=list(session_tools(ctx)),
+                    tool_surface=ctx.reload.tools,
                     mcp_registry=ctx.mcp_registry,
                     active_agent=agent.spec.name,
                     agent_spec=agent.spec,
@@ -5454,7 +5456,11 @@ class TUISession:
         workflow_tools = self._make_workflow_tools()
         conv.begin_activity()
         if turn_id is not None:
-            self._publish_session_event("turn_started", turn_id=turn_id)
+            self._publish_session_event(
+                "turn_started",
+                {"tool_surface_generation": self._ctx.reload.tools.current().generation},
+                turn_id=turn_id,
+            )
         try:
             # Optional MCP startup is deferred until after the first TUI frame,
             # but an agent turn that can see MCP tools must wait for the
@@ -5921,7 +5927,11 @@ class TUISession:
             ctx.approval_svc.reset_turn_memory()
         ctx.app_state.conversation.begin_activity()
         if turn_id is not None:
-            self._publish_session_event("turn_started", turn_id=turn_id)
+            self._publish_session_event(
+                "turn_started",
+                {"tool_surface_generation": ctx.reload.tools.current().generation},
+                turn_id=turn_id,
+            )
         try:
             import dataclasses as _dc
 

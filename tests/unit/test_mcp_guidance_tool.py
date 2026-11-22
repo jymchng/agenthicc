@@ -52,7 +52,7 @@ async def test_guide_rejects_invalid_inputs() -> None:
 
 
 def test_guidance_tool_is_in_registry_and_is_read_only() -> None:
-    registry = build_registry(project_plugin_tools=[])
+    registry = build_registry(extra_tools=[])
     assert "mcp_connection_guide" in registry.names
     assert MCP_AGENT_TOOLS == [mcp_connection_guide]
     capabilities = get_tool_capabilities(mcp_connection_guide)

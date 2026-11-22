@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
     from agenthicc.runners.reload import SurfaceHolder
     from agenthicc.tools.base import ToolLike
+    from agenthicc.tools.surface import ToolSurfaceHolder
     from agenthicc.skills.loader import SkillDef
     from agenthicc.tui.conversation_store import ConversationStore, AppState
     from agenthicc.tools.approval import ApprovalBroker
@@ -54,7 +55,7 @@ class WorkflowConfig:
     approval_svc: "ApprovalBroker | None"
     cfg: "AgenthiccConfig"
     skills: "SurfaceHolder[Mapping[str, SkillDef]]"
-    tool_surface: "SurfaceHolder[tuple[ToolLike, ...]]"
+    tool_surface: "ToolSurfaceHolder"
     mcp_registry: "McpToolRegistry | McpSessionManager | None"
     mention_cache: "MentionCache"
     agents_registry: "AgentsRegistry"
@@ -89,9 +90,9 @@ class WorkflowConfig:
     required_startup_phases: tuple[str, ...] = ()
     """Readiness phases a custom workflow must await before its first turn."""
 
-    def all_plugin_tools(self) -> list["ToolLike"]:
+    def extension_tools(self) -> list["ToolLike"]:
         """Read the current project and session browser tools for a phase."""
-        return [*self.tool_surface.current().value, *self.browser_tools]
+        return [*self.tool_surface.current().tools, *self.browser_tools]
 
     async def wait_for_startup(self, *phases: str) -> None:
         """Await session-owned readiness phases without creating new resources.

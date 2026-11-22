@@ -266,7 +266,7 @@ async def test_session_publisher_loads_validated_tools_and_emits_one_notice(
 
     assert result.error_code is None
     assert {item.state for item in result.artifacts} == {"loaded"}
-    assert {tool_name(item) for item in reload_service.tools.current().value} == {
+    assert {tool_name(item) for item in reload_service.tools.current().tools} == {
         "first_tool",
         "second_tool",
     }
@@ -406,10 +406,10 @@ async def test_authored_picker_and_operator_commands_restore_previous_behavior(
         assert "loaded" in await submit("approve operator-2")
         assert "second" in await submit("diff restore_demo")
         assert "Restored restore_demo" in await submit("rollback restore_demo")
-        (tool,) = reload_service.tools.current().value
+        (tool,) = reload_service.tools.current().tools
         assert callable(tool) and tool() == "first"
         assert "Removed restore_demo" in await submit("remove restore_demo")
-    assert reload_service.tools.current().value == ()
+    assert reload_service.tools.current().tools == ()
     await reload_service.close()
 
 
@@ -671,7 +671,7 @@ async def test_published_execute_tool_requires_a_safe_approval_for_each_call(
         published = await publisher.publish(run)
     assert published.error_code is None, published.summary()
     assert "static_only" in published.summary()
-    (live,) = reload_service.tools.current().value
+    (live,) = reload_service.tools.current().tools
     capabilities = get_tool_capabilities(live)
     assert capabilities == frozenset({"execute"})
 

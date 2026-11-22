@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from types import MappingProxyType
+from agenthicc.tools.surface import ToolSurface, ToolSurfaceHolder
 from agenthicc.runners.reload import SurfaceHolder
 import asyncio
 from pathlib import Path
@@ -665,7 +666,7 @@ async def _run_provider(
             approval_svc=None,
             cfg=cfg,
             skills=SurfaceHolder(MappingProxyType({})),
-            tool_surface=SurfaceHolder(tuple([write_file])),
+            tool_surface=ToolSurfaceHolder(ToolSurface(0, tuple([write_file]))),
             mcp_registry=None,
             mention_cache=MagicMock(),
             agents_registry=build_agents_registry(),

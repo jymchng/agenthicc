@@ -1720,10 +1720,9 @@ All phase turns, retries, page iterations, validation re-entry, and resume use
 the parent session conversation and memory. Stable workflow policy and the
 compiled capability-filtered tool bundle remain unchanged within a cache epoch;
 phase prompts, answers, routes, artifacts, and validation results are dynamic
-context. A genuine tool/backend/configuration change must call
-`runner.invalidate_tool_bundle_cache(reason=...)`, which starts a new
-diagnostic epoch. Cache metadata records eligibility and fingerprints only; it
-does not claim that a provider cache was hit.
+context. The next phase starts a new epoch after a tool reload. A backend or
+configuration change can call `runner.invalidate_phase_tools(reason=...)` to
+start an epoch explicitly. Cache metadata records eligibility and fingerprints.
 
 Visual and interaction rejection tools accept an explicit phase target. An
 unknown or incompatible target returns a structured error and leaves the phase

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from types import MappingProxyType
+from agenthicc.tools.surface import ToolSurface, ToolSurfaceHolder
 from agenthicc.runners.reload import SurfaceHolder
 import asyncio
 import importlib.util
@@ -62,7 +63,7 @@ def _config(
         approval_svc=None,
         cfg=cfg,
         skills=SurfaceHolder(MappingProxyType({})),
-        tool_surface=SurfaceHolder(()),
+        tool_surface=ToolSurfaceHolder(ToolSurface(0, ())),
         mcp_registry=None,
         mention_cache=MagicMock(),
         agents_registry=MagicMock(),

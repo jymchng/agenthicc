@@ -52,7 +52,7 @@ async def _fail_turn(error: BaseException, *, provider: str = "anthropic") -> di
         exec_cfg=ExecutionSettings(irrecoverable_error_max_retries=0, transport_max_retries=0),
         skills=None,
         mention_cache=MagicMock(),
-        project_plugin_tools=[],
+        extra_tools=[],
         mcp_registry=None,
         active_agent="auto",
         completed_turns=0,

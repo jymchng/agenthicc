@@ -63,6 +63,31 @@ class TestIntentReducers:
         assert s is state
         assert effects == []
 
+    def test_turn_tool_selection_preserves_other_intent_metadata(self) -> None:
+        state, _ = root_reducer(
+            base_state(),
+            ev(
+                "IntentCreated",
+                {"intent_id": "i1", "raw_text": "inspect", "metadata": {"source": "tui"}},
+            ),
+        )
+        names = ["first", "second"]
+        updated, effects = root_reducer(
+            state,
+            ev(
+                "TurnToolSurfaceSelected",
+                {"intent_id": "i1", "tool_surface_generation": 4, "tool_names": names},
+            ),
+        )
+        names.clear()
+        assert effects == []
+        assert state.intents["i1"].metadata == {"source": "tui"}
+        assert updated.intents["i1"].metadata == {
+            "source": "tui",
+            "tool_surface_generation": 4,
+            "tool_names": ["first", "second"],
+        }
+
     def test_unknown_event_is_rejected(self):
         with pytest.raises(UnknownEventError, match="UnknownXYZ"):
             root_reducer(base_state(), ev("UnknownXYZ", {}))

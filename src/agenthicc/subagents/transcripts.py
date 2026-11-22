@@ -194,13 +194,15 @@ class WorkerRecord:
     label: str
     agent_type: str
     task: str = ""
+    tool_surface_generation: int = 0
 
-    def to_dict(self) -> dict[str, str]:
+    def to_dict(self) -> dict[str, str | int]:
         return {
             "worker_id": self.worker_id,
             "label": self.label,
             "agent_type": self.agent_type,
             "task": self.task,
+            "tool_surface_generation": self.tool_surface_generation,
         }
 
 
@@ -323,6 +325,7 @@ class TranscriptWriter:
                     worker.label,
                     worker.agent_type,
                     self._redact(worker.task, _SHORT_LIMIT),
+                    worker.tool_surface_generation,
                 ).to_dict()
                 for worker in workers
             ],
@@ -507,9 +510,16 @@ def _worker_records(value: object) -> tuple[WorkerRecord, ...]:
             item.get("agent_type"),
         )
         task = item.get("task", "")
+        generation = item.get("tool_surface_generation")
         if isinstance(worker_id, str) and isinstance(label, str) and isinstance(agent_type, str):
             records.append(
-                WorkerRecord(worker_id, label, agent_type, task if isinstance(task, str) else "")
+                WorkerRecord(
+                    worker_id,
+                    label,
+                    agent_type,
+                    task if isinstance(task, str) else "",
+                    generation if type(generation) is int and generation >= 0 else 0,
+                )
             )
     return tuple(records)
 

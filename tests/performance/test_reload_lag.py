@@ -66,7 +66,7 @@ async def test_reload_discovering_two_hundred_tools_and_fifty_skills_meets_lag_b
         await service.close()
 
     assert report.ok
-    assert len(service.tools.current().value) == 200
+    assert len(service.tools.current().tools) == 200
     assert len(service.skills.current().value) == 50
     summary = monitor.summary()
     assert summary["samples"] > 0, summary

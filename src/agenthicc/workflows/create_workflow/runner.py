@@ -2012,7 +2012,8 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 skills=self._cfg.skills,
                 skill_permissions=self._cfg.cfg.agents.skill_permissions_for("auto"),
                 mention_cache=self._cfg.mention_cache,
-                project_plugin_tools=tools,
+                extra_tools=tools,
+                tool_surface_generation=self._cfg.tool_surface.current().generation,
                 allowed_tool_names=frozenset(tool_name(item) for item in tools),
                 mcp_registry=self._cfg.mcp_registry,
                 subagent_registry=self._cfg.subagent_registry,
@@ -2063,7 +2064,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
         from agenthicc.workflows.memory_tools import make_memory_tools
 
         mode_blocked = self._phase_mode(mode).blocked_capabilities
-        all_tools: _ToolList = list(self._cfg.all_plugin_tools())
+        all_tools: _ToolList = list(self._cfg.extension_tools())
         if self._cfg.mcp_registry is not None:
             try:
                 all_tools = all_tools + list(self._cfg.mcp_registry.all_tools())

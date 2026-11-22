@@ -1140,10 +1140,8 @@ async def _run_direct_turn(
         mention_cache=session.mention_cache,
         # AGI-03: the same session tools as a foreground turn, so a background
         # agent can ask the operator (ask_user → the inbox) and use memory.
-        project_plugin_tools=[
-            *session.reload.tools.current().value,
-            *session_tools(session),
-        ],
+        extra_tools=list(session_tools(session)),
+        tool_surface=session.reload.tools,
         mcp_registry=session.mcp_registry,
         subagent_registry=session.subagent_registry,
         active_agent=agent.spec.name,

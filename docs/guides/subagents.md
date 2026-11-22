@@ -394,6 +394,10 @@ are revalidated against the active registered schema before reuse.
 
 ## Capability, approval, and workspace boundaries
 
+The pool pins the session's tool generation when it spawns a worker. Workers
+spawned after a reload can use the new tools within their role and permission
+filters. Each worker's transcript records `tool_surface_generation`.
+
 There are independent tool, capability, and workspace filters:
 
 ```text

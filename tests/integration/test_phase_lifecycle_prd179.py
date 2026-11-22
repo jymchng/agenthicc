@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agenthicc.runners.reload import SurfaceHolder
+from agenthicc.tools.surface import ToolSurface, ToolSurfaceHolder
 from agenthicc.runners.session_conversation import SessionConversation
 from agenthicc.runners.workflow_checkpoint_store import WorkflowCheckpointStore
 from agenthicc.runners.workflow_handle import WorkflowRunHandle
@@ -128,7 +128,7 @@ def _reconstruct_config(tmp_path: Path) -> SimpleNamespace:
         workspace_scope=WorkspaceScope.create(tmp_path),
         browser_manager=object(),
         browser_tools=(),
-        tool_surface=SurfaceHolder(()),
+        tool_surface=ToolSurfaceHolder(ToolSurface(0, ())),
         mcp_registry=None,
         memory_router=None,
         semantic_index=None,

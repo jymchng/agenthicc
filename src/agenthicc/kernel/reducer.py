@@ -79,6 +79,31 @@ def _intent_status_changed(state: AppState, event: Event) -> tuple[AppState, lis
     ]
 
 
+def _turn_tool_surface_selected(state: AppState, event: Event) -> tuple[AppState, list[Effect]]:
+    old = state.intents.get(_payload_str(event.payload, "intent_id"))
+    if old is None:
+        return state, []
+    generation = event.payload.get("tool_surface_generation")
+    names = event.payload.get("tool_names")
+    if (
+        type(generation) is not int
+        or generation < 0
+        or not isinstance(names, list)
+        or any(not isinstance(name, str) for name in names)
+    ):
+        raise ValueError("TurnToolSurfaceSelected requires a generation and tool names")
+    return state.with_intent(
+        replace(
+            old,
+            metadata={
+                **old.metadata,
+                "tool_surface_generation": generation,
+                "tool_names": list(names),
+            },
+        )
+    ), []
+
+
 # ── WorkflowRun (live-session events, PRD-94) ────────────────────────────
 
 
@@ -193,6 +218,7 @@ def _session_reloaded(state: AppState, event: Event) -> tuple[AppState, list[Eff
 _HANDLERS: dict[str, ReducerFn] = {
     "IntentCreated": _intent_created,
     "IntentStatusChanged": _intent_status_changed,
+    "TurnToolSurfaceSelected": _turn_tool_surface_selected,
     # PRD-94: live-session workflow run tracking
     "WorkflowRunStarted": _workflow_run_started,
     "WorkflowPhaseCompleted": _workflow_phase_completed,

@@ -155,7 +155,7 @@ The `phases` list looks authoritative — it appears in IDE completions, in `Wor
 
 ### A2 ★ Two parallel tool-filtering implementations (High)
 
-`src/agenthicc/workflows/default/runner.py:645 _filter_tools()` and `src/agenthicc/workflows/code_plan/runner.py:648 _base_tools()` implement nearly identical logic: iterate `plugin_tools`, union with MCP tools, filter by `mode_blocked`. Differences:
+`src/agenthicc/workflows/default/runner.py:645 _filter_tools()` and `src/agenthicc/workflows/code_plan/runner.py:648 _base_tools()` implement nearly identical logic: read the current extension tools, union with MCP tools, filter by `mode_blocked`. Differences:
 - `_filter_tools` additionally applies `phase_allowed` capability intersection
 - `_base_tools` appends memory tools unconditionally
 

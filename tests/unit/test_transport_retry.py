@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from agenthicc.tools.surface import ToolSurface
 from agenthicc.config import ExecutionSettings, _dict_to_config
 from agenthicc.runners.agent_turn import _is_transient_network_error, _is_permanent_error
 
@@ -770,7 +771,7 @@ class TestSubagentWorkerRetry:
             index=1,
             parent_runner=_Parent(),
             parent_model="m",
-            all_tools=[],
+            tool_surface=ToolSurface(0, tuple([])),
             retry_config=retry_config,
         )
 

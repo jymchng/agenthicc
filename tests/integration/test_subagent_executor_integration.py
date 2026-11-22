@@ -8,6 +8,8 @@ from lauren_ai._transport import Completion, TokenUsage
 from lauren_ai._transport._mock import MockTransport
 import pytest
 
+from agenthicc.subagents.tool import SubagentToolSelection
+from agenthicc.tools.surface import ToolSurface
 from agenthicc.subagents.tool import make_spawn_subagents_tool
 from agenthicc.tools.capabilities import tool_execute
 from agenthicc.memory.journal import ConversationJournal
@@ -44,7 +46,7 @@ async def test_spawn_executor_runs_through_real_pool_and_agent_runner(tmp_path) 
     spawn = make_spawn_subagents_tool(
         parent_runner,
         "mock-model",
-        [run_bash],
+        SubagentToolSelection(ToolSurface(0, tuple([run_bash]))),
         conv_store=conversation,
         conversation_journal=journal,
     )

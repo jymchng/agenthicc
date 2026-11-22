@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 
     from agenthicc.memory.router import MemoryRouter
     from agenthicc.memory.vector import SemanticIndex
+    from agenthicc.runners.reload import ReloadService
     from agenthicc.tools.approval import ApprovalBroker
     from agenthicc.tools.base import ToolLike
 
@@ -36,13 +37,27 @@ class SessionToolSource(Protocol):
     @property
     def browser_tools(self) -> Iterable[ToolLike]: ...
 
+    @property
+    def reload(self) -> ReloadService: ...
+
 
 def session_tools(session: SessionToolSource) -> list[ToolLike]:
     """The session-bound tools for *session*: ask_user, memory and browser."""
+    from lauren_ai._tools import tool
+
+    from agenthicc.tools.capabilities import tool_control
     from agenthicc.workflows.code_plan.phase_tools import make_questions_tool
     from agenthicc.workflows.memory_tools import make_memory_tools
 
+    @tool_control
+    @tool()
+    async def reload_tools() -> dict[str, object]:
+        """Refresh this session's tool registry from already trusted sources."""
+        report = await session.reload.reload(frozenset({"tools"}), reason="command")
+        return report.to_dict()
+
     return [
+        reload_tools,
         *make_questions_tool(session.approval_svc),
         *make_memory_tools(session.memory_router, session.semantic_index),
         *session.browser_tools,

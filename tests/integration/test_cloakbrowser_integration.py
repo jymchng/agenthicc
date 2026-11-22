@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from types import MappingProxyType
+from agenthicc.tools.surface import ToolSurface, ToolSurfaceHolder
 from agenthicc.runners.reload import SurfaceHolder
 import asyncio
 from pathlib import Path
@@ -55,13 +56,13 @@ def test_workflow_config_exposes_session_browser_tools_once(tmp_path: Path) -> N
         approval_svc=None,
         cfg=AgenthiccConfig(),
         skills=SurfaceHolder(MappingProxyType({})),
-        tool_surface=SurfaceHolder(()),
+        tool_surface=ToolSurfaceHolder(ToolSurface(0, ())),
         mcp_registry=None,
         mention_cache=object(),
         agents_registry=object(),
         browser_tools=browser_tools,
     )
-    names = [tool.__name__ for tool in config.all_plugin_tools()]
+    names = [tool.__name__ for tool in config.extension_tools()]
     assert names.count("cloakbrowser_open") == 1
 
 
@@ -105,7 +106,7 @@ def test_create_workflow_runner_excludes_browser_tools_from_base_tools() -> None
     )
     config = SimpleNamespace(
         app_state=app_state,
-        all_plugin_tools=lambda: browser_tools,
+        extension_tools=lambda: browser_tools,
         mcp_registry=None,
         memory_router=None,
         semantic_index=None,

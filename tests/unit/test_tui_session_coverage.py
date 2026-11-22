@@ -648,7 +648,7 @@ async def test_tui_tool_refresh_updates_the_shared_workflow_config_surface(
 
     assert report.ok
     assert ctx.reload.tools.current() is not old_plugins
-    assert ctx.reload.tools.current().value == (new_tool,)
+    assert ctx.reload.tools.current().tools == (new_tool,)
     assert session._wf_config_base.tool_surface is ctx.reload.tools
 
 
@@ -677,7 +677,7 @@ async def test_tui_tool_refresh_publishes_successes_and_reports_failed_plugins(
 
     assert report.ok
     assert session._wf_config_base.tool_surface is ctx.reload.tools
-    assert ctx.reload.tools.current().value == (usable_tool,)
+    assert ctx.reload.tools.current().tools == (usable_tool,)
     assert len(report.diagnostics) == 1
     assert Path(report.diagnostics[0].path).name == "broken.py"
 

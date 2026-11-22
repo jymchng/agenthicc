@@ -30,6 +30,7 @@ from agenthicc.tools.base import ToolLike, tool_name
 
 if TYPE_CHECKING:
     from lauren_ai._memory import ShortTermMemory
+    from agenthicc.tools.surface import ToolSurface
     from agenthicc.workflows.config import WorkflowConfig
     from agenthicc.workflows.plugin import WorkflowRun
     from agenthicc.tui.runtime.mode_manager import ModeManager
@@ -187,9 +188,8 @@ class CodePlanRunner(BaseWorkflowRunner):
         # session bundle, then apply the current mode's capability ceiling to
         # the cached bundle on each request.  This avoids rebuilding plugin,
         # MCP, browser, and memory tool objects for every composite phase.
-        self._tool_bundle_cache: list[ToolLike] | None = None
-        self._tool_bundle_cache_key: tuple[str, ...] | None = None
-        self._filtered_tool_cache: list[ToolLike] | None = None
+        self._phase_catalog: tuple[ToolSurface, tuple[ToolLike, ...]] | None = None
+        self._phase_visibility: tuple[tuple[str, ...], tuple[ToolLike, ...]] | None = None
         self._tool_cache_epoch: int = 0
         self._tool_cache_epoch_reason: str = "initial"
 
@@ -986,7 +986,12 @@ class CodePlanRunner(BaseWorkflowRunner):
                 skills=self._cfg.skills,
                 skill_permissions=self._cfg.cfg.agents.skill_permissions_for("auto"),
                 mention_cache=self._cfg.mention_cache,
-                project_plugin_tools=tools,
+                extra_tools=tools,
+                tool_surface_generation=(
+                    self._phase_catalog[0].generation
+                    if self._phase_catalog is not None
+                    else self._cfg.tool_surface.current().generation
+                ),
                 mcp_registry=self._cfg.mcp_registry,
                 subagent_registry=self._cfg.subagent_registry,
                 active_agent="auto",
@@ -1048,8 +1053,12 @@ class CodePlanRunner(BaseWorkflowRunner):
             self._cfg.app_state.active_mode(), self._mode_manager, mode
         ).blocked_capabilities
         blocked_key = tuple(sorted(str(item) for item in mode_blocked))
-        if self._tool_bundle_cache is None:
-            all_tools: _ToolList = list(self._cfg.all_plugin_tools())
+        surface = self._cfg.tool_surface.current()
+        catalog = self._phase_catalog
+        if catalog is None or catalog[0] is not surface:
+            if catalog is not None:
+                self.invalidate_phase_tools(reason="tool_surface_reload")
+            all_tools: _ToolList = list(self._cfg.extension_tools())
             if self._cfg.mcp_registry is not None:
                 try:
                     all_tools.extend(self._cfg.mcp_registry.all_tools())
@@ -1064,19 +1073,18 @@ class CodePlanRunner(BaseWorkflowRunner):
             # once at the epoch boundary so every phase sees the same schema
             # sequence and provider cache key.
             all_tools.sort(key=tool_name)
-            self._tool_bundle_cache = all_tools
-        if self._tool_bundle_cache_key == blocked_key and self._filtered_tool_cache is not None:
-            return list(self._filtered_tool_cache)
-        filtered: _ToolList = [
-            tool
-            for tool in self._tool_bundle_cache
-            if not (get_tool_capabilities(tool) & mode_blocked)
-        ]
-        self._filtered_tool_cache = filtered
-        self._tool_bundle_cache_key = blocked_key
-        return list(filtered)
+            catalog = (surface, tuple(all_tools))
+            self._phase_catalog = catalog
+        visible = self._phase_visibility
+        if visible is not None and visible[0] == blocked_key:
+            return list(visible[1])
+        visible_tools = tuple(
+            tool for tool in catalog[1] if not (get_tool_capabilities(tool) & mode_blocked)
+        )
+        self._phase_visibility = (blocked_key, visible_tools)
+        return list(visible_tools)
 
-    def invalidate_tool_bundle_cache(self, *, reason: str = "configuration_changed") -> None:
+    def invalidate_phase_tools(self, *, reason: str = "configuration_changed") -> None:
         """Start a new stable-tool cache epoch.
 
         MCP reloads, browser backend changes, and plugin configuration changes
@@ -1085,8 +1093,7 @@ class CodePlanRunner(BaseWorkflowRunner):
         every phase.  The epoch is diagnostic metadata; it never claims that a
         provider cache was actually hit.
         """
-        self._tool_bundle_cache = None
-        self._filtered_tool_cache = None
-        self._tool_bundle_cache_key = None
+        self._phase_catalog = None
+        self._phase_visibility = None
         self._tool_cache_epoch += 1
         self._tool_cache_epoch_reason = str(reason)[:256] or "configuration_changed"

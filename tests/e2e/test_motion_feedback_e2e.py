@@ -83,7 +83,7 @@ async def _turn(app_state, processor, mock, text):
         skills=None,
         skill_permissions=cfg.agents.skill_permissions_for("auto"),
         mention_cache=MagicMock(),
-        project_plugin_tools=[],
+        extra_tools=[],
         mcp_registry=None,
         active_agent="auto",
         completed_turns=0,

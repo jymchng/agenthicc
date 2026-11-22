@@ -6,6 +6,7 @@ either must update this file in the same review.
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 from pathlib import Path
@@ -16,6 +17,7 @@ from lauren_ai._tools import TOOL_META
 from agenthicc.agent_tools import AGENT_TOOLS, OUTLOOK_AGENT_TOOLS
 from agenthicc.plugins.registry import build_registry
 from agenthicc.tools.capabilities import get_tool_capabilities
+from agenthicc.tools.surface import ToolSurface, ToolSurfaceHolder
 from agenthicc.tui.runtime.mode_manager import build_default_registry
 
 pytestmark = pytest.mark.unit
@@ -99,6 +101,43 @@ CATALOG_CEILING = 22_756
 
 def _name(tool: object) -> str:
     return str(getattr(tool, TOOL_META).name)
+
+
+def test_tool_surfaces_are_sorted_and_remain_pinned_after_publication() -> None:
+    from agenthicc.tools.base import tool_name
+
+    registry = build_registry()
+    tools = tuple(reversed(registry.tools[:3]))
+    generation = ToolSurface(2, tools, {tool_name(tool): "builtin" for tool in tools})
+    holder = ToolSurfaceHolder(generation)
+
+    assert tuple(map(tool_name, generation.tools)) == tuple(sorted(map(tool_name, tools)))
+    assert set(generation.sources.values()) == {"builtin"}
+    holder.publish(ToolSurface(3, ()))
+    assert holder.current().tools == ()
+    assert generation.generation == 2
+    assert len(generation.tools) == 3
+    with pytest.raises(ValueError, match="cannot move backwards"):
+        holder.publish(generation)
+
+
+def test_tool_surface_publication_belongs_to_reload_service() -> None:
+    source = _ROOT / "src" / "agenthicc"
+    publishers: set[Path] = set()
+    for path in source.rglob("*.py"):
+        content = path.read_text(encoding="utf-8")
+        if ".publish(" not in content:
+            continue
+        tree = ast.parse(content, filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                continue
+            if node.func.attr != "publish" or not node.args:
+                continue
+            value = node.args[0]
+            if isinstance(value, ast.Call) and getattr(value.func, "id", "") == "ToolSurface":
+                publishers.add(path.relative_to(source))
+    assert publishers == {Path("runners/reload.py")}
 
 
 def test_every_built_in_tool_has_its_reviewed_capabilities() -> None:

@@ -10,6 +10,8 @@ from lauren_ai._agents._runner import AgentRunnerBase
 from lauren_ai._transport import Completion, TokenUsage
 from lauren_ai._transport._mock import MockTransport
 
+from agenthicc.subagents.tool import SubagentToolSelection
+from agenthicc.tools.surface import ToolSurface
 from agenthicc.agent_tools import AGENT_TOOLS
 from agenthicc.subagents.tool import make_spawn_subagents_tool
 from agenthicc.subagents.types import (
@@ -72,7 +74,7 @@ async def _spawn(
     spawn = make_spawn_subagents_tool(
         AgentRunnerBase(transport=transport),
         "mock-model",
-        list(AGENT_TOOLS),
+        SubagentToolSelection(ToolSurface(0, tuple(list(AGENT_TOOLS)))),
         app_state=state,
         workspace_access=policy,
         approval_svc=broker,
@@ -411,7 +413,7 @@ async def test_a_working_role_receives_every_tool_the_parent_exposes(tmp_path: P
         spawn = make_spawn_subagents_tool(
             AgentRunnerBase(transport=mock),
             "mock-model",
-            [*AGENT_TOOLS, project_probe],
+            SubagentToolSelection(ToolSurface(0, tuple([*AGENT_TOOLS, project_probe]))),
             app_state=state,
             workspace_access=policy,
         )
@@ -466,7 +468,9 @@ async def test_a_working_role_does_not_inherit_the_parents_control_plane(
     spawn = make_spawn_subagents_tool(
         AgentRunnerBase(transport=transport),
         "mock-model",
-        [*AGENT_TOOLS, close_phase, ask_user, spawn_subagents],
+        SubagentToolSelection(
+            ToolSurface(0, tuple([*AGENT_TOOLS, close_phase, ask_user, spawn_subagents]))
+        ),
         app_state=state,
         workspace_access=policy,
     )
@@ -505,7 +509,7 @@ async def test_a_working_role_is_not_held_to_the_session_turn_limit(tmp_path: Pa
     spawn = make_spawn_subagents_tool(
         AgentRunnerBase(transport=transport),
         "mock-model",
-        list(AGENT_TOOLS),
+        SubagentToolSelection(ToolSurface(0, tuple(list(AGENT_TOOLS)))),
         app_state=state,
         workspace_access=policy,
         registry=registry,

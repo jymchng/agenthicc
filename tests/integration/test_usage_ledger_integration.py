@@ -13,6 +13,7 @@ from lauren_ai._memory import ShortTermMemory
 from lauren_ai._transport import Completion, TokenUsage
 from lauren_ai._transport._mock import MockTransport
 
+from agenthicc.tools.surface import ToolSurface
 from agenthicc.memory.compactor import compact_memory
 from agenthicc.runners.session_conversation import SessionConversation
 from agenthicc.runners.usage_ledger import UsageLedger, UsageQuality
@@ -217,7 +218,7 @@ async def test_standard_compaction_and_subagent_paths_use_the_same_ledger() -> N
         index=1,
         parent_runner=parent,
         parent_model="mock-model",
-        all_tools=[],
+        tool_surface=ToolSurface(0, tuple([])),
         usage_ledger=ledger,
         conversation_id="session-runtime",
         parent_run_id="parent-run",

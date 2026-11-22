@@ -120,7 +120,7 @@ async def _failing_turn(app_state, processor, session_id: str, command: str) -> 
             skills=None,
             skill_permissions=cfg.agents.skill_permissions_for("auto"),
             mention_cache=MagicMock(),
-            project_plugin_tools=[],
+            extra_tools=[],
             mcp_registry=None,
             active_agent="auto",
             completed_turns=0,

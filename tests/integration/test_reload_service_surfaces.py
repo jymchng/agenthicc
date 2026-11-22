@@ -64,7 +64,7 @@ async def test_tools_publish_healthy_files_and_preserve_failed_surfaces(
         assert report.published == frozenset({"tools"})
         assert [item.code for item in report.diagnostics] == ["import_error"]
         assert "sensitive-value" not in str(report.to_dict())
-        assert {tool_name(item) for item in reloader.tools.current().value} == {"alpha", "beta"}
+        assert {tool_name(item) for item in reloader.tools.current().tools} == {"alpha", "beta"}
 
         # The healthy skills surface can still publish if tools can no longer load.
         for name in ("alpha", "beta"):
@@ -140,8 +140,8 @@ async def test_tool_reload_uses_source_even_when_timestamp_and_size_match(
     with override_extension_trust(trust):
         assert (await reloader.reload(frozenset({"tools"}), reason="api")).ok
         old = reloader.tools.current()
-        assert callable(old.value[0])
-        assert old.value[0]() == "first"
+        assert callable(old.tools[0])
+        assert old.tools[0]() == "first"
         plugin.write_text(updated, encoding="utf-8")
         os.utime(plugin, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
         result = await reloader.reload(frozenset({"tools"}), reason="api")
@@ -149,9 +149,9 @@ async def test_tool_reload_uses_source_even_when_timestamp_and_size_match(
     assert result.ok
     assert result.changes[0].kind == "updated"
     new = reloader.tools.current()
-    assert callable(new.value[0])
-    assert new.value[0]() == "later"
-    assert old.value[0]() == "first"
+    assert callable(new.tools[0])
+    assert new.tools[0]() == "later"
+    assert old.tools[0]() == "first"
     await reloader.close()
 
 
@@ -166,12 +166,39 @@ async def test_reload_removes_the_only_tool_if_its_trusted_bytes_changed(
 
     with override_extension_trust(trust):
         assert (await reloader.reload(frozenset({"tools"}), reason="api")).ok
-        assert tuple(map(tool_name, reloader.tools.current().value)) == ("label",)
+        assert tuple(map(tool_name, reloader.tools.current().tools)) == ("label",)
         plugin.write_text(_tool_source("changed"), encoding="utf-8")
         result = await reloader.reload(frozenset({"tools"}), reason="api")
 
     assert result.ok
     assert result.diagnostics[0].code == "untrusted_modified"
     assert result.changes[0].kind == "removed"
-    assert reloader.tools.current().value == ()
+    assert reloader.tools.current().tools == ()
+    await reloader.close()
+
+
+async def test_reload_reports_authored_tools_with_no_capability_declaration(
+    tmp_path: Path, reloader: ReloadService
+) -> None:
+    from agenthicc.plugins.authored_types import content_digest
+
+    plugin = tmp_path / ".agenthicc" / "tools" / "label.py"
+    plugin.parent.mkdir(parents=True)
+    source = _tool_source("missing_tags").encode()
+    plugin.write_bytes(source)
+    trust = ExtensionTrust(store_path=tmp_path / "trust.json", trusted_roots=())
+    from hashlib import sha256
+
+    trust.trust(
+        plugin,
+        kind="tool",
+        expected_sha256=sha256(source).hexdigest(),
+        artifact_digest=content_digest({".agenthicc/tools/label.py": source}),
+    )
+    with override_extension_trust(trust):
+        reply = await reloader.reload(frozenset({"tools"}), reason="api")
+    assert reply.ok
+    assert reloader.tools.current().tools == ()
+    assert reply.diagnostics[0].code == "capability_denied"
+    assert "missing_tags" in reply.diagnostics[0].message
     await reloader.close()

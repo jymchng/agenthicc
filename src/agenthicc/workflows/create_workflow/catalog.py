@@ -648,7 +648,7 @@ def build_authoring_snapshot(
         role_default = ROLE_DEFAULT_ALLOWED.get(role)
         resolved_phase = _capability_values(role_default)
         phase_source = "role_default_unrestricted" if role_default is None else "role_default"
-    visible = list(tools) if tools is not None else list(config.all_plugin_tools())
+    visible = list(tools) if tools is not None else list(config.extension_tools())
     # AgentTurnRunner always merges the built-in registry after project tools.
     # Include the same live callables here so the authoring catalog describes
     # the effective turn rather than only the project-plugin subset.  Project
@@ -792,7 +792,7 @@ def _snapshot_cache_key(
         # The runner normally supplies its already-filtered phase tools.  The
         # fallback keeps direct cache users correct as plugin/MCP/browser
         # registries change, without probing any external service.
-        tool_list = list(config.all_plugin_tools())
+        tool_list = list(config.extension_tools())
         try:
             from agenthicc.agent_tools import AGENT_TOOLS
 

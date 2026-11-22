@@ -98,7 +98,7 @@ def test_snapshot_is_deterministic_bounded_and_json_safe() -> None:
     )
     config = SimpleNamespace(
         app_state=app,
-        all_plugin_tools=lambda: [write_document],
+        extension_tools=lambda: [write_document],
         mcp_registry=mcp,
         browser_manager=None,
         browser_tools=[],
@@ -139,7 +139,7 @@ def test_browser_action_metadata_is_described_but_not_authoring_available() -> N
 
     config = SimpleNamespace(
         app_state=app,
-        all_plugin_tools=lambda: [],
+        extension_tools=lambda: [],
         mcp_registry=None,
         browser_tools=[cloakbrowser_open_page],
         browser_manager=SimpleNamespace(
@@ -162,7 +162,7 @@ def test_snapshot_includes_live_global_introspection_and_role_provenance() -> No
     app = AppState.create()
     config = SimpleNamespace(
         app_state=app,
-        all_plugin_tools=lambda: [inspect_document],
+        extension_tools=lambda: [inspect_document],
         mcp_registry=None,
         browser_tools=[],
         browser_manager=None,
@@ -191,7 +191,7 @@ def test_snapshot_cache_reuses_and_invalidates_on_mode_change() -> None:
     app = AppState.create()
     config = SimpleNamespace(
         app_state=app,
-        all_plugin_tools=lambda: [inspect_document],
+        extension_tools=lambda: [inspect_document],
         mcp_registry=None,
         browser_tools=[],
         browser_manager=None,

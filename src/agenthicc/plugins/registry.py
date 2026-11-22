@@ -294,7 +294,7 @@ def override_builtin_tools(groups: Sequence[ToolGroup]) -> Iterator[None]:
 
 def build_registry(
     agent_name: str | None = None,
-    project_plugin_tools: Sequence[ToolLike] | None = None,
+    extra_tools: Sequence[ToolLike] | None = None,
     project_dir: Path | None = None,
     user_dir: Path | None = None,
 ) -> ToolRegistry:
@@ -306,7 +306,7 @@ def build_registry(
 
     Args:
         agent_name: If provided, agent-specific tools are loaded and appended.
-        project_plugin_tools: Pre-discovered project-wide plugins (from session
+        extra_tools: Pre-discovered project-wide plugins (from session
             startup cache); if None they are discovered on the fly.
         project_dir: Override for the project's .agenthicc/ root.
         user_dir: Override for the user's ~/.agenthicc/ root.
@@ -326,17 +326,17 @@ def build_registry(
         registry.register_group(grp, source="builtin")
 
     # 2. Project-wide plugins (cached at session start via session context)
-    if project_plugin_tools is None:
+    if extra_tools is None:
         if override is None:
             from agenthicc.plugins.discovery import discover_project_tools
 
-            project_plugin_tools = discover_project_tools(
+            extra_tools = discover_project_tools(
                 project_dir=project_dir,
                 user_dir=user_dir,
             ).all_tools
         else:
-            project_plugin_tools = []
-    registry.register_many(project_plugin_tools, source="project-plugin")
+            extra_tools = []
+    registry.register_many(extra_tools, source="project-plugin")
 
     # 3. Agent-specific plugins (highest precedence, loaded per-turn). They are
     #    local code the override's owner did not supply, so never under one.

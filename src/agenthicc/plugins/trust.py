@@ -267,6 +267,10 @@ class ExtensionTrust:
         """Every trust record, sorted by path."""
         return tuple(record for _path, record in sorted(self._records().items()))
 
+    def record_for(self, path: Path) -> TrustRecord | None:
+        """Read the recorded provenance for a canonical extension file."""
+        return self._records().get(str(path.expanduser().resolve()))
+
     # ── workspace decisions (TUX-03) ─────────────────────────────────────────
 
     def workspace_decision(self, directory: Path) -> WorkspaceDecision | None:

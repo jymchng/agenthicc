@@ -277,10 +277,16 @@ The current journey is:
    as bounded TUI tool output and persisted with the surrounding session
    events.
 
-Project-wide tools are discovered during session construction and cached in
-the session context. Restart the session after adding or editing one. The
-agent-specific scan happens when an agent turn builds its registry, but a
-restart is still the least surprising way to verify the complete catalog.
+Project-wide tools are discovered during session construction. Run
+`/tools reload` after adding or editing a trusted plugin. The session then
+publishes an updated tool generation and reports any refused sources.
+Authored plugins must declare valid capabilities and use distinct names.
+
+The direct agent can call `reload_tools()` to refresh the same catalog.
+The next provider request in that turn picks up the change. Workflow phases
+read the current generation at their start, and a worker keeps the generation
+it received when spawned. Each call is still subject to the active capability
+and approval rules.
 
 ## Dependencies and import-time behavior
 

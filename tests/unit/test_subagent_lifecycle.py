@@ -10,6 +10,8 @@ from typing import ClassVar
 import pytest
 
 import agenthicc.subagents.pool as pool_module
+from agenthicc.subagents.tool import SubagentToolSelection
+from agenthicc.tools.surface import ToolSurface
 from agenthicc.subagents.pool import (
     SubagentPool,
     SubagentResult,
@@ -78,7 +80,7 @@ def _pool(
         tasks,
         parent_runner=SimpleNamespace(_transport=None),
         parent_model="model",
-        all_tools=[],
+        tool_surface=ToolSurface(0, tuple([])),
         max_concurrent=max_concurrent,
         registry=DEFAULT_REGISTRY,
         stop_grace_s=stop_grace_s,
@@ -392,7 +394,7 @@ async def test_stopping_a_worker_waiting_on_approval_withdraws_only_its_prompt()
         [SubagentTask("alpha", "writer", "alpha"), SubagentTask("beta", "writer", "beta")],
         parent_runner=AgentRunnerBase(transport=_WriteThenFinishTransport()),
         parent_model="mock-model",
-        all_tools=[write_note],
+        tool_surface=ToolSurface(0, tuple([write_note])),
         app_state=app_state,
         approval_svc=approvals,
         registry=registry,
@@ -542,7 +544,7 @@ async def test_a_retried_worker_keeps_its_pool_scope_model_and_policy() -> None:
         [SubagentTask("task-0", "researcher", "research")],
         parent_runner=AgentRunnerBase(transport=transport),
         parent_model="parent-model",
-        all_tools=[],
+        tool_surface=ToolSurface(0, tuple([])),
         app_state=AppState.create(),
         registry=registry,
         usage_ledger=ledger,
@@ -641,8 +643,8 @@ async def test_the_parent_model_stops_one_worker_of_a_running_pool(tmp_path: Pat
     spawn = make_spawn_subagents_tool(
         AgentRunnerBase(transport=_Transport()),
         "mock-model",
-        [wait_for_release],
-        registry=_registry_for(frozenset({"wait_for_release"})),  # type: ignore[arg-type]
+        SubagentToolSelection(ToolSurface(0, tuple([wait_for_release]))),
+        registry=_registry_for(frozenset({"wait_for_release"})),
         conversation_id="conv",
         parent_run_id="turn-1",
         conversation_journal=journal,
@@ -730,8 +732,8 @@ async def test_an_older_pool_stays_retryable_after_a_newer_one_finishes(tmp_path
     spawn = make_spawn_subagents_tool(
         AgentRunnerBase(transport=transport),
         "mock-model",
-        [],
-        registry=_registry_for(frozenset()),  # type: ignore[arg-type]
+        SubagentToolSelection(ToolSurface(0, tuple([]))),
+        registry=_registry_for(frozenset()),
         conversation_id="conv",
         parent_run_id="turn-1",
         conversation_journal=journal,
@@ -772,8 +774,8 @@ async def test_a_pool_that_fails_at_once_reports_failure_not_a_clarification(
     spawn = make_spawn_subagents_tool(
         AgentRunnerBase(transport=_DownTransport()),
         "mock-model",
-        [],
-        registry=_registry_for(frozenset()),  # type: ignore[arg-type]
+        SubagentToolSelection(ToolSurface(0, tuple([]))),
+        registry=_registry_for(frozenset()),
         conversation_id="conv",
         parent_run_id="turn-1",
         conversation_journal=journal,
@@ -805,7 +807,7 @@ async def test_a_retry_is_refused_when_it_would_exceed_the_active_pool_limit(
         [SubagentTask("w", "researcher", "a")],
         parent_runner=SimpleNamespace(_transport=None),
         parent_model="model",
-        all_tools=[],
+        tool_surface=ToolSurface(0, tuple([])),
         max_concurrent=1,
         max_active_pools=1,
         registry=DEFAULT_REGISTRY,
@@ -937,7 +939,7 @@ async def test_a_worker_failing_after_a_productive_turn_keeps_that_turns_text() 
         [SubagentTask("w", "researcher", "look")],
         parent_runner=AgentRunnerBase(transport=_Transport()),
         parent_model="mock-model",
-        all_tools=[],
+        tool_surface=ToolSurface(0, tuple([])),
         registry=DEFAULT_REGISTRY,
         conversation_id="conv",
         parent_run_id="turn-1",

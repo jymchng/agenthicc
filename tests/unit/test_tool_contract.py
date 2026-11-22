@@ -20,6 +20,8 @@ from lauren_ai._tools import TOOL_META, ToolContext, _add_to_tool_map
 from lauren_ai._tools._executor import ToolExecutor
 from lauren_ai._transport import ToolCall
 
+from agenthicc.subagents.tool import SubagentToolSelection
+from agenthicc.tools.surface import ToolSurface
 from agenthicc.agent_tools import AGENT_TOOLS
 from agenthicc.tools.approval import order_global_hooks
 from agenthicc.tools.capabilities import ToolCapability, get_tool_capabilities
@@ -57,7 +59,9 @@ def _subagent_tools() -> list[object]:
     from agenthicc.subagents.tool import make_spawn_subagents_tool
 
     spawn = make_spawn_subagents_tool(
-        AgentRunnerBase(transport=MockTransport()), "mock-model", list(AGENT_TOOLS)
+        AgentRunnerBase(transport=MockTransport()),
+        "mock-model",
+        SubagentToolSelection(ToolSurface(0, tuple(list(AGENT_TOOLS)))),
     )
     broker = AgentMessageBroker(conversation_id="c", parent_run_id="r", pool_id="p")
     return [

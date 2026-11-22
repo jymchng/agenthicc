@@ -9,6 +9,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from agenthicc.subagents.tool import SubagentToolSelection
+from agenthicc.tools.surface import ToolSurface
 from agenthicc.subagents.pool import (
     AggregatedResult,
     SubagentPool,
@@ -398,7 +400,7 @@ class _MockPool(SubagentPool):
         self._tasks = []
         self._parent_runner = None  # type: ignore[assignment]
         self._parent_model = ""
-        self._all_tools = []
+        self._tool_surface = ToolSurface(0, ())
         self._max_concurrent = kwargs.get("max_concurrent", 4)
         self._app_state = None
         self._processor = None
@@ -483,7 +485,7 @@ class TestSubagentPoolGovernance:
             "tasks": [SubagentTask("t1", "explorer", "inspect")],
             "parent_runner": SimpleNamespace(_transport=object()),
             "parent_model": "model",
-            "all_tools": [],
+            "tool_surface": ToolSurface(0, ()),
         }
         options.update(overrides)
         return SubagentPool(**options)  # type: ignore[arg-type]
@@ -613,9 +615,9 @@ class TestSubagentWorkerTimeout:
             task=SubagentTask("t1", "short", "wait"),
             spec=spec,
             index=1,
-            parent_runner=object(),  # type: ignore[arg-type]
+            parent_runner=object(),
             parent_model="model",
-            all_tools=[],
+            tool_surface=ToolSurface(0, tuple([])),
             timeout_s=0.001,
         )
 
@@ -694,7 +696,7 @@ class TestSubagentWorkerRouting:
                 index=1,
                 parent_runner=SimpleNamespace(_transport=object()),
                 parent_model="model",
-                all_tools=[],
+                tool_surface=ToolSurface(0, tuple([])),
                 depth=depth,
                 pool_id="pool-parent",
                 max_depth=max_depth,
@@ -735,7 +737,7 @@ class TestSubagentWorkerRouting:
                 index=1,
                 parent_runner=SimpleNamespace(_transport=object()),
                 parent_model="model",
-                all_tools=all_tools,
+                tool_surface=ToolSurface(0, tuple(all_tools)),
             )
             captured = await self._run_with_capture(monkeypatch, worker)
             tools = captured["tools"]
@@ -775,7 +777,9 @@ class TestSubagentWorkerRouting:
             index=1,
             parent_runner=SimpleNamespace(_transport=object()),
             parent_model="model-a",
-            all_tools=[SimpleNamespace(name="read_file"), SimpleNamespace(name="write_file")],
+            tool_surface=ToolSurface(
+                0, tuple([SimpleNamespace(name="read_file"), SimpleNamespace(name="write_file")])
+            ),
             depth=2,
             max_depth=3,
             allowed_models=frozenset({"model-a", "model-b"}),
@@ -794,7 +798,7 @@ class TestSubagentWorkerRouting:
             index=1,
             parent_runner=SimpleNamespace(_transport=object()),
             parent_model="model-b",
-            all_tools=[],
+            tool_surface=ToolSurface(0, tuple([])),
             depth=2,
             max_depth=3,
             allowed_models=frozenset({"model-a", "model-b"}),
@@ -815,7 +819,7 @@ class TestSubagentWorkerRouting:
             index=1,
             parent_runner=SimpleNamespace(_transport=object()),
             parent_model="parent-model",
-            all_tools=[],
+            tool_surface=ToolSurface(0, tuple([])),
             provider_options={
                 "request_options": RequestOptions(
                     provider={"reasoning_effort": "medium", "custom_option": "preserved"}
@@ -853,11 +857,11 @@ class TestSubagentWorkerRouting:
             index=1,
             parent_runner=SimpleNamespace(_transport=object()),
             parent_model="parent-model",
-            all_tools=[],
+            tool_surface=ToolSurface(0, tuple([])),
             provider="openai",
             default_model="routed-model",
             default_effort="high",
-            default_context=16_000,
+            default_context=16000,
             execution_settings=settings,
             provider_options={
                 "request_options": RequestOptions(
@@ -888,7 +892,7 @@ class TestSubagentWorkerRouting:
             index=1,
             parent_runner=SimpleNamespace(_transport=object()),
             parent_model="parent-model",
-            all_tools=[],
+            tool_surface=ToolSurface(0, tuple([])),
             default_model="routed-model",
         )
 
@@ -908,7 +912,7 @@ class TestSubagentWorkerRouting:
             index=1,
             parent_runner=SimpleNamespace(_transport=object()),
             parent_model="parent-model",
-            all_tools=[],
+            tool_surface=ToolSurface(0, tuple([])),
             call_model="call-model",
             call_effort="low",
         )
@@ -939,9 +943,9 @@ class TestSubagentWorkerRouting:
             index=1,
             parent_runner=SimpleNamespace(_transport=object()),
             parent_model="parent-model",
-            all_tools=[],
+            tool_surface=ToolSurface(0, tuple([])),
             provider="openai",
-            execution_settings=ExecutionSettings(context_windows={"routed-model": 5_000}),
+            execution_settings=ExecutionSettings(context_windows={"routed-model": 5000}),
             provider_options={
                 "request_options": RequestOptions(
                     provider={"reasoning_effort": "none", "custom_option": "preserved"}
@@ -981,7 +985,7 @@ class TestSubagentWorkerRouting:
             index=1,
             parent_runner=SimpleNamespace(_transport=object()),
             parent_model="parent-model",
-            all_tools=[],
+            tool_surface=ToolSurface(0, tuple([])),
             provider_options={
                 "request_options": RequestOptions(
                     provider={"reasoning_effort": "none", "custom_option": "preserved"}
@@ -1015,7 +1019,12 @@ class TestSpawnSubagentsTool:
         class FakeRunner:
             _transport = None
 
-        return make_spawn_subagents_tool(FakeRunner(), "test-model", [], registry=registry)
+        return make_spawn_subagents_tool(
+            FakeRunner(),
+            "test-model",
+            SubagentToolSelection(ToolSurface(0, tuple([]))),
+            registry=registry,
+        )
 
     async def test_empty_tasks_returns_error(self) -> None:
         fn = self._make_tool()
@@ -1146,7 +1155,12 @@ class TestSpawnSubagentsTool:
                     },
                 )
             )
-            tool_fn = make_spawn_subagents_tool(object(), "test-model", [], registry=registry)
+            tool_fn = make_spawn_subagents_tool(
+                object(),
+                "test-model",
+                SubagentToolSelection(ToolSurface(0, tuple([]))),
+                registry=registry,
+            )
             fake_result = AggregatedResult(
                 pool_id="pool-schema",
                 total=1,
@@ -1169,7 +1183,9 @@ class TestSpawnSubagentsTool:
         from agenthicc.config import SubagentSettings
         from agenthicc.subagents.tool import make_spawn_subagents_tool
 
-        disabled = make_spawn_subagents_tool(object(), "model", [])
+        disabled = make_spawn_subagents_tool(
+            object(), "model", SubagentToolSelection(ToolSurface(0, tuple([])))
+        )
         disabled_schema = disabled.__lauren_ai_tool__.parameters["input_schema"]
         assert "model" not in disabled_schema["properties"]
         assert "effort" not in disabled_schema["properties"]
@@ -1177,7 +1193,7 @@ class TestSpawnSubagentsTool:
         enabled = make_spawn_subagents_tool(
             object(),
             "model",
-            [],
+            SubagentToolSelection(ToolSurface(0, tuple([]))),
             subagent_settings=SubagentSettings(allow_call_overrides=True),
         )
         enabled_schema = enabled.__lauren_ai_tool__.parameters["input_schema"]
@@ -1223,7 +1239,7 @@ class TestSpawnSubagentsTool:
         fn = make_spawn_subagents_tool(
             object(),
             "parent-model",
-            [],
+            SubagentToolSelection(ToolSurface(0, tuple([]))),
             provider="anthropic",
             subagent_settings=SubagentSettings(allow_call_overrides=True),
             allowed_models=frozenset({"anthropic/routed-model"}),
@@ -1296,7 +1312,9 @@ class TestSpawnSubagentsTool:
                 system_prompt="research",
             )
         )
-        fn = make_spawn_subagents_tool(object(), "model", [], registry=registry)
+        fn = make_spawn_subagents_tool(
+            object(), "model", SubagentToolSelection(ToolSurface(0, tuple([]))), registry=registry
+        )
         meta = getattr(fn, "__lauren_ai_tool__", None)
         assert meta is not None
         type_schema = meta.parameters["input_schema"]["properties"]["tasks"]["items"]["properties"][
@@ -1315,7 +1333,9 @@ class TestSpawnSubagentsTool:
         class FakeRunner:
             _transport = None
 
-        fn = make_spawn_subagents_tool(FakeRunner(), "test-model", [write_file])
+        fn = make_spawn_subagents_tool(
+            FakeRunner(), "test-model", SubagentToolSelection(ToolSurface(0, tuple([write_file])))
+        )
         fake_result = AggregatedResult(
             pool_id="pool-executor",
             total=1,
@@ -1343,7 +1363,12 @@ class TestSpawnSubagentsTool:
 
         conv = ConversationStore()
         conv.begin_turn("agent", "t1")
-        fn = make_spawn_subagents_tool(FakeRunner(), "test-model", [write_file], conv_store=conv)
+        fn = make_spawn_subagents_tool(
+            FakeRunner(),
+            "test-model",
+            SubagentToolSelection(ToolSurface(0, tuple([write_file]))),
+            conv_store=conv,
+        )
         fake_result = AggregatedResult(
             pool_id="pool-timeout",
             total=1,
@@ -1449,7 +1474,7 @@ def _capture_pool(
         if transport is not None
         else SimpleNamespace(_transport=None),
         parent_model="mock-model",
-        all_tools=[],
+        tool_surface=ToolSurface(0, tuple([])),
         processor=SimpleNamespace(emit=emit, drain=drain),
         conv_store=app.conversation,
         registry=DEFAULT_REGISTRY,
@@ -1668,7 +1693,7 @@ async def test_worker_refuses_a_denied_capability_tool_through_its_own_gate() ->
         [SubagentTask("task-0", "writer", "Write the note")],
         parent_runner=AgentRunnerBase(transport=transport),
         parent_model="mock-model",
-        all_tools=[write_note],
+        tool_surface=ToolSurface(0, tuple([write_note])),
         app_state=app_state,
         registry=registry,
     )
@@ -1740,11 +1765,11 @@ def _ledger_pool(
         [SubagentTask(task, "researcher", task) for task in usage_by_task],
         parent_runner=AgentRunnerBase(transport=_UsageByTaskTransport(usage_by_task, model)),
         parent_model=model,
-        all_tools=[],
+        tool_surface=ToolSurface(0, tuple([])),
         registry=DEFAULT_REGISTRY,
-        usage_ledger=ledger,  # type: ignore[arg-type]
+        usage_ledger=ledger,
         parent_run_id="turn-1",
-        **kwargs,  # type: ignore[arg-type]
+        **kwargs,
     )
 
 
@@ -1843,7 +1868,7 @@ async def test_a_type_declared_policy_narrows_the_first_attempt() -> None:
         [SubagentTask("task-0", "reader", "try to write")],
         parent_runner=AgentRunnerBase(transport=transport),
         parent_model="mock-model",
-        all_tools=[write_note],
+        tool_surface=ToolSurface(0, tuple([write_note])),
         app_state=app_state,
         registry=registry,
     )

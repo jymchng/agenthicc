@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from types import MappingProxyType
+from agenthicc.tools.surface import ToolSurface, ToolSurfaceHolder
 from agenthicc.runners.reload import SurfaceHolder
 import dataclasses
 from types import SimpleNamespace
@@ -41,7 +42,7 @@ def _runner_config() -> tuple[WorkflowConfig, AppState, list[object], ModeManage
         approval_svc=None,
         cfg=cfg,
         skills=SurfaceHolder(MappingProxyType({})),
-        tool_surface=SurfaceHolder(()),
+        tool_surface=ToolSurfaceHolder(ToolSurface(0, ())),
         mcp_registry=None,
         mention_cache=SimpleNamespace(),
         agents_registry=SimpleNamespace(get_role_system_prompt=lambda role: f"role:{role}"),

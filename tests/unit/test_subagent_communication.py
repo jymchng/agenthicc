@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from agenthicc.tools.surface import ToolSurface
 from agenthicc.memory.journal import ConversationJournal
 from agenthicc.subagents.communication import (
     AgentMessageBroker,
@@ -569,7 +570,7 @@ async def test_a_consumed_message_is_acknowledged_and_an_unconsumed_one_is_count
         [SubagentTask("task-0", "researcher", "look")],
         parent_runner=AgentRunnerBase(transport=_Transport()),
         parent_model="mock-model",
-        all_tools=[],
+        tool_surface=ToolSurface(0, tuple([])),
         registry=DEFAULT_REGISTRY,
         conversation_id="conv",
         parent_run_id="turn-1",

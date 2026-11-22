@@ -344,7 +344,7 @@ async def test_proactive_compaction_commit_failure_preserves_direct_input_for_re
         exec_cfg=_CompactBeforeSendConfig(),  # type: ignore[arg-type]
         skills=None,
         mention_cache=None,
-        project_plugin_tools=[],
+        extra_tools=[],
         mcp_registry=None,
         active_agent="default",
         completed_turns=0,

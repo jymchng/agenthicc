@@ -550,6 +550,7 @@ class WorkflowRunner(BaseWorkflowRunner):
             return await self._run_human_phase(spec, context)
 
         phase_text = self._build_phase_prompt(spec, intent, context)
+        tool_surface_generation = self._cfg.tool_surface.current().generation
         filtered = self._filter_tools(spec)
         # Generic-runner precedence: the declarative phase override wins over
         # the role registry prompt, but it is only the phase-specific seed.
@@ -664,7 +665,8 @@ class WorkflowRunner(BaseWorkflowRunner):
             "skills": self._cfg.skills,
             "skill_permissions": self._cfg.cfg.agents.skill_permissions_for(spec.agent_type),
             "mention_cache": self._cfg.mention_cache,
-            "project_plugin_tools": filtered,
+            "extra_tools": filtered,
+            "tool_surface_generation": tool_surface_generation,
             "mcp_registry": self._cfg.mcp_registry,
             "active_agent": spec.agent_type,
             "completed_turns": self._cfg.completed_turns,
@@ -1001,7 +1003,7 @@ class WorkflowRunner(BaseWorkflowRunner):
         ).blocked_capabilities
         phase_allowed = spec.resolved_allowed_caps
 
-        all_tools: list[ToolLike] = list(self._cfg.all_plugin_tools())
+        all_tools: list[ToolLike] = list(self._cfg.extension_tools())
         if self._cfg.mcp_registry is not None:
             try:
                 all_tools += self._cfg.mcp_registry.all_tools()

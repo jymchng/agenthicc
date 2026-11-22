@@ -183,6 +183,7 @@ class SessionContext:
             else None,
             skills=skills,
             tools=project_plugins.all_tools,
+            tool_sources=project_plugins.tool_sources(root / ".agenthicc"),
             command_plugin_names=command_plugin_names,
         )
         policy = SubagentExecutionPolicy.from_app_state(

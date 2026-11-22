@@ -254,9 +254,10 @@ Transient provider failures are rendered as compact retry notices showing the at
 | `/create-tools <instructions>` | Ask the agent to create lauren-ai tools |
 | `/create-commands <instructions>` | Ask the agent to create slash commands |
 
-`/tools reload` loads every tool plugin that can be loaded and reports any
-broken or dependency-missing plugins. If none can be loaded, the existing
-tool registry is kept active.
+`/tools reload` refreshes trusted tool plugins and reports discovery errors.
+The direct agent can call `reload_tools()` and use the updated catalog on its
+next model request. New workflow phases and newly spawned workers read the
+updated catalog. Running workers keep the tools they started with.
 
 `/config` opens its local configuration overlay immediately, including while a response is streaming.
 
