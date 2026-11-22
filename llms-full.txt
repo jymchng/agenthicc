@@ -5362,7 +5362,11 @@ command calls the runtime refused by policy (`"write_file: approval_denied"`),
 and `turns` is the provider turns the worker used. A worker that was refused and
 made no successful change fails with `error_code="mutation_refused"`; one whose
 reply was cut off by the output-token limit fails with `stop_reason`
-`output_truncated`. The digest ends each worker's section with a deterministic
+`output_truncated`, and the partial reply is saved under the parent workspace at
+`.agenthicc/subagent-output/<pool id>/<task id>-attempt<N>.md` (`output_file`,
+empty when nothing was saved). A worker with a write tool is told, in a
+`## LONG OUTPUT` section of its system prompt, to put content too long for one
+reply in a file and return the path. The digest ends each worker's section with a deterministic
 evidence line (`[evidence: changed … · ran … · refused … · N turns]`) built from
 what the runtime observed, never from the worker's prose; `evidence_footer(result)`
 renders it. A worker that ran in its own git worktree (SUBAGENT-15) also carries

@@ -199,6 +199,96 @@ async def test_a_reply_cut_off_by_the_output_limit_is_a_failure(tmp_path: Path) 
     assert len(transport.calls) == 1
 
 
+# ── long output: a cut-off reply is saved, and workers are told to use a file ─
+
+
+def _saved_replies(root: Path) -> list[Path]:
+    return sorted((root / ".agenthicc" / "subagent-output").glob("*/*.md"))
+
+
+async def test_a_cut_off_reply_is_saved_to_a_file_the_parent_can_read(tmp_path: Path) -> None:
+    transport = MockTransport()
+    transport.queue_response(_final("The answer begins with", "cut", stop_reason="max_tokens"))
+
+    result = await _spawn("researcher", transport, tmp_path, task="Explain the design.")
+
+    assert result["ok"] is False  # an incomplete reply is still a failure
+    (saved,) = _saved_replies(tmp_path)
+    assert saved.read_text(encoding="utf-8") == "The answer begins with"
+    relative = saved.relative_to(tmp_path).as_posix()
+    assert f"the partial reply is saved at {relative}" in _results(result)
+    # Nothing in the directory can be committed by accident.
+    guard = tmp_path / ".agenthicc" / "subagent-output" / ".gitignore"
+    assert guard.read_text(encoding="utf-8") == "*\n"
+
+
+async def test_a_cut_off_reply_is_not_saved_outside_the_workspace(tmp_path: Path) -> None:
+    workspace = tmp_path / "project"
+    elsewhere = tmp_path / "elsewhere"
+    workspace.mkdir()
+    elsewhere.mkdir()
+    (workspace / ".agenthicc").symlink_to(elsewhere, target_is_directory=True)
+    transport = MockTransport()
+    transport.queue_response(_final("The answer begins with", "cut", stop_reason="max_tokens"))
+
+    result = await _spawn("researcher", transport, workspace, task="Explain the design.")
+
+    assert result["ok"] is False
+    assert list(elsewhere.rglob("*")) == []
+    assert "output-token limit" in _results(result)
+    assert "is saved at" not in _results(result)
+
+
+async def test_an_empty_cut_off_reply_saves_nothing(tmp_path: Path) -> None:
+    transport = MockTransport()
+    transport.queue_response(_final("", "cut", stop_reason="max_tokens"))
+
+    result = await _spawn("researcher", transport, tmp_path, task="Explain the design.")
+
+    assert result["ok"] is False
+    assert _saved_replies(tmp_path) == []
+    assert "is saved at" not in _results(result)
+
+
+async def test_a_failure_to_save_leaves_the_failure_unchanged(tmp_path: Path) -> None:
+    (tmp_path / ".agenthicc").write_text("a file where the directory should be", encoding="utf-8")
+    transport = MockTransport()
+    transport.queue_response(_final("The answer begins with", "cut", stop_reason="max_tokens"))
+
+    result = await _spawn("researcher", transport, tmp_path, task="Explain the design.")
+
+    assert result["ok"] is False
+    assert "stop reason: output_truncated" in _results(result)
+    assert "is saved at" not in _results(result)
+
+
+async def test_a_worker_that_can_write_files_is_told_to_put_long_output_in_one(
+    tmp_path: Path,
+) -> None:
+    from agenthicc.subagents.pool import _worker_output_tokens
+
+    transport = MockTransport()
+    _write_then("Wrote out.txt.")(transport)
+
+    result = await _spawn("implementer", transport, tmp_path)
+
+    assert result["ok"] is True
+    system = str(transport.calls[0].system)
+    assert "## LONG OUTPUT" in system
+    assert f"about {_worker_output_tokens(None):,} tokens" in system
+    assert "write it to a file in the workspace" in system
+
+
+async def test_a_read_only_worker_is_not_told_to_write_a_file(tmp_path: Path) -> None:
+    transport = MockTransport()
+    transport.queue_response(_final("It is 42.", "answer"))
+
+    result = await _spawn("researcher", transport, tmp_path, task="What is the answer?")
+
+    assert result["ok"] is True
+    assert "## LONG OUTPUT" not in str(transport.calls[0].system)
+
+
 # ── criterion 6 and 7: empty answers ─────────────────────────────────────────
 
 

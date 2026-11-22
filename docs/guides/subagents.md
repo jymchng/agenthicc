@@ -293,10 +293,28 @@ or `permission_denied` — and the worker made no successful change, it fails wi
 type. The refusal is also in `SubagentResult.blocked_calls`. The worker's own
 account ("I wrote out.txt") is kept only as partial output.
 
-**A cut-off reply is a failure.** A worker has no turn limit, so the only cut-off
-is a reply stopped by the output-token limit, which ends with
+**A cut-off reply is a failure, and it is saved.** A worker has no turn limit, so
+the only cut-off is a reply stopped by the output-token limit, which ends with
 `stop_reason="output_truncated"`. It starts no further provider run; the text so
-far is partial output.
+far is partial output. That text is also written to
+`.agenthicc/subagent-output/<pool id>/<task id>-attempt<N>.md` under the parent
+session's workspace root, and the failure names the path (`error`, and
+`SubagentResult.output_file`), so the parent can read it with `read_file` instead
+of losing it. The file is never counted as success: the work is still incomplete.
+The directory holds its own `.gitignore` (`*`), is never inside a worker's git
+worktree (whose files are applied back as changes), and is not cleaned up
+automatically. Nothing is saved when the reply was empty, when the session has no
+workspace policy, when `.agenthicc` resolves outside the workspace, or when the
+write fails; in each case the failure is reported as before.
+
+**Long output goes in a file, before it is cut off.** A worker with a write tool
+gets a `## LONG OUTPUT` section in its system prompt naming its reply limit
+(`[execution] max_output_tokens`). It says that content too long for one reply — a
+large file, a full rewrite, a long report — must be written to a file in the
+workspace, checked, and referred to by path in the final response, even when the
+task asks for full or verbatim content. Content that fits in one reply is still
+returned in the final response. Read-only types have no write tool and do not get
+the section; for them the saved partial reply is the safety net.
 
 **An empty answer is not a result.** If a worker returns no final prose, it gets
 one finalisation turn. If it is still empty and it changed or ran something, the
