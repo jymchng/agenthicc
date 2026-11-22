@@ -15,7 +15,7 @@ the architecture, the dependency table and the delivery order.
 | [WFC-03](WFC-03-durable-stack-events-and-resume.md) | A durable stack — kernel events, checkpoint links, exactly-once return | 1, 6 | P1 |
 | [WFC-04](WFC-04-workflow-running-subagents.md) | Subagents that run a workflow | 2 | P1 |
 | [WFC-05](WFC-05-session-reload-service.md) | One session reload service for tools, skills, workflows and commands (implemented) | 3, 4, 5 | P0 |
-| [WFC-06](WFC-06-create-workflow-activate-complete-reload.md) | `create_workflow`: activate, complete, trust, reload, use | 3 | P1 |
+| [WFC-06](WFC-06-create-workflow-activate-complete-reload.md) | `create_workflow`: activate, complete, trust, reload, use (implemented) | 3 | P1 |
 | [WFC-07](WFC-07-create-tools-workflow.md) | `create_tools` — rename `make_agenthicc_tool`; one or several tools per run | 4 | P0 |
 | [WFC-08](WFC-08-live-tool-surface.md) | A live tool surface — new tools callable on the next request | 4 | P0 |
 | [WFC-09](WFC-09-create-skills-workflow.md) | `create_skills` — author one or several skills | 5 | P1 |

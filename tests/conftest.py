@@ -23,6 +23,16 @@ from agenthicc.kernel import (
 )
 
 
+@pytest.fixture
+def untrusted_project(tmp_path: Path) -> Iterator[Path]:
+    """A project whose exact authored bytes need an explicit trust record."""
+    project = tmp_path / "project"
+    project.mkdir()
+    trust = ExtensionTrust(store_path=tmp_path / "trust.json", trusted_roots=())
+    with override_extension_trust(trust):
+        yield project
+
+
 # ── git environment: never inherited from a hook ───────────────────────────────
 
 # A git hook (the pre-push suite) runs with GIT_DIR and related variables set

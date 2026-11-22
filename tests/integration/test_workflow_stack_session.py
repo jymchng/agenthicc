@@ -202,8 +202,11 @@ async def test_authored_return_loads_skill_before_the_parent_request(
         (StagedArtifact(artifact, ValidationReport(digest, ())),),
     )
 
+    from agenthicc.workflows.plugin import WorkflowInvocation
+
     class AuthoredChild(ChildWorkflow):
         name = "authored_child"
+        invocation = WorkflowInvocation(publishes=("skill",))
 
         @classmethod
         def build_runner(

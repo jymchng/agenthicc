@@ -1352,6 +1352,39 @@ def _read_workflow_sources(
     return resolved, sources
 
 
+def _check_authored_invocation(
+    plugin: type[WorkflowPlugin], errors: list[str], *, registers_human_gate: bool
+) -> None:
+    from agenthicc.workflows.loader import builtin_workflow_descriptors
+    from agenthicc.workflows.plugin import WorkflowInvocation
+
+    subject = plugin.__name__
+    if plugin.name in {builtin.name for builtin in builtin_workflow_descriptors()}:
+        errors.append(f"{subject}.name conflicts with a built-in workflow.")
+    invocation = plugin.invocation
+    if "invocation" not in vars(plugin) or not isinstance(invocation, WorkflowInvocation):
+        errors.append(f"{subject}.invocation must declare a WorkflowInvocation.")
+    else:
+        if not isinstance(invocation.when_to_use, str) or not (
+            1 <= len(invocation.when_to_use.strip()) <= 200
+        ):
+            errors.append(f"{subject}.invocation.when_to_use must contain 1 to 200 characters.")
+        if not isinstance(invocation.returns, str) or not invocation.returns.strip():
+            errors.append(f"{subject}.invocation.returns must describe the workflow result.")
+        if not invocation.interactive and (
+            registers_human_gate or any(phase.agent_type == "human" for phase in plugin.phases)
+        ):
+            errors.append(f"{subject}.invocation.interactive must declare its human gate.")
+    try:
+        plugin.build_params({"__agenthicc_unknown_parameter__": "validation"})
+    except (TypeError, ValueError):
+        return
+    except Exception as exc:  # noqa: BLE001 — invoked against generated code in the sandbox
+        errors.append(f"{subject}.build_params raised {type(exc).__name__} for an unknown key.")
+    else:
+        errors.append(f"{subject}.build_params must reject unknown keys.")
+
+
 def _validate_imported_workflow(
     resolved: Path,
     sources: dict[Path, str],
@@ -1360,6 +1393,7 @@ def _validate_imported_workflow(
     expected_name: str,
     strict_cache_contract: bool,
     available_integrations: Mapping[str, object] | None,
+    authored: bool = False,
 ) -> ValidationReport:
     shown = str(resolved)
     is_package = resolved.is_dir()
@@ -1380,6 +1414,8 @@ def _validate_imported_workflow(
     errors: list[str] = []
     warnings: list[str] = []
     plugin_names = tuple(plugin.name for plugin in plugins)
+    if authored and len(plugin_names) != 1:
+        errors.append("The authored package must declare exactly one workflow.")
 
     if expected_name and expected_name not in plugin_names:
         errors.append(
@@ -1407,7 +1443,15 @@ def _validate_imported_workflow(
         plugins[0],
     )
 
+    registers_human_gate = authored and any(
+        isinstance(node, ast.Call)
+        and _ast_decorator_name(node) in {"make_questions_tool", "make_planner_tools"}
+        for source in sources.values()
+        for node in ast.walk(ast.parse(source))
+    )
     for plugin in plugins:
+        if authored:
+            _check_authored_invocation(plugin, errors, registers_human_gate=registers_human_gate)
         if plugin.name in _RESERVED_NAMES:
             errors.append(
                 f"{plugin.__name__}.name is {plugin.name!r}, which is a builtin workflow; a "
@@ -1603,15 +1647,22 @@ def _validate_imported_workflow(
 
 
 def _static_workflow_report(
-    resolved: Path, sources: dict[Path, str], *, expected_name: str, reason: str
+    resolved: Path,
+    sources: dict[Path, str],
+    *,
+    expected_name: str,
+    reason: str,
+    authored: bool = False,
 ) -> ValidationReport:
     """Extract the locally declared workflow identity without evaluating the source."""
     names: list[str] = []
+    errors: list[str] = []
     for source in sources.values():
         tree = ast.parse(source)
         for definition in tree.body:
             if not isinstance(definition, ast.ClassDef) or not definition.bases:
                 continue
+            declarations: dict[str, ast.expr] = {}
             for field in definition.body:
                 value: ast.expr | None
                 if isinstance(field, ast.Assign):
@@ -1620,20 +1671,26 @@ def _static_workflow_report(
                     targets, value = [field.target], field.value
                 else:
                     continue
-                if (
-                    isinstance(value, ast.Constant)
-                    and isinstance(value.value, str)
-                    and value.value
-                    and any(
-                        isinstance(target, ast.Name) and target.id == "name" for target in targets
-                    )
-                ):
-                    names.append(value.value)
-    errors: list[str] = []
+                if value is not None:
+                    for target in targets:
+                        if isinstance(target, ast.Name):
+                            declarations[target.id] = value
+            name = declarations.get("name")
+            if (
+                not isinstance(name, ast.Constant)
+                or not isinstance(name.value, str)
+                or not name.value
+            ):
+                continue
+            names.append(name.value)
+            if authored:
+                errors.extend(_static_invocation_errors(definition, declarations.get("invocation")))
     if not names:
         errors.append("The workflow must declare a literal name for static validation.")
     if expected_name and expected_name not in names:
         errors.append(f"The package does not declare the approved name {expected_name!r}.")
+    if authored and len(names) != 1:
+        errors.append("The authored package must declare exactly one workflow.")
     errors.extend(f"{name!r} is a builtin workflow." for name in names if name in _RESERVED_NAMES)
     return ValidationReport(
         str(resolved),
@@ -1646,6 +1703,32 @@ def _static_workflow_report(
     )
 
 
+def _static_invocation_errors(definition: ast.ClassDef, invocation: ast.expr | None) -> list[str]:
+    if (
+        not isinstance(invocation, ast.Call)
+        or _ast_decorator_name(invocation) != "WorkflowInvocation"
+    ):
+        return [f"{definition.name}.invocation must declare a literal WorkflowInvocation."]
+    declared = {
+        option.arg: option.value.value
+        for option in invocation.keywords
+        if isinstance(option.value, ast.Constant)
+    }
+    use = declared.get("when_to_use")
+    returns = declared.get("returns")
+    errors: list[str] = []
+    if not isinstance(use, str) or not 1 <= len(use.strip()) <= 200:
+        errors.append(f"{definition.name}.invocation.when_to_use must contain 1 to 200 characters.")
+    if not isinstance(returns, str) or not returns.strip():
+        errors.append(f"{definition.name}.invocation.returns must describe the workflow result.")
+    if not any(
+        isinstance(member, ast.FunctionDef) and member.name == "build_params"
+        for member in definition.body
+    ):
+        errors.append(f"{definition.name}.build_params must reject unknown keys.")
+    return errors
+
+
 def _run_workflow_validation(
     path: str,
     *,
@@ -1653,6 +1736,7 @@ def _run_workflow_validation(
     expected_name: str,
     strict_cache_contract: bool,
     available_integrations: Mapping[str, object] | None = None,
+    authored: bool = False,
 ) -> ValidationReport:
     """Run the full contract in the subprocess for validation and fake-provider smoke."""
     loaded = _read_workflow_sources(path, base=base)
@@ -1667,6 +1751,7 @@ def _run_workflow_validation(
             expected_name=expected_name,
             strict_cache_contract=strict_cache_contract,
             available_integrations=available_integrations,
+            authored=authored,
         )
 
 
@@ -1677,6 +1762,7 @@ def _inspect_workflow(arguments: dict[str, object]) -> dict[str, object]:
         base=Path("/workspace"),
         expected_name=str(arguments["expected_name"]),
         strict_cache_contract=arguments["strict_cache_contract"] is True,
+        authored=arguments.get("authored") is True,
         available_integrations=integrations if isinstance(integrations, dict) else None,
     ).to_dict()
 
@@ -1698,6 +1784,7 @@ def validate_workflow_file(
     root: Path | None = None,
     strict_cache_contract: bool = False,
     available_integrations: Mapping[str, object] | None = None,
+    authored: bool = False,
 ) -> ValidationReport:
     """Validate workspace source and probe its runner contract in isolation."""
     from agenthicc.workflows.authoring.import_sandbox import inspect_generated_python
@@ -1715,6 +1802,7 @@ def validate_workflow_file(
             "path": str(Path("/workspace") / resolved.relative_to(base)),
             "expected_name": expected_name,
             "strict_cache_contract": strict_cache_contract,
+            "authored": authored,
             "integrations": dict(available_integrations)
             if available_integrations is not None
             else None,
@@ -1722,7 +1810,7 @@ def validate_workflow_file(
     )
     if check.status == "static_only":
         return _static_workflow_report(
-            resolved, sources, expected_name=expected_name, reason=check.reason
+            resolved, sources, expected_name=expected_name, reason=check.reason, authored=authored
         )
     if check.result is None:
         return _fail(str(resolved), check.reason)

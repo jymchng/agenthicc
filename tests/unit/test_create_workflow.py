@@ -89,9 +89,10 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from collections.abc import Mapping
 
 from agenthicc.workflows.base_runner import BaseWorkflowRunner
-from agenthicc.workflows.plugin import PhaseSpec, WorkflowPlugin
+from agenthicc.workflows.plugin import PhaseSpec, WorkflowInvocation, WorkflowParams, WorkflowPlugin
 
 
 @dataclass
@@ -142,11 +143,18 @@ class DemoRunner(BaseWorkflowRunner):
 class Demo(WorkflowPlugin):
     name = "demo"
     description = "A demo workflow."
+    invocation = WorkflowInvocation(when_to_use="Run the demo.", returns="A demo result.")
     mode_bindings = []
     phases = [
         PhaseSpec(name="one", next="two"),
         PhaseSpec(name="two", on_reject="one"),
     ]
+
+    @classmethod
+    def build_params(cls, source: Mapping[str, object]) -> WorkflowParams:
+        if source:
+            raise ValueError("This workflow takes no parameters.")
+        return WorkflowParams()
 
     @classmethod
     def build_runner(cls, config, mode_manager):
@@ -432,36 +440,21 @@ def test_transition_failure_shape() -> None:
 
 async def test_design_tools_expose_exactly_the_transition_surface() -> None:
     event, data = asyncio.Event(), {}
-    tools = make_design_tools(None, event, data, exit_event=asyncio.Event())
+    tools = make_design_tools(event, data, exit_event=asyncio.Event())
     assert set(_by_name(tools)) == {
-        "request_design_approval",
         "finalize_design",
         "exit_create_workflow",
     }
 
 
 async def test_design_tools_omit_exit_when_no_exit_event() -> None:
-    tools = make_design_tools(None, asyncio.Event(), {})
-    assert set(_by_name(tools)) == {"request_design_approval", "finalize_design"}
+    tools = make_design_tools(asyncio.Event(), {})
+    assert set(_by_name(tools)) == {"finalize_design"}
 
 
-async def test_finalize_design_refused_before_approval() -> None:
+async def test_finalize_design_sets_event_and_data() -> None:
     event, data = asyncio.Event(), {}
-    tools = make_design_tools(None, event, data)
-    result = await _call(tools, "finalize_design", "the design", "demo")
-    assert isinstance(result, dict)
-    assert result["ok"] is False
-    assert "not been approved" in str(result["error"])
-    assert not event.is_set()
-    assert data == {}
-
-
-async def test_approval_then_finalize_sets_event_and_data() -> None:
-    event, data = asyncio.Event(), {}
-    tools = make_design_tools(None, event, data)
-    approved = await _call(tools, "request_design_approval", " the design ", "demo")
-    assert isinstance(approved, dict)
-    assert approved["approved"] is True
+    tools = make_design_tools(event, data)
     result = await _call(tools, "finalize_design", " the design ", " demo ")
     assert isinstance(result, dict)
     assert result["ok"] is True
@@ -473,95 +466,24 @@ async def test_approval_then_finalize_sets_event_and_data() -> None:
     ("design", "name"),
     [("", "demo"), ("   ", "demo"), ("the design", ""), ("the design", "Bad-Name")],
 )
-async def test_request_design_approval_validates_payload(design: str, name: str) -> None:
-    event, data = asyncio.Event(), {}
-    tools = make_design_tools(None, event, data)
-    result = await _call(tools, "request_design_approval", design, name)
-    assert isinstance(result, dict)
-    assert result["ok"] is False
-    assert result["approved"] is False
-    assert not event.is_set()
-
-
-@pytest.mark.parametrize(
-    ("design", "name"),
-    [("", "demo"), ("the design", "Bad-Name")],
-)
 async def test_finalize_design_validates_payload(design: str, name: str) -> None:
     event, data = asyncio.Event(), {}
-    tools = make_design_tools(None, event, data)
-    await _call(tools, "request_design_approval", "the design", "demo")
+    tools = make_design_tools(event, data)
     result = await _call(tools, "finalize_design", design, name)
     assert isinstance(result, dict)
     assert result["ok"] is False
     assert not event.is_set()
 
 
-async def test_denied_approval_keeps_the_gate_closed() -> None:
-    event, data = asyncio.Event(), {}
-    approval = SimpleNamespace(
-        request_approval=_denying_approval(allowed=False, message="too vague")
-    )
-    tools = make_design_tools(approval, event, data)  # type: ignore[arg-type]
-    denied = await _call(tools, "request_design_approval", "the design", "demo")
-    assert isinstance(denied, dict)
-    assert denied["approved"] is False
-    assert denied["feedback"] == "too vague"
-    blocked = await _call(tools, "finalize_design", "the design", "demo")
-    assert isinstance(blocked, dict)
-    assert blocked["ok"] is False
-    assert not event.is_set()
-
-
-async def test_approval_granted_then_revoked_closes_the_gate_again() -> None:
-    event, data = asyncio.Event(), {}
-    responses = [
-        SimpleNamespace(allowed=True, message=""),
-        SimpleNamespace(allowed=False, message="changed my mind"),
-    ]
-
-    async def request_approval(_req: object) -> object:
-        return responses.pop(0)
-
-    tools = make_design_tools(SimpleNamespace(request_approval=request_approval), event, data)  # type: ignore[arg-type]
-    await _call(tools, "request_design_approval", "the design", "demo")
-    await _call(tools, "request_design_approval", "the design", "demo")
-    blocked = await _call(tools, "finalize_design", "the design", "demo")
-    assert isinstance(blocked, dict)
-    assert blocked["ok"] is False
-    assert not event.is_set()
-
-
-async def test_approval_service_error_is_reported_not_raised() -> None:
-    event, data = asyncio.Event(), {}
-
-    async def boom(_req: object) -> object:
-        raise RuntimeError("overlay died")
-
-    tools = make_design_tools(SimpleNamespace(request_approval=boom), event, data)  # type: ignore[arg-type]
-    result = await _call(tools, "request_design_approval", "the design", "demo")
-    assert isinstance(result, dict)
-    assert result["ok"] is False
-    assert "RuntimeError" in str(result["error"])
-    assert not event.is_set()
-
-
 async def test_exit_create_workflow_sets_exit_event_and_suggestion() -> None:
     event, data = asyncio.Event(), {}
     exit_event = asyncio.Event()
-    tools = make_design_tools(None, event, data, exit_event=exit_event)
+    tools = make_design_tools(event, data, exit_event=exit_event)
     result = await _call(tools, "exit_create_workflow", "  use /workflow code_plan  ")
     assert result == {"accepted": True}
     assert exit_event.is_set()
     assert data["suggestion"] == "use /workflow code_plan"
     assert not event.is_set()
-
-
-def _denying_approval(*, allowed: bool, message: str) -> object:
-    async def request_approval(_req: object) -> object:
-        return SimpleNamespace(allowed=allowed, message=message)
-
-    return request_approval
 
 
 # ── phase_tools: generation ───────────────────────────────────────────────────
@@ -1801,7 +1723,6 @@ def test_base_tools_survives_a_broken_mcp_registry() -> None:
 
 async def _design_turn(_text: str, **kwargs: object) -> None:
     tools = kwargs["tools"]
-    await _call(tools, "request_design_approval", "the design", "demo")
     await _call(tools, "finalize_design", "the design", "demo")
 
 
@@ -1913,10 +1834,8 @@ async def test_design_injects_inspection_and_question_tools() -> None:
         "describe_prompt_cache_contract",
         "show_workflow_template",
         "validate_workflow_cache_contract",
-        "request_design_approval",
         "finalize_design",
         "exit_create_workflow",
-        "ask_user",
     } <= set(captured)
 
 
@@ -1927,7 +1846,7 @@ async def test_run_turn_appends_the_design_transition_instruction(
     runner = _runner()
     event = asyncio.Event()
     data: dict[str, object] = {}
-    tools = make_design_tools(None, event, data, asyncio.Event())
+    tools = make_design_tools(event, data, asyncio.Event())
     captured: dict[str, object] = {}
 
     async def fake_turn(_text: str, **kwargs: object) -> None:
@@ -1948,12 +1867,9 @@ async def test_run_turn_appends_the_design_transition_instruction(
     suffix = captured["system_prompt_suffix"]
     assert isinstance(suffix, str)
     assert "[PHASE TRANSITION TOOLS]" in suffix
-    assert "`request_design_approval`" in suffix
     assert "`finalize_design`" in suffix
     assert "`exit_create_workflow`" in suffix
     assert "only after a transition tool call succeeds" in suffix
-    assert "[REQUIREMENTS CLARIFICATION]" in suffix
-    assert "multiple focused questions" in suffix
 
     prompt_contract = captured["prompt_contract"]
     assert CACHE_CONTRACT in prompt_contract.stable_system_prefix
@@ -2464,7 +2380,6 @@ async def _happy_turn(_text: str, **kwargs: object) -> None:
     """Drive whichever phase's transition tool is present in *tools*."""
     tools = _by_name(kwargs["tools"])
     if "finalize_design" in tools:
-        await _call(kwargs["tools"], "request_design_approval", "the design", "demo")
         await _call(kwargs["tools"], "finalize_design", "the design", "demo")
     elif "mark_generation_complete" in tools:
         await _complete_generation(kwargs["tools"])
@@ -2590,7 +2505,6 @@ async def test_run_loops_generate_after_a_rejection_then_completes(tmp_path: Pat
     async def turn(_text: str, **kwargs: object) -> None:
         tools = _by_name(kwargs["tools"])
         if "finalize_design" in tools:
-            await _call(kwargs["tools"], "request_design_approval", "the design", "demo")
             await _call(kwargs["tools"], "finalize_design", "the design", "demo")
         elif "mark_generation_complete" in tools:
             source = _STRICT_RUNNER_SOURCE if rejected["done"] else "class Nope:\n    pass\n"

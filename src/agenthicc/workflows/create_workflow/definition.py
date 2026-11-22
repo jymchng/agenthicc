@@ -66,12 +66,11 @@ class CreateWorkflow(WorkflowPlugin):
 
     The meta-workflow downstream users invoke to build their own workflows.  One
     agent runs all four phases sharing a single ``ShortTermMemory``, so the phase
-    that writes the file already has the approved design in context.
+    that writes the file already has the finalized design in context.
 
-    Design is read-only and gated on human approval. Generation keeps the
-    session's mode and exposes the run's scoped writers.  Validation imports the generated file
-    deterministically before the agent votes, and a rejection loops back to
-    generation.
+    Design is read-only. Generation keeps the session's mode and exposes the
+    run's scoped writers. Validation imports the generated package in isolation
+    before the agent votes, and a rejection loops back to generation.
     """
 
     name = "create_workflow"
@@ -109,13 +108,11 @@ class CreateWorkflow(WorkflowPlugin):
                 "describe_cloakbrowser_tools(), describe_playwright_tools(), "
                 "describe_runner_pattern(), describe_transition_tool_pattern(), "
                 "describe_prompt_cache_contract(), show_workflow_template(), "
-                "validate_workflow_cache_contract(path), and show_example_workflow(). Present "
-                "the design with "
-                "request_design_approval(design, workflow_name) and call "
-                "finalize_design(design, workflow_name) once it is approved. If the "
+                "validate_workflow_cache_contract(path), and show_example_workflow(). "
+                "Record the design with finalize_design(design, workflow_name). If the "
                 "request is not about creating a new workflow, call "
                 "exit_create_workflow(suggestion) instead. Only a successful call to "
-                "request_design_approval(), finalize_design(), or "
+                "finalize_design() or "
                 "exit_create_workflow() changes phase; prose never advances it. Keep "
                 "immutable workflow policy in a literal CACHE_CONTRACT and put phase "
                 "state, artifacts, questions, answers, and summaries in dynamic context. "
@@ -189,7 +186,7 @@ class CreateWorkflow(WorkflowPlugin):
                 "You are in the VALIDATION phase of create_workflow. The generated package "
                 "has already been imported and checked; read that report first. Call "
                 "reject_workflow(reason) if it lists any error or the file does not match the "
-                "approved design, otherwise call approve_workflow(summary). You MUST call "
+                "recorded design, otherwise call approve_workflow(summary). You MUST call "
                 "exactly one of these two tools. Only a successful call to "
                 "approve_workflow() or reject_workflow() changes phase; prose never "
                 "advances it."
@@ -202,10 +199,9 @@ class CreateWorkflow(WorkflowPlugin):
             output_schema="free_text",
             mode_override=None,
             system_prompt_override=(
-                "You are in the SUMMARY phase of create_workflow. Tell the user which "
-                "workflow was created, where it lives, what its phases are, and that "
-                "'/workflows reload' makes it available in this session. No "
-                "phase-transition tool is available; the runner owns completion."
+                "You are in the SUMMARY phase of create_workflow. Report the candidate's "
+                "name, package path, phases, and validation outcome. The session reports "
+                "the publication outcome after this turn."
             ),
         ),
     ]

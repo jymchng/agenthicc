@@ -10,7 +10,7 @@ Usage (inside ``CreateWorkflowRunner._design`` and friends)::
 
     design_event = asyncio.Event()
     design_data: dict[str, object] = {}
-    tools += make_design_tools(approval_svc, design_event, design_data, exit_event)
+    tools += make_design_tools(design_event, design_data, exit_event)
     await self._run_turn(..., tools=tools, ...)
     if design_event.is_set():
         approved_design = design_data["design"]
@@ -20,12 +20,10 @@ from __future__ import annotations
 
 import asyncio
 import re
-import uuid
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from agenthicc.tools.approval import ApprovalBroker
     from agenthicc.workflows.create_workflow.authoring import AuthoringLease
 
 # A workflow name must be a python-module-safe slug so the generated package
@@ -57,124 +55,29 @@ def validate_workflow_name(name: object) -> str | None:
 
 
 def make_design_tools(
-    approval_svc: ApprovalBroker | None,
     design_event: asyncio.Event,
     design_data: dict[str, object],
     exit_event: asyncio.Event | None = None,
 ) -> list[Callable[..., object]]:
-    """Return ``[request_design_approval, finalize_design, (exit_create_workflow)]``.
-
-    Mirrors ``make_planner_tools``: ``request_design_approval`` shows the plan-review
-    overlay and records the decision in a shared gate; ``finalize_design`` refuses
-    to hand off until the gate is granted.  The gate is reset on every approval
-    decision so a later rejection correctly blocks finalization again.
-
-    ``approval_svc=None`` → ``request_design_approval`` auto-approves (headless/tests).
-    """
+    """Build the read-only design transition tools."""
     from lauren_ai._tools import tool as _tool
     from agenthicc.tools.capabilities import tool_control
-
-    # Shared gate — written by request_design_approval, read by finalize_design.
-    approval_state: dict[str, bool] = {"granted": False}
-
-    @tool_control
-    @_tool()
-    async def request_design_approval(design: str, workflow_name: str) -> dict[str, object]:
-        """Present the proposed workflow design to the user for approval.
-
-        Show the complete design: the workflow's name and purpose, the ordered
-        phases, each phase's objective / tools / mode, and the transition graph
-        (next / on_reject).  Returns whether the design was approved plus any
-        written feedback.  If it is not approved, revise the design and call this
-        tool again.  Only call finalize_design() after receiving approved=True.
-
-        Args:
-            design: The complete, human-readable design of the workflow.
-            workflow_name: The lower_snake_case name for the new workflow.
-        """
-        if not isinstance(design, str) or not design.strip():
-            return _transition_failure(
-                "The design transition was rejected: design must be a non-empty string.",
-                "Provide the complete workflow design, then call "
-                "request_design_approval(design, workflow_name) again.",
-                approved=False,
-            )
-        name_error = validate_workflow_name(workflow_name)
-        if name_error is not None:
-            return _transition_failure(
-                f"The design transition was rejected: {name_error}.",
-                "Choose a valid lower_snake_case workflow_name and call "
-                "request_design_approval(design, workflow_name) again.",
-                approved=False,
-            )
-
-        if approval_svc is None:
-            approval_state["granted"] = True
-            return {
-                "ok": True,
-                "approved": True,
-                "feedback": (
-                    "The design is approved. Call finalize_design() now to hand off "
-                    "to the generation phase."
-                ),
-            }
-
-        from agenthicc.tools.approval import ApprovalRequest
-
-        req = ApprovalRequest(
-            tool_name="Workflow Design Review",
-            tool_use_id=uuid.uuid4().hex,
-            tool_input={"plan": design, "workflow_name": workflow_name},
-            capabilities=frozenset(),  # human approval request; no tool side effect
-            event=asyncio.Event(),
-            kind="plan_review",  # → PlanApprovalOverlay in tui_session.py
-        )
-        try:
-            response = await approval_svc.request_approval(req)
-        except Exception as exc:  # noqa: BLE001
-            approval_state["granted"] = False
-            return _transition_failure(
-                f"Design approval could not be requested: {type(exc).__name__}: {exc}",
-                "Resolve the approval-service error, then call "
-                "request_design_approval(design, workflow_name) again.",
-                approved=False,
-            )
-
-        approval_state["granted"] = response.allowed
-        feedback = response.message or ""
-        if response.allowed:
-            suffix = (
-                "The design is approved. Call finalize_design() now to hand off "
-                "to the generation phase."
-            )
-            feedback = f"{feedback}\n\n{suffix}" if feedback else suffix
-            return {"ok": True, "approved": True, "feedback": feedback}
-        return _transition_failure(
-            "The design approval request was rejected; the design cannot advance yet.",
-            "Revise the design using the feedback, then call "
-            "request_design_approval(design, workflow_name) again. "
-            "Call finalize_design() only after approved=True.",
-            approved=False,
-            feedback=feedback,
-        )
 
     @tool_control
     @_tool()
     async def finalize_design(design: str, workflow_name: str) -> dict[str, object]:
-        """Finalize the approved design and hand off to the generation phase.
+        """Record the design and hand off to the generation phase.
 
-        Call this ONLY after request_design_approval returned approved=True.
-        Writes the design to the workflow context and exits the design phase.
-        Refuses with an error if the design has not been approved.
+        Records the design and exits the design phase after validating its inputs.
 
         Args:
-            design: The final, approved workflow design.
+            design: The complete workflow design.
             workflow_name: The lower_snake_case name for the new workflow.
         """
         if not isinstance(design, str) or not design.strip():
             return _transition_failure(
                 "The design transition was rejected: finalized design must be non-empty.",
-                "Provide the complete approved design, then call "
+                "Provide the complete design, then call "
                 "finalize_design(design, workflow_name) again.",
             )
         name_error = validate_workflow_name(workflow_name)
@@ -183,12 +86,6 @@ def make_design_tools(
                 f"The design transition was rejected: {name_error}.",
                 "Provide a valid lower_snake_case workflow_name and call "
                 "finalize_design(design, workflow_name) again.",
-            )
-        if not approval_state["granted"]:
-            return _transition_failure(
-                "The design has not been approved, so the phase cannot advance.",
-                "Call request_design_approval(design, workflow_name) first and call "
-                "finalize_design() only after it returns approved=True.",
             )
         design_data["design"] = design.strip()
         design_data["workflow_name"] = workflow_name.strip()
@@ -204,7 +101,7 @@ def make_design_tools(
             ),
         }
 
-    tools: list[Callable[..., object]] = [request_design_approval, finalize_design]
+    tools: list[Callable[..., object]] = [finalize_design]
 
     if exit_event is not None:
         _exit_event = exit_event

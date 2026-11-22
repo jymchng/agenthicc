@@ -614,13 +614,12 @@ The built-in `create_workflow` authoring workflow turns a natural-language
 request into a project-local workflow package:
 
 ```text
-/workflow create_workflow
-Create a workflow that uses Cloakbrowser to parse facebook.com.
+/workflow call create_workflow Create a workflow that summarizes release evidence.
 ```
 
-The first line selects the workflow; the next ordinary input supplies its
-intent. `create_workflow` is modelled on `code_plan`, and shares its shape
-exactly:
+The command runs the authoring workflow for one intent and returns to the
+current selection. The agent can also request it with `enter_workflow`.
+`create_workflow` uses the state-machine pattern from `code_plan`.
 
 - an **outer loop** in `CreateWorkflowRunner.run()` that evolves
   `CreateWorkflowState` and nothing else;
@@ -644,8 +643,8 @@ by the generic runner after the turn.
 
 | Phase | Mode | Required handoff | On success | On rejection |
 | --- | --- | --- | --- | --- |
-| `design` | read-only | `request_design_approval(design, workflow_name)` then `finalize_design(design, workflow_name)` | `generate` | retry `design` |
-| `generate` | `Yolo` | write the file, then `mark_generation_complete(summary, path)` | `validate` | — |
+| `design` | read-only | `finalize_design(design, workflow_name)` | `generate` | retry `design` |
+| `generate` | current mode | write the package, then `mark_generation_complete(summary)` | `validate` | — |
 | `validate` | read-only | `approve_workflow(summary)` or `reject_workflow(reason)` | `summarize` | `generate` |
 | `summarize` | read-only | — (single turn) | complete | — |
 
@@ -654,13 +653,12 @@ actually about authoring a workflow; the run then ends in the `EXITED` terminal
 state without writing anything. Terminal states are `COMPLETE`, `EXITED`, and
 `FAILED`.
 
-### Design is human-gated
+### Record the design
 
-`request_design_approval` raises the plan-review overlay with the proposed name
-and phase graph. `finalize_design` refuses with an actionable `ok: false` result
-until that approval returned `approved=True`, and a later denial closes the gate
-again, so a rejected design cannot be handed off. In headless runs with no
-approval service the request auto-approves.
+`finalize_design` records the package name, phase graph, and runner design in
+the run's context. Safe mode brokers model entry before the workflow starts.
+When generation would replace a package outside the authored manifest, the
+runner asks for approval before touching it.
 
 Rejected transitions always return a structured failure containing `ok: false`,
 an `error`, a human-readable `message`, and a concrete `fix` naming the tool to
@@ -809,20 +807,19 @@ Validation and the bounded fake-runtime smoke harness receive an explicit path
 to that exact pending package; this does not make it visible to `/workflows
 reload` or weaken normal loader checks.
 
-If a completed workflow already occupies the target, the runner asks for
-explicit replacement approval before changing any files. It preserves the
-original package and trust records in a run-bound backup. After deterministic
-validation, smoke success, and validation-agent approval, the runner rechecks
-the complete package fingerprint, records trust for the exact validated Python
-bytes, and removes the pending marker. Only then can normal discovery load the
-package. A failed or interrupted run leaves the candidate pending and
-undiscoverable; resume the same checkpointed run to continue. If the run cannot
-be resumed, use `/workflow reset <run-id>` instead of deleting the marker or
-backup manually. Reset restores the approved original package and trust records,
-or discards a first-generation candidate, before it records the run as discarded;
-an already committed package is retained. If ownership validation or restoration
-fails, the run remains paused and the pending package stays excluded from normal
-discovery.
+The runner preserves an existing package and its trust records in a
+run-bound backup. Authored updates recheck the installed digest and keep the
+previous version for rollback. Other replacements require explicit approval.
+After validation, smoke, and the validation vote, the runner seals the exact
+package and hands it to the session. The session applies the publication
+policy, records digest-bound trust for the approved Python bytes, and reloads
+before resuming the parent.
+
+A paused run keeps its package pending. Resume the same checkpoint or use
+`/workflow return --abandon` for a called workflow. For a saved run, use
+`/workflow reset <run-id>` to restore the approved original or discard a
+first-generation candidate. Exhausting the repair budget also restores or
+discards the candidate.
 
 A workflow with its own runner is a few hundred lines, which does not fit in one
 tool call under a small completion ceiling — the truncated call is discarded and
@@ -924,25 +921,27 @@ decision.
 | `validate_workflow_cache_contract(path)` | execute-gated validation of a generated runner's cache, question, and tool contracts |
 
 The static inspection tools are available in Plan mode. The validator tool uses
-the same sandbox as the runner's validation phase. Every workflow phase gets the
-existing `ask_user` tool for clarifying questions. Optional browser and MCP
-health is reported as unavailable/not-probed data rather than turning a valid
-fallback into a generated-code error.
-The phase agent is explicitly reminded that it can ask multiple focused questions
-in one call, or across several rounds, whenever requirements are unclear. Every
-phase can additionally read the installed agenthicc source and documentation with the session-wide
+the same sandbox as the runner's validation phase. Generated workflows that
+need a human gate declare `interactive=True` in their invocation metadata.
+Optional browser and MCP health is reported as unavailable or unprobed when a
+declared fallback applies. Every phase can additionally read the installed
+agenthicc source and documentation with the session-wide
 `inspect_agenthicc_source`, `search_agenthicc_source`, `read_agenthicc_doc`, and
 `search_agenthicc_docs` tools — see the [tools guide](tools.md).
 
 ### Activate the generated workflow
 
-Run `/workflows reload` after the run so the normal workflow registry discovers
-the new file, then select it for a later request:
+The default policy loads the workflow before the parent receives the result.
+If the package opts in to model entry, the agent can call it in that same
+session. The operator can also select it for a later request.
 
 ```text
-/workflow cloakbrowser_parse_fb
-Parse the requested Facebook page and summarize the results.
+/workflow release_evidence
+Summarize this release's verification results.
 ```
+
+For `stage_only`, run `/authored approve <run-id>` to trust and load the
+candidate or `/authored reject <run-id>` to discard it.
 
 The active session keeps the conversation ID and provider memory while the
 generated workflow is selected. Built-in and generic workflow contexts can be

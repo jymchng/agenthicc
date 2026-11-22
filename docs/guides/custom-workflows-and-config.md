@@ -195,14 +195,11 @@ The built-in authoring workflow can generate the Python side of this design
 from a natural-language request:
 
 ```text
-/workflow create_workflow
-Create a release workflow with plan, execute, and verify phases. Use a custom
-runner, make the execute model configurable through TOML, and include the
-copy-ready configuration template in the module documentation.
+/workflow call create_workflow Create a release workflow with plan, execute, and verify phases. Make the execute model configurable through TOML.
 ```
 
-The design phase presents the workflow's name and phase graph for your approval
-and writes nothing. Before generation, the runner derives the canonical target
+The read-only design phase records the workflow's name and phase graph.
+Before generation, the runner derives the canonical target
 `.agenthicc/workflows/<name>/` from the authorized project workspace. It creates
 a run-owned pending marker there before exposing package-scoped writer tools;
 `runner.py` and optional workflow-local helpers are authored directly at that
@@ -211,19 +208,23 @@ counts, and hashes. The agent cannot choose a different destination. Normal
 workflow discovery skips a pending package before trust checks or imports, so
 partial source cannot become runnable accidentally.
 
-If the name already exists, the framework requires separate explicit approval
-to replace it. The original package and its trust records are preserved in a
-run-bound backup before generation changes the target. The validate phase
-checks and smoke-tests the exact pending package without making it visible to
-normal discovery. Only after deterministic checks, smoke success, and
-`approve_workflow(summary)` does the framework recheck the package fingerprint,
-record trust for its exact Python bytes, and remove the marker. If the run is
-interrupted, resume its existing checkpoint with `/workflow resume <run-id>`;
-do not remove the marker or backup manually. A failed run remains undiscoverable
-until it is resumed or reset. `/workflow reset <run-id>` restores the approved
-original bytes and trust records, or discards a first-generation candidate,
-before recording the run as discarded. Reset fails closed if the run-owned
-authoring transaction cannot be verified.
+An authored update must match the installed digest. Replacing an unrecorded
+workflow requires explicit approval. The runner backs up the original package
+and trust records before changing the target. After validation and summary,
+the session publishes the approved package and reloads the registry. With
+`stage_only`, the package remains pending until `/authored approve <run-id>`
+or `/authored reject <run-id>`.
+
+Resume interruptions with `/workflow resume <run-id>`. To discard the
+candidate, use `/workflow return --abandon` for a called workflow or
+`/workflow reset <run-id>` for a saved run. These commands restore any original
+bytes and trust records after checking that the run still owns the transaction.
+
+A generated plugin declares `WorkflowInvocation` with a `when_to_use`
+description of at most 200 characters and a `returns` description. It opts in
+to agent entry when the request calls for it and declares any required human
+gate. Its typed `build_params` accepts default settings and rejects unknown
+keys.
 
 The authoring runner also gives the agent a live, bounded, redacted snapshot of
 the effective tool catalog, phase capabilities, mode filtering, workspace and

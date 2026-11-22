@@ -258,17 +258,41 @@ def test_agent_skill_permissions_are_loaded_from_toml(tmp_path):
 
 
 def test_default_skill_bootstrap_remains_loader_compatible(tmp_path):
-    from agenthicc.skills.bootstrap import bootstrap_default_skills
+    from agenthicc.skills import bootstrap
 
-    installed = bootstrap_default_skills(global_dir=tmp_path)
+    installed = bootstrap.bootstrap_default_skills(global_dir=tmp_path)
     result = discover_skills_with_diagnostics(
         project_dir=tmp_path / "missing-project",
         user_dir=tmp_path,
     )
 
-    assert installed >= 9
+    assert installed == len(bootstrap._DEFAULTS)
     assert len(result.skills) >= installed
     assert not any(diagnostic.severity == "error" for diagnostic in result.diagnostics)
+
+
+@pytest.mark.parametrize("edited", [False, True])
+def test_bootstrap_retires_only_an_unchanged_seed(tmp_path, monkeypatch, caplog, edited):
+    import json
+    from hashlib import sha256
+
+    from agenthicc.skills import bootstrap
+
+    slug = "create-workflow"
+    seed = b"---\nname: Create Workflow\n---\nA retired skill.\n"
+    monkeypatch.setitem(bootstrap._RETIRED, slug, frozenset({sha256(seed).hexdigest()}))
+    directory = tmp_path / "skills" / slug
+    directory.mkdir(parents=True)
+    (directory / "SKILL.md").write_bytes(seed + (b"Edited.\n" if edited else b""))
+    marker = tmp_path / "default_skills.json"
+    marker.write_text(json.dumps({slug: "installed"}), encoding="utf-8")
+
+    bootstrap.bootstrap_default_skills(global_dir=tmp_path)
+
+    assert directory.exists() is edited
+    assert json.loads(marker.read_text())[slug] == ("retained" if edited else "deleted")
+    assert ("Retained edited retired default skill" in caplog.text) is edited
+    assert slug not in bootstrap._DEFAULTS
 
 
 def test_skill_dollar_alias_dispatches_but_permission_denial_is_enforced(tmp_path):

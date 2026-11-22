@@ -400,6 +400,7 @@ def context_from_payload(
             phase_iteration=payload_int(fields.get("phase_iteration"), 0),
         )
     if kind == "CreateWorkflowContext":
+        from agenthicc.plugins.authored_types import PublishedArtifact, _digest
         from agenthicc.workflows.authoring.budget import RepairBudget
 
         if (
@@ -427,6 +428,16 @@ def context_from_payload(
             repair_budget = RepairBudget.from_payload(fields.get("repair_budget"))
         except ValueError as exc:
             raise CheckpointValidationError(f"{exc}; start a new run") from exc
+        previous_digest = fields.get("previous_authored_digest")
+        if previous_digest is not None:
+            if not isinstance(previous_digest, str) or lease is None or not lease.replacing:
+                raise CheckpointValidationError("workflow checkpoint has the wrong predecessor")
+            try:
+                _digest(previous_digest)
+            except ValueError as exc:
+                raise CheckpointValidationError(
+                    "workflow checkpoint has an invalid predecessor"
+                ) from exc
 
         intent = fields.get("intent")
         run_id = fields.get("run_id")
@@ -492,16 +503,31 @@ def context_from_payload(
             ).hexdigest()
             if evidence_id != expected_evidence_id:
                 raise CheckpointValidationError("validation evidence fingerprint is invalid")
-            if publication.get("status") != "committed":
-                raise CheckpointValidationError(f"{state.name} checkpoint has no committed package")
+            if publication.get("status") != "staged":
+                raise CheckpointValidationError(f"{state.name} checkpoint has no staged package")
             if (
                 publication.get("package_fingerprint") != manifest.fingerprint
-                or publication.get("published_path") != lease.target_path
+                or publication.get("target_path") != lease.target_path
                 or publication.get("validation_evidence_id") != evidence_id
             ):
                 raise CheckpointValidationError(
                     "publication record does not match validated package evidence"
                 )
+            try:
+                artifact = PublishedArtifact.from_payload(publication.get("artifact"))
+            except ValueError as exc:
+                raise CheckpointValidationError("staged package receipt is invalid") from exc
+            prefix = f".agenthicc/workflows/{workflow_name}"
+            if (
+                artifact.kind != "workflow"
+                or artifact.name != workflow_name
+                or artifact.state != "staged"
+                or artifact.files != tuple(f"{prefix}/{item.path}" for item in manifest.files)
+                or artifact.supersedes != previous_digest
+                or not isinstance(publication.get("session_id"), str)
+                or not isinstance(publication.get("model"), str)
+            ):
+                raise CheckpointValidationError("staged package receipt has the wrong identity")
             if not isinstance(fields.get("validation_summary"), str) or not fields.get(
                 "validation_summary"
             ):
@@ -556,10 +582,10 @@ def context_from_payload(
             selected_tools=payload_strings(fields.get("selected_tools")),
             dependency_summary=payload_mapping(fields.get("dependency_summary")),
             authoring_lease=lease,
+            previous_authored_digest=previous_digest,
             package_manifest=manifest,
             validation_evidence=validation_evidence,
             publication=publication,
-            question_metadata=payload_mapping(fields.get("question_metadata")),
         )
     if kind == "CustomContext" and workflow is not None:
         custom_context = workflow.checkpoint_context_from_payload(fields, memory)

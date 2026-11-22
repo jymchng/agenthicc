@@ -172,14 +172,26 @@ class _SummarizedWorkflow(Protocol):
     def summary(self) -> str: ...
 
 
+@runtime_checkable
+class _WorkflowWithReturnOutputs(Protocol):
+    @property
+    def return_outputs(self) -> dict[str, str]: ...
+
+
 def workflow_return(
-    frame: WorkflowFrame, outcome: object, workflow_run: WorkflowRun | None
+    frame: WorkflowFrame,
+    outcome: object,
+    workflow_run: WorkflowRun | None,
+    *,
+    status: Literal["completed", "failed"] = "completed",
 ) -> WorkflowReturn:
     """Project a runner's phase outputs into bounded model context."""
     from agenthicc.workflows.plugin import WorkflowContext
 
     outputs: dict[str, str] = {}
-    if isinstance(outcome, WorkflowContext):
+    if isinstance(outcome, _WorkflowWithReturnOutputs):
+        outputs = outcome.return_outputs
+    elif isinstance(outcome, WorkflowContext):
         outputs = {name: output.full_text for name, output in outcome.phase_outputs.items()}
     elif workflow_run is not None and workflow_run.run_id == frame.run_id:
         outputs = {phase.phase_name: phase.output_summary for phase in workflow_run.phase_history}
@@ -187,8 +199,8 @@ def workflow_return(
     return WorkflowReturn(
         frame.frame_id,
         frame.workflow_name,
-        "completed",
-        summary or "Workflow completed.",
+        status,
+        summary or f"Workflow {status}.",
         outputs,
     )
 
@@ -410,7 +422,7 @@ class WorkflowStack:
         if (
             result.frame_id != frame_id
             or result.workflow_name != self.top.workflow_name
-            or result.status != "completed"
+            or result.status not in {"completed", "failed"}
         ):
             raise WorkflowStackError("invalid_return", "The result does not match the child.")
         return self._pop()

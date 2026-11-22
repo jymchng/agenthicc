@@ -258,14 +258,7 @@ def test_workflow_stack_signal_projects_frame_summaries() -> None:
     assert store.workflow_stack() == (summary,)
 
 
-# ── create-workflow skill in bootstrap ────────────────────────────────────────
-
-
-@pytest.mark.unit
-def test_create_workflow_skill_in_defaults() -> None:
-    from agenthicc.skills.bootstrap import _DEFAULTS
-
-    assert "create-workflow" in _DEFAULTS
+# ── authoring skills in bootstrap ──────────────────────────────────────────────
 
 
 @pytest.mark.unit
@@ -276,21 +269,6 @@ def test_create_tools_and_commands_skills_in_defaults() -> None:
     assert "create-commands" in _DEFAULTS
     assert "{args}" in _DEFAULTS["create-tools"]
     assert "{args}" in _DEFAULTS["create-commands"]
-
-
-@pytest.mark.unit
-def test_create_workflow_skill_has_required_frontmatter() -> None:
-    from agenthicc.skills.bootstrap import _DEFAULTS
-
-    content = _DEFAULTS["create-workflow"]
-    assert "name:" in content
-    assert "source: default" in content
-    assert "WorkflowPlugin" in content
-    assert "run_phase" in content
-    assert "Custom runners and typed TOML configuration" in content
-    assert "WorkflowParams" in content
-    assert "build_params()" in content
-    assert "agenthicc/agenthicc.toml" in content
 
 
 @pytest.mark.unit
@@ -308,12 +286,11 @@ def test_create_extension_skills_preserve_security_and_registry_guidance() -> No
 
 
 @pytest.mark.unit
-def test_create_workflow_skill_bootstrap_includes_it(tmp_path) -> None:
-    from agenthicc.skills.bootstrap import bootstrap_default_skills
+def test_bootstrap_includes_the_current_authoring_skills(tmp_path) -> None:
+    from agenthicc.skills.bootstrap import _DEFAULTS, bootstrap_default_skills
 
     n = bootstrap_default_skills(global_dir=tmp_path)
-    assert n >= 9  # original 6 + three creation skills
-    assert (tmp_path / "skills" / "create-workflow").is_dir()
-    assert (tmp_path / "skills" / "create-workflow" / "SKILL.md").exists()
+    assert n == len(_DEFAULTS)
+    assert not (tmp_path / "skills" / "create-workflow").exists()
     assert (tmp_path / "skills" / "create-tools" / "SKILL.md").exists()
     assert (tmp_path / "skills" / "create-commands" / "SKILL.md").exists()

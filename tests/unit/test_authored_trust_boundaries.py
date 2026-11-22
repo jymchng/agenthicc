@@ -52,3 +52,29 @@ def test_extension_trust_writes_are_owned_by_runtime_and_explicit_operator_actio
             ):
                 continue
             assert entry.relative_to(_SOURCE).as_posix() in permitted, (entry, node.lineno)
+
+
+def test_only_the_authored_store_finalizes_and_trusts_workflow_packages() -> None:
+    caller_paths = {
+        path.relative_to(_SOURCE).as_posix()
+        for path in _SOURCE.rglob("*.py")
+        for node in ast.walk(_tree(path))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "finalize_authoring"
+    }
+    assert caller_paths == {"plugins/authored.py"}
+
+    authoring = _tree(_SOURCE / "workflows/create_workflow/authoring.py")
+    calling_functions = {
+        function.name
+        for function in authoring.body
+        if isinstance(function, ast.FunctionDef)
+        and any(
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "trust"
+            for node in ast.walk(function)
+        )
+    }
+    assert calling_functions == {"finalize_authoring"}

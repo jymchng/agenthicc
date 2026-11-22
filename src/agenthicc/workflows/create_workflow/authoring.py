@@ -188,14 +188,18 @@ class _TrustRecordSnapshot:
     sha256: str
     kind: str
     trusted_at: str
+    artifact_digest: str | None = None
 
     def to_dict(self) -> dict[str, str]:
-        return {
+        result = {
             "path": self.path,
             "sha256": self.sha256,
             "kind": self.kind,
             "trusted_at": self.trusted_at,
         }
+        if self.artifact_digest is not None:
+            result["artifact_digest"] = self.artifact_digest
+        return result
 
     @classmethod
     def from_payload(cls, value: object) -> _TrustRecordSnapshot:
@@ -208,6 +212,7 @@ class _TrustRecordSnapshot:
         digest = str(value["sha256"])
         kind = str(value["kind"])
         trusted_at = str(value["trusted_at"])
+        artifact_digest = value.get("artifact_digest")
         if (
             not Path(path).is_absolute()
             or str(Path(path).resolve()) != path
@@ -216,9 +221,22 @@ class _TrustRecordSnapshot:
             or len(kind) > 64
             or not trusted_at
             or len(trusted_at) > 128
+            or (
+                artifact_digest is not None
+                and (
+                    not isinstance(artifact_digest, str)
+                    or not re.fullmatch(r"[a-f0-9]{64}", artifact_digest)
+                )
+            )
         ):
             raise AuthoringError("checkpoint original trust record has invalid fields")
-        return cls(path=path, sha256=digest, kind=kind, trusted_at=trusted_at)
+        return cls(
+            path=path,
+            sha256=digest,
+            kind=kind,
+            trusted_at=trusted_at,
+            artifact_digest=artifact_digest,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -320,6 +338,7 @@ class ExistingWorkflowTarget:
     target_exists: bool
     legacy_exists: bool
     fingerprint: str
+    files: tuple[PackageFile, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -479,7 +498,7 @@ def _write_json_atomic(path: Path, value: dict[str, object], *, create: bool = F
         raise
 
 
-def _file_entry(path: Path, relative: str) -> PackageFile:
+def _read_package_file(path: Path, relative: str) -> bytes:
     try:
         before = os.stat(path, follow_symlinks=False)
     except OSError as exc:
@@ -521,7 +540,11 @@ def _file_entry(path: Path, relative: str) -> PackageFile:
         raise AuthoringError(f"workflow file {relative} could not be read: {exc}") from exc
     finally:
         os.close(fd)
-    data = b"".join(chunks)
+    return b"".join(chunks)
+
+
+def _file_entry(path: Path, relative: str) -> PackageFile:
+    data = _read_package_file(path, relative)
     try:
         text = data.decode("utf-8")
     except UnicodeDecodeError as exc:
@@ -617,6 +640,7 @@ def inspect_existing_target(
         target_exists=target_exists,
         legacy_exists=legacy_exists,
         fingerprint=fingerprint,
+        files=ordered,
     )
 
 
@@ -643,6 +667,7 @@ def _snapshot_original_trust_records(
             sha256=record.sha256,
             kind=record.kind,
             trusted_at=record.trusted_at,
+            artifact_digest=record.artifact_digest,
         )
         for record in records
         if record.path in existing_paths
@@ -911,6 +936,26 @@ def scan_package(lease: AuthoringLease) -> PackageManifest:
     )
 
 
+def validated_package_digest(lease: AuthoringLease, expected: PackageManifest) -> str:
+    """Hash the logical destination paths and the exact validated bytes."""
+    from agenthicc.plugins.authored_types import content_digest
+
+    root = Path(lease.workspace_root)
+    target = Path(lease.target_path)
+    prefix = target.relative_to(root).as_posix()
+    if scan_package(lease) != expected:
+        raise AuthoringError("workflow package differs from the approved inventory")
+    sources: dict[str, bytes] = {}
+    for item in expected.files:
+        path = target / item.path
+        _reject_symlink_components(path, root)
+        data = _read_package_file(path, item.path)
+        if len(data) != item.byte_length or hashlib.sha256(data).hexdigest() != item.sha256:
+            raise AuthoringError(f"validated workflow file changed: {item.path}")
+        sources[f"{prefix}/{item.path}"] = data
+    return content_digest(sources)
+
+
 def scan_committed_package(
     lease: AuthoringLease,
     *,
@@ -1071,6 +1116,7 @@ def _restore_trust(lease: AuthoringLease) -> None:
             sha256=record.sha256,
             kind=record.kind,
             trusted_at=record.trusted_at,
+            artifact_digest=record.artifact_digest,
         )
         for record in lease.original_trust_records
     )

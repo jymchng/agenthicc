@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — workflow authoring
+
+- Use `/workflow call create_workflow <intent>` or the agent's
+  `enter_workflow` tool for workflow authoring. The session publishes and
+  reloads the validated package before returning, or keeps it pending under
+  the stage-only policy.
+- **Breaking.** The bundled `$create-workflow` skill has been retired.
+  Startup removes unchanged seeded copies and reports edited copies it
+  leaves in place.
+
 ### Added — long subagent output goes to a file
 
 - **A cut-off reply is saved.** When a worker's reply stops at the output-token

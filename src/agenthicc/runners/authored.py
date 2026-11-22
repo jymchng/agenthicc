@@ -26,6 +26,8 @@ if TYPE_CHECKING:
     )
     from agenthicc.runners.reload import ReloadReport, ReloadService, ReloadSurface
     from agenthicc.runners.workflow_stack import WorkflowReturn
+    from agenthicc.workflows.plugin import WorkflowPlugin
+    from agenthicc.workflows.registry import WorkflowRegistry
 
 
 _SURFACES: dict[ArtifactKind, ReloadSurface] = {
@@ -142,10 +144,17 @@ class AuthoredPublisher:
         run: AuthoredRun,
         *,
         source_root: Path | None = None,
+        allowed_kinds: tuple[ArtifactKind, ...] | None = None,
     ) -> AuthoredPublication:
         """Apply the configured policy and wait for the final publication state."""
         task = asyncio.create_task(
-            self._publish(run, policy=self._policy, source_root=source_root, approved_by="policy"),
+            self._publish(
+                run,
+                policy=self._policy,
+                source_root=source_root,
+                approved_by="policy",
+                allowed_kinds=allowed_kinds,
+            ),
             name="publish-authored",
         )
         try:
@@ -166,15 +175,34 @@ class AuthoredPublisher:
             await asyncio.gather(task, return_exceptions=True)
             raise
 
-    async def publish_return(self, result: WorkflowReturn, outcome: object) -> WorkflowReturn:
+    async def publish_return(
+        self,
+        result: WorkflowReturn,
+        outcome: object,
+        definition: type[WorkflowPlugin],
+        registry: WorkflowRegistry,
+    ) -> WorkflowReturn:
         """Attach a completed workflow's verified publication receipt to its return."""
         run = outcome.authored_run if isinstance(outcome, AuthoredWorkflowOutcome) else None
         if run is None:
             return result
-        publication = await self.publish(run)
+        publication = await self.publish(run, allowed_kinds=definition.invocation.publishes)
+        summary = [result.summary, publication.summary()]
+        if publication.artifacts and all(item.state == "staged" for item in publication.artifacts):
+            summary.append(f"Use /authored approve {run.run_id} to publish the staged package.")
+        if publication.reload_report is not None:
+            summary.append(publication.reload_report.summary())
+        for artifact in publication.artifacts:
+            if artifact.kind != "workflow" or artifact.state != "loaded":
+                continue
+            loaded = registry.get(artifact.name)
+            if loaded is not None and loaded.invocation.agent_callable:
+                summary.append(
+                    f"Agent-callable workflow {artifact.name}. {loaded.invocation.when_to_use}"
+                )
         return replace(
             result,
-            summary=f"{result.summary}\n{publication.summary()}",
+            summary="\n".join(summary),
             artifacts=publication.artifacts,
         )
 
@@ -235,10 +263,18 @@ class AuthoredPublisher:
         policy: AuthoredPolicy,
         source_root: Path | None,
         approved_by: _PUBLISH_APPROVAL,
+        allowed_kinds: tuple[ArtifactKind, ...] | None = None,
     ) -> AuthoredPublication:
         async with self._lock:
             try:
                 store = self.store()
+                if allowed_kinds is not None and any(
+                    item.artifact.kind not in allowed_kinds for item in run.candidates
+                ):
+                    await asyncio.to_thread(store.discard, run, source_root=source_root)
+                    raise AuthoredError(
+                        "undeclared_publication", "The workflow did not declare these artifacts."
+                    )
                 if policy == "stage_only":
                     staged = await asyncio.to_thread(store.stage, run, source_root=source_root)
                     result = AuthoredPublication(run.run_id, staged)

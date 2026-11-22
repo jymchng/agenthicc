@@ -242,7 +242,7 @@ Transient provider failures are rendered as compact retry notices showing the at
 | `/inbox [filters]` | Review and answer exact background approvals, questions, and input requests |
 | `/ps [terminal-id]`, `/stop [terminal-id\|all]` | Inspect or stop owned background terminals; `/ps` is paginated and `/ps --json` returns all records; `/stop` stops all |
 | `/mode [name]` | Choose or change the operating mode (a picker without a name) |
-| `/workflow <name> \| resume [run-id] \| reset [run-id]` | Select a workflow, resume the latest eligible run when `run-id` is omitted, or reset a workflow; use `/workflow create_workflow` to author one directly in `.agenthicc/workflows/` |
+| `/workflow <name> \| resume [run-id] \| reset [run-id]` | Select a workflow, resume the latest eligible run when `run-id` is omitted, or reset a workflow. Use `/workflow call create_workflow <intent>` to author a project workflow. |
 | `/model [provider] [model]` | Choose the provider and model from a picker (or directly); applies from the next turn, no restart |
 | `/config` | Open the configuration overlay |
 | `/init` | Preview or explicitly write managed project `AGENTS.md` guidance |
@@ -297,14 +297,20 @@ Workflows are typed state machines with explicit transitions. The built-in `code
 
 ### Authoring workflows
 
-Create a specialized workflow with `/workflow create_workflow`. It runs `design → generate → validate → summarize` on the same state-machine pattern as `code_plan`:
+Create a specialized workflow with `/workflow call create_workflow <intent>`.
+The workflow records its design and writes the package under
+`.agenthicc/workflows/<name>/` with scoped tools. A pending marker keeps the
+candidate out of discovery while the runner validates its exact bytes and runs
+a bounded fake-provider smoke check. Replacing an existing package outside the
+authored manifest requires approval before its files change.
 
-1. The design is presented for your approval.
-2. The generate phase writes the package directly to `.agenthicc/workflows/<name>/`, using package-scoped tools, and records a manifest. A runner-owned pending marker keeps the in-progress package out of normal workflow discovery. If that name already exists, replacement requires a separate explicit approval before any original files change; the original package and trust records are backed up for recovery.
-3. The validate phase checks that exact pending package, runs a bounded fake-provider smoke check, and loops back to generate until it passes — an approval of a file that does not import or smoke-test is overridden. The package remains undiscoverable during validation and repair.
-4. Only after deterministic validation and approval does the framework recheck the package fingerprint, record trust for the exact validated Python files, and remove the pending marker so normal discovery can load it. An interrupted run keeps its checkpoint and pending package for resume; `/workflow reset <run-id>` restores an approved replacement and its trust records, or discards an uncommitted first-generation candidate, before recording the run as discarded.
-
-For non-trivial behavior the agent is guided to create a `code_plan`-style custom runner with typed states, context, per-state functions, explicit `match` transitions, and resumable execution; simple workflows can use declarative `PhaseSpec` values. Run `/workflows reload` and then `/workflow <name>` after authoring.
+After validation and summary, the session records trust for the exact Python
+bytes, removes the marker, and reloads the registry before handing the result
+back to the parent. Set `security.authored_extension_policy = "stage_only"` to
+keep the candidate pending until `/authored approve <run-id>` or
+`/authored reject <run-id>`. Use `/workflow resume` to continue an interrupted
+run or `/workflow return --abandon` to discard its candidate and restore any
+approved original.
 
 The built-in `goal_flow` workflow can record necessary work discovered after
 planning. During implementation or verification, the agent may call

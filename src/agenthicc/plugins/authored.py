@@ -40,7 +40,7 @@ if TYPE_CHECKING:
 
     from agenthicc.plugins.authored_types import ArtifactKind
     from agenthicc.plugins.trust import ExtensionTrust
-    from agenthicc.workflows.create_workflow.authoring import AuthoringLease
+    from agenthicc.workflows.create_workflow.authoring import AuthoringLease, ExistingWorkflowTarget
 
 
 _MAX_FILE_BYTES = 1_000_000
@@ -257,6 +257,8 @@ class AuthoredArtifactStore:
         workflows: list[_CanonicalWorkflow] = []
         for item in run.candidates:
             artifact = item.artifact
+            if artifact.name in _reserved_names(artifact.kind):
+                raise AuthoredError("name_conflict", f"{artifact.name} is already in use.")
             if (
                 item.verdict.errors
                 or item.verdict.digest != artifact.digest
@@ -437,9 +439,7 @@ class AuthoredArtifactStore:
         for candidate in run.candidates:
             artifact = candidate.artifact
             old = owned.get((artifact.kind, artifact.name))
-            if artifact.name in _reserved_names(artifact.kind) or (
-                (None if old is None else old.digest) != artifact.supersedes
-            ):
+            if (None if old is None else old.digest) != artifact.supersedes:
                 raise AuthoredError("name_conflict", f"{artifact.name} is already in use.")
         planned: list[_InstallFile] = []
         for relative, (source, data, artifact) in inventory.items():
@@ -725,6 +725,23 @@ class AuthoredArtifactStore:
     def record(self, name: str) -> AuthoredRecord:
         """Find one live record by its operator-visible name."""
         return self._find(name)[0]
+
+    def workflow_update_digest(self, snapshot: ExistingWorkflowTarget) -> str | None:
+        """Return the owned current version after rechecking its live bytes."""
+        name = snapshot.workflow_name
+        for record in self.records():
+            artifact = record.artifact
+            if artifact.kind != "workflow" or artifact.name != name:
+                continue
+            prefix = f".agenthicc/workflows/{name}/"
+            files = tuple(prefix + item.path.removeprefix("package/") for item in snapshot.files)
+            if snapshot.legacy_exists or files != artifact.files:
+                raise AuthoredError("untrusted_modified", f"{name} has unrecorded files.")
+            sources = {relative: _source_bytes(self._path(relative)) for relative in artifact.files}
+            if content_digest(sources) != artifact.digest:
+                raise AuthoredError("untrusted_modified", f"{name} changed since publication.")
+            return artifact.digest
+        return None
 
     def _archive_root(self, artifact: PublishedArtifact) -> str:
         return f".agenthicc/authored/versions/{artifact.name}/{artifact.digest}"

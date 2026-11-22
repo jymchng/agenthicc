@@ -510,14 +510,15 @@ def test_skill_discovery_hides_provisional_set_without_recording_python_trust(
     assert store.trust.records() == ()
 
 
-def _workflow_run(store: AuthoredArtifactStore, run_id: str) -> AuthoredRun:
+def _workflow_run(
+    store: AuthoredArtifactStore, run_id: str, *, name: str = "canonical_probe"
+) -> AuthoredRun:
     from agenthicc.workflows.create_workflow.authoring import (
         begin_authoring,
         inspect_existing_target,
         prepare_authoring,
     )
 
-    name = "canonical_probe"
     previous = next(
         (record.artifact for record in store.records() if record.artifact.name == name), None
     )
@@ -584,6 +585,20 @@ async def test_canonical_workflow_approval_removes_marker_and_reloads(
     await reload_service.close()
 
 
+def test_builtin_name_is_rejected_and_leaves_no_candidate(store: AuthoredArtifactStore) -> None:
+    run = _workflow_run(store, "reserved-name", name="code_plan")
+    candidate = run.candidates[0]
+    assert isinstance(candidate, StagedWorkflow)
+
+    with pytest.raises(AuthoredError) as caught:
+        with store.commit(run):
+            pytest.fail("a built-in workflow name passed publication")
+
+    assert caught.value.code == "name_conflict"
+    assert not Path(candidate.lease.target_path).exists()
+    assert not store.trust.records()
+
+
 def test_workflow_reload_failure_restores_the_pending_lease(store: AuthoredArtifactStore) -> None:
     from agenthicc.workflows.create_workflow.authoring import verify_authoring
 
@@ -599,6 +614,36 @@ def test_workflow_reload_failure_restores_the_pending_lease(store: AuthoredArtif
     with store.commit(run):
         assert not Path(candidate.lease.marker_path).exists()
     assert store.records()[0].artifact.digest == candidate.artifact.digest
+
+
+def test_workflow_update_requires_the_recorded_inventory_and_bytes(
+    store: AuthoredArtifactStore,
+) -> None:
+    from agenthicc.workflows.create_workflow.authoring import (
+        ExistingWorkflowTarget,
+        inspect_existing_target,
+    )
+
+    run = _workflow_run(store, "version-one")
+    (candidate,) = run.candidates
+    with store.commit(run):
+        pass
+    path = store.workspace / candidate.artifact.files[0]
+
+    def snapshot() -> ExistingWorkflowTarget:
+        return inspect_existing_target(
+            store.workspace, run_id="version-two", workflow_name=candidate.artifact.name
+        )
+
+    assert store.workflow_update_digest(snapshot()) == candidate.artifact.digest
+    extra = path.with_name("extra.py")
+    extra.write_text("# User-added helper\n", encoding="utf-8")
+    with pytest.raises(AuthoredError, match="unrecorded files"):
+        store.workflow_update_digest(snapshot())
+    extra.unlink()
+    path.write_text("# User edit\n", encoding="utf-8")
+    with pytest.raises(AuthoredError, match="changed since publication"):
+        store.workflow_update_digest(snapshot())
 
 
 async def test_published_execute_tool_requires_a_safe_approval_for_each_call(

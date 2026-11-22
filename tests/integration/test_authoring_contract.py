@@ -63,7 +63,6 @@ async def test_checkpoint_restart_preserves_repairs_and_exhausts_the_original_bu
             await cast("Awaitable[object]", invoke_tool(*args))
 
         if ctx.state is CreateWorkflowState.DESIGN:
-            await invoke("request_design_approval", "Review documents", "doc_review")
             await invoke("finalize_design", "Review documents", "doc_review")
         elif ctx.state is CreateWorkflowState.GENERATE:
             generation_budgets.append(ctx.repair_budget.used)

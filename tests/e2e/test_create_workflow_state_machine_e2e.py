@@ -25,6 +25,7 @@ from lauren_ai._transport._mock import MockTransport
 from agenthicc.agents.registry import build_agents_registry
 from agenthicc.config import AgenthiccConfig
 from agenthicc.kernel import AppState, EventProcessor, SecurityPolicy, SystemSettings
+from agenthicc.plugins.authored import AuthoredArtifactStore
 from agenthicc.tui.conversation_store import AppState as TUIAppState
 from agenthicc.workflows.config import WorkflowConfig
 from agenthicc.workflows.create_workflow import CreateWorkflow, CreateWorkflowRunner
@@ -40,12 +41,15 @@ _GOOD_SOURCE = '''\
 
 from __future__ import annotations
 
-from agenthicc.workflows.plugin import PhaseSpec, WorkflowPlugin
+from collections.abc import Mapping
+
+from agenthicc.workflows.plugin import PhaseSpec, WorkflowInvocation, WorkflowParams, WorkflowPlugin
 
 
 class DocReview(WorkflowPlugin):
     name = "doc_review"
     description = "Draft a document, then review it."
+    invocation = WorkflowInvocation(when_to_use="Review a document.", returns="The draft and review.")
     mode_bindings = []
     phases = [
         PhaseSpec(
@@ -63,6 +67,12 @@ class DocReview(WorkflowPlugin):
             system_prompt_override="You are in the REVIEW phase. Check the document.",
         ),
     ]
+
+    @classmethod
+    def build_params(cls, source: Mapping[str, object]) -> WorkflowParams:
+        if source:
+            raise ValueError("This workflow takes no parameters.")
+        return WorkflowParams()
 '''
 
 _BROKEN_SOURCE = '''\
@@ -126,7 +136,6 @@ def _script(*steps: tuple[str, dict] | str) -> MockTransport:
 
 
 _DESIGN_STEPS: tuple[tuple[str, dict] | str, ...] = (
-    ("request_design_approval", {"design": "draft → review", "workflow_name": "doc_review"}),
     ("finalize_design", {"design": "draft → review", "workflow_name": "doc_review"}),
     "The design is finalized.",
 )
@@ -239,9 +248,9 @@ async def test_e2e_authors_a_workflow_end_to_end(app_state, processor, tmp_path,
 
 
 async def test_e2e_generated_workflow_is_immediately_loadable(
-    app_state, processor, tmp_path, monkeypatch
+    app_state, processor, untrusted_project, monkeypatch
 ):
-    monkeypatch.chdir(tmp_path)
+    monkeypatch.chdir(untrusted_project)
     mock = _script(
         *_DESIGN_STEPS,
         *_generate_steps(_GOOD_SOURCE),
@@ -249,12 +258,15 @@ async def test_e2e_generated_workflow_is_immediately_loadable(
         *_SUMMARY_STEPS,
     )
     runner = _runner(app_state, processor, mock)
-    await runner.run("create a doc_review workflow")
+    ctx = await runner.run("create a doc_review workflow")
     await processor.drain()
 
+    assert ctx.authored_run is not None
+    with AuthoredArtifactStore(untrusted_project).commit(ctx.authored_run):
+        pass
     registry = build_workflow_registry(
-        project_dir=tmp_path / ".agenthicc",
-        user_dir=tmp_path / "absent",
+        project_dir=untrusted_project / ".agenthicc",
+        user_dir=untrusted_project / "absent",
     )
     plugin_cls = registry.get("doc_review")
     assert plugin_cls is not None
@@ -267,7 +279,7 @@ async def test_e2e_generated_workflow_is_immediately_loadable(
 
 
 async def test_e2e_authored_workflow_ships_and_runs_its_own_state_machine(
-    app_state, processor, tmp_path, monkeypatch
+    app_state, processor, untrusted_project, monkeypatch
 ):
     """The shape create_workflow now demands is authored, loaded, and executed.
 
@@ -276,15 +288,11 @@ async def test_e2e_authored_workflow_ships_and_runs_its_own_state_machine(
     discovers it, `build_runner()` returns its own runner, and that runner's
     typed state machine drives its phases to a terminal state.
     """
-    monkeypatch.chdir(tmp_path)
+    monkeypatch.chdir(untrusted_project)
     from agenthicc.workflows.create_workflow.inspection_tools import _RUNNER_EXAMPLE
 
     target = "runner.py"
     mock = _script(
-        (
-            "request_design_approval",
-            {"design": "plan → verify → report, with a runner", "workflow_name": "release_check"},
-        ),
         (
             "finalize_design",
             {"design": "plan → verify → report, with a runner", "workflow_name": "release_check"},
@@ -306,17 +314,20 @@ async def test_e2e_authored_workflow_ships_and_runs_its_own_state_machine(
     assert ctx.artifacts["validate"].metadata["ok"] is True
     assert ctx.artifacts["validate"].metadata["warnings"] == []
 
-    source = (tmp_path / ".agenthicc" / "workflows" / "release_check" / "runner.py").read_text(
-        encoding="utf-8"
-    )
+    source = (
+        untrusted_project / ".agenthicc" / "workflows" / "release_check" / "runner.py"
+    ).read_text(encoding="utf-8")
     assert "class ReleaseState(Enum)" in source
     assert "while not state.is_terminal" in source
     assert "match state:" in source
 
     # The registry discovers it and build_runner() returns the file's own runner.
+    assert ctx.authored_run is not None
+    with AuthoredArtifactStore(untrusted_project).commit(ctx.authored_run):
+        pass
     registry = build_workflow_registry(
-        project_dir=tmp_path / ".agenthicc",
-        user_dir=tmp_path / "absent",
+        project_dir=untrusted_project / ".agenthicc",
+        user_dir=untrusted_project / "absent",
     )
     plugin_cls = registry.get("release_check")
     assert plugin_cls is not None

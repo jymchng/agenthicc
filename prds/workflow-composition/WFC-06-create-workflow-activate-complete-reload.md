@@ -1,6 +1,6 @@
 ---
 title: "WFC-06: create_workflow — an agent activates it, completes it, and the new workflow is trusted, reloaded and usable"
-status: Proposed
+status: Implemented
 version: 2.0.0
 date: 2026-11-22
 repository: jymchng/agenthicc
@@ -220,3 +220,33 @@ marker mechanism and a user-edited copy is left and reported.
 | Auto-trusting agent-generated code. | It is today's `create_workflow` behaviour, kept by decision and now given the WFC-11 §5.4 controls (digest-bound trust, runner-owned verdict, call-time capability gate, provenance and rollback, opt-in `stage_only`). |
 | Moving the trust call changes where a failure surfaces. | The session's publish step is all-or-nothing with restore (WFC-11 §5.2) and reports the failure in the return. |
 | Generated `agent_callable=True` workflows widen the agent's reach. | Default false; every entry still passes WFC-02 checks and the Safe-mode approval; the workflow's own phases run under their ceilings. |
+
+## Amendment — 2026-11-22
+
+The runtime still exposed a human design-review tool and a question prompt.
+The design phase now records its handoff with `finalize_design`. Generation
+retains the overwrite guard for an unrecorded workflow and Safe-mode tool
+approval. Generated workflows still declare their own human gates. This
+implements the unattended authoring requirement in §5.1.
+
+## Implementation status
+
+The runner seals a staged package under its lease. The session applies the
+configured publication policy and returns the post-reload receipt. The typed
+checkpoint preserves the candidate's manifest, validation evidence, and
+publication input. Exact inventory and byte checks protect authored updates.
+
+| Criteria | Verification |
+|---|---|
+| A1, A2, A8 | `test_new_workflow_is_published_and_called_in_the_same_session` observes the candidate during summary, then its trust and registry entry on the first parent request. That request calls the new workflow. |
+| A3, A4 | `test_operator_decides_whether_to_publish_the_pending_workflow` runs both `/authored approve` and `/authored reject` against a real staged run. |
+| A5 | `test_failed_validation_returns_and_discards_the_candidate` checks the failed return, candidate cleanup, and unchanged trust and registry. |
+| A6 | `test_authored_workflow_needs_an_invocation_description` checks the isolated and static validators. |
+| A7 | `test_builtin_name_is_rejected_and_leaves_no_candidate`. |
+| A9 | `test_abandoning_authoring_during_generation_discards_the_pending_package` pauses through the TUI interrupt and abandons the call. |
+| A10 | `test_only_the_authored_store_finalizes_and_trusts_workflow_packages` checks the production call site. |
+| A11 | The canonical store accepts a worktree source. The actual workflow-worker path is covered when WFC-04 lands. |
+
+`test_workflow_update_requires_the_recorded_inventory_and_bytes` covers the
+authored predecessor check. `test_bootstrap_retires_only_an_unchanged_seed`
+checks seeded-copy cleanup and preservation of edited copies.

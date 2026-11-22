@@ -44,6 +44,8 @@ from agenthicc.workflows.create_workflow.authoring import AuthoringLease, Packag
 if TYPE_CHECKING:
     from lauren_ai._memory import ShortTermMemory
 
+    from agenthicc.plugins.authored_types import AuthoredRun
+
 
 class CreateWorkflowState(Enum):
     """Every possible state in the create_workflow workflow."""
@@ -137,10 +139,49 @@ class CreateWorkflowContext:
     selected_tools: list[str] = dataclasses.field(default_factory=list)
     dependency_summary: dict[str, object] = dataclasses.field(default_factory=dict)
     authoring_lease: AuthoringLease | None = None
+    previous_authored_digest: str | None = None
     package_manifest: PackageManifest | None = None
     validation_evidence: dict[str, object] = dataclasses.field(default_factory=dict)
     publication: dict[str, object] = dataclasses.field(default_factory=dict)
-    question_metadata: dict[str, object] = dataclasses.field(default_factory=dict)
+
+    @property
+    def summary(self) -> str:
+        if self.state is CreateWorkflowState.COMPLETE:
+            return f"Validated workflow {self.workflow_name!r}. {self.validation_summary}".strip()
+        return self.fail_reason or self.suggestion
+
+    @property
+    def return_outputs(self) -> dict[str, str]:
+        validated = self.artifacts.get("validate")
+        if self.state is not CreateWorkflowState.COMPLETE or validated is None:
+            return {}
+        phases = validated.metadata.get("phase_names")
+        names = (
+            ", ".join(name for name in phases if isinstance(name, str))
+            if isinstance(phases, list)
+            else ""
+        )
+        return {"workflow": self.workflow_name, "phases": names}
+
+    @property
+    def authored_run(self) -> AuthoredRun | None:
+        """Expose the staged package after the runner finishes successfully."""
+        if self.state is not CreateWorkflowState.COMPLETE or self.authoring_lease is None:
+            return None
+        from agenthicc.plugins.authored_types import AuthoredRun, PublishedArtifact, StagedWorkflow
+        from agenthicc.workflows.authoring.verdict import ValidationReport
+
+        artifact = PublishedArtifact.from_payload(self.publication.get("artifact"))
+        return AuthoredRun(
+            self.run_id,
+            str(self.publication["session_id"]),
+            str(self.publication["model"]),
+            (
+                StagedWorkflow(
+                    artifact, ValidationReport(artifact.digest, ()), self.authoring_lease
+                ),
+            ),
+        )
 
     def add_artifact(self, artifact: PhaseArtifact) -> None:
         """Record *artifact*, keyed by its phase (latest write for a phase wins)."""

@@ -10,8 +10,8 @@ Branch `feat/workflow-composition` starts at `5100c8c` from fetched
 | 1 | M1 pushed | WFC-14 foundation, WFC-05 and the WFC-13 harness landed. Full local gate and pre-push checks passed. The remote tip matched `aa2bac1`. |
 | 2 | M2 pushed | WFC-11 publication service and WFC-10 live skills. The remote tip matched `7ca93be`. |
 | 3 | M3 pushed | WFC-01 and the publish connection. The remote tip matched `f0eb339`. |
-| 4 | M4 verified locally | WFC-02 workflow entry and inspection. See M4 verification below. |
-| 5 | Pending | WFC-06. |
+| 4 | M4 pushed | WFC-02 workflow entry and inspection. The remote tip matched `4c5e0cc`. |
+| 5 | M5 verified locally | WFC-06 authoring, publication, and immediate use. See M5 verification below. |
 | 6 | Pending | WFC-08 and WFC-07. |
 | 7 | Pending | WFC-09. |
 | 8 | Pending | WFC-04 and WFC-03. |
@@ -24,7 +24,7 @@ Branch `feat/workflow-composition` starts at `5100c8c` from fetched
 | WFC-03 | Pending | — |
 | WFC-04 | Spike complete | Nested mapping confirmed with a correction to optional keys in the published schema. |
 | WFC-05 | Implemented | `c757516`, `7bd642c`. Both runners use the service. See the PRD for A1–A7 evidence. |
-| WFC-06 | Pending | — |
+| WFC-06 | Implemented | Session-owned publication, exact predecessor checks, and the S3 acceptance scenario. WFC-04 exercises the workflow-worker integration. |
 | WFC-07 | Pending | — |
 | WFC-08 | Spike complete | Same-turn refresh verified by updating the provider schema list and the dispatch map together. |
 | WFC-09 | Pending | — |
@@ -256,3 +256,31 @@ The checks after the source fix passed on Python 3.13:
   is scheduled for CI.
 
 The verification logs are `/var/tmp/agenthicc-wfc-m4-*.log`.
+
+## M5 verification
+
+The real authoring runner leaves the candidate under its pending marker through
+summary. The session publishes it and reloads the registry before the model
+calls the new workflow. The stage-only cases run the operator commands to
+approve and reject. The failure and TUI abandonment cases preserve the live
+registry and trust records and discard their pending packages. Authored updates
+require the recorded inventory and digest. Startup retires unchanged seeded
+copies and reports edited copies.
+
+Five early publication tests returned `trusted_location` because pytest's
+ordinary fixture marks its temporary root trusted. The session tests now use a
+separate project and operator trust store. One interruption test initially
+timed out because the TUI workflow config retained its original transport.
+The test now interrupts the actual transport used by the workflow. The
+replacement fixtures preserve the production trust and checkpoint guards.
+
+The final checks passed on Python 3.13:
+
+- 6,275 unit tests with 15 skips, 427 integration tests, and 243 E2E tests
+  with two skips.
+- Nine performance tests, Ruff check and format, mypy on 425 source files,
+  the type audit against `origin/main`, strict MkDocs, and `llms_check`.
+- The production trust call-site scan and the retired design-tool search.
+  The full coverage report remains a CI gate at 81.5%.
+
+The verification logs are `/var/tmp/agenthicc-wfc-m5-*.log`.

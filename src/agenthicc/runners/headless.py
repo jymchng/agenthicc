@@ -380,12 +380,22 @@ async def _execute_workflow_turn(
     if frame.awaiting_child and result.status == "complete":
         stack.resume_parked_run()
         conversation.workflow_stack.set(stack.summaries())
+    publishes = bool(workflow.invocation.publishes)
     if frame.depth:
-        if result.status == "complete":
-            returned = workflow_return(frame, outcome, session.app_state.workflow_run())
+        done = result.status == "complete"
+        if done or (publishes and result.status == "failed"):
+            returned = workflow_return(
+                frame,
+                outcome,
+                session.app_state.workflow_run(),
+                status="completed" if done else "failed",
+            )
             parent = stack.complete(frame.frame_id, returned)
             conversation.workflow_stack.set(stack.summaries())
-            returned = await session.authored.publish_return(returned, outcome)
+            if done:
+                returned = await session.authored.publish_return(
+                    returned, outcome, workflow, session.workflow_registry
+                )
             stack.queue_return(WorkflowDelivery(parent.frame_id, frame.run_id, returned))
             if deliver_parent:
                 delivery = stack.take_return()
@@ -394,6 +404,14 @@ async def _execute_workflow_turn(
         else:
             stack.pause(frame.frame_id)
             conversation.workflow_stack.set(stack.summaries())
+    elif publishes and result.status in {"complete", "failed"}:
+        if result.status == "complete":
+            returned = workflow_return(frame, outcome, session.app_state.workflow_run())
+            await session.authored.publish_return(
+                returned, outcome, workflow, session.workflow_registry
+            )
+        stack.clear_base()
+        conversation.workflow_stack.set(stack.summaries())
     return result
 
 

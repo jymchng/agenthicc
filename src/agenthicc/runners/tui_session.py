@@ -2130,26 +2130,48 @@ class TUISession:
         self._suspended_workflow_handles[stack.top.frame_id] = handle
         self._workflow_handle = None
 
-    async def _finish_workflow_frame(self, outcome: object) -> None:
+    async def _finish_workflow_frame(
+        self, outcome: object, definition: type[WorkflowPlugin]
+    ) -> None:
         from agenthicc.runners.workflow_stack import WorkflowDelivery, workflow_return
 
         stack = self._ctx.workflow_stack
         handle = self._workflow_handle
+        child = stack.top
+        publishes = bool(definition.invocation.publishes)
+        if handle is None or (
+            handle.lifecycle != "complete" and not (publishes and handle.lifecycle == "failed")
+        ):
+            self._pause_workflow_child()
+            return
+        status: Literal["completed", "failed"] = (
+            "completed" if handle.lifecycle == "complete" else "failed"
+        )
+        result_context = outcome if outcome is not None else handle.context
         if not stack.depth:
-            if stack.top.awaiting_child and handle is not None and handle.lifecycle == "complete":
+            if publishes:
+                if status == "completed":
+                    result = workflow_return(
+                        child, result_context, self._ctx.app_state.workflow_run()
+                    )
+                    await self._ctx.authored.publish_return(
+                        result, result_context, definition, self._ctx.workflow_registry
+                    )
+                self._select_base_workflow(None)
+            elif child.awaiting_child:
                 stack.resume_parked_run()
                 self._project_workflow_stack()
             return
-        child = stack.top
-        if handle is None or handle.lifecycle != "complete":
-            self._pause_workflow_child()
-            return
-        result_context = outcome if outcome is not None else handle.context
-        result = workflow_return(child, result_context, self._ctx.app_state.workflow_run())
+        result = workflow_return(
+            child, result_context, self._ctx.app_state.workflow_run(), status=status
+        )
         parent = stack.complete(child.frame_id, result)
         self._workflow_handle = None
         self._project_workflow_stack()
-        result = await self._ctx.authored.publish_return(result, result_context)
+        if status == "completed":
+            result = await self._ctx.authored.publish_return(
+                result, result_context, definition, self._ctx.workflow_registry
+            )
         stack.queue_return(WorkflowDelivery(parent.frame_id, child.run_id, result))
 
     def _pause_workflow_child(self) -> None:
@@ -5316,7 +5338,7 @@ class TUISession:
                     _runner_result = await _wf_runner.run(text)
                 self._record_returned_workflow_result(_runner_result)
                 self._finalize_returned_workflow(_runner_result)
-                await self._finish_workflow_frame(_runner_result)
+                await self._finish_workflow_frame(_runner_result, _plugin_cls)
                 # PRD-155: workflow-bound runs return to Safe after success.
                 _wf_result = ctx.app_state.workflow_run()
                 if (
@@ -6044,7 +6066,7 @@ class TUISession:
                 await self._finalize_workflow_pause(handle)
             else:
                 self._finalize_returned_workflow(runner_result)
-                await self._finish_workflow_frame(runner_result)
+                await self._finish_workflow_frame(runner_result, wf_defn)
             # PRD-155: completed workflow-bound runs return to Safe.
             _wf_result = ctx.app_state.workflow_run()
             if (
