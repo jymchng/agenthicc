@@ -129,6 +129,8 @@ digest. A later file edit invalidates trust and discovery skips the edited code.
 Skills pass through the same publication step and are loaded as text.
 Direct changes through file tools ask for approval on executable extension
 paths and explain that the path runs as code.
+Workflow authoring uses a separate scoped writer that checks the pending
+package's ownership and workspace path.
 
 Loaded Python executes with your privileges. Content the agent reads can
 influence what it authors. Set `security.authored_extension_policy = "stage_only"`

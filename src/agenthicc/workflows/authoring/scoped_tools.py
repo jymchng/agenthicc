@@ -99,6 +99,7 @@ class _ScopedFiles:
                 tool_name=tool_name,
                 capabilities=frozenset({capability.value}),
                 tool_input={"path": str(path)},
+                protect_extensions=False,
             )
 
     def check_root(self) -> None:

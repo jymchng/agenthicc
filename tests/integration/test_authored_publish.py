@@ -22,6 +22,7 @@ from agenthicc.plugins.authored_types import (
     AuthoredRun,
     PublishedArtifact,
     StagedArtifact,
+    StagedWorkflow,
     content_digest,
 )
 from agenthicc.plugins.trust import ExtensionTrust, override_extension_trust
@@ -504,3 +505,156 @@ def test_skill_discovery_hides_provisional_set_without_recording_python_trust(
             assert "pending-skill" not in discover_skills(project, user)
         assert "pending-skill" in discover_skills(project, user)
     assert store.trust.records() == ()
+
+
+def _workflow_run(store: AuthoredArtifactStore, run_id: str) -> AuthoredRun:
+    from agenthicc.workflows.create_workflow.authoring import (
+        begin_authoring,
+        inspect_existing_target,
+        prepare_authoring,
+    )
+
+    name = "canonical_probe"
+    previous = next(
+        (record.artifact for record in store.records() if record.artifact.name == name), None
+    )
+    with override_extension_trust(store.trust):
+        existing = inspect_existing_target(store.workspace, run_id=run_id, workflow_name=name)
+        lease = begin_authoring(
+            prepare_authoring(
+                store.workspace,
+                run_id=run_id,
+                workflow_name=name,
+                expected_original_fingerprint=existing.fingerprint,
+            )
+        )
+    path = Path(lease.target_path) / "runner.py"
+    body = (
+        "from agenthicc.workflows.plugin import PhaseSpec, WorkflowPlugin\n"
+        "class CanonicalProbe(WorkflowPlugin):\n"
+        f"    name = {name!r}\n"
+        f"    description = {run_id!r}\n"
+        "    phases = [PhaseSpec(name='inspect')]\n"
+    ).encode()
+    path.write_bytes(body)
+    relative = path.relative_to(store.workspace).as_posix()
+    digest = content_digest({relative: body})
+    artifact = PublishedArtifact(
+        "workflow",
+        name,
+        (relative,),
+        digest,
+        "staged",
+        supersedes=previous.digest if previous is not None else None,
+    )
+    return AuthoredRun(
+        run_id,
+        "session-1",
+        "offline",
+        (StagedWorkflow(artifact, ValidationReport(digest, ()), lease),),
+    )
+
+
+async def test_canonical_workflow_approval_removes_marker_and_reloads(
+    store: AuthoredArtifactStore,
+    reload_service: ReloadService,
+    running_processor: EventProcessor,
+) -> None:
+    run = _workflow_run(store, "leased-workflow")
+    candidate = run.candidates[0]
+    assert isinstance(candidate, StagedWorkflow)
+    marker = Path(candidate.lease.marker_path)
+    publisher = AuthoredPublisher(store.workspace, reload_service, running_processor)
+    with override_extension_trust(store.trust):
+        assert (await publisher.publish(run, policy="stage_only")).artifacts[0].state == "staged"
+        assert marker.is_file()
+        assert store.trust.records() == ()
+        assert isinstance(store.staged(run.run_id).candidates[0], StagedWorkflow)
+        result = await publisher.approve(run.run_id)
+    assert result.error_code is None, result.summary()
+    assert result.reload_report is not None and result.reload_report.ok
+    assert result.artifacts[0].state == "loaded"
+    assert not marker.exists()
+    assert store.trust.records()[0].artifact_digest == candidate.artifact.digest
+    await reload_service.close()
+
+
+def test_workflow_reload_failure_restores_the_pending_lease(store: AuthoredArtifactStore) -> None:
+    from agenthicc.workflows.create_workflow.authoring import verify_authoring
+
+    run = _workflow_run(store, "retry-workflow")
+    candidate = run.candidates[0]
+    assert isinstance(candidate, StagedWorkflow)
+    with pytest.raises(RuntimeError, match="reload failed"):
+        with store.commit(run):
+            assert not Path(candidate.lease.marker_path).exists()
+            raise RuntimeError("reload failed")
+    verify_authoring(candidate.lease)
+    assert store.trust.records() == ()
+    with store.commit(run):
+        assert not Path(candidate.lease.marker_path).exists()
+    assert store.records()[0].artifact.digest == candidate.artifact.digest
+
+
+async def test_published_execute_tool_requires_a_safe_approval_for_each_call(
+    store: AuthoredArtifactStore,
+    reload_service: ReloadService,
+    running_processor: EventProcessor,
+) -> None:
+    from lauren_ai import ToolCallContext
+
+    from agenthicc.tools.approval import ApprovalGate, ApprovalRequest, ApprovalResponse
+    from agenthicc.tools.capabilities import CAPABILITIES_KEY, get_tool_capabilities
+    from agenthicc.tui.conversation_store import AppState
+    from agenthicc.tui.runtime.mode_manager import build_default_registry
+
+    name = "execute_probe"
+    code = _tool(name, "fixture output").replace(b"tool_read", b"tool_execute")
+    run = _run(store, "execute-authored", {name: code})
+    initial = run.candidates[0]
+    artifact = replace(
+        initial.artifact, declared_capabilities=("execute",), validation="static_only"
+    )
+    run = replace(run, candidates=(replace(initial, artifact=artifact),))
+    publisher = AuthoredPublisher(store.workspace, reload_service, running_processor)
+    with override_extension_trust(store.trust):
+        published = await publisher.publish(run, policy="auto")
+    assert published.error_code is None, published.summary()
+    assert "static_only" in published.summary()
+    (live,) = reload_service.tools.current().value
+    capabilities = get_tool_capabilities(live)
+    assert capabilities == frozenset({"execute"})
+
+    class Approvals:
+        def __init__(self) -> None:
+            self.requests: list[ApprovalRequest] = []
+
+        async def request_approval(self, request: ApprovalRequest) -> ApprovalResponse:
+            self.requests.append(request)
+            return ApprovalResponse(allowed=False)
+
+        def reset_turn_memory(self) -> None:
+            pass
+
+    approval = Approvals()
+    state = AppState.create()
+    safe = build_default_registry().get("Safe")
+    assert safe is not None
+    state.active_mode.set(safe)
+    gate = ApprovalGate(state, approval)
+    for number in range(2):
+        await gate.before_tool_call(
+            ToolCallContext(
+                agent_context=None,
+                turn=1,
+                tool_use_id=f"authored-{number}",
+                tool_name=tool_name(live),
+                tool_input={},
+                metadata={CAPABILITIES_KEY: capabilities},
+            )
+        )
+    assert tuple(item.capabilities for item in approval.requests) == (
+        frozenset({"execute"}),
+        frozenset({"execute"}),
+    )
+    await reload_service.close()

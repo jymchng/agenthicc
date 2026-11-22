@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Literal, TypeVar
 if TYPE_CHECKING:
     from collections.abc import Mapping
     from agenthicc.workflows.authoring.verdict import ValidationReport
+    from agenthicc.workflows.create_workflow.authoring import AuthoringLease
 
 ArtifactKind = Literal["tool", "skill", "workflow", "command"]
 ArtifactState = Literal["staged", "loaded", "load_failed", "rejected"]
@@ -152,6 +153,17 @@ class StagedArtifact:
 
     artifact: PublishedArtifact
     verdict: ValidationReport
+
+
+@dataclass(frozen=True, slots=True)
+class StagedWorkflow(StagedArtifact):
+    """An approved workflow held under its original canonical authoring lease."""
+
+    lease: AuthoringLease
+
+    def __post_init__(self) -> None:
+        if self.artifact.kind != "workflow" or self.artifact.name != self.lease.workflow_name:
+            raise ValueError("The workflow artifact does not match its authoring lease.")
 
 
 @dataclass(frozen=True, slots=True)

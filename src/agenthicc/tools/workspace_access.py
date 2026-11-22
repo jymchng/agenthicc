@@ -513,6 +513,7 @@ class WorkspaceAccessPolicy:
         capabilities: frozenset[str] = frozenset(),
         *,
         bind_current: bool = True,
+        protect_extensions: bool = True,
     ) -> WorkspaceAccessResult:
         """Preflight all declared paths for one tool call.
 
@@ -549,7 +550,7 @@ class WorkspaceAccessPolicy:
                 )
             resolved.append(item)
         outside = [item for item in resolved if not item.in_scope]
-        protected = [item for item in resolved if self._runs_as_code(item)]
+        protected = [item for item in resolved if protect_extensions and self._runs_as_code(item)]
         if not outside and not protected:
             return WorkspaceAccessResult(allowed=True, decisions=tuple(resolved))
         if self.mode_name.casefold() == "plan":
@@ -771,6 +772,7 @@ class WorkspaceAccessPolicy:
         capabilities: frozenset[str] = frozenset(),
         pattern: bool = False,
         tool_input: Mapping[str, object] | None = None,
+        protect_extensions: bool = True,
     ) -> Path:
         """Authorize one concrete adapter access and return its canonical path."""
 
@@ -793,7 +795,11 @@ class WorkspaceAccessPolicy:
             if revalidated.status is WorkspacePathStatus.TARGET_CHANGED:
                 self.clear_current_grant(tool_name)
                 raise PermissionError("target_changed: canonical target changed after approval")
-            if self.mode_name.casefold() == "plan" and self._runs_as_code(revalidated):
+            if (
+                protect_extensions
+                and self.mode_name.casefold() == "plan"
+                and self._runs_as_code(revalidated)
+            ):
                 self.clear_current_grant(tool_name)
                 raise PermissionError("protected_code: Plan mode cannot edit executable extensions")
             if not revalidated.in_scope and self.mode_name.casefold() == "plan":
@@ -823,6 +829,7 @@ class WorkspaceAccessPolicy:
             tool_name,
             tool_input or {"path": os.fspath(requested)},
             capabilities,
+            protect_extensions=protect_extensions,
         )
         if not result.allowed:
             raise PermissionError(f"{result.code}: {result.error}")
@@ -850,6 +857,7 @@ class WorkspaceAccessPolicy:
                 tool_name,
                 tool_input or {"path": os.fspath(requested)},
                 capabilities,
+                protect_extensions=protect_extensions,
             )
             if not result.allowed:
                 raise PermissionError(f"{result.code}: {result.error}")
@@ -867,7 +875,11 @@ class WorkspaceAccessPolicy:
         post_grant = self._consume_current(tool_name, requested, operation, pattern=pattern)
         if post_grant is False:
             raise PermissionError("target_changed: canonical target changed after approval")
-        if self.mode_name.casefold() == "plan" and self._runs_as_code(revalidated):
+        if (
+            protect_extensions
+            and self.mode_name.casefold() == "plan"
+            and self._runs_as_code(revalidated)
+        ):
             self.clear_current_grant(tool_name)
             raise PermissionError("protected_code: Plan mode cannot edit executable extensions")
         if not revalidated.in_scope and self.mode_name.casefold() == "plan":

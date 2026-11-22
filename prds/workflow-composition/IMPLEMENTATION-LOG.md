@@ -8,7 +8,7 @@ Branch `feat/workflow-composition` starts at `5100c8c` from fetched
 | Setup | Complete | `4deacb1` adds the series and its index block. Parsed all 15 front-matter blocks and resolved the series links. `2b9902a` applies the separate guidance patch. Hooks installed. Strict MkDocs, Ruff and mypy passed. |
 | 0 | M0 pushed | `a04bfb4` records three spikes and four amendments. The tool-surface follow-up also demonstrates dispatch after a same-turn schema refresh. See milestone gate results below. |
 | 1 | M1 pushed | WFC-14 foundation, WFC-05 and the WFC-13 harness landed. Full local gate and pre-push checks passed. The remote tip matched `aa2bac1`. |
-| 2 | In progress | WFC-11 sandbox, publication store, trust, and operator controls implemented. Canonical workflow lease integration and WFC-10 are pending. |
+| 2 | In progress | WFC-11 publication service, operator controls and lease handling implemented. WFC-10 is next. |
 | 3 | Pending | WFC-01 and the publish connection. |
 | 4 | Pending | WFC-02. |
 | 5 | Pending | WFC-06. |
@@ -29,7 +29,7 @@ Branch `feat/workflow-composition` starts at `5100c8c` from fetched
 | WFC-08 | Spike complete | Same-turn refresh verified by updating the provider schema list and the dispatch map together. |
 | WFC-09 | Pending | — |
 | WFC-10 | Pending | — |
-| WFC-11 | In progress | `6958a4b` isolates validation and smoke. Staged sets can publish and roll back through the live reload service and operator commands. The canonical workflow handoff and later authoring-workflow acceptance remain. |
+| WFC-11 | Runtime ready | `6958a4b` isolates validation and smoke. `59e893a` adds publication, operator controls and recovery. The canonical lease uses the same store. The workflow return connection and downstream authoring scenarios remain in their scheduled steps. |
 | WFC-12 | Pending | — |
 | WFC-13 | Harness ready | `7536d33` adds a scripted provider, request snapshots, isolated real sessions, and a test-only failure trigger. S1–S9 remain to be integrated. |
 | WFC-14 | Foundation | Shared scoped tools, deterministic verdict and persisted budget adopted by `create_workflow`. Sandbox validation and tool and skill adoption follow WFC-11, WFC-07 and WFC-09. |
@@ -161,5 +161,7 @@ approval and rejection, picker and actual CLI dispatch, rollback and remove
 against the live tool surface, protected file-tool approvals, and the
 interrupted-publication subprocess recovery. Editing a trusted tool causes the
 next reload to remove it from the live surface and report `untrusted_modified`.
-Canonical workflow leases and authoring workflow returns remain separate
-delivery slices in the programme.
+The canonical lease selection passed 59 tests covering stage-only approval,
+reload failure and retry, trust mutation ownership, protected-path approvals,
+and the Safe gate for a published execute-capable tool. The workflow return
+connection still lands in WFC-01.

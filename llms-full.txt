@@ -6119,6 +6119,12 @@ artifact in provenance and authored trust records.
 
 A `PublishedArtifact` paired with the runner's `ValidationReport`.
 
+### StagedWorkflow
+
+A staged artifact with its canonical `AuthoringLease`. The lease keeps the
+workflow package pending through stage-only approval and lets the publish
+store restore the pending marker when loading fails.
+
 ### AuthoredRun
 
 The distinct staged artifacts produced by one run, with its session and model

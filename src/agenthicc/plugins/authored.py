@@ -19,6 +19,7 @@ from agenthicc.plugins.authored_types import (
     PublishedArtifact,
     AuthoredRun,
     StagedArtifact,
+    StagedWorkflow,
     _digest,
     _relative,
     _run_id,
@@ -39,6 +40,7 @@ if TYPE_CHECKING:
 
     from agenthicc.plugins.authored_types import ArtifactKind
     from agenthicc.plugins.trust import ExtensionTrust
+    from agenthicc.workflows.create_workflow.authoring import AuthoringLease
 
 
 _MAX_FILE_BYTES = 1_000_000
@@ -107,6 +109,12 @@ class _InstallFile:
     @property
     def requires_trust(self) -> bool:
         return self.artifact.kind != "skill" and self.target.suffix == ".py"
+
+
+@dataclass(frozen=True, slots=True)
+class _CanonicalWorkflow:
+    candidate: StagedWorkflow
+    fingerprint: str
 
 
 def _field(payload: Mapping[str, object], key: str) -> str:
@@ -242,8 +250,9 @@ class AuthoredArtifactStore:
 
     def _gate(
         self, run: AuthoredRun, view: WorkspaceView
-    ) -> dict[str, tuple[Path, bytes, PublishedArtifact]]:
+    ) -> tuple[dict[str, tuple[Path, bytes, PublishedArtifact]], tuple[_CanonicalWorkflow, ...]]:
         inventory: dict[str, tuple[Path, bytes, PublishedArtifact]] = {}
+        workflows: list[_CanonicalWorkflow] = []
         for item in run.candidates:
             artifact = item.artifact
             if (
@@ -254,9 +263,15 @@ class AuthoredArtifactStore:
                 raise AuthoredError(
                     "validation_failed", "The runner verdict did not approve every artifact."
                 )
+            if isinstance(item, StagedWorkflow):
+                workflows.append(self._workflow_package(item, run.run_id, view))
             candidate_files: dict[str, bytes] = {}
             for relative in artifact.files:
-                path = self._source_path(view, run.run_id, relative)
+                path = (
+                    _workspace_path(view, relative)
+                    if isinstance(item, StagedWorkflow)
+                    else self._source_path(view, run.run_id, relative)
+                )
                 data = _source_bytes(path)
                 candidate_files[relative] = data
                 previous = inventory.get(relative)
@@ -265,7 +280,27 @@ class AuthoredArtifactStore:
                 inventory[relative] = (path, data, artifact)
             if content_digest(candidate_files) != artifact.digest:
                 raise AuthoredError("changed_bytes", f"{artifact.name} changed after validation.")
-        return inventory
+        return inventory, tuple(workflows)
+
+    def _workflow_package(
+        self, item: StagedWorkflow, run_id: str, view: WorkspaceView
+    ) -> _CanonicalWorkflow:
+        from agenthicc.workflows.create_workflow.authoring import AuthoringError, scan_package
+
+        lease = item.lease
+        if lease.run_id != run_id or Path(lease.workspace_root) != view.root:
+            raise AuthoredError("workflow_lease", "The workflow lease belongs to another run.")
+        try:
+            manifest = scan_package(lease)
+        except AuthoringError as exc:
+            raise AuthoredError(
+                "workflow_lease", "The workflow lease could not be verified."
+            ) from exc
+        target = Path(lease.target_path).relative_to(view.root).as_posix()
+        files = tuple(sorted(f"{target}/{file.path}" for file in manifest.files))
+        if files != item.artifact.files:
+            raise AuthoredError("changed_bytes", "The workflow inventory changed after validation.")
+        return _CanonicalWorkflow(item, manifest.fingerprint)
 
     def _discard(self, run_id: str, view: WorkspaceView) -> None:
         location = _workspace_path(view, f".agenthicc/.staging/{_run_id(run_id)}")
@@ -278,7 +313,23 @@ class AuthoredArtifactStore:
         view = self._candidate_view(source_root)
         with InterProcessLock(self._lock):
             self._recover_pending()
-            self._discard(run.run_id, view)
+            self._discard_candidates(run, view)
+
+    def _discard_candidates(self, run: AuthoredRun, view: WorkspaceView) -> None:
+        from agenthicc.plugins.trust import override_extension_trust
+        from agenthicc.workflows.create_workflow.authoring import restore_authoring
+
+        with override_extension_trust(self.trust):
+            for item in run.candidates:
+                if not isinstance(item, StagedWorkflow):
+                    continue
+                lease = item.lease
+                if lease.run_id != run.run_id or Path(lease.workspace_root) != view.root:
+                    raise AuthoredError(
+                        "workflow_lease", "The workflow lease belongs to another run."
+                    )
+                restore_authoring(lease)
+        self._discard(run.run_id, view)
 
     def _stage_ticket(self, run_id: str) -> Path:
         return self._staged / f"{_run_id(run_id)}.json"
@@ -291,9 +342,9 @@ class AuthoredArtifactStore:
         with InterProcessLock(self._lock):
             self._recover_pending()
             try:
-                inventory = self._gate(run, view)
+                inventory, workflows = self._gate(run, view)
             except (AuthoredError, OSError):
-                self._discard(run.run_id, view)
+                self._discard_candidates(run, view)
                 raise
             artifacts = tuple(item.artifact for item in run.candidates)
             ticket = self._stage_ticket(run.run_id)
@@ -303,6 +354,11 @@ class AuthoredArtifactStore:
                     "session_id": run.session_id,
                     "model": run.model,
                     "artifacts": [artifact.to_dict() for artifact in artifacts],
+                    "workflow_leases": {
+                        item.candidate.artifact.name: item.candidate.lease.to_dict()
+                        for item in workflows
+                        if view.root == self.workspace
+                    },
                 }
             )
             if ticket.exists():
@@ -330,14 +386,24 @@ class AuthoredArtifactStore:
         artifacts = data.get("artifacts")
         if _field(data, "run_id") != run_id or not isinstance(artifacts, list):
             raise AuthoredError("invalid_provenance", "The approval ticket is invalid.")
+        from agenthicc.workflows.create_workflow.authoring import AuthoringLease
+
+        raw_leases = data.get("workflow_leases", {})
+        if not isinstance(raw_leases, dict):
+            raise AuthoredError("invalid_provenance", "The workflow approval ticket is invalid.")
+        candidates: list[StagedArtifact] = []
+        for artifact in map(PublishedArtifact.from_payload, artifacts):
+            report = ValidationReport(artifact.digest, ())
+            if artifact.kind == "workflow" and artifact.name in raw_leases:
+                lease = AuthoringLease.from_payload(raw_leases[artifact.name])
+                candidates.append(StagedWorkflow(artifact, report, lease))
+            else:
+                candidates.append(StagedArtifact(artifact, report))
         return AuthoredRun(
             run_id,
             _field(data, "session_id"),
             _field(data, "model"),
-            tuple(
-                StagedArtifact(artifact, ValidationReport(artifact.digest, ()))
-                for artifact in map(PublishedArtifact.from_payload, artifacts)
-            ),
+            tuple(candidates),
         )
 
     def staged_runs(self) -> tuple[AuthoredRun, ...]:
@@ -349,7 +415,7 @@ class AuthoredArtifactStore:
         with InterProcessLock(self._lock):
             self._recover_pending()
             run = self.staged(run_id)
-            self._discard(run_id, self._workspace)
+            self._discard_candidates(run, self._workspace)
             self._stage_ticket(run_id).unlink()
             return run
 
@@ -378,7 +444,7 @@ class AuthoredArtifactStore:
             target = self._path(relative)
             prior: bytes | None = None
             if target.exists():
-                if not any(
+                if source != target and not any(
                     relative in previous.files and previous.digest == artifact.supersedes
                     for previous in owned.values()
                 ):
@@ -505,10 +571,15 @@ class AuthoredArtifactStore:
         with InterProcessLock(self._lock):
             self._recover_pending()
             try:
-                inventory = self._gate(run, view)
+                inventory, workflows = self._gate(run, view)
             except (AuthoredError, OSError):
-                self._discard(run.run_id, view)
+                self._discard_candidates(run, view)
                 raise
+            canonical = {
+                item.candidate.artifact.name: item
+                for item in workflows
+                if view.root == self.workspace
+            }
             records = self.records()
             plan = self._plan(run, inventory, records)
             replacing = {
@@ -522,7 +593,14 @@ class AuthoredArtifactStore:
                 if (record.artifact.kind, record.artifact.name) in replacing
             )
             for record in versions:
-                self._archive(record)
+                workflow = (
+                    canonical.get(record.artifact.name)
+                    if record.artifact.kind == "workflow"
+                    else None
+                )
+                self._archive(
+                    record, lease=workflow.candidate.lease if workflow is not None else None
+                )
             retained = set(inventory)
             retained.update(
                 relative
@@ -536,6 +614,7 @@ class AuthoredArtifactStore:
                 for relative in record.artifact.files
                 if relative not in retained
             }
+            retired = {path for path in retired if path.exists()}
             retired_code = tuple(path for path in retired if path.suffix == ".py")
             trust_paths = (
                 *tuple(item.target for item in plan if item.requires_trust),
@@ -547,11 +626,20 @@ class AuthoredArtifactStore:
             live = tuple(replace(item.artifact, state="loaded") for item in run.candidates)
             original_files = {item.target: item.prior for item in plan}
             original_files.update({path: _source_bytes(path) for path in retired})
+            for package in canonical.values():
+                for name in (
+                    package.candidate.lease.marker_path,
+                    package.candidate.lease.lock_path,
+                ):
+                    path = Path(name)
+                    original_files[path] = _source_bytes(path)
             self._begin_pending(run.run_id, original_files, live, trust_paths, old_trust)
             try:
                 for item in plan:
                     if _source_bytes(item.source) != item.data:
                         raise AuthoredError("changed_bytes", "An authored file changed at commit.")
+                    if item.source == item.target:
+                        continue
                     self._install_file(item.source, item.target)
                     if item.requires_trust:
                         self.trust.trust(
@@ -562,6 +650,8 @@ class AuthoredArtifactStore:
                         )
                     elif _source_bytes(item.target) != item.data:
                         raise AuthoredError("changed_bytes", "An authored file changed at commit.")
+                if canonical:
+                    self._finalize_workflows(tuple(canonical.values()))
                 for path in sorted(retired):
                     path.unlink()
                 self.trust.restore_records(retired_code, ())
@@ -575,6 +665,19 @@ class AuthoredArtifactStore:
             self._stage_ticket(run.run_id).unlink(missing_ok=True)
             for record in versions:
                 self._prune_versions(record.artifact)
+
+    def _finalize_workflows(self, packages: tuple[_CanonicalWorkflow, ...]) -> None:
+        from agenthicc.plugins.trust import override_extension_trust
+        from agenthicc.workflows.create_workflow.authoring import finalize_authoring
+
+        with override_extension_trust(self.trust):
+            for package in packages:
+                candidate = package.candidate
+                finalize_authoring(
+                    candidate.lease,
+                    expected_fingerprint=package.fingerprint,
+                    artifact_digest=candidate.artifact.digest,
+                )
 
     def _record_loaded(
         self,
@@ -630,14 +733,22 @@ class AuthoredArtifactStore:
     def _version_index(self, artifact: PublishedArtifact) -> Path:
         return self._versions / artifact.kind / artifact.name / f"{artifact.digest}.json"
 
-    def _archive(self, record: AuthoredRecord) -> None:
+    def _archive(self, record: AuthoredRecord, *, lease: AuthoringLease | None = None) -> None:
         artifact = record.artifact
-        data = {relative: _source_bytes(self._path(relative)) for relative in artifact.files}
+        data: dict[str, bytes] = {}
+        for relative in artifact.files:
+            source = self._path(relative)
+            if lease is not None:
+                original = (
+                    Path(lease.backup_path) / "package" / source.relative_to(lease.target_path)
+                )
+                source = self._path(original.relative_to(self.workspace).as_posix())
+            data[relative] = _source_bytes(source)
         if content_digest(data) != artifact.digest:
             raise AuthoredError("untrusted_modified", f"{artifact.name} changed since publication.")
-        for relative, source in data.items():
+        for relative, contents in data.items():
             atomic_replace(
-                self._archive_path(artifact, relative), source, prefix=".authored-version-"
+                self._archive_path(artifact, relative), contents, prefix=".authored-version-"
             )
         atomic_replace(
             self._version_index(artifact),

@@ -10,6 +10,12 @@ from typing import Literal, cast
 import pytest
 
 from agenthicc.tools.base import tool_name
+from agenthicc.tools.workspace_access import (
+    WorkspaceAccessPolicy,
+    WorkspaceScope,
+    reset_current_workspace_access,
+    set_current_workspace_access,
+)
 from agenthicc.workflows.authoring.budget import RepairBudget, RepairBudgetExhausted
 from agenthicc.workflows.authoring.scoped_tools import make_scoped_writer_tools
 from agenthicc.workflows.authoring.verdict import Finding, ValidationReport, decide
@@ -55,8 +61,12 @@ def test_repair_budget_charges_only_the_permitted_routes() -> None:
 
 @pytest.fixture
 def scoped_write(tmp_path: Path) -> _Writer:
+    return _writer(tmp_path)
+
+
+def _writer(path: Path) -> _Writer:
     tools = make_scoped_writer_tools(
-        tmp_path, suffixes=frozenset({".py"}), max_file_bytes=32, max_files=1
+        path, suffixes=frozenset({".py"}), max_file_bytes=32, max_files=1
     )
     return cast(
         _Writer, next(candidate for candidate in tools if tool_name(candidate) == "write_file")
@@ -91,6 +101,31 @@ async def test_scoped_writer_rejects_symlink(tmp_path: Path, scoped_write: _Writ
     result = await scoped_write("candidate.py", "changed")
     assert result["code"] == "symlink"
     assert outside.read_text(encoding="utf-8") == "original"
+
+
+async def test_scoped_writer_cannot_author_under_the_user_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    root = tmp_path / ".agenthicc" / "workflows" / "user-workflow"
+    root.mkdir(parents=True)
+    result = await _writer(root)("candidate.py", "value = 1")
+    assert result["code"] == "outside_workspace"
+    assert not (root / "candidate.py").exists()
+
+
+async def test_pending_workflow_writer_uses_its_runner_owned_scope(tmp_path: Path) -> None:
+    root = tmp_path / ".agenthicc" / "workflows" / "new-workflow"
+    root.mkdir(parents=True)
+    policy = WorkspaceAccessPolicy(WorkspaceScope.create(tmp_path))
+    token = set_current_workspace_access(policy)
+    try:
+        direct = await policy.authorize_tool("write_file", {"path": str(root / "candidate.py")})
+        authored = await _writer(root)("candidate.py", "value = 1")
+    finally:
+        reset_current_workspace_access(token)
+    assert direct.code == "approval_unavailable"
+    assert authored["ok"] is True
 
 
 async def test_concurrent_scoped_writes_share_the_file_limit(

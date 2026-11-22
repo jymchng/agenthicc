@@ -1183,7 +1183,12 @@ def _sync_directory(path: Path) -> None:
         return
 
 
-def finalize_authoring(lease: AuthoringLease, *, expected_fingerprint: str) -> PackageManifest:
+def finalize_authoring(
+    lease: AuthoringLease,
+    *,
+    expected_fingerprint: str,
+    artifact_digest: str | None = None,
+) -> PackageManifest:
     """Trust validated bytes, recheck the manifest, then atomically expose them."""
     if not re.fullmatch(r"[a-f0-9]{64}", expected_fingerprint):
         raise AuthoringError("validation evidence has no valid package fingerprint")
@@ -1199,7 +1204,12 @@ def finalize_authoring(lease: AuthoringLease, *, expected_fingerprint: str) -> P
     package_root = Path(lease.target_path)
     for item in manifest.files:
         if item.path.endswith(".py"):
-            trust.trust(package_root / item.path, kind="workflow")
+            trust.trust(
+                package_root / item.path,
+                kind="workflow",
+                expected_sha256=item.sha256,
+                artifact_digest=artifact_digest,
+            )
 
     current = scan_package(lease)
     if current.fingerprint != expected_fingerprint:

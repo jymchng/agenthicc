@@ -337,3 +337,29 @@ filesystem. A pending journal entry hides the provisional files from other
 loaders. The next store operation can recover a process that exits during
 installation. Tests cover a process exit, real reload rollback, and a modified
 archived version.
+
+The live tree also has operator-initiated trust actions in the Agents Hub and
+the Markdown agent library. The hub requires explicit confirmation and the
+library creates the definition submitted by the operator. The static scan
+accounts for these existing operator actions. Authored publication uses the
+store and canonical finalizer. The last runner-side finalizer call moves in
+WFC-06.
+
+## Implementation evidence
+
+| Criterion | Test or delivery dependency |
+|---|---|
+| A1 | `test_session_publisher_loads_validated_tools_and_emits_one_notice` exercises the real loaders. The `create_tools` workflow and resume-turn case land in WFC-07 and WFC-08. |
+| A2 | `test_canonical_workflow_approval_removes_marker_and_reloads` and `test_skill_discovery_hides_provisional_set_without_recording_python_trust`. The workflow-driven TUI and headless cases land with WFC-01, WFC-06 and WFC-09. |
+| A3 | `test_failed_runner_verdict_discards_entire_set` |
+| A4 | `test_moving_second_file_failure_restores_first_and_trust`, `test_load_failure_keeps_the_prior_surface_and_reverts_the_set`, `test_workflow_reload_failure_restores_the_pending_lease` |
+| A5 | `test_changed_staged_bytes_fail_closed`, `test_authored_trust_rechecks_bytes_and_records_the_set_digest` |
+| A6 | `test_two_publishers_allow_only_one_owner_of_the_same_name` |
+| A7 | `test_authored_picker_and_operator_commands_restore_previous_behavior`, `test_authored_cli_lists_approves_and_rejects_staged_runs` |
+| A8 | `test_model_tool_modules_do_not_reference_extension_trust_mutators` |
+| A9 | `test_extension_trust_writes_are_owned_by_runtime_and_explicit_operator_actions`. The legacy runner call remains until WFC-06. |
+| A10 | `test_reload_removes_the_only_tool_if_its_trusted_bytes_changed` |
+| A11 | `test_authored_picker_and_operator_commands_restore_previous_behavior`, `test_rollback_refuses_changed_archive_content` |
+| A12 | `test_store_refuses_authoring_below_the_user_root`, `test_scoped_writer_cannot_author_under_the_user_root` |
+| A13 | `test_published_execute_tool_requires_a_safe_approval_for_each_call` |
+| A14 | `test_without_bubblewrap_validation_is_static_and_does_not_import`, `test_validation_executes_only_inside_the_read_only_network_namespace`, and the publication receipt check in `test_published_execute_tool_requires_a_safe_approval_for_each_call`. |
