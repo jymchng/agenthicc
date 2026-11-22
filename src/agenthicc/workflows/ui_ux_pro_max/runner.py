@@ -1215,7 +1215,7 @@ class UiUxProMaxRunner(BaseWorkflowRunner):
 
     def _seed_skill_availability(self, context: UiUxProMaxContext) -> None:
         candidates = []
-        for skill in self._cfg.skills.values():
+        for skill in self._cfg.skills.current().value.values():
             normalized = "".join(ch for ch in f"{skill.slug} {skill.name}".lower() if ch.isalnum())
             if "uiuxpromax" in normalized:
                 candidates.append(skill)

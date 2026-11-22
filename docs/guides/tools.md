@@ -404,7 +404,7 @@ For the prompt-driven authoring skill, submit its instructions directly:
 The `/create-tools` skill is independent of `create_workflow`; it gives the
 agent project-specific guidance for producing a Lauren `@tool`-decorated
 `TOOLS` export. Review the generated code, trust it with `agenthicc trust add`,
-and reload the tool registry.
+and reload the tool registry with `/reload tools` or `/tools reload`.
 
 ## Try it
 

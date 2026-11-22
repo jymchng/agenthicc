@@ -12,6 +12,8 @@ Every test here wires at least one real collaborator rather than a stub:
 
 from __future__ import annotations
 
+from types import MappingProxyType
+from agenthicc.runners.reload import SurfaceHolder
 import asyncio
 import dataclasses
 from pathlib import Path
@@ -122,8 +124,8 @@ def _workflow_config(
         ),  # type: ignore[arg-type]
         approval_svc=approval_svc,
         cfg=cfg,
-        skills={},
-        plugin_tools=[],
+        skills=SurfaceHolder(MappingProxyType({})),
+        tool_surface=SurfaceHolder(()),
         mcp_registry=None,
         mention_cache=SimpleNamespace(),  # type: ignore[arg-type]
         agents_registry=SimpleNamespace(),  # type: ignore[arg-type]
@@ -475,8 +477,8 @@ def test_authoring_budgets_come_from_real_toml(tmp_path: Path) -> None:
         agent_runner=SimpleNamespace(_transport=None),  # type: ignore[arg-type]
         approval_svc=None,
         cfg=cfg,
-        skills={},
-        plugin_tools=[],
+        skills=SurfaceHolder(MappingProxyType({})),
+        tool_surface=SurfaceHolder(()),
         mcp_registry=None,
         mention_cache=SimpleNamespace(),  # type: ignore[arg-type]
         agents_registry=SimpleNamespace(),  # type: ignore[arg-type]
@@ -506,8 +508,8 @@ def test_phase_models_come_from_real_toml(tmp_path: Path) -> None:
         agent_runner=SimpleNamespace(_transport=None),  # type: ignore[arg-type]
         approval_svc=None,
         cfg=base,
-        skills={},
-        plugin_tools=[],
+        skills=SurfaceHolder(MappingProxyType({})),
+        tool_surface=SurfaceHolder(()),
         mcp_registry=None,
         mention_cache=SimpleNamespace(),  # type: ignore[arg-type]
         agents_registry=SimpleNamespace(),  # type: ignore[arg-type]

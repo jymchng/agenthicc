@@ -19,6 +19,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from agenthicc.plugins.source import execute_extension_source
+
 if TYPE_CHECKING:
     from .command import Command
 
@@ -102,7 +104,7 @@ def _load_command_file(path: Path) -> CommandLoadResult:
             return CommandLoadResult(path=path, error="could not create module spec")
         module = importlib.util.module_from_spec(spec)
         sys.modules[module_name] = module
-        spec.loader.exec_module(module)
+        execute_extension_source(path, module)
     except Exception as exc:
         return CommandLoadResult(path=path, error=f"{type(exc).__name__}: {exc}")
 

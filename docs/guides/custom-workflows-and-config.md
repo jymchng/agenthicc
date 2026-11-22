@@ -342,12 +342,11 @@ In the TUI, select it with:
 After editing a plugin file, reload the registry in the active session:
 
 ```text
-/workflows reload
+/workflow reload
 ```
 
-Restarting the session reloads both the workflow and configuration. The
-`/workflows reload` command reloads Python workflow files/packages, not the TOML
-configuration.
+`/workflow reload` rescans Python workflow files and packages. Restart
+the session to apply changes to the TOML configuration.
 
 You can keep a separate configuration file for a workflow or environment and
 select it explicitly:

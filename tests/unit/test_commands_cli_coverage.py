@@ -25,7 +25,7 @@ from agenthicc.commands.builtins import (
 )
 from agenthicc.commands.command import CommandContext
 from agenthicc.config import AgenthiccConfig
-from agenthicc.skills.loader import SkillDef, SkillDiscoveryResult
+from agenthicc.skills.loader import SkillDef
 from agenthicc.tui.runtime import ModeManager, ModeRegistry, RuntimeMode
 
 pytestmark = pytest.mark.unit
@@ -83,9 +83,6 @@ def test_builtin_commands_cover_status_model_mode_and_simple_handlers(
     ctx.command_registry = None
     assert _cmd_commands(ctx)
     ctx.args = "reload"
-    ctx.reload_commands = lambda: (True, "reloaded")
-    assert _cmd_commands(ctx)
-    ctx.reload_commands = lambda: (_ for _ in ()).throw(RuntimeError("reload broke"))
     assert _cmd_commands(ctx)
 
     monkeypatch.chdir(tmp_path)
@@ -157,9 +154,6 @@ def test_builtin_replay_skills_and_skill_handler_paths(
     ctx.args = "wrong"
     assert _cmd_skills(ctx)
     ctx.args = "reload"
-    ctx.reload_skills = lambda: SkillDiscoveryResult({"coverage": skill})
-    assert _cmd_skills(ctx)
-    ctx.reload_skills = lambda: (_ for _ in ()).throw(RuntimeError("reload failed"))  # type: ignore[assignment]
     assert _cmd_skills(ctx)
 
     monkeypatch.setattr(
@@ -207,7 +201,6 @@ def test_skills_listing_uses_overlay_when_available(tmp_path: Path) -> None:
     assert ctx.console.export_text() == ""
 
     ctx.args = "reload"
-    ctx.reload_skills = lambda: SkillDiscoveryResult({"review": skill})
     assert _cmd_skills(ctx) is True
     assert isinstance(overlays[-1], RegistryMessageOverlay)
     assert ctx.console.export_text() == ""

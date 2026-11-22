@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import dataclasses
+
+from types import MappingProxyType
+from agenthicc.runners.reload import SurfaceHolder
 import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -38,8 +42,8 @@ def _runner() -> CodePlanRunner:
         ),  # type: ignore[arg-type]
         approval_svc=None,
         cfg=cfg,
-        skills={},
-        plugin_tools=[],
+        skills=SurfaceHolder(MappingProxyType({})),
+        tool_surface=SurfaceHolder(()),
         mcp_registry=None,
         mention_cache=SimpleNamespace(),  # type: ignore[arg-type]
         agents_registry=SimpleNamespace(),  # type: ignore[arg-type]
@@ -191,7 +195,7 @@ async def test_run_phase_filters_tools_using_the_effective_phase_mode() -> None:
     async def write_fixture(path: str) -> dict[str, str]:
         return {"path": path}
 
-    runner._cfg.plugin_tools.append(write_fixture)  # type: ignore[union-attr]
+    runner._cfg = dataclasses.replace(runner._cfg, tool_surface=SurfaceHolder((write_fixture,)))
     captured: dict[str, object] = {}
 
     async def fake_turn(_text: str, **kwargs: object) -> None:
@@ -236,7 +240,7 @@ async def test_execute_filters_tools_by_the_approved_execute_mode() -> None:
     async def write_fixture(path: str) -> dict[str, str]:
         return {"path": path}
 
-    runner._cfg.plugin_tools.append(write_fixture)  # type: ignore[union-attr]
+    runner._cfg = dataclasses.replace(runner._cfg, tool_surface=SurfaceHolder((write_fixture,)))
     offered: list[str] = []
 
     async def execute_turn(_text: str, **kwargs: object) -> None:

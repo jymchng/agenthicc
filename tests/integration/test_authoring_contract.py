@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import MappingProxyType
+from agenthicc.runners.reload import SurfaceHolder
 import asyncio
 import dataclasses
 from pathlib import Path
@@ -91,8 +93,8 @@ async def test_checkpoint_restart_preserves_repairs_and_exhausts_the_original_bu
         agent_runner=AgentRunnerBase(transport=MockTransport()),
         approval_svc=None,
         cfg=AgenthiccConfig(),
-        skills={},
-        plugin_tools=[],
+        skills=SurfaceHolder(MappingProxyType({})),
+        tool_surface=SurfaceHolder(()),
         mcp_registry=None,
         mention_cache=MentionCache(),
         agents_registry=build_agents_registry(),

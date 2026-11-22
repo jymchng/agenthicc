@@ -728,7 +728,6 @@ async def test_direct_turn_requires_runner_and_delegates_to_canonical_runner(
         session_memory=object(),
         skills={},
         mention_cache=object(),
-        project_plugins=SimpleNamespace(all_tools=[]),
         mcp_registry=None,
         approval_svc=object(),
         memory_router=None,

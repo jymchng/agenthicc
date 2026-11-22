@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import MappingProxyType
+from agenthicc.runners.reload import SurfaceHolder
 import asyncio
 from types import SimpleNamespace
 
@@ -45,8 +47,8 @@ def _config():
             ),  # type: ignore[arg-type]
             approval_svc=Approval(),  # type: ignore[arg-type]
             cfg=cfg,
-            skills={},
-            plugin_tools=[],
+            skills=SurfaceHolder(MappingProxyType({})),
+            tool_surface=SurfaceHolder(()),
             mcp_registry=None,
             mention_cache=SimpleNamespace(),  # type: ignore[arg-type]
             agents_registry=SimpleNamespace(get_role_system_prompt=lambda role: f"role:{role}"),  # type: ignore[arg-type]
@@ -402,7 +404,7 @@ async def test_workflow_loop_unknown_parallel_cancel_and_human_paths(
 
     filtered_runner = WorkflowRunner(
         Branches,
-        replace(config, plugin_tools=[writes, plain], mcp_registry=BadMcp()),
+        replace(config, tool_surface=SurfaceHolder(tuple([writes, plain])), mcp_registry=BadMcp()),
         mode,
     )
     filtered = filtered_runner._filter_tools(

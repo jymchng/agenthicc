@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from io import StringIO
+from pathlib import Path
 
 import pytest
 from unittest.mock import MagicMock
@@ -10,9 +11,6 @@ from unittest.mock import MagicMock
 from agenthicc.commands import Command, CommandContext, CommandDispatcher, UnifiedCommandRegistry
 from agenthicc.config import load_config
 from agenthicc.skills.loader import (
-    SkillDef,
-    SkillDiagnostic,
-    SkillDiscoveryResult,
     SkillPermissionSet,
     _parse_skill,
     discover_skills,
@@ -321,27 +319,32 @@ def test_skill_dollar_alias_dispatches_but_permission_denial_is_enforced(tmp_pat
     assert "Review file.py" in pending.call_args.args[0]
 
 
-def test_skills_reload_command_reports_changes_and_diagnostics(tmp_path):
+async def test_skill_refresh_command_reports_changes_and_diagnostics(tmp_path: Path) -> None:
+    from collections.abc import Coroutine
+
     from rich.console import Console
     from agenthicc.config import AgenthiccConfig
     from agenthicc.commands import build_builtin_registry
+    from agenthicc.runners.reload import ReloadChange, ReloadDiagnostic, ReloadReport, ReloadSurface
 
-    old_skill = SkillDef(name="Old", slug="old", path=tmp_path / "old")
-    new_skill = SkillDef(name="New", slug="new", path=tmp_path / "new")
-    skills = {"old": old_skill}
     output = StringIO()
     console = Console(file=output, markup=False, force_terminal=False)
+    pending: list[Coroutine[object, object, None]] = []
 
-    def reload_skills() -> SkillDiscoveryResult:
-        skills.clear()
-        skills["new"] = new_skill
-        return SkillDiscoveryResult(
-            skills=skills,
-            diagnostics=(
-                SkillDiagnostic(
-                    path=tmp_path / "broken" / "SKILL.md",
-                    code="invalid-frontmatter",
-                    message="metadata could not be parsed",
+    async def refresh(surfaces: frozenset[ReloadSurface]) -> ReloadReport:
+        assert surfaces == frozenset({"skills"})
+        return ReloadReport(
+            1,
+            "command",
+            surfaces,
+            surfaces,
+            (ReloadChange("skills", "new", "added"), ReloadChange("skills", "old", "removed")),
+            (
+                ReloadDiagnostic(
+                    "skills",
+                    str(tmp_path / "broken" / "SKILL.md"),
+                    "invalid_manifest",
+                    "Skill discovery: invalid-frontmatter.",
                 ),
             ),
         )
@@ -352,16 +355,16 @@ def test_skills_reload_command_reports_changes_and_diagnostics(tmp_path):
         model="",
         console=console,
         config=AgenthiccConfig(),
-        skills=skills,
-        reload_skills=reload_skills,
+        reload=refresh,
+        start_task=pending.append,
     )
 
     assert CommandDispatcher(build_builtin_registry()).dispatch("/skills reload", context)
+    assert len(pending) == 1
+    await pending[0]
     rendered = output.getvalue()
-    assert "Reloaded 1 skill(s)" in rendered
-    assert "added: new" in rendered
-    assert "removed: old" in rendered
-    assert "Skill reload:" in rendered
+    assert "skills +1 −1" in rendered
+    assert "1 diagnostic(s)" in rendered
     assert "invalid-frontmatter" in rendered
 
 
@@ -380,4 +383,4 @@ def test_skills_reload_command_is_unavailable_without_session_callback():
     )
 
     assert CommandDispatcher(build_builtin_registry()).dispatch("/skills reload", context)
-    assert "only available in an interactive session" in output.getvalue()
+    assert "Reload is unavailable" in output.getvalue()

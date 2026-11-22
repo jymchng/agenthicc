@@ -99,7 +99,7 @@ def test_session_helpers_project_terminal_usage_and_event_publication(
     assert ctx.session_service.kwargs["kind"] == "turn_started"
 
 
-def test_session_reload_failure_paths_and_workflow_resume_guards(
+async def test_session_failed_refresh_and_workflow_resume_guards(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     session, ctx, _workspace, _input = _make_session()
@@ -107,17 +107,17 @@ def test_session_reload_failure_paths_and_workflow_resume_guards(
         "agenthicc.plugins.discovery.discover_project_tools",
         lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("tools unavailable")),
     )
-    assert session._reload_tools()[0] is False
+    assert not (await session._request_extension_reload(frozenset({"tools"}))).ok
     monkeypatch.setattr(
         "agenthicc.workflows.registry.build_workflow_registry",
         lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("workflows unavailable")),
     )
-    assert session._reload_workflows()[0] is False
+    assert not (await session._request_extension_reload(frozenset({"workflows"}))).ok
     monkeypatch.setattr(
         "agenthicc.commands.plugin_loader.discover_command_plugins",
         lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("commands unavailable")),
     )
-    assert session._reload_commands()[0] is False
+    assert not (await session._request_extension_reload(frozenset({"commands"}))).ok
 
     assert session._handle_workflow_resume("missing") is True
     ctx.app_state.active_mode.set(RuntimeMode("Plan", default_workflow="demo"))

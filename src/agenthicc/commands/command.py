@@ -12,11 +12,12 @@ from enum import StrEnum
 from typing import Callable, Literal, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Awaitable, Coroutine, Mapping
     from rich.console import Console
     from agenthicc.config import AgenthiccConfig
     from agenthicc.commands.registry import UnifiedCommandRegistry
-    from agenthicc.skills.loader import SkillDef, SkillDiscoveryResult
+    from agenthicc.skills.loader import SkillDef
+    from agenthicc.runners.reload import ReloadReport, ReloadSurface
     from agenthicc.tools.base import ToolLike
     from agenthicc.tui.workspace.overlay import Overlay
     from agenthicc.tui.runtime.mode_manager import ModeManager
@@ -112,7 +113,7 @@ class CommandContext:
     session_id: str = ""
     active_agent: str = "default"
 
-    skills: "dict[str, SkillDef]" = field(default_factory=dict)
+    skills: "Mapping[str, SkillDef]" = field(default_factory=dict)
     command_registry: "UnifiedCommandRegistry | None" = None
     tools: "list[ToolLike] | None" = None
     tool_sources: "Mapping[str, str] | None" = None
@@ -128,10 +129,8 @@ class CommandContext:
     set_pending_menu: "Callable[[Overlay], None] | None" = None
     close_overlay: "Callable[[], None] | None" = None
     set_pending_replay: "Callable[[str], None] | None" = None
-    reload_skills: "Callable[[], SkillDiscoveryResult] | None" = None
-    reload_commands: "Callable[[], tuple[bool, str]] | None" = None
-    reload_tools: "Callable[[], tuple[bool, str]] | None" = None
-    reload_workflows: "Callable[[], tuple[bool, str]] | None" = None
+    reload: "Callable[[frozenset[ReloadSurface]], Awaitable[ReloadReport]] | None" = None
+    start_task: "Callable[[Coroutine[object, object, None]], object] | None" = None
     set_input_text: "Callable[[str], None] | None" = None
     usage_snapshot: "Callable[[], UsageSnapshot] | None" = None
     cancel_active: "Callable[[], bool] | None" = None

@@ -10,6 +10,8 @@ NOTE: no ``from __future__ import annotations`` — the ``@tool()`` decorator
 inspects annotations at decoration time.
 """
 
+from types import MappingProxyType
+from agenthicc.runners.reload import SurfaceHolder
 import asyncio
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -189,8 +191,8 @@ def _runner(app_state, processor, mock: MockTransport) -> CreateWorkflowRunner:
         agent_runner=AgentRunnerBase(transport=mock, signals=SignalBus()),
         approval_svc=None,  # headless: design approval auto-grants
         cfg=cfg,
-        skills={},
-        plugin_tools=[],
+        skills=SurfaceHolder(MappingProxyType({})),
+        tool_surface=SurfaceHolder(()),
         mcp_registry=None,
         mention_cache=MagicMock(),
         agents_registry=build_agents_registry(),

@@ -3,11 +3,24 @@
 from __future__ import annotations
 
 import dataclasses
-from types import SimpleNamespace
+from pathlib import Path
+from types import MappingProxyType, SimpleNamespace
+from collections.abc import Mapping, Sequence
+from typing import TYPE_CHECKING, cast
 
+from agenthicc.commands.registry import UnifiedCommandRegistry
+from agenthicc.kernel import AppState, EventProcessor
+from agenthicc.runners.reload import ReloadService, SurfaceHolder
 from agenthicc.runners.session_context import SessionContext
+from agenthicc.subagents.types import DEFAULT_REGISTRY, SubagentTypeRegistry
+from agenthicc.workflows.registry import WorkflowRegistry
 from agenthicc.tui.trigger import TriggerManager
 from agenthicc.workflows.config import WorkflowConfig
+
+
+if TYPE_CHECKING:
+    from agenthicc.skills.loader import SkillDef
+    from agenthicc.tools.base import ToolLike
 
 
 def _stand_in(cls: type[object], fields: dict[str, object]) -> SimpleNamespace:
@@ -36,7 +49,33 @@ def session_context(**fields: object) -> SimpleNamespace:
     have all of them. A session always has a trigger registry, so the stand-in
     carries an empty one unless the test supplies its own.
     """
-    return _stand_in(SessionContext, {"trigger_registry": TriggerManager(), **fields})
+    context = _stand_in(SessionContext, {"trigger_registry": TriggerManager(), **fields})
+    if "reload" not in fields:
+        kernel = fields.get("processor")
+        workflows = fields.get("workflow_registry")
+        commands = fields.get("cmd_registry")
+        subagents = fields.get("subagent_registry")
+        skills = cast("Mapping[str, SkillDef]", fields.get("skills", {}))
+        tools = cast("Sequence[ToolLike]", fields.get("tools", ()))
+        context.reload = ReloadService(
+            processor=kernel
+            if isinstance(kernel, EventProcessor)
+            else EventProcessor(initial_state=AppState.create(), persist=False),
+            project_dir=Path.cwd() / ".agenthicc",
+            user_dir=Path.home() / ".agenthicc",
+            workflow_registry=workflows
+            if isinstance(workflows, WorkflowRegistry)
+            else WorkflowRegistry(),
+            command_registry=commands
+            if isinstance(commands, UnifiedCommandRegistry)
+            else UnifiedCommandRegistry(),
+            subagent_registry=subagents
+            if isinstance(subagents, SubagentTypeRegistry)
+            else DEFAULT_REGISTRY.copy(),
+            skills=skills,
+            tools=tools,
+        )
+    return context
 
 
 def workflow_config(**fields: object) -> SimpleNamespace:
@@ -45,4 +84,12 @@ def workflow_config(**fields: object) -> SimpleNamespace:
     Runners read ``WorkflowConfig`` fields directly, so a fake must have all of
     them; methods such as ``all_plugin_tools`` are the test's to supply.
     """
-    return _stand_in(WorkflowConfig, fields)
+    skills = cast("Mapping[str, SkillDef]", fields.pop("skills", {}))
+    return _stand_in(
+        WorkflowConfig,
+        {
+            "skills": SurfaceHolder(MappingProxyType(dict(skills))),
+            "tool_surface": SurfaceHolder(()),
+            **fields,
+        },
+    )

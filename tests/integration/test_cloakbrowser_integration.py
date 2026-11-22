@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import MappingProxyType
+from agenthicc.runners.reload import SurfaceHolder
 import asyncio
 from pathlib import Path
 from types import SimpleNamespace
@@ -52,8 +54,8 @@ def test_workflow_config_exposes_session_browser_tools_once(tmp_path: Path) -> N
         agent_runner=object(),
         approval_svc=None,
         cfg=AgenthiccConfig(),
-        skills={},
-        plugin_tools=[],
+        skills=SurfaceHolder(MappingProxyType({})),
+        tool_surface=SurfaceHolder(()),
         mcp_registry=None,
         mention_cache=object(),
         agents_registry=object(),

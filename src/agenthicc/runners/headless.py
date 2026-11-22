@@ -503,8 +503,8 @@ async def execute_workflow(
             agent_runner=cast("AgentRunnerBase", selected_runner),
             approval_svc=session.approval_svc,
             cfg=selected_config,
-            skills=session.skills,
-            plugin_tools=session.project_plugins,
+            skills=session.reload.skills,
+            tool_surface=session.reload.tools,
             mcp_registry=session.mcp_registry,
             mention_cache=session.mention_cache,
             agents_registry=session.agents_registry,
@@ -894,6 +894,23 @@ async def _run_headless_workflow_stream(ctx: "CLIContext") -> None:
             intent = line.strip()
             if not intent:
                 continue
+            command = intent.split(maxsplit=1)
+            if command[0] == "/reload":
+                from agenthicc.runners.reload import parse_reload_surfaces
+
+                try:
+                    surfaces = parse_reload_surfaces(command[1] if len(command) == 2 else "")
+                except ValueError as exc:
+                    print(
+                        json.dumps(
+                            {"event": "error", "code": "invalid_reload", "message": str(exc)}
+                        ),
+                        flush=True,
+                    )
+                else:
+                    report = await session.reload.reload(surfaces, reason="command")
+                    print(json.dumps({"event": "reload", **report.to_dict()}), flush=True)
+                continue
             if intent == "/loops" or intent == "/loop" or intent.startswith("/loop "):
                 print(
                     json.dumps(
@@ -966,6 +983,7 @@ async def _close_headless_session(
     """Close durable handles and background services for a headless session."""
     session_service = session.session_service
     try:
+        await session.reload.close()
         projection_task = session.kernel_projection_task
         if projection_task is not None:
             projection_task.cancel()

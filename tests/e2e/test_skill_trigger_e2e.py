@@ -8,7 +8,7 @@ from rich.console import Console
 
 from agenthicc.commands import CommandContext, CommandDispatcher, UnifiedCommandRegistry
 from agenthicc.config import AgenthiccConfig
-from agenthicc.runners.tui_session import _build_skill_command
+from agenthicc.commands.builtins import _build_skill_command
 from agenthicc.skills.loader import discover_skills_with_diagnostics
 from agenthicc.tui.trigger import TriggerContext, TriggerManager
 from agenthicc.tui.triggers.slash_command import SkillTrigger, SlashCommandTrigger

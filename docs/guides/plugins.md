@@ -204,6 +204,15 @@ writer scoped to the run’s pending candidate. Deterministic validation
 and model review must both approve the same content digest. See the
 [workflow authoring guide](workflows.md#budgets) for repair and resume.
 
+## Refresh a live session
+
+Use `/reload` to refresh tools, skills, workflows and commands. Pass surface
+names to refresh a subset. The service performs discovery off the event loop
+and skips untrusted code. It reports bounded diagnostics for trust, import
+and dependency failures and namespace conflicts. Tool and command entry
+modules reload from current source bytes even when their timestamp and size
+match the previous version.
+
 ## MCP servers
 
 Configure MCP servers with `[[tools.mcp_servers]]`. A session owns one

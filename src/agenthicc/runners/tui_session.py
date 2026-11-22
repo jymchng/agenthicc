@@ -81,7 +81,6 @@ if TYPE_CHECKING:
     from agenthicc.cli.context import CLIContext, CLIFlags
     from agenthicc.commands.busy_policy import BusyDecision
     from agenthicc.commands.command import Command, UsageSnapshot
-    from agenthicc.commands.registry import UnifiedCommandRegistry
     from agenthicc.config import (
         AgenthiccConfig,
         CloakBrowserSettings,
@@ -98,7 +97,8 @@ if TYPE_CHECKING:
     from agenthicc.runners.workflow_handle import WorkflowRunHandle
     from agenthicc.runners.workflow_profile import ResumeProviderProfile
     from agenthicc.runners.workflow_recovery import WorkflowRecoveryRecord
-    from agenthicc.skills.loader import SkillDef, SkillDiscoveryResult
+    from agenthicc.skills.loader import SkillDef
+    from agenthicc.runners.reload import ReloadReport, ReloadSurface
     from agenthicc.subagents.pool import SubagentPool
     from agenthicc.tools.approval import ApprovalRequest, ApprovalRequester
     from agenthicc.tui.conversation_store import MessageQueue
@@ -561,38 +561,6 @@ def _workflow_failure_kind(exc: object) -> str:
     return disposition.kind
 
 
-def _build_skill_command(slug: str, skill: SkillDef) -> Command:
-    """Build the dollar-prefixed command owned by one discovered skill."""
-    from agenthicc.commands.builtins import _make_skill_handler
-    from agenthicc.commands.command import Command
-
-    return Command(
-        name=f"${slug}",
-        description=skill.description or skill.name,
-        argument_hint="[args…]",
-        group="Skills",
-        handler=_make_skill_handler(slug, skill),
-        aliases=tuple(f"${alias}" for alias in skill.aliases),
-        source_id=f"skill:{slug}",
-    )
-
-
-def _register_skill_commands(
-    registry: UnifiedCommandRegistry,
-    skills: dict[str, SkillDef],
-) -> None:
-    """Register the current skill commands in the unified command registry."""
-    for slug, skill in skills.items():
-        try:
-            command = _build_skill_command(slug, skill)
-            if any(registry.get(name) is not None for name in (command.name, *command.aliases)):
-                continue
-            registry.register(command)
-        except Exception:  # noqa: BLE001
-            # A malformed extension must not prevent the TUI from starting.
-            pass
-
-
 def _reset_terminal_on_exit() -> None:
     try:
         sys.stdout.write("\x1b[m\x1b[?2004l\x1b[?25h")
@@ -755,26 +723,23 @@ def _discover_extensions_sync(
     return result
 
 
-def _apply_extension_discovery(ctx: SessionContext, discovery: _ExtensionDiscovery) -> None:
-    """Publish a validated discovery result on the event-loop owner."""
+def _apply_extension_discovery(
+    ctx: SessionContext, discovery: _ExtensionDiscovery, workflows: WorkflowRegistry
+) -> None:
+    """Publish validated startup discovery on the event-loop owner."""
     from agenthicc.plugins.discovery import warn_conflicts
 
-    ctx.skills.clear()
-    ctx.skills.update(discovery.skills)
-    ctx.project_plugins.results.clear()
-    ctx.project_plugins.results.extend(discovery.project_plugins.results)
+    ctx.reload.install_initial(
+        skills=discovery.skills,
+        tools=discovery.project_plugins.all_tools,
+        commands=discovery.project_commands,
+        workflows=workflows,
+    )
     ctx.agents_registry.replace_with(discovery.agents_registry)
     ctx.subagent_registry.replace_with(discovery.subagent_registry)
     _check_session_agent(ctx)
-    if ctx.project_plugins.all_tools:
-        warn_conflicts(ctx.project_plugins)
-    for command in discovery.project_commands:
-        try:
-            ctx.cmd_registry.register(command)
-        except Exception:  # noqa: BLE001
-            log.warning("Command plugin %r could not be registered", command.name, exc_info=True)
-    ctx.command_plugin_names.update(command.name for command in discovery.project_commands)
-    _register_skill_commands(ctx.cmd_registry, ctx.skills)
+    if discovery.project_plugins.all_tools:
+        warn_conflicts(discovery.project_plugins)
 
 
 def _check_session_agent(ctx: SessionContext) -> None:
@@ -1583,7 +1548,9 @@ async def _build_session_context_impl(
     if not defer_extensions:
         startup.finish("extensions")
 
-    _register_skill_commands(cmd_registry, skills)
+    from agenthicc.runners.reload import _skill_commands
+
+    _skill_commands(cmd_registry, skills)
 
     trigger_registry = TriggerManager()
     from agenthicc.tui.input.command_usage import CommandUsage
@@ -1657,7 +1624,7 @@ async def _build_session_context_impl(
         memory_router=_memory_router,
         semantic_index=cast("SemanticIndex", _semantic_index),
         pending_resume=pending_resume,
-        command_plugin_names=command_plugin_names,
+        command_plugin_names=tuple(command_plugin_names),
         session_service=session_service,
         kernel_projection_task=kernel_projection_task,
         usage_ledger=usage_ledger,
@@ -1856,8 +1823,8 @@ class TUISession:
             agent_runner=ctx.agent_runner,
             approval_svc=ctx.approval_svc,
             cfg=ctx.cfg,
-            skills=ctx.skills,
-            plugin_tools=ctx.project_plugins,
+            skills=ctx.reload.skills,
+            tool_surface=ctx.reload.tools,
             mcp_registry=ctx.mcp_registry,
             mention_cache=ctx.mention_cache,
             agents_registry=ctx.agents_registry,
@@ -2812,11 +2779,10 @@ class TUISession:
             # publish a discovery result into a closed session's registries.
             if startup.closed:
                 return None
-            _apply_extension_discovery(self._ctx, discovery)
-            self._ctx.workflow_registry.replace_with(workflow_registry)
+            _apply_extension_discovery(self._ctx, discovery, workflow_registry)
             self._ctx.mode_manager.refresh_workflow_bindings(
-                workflow_registry.mode_default_map(),
-                workflow_registry.mode_available_map(),
+                self._ctx.workflow_registry.mode_default_map(),
+                self._ctx.workflow_registry.mode_available_map(),
             )
             return None
 
@@ -3038,7 +3004,7 @@ class TUISession:
 
             mcp_tools = ctx.mcp_registry.all_tools() if ctx.mcp_registry is not None else []
             project_tools: list[ToolLike] = [
-                *cast("list[ToolLike]", ctx.project_plugins.all_tools),
+                *ctx.reload.tools.current().value,
                 *session_tools(ctx),
                 *mcp_tools,
             ]
@@ -3849,7 +3815,7 @@ class TUISession:
         from agenthicc.plugins.registry import build_registry
 
         ctx = self._ctx
-        project_tools: list[ToolLike] = list(ctx.project_plugins.all_tools)
+        project_tools: list[ToolLike] = list(ctx.reload.tools.current().value)
         # Most slash commands are local/read-only and do not need browser
         # tool schemas. Iterating the session proxy here would import an
         # optional browser package merely to run /status or /startup. The
@@ -3877,7 +3843,7 @@ class TUISession:
             console=ctx.console,
             config=ctx.cfg,
             session_id=ctx.session_id,
-            skills=ctx.skills,
+            skills=ctx.reload.skills.current().value,
             active_agent="default",
             command_registry=ctx.cmd_registry,
             tools=tool_registry.tools,
@@ -3894,10 +3860,8 @@ class TUISession:
             set_pending_menu=self._workspace.overlays.show,
             close_overlay=self._workspace.overlays.hide,
             set_pending_replay=self._set_pending_replay,
-            reload_skills=self._reload_skills,
-            reload_commands=self._reload_commands,
-            reload_tools=self._reload_tools,
-            reload_workflows=self._reload_workflows,
+            reload=self._request_extension_reload,
+            start_task=lambda coro: self._tasks.start(coro, name="reload-command"),
             set_input_text=self._set_input_text,
             usage_snapshot=self._usage_snapshot,
             cancel_active=self._cancel_active_task,
@@ -4112,235 +4076,25 @@ class TUISession:
             return
         self._ctx.app_state.conversation.notify_transient(f"▶ Ran now: {decision.command_name}")
 
-    def _reload_skills(self) -> SkillDiscoveryResult:
-        """Rescan skill directories and refresh skill-owned dollar commands."""
-        from agenthicc.skills.loader import discover_skills_with_diagnostics
-
-        cfg = self._ctx.cfg
-        global_dir = (
-            Path(cfg.skills.default_skill_directory).expanduser()
-            if cfg.skills.default_skill_directory
-            else Path.home() / ".agenthicc"
-        )
-        discovery = discover_skills_with_diagnostics(
-            project_dir=Path(".agenthicc"),
-            user_dir=global_dir,
-        )
-
-        # Build all replacement commands before mutating the live session. If
-        # discovery or command construction fails, the current session remains
-        # usable and the caller can report the failure.
-        replacement_commands = [
-            (skill, _build_skill_command(slug, skill)) for slug, skill in discovery.skills.items()
-        ]
-        registry = self._ctx.cmd_registry
-        skill_sources = {
-            command.source_id
-            for command in registry.all_commands()
-            if command.source_id.startswith("skill:")
-        }
-        for source_id in skill_sources:
-            registry.unregister_source(source_id)
-
-        # Preserve the dictionary object because workflow configuration and
-        # command contexts keep references to this session-owned mapping.
-        self._ctx.skills.clear()
-        self._ctx.skills.update(discovery.skills)
-        conflicts: list[tuple[Path, str]] = []
-        for skill, command in replacement_commands:
-            if any(registry.get(name) is not None for name in (command.name, *command.aliases)):
-                conflicts.append(
-                    (
-                        skill.path,
-                        f"{command.name}: command name or alias conflicts with an existing command",
-                    )
-                )
-                continue
-            registry.register(command)
-
-        if conflicts:
-            from agenthicc.skills.loader import SkillDiagnostic, SkillDiscoveryResult
-
-            discovery = SkillDiscoveryResult(
-                skills=discovery.skills,
-                diagnostics=discovery.diagnostics
-                + tuple(
-                    SkillDiagnostic(
-                        path=path,
-                        code="command-conflict",
-                        message=message,
-                        severity="warning",
-                    )
-                    for path, message in conflicts
-                ),
+    async def _request_extension_reload(self, surfaces: frozenset[ReloadSurface]) -> ReloadReport:
+        report = await self._ctx.reload.reload(surfaces, reason="command")
+        if "workflows" in report.published:
+            registry = self._ctx.workflow_registry
+            if (
+                self._workflow_override is not None
+                and self._workflow_override not in registry.names()
+            ):
+                self._set_workflow_override(None)
+            self._ctx.mode_manager.refresh_workflow_bindings(
+                registry.mode_default_map(), registry.mode_available_map()
             )
-        return discovery
-
-    def _reload_tools(self) -> tuple[bool, str]:
-        """Rescan plugins and publish all tools that loaded successfully.
-
-        Tool files are independent load units. A broken or dependency-missing
-        file is reported, but must not hide tools from healthy files. If no
-        file can be loaded at all because discovery returned failures, retain
-        the current registry rather than replacing it with an empty one.
-        """
-        from agenthicc.plugins.discovery import discover_project_tools, warn_conflicts
-
-        subagent_registry = self._ctx.subagent_registry.copy()
-        try:
-            discovered = discover_project_tools(
-                project_dir=Path(".agenthicc"),
-                user_dir=Path.home() / ".agenthicc",
-                subagent_registry=subagent_registry,
-            )
-        except Exception as exc:  # noqa: BLE001
-            return False, f"Tool reload failed; existing tools kept: {type(exc).__name__}: {exc}"
-
-        failures: list[str] = []
-        for result in discovered.failed:
-            reason = result.error or ("missing dependencies: " + ", ".join(result.missing_deps))
-            failures.append(f"{result.path}: {reason}")
-
-        # Publish partial discovery results. The discovery layer attempts
-        # every file, so a broken optional plugin must not hide healthy ones.
-        if failures and not discovered.all_tools:
-            return False, "Tool reload failed; existing tools kept:\n" + "\n".join(failures)
-
-        old_count = len(self._ctx.project_plugins.all_tools)
-        warn_conflicts(discovered)
-        self._ctx.project_plugins = discovered
-
-        # WorkflowConfig is session-owned and frozen; replace its plugin set so
-        # subsequent workflow turns see the same freshly loaded tools.
-        import dataclasses
-
-        self._wf_config_base = dataclasses.replace(
-            self._wf_config_base,
-            plugin_tools=discovered,
-        )
-        new_count = len(discovered.all_tools)
-        message = f"Tools reloaded — {new_count} tool(s) available (was {old_count})."
-        if failures:
-            message += (
-                f" Skipped {len(failures)} plugin(s) that could not be loaded:\n"
-                + "\n".join(failures)
-            )
-        return True, message
-
-    def _reload_workflows(self) -> tuple[bool, str]:
-        """Rebuild workflows and replace the live registry in place."""
-        from agenthicc.workflows.registry import build_workflow_registry
-
-        try:
-            discovered = build_workflow_registry(
-                project_dir=Path(".agenthicc"),
-                user_dir=Path.home() / ".agenthicc",
-            )
-        except Exception as exc:  # noqa: BLE001
-            return False, (
-                f"Workflow reload failed; existing workflows kept: {type(exc).__name__}: {exc}"
-            )
-
-        registry = self._ctx.workflow_registry
-        old_names = set(registry.names())
-        new_names = set(discovered.names())
-        registry.replace_with(discovered)
-
-        if self._workflow_override is not None and self._workflow_override not in new_names:
-            self._set_workflow_override(None)
-
-        changes: list[str] = []
-        added = sorted(new_names - old_names)
-        removed = sorted(old_names - new_names)
-        if added:
-            changes.append(f"added: {', '.join(added)}")
-        if removed:
-            changes.append(f"removed: {', '.join(removed)}")
-        suffix = "; ".join(changes) if changes else "no workflow changes"
-        return True, f"Workflows reloaded — {len(new_names)} workflow(s); {suffix}."
-
-    def _reload_commands(self) -> tuple[bool, str]:
-        """Rescan slash-command plugins and publish a valid set atomically."""
-        from agenthicc.commands import build_builtin_registry
-        from agenthicc.commands.plugin_loader import discover_command_plugins
-
-        try:
-            discovered = discover_command_plugins(
-                project_dir=Path(".agenthicc"),
-                user_dir=Path.home() / ".agenthicc",
-            )
-        except Exception as exc:  # noqa: BLE001
-            return (
-                False,
-                f"Command reload failed; existing commands kept: {type(exc).__name__}: {exc}",
-            )
-
-        if discovered.failed:
-            failures: list[str] = []
-            for result in discovered.failed:
-                if result.error:
-                    reason = result.error
-                else:
-                    reason = "missing dependencies: " + ", ".join(result.missing_deps)
-                failures.append(f"{result.path}: {reason}")
-            return (
-                False,
-                "Command reload failed; existing commands kept:\n" + "\n".join(failures),
-            )
-
-        registry = self._ctx.cmd_registry
-        old_plugin_names = set(self._ctx.command_plugin_names)
-        old_plugins = {
-            command.name: command
-            for command in registry.all_commands()
-            if command.name in old_plugin_names
-        }
-        new_plugins = {command.name: command for command in discovered.all_commands}
-
-        # Preserve commands registered by other extension surfaces (for
-        # example MCP) while rebuilding the stable built-in/skill/plugin order.
-        preserved = [
-            command
-            for command in registry.all_commands()
-            if command.name not in old_plugin_names
-            and command.source_id != "builtin"
-            and not command.source_id.startswith("skill:")
-        ]
-
-        candidate = build_builtin_registry()
-        for command in preserved:
-            candidate.register(command)
-        candidate.register_many(discovered.all_commands)
-        _register_skill_commands(candidate, self._ctx.skills)
-
-        # Only publish after discovery, validation, and candidate construction
-        # have all succeeded. Consumers keep the same registry object.
-        registry.replace_with(candidate)
-        new_plugin_names = set(new_plugins)
-        command_plugin_names = self._ctx.command_plugin_names
-        if command_plugin_names is None:
-            self._ctx.command_plugin_names = set(new_plugin_names)
-        else:
-            command_plugin_names.clear()
-            command_plugin_names.update(new_plugin_names)
-
-        added = sorted(new_plugin_names - old_plugin_names)
-        removed = sorted(old_plugin_names - new_plugin_names)
-        updated = sorted(set(old_plugins) & new_plugin_names)
-        summary: list[str] = []
-        if added:
-            summary.append(f"added: {', '.join(added)}")
-        if updated:
-            summary.append(f"updated: {', '.join(updated)}")
-        if removed:
-            summary.append(f"removed: {', '.join(removed)}")
-        if not summary:
-            summary.append("no command changes")
-        return True, "Commands reloaded — " + "; ".join(summary)
+        return report
 
     def _handle_workflow_command(self, args: str) -> bool:
         """Handle /workflow <name> | reset | resume [run-id]."""
         name = args.strip()
+        if name.casefold() == "reload":
+            return self.dispatch_slash("/workflows reload")
         conv = self._ctx.app_state.conversation
         resume_parts = name.split()
         if resume_parts and resume_parts[0] == "resume":
@@ -5337,12 +5091,10 @@ class TUISession:
                     conv_store=ctx.app_state.conversation,
                     app_state=ctx.app_state,
                     exec_cfg=agent.exec_cfg,
-                    skills=ctx.skills,
+                    skills=ctx.reload.skills.current().value,
                     skill_permissions=ctx.cfg.agents.skill_permissions_for(agent.spec.name),
                     mention_cache=ctx.mention_cache,
-                    project_plugin_tools=(
-                        cast("list[ToolLike]", ctx.project_plugins.all_tools) + session_tools(ctx)
-                    ),
+                    project_plugin_tools=([*ctx.reload.tools.current().value, *session_tools(ctx)]),
                     mcp_registry=ctx.mcp_registry,
                     active_agent=agent.spec.name,
                     agent_spec=agent.spec,
@@ -6673,6 +6425,7 @@ async def _close_tui_session_resources(
         if session is not None:
             session._release_workflow_claim(session._workflow_handle)
             session._terminal_unsub()
+        await ctx.reload.close()
         ctx.session_log.close()
         # PRD-129 Phase 2: close the durable conversation journal handle.
         _close = getattr(ctx.session_memory, "close", None)

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import MappingProxyType
+from agenthicc.runners.reload import SurfaceHolder
 import asyncio
 import json
 from collections.abc import Sequence
@@ -661,8 +663,8 @@ def _make_runner(tmp_path: Path, *, max_remediation_cycles: int = 2) -> UiUxProM
         ),  # type: ignore[arg-type]
         approval_svc=None,
         cfg=cfg,
-        skills={},
-        plugin_tools=[],
+        skills=SurfaceHolder(MappingProxyType({})),
+        tool_surface=SurfaceHolder(()),
         mcp_registry=None,
         mention_cache=SimpleNamespace(),  # type: ignore[arg-type]
         agents_registry=SimpleNamespace(),  # type: ignore[arg-type]

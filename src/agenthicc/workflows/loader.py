@@ -19,6 +19,8 @@ from pathlib import Path
 from types import ModuleType
 from typing import TYPE_CHECKING, Literal
 
+from agenthicc.plugins.source import execute_extension_source
+
 if TYPE_CHECKING:
     from collections.abc import Callable
     from agenthicc.workflows.plugin import WorkflowPlugin
@@ -232,7 +234,7 @@ def _execute_module(
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
     temporary_names.add(module_name)
-    spec.loader.exec_module(module)
+    execute_extension_source(path, module)
     return module
 
 
@@ -254,7 +256,7 @@ def _execute_workflow_package(
         package = importlib.util.module_from_spec(package_spec)
         sys.modules[package_name] = package
         temporary_names.add(package_name)
-        package_spec.loader.exec_module(package)
+        execute_extension_source(init_path, package)
     else:
         # A directory workflow does not need an __init__.py. This lightweight
         # namespace package is enough for ``from .tools import ...``.

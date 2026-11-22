@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import MappingProxyType
+from agenthicc.runners.reload import SurfaceHolder
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -43,8 +45,8 @@ def _make_runner(plugin_cls: type[WorkflowPlugin]) -> WorkflowRunner:
         agent_runner=MagicMock(),
         approval_svc=None,
         cfg=MagicMock(),
-        skills={},
-        plugin_tools=[],
+        skills=SurfaceHolder(MappingProxyType({})),
+        tool_surface=SurfaceHolder(()),
         mcp_registry=None,
         mention_cache=MagicMock(),
         agents_registry=MagicMock(),

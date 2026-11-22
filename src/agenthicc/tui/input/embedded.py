@@ -265,7 +265,7 @@ def load_composer_context(
     from agenthicc.commands.builtins import build_builtin_registry
     from agenthicc.commands.plugin_loader import discover_command_plugins
     from agenthicc.config import load_config
-    from agenthicc.runners.tui_session import _build_skill_command
+    from agenthicc.commands.builtins import _build_skill_command
     from agenthicc.skills.loader import discover_skills
     from agenthicc.workflows.registry import build_workflow_registry
 

@@ -12,6 +12,8 @@ Covers, in order:
 
 from __future__ import annotations
 
+from types import MappingProxyType
+from agenthicc.runners.reload import SurfaceHolder
 import asyncio
 import importlib.util
 import sys
@@ -233,8 +235,8 @@ def _runner(*, max_attempts: int = 3, max_turns: int = 5) -> CreateWorkflowRunne
         ),  # type: ignore[arg-type]
         approval_svc=None,
         cfg=cfg,
-        skills={},
-        plugin_tools=[],
+        skills=SurfaceHolder(MappingProxyType({})),
+        tool_surface=SurfaceHolder(()),
         mcp_registry=None,
         mention_cache=SimpleNamespace(),  # type: ignore[arg-type]
         agents_registry=SimpleNamespace(),  # type: ignore[arg-type]
@@ -1750,7 +1752,9 @@ def test_base_tools_drops_blocked_capabilities_and_adds_memory_tools() -> None:
         return path
 
     runner = _runner()
-    runner._cfg = dataclasses.replace(runner._cfg, plugin_tools=[writer, reader])
+    runner._cfg = dataclasses.replace(
+        runner._cfg, tool_surface=SurfaceHolder(tuple([writer, reader]))
+    )
     runner._cfg.app_state.active_mode.set(
         RuntimeMode(name="Locked", blocked_capabilities=frozenset({ToolCapability.WRITE}))
     )
@@ -1775,7 +1779,7 @@ def test_base_tools_keeps_everything_when_nothing_is_blocked() -> None:
         return path
 
     runner = _runner()
-    runner._cfg = dataclasses.replace(runner._cfg, plugin_tools=[writer])
+    runner._cfg = dataclasses.replace(runner._cfg, tool_surface=SurfaceHolder(tuple([writer])))
     names = {getattr(tool, "__name__", "") for tool in runner._base_tools()}
     assert "writer" in names
 
@@ -2185,7 +2189,7 @@ async def test_generate_keeps_package_writes_scoped_under_its_declared_mode(
         return path
 
     runner = _validating_runner(tmp_path)
-    runner._cfg = dataclasses.replace(runner._cfg, plugin_tools=[writer])
+    runner._cfg = dataclasses.replace(runner._cfg, tool_surface=SurfaceHolder(tuple([writer])))
     manager = ModeManager(app_state=runner._cfg.app_state, default_name="Safe")
     runner._mode_manager = manager
     published: list[str] = []

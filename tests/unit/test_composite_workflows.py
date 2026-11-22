@@ -62,7 +62,6 @@ async def test_code_plan_runner_run_result_accessible_via_super() -> None:
     mock_cfg.conv_store.append_event = MagicMock()
     mock_cfg.conv_store.close_turn = MagicMock()
     mock_cfg.approval_svc = None
-    mock_cfg.plugin_tools = []
     mock_cfg.mcp_registry = None
     mock_cfg.memory_router = None
     mock_cfg.semantic_index = None
@@ -107,7 +106,6 @@ async def test_run_phase_calls_run_turn() -> None:
     mock_cfg = MagicMock()
     mock_cfg.app_state.active_mode.return_value = MagicMock(blocked_capabilities=frozenset())
     mock_cfg.approval_svc = None
-    mock_cfg.plugin_tools = []
     mock_cfg.mcp_registry = None
     mock_cfg.memory_router = None
     mock_cfg.semantic_index = None
@@ -154,7 +152,6 @@ async def test_run_phase_passes_shared_memory() -> None:
     mock_cfg = MagicMock()
     mock_cfg.app_state.active_mode.return_value = MagicMock(blocked_capabilities=frozenset())
     mock_cfg.approval_svc = None
-    mock_cfg.plugin_tools = []
     mock_cfg.mcp_registry = None
     mock_cfg.memory_router = None
     mock_cfg.semantic_index = None

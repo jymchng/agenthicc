@@ -4,6 +4,8 @@ NOTE: no ``from __future__ import annotations`` — @agent() inspects annotation
 at decoration time.
 """
 
+from types import MappingProxyType
+from agenthicc.runners.reload import SurfaceHolder
 import asyncio
 
 import pytest
@@ -80,8 +82,8 @@ def _make_wf_runner(
         # from cfg.execution, so a bare MagicMock (no comparison support) breaks
         # the compaction trigger / pre-send guard.
         cfg=AgenthiccConfig(),
-        skills={},
-        plugin_tools=[],
+        skills=SurfaceHolder(MappingProxyType({})),
+        tool_surface=SurfaceHolder(()),
         mcp_registry=None,
         mention_cache=MagicMock(),
         agents_registry=agents_registry or build_agents_registry(),

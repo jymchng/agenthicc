@@ -18,6 +18,8 @@ from agenthicc.plugins.deps import (
 from agenthicc.plugins.trust import current_extension_trust
 from agenthicc.tools.base import tool_name
 
+from agenthicc.plugins.source import execute_extension_source
+
 if TYPE_CHECKING:
     from agenthicc.subagents.types import SubagentTypeRegistry, SubagentTypeSpec
 
@@ -137,12 +139,12 @@ def _load_plugin_file(
         module = importlib.util.module_from_spec(spec)
         sys.modules[module_name] = module
         if plugin_subagent_registry is None:
-            spec.loader.exec_module(module)
+            execute_extension_source(path, module)
         else:
             from agenthicc.subagents.types import _bind_registration_target
 
             with _bind_registration_target(plugin_subagent_registry):
-                spec.loader.exec_module(module)
+                execute_extension_source(path, module)
     except ImportError as exc:
         inferred = _infer_missing_from_ast(path)
         if inferred:

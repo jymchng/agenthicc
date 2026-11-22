@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import MappingProxyType
+from agenthicc.runners.reload import SurfaceHolder
 from types import SimpleNamespace
 
 import pytest
@@ -77,8 +79,8 @@ async def test_workflow_config_materializes_tools_and_awaits_startup() -> None:
         agent_runner=SimpleNamespace(),
         approval_svc=None,
         cfg=SimpleNamespace(),
-        skills={},
-        plugin_tools=plugin,  # type: ignore[arg-type]
+        skills=SurfaceHolder(MappingProxyType({})),
+        tool_surface=SurfaceHolder(tuple(plugin.all_tools)),  # type: ignore[arg-type]
         mcp_registry=None,
         mention_cache=SimpleNamespace(),
         agents_registry=SimpleNamespace(),
@@ -98,8 +100,8 @@ async def test_workflow_config_materializes_tools_and_awaits_startup() -> None:
         agent_runner=SimpleNamespace(),
         approval_svc=None,
         cfg=SimpleNamespace(),
-        skills={},
-        plugin_tools=[],
+        skills=SurfaceHolder(MappingProxyType({})),
+        tool_surface=SurfaceHolder(()),
         mcp_registry=None,
         mention_cache=SimpleNamespace(),
         agents_registry=SimpleNamespace(),

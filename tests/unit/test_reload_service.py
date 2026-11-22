@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from threading import Event
 from typing import TYPE_CHECKING
@@ -89,8 +90,13 @@ async def test_covered_reload_calls_share_one_discovery_and_report(
 
 
 async def test_reload_order_and_replay_generations(
-    reloader: ReloadService, running_processor: EventProcessor, monkeypatch: pytest.MonkeyPatch
+    reloader: ReloadService,
+    running_processor: EventProcessor,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
+    from agenthicc.kernel.events import Event as KernelEvent
+    from agenthicc.kernel.processor import restore_from_log
     from agenthicc.kernel.reducer import root_reducer
     from agenthicc.kernel.state import AppState
 
@@ -110,10 +116,47 @@ async def test_reload_order_and_replay_generations(
     await running_processor.drain()
 
     assert observed_order == ["skills", "tools", "workflows", "commands", "skills"]
-    state = AppState.create()
-    for generation in (1, 2):
-        state, effects = root_reducer(state, events.get_nowait())
+    received = [events.get_nowait(), events.get_nowait()]
+    encoded = [json.dumps(event.to_dict()) for event in received]
+    log = tmp_path / "reload.jsonl"
+    log.write_text("\n".join(encoded) + "\n", encoding="utf-8")
+    initial = AppState.create()
+    state = initial
+    for generation, item in enumerate(encoded, 1):
+        state, effects = root_reducer(state, KernelEvent.from_dict(json.loads(item)))
         assert state.reload_generation == generation
         assert effects == []
+    assert (await restore_from_log(str(log), initial)).reload_generation == 2
     assert events.empty()
+    await reloader.close()
+
+
+async def test_cancelled_preview_keeps_discovery_exclusive_until_the_thread_returns(
+    reloader: ReloadService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first_seen = Event()
+    finish_first = Event()
+    calls: list[int] = []
+
+    def discover(*, project_dir: Path, user_dir: Path) -> SkillDiscoveryResult:
+        calls.append(len(calls) + 1)
+        if calls == [1]:
+            first_seen.set()
+            assert finish_first.wait(5)
+        return SkillDiscoveryResult({})
+
+    monkeypatch.setattr("agenthicc.skills.loader.discover_skills_with_diagnostics", discover)
+    preview = asyncio.create_task(reloader.preview(frozenset({"skills"})))
+    try:
+        assert await asyncio.to_thread(first_seen.wait, 5)
+        preview.cancel()
+        following = asyncio.create_task(reloader.reload(frozenset({"skills"}), reason="api"))
+        await asyncio.sleep(0)
+        assert calls == [1]
+    finally:
+        finish_first.set()
+    with pytest.raises(asyncio.CancelledError):
+        await preview
+    assert (await following).generation == 1
+    assert calls == [1, 2]
     await reloader.close()

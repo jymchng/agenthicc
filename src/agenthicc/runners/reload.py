@@ -37,6 +37,7 @@ __all__ = [
     "ReloadSurface",
     "SurfaceHolder",
     "SurfaceSnapshot",
+    "parse_reload_surfaces",
 ]
 
 ReloadSurface = Literal["tools", "skills", "workflows", "commands"]
@@ -54,6 +55,14 @@ _DiagnosticCode = Literal[
 ]
 
 _T = TypeVar("_T")
+
+
+def parse_reload_surfaces(args: str) -> frozenset[ReloadSurface]:
+    """Parse the optional surface names shared by the TUI and headless command."""
+    wanted = frozenset(args.casefold().split())
+    if wanted - frozenset(RELOAD_SURFACES):
+        raise ValueError("Usage: /reload [skills tools workflows commands]")
+    return frozenset(surface for surface in RELOAD_SURFACES if not wanted or surface in wanted)
 
 
 @dataclass(frozen=True, slots=True)
@@ -225,20 +234,11 @@ def _source_diagnostic(
 def _skill_commands(
     registry: UnifiedCommandRegistry, skills: Mapping[str, SkillDef]
 ) -> tuple[ReloadDiagnostic, ...]:
-    from agenthicc.commands.builtins import _make_skill_handler
-    from agenthicc.commands.command import Command
+    from agenthicc.commands.builtins import _build_skill_command
 
     diagnostics: list[ReloadDiagnostic] = []
     for slug, skill in skills.items():
-        command = Command(
-            name=f"${slug}",
-            description=skill.description or skill.name,
-            argument_hint="[args…]",
-            group="Skills",
-            handler=_make_skill_handler(slug, skill),
-            aliases=tuple(f"${alias}" for alias in skill.aliases),
-            source_id=f"skill:{slug}",
-        )
+        command = _build_skill_command(slug, skill)
         if any(registry.get(name) is not None for name in (command.name, *command.aliases)):
             diagnostics.append(
                 ReloadDiagnostic(
@@ -291,6 +291,7 @@ class ReloadService:
         self._generation = processor.get_state().reload_generation
         self._discovery_lock = asyncio.Lock()
         self._flight: _Flight | None = None
+        self._published: set[ReloadSurface] = set()
         self._closed = False
 
     @property
@@ -304,6 +305,32 @@ class ReloadService:
     @property
     def generation(self) -> int:
         return self._generation
+
+    def install_initial(
+        self,
+        *,
+        skills: Mapping[str, SkillDef],
+        tools: Sequence[ToolLike],
+        commands: Sequence[Command],
+        workflows: WorkflowRegistry,
+    ) -> None:
+        """Install deferred startup data only for surfaces still at startup."""
+        if self._closed:
+            return
+        if "skills" not in self._published:
+            self._skills._publish(self._generation, MappingProxyType(dict(skills)))
+            self._versions["skills"] = dict.fromkeys(skills)
+        if "tools" not in self._published:
+            self._tools._publish(self._generation, tuple(tools))
+            self._versions["tools"] = dict.fromkeys(map(tool_name, tools))
+        if "commands" not in self._published:
+            self._command_registry.register_many(commands)
+            self._command_plugin_names = frozenset(command.name for command in commands)
+            self._versions["commands"] = dict.fromkeys(self._command_plugin_names)
+        _skill_commands(self._command_registry, self._skills.current().value)
+        if "workflows" not in self._published:
+            self._workflow_registry.replace_with(workflows)
+            self._versions["workflows"] = dict.fromkeys(workflows.names())
 
     async def reload(
         self, surfaces: frozenset[ReloadSurface], *, reason: ReloadReason
@@ -357,9 +384,7 @@ class ReloadService:
             commands = tuple(self._command_registry.all_commands())
             skill_snapshot = self._skills.current().value
             try:
-                candidate = await asyncio.to_thread(
-                    self._discover, surface, commands, skill_snapshot
-                )
+                candidate = await self._discover_off_loop(surface, commands, skill_snapshot)
             except Exception:  # noqa: BLE001 - a failed discovery keeps the surface intact
                 diagnostics.append(
                     ReloadDiagnostic(
@@ -374,13 +399,17 @@ class ReloadService:
             diagnostics.extend(candidate.diagnostics)
             if candidate.apply is None:
                 continue
-            changes.extend(_changes(surface, self._versions[surface], candidate.versions))
+            before = self._versions[surface]
+            if surface == "workflows":
+                before = {name: before.get(name) for name in self._workflow_registry.names()}
+            changes.extend(_changes(surface, before, candidate.versions))
             if not preview:
                 candidate.apply(generation)
                 self._versions[surface] = candidate.versions
                 published.add(surface)
 
         if published:
+            self._published.update(published)
             self._generation = generation
         report = ReloadReport(
             self._generation,
@@ -393,6 +422,21 @@ class ReloadService:
         if published:
             self._processor.emit_nowait(Event.create("SessionReloaded", report.to_dict()))
         return report
+
+    async def _discover_off_loop(
+        self,
+        surface: ReloadSurface,
+        commands: tuple[Command, ...],
+        skills: Mapping[str, SkillDef],
+    ) -> _Candidate:
+        work = asyncio.create_task(asyncio.to_thread(self._discover, surface, commands, skills))
+        try:
+            return await asyncio.shield(work)
+        except asyncio.CancelledError:
+            # A cancelled preview still owns its discovery until the thread has
+            # stopped importing. The next discovery must not overlap it.
+            await asyncio.gather(work, return_exceptions=True)
+            raise
 
     def _discover(
         self,
@@ -445,6 +489,7 @@ class ReloadService:
         return _Candidate(versions, tuple(diagnostics), apply)
 
     def _scan_tools(self) -> _Candidate:
+        from agenthicc.agent_tools import AGENT_TOOLS
         from agenthicc.plugins.discovery import discover_project_tools
 
         found = discover_project_tools(
@@ -453,20 +498,33 @@ class ReloadService:
             subagent_registry=self._subagent_registry.copy(),
         )
         tools = tuple(found.all_tools)
-        diagnostics = tuple(_source_diagnostic("tools", item, kind="tool") for item in found.failed)
+        diagnostics = [_source_diagnostic("tools", item, kind="tool") for item in found.failed]
         if diagnostics and not tools:
-            return _Candidate({}, diagnostics, None)
+            return _Candidate({}, tuple(diagnostics), None)
 
         versions: dict[str, str | None] = {}
+        names = set(map(tool_name, AGENT_TOOLS))
         for item in found.results:
             if item.tools:
                 digest = _digest(item.path)
-                versions.update((tool_name(tool), digest) for tool in item.tools)
+                for tool in item.tools:
+                    name = tool_name(tool)
+                    if name in names:
+                        diagnostics.append(
+                            ReloadDiagnostic(
+                                "tools",
+                                str(item.path),
+                                "name_conflict",
+                                f"{name} overrides an earlier tool source.",
+                            )
+                        )
+                    names.add(name)
+                    versions[name] = digest
 
         def apply(generation: int) -> None:
             self._tools._publish(generation, tools)
 
-        return _Candidate(versions, diagnostics, apply)
+        return _Candidate(versions, tuple(diagnostics), apply)
 
     def _scan_workflows(self) -> _Candidate:
         from agenthicc.workflows.registry import build_workflow_registry
@@ -533,16 +591,28 @@ class ReloadService:
                 and not command.is_skill
             ]
         )
-        registry.register_many(found.all_commands)
-        diagnostics = _skill_commands(registry, skills)
+        diagnostics: list[ReloadDiagnostic] = []
         versions: dict[str, str | None] = {}
         for item in found.results:
-            if item.commands:
-                digest = _digest(item.path)
-                versions.update((command.name, digest) for command in item.commands)
+            if not item.commands:
+                continue
+            digest = _digest(item.path)
+            for command in item.commands:
+                if any(registry.get(name) is not None for name in (command.name, *command.aliases)):
+                    diagnostics.append(
+                        ReloadDiagnostic(
+                            "commands",
+                            str(item.path),
+                            "name_conflict",
+                            f"{command.name} overrides an earlier command or alias.",
+                        )
+                    )
+                registry.register(command)
+                versions[command.name] = digest
+        diagnostics.extend(_skill_commands(registry, skills))
 
         def apply(_generation: int) -> None:
             self._command_registry.replace_with(registry)
             self._command_plugin_names = frozenset(versions)
 
-        return _Candidate(versions, diagnostics, apply)
+        return _Candidate(versions, tuple(diagnostics), apply)

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import MappingProxyType
+from agenthicc.runners.reload import SurfaceHolder
 import asyncio
 import importlib.util
 import sys
@@ -59,8 +61,8 @@ def _config(
         ),  # type: ignore[arg-type]
         approval_svc=None,
         cfg=cfg,
-        skills={},
-        plugin_tools=[],
+        skills=SurfaceHolder(MappingProxyType({})),
+        tool_surface=SurfaceHolder(()),
         mcp_registry=None,
         mention_cache=MagicMock(),
         agents_registry=MagicMock(),

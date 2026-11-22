@@ -127,7 +127,7 @@ TUI route may then report the command as having no usable handler.
 - the complete submitted `text` and the parsed `args` string;
 - the Rich `console`, live config, session id, and active-agent label;
 - the current command registry and mode manager;
-- callbacks for pending skills, menus, replay, overlay close, and skill reload;
+- callbacks for pending skills, menus, replay and overlay close, plus the session reload service;
 - session-provided workflow recovery callbacks used by `/workflows runs`.
 
 Handlers should use these fields rather than reaching into renderer or
@@ -165,16 +165,21 @@ replace a global command or a built-in with the same name. Use `/commands` to
 inspect the effective registry. Choose unique canonical names and aliases:
 alias conflicts are not diagnosed, and aliases can affect name resolution.
 
-Project-wide commands are loaded when the session is constructed.
-`/commands reload` rescans both command directories and updates the existing
-registry in place. Added, updated, and removed command names are reported.
-`/skills reload` refreshes skill-owned dollar triggers only, not Python command
-plugins. `/tools reload` rescans project and user-global tool plugins and
-publishes the successfully loaded subset even when another plugin fails; the
-failure details are reported. If no tool plugin loads successfully, the
-previous live tool registry is kept. `/workflows reload` rebuilds the workflow
-registry in place. Explicit skills use `$skill-name`; slash-prefixed skill
-names are not accepted.
+### Live extension reload
+
+Run `/reload` for all four extension surfaces or pass specific names, such
+as `/reload tools skills`. `/commands reload`, `/skills reload`, `/tools reload`,
+and `/workflow reload` (also `/workflows reload`) each request one surface
+through the same service. Skill reload also refreshes its dollar triggers.
+
+Discovery runs in a worker thread. The session publishes complete surfaces
+as they become available and reports the changed item counts and source
+diagnostics. Tool reload can publish healthy plugins alongside import
+failures. If failures leave zero tools, the previous tool surface stays
+active. A failed command scan preserves the previous command registry.
+
+In a headless workflow session, submit `/reload` on stdin to receive one
+JSON object with `"event": "reload"` and the typed report fields.
 
 ## Picker and submission journey
 
@@ -237,10 +242,10 @@ streaming. `/cancel` and `/interrupt` use the same control owner as `Ctrl+C`;
 `/bg` and `/background` use the existing background-session handoff when that
 integration is enabled.
 
-Mutating or agent-starting operations remain deferred. This includes normal
-text, `$skill` invocations, workflow/model changes, reload forms such as
-`/skills reload`, `/tools reload`, `/workflows reload`, and `/commands reload`,
-`/compact`, `/replay`, and MCP actions.
+Extension reload commands also run immediately while an agent is active.
+The service builds the new surface off the loop and publishes it for
+subsequent consumers. Normal text, `$skill` invocations, workflow selection,
+model changes, `/compact`, `/replay` and MCP actions remain deferred.
 The `/config` overlay is a local UI action; edits are applied by the overlay's
 save action and do not become an agent message. User and project commands
 default to `queue`; an immediate-control policy is reserved for built-in

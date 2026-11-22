@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from agenthicc.runners.reload import SurfaceHolder
 from agenthicc.tools.sandbox import WorkspaceScope
 from agenthicc.workflows.loader import builtin_workflow_descriptors, load_builtin_workflow
 from agenthicc.workflows.reconstruct_site import (
@@ -43,7 +44,7 @@ def _config(tmp_path: Path, params: ReconstructSiteParams) -> SimpleNamespace:
         workspace_scope=WorkspaceScope.create(tmp_path),
         browser_manager=None,
         browser_tools=(),
-        plugin_tools=[],
+        tool_surface=SurfaceHolder(()),
         mcp_registry=None,
         memory_router=None,
         semantic_index=None,

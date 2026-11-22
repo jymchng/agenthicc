@@ -8121,3 +8121,19 @@ and name conflicts.
 
 Returns a mapping of workflow names to source paths without importing
 lazy built-in workflows.
+
+### parse_reload_surfaces
+
+Parse case-insensitive surface tokens for `/reload`. Empty input selects
+all surfaces. Unknown tokens raise `ValueError`.
+
+### execute_extension_source
+
+Execute the current source bytes in a prepared Python module. Reload uses
+this entry to bypass timestamp-based bytecode caches.
+
+`SessionContext.reload` owns the service in TUI and headless workflow
+sessions. `WorkflowConfig.skills` and `WorkflowConfig.tool_surface` hold
+references to the session's live snapshot holders. The command context
+exposes one asynchronous `reload` callback and schedules command
+continuations through its session owner.

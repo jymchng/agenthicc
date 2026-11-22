@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
     from agenthicc.skills.loader import SkillDef
 
 __all__ = [
@@ -84,7 +85,7 @@ def maybe_load_reference(body: str, skill_dir: Path) -> str:
 
 def find_matching_skills(
     user_message: str,
-    skills: dict[str, SkillDef],
+    skills: Mapping[str, SkillDef],
 ) -> list[SkillDef]:
     """Return skills whose suggested_topics overlap with words in user_message."""
     words = set(re.findall(r"\w+", user_message.lower()))

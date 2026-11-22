@@ -408,7 +408,6 @@ def test_commands_listing_uses_overlay_when_available() -> None:
     assert all(not row.label.startswith("$") for row in overlays[0]._rows)
 
     context.args = "reload"
-    context.reload_commands = lambda: (True, "Commands reloaded")
     assert _cmd_commands(context) is True
     assert isinstance(overlays[-1], RegistryMessageOverlay)
     assert console.export_text() == ""

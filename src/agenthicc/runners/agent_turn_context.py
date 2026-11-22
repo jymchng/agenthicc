@@ -7,7 +7,7 @@ reads from this context; call sites construct it and pass it to the runner.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -144,7 +144,7 @@ class AgentTurnOptions(TypedDict):
     conv_store: "ConversationStore | None"
     app_state: "AppState | None"
     exec_cfg: "ExecutionSettings | None"
-    skills: "dict[str, SkillDef] | None"
+    skills: "Mapping[str, SkillDef] | None"
     skill_permissions: "SkillPermissionSet | None"
     mention_cache: "MentionCache | None"
     project_plugin_tools: "list[ToolLike] | None"
@@ -192,7 +192,7 @@ class AgentTurnContext:
     exec_cfg: "ExecutionSettings | None" = None
 
     # ── content injection ─────────────────────────────────────────────────────
-    skills: "dict[str, SkillDef] | None" = None
+    skills: "Mapping[str, SkillDef] | None" = None
     skill_permissions: "SkillPermissionSet | None" = None
     mention_cache: "MentionCache | None" = None
     project_plugin_tools: "list[ToolLike] | None" = None

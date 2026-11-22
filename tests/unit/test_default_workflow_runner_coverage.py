@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import MappingProxyType
+from agenthicc.runners.reload import SurfaceHolder
 import dataclasses
 from types import SimpleNamespace
 
@@ -38,8 +40,8 @@ def _runner_config() -> tuple[WorkflowConfig, AppState, list[object], ModeManage
         agent_runner=SimpleNamespace(_transport=SimpleNamespace(_config=SimpleNamespace(model=""))),
         approval_svc=None,
         cfg=cfg,
-        skills={},
-        plugin_tools=[],
+        skills=SurfaceHolder(MappingProxyType({})),
+        tool_surface=SurfaceHolder(()),
         mcp_registry=None,
         mention_cache=SimpleNamespace(),
         agents_registry=SimpleNamespace(get_role_system_prompt=lambda role: f"role:{role}"),

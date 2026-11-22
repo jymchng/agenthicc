@@ -234,6 +234,7 @@ Transient provider failures are rendered as compact retry notices showing the at
 | Command | Purpose |
 |---|---|
 | `/help`, `/commands` | Inspect available commands in an overlay |
+| `/reload [skills tools workflows commands]` | Rescan all extension surfaces or select the ones to refresh |
 | `/tools [reload]`, `/workflows [runs\|reload]` | Inspect tools/workflows, or open the paginated paused-run selector; `/tools` labels each tool `builtin` or `plugin` |
 | `/status`, `/history` | Inspect runtime status and session events |
 | `/loop [interval] <prompt-or-command>` | Schedule a local recurring prompt; use `status`, `pause`, `resume`, or `stop` to control it |

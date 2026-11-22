@@ -139,7 +139,6 @@ class _Session:
         self.workflow_registry = object()
         self.terminal_manager = None
         self.mention_cache = object()
-        self.project_plugins = SimpleNamespace(all_tools=[])
         self.mcp_registry = None
         self.approval_svc = object()
         self.memory_router = None

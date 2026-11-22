@@ -3384,7 +3384,7 @@ async def _run_agent_turn(
     conv_store: ConversationStore | None = None,
     app_state: AppState | None = None,
     exec_cfg: ExecutionSettings | None = None,
-    skills: dict[str, SkillDef] | None = None,
+    skills: Mapping[str, SkillDef] | None = None,
     mention_cache: MentionCache | None = None,
     project_plugin_tools: list[ToolLike] | None = None,
     mcp_registry: McpToolRegistry | McpSessionManager | None = None,

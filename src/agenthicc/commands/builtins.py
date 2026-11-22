@@ -10,7 +10,8 @@ from .registry import UnifiedCommandRegistry
 
 if TYPE_CHECKING:
     from agenthicc.runners.model_switch import ModelChoice
-    from agenthicc.skills.loader import SkillDef, SkillDiscoveryResult
+    from agenthicc.skills.loader import SkillDef
+    from agenthicc.runners.reload import ReloadSurface
     from agenthicc.tui.workspace.dialog import DialogSettings
     from agenthicc.tui.workspace.overlay import Overlay
     from agenthicc.tui.workspace.picker import PickerRow
@@ -755,15 +756,30 @@ def _mcp_busy_policy(args: str) -> BusyPolicy:
 
 
 def _reloadable_list_policy(args: str) -> BusyPolicy:
-    """List commands are safe; reload and malformed action forms defer."""
-    return BusyPolicy.IMMEDIATE_READ_ONLY if not args.strip() else BusyPolicy.QUEUE
+    """Allow list operations and session-owned reloads during a turn."""
+    action = args.strip().lower()
+    if action == "reload":
+        return BusyPolicy.IMMEDIATE_CONTROL
+    return BusyPolicy.QUEUE if action else BusyPolicy.IMMEDIATE_READ_ONLY
 
 
 def _workflows_busy_policy(args: str) -> BusyPolicy:
-    """Keep recovery inspection immediate; defer registry mutation/typos."""
-    return (
-        BusyPolicy.IMMEDIATE_READ_ONLY if args.strip().lower() in {"", "runs"} else BusyPolicy.QUEUE
-    )
+    """Keep recovery inspection and session-owned reloads immediate."""
+    if args.strip().lower() == "runs":
+        return BusyPolicy.IMMEDIATE_READ_ONLY
+    return _reloadable_list_policy(args)
+
+
+def _reload_action_matches(prefix: str) -> list[str]:
+    return ["reload"] if "reload".startswith(prefix.casefold()) else []
+
+
+def _workflow_action_matches(prefix: str) -> list[str]:
+    return [action for action in ("runs", "reload") if action.startswith(prefix.casefold())]
+
+
+def _workflow_selector_busy_policy(args: str) -> BusyPolicy:
+    return BusyPolicy.IMMEDIATE_CONTROL if args.strip().lower() == "reload" else BusyPolicy.QUEUE
 
 
 def _history_busy_policy(args: str) -> BusyPolicy:
@@ -880,43 +896,45 @@ def _cmd_model(ctx: CommandContext) -> bool:
     return True
 
 
+def _request_reload(ctx: CommandContext, surfaces: frozenset[ReloadSurface], title: str) -> bool:
+    reload = ctx.reload
+    start = ctx.start_task
+    if reload is None or start is None:
+        _present_registry_result(ctx, title, "Reload is unavailable for this command context.")
+        return True
+
+    async def run() -> None:
+        try:
+            report = await reload(surfaces)
+        except Exception:  # noqa: BLE001 - the command reports an unavailable reload
+            _present_registry_result(ctx, title, "Reload failed. Existing extensions were kept.")
+            return
+        lines = [report.summary()]
+        lines.extend(f"{item.path} — {item.message}" for item in report.diagnostics)
+        _present_registry_result(ctx, title, "\n".join(lines))
+
+    start(run())
+    return True
+
+
+def _cmd_reload(ctx: CommandContext) -> bool:
+    from agenthicc.runners.reload import parse_reload_surfaces
+
+    try:
+        surfaces = parse_reload_surfaces(ctx.args)
+    except ValueError as exc:
+        _present_registry_result(ctx, "Reload", str(exc))
+        return True
+    return _request_reload(ctx, surfaces, "Reload")
+
+
 def _cmd_skills(ctx: CommandContext) -> bool:
     requested = ctx.args.strip().lower()
     if requested:
         if requested != "reload":
             _present_registry_result(ctx, "Skills", "Usage: /skills [reload]")
             return True
-        if ctx.reload_skills is None:
-            _present_registry_result(
-                ctx,
-                "Skills",
-                "Skill reload is only available in an interactive session.",
-            )
-            return True
-
-        before = set(ctx.skills)
-        try:
-            discovery: SkillDiscoveryResult = ctx.reload_skills()
-        except Exception as exc:  # noqa: BLE001
-            message = str(exc).strip() or type(exc).__name__
-            _present_registry_result(ctx, "Skills", f"Skill reload failed: {message}")
-            return True
-
-        after = set(ctx.skills)
-        added = sorted(after - before)
-        removed = sorted(before - after)
-        changes: list[str] = []
-        if added:
-            changes.append(f"added: {', '.join(added)}")
-        if removed:
-            changes.append(f"removed: {', '.join(removed)}")
-        suffix = f" ({'; '.join(changes)})" if changes else ""
-        messages = [f"Reloaded {len(after)} skill(s){suffix}."]
-        for diagnostic in discovery.diagnostics:
-            if diagnostic.severity != "info":
-                messages.append(f"Skill reload: {diagnostic}")
-        _present_registry_result(ctx, "Skills", "\n".join(messages))
-        return True
+        return _request_reload(ctx, frozenset({"skills"}), "Skills")
 
     visible_skills = {
         slug: skill for slug, skill in ctx.skills.items() if _skill_allowed_for_context(ctx, skill)
@@ -1248,19 +1266,7 @@ def _cmd_commands(ctx: CommandContext) -> bool:
         if requested != "reload":
             _present_registry_result(ctx, "Commands", "Usage: /commands [reload]")
             return True
-        if ctx.reload_commands is None:
-            _present_registry_result(
-                ctx,
-                "Commands",
-                "Command reload is only available in an interactive session.",
-            )
-            return True
-        try:
-            _ok, message = ctx.reload_commands()
-        except Exception as exc:  # noqa: BLE001
-            message = f"Command reload failed; existing commands kept: {type(exc).__name__}: {exc}"
-        _present_registry_result(ctx, "Commands", message)
-        return True
+        return _request_reload(ctx, frozenset({"commands"}), "Commands")
 
     registry = ctx.command_registry
     if registry is None:
@@ -1299,19 +1305,7 @@ def _cmd_tools(ctx: CommandContext) -> bool:
         if requested != "reload":
             _present_registry_result(ctx, "Tools", "Usage: /tools [reload]")
             return True
-        if ctx.reload_tools is None:
-            _present_registry_result(
-                ctx,
-                "Tools",
-                "Tool reload is only available in an interactive session.",
-            )
-            return True
-        try:
-            _ok, message = ctx.reload_tools()
-        except Exception as exc:  # noqa: BLE001
-            message = f"Tool reload failed; existing tools kept: {type(exc).__name__}: {exc}"
-        _present_registry_result(ctx, "Tools", message)
-        return True
+        return _request_reload(ctx, frozenset({"tools"}), "Tools")
 
     tools = ctx.tools
     tool_sources = ctx.tool_sources
@@ -1439,21 +1433,7 @@ def _cmd_workflows(ctx: CommandContext) -> bool:
         if requested != "reload":
             _present_registry_result(ctx, "Workflows", "Usage: /workflows [runs|reload]")
             return True
-        if ctx.reload_workflows is None:
-            _present_registry_result(
-                ctx,
-                "Workflows",
-                "Workflow reload is only available in an interactive session.",
-            )
-            return True
-        try:
-            _ok, message = ctx.reload_workflows()
-        except Exception as exc:  # noqa: BLE001
-            message = (
-                f"Workflow reload failed; existing workflows kept: {type(exc).__name__}: {exc}"
-            )
-        _present_registry_result(ctx, "Workflows", message)
-        return True
+        return _request_reload(ctx, frozenset({"workflows"}), "Workflows")
 
     registry = ctx.workflow_registry
     if registry is None:
@@ -1568,6 +1548,19 @@ def _skill_allowed_for_context(ctx: CommandContext, skill: "SkillDef") -> bool:
         if isinstance(candidate, SkillPermissionSet):
             permissions = candidate
     return skill.is_allowed_for(ctx.active_agent, permissions)
+
+
+def _build_skill_command(slug: str, skill: SkillDef) -> Command:
+    """Build the unified picker and dispatch entry for a discovered skill."""
+    return Command(
+        name=f"${slug}",
+        description=skill.description or skill.name,
+        argument_hint="[args…]",
+        group="Skills",
+        handler=_make_skill_handler(slug, skill),
+        aliases=tuple(f"${alias}" for alias in skill.aliases),
+        source_id=f"skill:{slug}",
+    )
 
 
 def _make_skill_handler(slug: str, skill: "SkillDef") -> CommandHandler:
@@ -1710,12 +1703,21 @@ BUILTIN_COMMANDS: list[Command] = [
         handler=_cmd_clear,
     ),
     Command(
+        name="/reload",
+        group="Configuration",
+        description="Reload skills, tools, workflows or commands",
+        argument_hint="[skills tools workflows commands]",
+        busy_policy=BusyPolicy.IMMEDIATE_CONTROL,
+        handler=_cmd_reload,
+    ),
+    Command(
         name="/commands",
         group="Session",
         description="List all registered commands with their source",
         argument_hint="[reload]",
         busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
         busy_policy_resolver=_reloadable_list_policy,
+        completions_factory=_reload_action_matches,
         handler=_cmd_commands,
     ),
     Command(
@@ -1725,6 +1727,7 @@ BUILTIN_COMMANDS: list[Command] = [
         argument_hint="[reload]",
         busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
         busy_policy_resolver=_reloadable_list_policy,
+        completions_factory=_reload_action_matches,
         handler=_cmd_tools,
     ),
     Command(
@@ -1734,6 +1737,7 @@ BUILTIN_COMMANDS: list[Command] = [
         argument_hint="[runs|reload]",
         busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
         busy_policy_resolver=_workflows_busy_policy,
+        completions_factory=_workflow_action_matches,
         handler=_cmd_workflows,
     ),
     Command(
@@ -1838,6 +1842,7 @@ BUILTIN_COMMANDS: list[Command] = [
         argument_hint="[reload]",
         busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
         busy_policy_resolver=_reloadable_list_policy,
+        completions_factory=_reload_action_matches,
         handler=_cmd_skills,
     ),
     Command(
@@ -1919,7 +1924,8 @@ BUILTIN_COMMANDS: list[Command] = [
         name="/workflow",
         group="Workflows",
         description="Switch workflow, or resume the latest saved run",
-        argument_hint="<name> | resume [run-id] | reset [run-id]",
+        argument_hint="<name> | reload | resume [run-id] | reset [run-id]",
+        busy_policy_resolver=_workflow_selector_busy_policy,
         # No handler: /workflow is intercepted in TUISession.route() before
         # dispatch_slash() so it can access session-local state.  The entry
         # exists here solely so the trigger picker displays and completes it.

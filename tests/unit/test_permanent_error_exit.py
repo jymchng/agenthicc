@@ -299,7 +299,6 @@ def _make_runner() -> CodePlanRunner:
     mock_cfg.app_state.update_workflow_phase = MagicMock()
     mock_cfg.processor.emit = AsyncMock()
     mock_cfg.approval_svc = None
-    mock_cfg.plugin_tools = []
     mock_cfg.mcp_registry = None
     mock_cfg.memory_router = None
     mock_cfg.semantic_index = None

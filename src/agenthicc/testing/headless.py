@@ -38,6 +38,9 @@ import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import MappingProxyType
+
+from agenthicc.runners.reload import SurfaceHolder
 from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
@@ -369,8 +372,8 @@ async def run_headless_replay(
             agent_runner=agent_runner,
             approval_svc=approvals,
             cfg=run_cfg,
-            skills={},
-            plugin_tools=[],
+            skills=SurfaceHolder(MappingProxyType({})),
+            tool_surface=SurfaceHolder(()),
             mcp_registry=None,
             mention_cache=MentionCache(),
             agents_registry=agents_registry,  # type: ignore[arg-type]

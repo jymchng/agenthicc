@@ -156,7 +156,6 @@ def _make_session(plugin: type[WorkflowPlugin]) -> SimpleNamespace:
         agent_runner=object(),
         session_memory=_SessionMemory(),
         skills={},
-        project_plugins=SimpleNamespace(all_tools=[]),
         mcp_registry=None,
         mention_cache=object(),
         agents_registry=object(),
@@ -519,7 +518,10 @@ async def test_headless_workflow_stream_runs_each_nonempty_stdin_line(monkeypatc
         "agenthicc.runners.tui_session._build_session_context",
         lambda *args, **kwargs: _async_session(session, kwargs),
     )
-    monkeypatch.setattr("sys.stdin", io.StringIO("/loops\nfirst task\n\nsecond task\n"))
+    monkeypatch.setattr(
+        "sys.stdin",
+        io.StringIO("/loops\n/reload tools skills\n/reload invalid\nfirst task\n\nsecond task\n"),
+    )
 
     await headless._run_headless_workflow_stream(
         CLIContext(
@@ -537,8 +539,12 @@ async def test_headless_workflow_stream_runs_each_nonempty_stdin_line(monkeypatc
         "session_id": "session-1",
     }
     assert lines[1]["code"] == "loop_interactive_required"
-    assert [line["status"] for line in lines[2:]] == ["complete", "complete"]
-    assert [line["phases"] for line in lines[2:]] == [["plan"], ["plan"]]
+    assert lines[2]["event"] == "reload"
+    assert lines[2]["generation"] == 1
+    assert lines[2]["published"] == ["skills", "tools"]
+    assert lines[3]["code"] == "invalid_reload"
+    assert [line["status"] for line in lines[4:]] == ["complete", "complete"]
+    assert [line["phases"] for line in lines[4:]] == [["plan"], ["plan"]]
     assert session.session_log.closed is True
 
 

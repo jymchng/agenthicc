@@ -202,7 +202,6 @@ async def test_worker_cancel_path_cleans_up_without_resurrecting_session(
         session_memory=None,
         skills={},
         mention_cache=None,
-        project_plugins=SimpleNamespace(all_tools=[]),
         mcp_registry=None,
         approval_svc=None,
         memory_router=None,

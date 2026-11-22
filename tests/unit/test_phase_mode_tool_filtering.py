@@ -9,6 +9,8 @@ inside the registry, so no filter can expose a real tool behind a stub.
 
 from __future__ import annotations
 
+from types import MappingProxyType
+from agenthicc.runners.reload import SurfaceHolder
 import asyncio
 from dataclasses import replace
 from types import SimpleNamespace
@@ -126,8 +128,8 @@ def _workflow_runner() -> tuple[WorkflowRunner, list[str]]:
         agent_runner=SimpleNamespace(),  # type: ignore[arg-type]
         approval_svc=None,
         cfg=AgenthiccConfig(),
-        skills={},
-        plugin_tools=[stage_change, inspect_change],
+        skills=SurfaceHolder(MappingProxyType({})),
+        tool_surface=SurfaceHolder(tuple([stage_change, inspect_change])),
         mcp_registry=None,
         mention_cache=SimpleNamespace(),  # type: ignore[arg-type]
         agents_registry=SimpleNamespace(),  # type: ignore[arg-type]

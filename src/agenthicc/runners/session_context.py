@@ -7,7 +7,8 @@ No logic lives here.  ``TUISession`` reads from this context;
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass, field
+from dataclasses import InitVar, dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -42,6 +43,7 @@ if TYPE_CHECKING:
     from agenthicc.runners.session_lease import SessionOwnerLease
     from agenthicc.runners.startup import StartupCoordinator
     from agenthicc.runners.run_coordinator import ResumePlan
+    from agenthicc.runners.reload import ReloadService
     from asyncio import Task
 
 
@@ -73,8 +75,8 @@ class SessionContext:
     agent_runner: "AgentRunnerBase"
     session_conversation: "SessionConversation"
     mention_cache: "MentionCache"
-    skills: "dict[str, SkillDef]"
-    project_plugins: "PluginToolSet"
+    skills: InitVar[dict[str, SkillDef]]
+    project_plugins: InitVar[PluginToolSet]
     mcp_registry: "McpToolRegistry | McpSessionManager | None"
     terminal_manager: "TerminalManager"
 
@@ -104,7 +106,8 @@ class SessionContext:
     # ── extension lifecycle ──────────────────────────────────────────────────
     #: Canonical names loaded from normal slash-command plugin files.  Kept
     #: separately so a reload can restore built-ins after a plugin is removed.
-    command_plugin_names: set[str] = field(default_factory=set)
+    command_plugin_names: InitVar[tuple[str, ...]] = ()
+    reload: ReloadService = field(init=False)
 
     # ── client-neutral session boundary (PRD-150) ───────────────────────────
     session_service: "SessionService | None" = None
@@ -149,6 +152,31 @@ class SessionContext:
     # deferred optional integrations.  It is observational only; runtime
     # resources retain their existing ownership boundaries.
     startup: "StartupCoordinator | None" = None
+
+    def __post_init__(
+        self,
+        skills: dict[str, SkillDef],
+        project_plugins: PluginToolSet,
+        command_plugin_names: tuple[str, ...],
+    ) -> None:
+        from agenthicc.runners.reload import ReloadService
+
+        root = self.workspace_scope.primary_root if self.workspace_scope is not None else Path.cwd()
+        default_skill_directory = self.cfg.skills.default_skill_directory
+        self.reload = ReloadService(
+            processor=self.processor,
+            project_dir=root / ".agenthicc",
+            user_dir=Path.home() / ".agenthicc",
+            workflow_registry=self.workflow_registry,
+            command_registry=self.cmd_registry,
+            subagent_registry=self.subagent_registry,
+            skill_user_dir=Path(default_skill_directory).expanduser()
+            if default_skill_directory
+            else None,
+            skills=skills,
+            tools=project_plugins.all_tools,
+            command_plugin_names=command_plugin_names,
+        )
 
     @property
     def session_memory(self) -> "JournaledShortTermMemory":

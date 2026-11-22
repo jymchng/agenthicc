@@ -19,7 +19,6 @@ def _make_runner(plan_model="", execute_model="", review_model="", summary_model
     mock_cfg.app_state.workflow_run.return_value = None
     mock_cfg.app_state.update_workflow_phase = MagicMock()
     mock_cfg.app_state.active_mode.return_value = MagicMock(blocked_capabilities=frozenset())
-    mock_cfg.plugin_tools = []
     mock_cfg.mcp_registry = None
     mock_cfg.approval_svc = None
     mock_cfg.memory_router = None

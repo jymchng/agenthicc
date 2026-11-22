@@ -26,7 +26,7 @@ from agenthicc.commands.builtins import (
 from agenthicc.commands.command import CommandContext, UsageSnapshot
 from agenthicc.commands.registry import UnifiedCommandRegistry
 from agenthicc.config import AgenthiccConfig
-from agenthicc.skills.loader import SkillDef, SkillDiscoveryResult, SkillDiagnostic
+from agenthicc.skills.loader import SkillDef
 
 pytestmark = pytest.mark.unit
 
@@ -56,10 +56,10 @@ def test_builtin_busy_policy_helpers() -> None:
     assert _mcp_busy_policy("connect") is BusyPolicy.QUEUE
     assert _mcp_busy_policy("reload") is BusyPolicy.QUEUE
     assert _reloadable_list_policy("") is BusyPolicy.IMMEDIATE_READ_ONLY
-    assert _reloadable_list_policy("reload") is BusyPolicy.QUEUE
+    assert _reloadable_list_policy("reload") is BusyPolicy.IMMEDIATE_CONTROL
     assert _workflows_busy_policy("") is BusyPolicy.IMMEDIATE_READ_ONLY
     assert _workflows_busy_policy("runs") is BusyPolicy.IMMEDIATE_READ_ONLY
-    assert _workflows_busy_policy("reload") is BusyPolicy.QUEUE
+    assert _workflows_busy_policy("reload") is BusyPolicy.IMMEDIATE_CONTROL
 
 
 @pytest.mark.asyncio
@@ -115,9 +115,6 @@ def test_cancel_replay_and_tools_error_paths(
     assert _cmd_replay(ctx)
 
     ctx.args = "reload"
-    ctx.reload_tools = None
-    assert _cmd_tools(ctx)
-    ctx.reload_tools = lambda: (_ for _ in ()).throw(RuntimeError("tools failed"))
     assert _cmd_tools(ctx)
     ctx.args = "unknown"
     assert _cmd_tools(ctx)
@@ -170,26 +167,21 @@ def test_terminal_ps_and_stop_handlers_cover_manager_and_overlay_paths(tmp_path:
     assert overlays
 
 
-def test_skill_reload_diagnostics_and_permission_filter(tmp_path: Path) -> None:
+def test_skill_listing_applies_agent_permissions(tmp_path: Path) -> None:
     ctx = _ctx(tmp_path)
     skill = SkillDef("Allowed", "allowed", tmp_path, _body="body")
     denied = SkillDef("Denied", "denied", tmp_path, allowed_agents=("other",), _body="no")
     ctx.skills = {"allowed": skill, "denied": denied}
-    ctx.reload_skills = lambda: SkillDiscoveryResult(
-        {"allowed": skill, "denied": denied},
-        (SkillDiagnostic(path=tmp_path, code="warning", message="warn", severity="warning"),),
-    )
-    ctx.args = "reload"
+    ctx.args = ""
     assert _cmd_skills(ctx)
-    assert "warning" in ctx.console.export_text().lower()
+    rendered = ctx.console.export_text()
+    assert "$allowed" in rendered
+    assert "$denied" not in rendered
 
 
 def test_workflow_reload_and_tool_metadata_rendering(tmp_path: Path) -> None:
     ctx = _ctx(tmp_path)
-    ctx.reload_workflows = lambda: (False, "workflow reload failed")
     ctx.args = "reload"
-    assert _cmd_workflows(ctx)
-    ctx.reload_workflows = lambda: (_ for _ in ()).throw(RuntimeError("workflow broke"))
     assert _cmd_workflows(ctx)
     ctx.args = "wrong"
     assert _cmd_workflows(ctx)

@@ -121,3 +121,35 @@ async def test_skill_reader_sees_one_complete_snapshot_during_reload(
     assert set(original) == {"alpha", "beta"}
     assert isinstance(original, MappingProxyType)
     await reloader.close()
+
+
+async def test_tool_reload_uses_source_even_when_timestamp_and_size_match(
+    tmp_path: Path, reloader: ReloadService
+) -> None:
+    import os
+
+    plugin = tmp_path / ".agenthicc" / "tools" / "label.py"
+    plugin.parent.mkdir(parents=True)
+    original = _tool_source("label").replace("'label'", "'first'")
+    updated = original.replace("'first'", "'later'")
+    assert len(updated) == len(original)
+    plugin.write_text(original, encoding="utf-8")
+    stamp = plugin.stat()
+    trust = ExtensionTrust(store_path=tmp_path / "trust.json", trusted_roots=(plugin.parent,))
+
+    with override_extension_trust(trust):
+        assert (await reloader.reload(frozenset({"tools"}), reason="api")).ok
+        old = reloader.tools.current()
+        assert callable(old.value[0])
+        assert old.value[0]() == "first"
+        plugin.write_text(updated, encoding="utf-8")
+        os.utime(plugin, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+        result = await reloader.reload(frozenset({"tools"}), reason="api")
+
+    assert result.ok
+    assert result.changes[0].kind == "updated"
+    new = reloader.tools.current()
+    assert callable(new.value[0])
+    assert new.value[0]() == "later"
+    assert old.value[0]() == "first"
+    await reloader.close()
