@@ -12,6 +12,36 @@ improvement backlog is [`PRD-138`](prds/prd-138-repository-improvement-roadmap.m
 4. Confirm whether a similarly named type belongs to the kernel or reactive TUI
    state model.
 5. Keep new behaviour inside the existing ownership boundary in `CLAUDE.md`.
+6. Study before you implement: read every file in the call chain, from the
+   failing site back to the entry point, and the contract between the
+   components involved. Do not fix from an error message and the crashing line
+   alone.
+7. Stage explicit paths only. Never sweep in, revert or reformat changes you
+   did not make.
+
+## Working rules for agents
+
+- **Your own session does the work.** Work sequentially. Use subagents only
+  when the operator allows it for the task, and never hand part of your task
+  to another Claude session or a peer session; decline such offers. When
+  subagents are allowed, give each mutating one its own git worktree off the
+  feature branch with disjoint files, and merge their results yourself.
+- **Replace, don't layer.** The project is not in production. When a change or
+  PRD supersedes a symbol, delete it, fix every caller and test, and drop the
+  `isinstance` branches and `# type: ignore` comments that only supported the
+  old path. No shims, aliases, dual paths, `Optional` escape hatches or
+  `SimpleNamespace` fakes of old objects. Confirm with
+  `grep -rn "<OldSymbol>" src/ tests/ docs/` before closing the task.
+- **No `Any` in new files.** Every parameter and return value has a concrete
+  type; use `object` only as a last resort.
+- **One commit per completed PRD** on the current branch. Push, open pull
+  requests or change GitHub settings only when the task asks for it; never use
+  `--no-verify`; never apply branch protection (the owner decided `main` stays
+  unprotected; CI plus the local hooks are the gates).
+- **Report faithfully.** Show failures with their output, say what you did not
+  run, and claim "green" only for a run that started after your last edit.
+  Delegated work is judged by what the runtime observed, not by what a worker
+  said.
 
 ## Current runtime boundaries
 
@@ -68,6 +98,15 @@ package for worktree-environment command execution and its isolation tests.
 These commands fail closed when Bubblewrap is unavailable rather than falling
 back to an unrestricted shell.
 
+`uv sync --extra dev` is an *exact* sync and silently uninstalls optional
+extras (`book`, `playwright`, `cloakbrowser`) that the developer virtualenv
+normally carries; sync with
+`uv sync --extra dev --extra book --extra playwright --extra cloakbrowser --inexact`.
+`uv run` syncs inexactly and is safe. The host can be heavily loaded: check
+`uptime` and re-run a timing-sensitive failure in isolation before calling it a
+regression. `nox -s coverage` takes about an hour — run it in the background
+and re-run it in full after the last fix before claiming green.
+
 `noxfile.py` is the CI session definition. Every session runs on nox's uv
 backend, which installs the project and its one `dev` extra into the session's
 own virtualenv, so each tool runs at its declared version on the session's
@@ -96,8 +135,12 @@ pymdown-extensions, twine) is part of `dev`. List the real sessions with
 | `clean` | Remove build, test, and coverage artifacts |
 
 `.github/workflows/ci.yml` runs all of these gates and ends in the aggregate
-**Required checks** job that branch protection requires; the release workflow
-re-runs it for the tagged commit before building.
+**Required checks** job, the single status to wait on before merging. CI runs on
+pull requests to `main`/`dev` and on pushes to those branches only, so on a
+feature branch the local hooks are your gate. `main` is intentionally not
+branch-protected: do not run `scripts/apply_branch_protection.sh` or change
+repository settings unless asked. The release workflow re-runs the CI for the
+tagged commit before building.
 
 ## Surfaces and gates
 
@@ -167,6 +210,32 @@ Three details matter here:
 5. Add tests for success, denial, malformed input, timeout, and side-effect
    duplication on retry.
 
+### Committing and pushing
+
+1. Read `git status --short` first; stage explicit paths; keep other people's
+   hunks out (see `CLAUDE.md`, "Commits, hooks and pushing", for the
+   `git show HEAD:<file>` blob technique).
+2. Commit hooks run ruff. Push hooks run mypy, the type-audit ratchet and the
+   whole unit suite — about ten minutes — so run `git push` in the background
+   and do not touch the tree until it exits.
+3. If git has no identity, set the four `GIT_AUTHOR_*`/`GIT_COMMITTER_*`
+   environment variables for the command; do not edit git config.
+4. Use conventional commit subjects (`feat(scope): …`, `!` for breaking) and
+   merge pull requests with merge commits.
+
+### Changing subagent behaviour
+
+1. Working roles inherit every parent tool and the session's turn limit;
+   investigative roles keep explicit read-only lists; no worker inherits
+   `control`-capability tools or `spawn_subagents`.
+2. No hidden nudge turns or retries: a worker that only narrates fails with
+   `missing_mutation` or `missing_action`.
+3. Report runtime-observed evidence (`completion_evidence`), never prose.
+4. Each parallel file-changing worker gets its own git worktree, started from a
+   snapshot of the parent's uncommitted state and applied back with `git apply`.
+5. Test the named failure reasons. See SUBAGENT-12 to SUBAGENT-15 and the
+   "Changing subagents" section of `CLAUDE.md`.
+
 ### Adding a slash command
 
 1. Add it to `commands/builtins.py` or the supported command plugin export.
@@ -208,7 +277,9 @@ Three details matter here:
 - Do not expose API keys, OAuth tokens, plugin secrets, or session contents in
   logs or docs.
 - Use concrete parameterized annotations. Do not introduce `Any` when a real
-  type is knowable; do not use bare `list` or `dict`.
+  type is knowable; do not use bare `list` or `dict`. In a new file `Any`
+  appears zero times: import real types under `TYPE_CHECKING`, name structural
+  types with aliases, and use `object` only as a last resort.
 - Use `TYPE_CHECKING` for cross-package type-only imports and quoted annotations
   when decoration-time `get_type_hints()` requires it.
 - Frozen kernel state is updated through events/copy-on-write helpers, never by

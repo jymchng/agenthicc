@@ -11,6 +11,11 @@ cd agenthicc
 uv sync --extra dev
 ```
 
+If your environment also carries the optional `book`, `playwright` or
+`cloakbrowser` extras, sync with
+`uv sync --extra dev --extra book --extra playwright --extra cloakbrowser --inexact`:
+a plain `uv sync --extra dev` is an exact sync and uninstalls them.
+
 The checked-in `pyproject.toml` uses the lauren-ai dependency declared by the
 lockfile. If you develop against a sibling lauren-ai checkout, use the local
 source override documented in `pyproject.toml`; do not assume a sibling path is
@@ -59,13 +64,15 @@ silently changing the environment.
 
 ## Required gates
 
-`.github/workflows/ci.yml` runs every gate on each push and pull request: lint,
+`.github/workflows/ci.yml` runs every gate on pull requests to `main`/`dev` and on
+pushes to those branches: lint,
 typecheck, the type ratchet, `llms_check`, the strict docs build, unit and
 integration tests on Python 3.11–3.13, E2E tests, the Windows tests, and
 coverage. Its final job, **Required checks**, fails unless all of them
-succeeded; branch protection requires that one check, and
-`scripts/apply_branch_protection.sh` applies the rule for a repository
-administrator. The release workflow runs the same CI for the tagged commit
+succeeded, and it is the single check to wait on before merging. The owner has
+decided `main` stays unprotected, so CI plus the local hooks are the gates and
+`scripts/apply_branch_protection.sh` is not applied unless the owner asks. The
+release workflow runs the same CI for the tagged commit
 before it builds, so a tag on a red commit cannot publish.
 
 The same gates run locally before you push:
@@ -73,6 +80,10 @@ The same gates run locally before you push:
 ```bash
 uvx pre-commit install   # ruff on commit; mypy, the ratchet and unit tests on push
 ```
+
+The push hook runs mypy, the type ratchet and the whole unit suite on the
+working tree, about ten minutes; run it in the background and leave the tree
+untouched until it finishes.
 
 Quality baselines — the type-safety baseline, the coverage floor and the gate
 definitions — are owned in `.github/CODEOWNERS`. The type ratchet fails when a

@@ -90,13 +90,17 @@ the sessions with `uv run nox --list`: `tests`, `tests_unit` and
 `typecheck`, `typecheck_contracts`, `type_audit`, `docs`, `build`,
 `build_check`, `llms_check`, `clean`.
 
-`.github/workflows/ci.yml` runs every gate on each push and pull request and
-ends in one aggregate **Required checks** job, which is the status check branch
-protection requires (`scripts/apply_branch_protection.sh`). The release
-workflow re-runs that CI for the tagged commit, checks that the tag names the
-package version, and checks that the built wheel's `agenthicc --version`
+`.github/workflows/ci.yml` runs every gate on pull requests to `main`/`dev` and
+on pushes to those branches, and ends in one aggregate **Required checks** job,
+the single status to wait on before merging. The owner has decided `main` stays
+unprotected, so CI plus the local hooks are the gates and
+`scripts/apply_branch_protection.sh` is not applied unless the owner asks. The
+release workflow re-runs that CI for the tagged commit, checks that the tag names
+the package version, and checks that the built wheel's `agenthicc --version`
 reports it. `uvx pre-commit install` runs the same tools locally: ruff on
-commit; mypy, the type ratchet and the unit tests on push.
+commit; mypy, the type ratchet and the unit tests on push. The push hook takes
+about ten minutes on the working tree: run it in the background and leave the
+tree untouched until it finishes.
 
 `nox -s llms_check` checks that every symbol in `agenthicc.__all__` and
 `agenthicc.kernel.__all__` has a `###` heading in `llms-full.txt`; it does not generate the file or validate prose
