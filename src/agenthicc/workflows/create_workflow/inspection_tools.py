@@ -6,14 +6,14 @@ and role lists are read live from their enums, so the guidance can never drift
 from the real contract.  A canonical, known-valid example workflow is included
 so the agent has a correct template to adapt rather than one it hallucinates.
 
-Most tools here are read-only and take no session state.  The cache-contract
-validator is intentionally different: it imports the target workflow through
-the same loader used at runtime, so its target must be a trusted generated path
-and its execution capability is gated separately.
+Most tools here are read-only and take no session state. The cache-contract
+validator has an execute capability and inspects generated workflow code in
+the authoring sandbox.
 """
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING, cast
 
@@ -1424,17 +1424,13 @@ def make_inspection_tools(
     @tool_read_execute
     @_tool()
     async def validate_workflow_cache_contract(path: str) -> dict[str, object]:
-        """Validate a trusted generated workflow's cache/question contract.
-
-        Validation imports the target package exactly as the workflow loader
-        does.  Top-level code in that package therefore executes; the tool is
-        execute-gated even though its intended result is a read-only report.
-        """
+        """Validate a generated workflow's cache contract in the sandbox."""
 
         from pathlib import Path
         from agenthicc.workflows.create_workflow.validation import validate_workflow_file
 
-        report = validate_workflow_file(
+        report = await asyncio.to_thread(
+            validate_workflow_file,
             path,
             root=Path.cwd(),
             strict_cache_contract=True,
@@ -1449,10 +1445,7 @@ def make_inspection_tools(
             "categories": dict(report.categories),
             "evidence": dict(report.evidence),
             "skipped_checks": list(report.skipped_checks),
-            "execution_note": (
-                "The target was imported through the workflow loader; call this only for a "
-                "trusted generated path because module-level code executes during validation."
-            ),
+            "validation": report.validation,
         }
 
     tools: list[Callable[..., object]] = [

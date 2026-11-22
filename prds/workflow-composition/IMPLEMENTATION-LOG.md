@@ -7,8 +7,8 @@ Branch `feat/workflow-composition` starts at `5100c8c` from fetched
 |---|---|---|
 | Setup | Complete | `4deacb1` adds the series and its index block. Parsed all 15 front-matter blocks and resolved the series links. `2b9902a` applies the separate guidance patch. Hooks installed. Strict MkDocs, Ruff and mypy passed. |
 | 0 | M0 pushed | `a04bfb4` records three spikes and four amendments. The tool-surface follow-up also demonstrates dispatch after a same-turn schema refresh. See milestone gate results below. |
-| 1 | M1 verified | WFC-14 foundation, WFC-05 and the WFC-13 harness landed. Full local gate passed after `d669ab8`. |
-| 2 | Pending | WFC-11 and WFC-10. |
+| 1 | M1 pushed | WFC-14 foundation, WFC-05 and the WFC-13 harness landed. Full local gate and pre-push checks passed. The remote tip matched `aa2bac1`. |
+| 2 | In progress | WFC-11 workflow validation sandbox implemented. Authored store and WFC-10 are pending. |
 | 3 | Pending | WFC-01 and the publish connection. |
 | 4 | Pending | WFC-02. |
 | 5 | Pending | WFC-06. |
@@ -29,7 +29,7 @@ Branch `feat/workflow-composition` starts at `5100c8c` from fetched
 | WFC-08 | Spike complete | Same-turn refresh verified by updating the provider schema list and the dispatch map together. |
 | WFC-09 | Pending | — |
 | WFC-10 | Pending | — |
-| WFC-11 | Spike complete | Sandboxed import, read-only workspace, network isolation and bounds confirmed. |
+| WFC-11 | In progress | Workflow validation and smoke run in the read-only sandbox, with an AST fallback. Store, policy, commands, and publication remain. |
 | WFC-12 | Pending | — |
 | WFC-13 | Harness ready | `7536d33` adds a scripted provider, request snapshots, isolated real sessions, and a test-only failure trigger. S1–S9 remain to be integrated. |
 | WFC-14 | Foundation | Shared scoped tools, deterministic verdict and persisted budget adopted by `create_workflow`. Sandbox validation and tool and skill adoption follow WFC-11, WFC-07 and WFC-09. |
@@ -138,3 +138,17 @@ The corrected full gate passed on Python 3.13:
 
 The logs are `/var/tmp/agenthicc-wfc-m1-final-*.log`. Full line and branch
 coverage will be measured by the PR coverage job.
+
+## WFC-11 workflow validation boundary
+
+The first two integration cases reproduced in-process execution and missing
+static fallback against the M1 tree. The sandboxed implementation passed the
+244-test workflow selection, then all seven isolation cases. The production
+sandbox tests prove that candidate imports run without the parent's environment,
+with a private network and read-only workspace, and that local relative imports
+stay available during inspection. They also verify time and output limits and
+the `static_only` fallback. The publish receipt still needs to carry the
+validation status to satisfy WFC-11 A14 end to end.
+
+Ruff, mypy on 417 source files, type audit, strict MkDocs and `llms_check`
+passed. The audit baselines decreased for explicit `Any` and `getattr` usage.

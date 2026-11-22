@@ -1,19 +1,4 @@
-"""Deterministic validation of an agent-generated workflow plugin file.
-
-The create_workflow VALIDATE phase never trusts the agent's own judgement alone:
-before the agent is even asked for a verdict, the runner imports the generated
-file exactly the way :func:`agenthicc.workflows.loader.load_python_workflows`
-will and checks the resulting plugin class against the real
-:class:`~agenthicc.workflows.plugin.WorkflowPlugin` contract.  The resulting
-:class:`ValidationReport` is fed into the agent's prompt as evidence, and the
-runner overrides an ``approve_workflow`` call whenever the report is not ``ok``.
-
-Importing the file executes it — the same trust model as the workflow loader
-itself, which must import a plugin module to discover its classes. This is not
-an isolation boundary: generated imports and import-time code run with the
-current process's ordinary permissions. The file is checked to resolve inside
-the workspace root, but module imports are unrestricted.
-"""
+"""Validate generated workflow source and inspect it in an isolated runtime."""
 
 from __future__ import annotations
 
@@ -22,10 +7,13 @@ import ast
 import json
 import logging
 from collections.abc import Iterable, Mapping
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from agenthicc.workflows.plugin import WorkflowPlugin
 
 log = logging.getLogger(__name__)
@@ -186,6 +174,7 @@ class ValidationReport:
     categories: dict[str, str] = dataclasses.field(default_factory=dict)
     evidence: dict[str, object] = dataclasses.field(default_factory=dict)
     skipped_checks: tuple[str, ...] = ()
+    validation: Literal["passed", "static_only"] = "passed"
 
     def render(self) -> str:
         """Render the report as the text block shown to the validating agent."""
@@ -220,7 +209,11 @@ class ValidationReport:
             )
         if self.ok and not self.warnings:
             lines.append("")
-            lines.append("The workflow imports cleanly and its phase graph is consistent.")
+            lines.append(
+                "The workflow imports cleanly and its phase graph is consistent."
+                if self.validation == "passed"
+                else "The workflow passed static validation."
+            )
         return "\n".join(lines)
 
     def to_dict(self) -> dict[str, object]:
@@ -236,6 +229,7 @@ class ValidationReport:
             "categories": dict(self.categories),
             "evidence": dict(self.evidence),
             "skipped_checks": list(self.skipped_checks),
+            "validation": self.validation,
         }
 
 
@@ -264,42 +258,32 @@ def _fail(path: str, *errors: str) -> ValidationReport:
     )
 
 
+@contextmanager
 def _import_plugins(
     path: Path,
-) -> tuple[list[type[WorkflowPlugin]], dict[str, object], str]:
-    """Import *path* and return ``(plugin_classes, module_namespace, error_message)``.
-
-    Mirrors :func:`agenthicc.workflows.loader.load_python_workflows` but returns
-    the failure text instead of swallowing it, so the agent sees the real
-    ``ImportError`` / ``NameError`` / ``ValueError`` raised by its own file.  The
-    namespace is returned so runner checks can look at every class the file
-    defined — the module itself is removed from ``sys.modules`` again.
-    """
+) -> Iterator[tuple[list[type[WorkflowPlugin]], dict[str, object], str]]:
+    """Keep the imported package available throughout the isolated checks."""
     import inspect
 
     from agenthicc.workflows.plugin import WorkflowPlugin as _Plugin
-    from agenthicc.workflows.loader import load_python_workflow_modules
+    from agenthicc.workflows.loader import open_python_workflow_modules
 
-    try:
-        modules = load_python_workflow_modules(path)
-    except (Exception, SystemExit) as exc:  # noqa: BLE001 — generated code, any failure
-        return [], {}, f"{type(exc).__name__}: {exc}"
-
-    found: list[type[WorkflowPlugin]] = []
-    namespace: dict[str, object] = {}
-    seen: set[type[WorkflowPlugin]] = set()
-    for module in modules:
-        namespace.update(vars(module))
-        for _name, obj in inspect.getmembers(module, inspect.isclass):
-            if (
-                obj is not _Plugin
-                and issubclass(obj, _Plugin)
-                and getattr(obj, "name", "") != ""
-                and obj not in seen
-            ):
-                seen.add(obj)
-                found.append(obj)
-    return found, namespace, ""
+    with ExitStack() as stack:
+        try:
+            modules = stack.enter_context(open_python_workflow_modules(path))
+        except (Exception, SystemExit) as exc:  # noqa: BLE001 - report generated import failures
+            yield [], {}, f"{type(exc).__name__}: {exc}"
+            return
+        found: list[type[WorkflowPlugin]] = []
+        namespace: dict[str, object] = {}
+        seen: set[type[WorkflowPlugin]] = set()
+        for module in modules:
+            namespace.update(vars(module))
+            for _name, obj in inspect.getmembers(module, inspect.isclass):
+                if obj is not _Plugin and issubclass(obj, _Plugin) and obj.name and obj not in seen:
+                    seen.add(obj)
+                    found.append(obj)
+        yield found, namespace, ""
 
 
 def _check_phases(
@@ -1253,27 +1237,9 @@ def _check_prompt_cache_contract(
     return "contract-native"
 
 
-def validate_workflow_file(
-    path: str,
-    *,
-    expected_name: str = "",
-    root: Path | None = None,
-    strict_cache_contract: bool = False,
-    available_integrations: Mapping[str, object] | None = None,
-) -> ValidationReport:
-    """Deterministically validate a workflow file or package at *path*.
-
-    :param path: Path the generation phase reported writing, absolute or relative
-        to *root*.
-    :param expected_name: When non-empty, the approved workflow name the path must
-        define.
-    :param root: Workspace root the file must live inside; defaults to the current
-        working directory.  A path resolving outside it is refused without import.
-    :returns: A :class:`ValidationReport`; ``ok`` is True only when no blocking
-        error was found.
-    """
-    base = (root or Path.cwd()).resolve()
-
+def _read_workflow_sources(
+    path: str, *, base: Path
+) -> tuple[Path, dict[Path, str]] | ValidationReport:
     raw = path.strip() if isinstance(path, str) else ""
     if not raw:
         return _fail(
@@ -1383,7 +1349,21 @@ def validate_workflow_file(
     if source_errors:
         return _fail(shown, *source_errors)
 
-    plugins, namespace, import_error = _import_plugins(resolved)
+    return resolved, sources
+
+
+def _validate_imported_workflow(
+    resolved: Path,
+    sources: dict[Path, str],
+    imported: tuple[list[type[WorkflowPlugin]], dict[str, object], str],
+    *,
+    expected_name: str,
+    strict_cache_contract: bool,
+    available_integrations: Mapping[str, object] | None,
+) -> ValidationReport:
+    shown = str(resolved)
+    is_package = resolved.is_dir()
+    plugins, namespace, import_error = imported
     if import_error:
         return _fail(
             shown,
@@ -1619,4 +1599,147 @@ def validate_workflow_file(
             if available_integrations is None
             else ()
         ),
+    )
+
+
+def _static_workflow_report(
+    resolved: Path, sources: dict[Path, str], *, expected_name: str, reason: str
+) -> ValidationReport:
+    """Extract the locally declared workflow identity without evaluating the source."""
+    names: list[str] = []
+    for source in sources.values():
+        tree = ast.parse(source)
+        for definition in tree.body:
+            if not isinstance(definition, ast.ClassDef) or not definition.bases:
+                continue
+            for field in definition.body:
+                value: ast.expr | None
+                if isinstance(field, ast.Assign):
+                    targets, value = field.targets, field.value
+                elif isinstance(field, ast.AnnAssign):
+                    targets, value = [field.target], field.value
+                else:
+                    continue
+                if (
+                    isinstance(value, ast.Constant)
+                    and isinstance(value.value, str)
+                    and value.value
+                    and any(
+                        isinstance(target, ast.Name) and target.id == "name" for target in targets
+                    )
+                ):
+                    names.append(value.value)
+    errors: list[str] = []
+    if not names:
+        errors.append("The workflow must declare a literal name for static validation.")
+    if expected_name and expected_name not in names:
+        errors.append(f"The package does not declare the approved name {expected_name!r}.")
+    errors.extend(f"{name!r} is a builtin workflow." for name in names if name in _RESERVED_NAMES)
+    return ValidationReport(
+        str(resolved),
+        not errors,
+        errors=tuple(errors),
+        plugin_names=tuple(names),
+        categories={"source": "pass", "result": "fail" if errors else "pass"},
+        skipped_checks=(reason,),
+        validation="static_only",
+    )
+
+
+def _run_workflow_validation(
+    path: str,
+    *,
+    base: Path,
+    expected_name: str,
+    strict_cache_contract: bool,
+    available_integrations: Mapping[str, object] | None = None,
+) -> ValidationReport:
+    """Run the full contract in the subprocess for validation and fake-provider smoke."""
+    loaded = _read_workflow_sources(path, base=base)
+    if isinstance(loaded, ValidationReport):
+        return loaded
+    resolved, sources = loaded
+    with _import_plugins(resolved) as imported:
+        return _validate_imported_workflow(
+            resolved,
+            sources,
+            imported,
+            expected_name=expected_name,
+            strict_cache_contract=strict_cache_contract,
+            available_integrations=available_integrations,
+        )
+
+
+def _inspect_workflow(arguments: dict[str, object]) -> dict[str, object]:
+    integrations = arguments.get("integrations")
+    return _run_workflow_validation(
+        str(arguments["path"]),
+        base=Path("/workspace"),
+        expected_name=str(arguments["expected_name"]),
+        strict_cache_contract=arguments["strict_cache_contract"] is True,
+        available_integrations=integrations if isinstance(integrations, dict) else None,
+    ).to_dict()
+
+
+def _restore_workspace_paths(value: object, base: Path) -> object:
+    if isinstance(value, str):
+        return value.replace("/workspace/", f"{base}/")
+    if isinstance(value, list):
+        return [_restore_workspace_paths(item, base) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _restore_workspace_paths(item, base) for key, item in value.items()}
+    return value
+
+
+def validate_workflow_file(
+    path: str,
+    *,
+    expected_name: str = "",
+    root: Path | None = None,
+    strict_cache_contract: bool = False,
+    available_integrations: Mapping[str, object] | None = None,
+) -> ValidationReport:
+    """Validate workspace source and probe its runner contract in isolation."""
+    from agenthicc.workflows.authoring.import_sandbox import inspect_generated_python
+    from agenthicc.workflows.payload import payload_mapping, payload_strings
+
+    base = (root or Path.cwd()).resolve()
+    loaded = _read_workflow_sources(path, base=base)
+    if isinstance(loaded, ValidationReport):
+        return loaded
+    resolved, sources = loaded
+    check = inspect_generated_python(
+        base,
+        _inspect_workflow,
+        {
+            "path": str(Path("/workspace") / resolved.relative_to(base)),
+            "expected_name": expected_name,
+            "strict_cache_contract": strict_cache_contract,
+            "integrations": dict(available_integrations)
+            if available_integrations is not None
+            else None,
+        },
+    )
+    if check.status == "static_only":
+        return _static_workflow_report(
+            resolved, sources, expected_name=expected_name, reason=check.reason
+        )
+    if check.result is None:
+        return _fail(str(resolved), check.reason)
+    report = payload_mapping(_restore_workspace_paths(check.result, base))
+    errors = tuple(payload_strings(report.get("errors")))
+    raw_categories = payload_mapping(report.get("categories"))
+    return ValidationReport(
+        str(resolved),
+        report.get("ok") is True and not errors,
+        errors=errors,
+        warnings=tuple(payload_strings(report.get("warnings"))),
+        plugin_names=tuple(payload_strings(report.get("plugin_names"))),
+        phase_names=tuple(payload_strings(report.get("phase_names"))),
+        cache_contract=str(report.get("cache_contract", "legacy")),
+        categories={
+            name: status for name, status in raw_categories.items() if isinstance(status, str)
+        },
+        evidence=payload_mapping(report.get("evidence")),
+        skipped_checks=tuple(payload_strings(report.get("skipped_checks"))),
     )

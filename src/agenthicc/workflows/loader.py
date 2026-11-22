@@ -14,6 +14,7 @@ import importlib.util
 import inspect
 import logging
 import sys
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
@@ -22,7 +23,7 @@ from typing import TYPE_CHECKING, Literal
 from agenthicc.plugins.source import execute_extension_source
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
     from agenthicc.workflows.plugin import WorkflowPlugin
 
 log = logging.getLogger(__name__)
@@ -159,19 +160,19 @@ def load_python_workflows(
     try:
         from agenthicc.workflows.plugin import WorkflowPlugin
 
-        modules = load_python_workflow_modules(path)
-        results: list[type[WorkflowPlugin]] = []
-        seen: set[type[WorkflowPlugin]] = set()
-        for module in modules:
-            for _attr_name, obj in inspect.getmembers(module, inspect.isclass):
-                if (
-                    obj is not WorkflowPlugin
-                    and issubclass(obj, WorkflowPlugin)
-                    and getattr(obj, "name", "") != ""
-                    and obj not in seen
-                ):
-                    seen.add(obj)
-                    results.append(obj)
+        with open_python_workflow_modules(path) as modules:
+            results: list[type[WorkflowPlugin]] = []
+            seen: set[type[WorkflowPlugin]] = set()
+            for module in modules:
+                for _attr_name, obj in inspect.getmembers(module, inspect.isclass):
+                    if (
+                        obj is not WorkflowPlugin
+                        and issubclass(obj, WorkflowPlugin)
+                        and getattr(obj, "name", "") != ""
+                        and obj not in seen
+                    ):
+                        seen.add(obj)
+                        results.append(obj)
         if not results and on_skip is not None:
             on_skip(path, "invalid_manifest")
         return results
@@ -182,14 +183,9 @@ def load_python_workflows(
         return []
 
 
-def load_python_workflow_modules(path: Path) -> list[ModuleType]:
-    """Execute *path* and return its primary module namespace(s).
-
-    Unlike :func:`load_python_workflows`, import errors are propagated.  The
-    deterministic create-workflow validator uses this to show the actual
-    failure to the authoring agent.  Temporary module names are removed before
-    returning, while returned module objects remain available for inspection.
-    """
+@contextmanager
+def open_python_workflow_modules(path: Path) -> Iterator[list[ModuleType]]:
+    """Execute a workflow and keep relative imports available during inspection."""
     resolved = path.expanduser()
     module_name = _temporary_module_name(resolved)
     temporary_names: set[str] = set()
@@ -203,7 +199,7 @@ def load_python_workflow_modules(path: Path) -> list[ModuleType]:
             if not resolved.is_file():
                 raise FileNotFoundError(f"workflow path does not exist: {resolved}")
             modules = [_execute_module(resolved, module_name, temporary_names)]
-        return modules
+        yield modules
     finally:
         # A workflow package may import tools.py, state.py, or other local
         # helpers. Remove the entire temporary package namespace so reloads

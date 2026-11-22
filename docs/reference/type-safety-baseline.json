@@ -1,9 +1,9 @@
 {
   "bare_dict_annotations": 34,
   "bare_list_annotations": 0,
-  "explicit_any_annotations": 10,
+  "explicit_any_annotations": 9,
   "functions_with_missing_annotations": 12,
-  "getattr_calls": 460,
+  "getattr_calls": 459,
   "hasattr_calls": 32,
   "missing_parameter_annotations": 11,
   "missing_return_annotations": 12,

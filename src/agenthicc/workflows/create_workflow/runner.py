@@ -1401,14 +1401,16 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             return CreateWorkflowState.FAILED
 
         root = Path(lease.workspace_root)
-        report: PackageValidationReport = validate_workflow_file(
+        report: PackageValidationReport = await asyncio.to_thread(
+            validate_workflow_file,
             lease.target_path,
             expected_name=ctx.workflow_name,
             root=root,
             strict_cache_contract=True,
             available_integrations=ctx.dependency_summary,
         )
-        smoke = run_generated_workflow_smoke(
+        smoke = await asyncio.to_thread(
+            run_generated_workflow_smoke,
             lease.target_path,
             expected_name=ctx.workflow_name,
             root=root,
@@ -1444,7 +1446,10 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
         else:
             report = dataclasses.replace(
                 report,
-                categories={**report.categories, "smoke": "pass"},
+                categories={
+                    **report.categories,
+                    "smoke": "static_only" if smoke.validation == "static_only" else "pass",
+                },
             )
         findings = tuple(
             Finding(
@@ -1485,6 +1490,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             "errors": list(report.errors),
             "warnings": list(report.warnings),
             "smoke": smoke.to_dict(),
+            "validation": report.validation,
             "package_fingerprint": verdict.digest,
         }
         ctx.validation_evidence["evidence_id"] = _evidence_fingerprint(ctx.validation_evidence)

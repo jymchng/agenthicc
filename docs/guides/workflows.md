@@ -798,9 +798,9 @@ what is already on disk rather than start over. See
 
 ### Validation is deterministic first, agent second
 
-Before the validating agent is asked for anything, the runner imports the
-generated package exactly the way `load_python_workflows` will and checks it against
-the real `WorkflowPlugin` contract. `validate_workflow_file` reports:
+Before asking the agent for a verdict, the runner checks the generated source
+and inspects the package against the `WorkflowPlugin` contract in a subprocess.
+`validate_workflow_file` reports:
 
 - refusal, without importing, for a path outside the workspace root, a missing
   file, a directory without `runner.py`, a non-`.py` legacy file or
@@ -813,14 +813,10 @@ the real `WorkflowPlugin` contract. `validate_workflow_file` reports:
 - phase-graph faults: duplicate or empty phase names, non-`PhaseSpec` entries,
   `max_turns` below 1, and `next` / `on_reject` / `on_error` edges that do not
   resolve.
-- generated workflow imports are not restricted by a static allow-list.
-  Validation imports the candidate package as the workflow loader does, so
-  missing dependencies and runtime import errors are still reported. Imports
-  and import-time code execute in-process with ordinary Python permissions;
-  this is not a sandbox, and direct API, network, process, or filesystem use
-  bypasses session tool capability checks. Only execute generated workflows
-  from sources you trust, or validate them inside a separate OS-level isolation
-  boundary;
+- missing dependencies and runtime import errors from the isolated workflow
+  loader. Bubblewrap gives the subprocess a read-only workspace and private
+  network namespace and bounds its runtime and output. When Bubblewrap is
+  unavailable, validation uses AST checks and reports `static_only`;
 - missing custom-runner checkpoint codecs, unsafe resume/error handling, direct
   instruction-file reads, cache-contract violations, and invalid transition
   decorator order or handoff-helper contracts;
@@ -831,9 +827,7 @@ filename that differs from the workflow name are reported as warnings.
 That report is injected into the validating agent's prompt as evidence. The agent
 still has to call `approve_workflow` or `reject_workflow` — the transition is
 always a tool call — but **an approval is overridden when the report failed**, and
-the run loops back to `generate` with the concrete errors attached. A workflow
-that does not import can therefore never be accepted, however confident the model
-is.
+the run loops back to `generate` with the concrete errors attached.
 
 Runtime startup failures are also surfaced in the TUI. This covers errors that
 occur before `run_phase()` opens an agent turn, such as a lazy phase-tool
@@ -888,12 +882,10 @@ decision.
 | `show_example_workflow(style)` | a complete `runner.py` package entry point to adapt — `"runner"` (default) or `"declarative"` |
 | `describe_prompt_cache_contract()` | stable/dynamic prompt regions, cache policy, and invalidation ownership |
 | `show_workflow_template()` | the cache-stable custom-runner template and required `run_phase()` call |
-| `validate_workflow_cache_contract(path)` | execute-gated strict validation of a trusted generated runner's cache/question/tool contract |
+| `validate_workflow_cache_contract(path)` | execute-gated validation of a generated runner's cache, question, and tool contracts |
 
-The static inspection tools are available in Plan mode. The validator is
-execute-gated and is available to the Yolo generation phase after files are
-written, because validation imports the target package and executes its module
-top level just as the workflow loader does. Every workflow phase gets the
+The static inspection tools are available in Plan mode. The validator tool uses
+the same sandbox as the runner's validation phase. Every workflow phase gets the
 existing `ask_user` tool for clarifying questions. Optional browser and MCP
 health is reported as unavailable/not-probed data rather than turning a valid
 fallback into a generated-code error.

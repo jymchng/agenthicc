@@ -3857,13 +3857,11 @@ package `.agenthicc/workflows/<name>/` with optional workflow-local tools and
 helpers beside `runner.py`. The runner creates a run-owned pending marker before
 exposing package-scoped writers; `mark_generation_complete(summary)` has no path
 argument. Validate checks the exact pending package through an explicit
-candidate boundary, then runs a bounded fake-provider contract smoke. Neither
-validation nor smoke restricts Python imports: the candidate package is imported
-in-process, and import-time code executes with ordinary process permissions.
-This is not a sandbox, and direct API, network, process, or filesystem access
-bypasses the parent session's tool capability checks. Missing dependencies can
-still cause ordinary import failures. Only execute generated code from trusted
-sources, or use a separate OS-level isolation boundary. Rejection routes back to
+candidate boundary, then runs a bounded fake-provider contract smoke. The
+executable checks run inside Bubblewrap with a read-only workspace, private
+network namespace, wall-clock bound, and bounded output. When Bubblewrap is
+unavailable, the runner records `static_only` and uses AST validation.
+Rejection routes back to
 `generate`. Only after all checks and `approve_workflow(summary)` does the runner
 recheck the whole-package fingerprint, record trust for the exact Python bytes,
 and remove the marker.
@@ -4057,6 +4055,8 @@ def validate_workflow_file(
     *,
     expected_name: str = "",
     root: Path | None = None,
+    strict_cache_contract: bool = False,
+    available_integrations: Mapping[str, object] | None = None,
 ) -> ValidationReport
 ```
 
@@ -4070,8 +4070,8 @@ list `mode_bindings`, a working `build_params({})`, and a consistent phase graph
 (unique names, positive `max_turns`, `next`/`on_reject`/`on_error` edges that
 resolve). Unreachable phases, unknown `agent_type` or `output_schema` values, and
 Optional phases may be imported lazily; module import failures are reported.
-Import statements are unrestricted by the static validator. Candidate imports
-execute in-process with ordinary process permissions, not in a sandbox.
+The candidate imports run in a bounded Bubblewrap subprocess. A platform
+without Bubblewrap returns an AST report with `validation="static_only"`.
 
 ### ValidationReport
 
@@ -4088,6 +4088,7 @@ class ValidationReport:
     categories: dict[str, str] = field(default_factory=dict)
     evidence: dict[str, object] = field(default_factory=dict)
     skipped_checks: tuple[str, ...] = ()
+    validation: Literal["passed", "static_only"] = "passed"
 
     def render(self) -> str
     def to_dict(self) -> dict[str, object]
@@ -4095,6 +4096,19 @@ class ValidationReport:
 
 `ok` is True only when `errors` is empty. `render()` returns the numbered report
 block injected into the validating agent's system prompt.
+
+### run_generated_workflow_smoke
+
+Runs the candidate with a fake provider inside the validation sandbox and
+returns a `SmokeReport`. Relative imports remain available throughout the
+checks, including imports first used by a runner method. Static-only reports
+mark the runtime check as skipped.
+
+### inspect_generated_python
+
+Runs a runtime-owned callback in Bubblewrap with the workspace mounted
+read-only. The callback receives JSON inputs and returns a bounded JSON object.
+The `ImportCheck` status is `passed`, `failed`, or `static_only`.
 
 ### make_inspection_tools
 
