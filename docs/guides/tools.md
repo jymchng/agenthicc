@@ -50,6 +50,14 @@ Yolo is the unrestricted mode. These are executor gates, not merely prompt
 instructions, so project, MCP, dynamic, and built-in tools follow the same
 policy.
 
+## Skill discovery tools
+
+`list_skills(query=None)` lists up to 40 skills available to the current agent.
+`use_skill(name, args=None)` returns up to 16 KiB of rendered instructions,
+with the source and the full body’s digest. A skill can narrow the tools for
+the rest of the turn. See the [skills guide](plugins.md#skills) for activation
+options and permissions.
+
 ## The shortest working path
 
 Create `.agenthicc/tools/project_status.py`:

@@ -162,6 +162,7 @@ class SubagentExecutionPolicy:
         permissions: "SubagentPermissionConstraints | None" = None,
         type_name: str = "",
         workspace_scope_identity: str | None = None,
+        allowed_tools: frozenset[str] | None = None,
     ) -> "SubagentExecutionPolicy":
         """Apply a definition policy and optional permissions as a narrowing delta."""
         declared_blocked = declared.blocked_capabilities if declared is not None else frozenset()
@@ -169,7 +170,7 @@ class SubagentExecutionPolicy:
         blocked = self.blocked_capabilities | declared_blocked
         approval = (self.approval_required | declared_approval) - blocked
 
-        scope = self.capability_scope
+        scope = self.capability_scope.restrict(AgentCapabilityScope(allowed_tools=allowed_tools))
         if declared is not None:
             scope = scope.restrict(declared.capability_scope)
         if permissions is not None:

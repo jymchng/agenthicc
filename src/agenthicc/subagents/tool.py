@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, TypedDict, cast
 
 from agenthicc.config import SubagentSettings
 from agenthicc.result_contracts import project_result_value, validate_result_value
+from agenthicc.skills.tools import current_skill_use
 from agenthicc.subagents.communication import (
     PoolHandle,
     make_parent_communication_tools,
@@ -232,19 +233,21 @@ def make_spawn_subagents_tool(
     )
     continuation_registry = registry_for_session(conversation_id, conv_store)
 
-    def _surface(agent_type: str) -> tuple[list[object], frozenset[str], str] | None:
+    def _surface(
+        agent_type: str, candidates: list[object], parent_policy: SubagentExecutionPolicy | None
+    ) -> tuple[list[object], frozenset[str], str] | None:
         spec = _registry.get(agent_type)
         if spec is None:
             return None
-        tools, blocked = type_surface(
-            spec, all_tools, tool_registry, (effective_policy, spec.policy)
-        )
-        mode = spec.policy if spec.policy is not None else effective_policy
+        tools, blocked = type_surface(spec, candidates, tool_registry, (parent_policy, spec.policy))
+        mode = spec.policy if spec.policy is not None else parent_policy
         return tools, blocked, mode.mode_name if mode is not None else ""
 
-    def _type_unavailable(agent_type: str) -> str:
+    def _type_unavailable(
+        agent_type: str, candidates: list[object], parent_policy: SubagentExecutionPolicy | None
+    ) -> str:
         """Why *agent_type* cannot do its job in this session, or ``""``."""
-        surface = _surface(agent_type)
+        surface = _surface(agent_type, candidates, parent_policy)
         spec = _registry.get(agent_type)
         if surface is None or spec is None:
             return ""
@@ -253,7 +256,7 @@ def make_spawn_subagents_tool(
 
     type_tags: dict[str, str] = {}
     for _type_name in _registry.names():
-        _surface_info = _surface(_type_name)
+        _surface_info = _surface(_type_name, all_tools, effective_policy)
         _spec = _registry.get(_type_name)
         if _surface_info is None or _spec is None:
             continue
@@ -451,9 +454,16 @@ def make_spawn_subagents_tool(
 
         # SUBAGENT-13: refuse a type that cannot do its job in this session
         # before any worker, panel row, ledger entry or provider call exists.
+        spawn_tools = all_tools
+        spawn_policy = effective_policy
+        skill_use = current_skill_use()
+        if skill_use is not None:
+            spawn_tools = [item for item in all_tools if skill_use.permitted(tool_name(item))]
+            if spawn_policy is not None:
+                spawn_policy = spawn_policy.restrict_by(None, allowed_tools=skill_use.visible_names)
         unavailable: dict[str, str] = {}
         for requested_type in dict.fromkeys(task.agent_type for task in subagent_tasks):
-            reason = _type_unavailable(requested_type)
+            reason = _type_unavailable(requested_type, spawn_tools, spawn_policy)
             if reason:
                 unavailable[requested_type] = reason
         if unavailable:
@@ -564,9 +574,11 @@ def make_spawn_subagents_tool(
             "ancestry": ancestry,
             "types": effective_routing,
         }
+        if len(spawn_tools) != len(all_tools):
+            routing_policy["visible_tools"] = sorted(map(tool_name, spawn_tools))
         fp = _tasks_fingerprint(
             subagent_tasks,
-            policy_revision=(effective_policy.policy_revision if effective_policy else ""),
+            policy_revision=(spawn_policy.policy_revision if spawn_policy else ""),
             routing_policy=routing_policy,
             type_policy_revisions=type_policy_revisions,
         )
@@ -649,7 +661,7 @@ def make_spawn_subagents_tool(
             tasks=subagent_tasks,
             parent_runner=parent_runner,
             parent_model=parent_model,
-            all_tools=all_tools,
+            all_tools=spawn_tools,
             max_concurrent=effective_max_concurrent,
             app_state=app_state,
             processor=processor,
@@ -666,7 +678,7 @@ def make_spawn_subagents_tool(
             workspace_access=workspace_access,
             conversation_journal=conversation_journal,
             task_fingerprint=fp,
-            policy=effective_policy,
+            policy=spawn_policy,
             provider=provider,
             default_model=default_model,
             default_effort=_settings.default_effort,

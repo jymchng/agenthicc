@@ -19,6 +19,7 @@ import re
 import time
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, TypeVar, cast
@@ -586,8 +587,10 @@ if TYPE_CHECKING:
     from agenthicc.mentions.parser import Mention
     from agenthicc.plugins.registry import ToolRegistry
     from agenthicc.runners.prompt_contract import PromptContract
+    from agenthicc.runners.reload import SurfaceHolder
     from agenthicc.runners.usage_ledger import UsageLedger, UsageRunTracker
     from agenthicc.skills.loader import SkillDef, SkillPermissionSet
+    from agenthicc.skills.tools import SkillUseState
     from agenthicc.subagents.types import SubagentTypeRegistry
     from agenthicc.tools.approval import ApprovalBroker
     from agenthicc.tools.base import ToolLike
@@ -983,6 +986,7 @@ class AgentTurnRunner:
 
         # Content produced during the turn.
         self._skill_suffix: str = ""
+        self._skill_state = self._make_skill_state()
         self._runtime_dynamic_blocks: list[PromptBlock] = []
         self._cache_summary: str | None = None
         self._usage_tracker: UsageRunTracker | None = None
@@ -999,6 +1003,32 @@ class AgentTurnRunner:
 
     # ── public entry point ────────────────────────────────────────────────────
 
+    def _make_skill_state(self) -> SkillUseState | None:
+        from agenthicc.kernel.events import Event
+        from agenthicc.skills.tools import SkillUseState
+
+        ctx = self._ctx
+        if ctx.skills is None:
+            return None
+
+        def record(payload: dict[str, object]) -> None:
+            ctx.processor.emit_nowait(
+                Event.create("SkillUsed", {"turn_id": self._intent_id, **payload})
+            )
+
+        return SkillUseState(
+            ctx.skills,
+            agent=ctx.active_agent or "default",
+            permissions=ctx.skill_permissions,
+            permission_lookup=(
+                ctx.agent_config.agents.skill_permissions_for
+                if ctx.agent_config is not None
+                else None
+            ),
+            project=self._workspace_root(),
+            on_use=record,
+        )
+
     def _project_legacy_recovery(self) -> None:
         """Project a repair found outside lauren-ai's signal bus once."""
         projector = self._recovery_projector
@@ -1014,6 +1044,8 @@ class AgentTurnRunner:
 
     async def run(self) -> None:
         """Execute the full agent turn under its session workspace policy."""
+        from agenthicc.skills.tools import bind_skill_use
+
         ctx = self._ctx
         workspace_access = ctx.workspace_access
         if workspace_access is None:
@@ -1028,7 +1060,12 @@ class AgentTurnRunner:
 
             policy_token = set_current_workspace_access(ctx.workspace_access)
         try:
-            await self._run_impl()
+            with (
+                bind_skill_use(self._skill_state)
+                if self._skill_state is not None
+                else nullcontext()
+            ):
+                await self._run_impl()
         finally:
             if policy_token is not None:
                 from agenthicc.tools.workspace_access import reset_current_workspace_access
@@ -1416,7 +1453,7 @@ class AgentTurnRunner:
 
         ctx = self._ctx
         available_skills = filter_skills_for_agent(
-            ctx.skills or {},
+            ctx.skills.current().value if ctx.skills is not None else {},
             ctx.active_agent or "default",
             ctx.skill_permissions,
         )
@@ -1440,7 +1477,14 @@ class AgentTurnRunner:
         from agenthicc.agents.plugin import BASE_SYSTEM_PROMPT as _BASE
         from agenthicc.plugins.registry import build_registry
         from agenthicc.runners.prompt_contract import PromptBlock
+        from agenthicc.runners.skill_runner import SkillAwareRunner
         from agenthicc.runners.tool_populator import populate_agent_tools as _populate
+        from agenthicc.skills.tools import (
+            SKILL_CONTEXT_GUIDANCE,
+            SKILL_TOOL_NAMES,
+            list_skills,
+            use_skill,
+        )
         from agenthicc.tools.capabilities import (
             get_tool_capabilities,
             is_exploratory_tool,
@@ -1469,6 +1513,9 @@ class AgentTurnRunner:
             agent_name=ctx.active_agent or "default",
             project_plugin_tools=project_tools,
         )
+        if self._skill_state is not None:
+            registry.register(list_skills, source="builtin")
+            registry.register(use_skill, source="builtin")
         excluded_capabilities = ctx.excluded_capabilities
         allowed_tool_names = ctx.allowed_tool_names
         gate_state = ctx.app_state
@@ -1498,6 +1545,8 @@ class AgentTurnRunner:
 
         # System prompt
         effective_base = _BASE
+        if visible_names & SKILL_TOOL_NAMES:
+            effective_base += f"\n\n{SKILL_CONTEXT_GUIDANCE}"
         mcp_prompt = getattr(ctx.mcp_registry, "prompt_instructions", None)
         if callable(mcp_prompt):
             prompt_text = mcp_prompt()
@@ -1600,12 +1649,14 @@ class AgentTurnRunner:
 
         hooks = order_global_hooks(hooks)
 
-        runner_class: type[AgentRunnerBase] = _RunnerBase
+        runner_class: type[AgentRunnerBase] = (
+            SkillAwareRunner if self._skill_state is not None else _RunnerBase
+        )
         next_queued_message = ctx.next_queued_message
         if next_queued_message is not None:
             claim_queued_message = next_queued_message
 
-            class _QueuedInputRunner(_RunnerBase):
+            class _QueuedInputRunner(SkillAwareRunner):
                 """Commit tool results before injecting the next queued input.
 
                 Lauren-ai's stream loop normally commits the returned tool
@@ -1816,6 +1867,8 @@ class AgentTurnRunner:
                 self._runtime_dynamic_blocks.insert(0, PromptBlock("AVAILABLE TOOLS", description))
 
         self._visible_tools = list(visible_tools)
+        if self._skill_state is not None:
+            self._skill_state.configure_tools(map(tool_name, visible_tools))
         self._tool_registry = registry
         return agent_instance, active_runner
 
@@ -3384,7 +3437,7 @@ async def _run_agent_turn(
     conv_store: ConversationStore | None = None,
     app_state: AppState | None = None,
     exec_cfg: ExecutionSettings | None = None,
-    skills: Mapping[str, SkillDef] | None = None,
+    skills: SurfaceHolder[Mapping[str, SkillDef]] | None = None,
     mention_cache: MentionCache | None = None,
     project_plugin_tools: list[ToolLike] | None = None,
     mcp_registry: McpToolRegistry | McpSessionManager | None = None,
@@ -3415,7 +3468,7 @@ async def _run_agent_turn(
 ) -> None:
     """Thin shim — constructs AgentTurnContext and delegates to AgentTurnRunner.
 
-    All existing call sites continue to work without modification.
+    The session's live skill holder is shared with the agent and its workers.
     """
     if session_memory is None:
         from lauren_ai._memory import ShortTermMemory as _ShortTermMemory

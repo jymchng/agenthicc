@@ -36,6 +36,7 @@ _KNOWN_FIELDS: Final[frozenset[str]] = frozenset(
         "tags",
         "suggestedTopics",
         "disallowAutoTriggering",
+        "disable_model_invocation",
         "tools",
         "disabledTools",
         "maxTurnDepth",
@@ -105,6 +106,8 @@ class SkillDef:
     denied_agents: tuple[str, ...] = ()
     source: str = "unknown"
     _body: str | None = field(default=None, repr=False)
+    disable_model_invocation: bool = False
+    _model_content: SkillModelContent | None = field(default=None, repr=False)
 
     @property
     def canonical_name(self) -> str:
@@ -141,12 +144,36 @@ class SkillDef:
 
     @property
     def body(self) -> str:
-        """Lazy-load the instruction body on first access."""
+        """Lazy-load the instruction body on first user activation."""
 
         if self._body is None:
             raw = (self.path / "SKILL.md").read_text(encoding="utf-8")
             self._body = _extract_body(raw)
         return self._body
+
+
+@dataclass(frozen=True, slots=True)
+class SkillModelContent:
+    """Text from the skill generation admitted to the model's inventory."""
+
+    body: str
+    reference: str | None
+    template: str | None
+
+
+def _read_model_content(skill_md: Path, body: str) -> SkillModelContent | None:
+    def companion(name: str) -> str | None:
+        path = skill_md.with_name(name)
+        if path.is_symlink() or (path.exists() and not path.is_file()):
+            raise OSError(f"Skill companion {name} must be a regular file.")
+        return path.read_text(encoding="utf-8") if path.is_file() else None
+
+    if skill_md.parent.is_symlink() or skill_md.is_symlink():
+        return None
+    try:
+        return SkillModelContent(body.strip(), companion("reference.md"), companion("template.md"))
+    except (OSError, UnicodeError):
+        return None
 
 
 @dataclass(frozen=True)
@@ -316,7 +343,7 @@ def _parse_skill_detailed(
 
     try:
         raw = skill_md.read_text(encoding="utf-8")
-        frontmatter, _ = _split_frontmatter(raw)
+        frontmatter, body = _split_frontmatter(raw)
     except (OSError, UnicodeError) as exc:
         diagnostics.append(SkillDiagnostic(skill_md, "read-error", str(exc), "error"))
         return None, diagnostics
@@ -521,6 +548,14 @@ def _parse_skill_detailed(
         diagnostics.append(
             SkillDiagnostic(skill_md, "invalid-model", "model must be a string", "error")
         )
+    disable_model = metadata.get("disable_model_invocation", False)
+    if not isinstance(disable_model, bool):
+        diagnostics.append(
+            SkillDiagnostic(
+                skill_md, "invalid-boolean", "disable_model_invocation must be a boolean", "error"
+            )
+        )
+        return None, diagnostics
 
     skill = SkillDef(
         name=name,
@@ -536,6 +571,7 @@ def _parse_skill_detailed(
             skill_md,
         ),
         disallow_auto_triggering=disallow_auto,
+        disable_model_invocation=disable_model,
         tools=_string_list(metadata.get("tools"), "tools", diagnostics, skill_md),
         disabled_tools=_string_list(
             _metadata_value(metadata, "disabledTools", diagnostics, skill_md),
@@ -563,6 +599,8 @@ def _parse_skill_detailed(
     )
     if any(diagnostic.severity == "error" for diagnostic in diagnostics):
         return None, diagnostics
+    if not disable_model and not skill.model:
+        skill._model_content = _read_model_content(skill_md, body)
     return skill, diagnostics
 
 

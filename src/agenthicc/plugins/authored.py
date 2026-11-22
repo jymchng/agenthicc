@@ -161,9 +161,10 @@ def _json_bytes(value: object) -> bytes:
 def _reserved_names(kind: ArtifactKind) -> frozenset[str]:
     if kind == "tool":
         from agenthicc.agent_tools import AGENT_TOOLS
+        from agenthicc.skills.tools import SKILL_TOOL_NAMES
         from agenthicc.tools.base import tool_name
 
-        return frozenset(map(tool_name, AGENT_TOOLS))
+        return frozenset(map(tool_name, AGENT_TOOLS)) | SKILL_TOOL_NAMES
     if kind == "workflow":
         from agenthicc.workflows.loader import builtin_workflow_descriptors
 

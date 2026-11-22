@@ -147,7 +147,7 @@ async def test_stream_reraises_permanent_error() -> None:
         # Disable PRD-198's bounded recovery budget so this test isolates the
         # immediate propagation contract of a zero-budget permanent error.
         exec_cfg=ExecutionSettings(irrecoverable_error_max_retries=0),
-        skills={},
+        skills=None,
         mention_cache=MagicMock(),
         project_plugin_tools=[],
         mcp_registry=None,
@@ -211,7 +211,7 @@ async def test_stream_reraises_transient_error() -> None:
             transport_max_retries=1,
             transport_retry_base_delay_s=0.0,
         ),
-        skills={},
+        skills=None,
         mention_cache=MagicMock(),
         project_plugin_tools=[],
         mcp_registry=None,
@@ -262,7 +262,7 @@ async def test_stream_reraises_non_provider_exceptions(exception_type: type[Exce
         conv_store=conv_store,
         app_state=None,
         exec_cfg=ExecutionSettings(),
-        skills={},
+        skills=None,
         mention_cache=MagicMock(),
         project_plugin_tools=[],
         mcp_registry=None,

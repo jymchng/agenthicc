@@ -6,6 +6,11 @@ SessionReloaded payload:
     requested, published: Sorted lists of surface names.
     changes_summary: Changed item names, surfaces and change kinds.
     diagnostics: Bounded source paths, codes, messages and optional digests.
+
+SkillUsed payload:
+    turn_id: Agent turn identifier or worker task identifier.
+    ok, slug, source, digest, narrowed_tools, truncated: Skill load receipt.
+    pool_id: Set for worker tasks so their turn identifiers are unambiguous.
 """
 
 from __future__ import annotations
@@ -41,6 +46,7 @@ PROJECTION_EVENT_TYPES: frozenset[str] = frozenset(
         "McpServerFailed",
         "McpServerReady",
         "ProviderRecoveryRetryScheduled",
+        "SkillUsed",
         "SubagentCompleted",
         "SubagentFailed",
         "SubagentPoolCompleted",

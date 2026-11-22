@@ -36,6 +36,7 @@ import sys
 import time
 import uuid
 from copy import deepcopy
+from contextlib import nullcontext
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -1999,6 +2000,13 @@ class SubagentWorker:
         )
 
         from agenthicc.runners.tool_populator import populate_agent_tools
+        from agenthicc.runners.skill_runner import SkillAwareRunner
+        from agenthicc.skills.tools import (
+            SKILL_CONTEXT_GUIDANCE,
+            SKILL_TOOL_NAMES,
+            bind_skill_use,
+            current_skill_use,
+        )
 
         # Filter the full tool list to the expanded effective scope. Communication
         # tools are session-bound control-plane tools and are added separately;
@@ -2104,6 +2112,29 @@ class SubagentWorker:
         # explicit prevents a role's usual "brief summary" instruction from
         # discarding a task that explicitly requests complete content.
         system = self._spec.system_prompt
+        parent_skill_use = current_skill_use()
+        visible_names = frozenset(map(tool_name, filtered))
+        skill_use = None
+        if parent_skill_use is not None and SKILL_TOOL_NAMES & visible_names:
+
+            def record_skill_use(payload: dict[str, object]) -> None:
+                from agenthicc.kernel.events import Event
+
+                if self._processor is not None:
+                    self._processor.emit_nowait(
+                        Event.create(
+                            "SkillUsed",
+                            {
+                                "turn_id": self._task.task_id,
+                                "pool_id": self._pool_id,
+                                **payload,
+                            },
+                        )
+                    )
+
+            skill_use = parent_skill_use.for_agent(self._task.agent_type, on_use=record_skill_use)
+            skill_use.configure_tools(visible_names)
+            system += "\n\n" + SKILL_CONTEXT_GUIDANCE
         if self._policy is not None:
             system += "\n\n" + self._policy.prompt_section()
             if self._policy.system_prompt_suffix:
@@ -2242,7 +2273,8 @@ class SubagentWorker:
                     + _token_count(_usage_field(usage, "output_tokens"))
                 )
 
-        runner = _RunnerBase(
+        runner_class = SkillAwareRunner if skill_use is not None else _RunnerBase
+        runner = runner_class(
             # OpenAI-compatible endpoints may return nullable usage fields.
             # Lauren's non-streaming runner adds those fields directly, so
             # isolate each worker behind the normalising proxy.
@@ -2328,6 +2360,10 @@ class SubagentWorker:
             )
 
         async def _run_once(message: str, config_override: AgentConfig) -> None:
+            with bind_skill_use(skill_use) if skill_use is not None else nullcontext():
+                await _run_provider(message, config_override)
+
+        async def _run_provider(message: str, config_override: AgentConfig) -> None:
             if usage_tracker is not None:
                 response = await runner.run(
                     agent_instance,

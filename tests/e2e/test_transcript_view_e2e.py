@@ -117,7 +117,7 @@ async def _failing_turn(app_state, processor, session_id: str, command: str) -> 
             conv_store=app_state.conversation,
             app_state=app_state,
             exec_cfg=cfg.execution,
-            skills={},
+            skills=None,
             skill_permissions=cfg.agents.skill_permissions_for("auto"),
             mention_cache=MagicMock(),
             project_plugin_tools=[],

@@ -483,6 +483,8 @@ The kernel `AppState` and the reactive TUI `AppState` are different types with d
 
 Explicit skills use the `$skill-name` or `$alias` trigger; `/` remains reserved for commands. `/commands` lists slash commands only; use `/skills` to inspect discovered skills. The former `/skill-name` spelling is not executed.
 
+Agents can discover and read skills during a turn with `list_skills` and `use_skill`. The skill’s frontmatter controls whether the agent can load it. See [skills and plugins](./docs/guides/plugins.md#skills).
+
 In a registry overlay, press Enter on an entry to open its details. Press Enter again on the details page to place the invocation in the input panel: `/workflow <name>` for workflows, the command's canonical `/name` for commands, and `$<skill-name>` for skills. The text is prepared but not submitted.
 
 ### Installing skills

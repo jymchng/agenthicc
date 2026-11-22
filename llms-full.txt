@@ -7688,6 +7688,7 @@ class SkillDef:
     slug: str
     path: Path
     description: str = ""
+    disable_model_invocation: bool = False
     aliases: tuple[str, ...] = ()
     allowed_agents: tuple[str, ...] | None = None
     denied_agents: tuple[str, ...] = ()
@@ -7771,6 +7772,21 @@ def filter_skills_for_agent(
 
 Return only skills allowed by both their frontmatter and the active agent's
 configured policy.
+
+### list_skills and use_skill
+
+The `agenthicc.skills.tools` module provides two read-capability tools for
+active session turns. `list_skills(query=None)` returns at most 40 entries and
+6,000 characters. `use_skill(name, args=None)` returns source-labelled skill
+guidance, with the full digest and a 16 KiB body limit. Both read the current
+skills surface and enforce the calling agent’s skill permissions.
+
+The `disable_model_invocation` frontmatter field hides a skill from these tools.
+Skills with `model` set need `$skill-name` activation. `maxTurnDepth` applies to
+`$skill-name` only. Skill allowlists and disabled tools narrow the next provider
+request and tool dispatch until the turn ends. The `SkillUsed` kernel event
+records the skill slug, source, digest, narrowing and truncation status with the
+calling turn ID. Worker events also include the pool ID.
 
 ### render_context_commands — `agenthicc.skills.runner`
 

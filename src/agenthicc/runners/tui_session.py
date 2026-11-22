@@ -5101,7 +5101,7 @@ class TUISession:
                     conv_store=ctx.app_state.conversation,
                     app_state=ctx.app_state,
                     exec_cfg=agent.exec_cfg,
-                    skills=ctx.reload.skills.current().value,
+                    skills=ctx.reload.skills,
                     skill_permissions=ctx.cfg.agents.skill_permissions_for(agent.spec.name),
                     mention_cache=ctx.mention_cache,
                     project_plugin_tools=([*ctx.reload.tools.current().value, *session_tools(ctx)]),

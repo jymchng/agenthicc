@@ -1135,7 +1135,7 @@ async def _run_direct_turn(
         conv_store=app_state.conversation,
         app_state=app_state,
         exec_cfg=agent.exec_cfg,
-        skills=session.reload.skills.current().value,
+        skills=session.reload.skills,
         skill_permissions=cfg.agents.skill_permissions_for(agent.spec.name),
         mention_cache=session.mention_cache,
         # AGI-03: the same session tools as a foreground turn, so a background

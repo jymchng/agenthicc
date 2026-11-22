@@ -118,6 +118,7 @@ if TYPE_CHECKING:
     from agenthicc.tools.mcp_manager import McpSessionManager
     from agenthicc.tui.conversation_store import AppState, ConversationStore
     from agenthicc.skills.loader import SkillPermissionSet, SkillDef
+    from agenthicc.runners.reload import SurfaceHolder
     from agenthicc.runners.usage_ledger import UsageLedger
     from agenthicc.runners.prompt_contract import PromptContract
     from agenthicc.tools.workspace_access import WorkspaceAccessPolicy
@@ -144,7 +145,7 @@ class AgentTurnOptions(TypedDict):
     conv_store: "ConversationStore | None"
     app_state: "AppState | None"
     exec_cfg: "ExecutionSettings | None"
-    skills: "Mapping[str, SkillDef] | None"
+    skills: "SurfaceHolder[Mapping[str, SkillDef]] | None"
     skill_permissions: "SkillPermissionSet | None"
     mention_cache: "MentionCache | None"
     project_plugin_tools: "list[ToolLike] | None"
@@ -192,7 +193,7 @@ class AgentTurnContext:
     exec_cfg: "ExecutionSettings | None" = None
 
     # ── content injection ─────────────────────────────────────────────────────
-    skills: "Mapping[str, SkillDef] | None" = None
+    skills: "SurfaceHolder[Mapping[str, SkillDef]] | None" = None
     skill_permissions: "SkillPermissionSet | None" = None
     mention_cache: "MentionCache | None" = None
     project_plugin_tools: "list[ToolLike] | None" = None

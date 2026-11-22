@@ -206,6 +206,18 @@ skills and any non-informational discovery diagnostics; a failed scan leaves
 the current session unchanged. The former `/skill-name` spelling is not
 accepted.
 
+An agent can also use `list_skills` to search the live inventory and `use_skill`
+to read instructions during a turn. Agents see skills added by a session reload
+on their next call. Set `disable_model_invocation: true` to reserve a skill for
+human activation. A skill that declares `model` also requires `$skill-name`
+activation. `maxTurnDepth` applies only to `$skill-name`, and
+`disallowAutoTriggering` controls matching on user text.
+
+When an agent uses a skill, `tools` and `disabledTools` can limit which tools it
+can call for the rest of the turn. Every call continues to follow the active
+mode and its approval rules. The returned instructions identify their source
+and digest. Loading the same skill again in the turn returns its digest.
+
 ## Commands
 
 Command plugins expose `COMMAND` and/or `COMMANDS` and are loaded from command directories. A

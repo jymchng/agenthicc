@@ -53,15 +53,21 @@ description: >-
 | `author` | string | no | Attribution |
 | `aliases` | list of strings | no | Compatibility trigger names |
 | `suggestedTopics` | list of strings | no | Topics this skill should be surfaced for |
-| `disallowAutoTriggering` | boolean | no | Set `true` to require explicit `$name` invocation |
+| `disallowAutoTriggering` | boolean | no | Set `true` to skip automatic matching on user text |
+| `disable_model_invocation` | boolean | no | Set `true` to hide the skill from `list_skills` and require human activation |
 | `allowedAgents` | list of strings | no | Restrict which agent roles may use the skill |
 | `deniedAgents` | list of strings | no | Exclude specific agent roles |
 | `permissions` | mapping | no | Per-agent allow/deny rules; `permissions.agents.allow` and `.deny` mirror `allowedAgents`/`deniedAgents` |
-| `tools` | list of strings | no | Tools the skill expects to be available |
-| `disabledTools` | list of strings | no | Tools to withhold while the skill runs |
-| `maxTurnDepth` | positive integer | no | Turn budget for the skill; defaults to `200` |
-| `model` | string | no | Preferred model override |
+| `tools` | list of strings | no | Restrict the turn to these tools within the existing permissions |
+| `disabledTools` | list of strings | no | Withhold these tools for the rest of the turn after `use_skill` |
+| `maxTurnDepth` | positive integer | no | Turn budget for `$name` activation, default `200` |
+| `model` | string | no | Preferred model for `$name` activation. A configured model requires human activation |
 | `source` | string | no | Provenance marker |
+
+Agents can call `list_skills` and `use_skill` during a turn. A call uses the
+current session inventory and the calling agent’s skill permissions. A loaded
+skill can narrow the remaining tool choices. Its context commands are rendered
+as instructions, subject to the usual permissions and approvals.
 
 ### Compatibility field aliases
 

@@ -326,7 +326,7 @@ skills against anything else produces files that silently lose their metadata.
 
 | Rule | Constraint | Evidence |
 |---|---|---|
-| Allowed frontmatter fields | `name`, `description`, `author`, `tags`, `suggestedTopics`, `disallowAutoTriggering`, `tools`, `disabledTools`, `maxTurnDepth`, `model`, `aliases`, `allowedAgents`, `deniedAgents`, `permissions`, `source`, `version` | `src/agenthicc/skills/loader.py:31-50` |
+| Allowed frontmatter fields | `name`, `description`, `author`, `tags`, `suggestedTopics`, `disallowAutoTriggering`, `disable_model_invocation`, `tools`, `disabledTools`, `maxTurnDepth`, `model`, `aliases`, `allowedAgents`, `deniedAgents`, `permissions`, `source`, `version` | `src/agenthicc/skills/loader.py:31-50` |
 | Field aliases accepted | e.g. `suggested_topics`/`topics`, `alias`, `allowed_agents`/`allowAgents`/`allow_agents` | `loader.py:51-59` |
 | Canonical name length limit | 64 | `loader.py:28` |
 | Description length limit | 1 536 | `loader.py:29` |

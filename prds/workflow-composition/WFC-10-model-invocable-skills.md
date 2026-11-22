@@ -161,3 +161,17 @@ skills a turn (or a worker) may load.
 | A repository-supplied skill steers the agent. | Source/digest wrapper, "guidance not authority" preamble, unchanged approvals and ceiling, per-turn skill cap. |
 | Narrowing surprises the agent mid-turn. | The result states `narrowed_tools`; the change lands at a tool boundary, not inside a call. |
 | Prompt growth from many skills. | 16 KB per body and `already_loaded` de-duplication; no count cap, so workers are not limited. |
+
+## Implementation status
+
+The loader, model tools, provider request integration, and worker path are in
+place. WFC-09 adds the real `create_skills` producer and WFC-13 S5 exercises it
+through headless execution.
+
+| Criteria | Evidence |
+|---|---|
+| A1, A7, A8 | `test_model_uses_authored_skill_and_worker_inherits_remaining_tools` publishes with the runtime publisher on the first provider request and checks listing, rendering, provenance, and worker discovery. The `create_skills` entry point is pending WFC-09. |
+| A2 | The same test checks `run_bash`, the repository’s shell tool, on the next provider request and in the worker’s first request. |
+| A3, A4 | `test_model_skill_permissions_and_frontmatter` checks role policy, model overrides, opt-out validation, and explicit model invocation when auto-matching is disabled. |
+| A5 | `test_bounded_body_digest_and_cumulative_narrowing` checks the full digest, UTF-8 truncation, repeated loads and cumulative limits. |
+| A6 | `test_reload_during_skill_calls_preserves_complete_snapshots` races discovery and skill use against successive reloads with paired instructions, reference and template files. |
