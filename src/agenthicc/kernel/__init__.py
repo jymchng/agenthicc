@@ -31,6 +31,7 @@ if TYPE_CHECKING:
         SystemSettings,
         ToolRegistration,
         Workflow,
+        WorkflowFrameRecord,
         WorkflowNode,
     )
 
@@ -55,6 +56,7 @@ __all__ = [
     "ToolRegistration",
     "UnknownEventError",
     "Workflow",
+    "WorkflowFrameRecord",
     "WorkflowNode",
     "restore_from_log",
     "root_reducer",
@@ -83,6 +85,7 @@ _EXPORTS: dict[str, str] = {
     "SystemSettings": "state",
     "ToolRegistration": "state",
     "Workflow": "state",
+    "WorkflowFrameRecord": "state",
     "WorkflowNode": "state",
 }
 _SUBMODULES = frozenset({"events", "processor", "reducer", "state"})

@@ -443,10 +443,13 @@ def test_authored_cli_lists_approves_and_rejects_staged_runs(
 def test_private_recovery_rolls_back_a_process_killed_during_publication(
     store: AuthoredArtifactStore,
 ) -> None:
-    run = _run(store, "interrupted", {"interrupted_tool": _tool("interrupted_tool", "first")})
+    run = _run(
+        store,
+        "interrupted",
+        {name: _tool(name, name) for name in ("first_tool", "second_tool", "third_tool")},
+    )
     store.stage(run)
-    artifact = run.candidates[0].artifact
-    target = store.workspace / artifact.files[0]
+    targets = tuple(store.workspace / item.artifact.files[0] for item in run.candidates)
     source = """
 import os
 import sys
@@ -457,8 +460,13 @@ from agenthicc.plugins.trust import ExtensionTrust
 workspace, owner, run_id = sys.argv[1:]
 trust = ExtensionTrust(store_path=Path(owner), trusted_roots=())
 store = AuthoredArtifactStore(Path(workspace), trust=trust)
-with store.commit(store.staged(run_id), approved_by="user"):
+install_file = store._install_file
+def install_first_then_stop(source, target):
+    install_file(source, target)
     os._exit(74)
+store._install_file = install_first_then_stop
+with store.commit(store.staged(run_id), approved_by="user"):
+    raise AssertionError("publication reached reload before the crash boundary")
 """
     interrupted = subprocess.run(
         [
@@ -474,15 +482,16 @@ with store.commit(store.staged(run_id), approved_by="user"):
         timeout=15,
     )
     assert interrupted.returncode == 74, interrupted.stderr.decode()
-    assert target.is_file()
-    assert not store.trust.permits(target, kind="tool")
+    assert sum(target.is_file() for target in targets) == 1
+    assert not any(store.trust.permits(target, kind="tool") for target in targets)
 
     reopened = AuthoredArtifactStore(store.workspace, trust=store.trust)
-    reopened.recover()
-    assert not target.exists()
+    with override_extension_trust(store.trust):
+        AuthoredArtifactStore.recover_workspace(store.workspace)
+    assert not any(target.exists() for target in targets)
     assert reopened.trust.records() == ()
     assert reopened.records() == ()
-    assert reopened.staged(run.run_id).candidates[0].artifact == artifact
+    assert reopened.staged(run.run_id).candidates == run.candidates
 
 
 def test_skill_discovery_hides_provisional_set_without_recording_python_trust(

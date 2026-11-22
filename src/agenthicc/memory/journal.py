@@ -506,8 +506,15 @@ class ConversationJournal:
 
     def has_message_id(self, message_id: str) -> bool:
         """Whether an idempotent message append with *message_id* is durable."""
+        return self._has_record("append", "message_id", message_id)
+
+    def has_started_turn(self, turn_id: str) -> bool:
+        """Whether the journal has accepted a turn with this identity."""
+        return self._has_record("turn_started", "turn_id", turn_id)
+
+    def _has_record(self, kind: str, key: str, value: str) -> bool:
         self._drain()
-        if not message_id or not self._path.exists():
+        if not value or not self._path.exists():
             return False
         with self._path.open("r", encoding="utf-8") as fh:
             for raw in fh:
@@ -520,8 +527,8 @@ class ConversationJournal:
                     break
                 if (
                     isinstance(entry, dict)
-                    and entry.get("kind") == "append"
-                    and entry.get("message_id") == message_id
+                    and entry.get("kind") == kind
+                    and entry.get(key) == value
                 ):
                     return True
         return False

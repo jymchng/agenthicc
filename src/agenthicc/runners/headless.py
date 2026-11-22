@@ -211,8 +211,51 @@ def _select_headless_workflow_resume(
         conversation=conversation,
         provider_profile=None,
         workspace_root=workspace_root,
+        max_stack_depth=session.cfg.workflow_stack_max_depth,
     )
     return record.run_id if record is not None else None
+
+
+def _restore_headless_workflow(session: SessionContext, run_id: str) -> None:
+    from agenthicc.runners.workflow_checkpoint_store import WorkflowCheckpointStore
+    from agenthicc.runners.workflow_recovery import (
+        WorkflowRecoveryCoordinator,
+        linked_workflow_recovery,
+        recovered_workflow_frames,
+    )
+
+    conversation = session.session_conversation
+    if conversation is None:
+        raise ValueError("workflow resume requires the durable session conversation")
+    max_depth = session.cfg.workflow_stack_max_depth
+    workspace_scope = session.workspace_scope
+    store = WorkflowCheckpointStore(session.session_id)
+    records = WorkflowRecoveryCoordinator(session.session_id, checkpoint_store=store).inspect(
+        workflow_registry=session.workflow_registry,
+        conversation=conversation,
+        workspace_root=str(workspace_scope.primary_root) if workspace_scope is not None else "",
+        max_stack_depth=max_depth,
+    )
+    record = next((item for item in records if item.run_id == run_id), None)
+    if record is None or not record.recoverable:
+        reason = record.display_error if record is not None else "run was not found"
+        raise ValueError(f"workflow run {run_id!r} is not recoverable: {reason}")
+    chain = linked_workflow_recovery(records, record, max_depth=max_depth)
+    stack = session.workflow_stack
+    stack.restore_frames(
+        recovered_workflow_frames(
+            chain, stack, session.workflow_registry, session.processor.get_state().workflow_frames
+        )
+    )
+    session.workflow_bridge.sync()
+    if chain.missing_parent_run_id is not None:
+        session.app_state.conversation.append_event(
+            "system",
+            {
+                "text": f"Parent run {chain.missing_parent_run_id!r} was not found. "
+                "The saved workflow is available as a base run."
+            },
+        )
 
 
 async def execute_workflow(
@@ -227,6 +270,9 @@ async def execute_workflow(
     profile_override: str | None = None,
 ) -> WorkflowExecutionResult:
     """Execute a named workflow or default agent turn, including child returns."""
+    if resume_run_id is not None and session.workflow_stack.top.run_id != resume_run_id:
+        _restore_headless_workflow(session, resume_run_id)
+        workflow_name = session.workflow_stack.top.workflow_name
     return await _execute_workflow_turn(
         session,
         workflow_name,
@@ -274,7 +320,7 @@ async def _execute_workflow_turn(
         if not intent.strip():
             raise ValueError("Workflow intent must not be empty")
         stack.set_base("default")
-        session.app_state.conversation.workflow_stack.set(stack.summaries())
+        session.workflow_bridge.sync()
         await _run_headless_agent_turn(session, intent, completed_turns)
         return WorkflowExecutionResult(session.session_id, "default", "", "complete", ())
     pinned = bool(frame.depth or frame.awaiting_child)
@@ -319,9 +365,13 @@ async def _execute_workflow_turn(
     else:
         stack.set_base(workflow.name)
         frame = stack.top
+        if frame.status == "paused":
+            frame = stack.resume(frame.frame_id)
 
     conversation = session.app_state.conversation
-    conversation.workflow_stack.set(stack.summaries())
+    session.workflow_bridge.sync()
+    if frame.depth:
+        await session.processor.flush_events()
     tools = WorkflowToolScope(
         stack,
         session.workflow_registry,
@@ -352,7 +402,7 @@ async def _execute_workflow_turn(
             )
         if frame.depth:
             stack.pause(frame.frame_id)
-            conversation.workflow_stack.set(stack.summaries())
+            session.workflow_bridge.sync()
         raise
     pending = tools.take_pending()
     if pending is not None:
@@ -381,7 +431,7 @@ async def _execute_workflow_turn(
         )
     if frame.awaiting_child and result.status == "complete":
         stack.resume_parked_run()
-        conversation.workflow_stack.set(stack.summaries())
+        session.workflow_bridge.sync()
     publishes = bool(workflow.invocation.publishes)
     if frame.depth:
         done = result.status == "complete"
@@ -393,19 +443,21 @@ async def _execute_workflow_turn(
                 status="completed" if done else "failed",
             )
             parent = stack.complete(frame.frame_id, returned)
-            conversation.workflow_stack.set(stack.summaries())
             if done:
                 returned = await session.authored.publish_return(
                     returned, outcome, workflow, session.workflow_registry
                 )
-            stack.queue_return(WorkflowDelivery(parent.frame_id, frame.run_id, returned))
+            delivery = WorkflowDelivery(parent.frame_id, frame.run_id, returned)
+            session.workflow_bridge.record_return(delivery)
+            await session.processor.flush_events()
+            stack.queue_return(delivery)
             if deliver_parent:
                 delivery = stack.take_return()
                 if delivery is not None:
                     await _deliver_headless_return(session, delivery, completed_turns + 1)
         else:
             stack.pause(frame.frame_id)
-            conversation.workflow_stack.set(stack.summaries())
+            session.workflow_bridge.sync()
     elif publishes and result.status in {"complete", "failed"}:
         if result.status == "complete":
             returned = workflow_return(frame, outcome, session.app_state.workflow_run())
@@ -413,7 +465,7 @@ async def _execute_workflow_turn(
                 returned, outcome, workflow, session.workflow_registry
             )
         stack.clear_base()
-        conversation.workflow_stack.set(stack.summaries())
+        session.workflow_bridge.sync()
     return result
 
 
@@ -440,18 +492,44 @@ async def _deliver_headless_return(
             payload={"text": text, "client_id": "workflow-return", "idempotency_key": delivery.key},
             turn_id=delivery.key,
         )
-    if name is not None:
-        return await _execute_workflow_turn(
-            session,
-            name,
-            (parent.intent or text) if parent.awaiting_child else text,
-            completed_turns=completed_turns,
-            resume_run_id=parent.run_id if parent.awaiting_child else None,
-            continuation=text if parent.awaiting_child else None,
-            deliver_parent=deliver_parent,
-        )
-    await _run_headless_agent_turn(session, text, completed_turns)
-    return None
+    from agenthicc.runners.workflow_return_delivery import bind_workflow_return
+
+    with bind_workflow_return(delivery.key):
+        if name is not None:
+            return await _execute_workflow_turn(
+                session,
+                name,
+                (parent.intent or text) if parent.awaiting_child else text,
+                completed_turns=completed_turns,
+                resume_run_id=parent.run_id if parent.awaiting_child else None,
+                continuation=text if parent.awaiting_child else None,
+                deliver_parent=deliver_parent,
+            )
+        await _run_headless_agent_turn(session, text, completed_turns)
+        return None
+
+
+async def _recover_headless_return(session: SessionContext) -> WorkflowExecutionResult | None:
+    bridge = session.workflow_bridge
+    delivery = bridge.find_pending_return()
+    if delivery is None:
+        plan = session.pending_resume
+        if plan is not None and plan.workflow_run_id is None and plan.turn_id.startswith("return:"):
+            await session.processor.flush_events()
+            await _run_headless_agent_turn(session, plan.user_message, 0, resume_plan=plan)
+            session.pending_resume = None
+            return WorkflowExecutionResult(session.session_id, "default", "", "complete", ())
+        return None
+    parent_run = bridge.return_parent_run_id(delivery)
+    if parent_run is None:
+        bridge.restore_direct_parent(delivery)
+    else:
+        _restore_headless_workflow(session, parent_run)
+        if session.workflow_stack.top.frame_id != delivery.parent_frame_id:
+            raise ValueError("The return points to a different caller frame.")
+    await session.processor.flush_events()
+    result = await _deliver_headless_return(session, delivery, 0)
+    return result or WorkflowExecutionResult(session.session_id, "default", "", "complete", ())
 
 
 def _workflow_worker_runtime(session: SessionContext) -> WorkflowWorkerRuntime:
@@ -483,7 +561,11 @@ def _workflow_worker_runtime(session: SessionContext) -> WorkflowWorkerRuntime:
 
 
 async def _run_headless_agent_turn(
-    session: SessionContext, text: str, completed_turns: int
+    session: SessionContext,
+    text: str,
+    completed_turns: int,
+    *,
+    resume_plan: ResumePlan | None = None,
 ) -> None:
     from agenthicc.agents.selection import turn_agent
     from agenthicc.memory.tool_history import ToolHistoryRecoveryRequired
@@ -541,6 +623,8 @@ async def _run_headless_agent_turn(
                     semantic_index=session.semantic_index,
                     usage_ledger=session.usage_ledger,
                     browser_manager=session.browser_manager,
+                    resume_turn_id=resume_plan.turn_id if resume_plan is not None else None,
+                    resume_ledger=resume_plan.ledger if resume_plan is not None else None,
                 )
         except BaseException:
             if tools.take_pending() is not None:
@@ -626,12 +710,16 @@ async def _execute_registered_workflow(
             resume_registry = session.workflow_registry
             if frame.depth or frame.awaiting_child:
                 resume_registry = WorkflowRegistry()
-                resume_registry.register(workflow_cls)
+                resume_registry.replace_with(session.workflow_registry)
+                for active in session.workflow_stack.frames:
+                    if active.definition is not None:
+                        resume_registry.register(active.definition)
             records = coordinator.inspect(
                 workflow_registry=resume_registry,
                 conversation=session_conversation,
                 provider_profile=None,
                 workspace_root=str(getattr(session.workspace_scope, "primary_root", "") or ""),
+                max_stack_depth=session.cfg.workflow_stack_max_depth,
             )
             record = next(
                 (candidate for candidate in records if candidate.run_id == resume_run_id),
@@ -664,6 +752,13 @@ async def _execute_registered_workflow(
             )
             workflow_handle = WorkflowRunHandle.create(
                 run_id=frame.run_id if frame.depth else uuid.uuid4().hex,
+                frame_id=frame.frame_id,
+                parent_run_id=(
+                    parent.run_id
+                    if frame.depth and (parent := session.workflow_stack.frames[-2]).awaiting_child
+                    else None
+                ),
+                origin=frame.origin,
                 workflow=workflow_cls,
                 conversation=session_conversation,
                 intent=intent,
@@ -771,7 +866,7 @@ async def _execute_registered_workflow(
             )
             workflow_handle.claim(f"headless:{os.getpid()}:{workflow_handle.run_id}")
             session.workflow_stack.attach_run(workflow_handle.run_id, workflow_handle.current_phase)
-            session.app_state.conversation.workflow_stack.set(session.workflow_stack.summaries())
+            session.workflow_bridge.sync()
             if _phase_specs:
                 workflow_handle.update_phase(_phase_specs[0].name, 0, 0)
             else:
@@ -1185,6 +1280,10 @@ async def run_headless_workflow(
         )
         processor_task = asyncio.create_task(session.processor.run(), name="headless-processor")
         await asyncio.sleep(0)
+        if resume_id is not None:
+            recovered = await _recover_headless_return(session)
+            if recovered is not None:
+                return recovered
         resume_run_id = (
             _select_headless_workflow_resume(session, workflow_name)
             if resume_id is not None
@@ -1265,6 +1364,14 @@ async def _run_headless_workflow_stream(ctx: "CLIContext") -> None:
             flush=True,
         )
         completed_turns = 0
+        if resume_id is not None:
+            recovered = await _recover_headless_return(session)
+            if recovered is not None:
+                record = recovered.error_record()
+                if record is not None:
+                    print(json.dumps(record), flush=True)
+                print(json.dumps(recovered.to_dict()), flush=True)
+                completed_turns += 1
         while True:
             line = await asyncio.get_event_loop().run_in_executor(None, sys.stdin.readline)
             if not line:

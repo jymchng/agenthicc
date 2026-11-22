@@ -325,7 +325,7 @@ def test_resume_refreshes_checkpoint_index_and_resolves_claim_diagnostic_id(
         run_id=expected_run_id,
         recoverable=True,
         workflow_name="demo",
-        checkpoint=SimpleNamespace(),
+        checkpoint=SimpleNamespace(parent_run_id=None),
     )
 
     class Demo:
@@ -347,9 +347,7 @@ def test_resume_refreshes_checkpoint_index_and_resolves_claim_diagnostic_id(
     handle = ClaimedHandle()
     ctx.workflow_registry.register(Demo)  # type: ignore[arg-type]
     session._workflow_recovery.inspect = lambda **_: [record]  # type: ignore[method-assign]
-    session._rehydrate_workflow_record = (  # type: ignore[method-assign]
-        lambda _record, claim: handle if not claim else handle
-    )
+    monkeypatch.setattr(session, "_restore_workflow_record", lambda _record: handle)
 
     # This is the shape a user can accidentally copy from the diagnostic: the
     # full owner token and terminal-font confusions are both present.

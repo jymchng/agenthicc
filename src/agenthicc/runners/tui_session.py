@@ -1,4 +1,4 @@
-"""TUI session — starts the reactive runtime (PRD-58 to PRD-67, PRD-93)."""
+"""TUI session and the kernel-to-conversation bridge for foreground workflow frames."""
 
 from __future__ import annotations
 
@@ -65,6 +65,7 @@ def _restore_create_workflow_authoring_from_checkpoint(checkpoint: object) -> st
 
 
 if TYPE_CHECKING:
+    from agenthicc.kernel.events import Event
     from lauren_ai._agents._runner import AgentRunnerBase
     from lauren_ai._config import LLMConfig
     from lauren_ai._memory import ShortTermMemory
@@ -95,7 +96,7 @@ if TYPE_CHECKING:
     from agenthicc.runners.session_context import SessionContext
     from agenthicc.runners.startup import StartupCoordinator
     from agenthicc.runners.workflow_handle import WorkflowRunHandle
-    from agenthicc.runners.workflow_stack import WorkflowCall
+    from agenthicc.runners.workflow_stack import WorkflowCall, WorkflowDelivery, WorkflowFrame
     from agenthicc.workflows.stack_tools import WorkflowToolScope
     from agenthicc.runners.workflow_profile import ResumeProviderProfile
     from agenthicc.runners.workflow_recovery import WorkflowRecoveryRecord
@@ -1215,6 +1216,10 @@ async def _build_session_context_impl(
     from agenthicc.workflows.registry import build_workflow_registry
 
     load_external = headless or resume_id is not None or workflow_name is not None
+    if load_external:
+        from agenthicc.plugins.authored import AuthoredArtifactStore
+
+        await asyncio.to_thread(AuthoredArtifactStore.recover_workspace, Path.cwd())
 
     workflow_registry = build_workflow_registry(
         project_dir=Path(".agenthicc"),
@@ -1675,6 +1680,213 @@ class SessionSwitch:
 # ── TUISession ────────────────────────────────────────────────────────────────
 
 
+class WorkflowStackBridge:
+    """Commit foreground stack changes to the kernel and project its state."""
+
+    def __init__(self, context: SessionContext) -> None:
+        self._context = context
+        self._announced: dict[str, WorkflowFrame] = {}
+        context.processor.add_sink(self._project_event)
+
+    def _project_event(self, event: Event) -> None:
+        if event.event_type not in {
+            "workflow_frame_pushed",
+            "workflow_frame_state_changed",
+            "workflow_frame_returned",
+        }:
+            return
+        self._project()
+
+    def _project(self) -> None:
+        from agenthicc.runners.workflow_stack import WorkflowFrameSummary, WorkflowFrameStatus
+
+        context = self._context
+        active = {frame.frame_id for frame in context.workflow_stack.frames}
+        kernel = context.processor.get_state()
+        rows = tuple(
+            WorkflowFrameSummary(
+                frame.frame_id,
+                frame.workflow_name,
+                frame.run_id,
+                frame.depth,
+                cast("WorkflowFrameStatus", frame.status),
+                frame.phase,
+            )
+            for frame in kernel.workflow_frames
+            if frame.frame_id in active and frame.status in {"running", "paused", "suspended"}
+        )
+        context.app_state.conversation.workflow_stack.set(rows)
+
+    def sync(self) -> None:
+        from agenthicc.kernel import Event
+        from agenthicc.runners.workflow_return_delivery import workflow_digest
+
+        context = self._context
+        frames = context.workflow_stack.frames
+        persisted = {
+            frame.frame_id: frame for frame in context.processor.get_state().workflow_frames
+        }
+        pushed = {
+            frame.parent_frame_id
+            for frame in frames
+            if frame.frame_id not in self._announced and frame.frame_id not in persisted
+        }
+        for frame in frames:
+            announced = self._announced.get(frame.frame_id) or persisted.get(frame.frame_id)
+            if announced is None:
+                context.processor.emit_nowait(
+                    Event.create(
+                        "workflow_frame_pushed",
+                        {
+                            "frame_id": frame.frame_id,
+                            "parent_frame_id": frame.parent_frame_id,
+                            "workflow_name": frame.workflow_name,
+                            "run_id": frame.run_id,
+                            "origin": frame.origin,
+                            "depth": frame.depth,
+                            "intent_digest": workflow_digest(frame.intent),
+                            "status": frame.status,
+                            "phase": frame.phase,
+                        },
+                    )
+                )
+            elif (
+                (announced.run_id, announced.workflow_name, announced.phase)
+                != (frame.run_id, frame.workflow_name, frame.phase)
+                or (announced.parent_frame_id, announced.depth)
+                != (frame.parent_frame_id, frame.depth)
+                or (announced.status != frame.status and frame.frame_id not in pushed)
+            ):
+                context.processor.emit_nowait(
+                    Event.create(
+                        "workflow_frame_state_changed",
+                        {
+                            "frame_id": frame.frame_id,
+                            "workflow_name": frame.workflow_name,
+                            "run_id": frame.run_id,
+                            "status": frame.status,
+                            "phase": frame.phase,
+                            "parent_frame_id": frame.parent_frame_id,
+                            "depth": frame.depth,
+                        },
+                    )
+                )
+        self._announced = {frame.frame_id: frame for frame in frames}
+        self._project()
+
+    def record_return(self, delivery: WorkflowDelivery) -> None:
+        from agenthicc.kernel import Event
+        from agenthicc.runners.workflow_checkpoint_store import WorkflowCheckpointStore
+        from agenthicc.runners.workflow_return_delivery import workflow_digest
+
+        context = self._context
+        WorkflowCheckpointStore(context.session_id).save_return(delivery)
+        result = delivery.result
+        context.processor.emit_nowait(
+            Event.create(
+                "workflow_frame_returned",
+                {
+                    "frame_id": result.frame_id,
+                    "status": result.status,
+                    "summary_digest": workflow_digest(result.summary),
+                    "artifact_names": [artifact.name for artifact in result.artifacts],
+                },
+            )
+        )
+        self._announced = {frame.frame_id: frame for frame in context.workflow_stack.frames}
+
+    def find_pending_return(self) -> WorkflowDelivery | None:
+        """Reconcile the return packet, event log, and accepted conversation turns."""
+        from agenthicc.kernel import Event
+        from agenthicc.runners.workflow_checkpoint_store import WorkflowCheckpointStore
+        from agenthicc.runners.workflow_return_delivery import workflow_digest
+        from agenthicc.workflows.checkpoint import CheckpointValidationError
+
+        context = self._context
+        conversation = context.session_conversation
+        if conversation is None:
+            return None
+        candidates = tuple(
+            frame
+            for frame in context.processor.get_state().workflow_frames
+            if frame.parent_frame_id is not None and frame.run_id and not frame.delivered
+        )
+        if not candidates:
+            return None
+        store = WorkflowCheckpointStore(context.session_id)
+        for frame in reversed(candidates):
+            delivery = store.load_return(frame.run_id)
+            if delivery is None:
+                if frame.summary_digest:
+                    raise CheckpointValidationError(
+                        "The recorded workflow return packet is missing."
+                    )
+                continue
+            result = delivery.result
+            if (
+                frame.return_key != delivery.key
+                or result.frame_id != frame.frame_id
+                or result.workflow_name != frame.workflow_name
+                or (
+                    frame.summary_digest
+                    and (
+                        frame.summary_digest != workflow_digest(result.summary)
+                        or frame.status != result.status
+                        or frame.artifact_names != tuple(item.name for item in result.artifacts)
+                    )
+                )
+            ):
+                raise CheckpointValidationError(
+                    "The workflow return packet differs from the event log."
+                )
+            if not frame.summary_digest:
+                self.record_return(delivery)
+            if conversation.journal.has_started_turn(delivery.key):
+                context.processor.emit_nowait(
+                    Event.create("workflow_return_delivered", {"return_key": delivery.key})
+                )
+                continue
+            return delivery
+        return None
+
+    def return_parent_run_id(self, delivery: WorkflowDelivery) -> str | None:
+        """Find the phased caller, if this return has a caller checkpoint."""
+        from agenthicc.runners.workflow_checkpoint_store import WorkflowCheckpointStore
+
+        checkpoint = WorkflowCheckpointStore(self._context.session_id).load(delivery.child_run_id)
+        return checkpoint.parent_run_id if checkpoint is not None else None
+
+    def restore_direct_parent(self, delivery: WorkflowDelivery) -> None:
+        """Recover the base frame used by a return to an ordinary turn."""
+        context = self._context
+        stack = context.workflow_stack
+        parent = next(
+            (
+                frame
+                for frame in context.processor.get_state().workflow_frames
+                if frame.frame_id == delivery.parent_frame_id
+            ),
+            None,
+        )
+        if parent is None or parent.depth:
+            raise ValueError("The saved workflow return has no recoverable caller.")
+        stack.restore_frames(
+            (
+                replace(
+                    stack.base,
+                    frame_id=parent.frame_id,
+                    workflow_name=parent.workflow_name,
+                    run_id="",
+                    definition=None,
+                    status="running",
+                    phase=None,
+                    awaiting_child=False,
+                ),
+            )
+        )
+        self.sync()
+
+
 class TUISession:
     """All TUI session behaviour — methods correspond to the former nested closures."""
 
@@ -1800,7 +2012,8 @@ class TUISession:
         self._turn_count: int = 0
         self._pending_replay_id: str | None = None
         self._workflow_mode_unsub = ctx.app_state.active_mode.subscribe(self._refresh_workflow_mode)
-        self._project_workflow_stack()
+        if not ctx.resumed:
+            self._project_workflow_stack()
         self._workflow_handle = None
         self._suspended_workflow_handles: dict[str, WorkflowRunHandle] = {}
         # Commands that run in the background (for example /compact).
@@ -1810,6 +2023,7 @@ class TUISession:
         self._workflow_recovery = WorkflowRecoveryCoordinator(ctx.session_id)
         self._workflow_recovery_records: dict[str, WorkflowRecoveryRecord] = {}
         self._workflow_recovery_errors: dict[str, WorkflowRecoveryRecord] = {}
+        self._workflow_recovery_parents: set[str] = set()
         self._workflow_owner_prefix = f"tui:{os.getpid()}:{uuid.uuid4().hex[:12]}"
         terminal_manager = ctx.terminal_manager
         if terminal_manager is not None:
@@ -2027,7 +2241,7 @@ class TUISession:
         self._pending_replay_id = session_id
 
     def _project_workflow_stack(self) -> None:
-        self._ctx.app_state.conversation.workflow_stack.set(self._ctx.workflow_stack.summaries())
+        self._ctx.workflow_bridge.sync()
 
     def _refresh_workflow_mode(self) -> None:
         from agenthicc.subagents.policy import SubagentExecutionPolicy
@@ -2171,12 +2385,14 @@ class TUISession:
         )
         parent = stack.complete(child.frame_id, result)
         self._workflow_handle = None
-        self._project_workflow_stack()
         if status == "completed":
             result = await self._ctx.authored.publish_return(
                 result, result_context, definition, self._ctx.workflow_registry
             )
-        stack.queue_return(WorkflowDelivery(parent.frame_id, child.run_id, result))
+        delivery = WorkflowDelivery(parent.frame_id, child.run_id, result)
+        self._ctx.workflow_bridge.record_return(delivery)
+        await self._ctx.processor.flush_events()
+        stack.queue_return(delivery)
 
     def _pause_workflow_child(self) -> None:
         stack = self._ctx.workflow_stack
@@ -2257,8 +2473,22 @@ class TUISession:
         if handle is not None and self._discard_paused_workflow(handle) is None:
             return
         result = stack.abandon(child.frame_id)
-        self._project_workflow_stack()
-        stack.queue_return(WorkflowDelivery(stack.top.frame_id, child.run_id, result))
+        delivery = WorkflowDelivery(stack.top.frame_id, child.run_id, result)
+        self._ctx.workflow_bridge.record_return(delivery)
+        self._agent_task = asyncio.create_task(
+            self._finish_workflow_abandonment(delivery), name="workflow-abandonment"
+        )
+
+    async def _finish_workflow_abandonment(self, delivery: WorkflowDelivery) -> None:
+        try:
+            await self._ctx.processor.flush_events()
+            self._ctx.workflow_stack.queue_return(delivery)
+        except OSError as exc:
+            self._ctx.app_state.conversation.notify_transient(
+                f"⚠ Could not record workflow abandonment: {exc}"
+            )
+        finally:
+            self._agent_task = None
         self.advance()
 
     def _dispatch_workflow_resume(
@@ -2280,10 +2510,11 @@ class TUISession:
         the footer projection before the runner task can yield.
         """
         stack = self._ctx.workflow_stack
+        if stack.top.frame_id == handle.frame_id and stack.top.status == "paused":
+            stack.resume(stack.top.frame_id)
+            self._project_workflow_stack()
         if stack.depth:
-            if stack.top.status == "paused":
-                stack.resume(stack.top.frame_id)
-                self._project_workflow_stack()
+            assert stack.top.frame_id == handle.frame_id
         else:
             self._select_base_workflow(handle.workflow_name)
         if continuation is not None and turn_id is not None:
@@ -2567,7 +2798,7 @@ class TUISession:
         if not self._workflow_recovery_records and not self._workflow_recovery_errors:
             return
 
-        candidates = list(self._workflow_recovery_records.values())
+        candidates = self._workflow_recovery_candidates()
         self._publish_session_event(
             "workflow_recovery_available",
             {
@@ -2595,7 +2826,7 @@ class TUISession:
 
         record = candidates[0]
         try:
-            self._workflow_handle = self._rehydrate_workflow_record(record, claim=False)
+            self._workflow_handle = self._restore_workflow_record(record)
             checkpoint = record.checkpoint
             assert checkpoint is not None
             disposition = "interrupted" if record.interrupted else "paused"
@@ -2608,6 +2839,34 @@ class TUISession:
             self._ctx.app_state.conversation.notify_transient(
                 f"⚠ Cannot restore workflow '{record.run_id}': {type(exc).__name__}: {exc}"
             )
+
+    async def _restore_pending_workflow_return(self) -> bool:
+        ctx = self._ctx
+        if not ctx.resumed or self._tool_history_blocked():
+            return False
+        bridge = ctx.workflow_bridge
+        try:
+            delivery = bridge.find_pending_return()
+            if delivery is None:
+                return False
+            parent_run = bridge.return_parent_run_id(delivery)
+            if parent_run is None:
+                bridge.restore_direct_parent(delivery)
+            else:
+                record = self._workflow_recovery_records.get(parent_run)
+                if record is None:
+                    raise ValueError(f"Parent run {parent_run!r} is unavailable.")
+                handle = self._restore_workflow_record(record)
+                if handle.frame_id != delivery.parent_frame_id:
+                    raise ValueError("The return points to a different caller frame.")
+                self._suspended_workflow_handles[handle.frame_id] = handle
+            await ctx.processor.flush_events()
+        except (OSError, ValueError) as exc:
+            ctx.app_state.conversation.notify_transient(f"⚠ Cannot restore workflow return: {exc}")
+            return False
+        ctx.workflow_stack.queue_return(delivery)
+        self.advance()
+        return True
 
     def _refresh_workflow_recovery_records(self) -> None:
         """Reload durable workflow records before an explicit resume lookup.
@@ -2628,6 +2887,7 @@ class TUISession:
             conversation=conversation,
             provider_profile=None,
             workspace_root=workspace_root,
+            max_stack_depth=self._ctx.cfg.workflow_stack_max_depth,
         )
         self._workflow_recovery_records = {
             record.run_id: record for record in records if record.recoverable
@@ -2635,11 +2895,23 @@ class TUISession:
         self._workflow_recovery_errors = {
             record.run_id: record for record in records if not record.recoverable
         }
+        self._workflow_recovery_parents = {
+            record.checkpoint.parent_run_id
+            for record in self._workflow_recovery_records.values()
+            if record.checkpoint is not None and record.checkpoint.parent_run_id is not None
+        }
+
+    def _workflow_recovery_candidates(self) -> list[WorkflowRecoveryRecord]:
+        return [
+            record
+            for run_id, record in self._workflow_recovery_records.items()
+            if run_id not in self._workflow_recovery_parents
+        ]
 
     def _list_workflow_runs(self) -> list[WorkflowRecoveryRecord]:
         """Return current recoverable runs in newest-checkpoint-first order."""
         self._refresh_workflow_recovery_records()
-        records = list(self._workflow_recovery_records.values())
+        records = self._workflow_recovery_candidates()
         return sorted(
             records,
             key=lambda record: (
@@ -2684,6 +2956,7 @@ class TUISession:
             conversation=conversation,
             provider_profile=None,
             workspace_root=workspace_root,
+            max_stack_depth=self._ctx.cfg.workflow_stack_max_depth,
         )
 
     def _resume_workflow_from_overlay(self, run_id: str) -> bool:
@@ -2728,6 +3001,42 @@ class TUISession:
             if len(matches) == 1:
                 return matches[0]
         return requested
+
+    def _restore_workflow_record(self, record: WorkflowRecoveryRecord) -> WorkflowRunHandle:
+        from agenthicc.runners.workflow_recovery import (
+            linked_workflow_recovery,
+            recovered_workflow_frames,
+        )
+
+        if record.run_id in self._workflow_recovery_parents:
+            raise ValueError("Resume the waiting workflow's child first.")
+        ctx = self._ctx
+        chain = linked_workflow_recovery(
+            tuple(self._workflow_recovery_records.values()),
+            record,
+            max_depth=ctx.cfg.workflow_stack_max_depth,
+        )
+        frames = recovered_workflow_frames(
+            chain,
+            ctx.workflow_stack,
+            ctx.workflow_registry,
+            ctx.processor.get_state().workflow_frames,
+        )
+        handles = tuple(
+            self._rehydrate_workflow_record(item, claim=False) for item in chain.records
+        )
+        ctx.workflow_stack.restore_frames(frames)
+        self._suspended_workflow_handles = {handle.frame_id: handle for handle in handles[:-1]}
+        self._project_workflow_stack()
+        if chain.missing_parent_run_id is not None:
+            ctx.app_state.conversation.append_event(
+                "system",
+                {
+                    "text": f"Parent run {chain.missing_parent_run_id!r} was not found. "
+                    "The saved workflow is available as a base run."
+                },
+            )
+        return handles[-1]
 
     def _rehydrate_workflow_record(
         self,
@@ -3020,6 +3329,9 @@ class TUISession:
             return
 
         async def load() -> object:
+            from agenthicc.plugins.authored import AuthoredArtifactStore
+
+            await asyncio.to_thread(AuthoredArtifactStore.recover_workspace, Path.cwd())
             discovery, workflow_registry = await asyncio.gather(
                 asyncio.to_thread(
                     _discover_extensions_sync,
@@ -3142,7 +3454,8 @@ class TUISession:
         ctx.app_state.conversation.context_window.set(ctx.cfg.execution.effective_context_window())
         # PRD-129 Phase 3: auto-resume a direct turn the prior session left
         # interrupted (no-op on a clean start or when a workflow was in progress).
-        self._maybe_resume_interrupted_turn()
+        if not await self._restore_pending_workflow_return():
+            self._maybe_resume_interrupted_turn()
 
     async def _await_agent_runtime(self) -> None:
         """Join the post-frame conversation and provider phases before a turn.
@@ -4650,7 +4963,7 @@ class TUISession:
                     )
                 return True
             try:
-                handle = self._rehydrate_workflow_record(record, claim=False)
+                handle = self._restore_workflow_record(record)
                 self._workflow_handle = handle
             except Exception as exc:  # noqa: BLE001
                 conv.notify_transient(
@@ -4659,10 +4972,10 @@ class TUISession:
                 return True
 
         if handle is None:
-            candidates = list(self._workflow_recovery_records.values())
+            candidates = self._workflow_recovery_candidates()
             if len(candidates) == 1:
                 try:
-                    handle = self._rehydrate_workflow_record(candidates[0], claim=False)
+                    handle = self._restore_workflow_record(candidates[0])
                     self._workflow_handle = handle
                 except Exception as exc:  # noqa: BLE001
                     conv.notify_transient(
@@ -4927,10 +5240,10 @@ class TUISession:
             # handle.  An ordinary ``continue`` must resolve that durable
             # record before it is allowed to fall through to the new-run path.
             self._refresh_workflow_recovery_records()
-            candidates = list(self._workflow_recovery_records.values())
+            candidates = self._workflow_recovery_candidates()
             if len(candidates) == 1:
                 try:
-                    handle = self._rehydrate_workflow_record(candidates[0], claim=False)
+                    handle = self._restore_workflow_record(candidates[0])
                     self._workflow_handle = handle
                 except Exception as exc:  # noqa: BLE001
                     self._ctx.app_state.conversation.notify_transient(
@@ -5057,14 +5370,17 @@ class TUISession:
             self._apply_pending_model()
             delivery = self._ctx.workflow_stack.take_return()
             if delivery is not None:
-                text = delivery.result.as_system_block()
-                suspended = self._suspended_workflow_handles.pop(delivery.parent_frame_id, None)
-                if suspended is not None:
-                    self._workflow_handle = suspended
-                    self._start_workflow_continuation(text, return_key=delivery.key)
+                from agenthicc.runners.workflow_return_delivery import bind_workflow_return
+
+                with bind_workflow_return(delivery.key):
+                    text = delivery.result.as_system_block()
+                    suspended = self._suspended_workflow_handles.pop(delivery.parent_frame_id, None)
+                    if suspended is not None:
+                        self._workflow_handle = suspended
+                        self._start_workflow_continuation(text, return_key=delivery.key)
+                        return
+                    self._schedule_workflow_turn(text, "workflow-return", key=delivery.key)
                     return
-                self._schedule_workflow_turn(text, "workflow-return", key=delivery.key)
-                return
             self._refresh_workflow_mode()
         if self._handoff_pending:
             # The turn ended before another tool boundary: hand off now.
@@ -5190,6 +5506,8 @@ class TUISession:
 
                 from agenthicc.workflows.plugin import WorkflowContext
 
+                if frame.depth:
+                    await ctx.processor.flush_events()
                 required_phases = tuple(
                     phase
                     for phase in _plugin_cls.required_startup_phases
@@ -5271,6 +5589,14 @@ class TUISession:
                         )
                         new_handle = WorkflowRunHandle.create(
                             run_id=frame.run_id if frame.depth else uuid.uuid4().hex,
+                            frame_id=frame.frame_id,
+                            parent_run_id=(
+                                parent.run_id
+                                if frame.depth
+                                and (parent := ctx.workflow_stack.frames[-2]).awaiting_child
+                                else None
+                            ),
+                            origin=frame.origin,
                             workflow=_plugin_cls,
                             conversation=session_conversation,
                             intent=text,

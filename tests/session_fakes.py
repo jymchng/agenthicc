@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 import dataclasses
+from copy import copy
 from pathlib import Path
 from types import MappingProxyType, SimpleNamespace
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, cast
 
 from agenthicc.commands.registry import UnifiedCommandRegistry
-from agenthicc.kernel import AppState, EventProcessor
+from agenthicc.kernel import AppState, Event, EventProcessor
 from agenthicc.runners.reload import ReloadService, SurfaceHolder
 from agenthicc.runners.session_context import SessionContext
+from agenthicc.runners.tui_session import WorkflowStackBridge
 from agenthicc.runners.workflow_stack import WorkflowStack
 from agenthicc.subagents.policy import SubagentExecutionPolicy
 from agenthicc.subagents.types import DEFAULT_REGISTRY, SubagentTypeRegistry
@@ -45,6 +47,13 @@ def _stand_in(cls: type[object], fields: dict[str, object]) -> SimpleNamespace:
     return SimpleNamespace(**values)
 
 
+class _WorkflowProjectionProcessor(EventProcessor):
+    """Fold frame events synchronously for tests without a running kernel."""
+
+    def emit_nowait(self, event: Event) -> None:
+        self._process(event, None)
+
+
 def session_context(**fields: object) -> SimpleNamespace:
     """Return a ``SessionContext`` stand-in that carries every field.
 
@@ -66,6 +75,12 @@ def session_context(**fields: object) -> SimpleNamespace:
             mode_default=state.active_mode().default_workflow,
             selection=selected if isinstance(selected, str) else None,
         )
+    if isinstance(context.app_state, TUIAppState) and "workflow_bridge" not in fields:
+        projection = copy(context)
+        projection.processor = _WorkflowProjectionProcessor(
+            initial_state=AppState.create(), persist=False
+        )
+        context.workflow_bridge = WorkflowStackBridge(cast("SessionContext", projection))
     if "reload" not in fields:
         kernel = fields.get("processor")
         workflows = fields.get("workflow_registry")

@@ -3783,9 +3783,57 @@ The executable phase graph used by one workflow run.
 class WorkflowCheckpoint
 ```
 
-Fields: `run_id`, `workflow_name`, `conversation_id`, `intent`, `status`, `current_phase`, `phase_index`, `phase_iteration`, … (36 fields total).
+Workflow checkpoints carry `run_id`, `frame_id`, a nullable `parent_run_id`,
+and `origin`, plus workflow context, topology, lifecycle, and journal cursor.
+Schema version 2 requires the stack fields.
 
 Versioned workflow metadata pointing into session history.
+
+### WorkflowFrameRecord
+
+Frozen kernel projection of a foreground workflow frame. It stores the
+frame and caller IDs, run, origin, depth, phase, status, intent digest, return
+summary digest, artifact names, and delivery state.
+
+### WorkflowStackBridge
+
+Duplex adapter in `runners/tui_session.py`. It records stack transitions in
+the kernel, updates the reactive conversation stack, and reconciles pending
+returns with the conversation journal.
+
+### WorkflowRecoveryChain
+
+An ordered tuple of recoverable checkpoints and an optional missing parent
+run ID.
+
+### WorkflowRecoveryLinkError
+
+A checkpoint validation error with the diagnostic code and affected run IDs.
+
+### linked_workflow_recovery
+
+Validates parent links, rejects cycles and excessive depth, and returns the
+chain from its base to the selected workflow.
+
+### recovered_workflow_frames
+
+Converts a validated recovery chain into paused and suspended runtime frames.
+
+### workflow_recovery_leaves
+
+Returns the recoverable workflow records that have no recoverable children.
+
+### EventProcessor.flush_events
+
+Waits for pending events to fold and syncs their log lines to disk.
+
+### ConversationJournal.has_started_turn
+
+Checks the journal for a durable start marker matching an exact turn ID.
+
+### AuthoredArtifactStore.recover_workspace
+
+Reconciles a pending publication before session startup discovers extensions.
 
 ### context_from_payload
 

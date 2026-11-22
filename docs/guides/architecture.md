@@ -156,6 +156,22 @@ handle owns phase progress and checkpoints, while the stack owns suspension,
 pause and return. A completed child gives its parent a `WorkflowReturn` via a
 synthetic turn keyed by the parent frame and child run IDs.
 
+`WorkflowStackBridge` in `runners/tui_session.py` publishes foreground stack
+transitions to the kernel. It projects the frozen `AppState.workflow_frames`
+into the reactive conversation stack for the TUI and headless sessions.
+
+| Event | Kernel projection |
+| --- | --- |
+| `workflow_frame_pushed` | Records an active frame and suspends its caller. |
+| `workflow_frame_state_changed` | Updates the current phase, lifecycle, run identity, or recovered links. |
+| `workflow_frame_returned` | Records the terminal status, summary digest, and artifact names, then activates the caller. |
+| `workflow_return_delivered` | Acknowledges the return key when the caller's conversation accepts the turn. |
+
+Frame events store the first 16 hexadecimal characters of the SHA-256
+digests of the intent and return summary. The checkpoint and conversation
+journal own the text. The return packet and kernel event are durable before
+the parent is dispatched.
+
 At the provider boundary, `AgentTurnRunner` passes one memory instance through
 the shared `lauren-ai` transaction API. `run()` and `run_stream()` validate
 before every provider request, execute a full assistant call batch, commit one

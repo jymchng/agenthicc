@@ -10,6 +10,7 @@ import os
 import queue
 import threading
 from collections.abc import Callable
+from concurrent.futures import Future
 from typing import Protocol, runtime_checkable
 
 from agenthicc.supervised_tasks import SupervisedTasks
@@ -59,7 +60,7 @@ class _EventLogWriter:
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         # Closed by the writer thread once the sentinel arrives.
         self._file = open(path, "a", encoding="utf-8")
-        self._lines: queue.SimpleQueue[str | None] = queue.SimpleQueue()
+        self._lines: queue.SimpleQueue[str | Future[None] | None] = queue.SimpleQueue()
         self._thread = threading.Thread(
             target=self._write_lines, name="agenthicc-kernel-event-log", daemon=True
         )
@@ -68,18 +69,34 @@ class _EventLogWriter:
     def write(self, line: str) -> None:
         self._lines.put(line)
 
+    async def flush(self) -> None:
+        barrier: Future[None] = Future()
+        self._lines.put(barrier)
+        await asyncio.shield(asyncio.wrap_future(barrier))
+
     def _write_lines(self) -> None:
-        failed = False
+        failure: OSError | None = None
         try:
             while (line := self._lines.get()) is not None:
-                if failed:
+                if isinstance(line, Future):
+                    try:
+                        if failure is not None:
+                            raise failure
+                        self._file.flush()
+                        os.fsync(self._file.fileno())
+                    except OSError as exc:
+                        line.set_exception(exc)
+                    else:
+                        line.set_result(None)
+                    continue
+                if failure is not None:
                     continue
                 try:
                     self._file.write(line)
                     if self._lines.empty():
                         self._file.flush()
-                except OSError:
-                    failed = True
+                except OSError as exc:
+                    failure = exc
                     logger.exception("kernel event log write failed; later events are not logged")
         finally:
             try:
@@ -117,6 +134,7 @@ class EventProcessor:
         self._reducer = reducer
         self._effects = effect_executor or NoOpEffectExecutor()
         self._persist = persist
+        self._writer: _EventLogWriter | None = None
         # ``None`` is the stop marker ``stop()`` enqueues behind pending events.
         self._queue: asyncio.Queue[Event | None] = asyncio.Queue()
         self._readers: list[asyncio.Queue[AppState]] = []
@@ -204,6 +222,13 @@ class EventProcessor:
         async with asyncio.timeout(timeout):
             await self._queue.join()
 
+    async def flush_events(self) -> None:
+        """Wait for pending events and commit their log lines to disk."""
+        await self.drain()
+        writer = self._writer
+        if writer is not None:
+            await writer.flush()
+
     # ── loop ─────────────────────────────────────────────────────────────
 
     async def run(self) -> None:
@@ -213,6 +238,7 @@ class EventProcessor:
             if self._persist
             else None
         )
+        self._writer = writer
         try:
             # Block on the queue instead of polling it with asyncio.wait_for:
             # a cancelled get() always propagates, while wait_for on Python
@@ -228,6 +254,7 @@ class EventProcessor:
                 finally:
                     self._queue.task_done()
         finally:
+            self._writer = None
             await self._tasks.aclose(timeout=_EFFECT_SHUTDOWN_GRACE_S)
             if writer is not None:
                 await writer.aclose()

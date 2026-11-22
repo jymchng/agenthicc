@@ -250,6 +250,9 @@ def test_workflow_projection_joins_latest_checkpoint_and_reports_invalid_bytes(
     workflow_root.mkdir(parents=True)
     checkpoint = WorkflowCheckpoint(
         run_id="workflow-run",
+        frame_id="workflow-run",
+        parent_run_id=None,
+        origin="selection",
         workflow_name="goal_flow",
         conversation_id="main",
         intent="Goal",

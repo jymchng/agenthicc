@@ -1,6 +1,6 @@
 ---
 title: "WFC-03: A durable workflow stack — kernel events, checkpoint links, and exactly-once return"
-status: Proposed
+status: Implemented
 version: 1.0.0
 date: 2026-11-22
 repository: jymchng/agenthicc
@@ -159,3 +159,23 @@ PRD-170 and PRD-213 gain a pointer to this PRD.
 | Event-log growth. | Three small, digest-only events per frame. |
 | Schema bump strands old paused runs. | Deliberate; message tells the operator to start a new run; the project is pre-release. |
 | Two writers for the presentation signal. | Single bridge, enforced by a test that greps for other writers. |
+
+## Amendment — 2026-11-22
+
+The bridge records `workflow_frame_state_changed` for the phase and lifecycle
+of a frame that stays on the stack. This lets the existing footer follow phase
+progress between a push and a return. The event carries identity and phase
+metadata. When a return is accepted, the conversation journal uses the same
+key for the turn and its synthetic input. This covers a stop after the turn
+start is durable and before the input reaches the provider.
+
+## Implementation status
+
+| Criterion | Evidence |
+| --- | --- |
+| A1 | `test_workflow_frame_reducer_replays_nested_returns_without_side_effects` compares a nested projection before and after replay. `test_restart_delivers_one_parent_turn_after_durable_return` replays the persisted kernel log in the reopened process. |
+| A2 | `test_restart_delivers_one_parent_turn_after_durable_return` terminates the process at the packet, event, and journal-start boundaries. Each reopened session sends one provider request and keeps one journal start marker. |
+| A3 | `test_restart_restores_a_paused_child_and_resumes_its_suspended_caller` reopens the session, checks both frames in the TUI projection, and submits the child's resume command before observing the caller request. |
+| A4 | `test_checkpoint_predating_stack_is_rejected_before_recovery` checks schema 1 and each missing stack field. |
+| A5 | `test_orphan_is_offered_and_link_cycles_and_excess_depth_are_diagnostic` checks missing links, cycles, and the configured depth. |
+| A6 | `test_workflow_frame_reducer_replays_nested_returns_without_side_effects` checks the original state and payloads and confirms that the reducers return no effects. |

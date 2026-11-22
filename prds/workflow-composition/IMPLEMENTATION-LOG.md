@@ -21,7 +21,7 @@ Branch `feat/workflow-composition` starts at `5100c8c` from fetched
 |---|---|---|
 | WFC-01 | Implemented | `f0eb339`. See the PRD for stack, child resume and return-delivery evidence. |
 | WFC-02 | Implemented | Model entry, pending handoff, and status in the TUI and headless workflow owner. See the PRD for A1–A6 evidence. |
-| WFC-03 | Pending | — |
+| WFC-03 | Implemented | Stack reducer, checkpoint schema 2, linked resume, and S7 subprocess recovery at three delivery boundaries. |
 | WFC-04 | Implemented | The S2 worker tests passed for disjoint parallel staging, cancellation, mixed tasks, typed failure, and parent-owned publication. |
 | WFC-05 | Implemented | `c757516`, `7bd642c`. Both runners use the service. See the PRD for A1–A7 evidence. |
 | WFC-06 | Implemented | Session-owned publication, exact predecessor checks, and the S3 acceptance scenario. WFC-04 exercises the workflow-worker integration. |
@@ -341,3 +341,37 @@ the self-extension scenarios. Ruff check and format, mypy on 438 source files,
 the type-audit ratchet, strict MkDocs, and the public-symbol check passed.
 The logs are `/var/tmp/agenthicc-wfc-m8-wfc04-*.log`. The full M8 gate follows
 durable stack recovery.
+
+## WFC-03 verification
+
+The focused return suite passed 17 checks. It stops the actual session after
+the private packet, after the durable kernel return, and after the conversation
+journal accepts the parent turn. Each reopened session sends one parent
+request. A further reopen sends none. A separate reopened TUI restores a
+paused child and its suspended caller before the operator resumes the child.
+The publication test interrupts the first of three file moves and verifies
+that recovery restores the previous state with all three candidates staged.
+
+The journal-start crash initially reached the provider without its synthetic
+message because the generic resume path expected the input to be present.
+The workflow return now appends that input under its durable turn key before
+provider dispatch. The full unit run also found two CLI fixture failures
+reporting `SimpleNamespace` had no `workflow_stack_max_depth`. The fixture
+now supplies the setting and kernel state, and all 12 CLI checks passed.
+
+Ruff, mypy, the type audit, strict MkDocs, and the public-symbol check passed
+after the final source change. The full M8 rerun is in
+`/var/tmp/agenthicc-wfc-m8-rerun-*.log`.
+
+The unit rerun passed 6,325 tests with 15 skips. Integration exposed three
+fixture gaps. The background project workflow lacked a bridge, the recovery
+kernel stand-in lacked `workflow_frames`, and the continuation handle lacked
+`frame_id`. The focused rerun passed four integration and end-to-end cases
+after those fixtures were brought up to the runtime contract. The final
+milestone gates are in `/var/tmp/agenthicc-wfc-m8-final-*.log`.
+
+The first E2E run imported 388 modules before the first frame, exceeding
+the 386-module limit. A fresh TUI now reconciles publication before deferred
+extension discovery. Headless and resumed sessions reconcile before eager
+discovery. The unchanged first-frame budget and five recovery checks
+passed in `/var/tmp/agenthicc-wfc-m8-startup-rerun.log`.

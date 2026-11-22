@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 from agenthicc.runners.workflow_checkpoint_store import (
     WorkflowCheckpointStore,
 )
+from agenthicc.runners.workflow_stack import WorkflowFrame, workflow_child_policy
 from agenthicc.workflows.checkpoint import (
     CheckpointValidationError,
     WorkflowCheckpoint,
@@ -25,15 +26,24 @@ from agenthicc.workflows.checkpoint import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from agenthicc.kernel.state import WorkflowFrameRecord
     from agenthicc.runners.session_conversation import SessionConversation
     from agenthicc.runners.workflow_handle import WorkflowRunHandle
+    from agenthicc.runners.workflow_stack import WorkflowStack
     from agenthicc.workflows.plugin import WorkflowPlugin
     from agenthicc.workflows.registry import WorkflowRegistry
 
 __all__ = [
     "RECOVERABLE_WORKFLOW_STATUSES",
+    "WorkflowRecoveryChain",
     "WorkflowRecoveryCoordinator",
+    "WorkflowRecoveryLinkError",
     "WorkflowRecoveryRecord",
+    "linked_workflow_recovery",
+    "recovered_workflow_frames",
+    "workflow_recovery_leaves",
 ]
 
 RECOVERABLE_WORKFLOW_STATUSES = frozenset({"running", "pausing", "paused", "resuming"})
@@ -108,9 +118,7 @@ class WorkflowRecoveryRecord:
     def activity_timestamp(self) -> float:
         """Return the durable activity time used for latest-run selection.
 
-        Schema-v1 checkpoints written before ``updated_at`` existed fall back
-        to their creation time. Invalid values are treated as oldest rather
-        than being allowed to perturb deterministic ordering.
+        Invalid timestamps sort as the oldest for deterministic ordering.
         """
         checkpoint = self.checkpoint
         if checkpoint is None:
@@ -216,6 +224,126 @@ class WorkflowRecoveryRecord:
         return "workflow checkpoint is not recoverable"
 
 
+@dataclass(frozen=True, slots=True)
+class WorkflowRecoveryChain:
+    """An ordered set of valid checkpoints and a possible missing ancestor."""
+
+    records: tuple[WorkflowRecoveryRecord, ...]
+    missing_parent_run_id: str | None = None
+
+
+class WorkflowRecoveryLinkError(CheckpointValidationError):
+    def __init__(self, code: str, message: str, run_ids: tuple[str, ...]) -> None:
+        super().__init__(message)
+        self.code = code
+        self.run_ids = run_ids
+
+
+def linked_workflow_recovery(
+    records: Sequence[WorkflowRecoveryRecord], selected: WorkflowRecoveryRecord, *, max_depth: int
+) -> WorkflowRecoveryChain:
+    """Resolve parent links without claiming or running any checkpoint."""
+    known = {record.run_id: record for record in records}
+    upward: list[WorkflowRecoveryRecord] = []
+    visited: set[str] = set()
+    cursor = selected
+    while True:
+        if cursor.run_id in visited:
+            raise WorkflowRecoveryLinkError(
+                "workflow_link_cycle",
+                "The checkpoint stack contains a parent-link cycle.",
+                tuple(item.run_id for item in upward),
+            )
+        if cursor.checkpoint is None or not cursor.recoverable:
+            raise WorkflowRecoveryLinkError(
+                "workflow_parent_invalid",
+                f"Parent run {cursor.run_id!r} is not recoverable.",
+                tuple(item.run_id for item in upward),
+            )
+        visited.add(cursor.run_id)
+        upward.append(cursor)
+        parent = cursor.checkpoint.parent_run_id
+        if len(upward) - 1 > max_depth:
+            raise WorkflowRecoveryLinkError(
+                "workflow_stack_depth",
+                "The saved stack exceeds the configured depth.",
+                tuple(item.run_id for item in upward),
+            )
+        if parent is None or parent not in known:
+            return WorkflowRecoveryChain(tuple(reversed(upward)), parent)
+        cursor = known[parent]
+
+
+def workflow_recovery_leaves(
+    records: Sequence[WorkflowRecoveryRecord],
+) -> list[WorkflowRecoveryRecord]:
+    """Offer recoverable children before the checkpoints waiting for them."""
+    parents = {
+        record.checkpoint.parent_run_id
+        for record in records
+        if record.checkpoint is not None and record.recoverable
+    }
+    return [record for record in records if record.recoverable and record.run_id not in parents]
+
+
+def recovered_workflow_frames(
+    chain: WorkflowRecoveryChain,
+    stack: WorkflowStack,
+    registry: WorkflowRegistry,
+    persisted: tuple[WorkflowFrameRecord, ...],
+) -> tuple[WorkflowFrame, ...]:
+    """Reconstruct the runtime chain without claiming runs or invoking the provider."""
+    frames: list[WorkflowFrame] = []
+    first = chain.records[0].checkpoint
+    assert first is not None
+    first_frame = next((row for row in persisted if row.frame_id == first.frame_id), None)
+    if first.parent_run_id is None and first_frame is not None:
+        virtual = next(
+            (
+                row
+                for row in persisted
+                if row.frame_id == first_frame.parent_frame_id and row.depth == 0
+            ),
+            None,
+        )
+        if virtual is not None:
+            frames.append(
+                replace(
+                    stack.base,
+                    frame_id=virtual.frame_id,
+                    workflow_name=virtual.workflow_name,
+                    status="suspended",
+                )
+            )
+    policy = stack.base.policy
+    for record in chain.records:
+        checkpoint = record.checkpoint
+        assert checkpoint is not None
+        definition = registry.get(checkpoint.workflow_name)
+        if definition is None:
+            raise ValueError(f"Workflow {checkpoint.workflow_name!r} is no longer loaded.")
+        parent = frames[-1] if frames else None
+        if parent is not None or checkpoint.origin != "selection":
+            policy = workflow_child_policy(definition, policy)
+        frames.append(
+            WorkflowFrame(
+                checkpoint.frame_id,
+                checkpoint.workflow_name,
+                checkpoint.run_id,
+                parent.frame_id if parent is not None else None,
+                checkpoint.origin,
+                checkpoint.intent,
+                len(frames),
+                policy,
+                "paused" if record is chain.records[-1] else "suspended",
+                definition,
+                phase=checkpoint.current_phase,
+                awaiting_child=checkpoint.pause_reason == "workflow_call",
+            )
+        )
+    return tuple(frames)
+
+
 class WorkflowRecoveryCoordinator:
     """Inspect, validate, claim, and rehydrate one session's workflow runs."""
 
@@ -238,6 +366,7 @@ class WorkflowRecoveryCoordinator:
         provider_profile: str | None = None,
         workspace_root: str | None = None,
         include_terminal: bool = False,
+        max_stack_depth: int = 4,
     ) -> list[WorkflowRecoveryRecord]:
         """Return deterministic recovery records for this session.
 
@@ -346,6 +475,23 @@ class WorkflowRecoveryCoordinator:
                 )
             )
 
+        invalid_links: dict[str, WorkflowRecoveryLinkError] = {}
+        for record in records:
+            if record.recoverable:
+                try:
+                    linked_workflow_recovery(records, record, max_depth=max_stack_depth)
+                except WorkflowRecoveryLinkError as exc:
+                    invalid_links.update(dict.fromkeys(exc.run_ids, exc))
+        records = [
+            replace(
+                record,
+                error_code=invalid_links[record.run_id].code,
+                error=str(invalid_links[record.run_id]),
+            )
+            if record.run_id in invalid_links
+            else record
+            for record in records
+        ]
         records.sort(
             key=lambda item: (
                 -item.activity_timestamp,
@@ -383,6 +529,7 @@ class WorkflowRecoveryCoordinator:
         conversation: "SessionConversation | None" = None,
         provider_profile: str | None = None,
         workspace_root: str | None = None,
+        max_stack_depth: int = 4,
     ) -> WorkflowRecoveryRecord | None:
         """Select one current recoverable run for a resume operation.
 
@@ -397,8 +544,9 @@ class WorkflowRecoveryCoordinator:
             conversation=conversation,
             provider_profile=provider_profile,
             workspace_root=workspace_root,
+            max_stack_depth=max_stack_depth,
         )
-        candidates = [record for record in records if record.recoverable]
+        candidates = workflow_recovery_leaves(records)
         if len(candidates) > 1:
             choices = ", ".join(record.run_id for record in candidates[:8])
             suffix = " …" if len(candidates) > 8 else ""
@@ -409,11 +557,17 @@ class WorkflowRecoveryCoordinator:
         if candidates:
             selected = candidates[0]
             if workflow_name is not None and selected.workflow_name != workflow_name:
-                raise ValueError(
-                    f"session has recoverable workflow {selected.workflow_name!r} "
-                    f"(run {selected.run_id}); it cannot be replaced implicitly by "
-                    f"{workflow_name!r}"
-                )
+                chain = linked_workflow_recovery(records, selected, max_depth=max_stack_depth)
+                if not any(item.workflow_name == workflow_name for item in chain.records) and not (
+                    workflow_name == "default"
+                    and chain.records[0].checkpoint is not None
+                    and chain.records[0].checkpoint.origin != "selection"
+                ):
+                    raise ValueError(
+                        f"session has recoverable workflow {selected.workflow_name!r} "
+                        f"(run {selected.run_id}); it cannot be replaced implicitly by "
+                        f"{workflow_name!r}"
+                    )
             return selected
 
         invalid = [record for record in records if not record.recoverable]
@@ -433,6 +587,7 @@ class WorkflowRecoveryCoordinator:
         conversation: "SessionConversation | None" = None,
         provider_profile: str | None = None,
         workspace_root: str | None = None,
+        max_stack_depth: int = 4,
     ) -> WorkflowRecoveryRecord | None:
         """Select the newest eligible run for omitted-ID resume.
 
@@ -445,8 +600,9 @@ class WorkflowRecoveryCoordinator:
             conversation=conversation,
             provider_profile=provider_profile,
             workspace_root=workspace_root,
+            max_stack_depth=max_stack_depth,
         )
-        candidates = [record for record in records if record.recoverable]
+        candidates = workflow_recovery_leaves(records)
         if candidates:
             return candidates[0]
 

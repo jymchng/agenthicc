@@ -13,7 +13,7 @@ import pytest
 from agenthicc.tools.approval import ApprovalRequest
 
 from agenthicc.cli.context import CLIContext, CLIFlags
-from agenthicc.kernel import Event
+from agenthicc.kernel import AppState, Event
 from agenthicc.runners.session_conversation import SessionConversation
 from agenthicc.runners.workflow_checkpoint_store import WorkflowCheckpointStore
 from agenthicc.tui.conversation_store import AppState as TUIAppState
@@ -44,11 +44,15 @@ def _approval_request(tool_name: str = "write", **fields: object) -> ApprovalReq
 
 class _Processor:
     def __init__(self) -> None:
+        self._state = AppState.create()
         self.published: list[Event] = []
         self._sinks: list[Callable[[Event], None]] = []
         self.running = False
         self.drained = False
         self._stop = asyncio.Event()
+
+    def get_state(self) -> AppState:
+        return self._state
 
     def add_sink(self, sink: Callable[[Event], None]) -> Callable[[], None]:
         self._sinks.append(sink)
@@ -159,7 +163,7 @@ def _make_session(plugin: type[WorkflowPlugin]) -> SimpleNamespace:
         mcp_registry=None,
         mention_cache=object(),
         agents_registry=object(),
-        cfg=SimpleNamespace(workflows={}),
+        cfg=SimpleNamespace(workflows={}, workflow_stack_max_depth=4),
         session_id="session-1",
         memory_router=None,
         semantic_index=None,

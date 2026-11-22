@@ -70,6 +70,19 @@ def limit_workflow_mode(mode: RuntimeMode, policy: SubagentExecutionPolicy) -> R
     return restrict_mode(mode, policy.runtime_mode())
 
 
+def workflow_child_policy(
+    workflow: type[WorkflowPlugin], parent: SubagentExecutionPolicy
+) -> SubagentExecutionPolicy:
+    """Keep a called workflow within its caller's policy and declared phases."""
+    caps = tuple(phase.resolved_allowed_caps for phase in workflow.phases)
+    blocked = frozenset[str]()
+    if caps and all(allowed is not None for allowed in caps):
+        allowed = {cap for phase_caps in caps if phase_caps is not None for cap in phase_caps}
+        allowed.add(ToolCapability.CONTROL)
+        blocked = frozenset(cap.value for cap in ToolCapability if cap not in allowed)
+    return parent.restrict_by(None, blocked_capabilities=blocked)
+
+
 def _bounded(text: str, maximum: int) -> str:
     marker = " [truncated]"
     if len(text) <= maximum:
@@ -119,6 +132,50 @@ class WorkflowReturn:
             "outputs": dict(self.outputs),
             "artifacts": [artifact.to_dict() for artifact in self.artifacts],
         }
+
+    @classmethod
+    def from_dict(cls, value: object) -> WorkflowReturn:
+        from agenthicc.plugins.authored_types import PublishedArtifact
+
+        if not isinstance(value, dict):
+            raise ValueError("Invalid workflow return.")
+        frame_id, name, summary = (
+            value.get("frame_id"),
+            value.get("workflow_name"),
+            value.get("summary"),
+        )
+        status = value.get("status")
+        outputs, artifacts = value.get("outputs"), value.get("artifacts")
+        if (
+            not isinstance(frame_id, str)
+            or not frame_id
+            or not isinstance(name, str)
+            or not name
+            or not isinstance(summary, str)
+            or not isinstance(outputs, dict)
+            or not all(
+                isinstance(key, str) and isinstance(text, str) for key, text in outputs.items()
+            )
+            or not isinstance(artifacts, list)
+            or not isinstance(status, str)
+            or status not in {"completed", "failed", "abandoned"}
+        ):
+            raise ValueError("Invalid workflow return.")
+        resolved: _ReturnStatus = (
+            "completed"
+            if status == "completed"
+            else "failed"
+            if status == "failed"
+            else "abandoned"
+        )
+        return cls(
+            frame_id,
+            name,
+            resolved,
+            summary,
+            dict(outputs),
+            tuple(PublishedArtifact.from_payload(item) for item in artifacts),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -225,6 +282,22 @@ class WorkflowDelivery:
     def key(self) -> str:
         return f"return:{self.parent_frame_id}:{self.child_run_id}"
 
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "parent_frame_id": self.parent_frame_id,
+            "child_run_id": self.child_run_id,
+            "result": self.result.to_dict(),
+        }
+
+    @classmethod
+    def from_dict(cls, value: object) -> WorkflowDelivery:
+        if not isinstance(value, dict):
+            raise ValueError("Invalid workflow delivery.")
+        parent, child = value.get("parent_frame_id"), value.get("child_run_id")
+        if not isinstance(parent, str) or not parent or not isinstance(child, str) or not child:
+            raise ValueError("Invalid workflow delivery.")
+        return cls(parent, child, WorkflowReturn.from_dict(value.get("result")))
+
 
 class WorkflowStack:
     """Own one running foreground frame and its suspended ancestors."""
@@ -264,6 +337,10 @@ class WorkflowStack:
         return self._frames[0]
 
     @property
+    def frames(self) -> tuple[WorkflowFrame, ...]:
+        return self._frames
+
+    @property
     def top(self) -> WorkflowFrame:
         return self._frames[-1]
 
@@ -289,6 +366,17 @@ class WorkflowStack:
             for frame in self._frames
         )
 
+    def restore_frames(self, frames: tuple[WorkflowFrame, ...]) -> None:
+        """Adopt a validated stack without running any of its frames."""
+        if not frames or len(frames) - 1 > self._max_depth:
+            raise ValueError("Recovered workflow frames exceed the stack depth.")
+        for depth, frame in enumerate(frames):
+            parent = frames[depth - 1].frame_id if depth else None
+            if frame.depth != depth or frame.parent_frame_id != parent:
+                raise ValueError("Recovered workflow frame links are invalid.")
+        self._frames = frames
+        self._base_selected = self.base.workflow_name != "default"
+
     def set_base(self, name: str) -> None:
         self._require_base()
         self._base_selected = True
@@ -310,7 +398,7 @@ class WorkflowStack:
         self._frames = (replace(self.base, policy=policy),)
 
     def _replace_base_name(self, name: str) -> None:
-        if self.base.workflow_name != name:
+        if self.base.workflow_name != name or self.base.status != "running":
             self._frames = (
                 replace(
                     self.base,
@@ -319,6 +407,7 @@ class WorkflowStack:
                     phase=None,
                     definition=None,
                     awaiting_child=False,
+                    status="running",
                 ),
             )
 
@@ -351,14 +440,7 @@ class WorkflowStack:
         if not entry.intent.strip():
             raise WorkflowStackError("invalid_intent", "Provide an intent for the workflow.")
 
-        caps = tuple(phase.resolved_allowed_caps for phase in entry.definition.phases)
-        blocked = frozenset[str]()
-        if caps and all(allowed is not None for allowed in caps):
-            allowed = {cap for phase_caps in caps if phase_caps is not None for cap in phase_caps}
-            # The phase runner still needs its own transitions within the call.
-            allowed.add(ToolCapability.CONTROL)
-            blocked = frozenset(cap.value for cap in ToolCapability if cap not in allowed)
-        return self.top.policy.restrict_by(None, blocked_capabilities=blocked)
+        return workflow_child_policy(entry.definition, self.top.policy)
 
     def push(self, entry: WorkflowCall) -> WorkflowFrame:
         policy = self.validate(entry)
@@ -411,7 +493,10 @@ class WorkflowStack:
         return self._set_status("paused")
 
     def resume(self, frame_id: str) -> WorkflowFrame:
-        self._require_current(frame_id)
+        if self.top.frame_id != frame_id:
+            raise WorkflowStackError(
+                "frame_not_current", "That workflow frame is no longer active."
+            )
         if self.top.status != "paused":
             raise WorkflowStackError("frame_not_paused", "The workflow frame is not paused.")
         return self._set_status("running")

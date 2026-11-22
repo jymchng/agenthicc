@@ -81,7 +81,7 @@ def _make_session(
     mode_manager = ModeManager(modes, app)
     bus = CommandBus()
     config = AgenthiccConfig()
-    state = SimpleNamespace(workflows={})
+    state = SimpleNamespace(workflows={}, workflow_frames=())
 
     async def processor_run() -> None:
         await asyncio.Event().wait()
@@ -525,6 +525,9 @@ def test_reset_of_nonrecoverable_create_workflow_restores_package(tmp_path: Path
     )
     checkpoint = WorkflowCheckpoint(
         run_id=run_id,
+        frame_id=run_id,
+        parent_run_id=None,
+        origin="selection",
         workflow_name="create_workflow",
         conversation_id="coverage-session",
         intent=context.intent,

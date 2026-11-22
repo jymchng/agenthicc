@@ -47,6 +47,7 @@ if TYPE_CHECKING:
     from agenthicc.runners.reload import ReloadService
     from agenthicc.runners.authored import AuthoredPublisher
     from agenthicc.runners.workflow_stack import WorkflowStack
+    from agenthicc.runners.tui_session import WorkflowStackBridge
     from asyncio import Task
 
 
@@ -132,6 +133,7 @@ class SessionContext:
     #: Explicit ``--workflow`` selection for the base frame.
     initial_workflow: InitVar[str | None] = None
     workflow_stack: WorkflowStack = field(init=False)
+    workflow_bridge: WorkflowStackBridge = field(init=False, repr=False)
 
     # ── workspace access (PRD-168) ──────────────────────────────────────────
     #: Canonical roots shared by filesystem tools, commands, mentions, and
@@ -165,6 +167,7 @@ class SessionContext:
         initial_workflow: str | None,
     ) -> None:
         from agenthicc.runners.reload import ReloadService
+        from agenthicc.runners.tui_session import WorkflowStackBridge
         from agenthicc.runners.workflow_stack import WorkflowStack
         from agenthicc.subagents.policy import SubagentExecutionPolicy
 
@@ -196,7 +199,9 @@ class SessionContext:
             selection=initial_workflow,
             max_depth=self.cfg.workflow_stack_max_depth,
         )
-        self.app_state.conversation.workflow_stack.set(self.workflow_stack.summaries())
+        self.workflow_bridge = WorkflowStackBridge(self)
+        if not self.resumed:
+            self.workflow_bridge.sync()
 
     @cached_property
     def authored(self) -> AuthoredPublisher:

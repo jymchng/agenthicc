@@ -16,6 +16,20 @@ TurnToolSurfaceSelected payload:
     intent_id: Agent turn's kernel intent.
     tool_surface_generation: Generation used for the selected schemas.
     tool_names: Provider-visible tool names in schema order.
+
+workflow_frame_pushed payload:
+    frame_id, parent_frame_id, workflow_name, run_id, origin, depth: Frame identity.
+    phase, status: Initial phase and lifecycle.
+    intent_digest: First 16 hex characters of the intent's SHA-256.
+
+workflow_frame_state_changed payload:
+    frame_id, parent_frame_id, workflow_name, run_id, depth, phase, status.
+
+workflow_frame_returned payload:
+    frame_id, status, summary_digest, artifact_names.
+
+workflow_return_delivered payload:
+    return_key: Stable identity of the parent conversation turn.
 """
 
 from __future__ import annotations

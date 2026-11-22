@@ -157,6 +157,9 @@ def test_checkpoint_store_accepts_large_context_without_framework_byte_cap(
 ) -> None:
     checkpoint = WorkflowCheckpoint(
         run_id="large-run",
+        frame_id="large-run",
+        parent_run_id=None,
+        origin="selection",
         workflow_name="code_plan",
         conversation_id="session-1",
         intent="large context",
@@ -180,6 +183,9 @@ def test_checkpoint_store_round_trip_and_tamper_detection(tmp_path: Path) -> Non
     store = WorkflowCheckpointStore("session-1", root=tmp_path)
     checkpoint = WorkflowCheckpoint(
         run_id="run-1",
+        frame_id="run-1",
+        parent_run_id=None,
+        origin="selection",
         workflow_name="code_plan",
         conversation_id="session-1",
         intent="implement feature",
@@ -370,6 +376,9 @@ def test_checkpoint_rejects_memory_older_than_cursor(tmp_path: Path) -> None:
     store = WorkflowCheckpointStore("session-1", root=tmp_path / "cursor")
     checkpoint = WorkflowCheckpoint(
         run_id="cursor-run",
+        frame_id="cursor-run",
+        parent_run_id=None,
+        origin="selection",
         workflow_name=Plugin.name,
         conversation_id="session-1",
         intent="cursor",
@@ -403,6 +412,9 @@ def test_checkpoint_cannot_attach_to_a_different_session_conversation(tmp_path: 
     store = WorkflowCheckpointStore("actual-session", root=tmp_path / "session-bound")
     checkpoint = WorkflowCheckpoint(
         run_id="foreign-run",
+        frame_id="foreign-run",
+        parent_run_id=None,
+        origin="selection",
         workflow_name=Plugin.name,
         conversation_id="different-session",
         intent="foreign",

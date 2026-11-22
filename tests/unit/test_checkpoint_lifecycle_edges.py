@@ -21,6 +21,9 @@ pytestmark = pytest.mark.unit
 def _checkpoint(session_id: str = "session-1", run_id: str = "run-1") -> WorkflowCheckpoint:
     return WorkflowCheckpoint(
         run_id=run_id,
+        frame_id=run_id,
+        parent_run_id=None,
+        origin="selection",
         workflow_name="edge_plugin",
         conversation_id=session_id,
         intent="intent",

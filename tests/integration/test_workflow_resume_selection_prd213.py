@@ -186,6 +186,7 @@ async def test_continuation_resume_queues_message_before_resume_started(
 
     class Handle:
         run_id = "continuation-run"
+        frame_id = "continuation-frame"
         workflow_name = RecoveredWorkflow.name
         lifecycle = "paused"
         checkpoint_supported = True

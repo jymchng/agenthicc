@@ -517,6 +517,15 @@ class AuthoredArtifactStore:
         with InterProcessLock(self._lock):
             self._recover_pending()
 
+    @classmethod
+    def recover_workspace(cls, workspace: Path) -> None:
+        """Reconcile a pending workspace transaction before extension discovery."""
+        trust = current_extension_trust()
+        root = workspace.resolve()
+        operator = _authored_state_directory(root, trust.store_path)
+        if (operator / "pending.json").is_file():
+            cls(root, trust=trust).recover()
+
     def _recover_pending(self) -> None:
         document = read_json_object(self._pending, max_bytes=1_000_000)
         if document is None:

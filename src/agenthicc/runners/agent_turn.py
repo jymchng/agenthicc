@@ -962,6 +962,7 @@ class AgentTurnRunner:
 
     def __init__(self, ctx: AgentTurnContext) -> None:
         self._ctx = ctx
+        self._workflow_return_key: str | None = None
 
         # Mutable state shared between methods and signal-handler closures.
         self._intent_id: str = ""
@@ -1209,17 +1210,24 @@ class AgentTurnRunner:
 
     async def _emit_intent_created(self) -> None:
         from agenthicc.kernel import Event
+        from agenthicc.runners.workflow_return_delivery import consume_workflow_return_key
 
         # PRD-129 Phase 3: a resumed turn reuses its original id so the durable
         # tool ledger and journal turn markers line up.
-        self._intent_id = self._ctx.resume_turn_id or uuid.uuid4().hex
+        resumed = self._ctx.resume_turn_id
+        self._workflow_return_key = consume_workflow_return_key()
+        if resumed is not None and resumed.startswith("return:"):
+            self._workflow_return_key = resumed
+        self._intent_id = self._ctx.resume_turn_id or self._workflow_return_key or uuid.uuid4().hex
         self._agent_id = f"agent-{self._intent_id[:8]}"
         await self._ctx.processor.emit(
             Event.create(
                 "IntentCreated",
                 {
                     "intent_id": self._intent_id,
-                    "raw_text": self._ctx.text,
+                    "raw_text": "[Workflow return]"
+                    if self._workflow_return_key
+                    else self._ctx.text,
                 },
             )
         )
@@ -2943,7 +2951,14 @@ class AgentTurnRunner:
         # PRD-129 Phase 3: mark the turn's start + rollback point in the journal.
         # On a crash the absence of a matching turn_completed (written in the
         # finally below) flags this turn for resumption.
-        if _journal is not None and ctx.session_memory is not None:
+        if (
+            _journal is not None
+            and ctx.session_memory is not None
+            and (
+                self._workflow_return_key is None
+                or not _journal.has_started_turn(self._workflow_return_key)
+            )
+        ):
             from agenthicc.runners.workflow_execution_context import (
                 current_workflow_run_id,
             )
@@ -2956,6 +2971,29 @@ class AgentTurnRunner:
                 base_cursor=getattr(_journal, "cursor", None),
                 workflow_run_id=current_workflow_run_id(),
             )
+        seeded_workflow_return = self._workflow_return_key is not None and isinstance(
+            ctx.session_memory, JournaledShortTermMemory
+        )
+        if self._workflow_return_key is not None and isinstance(
+            ctx.session_memory, JournaledShortTermMemory
+        ):
+            incomplete = ctx.session_memory.journal.resume_state() if ctx.resume_turn_id else None
+            return_message = (
+                incomplete.user_message
+                if incomplete is not None and incomplete.turn_id == self._workflow_return_key
+                else agent_text
+            )
+            ctx.session_memory.add_user_once(return_message, message_id=self._workflow_return_key)
+        if self._workflow_return_key is not None and not any(
+            frame.delivered and frame.return_key == self._workflow_return_key
+            for frame in ctx.processor.get_state().workflow_frames
+        ):
+            from agenthicc.kernel import Event
+
+            await ctx.processor.emit(
+                Event.create("workflow_return_delivered", {"return_key": self._workflow_return_key})
+            )
+            await ctx.processor.flush_events()
 
         # PRD-182: retries must preserve the committed provider/tool prefix.
         # Step-aware lauren-ai runners advance an explicit checkpoint; older
@@ -2964,7 +3002,7 @@ class AgentTurnRunner:
         _attempt_number = [0]
         _partial_stream_text: list[str] = []
         _stream_seeded_user = [False]
-        _resume_existing_turn = [ctx.resume_turn_id is not None]
+        _resume_existing_turn = [ctx.resume_turn_id is not None or seeded_workflow_return]
         _safe_snapshot_includes_user = [False]
         _partial_fragment_recorded = [False]
         _output_attempt_start = [
