@@ -253,7 +253,7 @@ async def test_session_publisher_loads_validated_tools_and_emits_one_notice(
     reload_service: ReloadService,
     running_processor: EventProcessor,
 ) -> None:
-    publisher = AuthoredPublisher(store.workspace, reload_service, running_processor)
+    publisher = AuthoredPublisher(store.workspace, reload_service, running_processor, policy="auto")
     events = running_processor.subscribe_events()
     run = _run(
         store,
@@ -261,7 +261,7 @@ async def test_session_publisher_loads_validated_tools_and_emits_one_notice(
         {"first_tool": _tool("first_tool", "first"), "second_tool": _tool("second_tool", "second")},
     )
     with override_extension_trust(store.trust):
-        result = await publisher.publish(run, policy="auto")
+        result = await publisher.publish(run)
     await running_processor.drain()
 
     assert result.error_code is None
@@ -283,7 +283,7 @@ async def test_load_failure_keeps_the_prior_surface_and_reverts_the_set(
     reload_service: ReloadService,
     running_processor: EventProcessor,
 ) -> None:
-    publisher = AuthoredPublisher(store.workspace, reload_service, running_processor)
+    publisher = AuthoredPublisher(store.workspace, reload_service, running_processor, policy="auto")
     snapshot = reload_service.tools.current()
     run = _run(
         store,
@@ -294,7 +294,7 @@ async def test_load_failure_keeps_the_prior_surface_and_reverts_the_set(
         },
     )
     with override_extension_trust(store.trust):
-        result = await publisher.publish(run, policy="auto")
+        result = await publisher.publish(run)
 
     assert result.error_code == "import_error"
     assert {item.state for item in result.artifacts} == {"load_failed"}
@@ -365,7 +365,9 @@ async def test_authored_picker_and_operator_commands_restore_previous_behavior(
     picker = TriggerContext(cwd=store.workspace)
     assert "/authored" in {item.value for item in trigger.get_matches("authored", picker)}
     assert "/authored rollback" in {item.value for item in trigger.get_matches("authored ", picker)}
-    publisher = AuthoredPublisher(store.workspace, reload_service, running_processor)
+    publisher = AuthoredPublisher(
+        store.workspace, reload_service, running_processor, policy="stage_only"
+    )
     dispatcher = CommandDispatcher(registry)
     output = io.StringIO()
     pending: list[asyncio.Task[None]] = []
@@ -395,12 +397,13 @@ async def test_authored_picker_and_operator_commands_restore_previous_behavior(
 
     run = _run(store, "operator", {"restore_demo": _tool("restore_demo", "first")})
     with override_extension_trust(store.trust):
-        staged = await publisher.publish(run, policy="stage_only")
+        staged = await publisher.publish(run)
         assert staged.artifacts[0].state == "staged"
         assert "staged" in await submit("list")
         assert "loaded" in await submit("approve operator")
         updated = _update(store, "operator-2", "restore_demo", _tool("restore_demo", "second"))
-        assert (await publisher.publish(updated, policy="auto")).error_code is None
+        assert (await publisher.publish(updated)).artifacts[0].state == "staged"
+        assert "loaded" in await submit("approve operator-2")
         assert "second" in await submit("diff restore_demo")
         assert "Restored restore_demo" in await submit("rollback restore_demo")
         (tool,) = reload_service.tools.current().value
@@ -564,9 +567,11 @@ async def test_canonical_workflow_approval_removes_marker_and_reloads(
     candidate = run.candidates[0]
     assert isinstance(candidate, StagedWorkflow)
     marker = Path(candidate.lease.marker_path)
-    publisher = AuthoredPublisher(store.workspace, reload_service, running_processor)
+    publisher = AuthoredPublisher(
+        store.workspace, reload_service, running_processor, policy="stage_only"
+    )
     with override_extension_trust(store.trust):
-        assert (await publisher.publish(run, policy="stage_only")).artifacts[0].state == "staged"
+        assert (await publisher.publish(run)).artifacts[0].state == "staged"
         assert marker.is_file()
         assert store.trust.records() == ()
         assert isinstance(store.staged(run.run_id).candidates[0], StagedWorkflow)
@@ -616,9 +621,9 @@ async def test_published_execute_tool_requires_a_safe_approval_for_each_call(
         initial.artifact, declared_capabilities=("execute",), validation="static_only"
     )
     run = replace(run, candidates=(replace(initial, artifact=artifact),))
-    publisher = AuthoredPublisher(store.workspace, reload_service, running_processor)
+    publisher = AuthoredPublisher(store.workspace, reload_service, running_processor, policy="auto")
     with override_extension_trust(store.trust):
-        published = await publisher.publish(run, policy="auto")
+        published = await publisher.publish(run)
     assert published.error_code is None, published.summary()
     assert "static_only" in published.summary()
     (live,) = reload_service.tools.current().value

@@ -1258,9 +1258,7 @@ def _render_compaction_status(self: ScrollBufferAppender, ev: ConversationEvent)
 def _render_authored_publication(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
     self._flush_group_summary()
     self._open_block("authored_published")
-    _print_notice(
-        self, "success", "Extensions published", _text(ev.payload, "summary"), literal=True
-    )
+    _print_notice(self, "success", "Extensions published", _text(ev.payload, "summary"))
     self._gap_pending = True
 
 

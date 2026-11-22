@@ -180,7 +180,9 @@ class SessionContext:
             tools=project_plugins.all_tools,
             command_plugin_names=command_plugin_names,
         )
-        self.authored = AuthoredPublisher(root, self.reload, self.processor)
+        self.authored = AuthoredPublisher(
+            root, self.reload, self.processor, policy=self.cfg.security.authored_extension_policy
+        )
 
     @property
     def session_memory(self) -> "JournaledShortTermMemory":

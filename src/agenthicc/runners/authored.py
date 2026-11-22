@@ -117,10 +117,13 @@ class AuthoredPublisher:
         workspace: Path,
         reload_service: ReloadService,
         processor: EventProcessor,
+        *,
+        policy: AuthoredPolicy,
     ) -> None:
         self._workspace = workspace
         self._reload = reload_service
         self._processor = processor
+        self._policy = policy
         self._lock = asyncio.Lock()
 
     def store(self) -> AuthoredArtifactStore:
@@ -131,12 +134,11 @@ class AuthoredPublisher:
         self,
         run: AuthoredRun,
         *,
-        policy: AuthoredPolicy,
         source_root: Path | None = None,
     ) -> AuthoredPublication:
         """Apply the configured policy and wait for the final publication state."""
         task = asyncio.create_task(
-            self._publish(run, policy=policy, source_root=source_root, approved_by="policy"),
+            self._publish(run, policy=self._policy, source_root=source_root, approved_by="policy"),
             name="publish-authored",
         )
         try:

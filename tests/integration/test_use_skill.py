@@ -80,7 +80,7 @@ async def test_model_uses_authored_skill_and_worker_inherits_remaining_tools(
     running_processor: EventProcessor,
 ) -> None:
     monkeypatch.chdir(workspace)
-    publisher = AuthoredPublisher(workspace, reload_service, running_processor)
+    publisher = AuthoredPublisher(workspace, reload_service, running_processor, policy="auto")
     stage = publisher.store().stage_directory("release-skill", "skill") / "release-notes"
     stage.mkdir()
     markdown = (
@@ -111,7 +111,7 @@ async def test_model_uses_authored_skill_and_worker_inherits_remaining_tools(
         ) -> Completion | AsyncIterator[CompletionChunk]:
             if not self.calls:
                 assert not reload_service.skills.current().value
-                published = await publisher.publish(run, policy="auto")
+                published = await publisher.publish(run)
                 assert published.error_code is None, published
             return await super().complete(*args, **kwargs)
 

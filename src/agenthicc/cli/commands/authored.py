@@ -37,7 +37,7 @@ async def _publisher() -> AsyncIterator[AuthoredPublisher]:
     )
     task = asyncio.create_task(processor.run(), name="authored-cli-processor")
     try:
-        yield AuthoredPublisher(workspace, reload, processor)
+        yield AuthoredPublisher(workspace, reload, processor, policy="stage_only")
     finally:
         await reload.close()
         await processor.drain()
