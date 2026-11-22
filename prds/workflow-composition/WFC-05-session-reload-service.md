@@ -1,6 +1,6 @@
 ---
 title: "WFC-05: One session reload service for tools, skills, workflows and commands"
-status: Proposed
+status: Implemented
 version: 1.0.0
 date: 2026-11-22
 repository: jymchng/agenthicc
@@ -189,3 +189,32 @@ and `llms-full.txt` are updated in the same change.
 | A thread-run discovery imports plugin modules that assume the main thread. | Import-time work moves to the thread, instantiation to the loop; a plugin that fails thread-import is reported, not crashed. Documented in `plugins.md`. |
 | Users rely on the old `(bool, str)` messages. | The report's `summary()` keeps the same information; commands print it. |
 | Reload storms. | Single-flight + coalescing; authoring returns call it once per pop. |
+
+## Amendment — 2026-11-22
+
+The existing kernel uses PascalCase event names. The reducer handles
+`SessionReloaded` and headless workflow stdin emits `"event": "reload"`.
+The TUI supports both the new `/workflow reload` form and the existing
+`/workflows reload` form. Scope selection and interactive command execution
+use the session’s shared service. Tool and skill snapshots are also shared
+with workflow configuration, so reload needs no config replacement.
+
+## Implementation status
+
+Service and event commit `c757516`. Runner and command integration commit
+`7bd642c`.
+
+| Criterion | Automated evidence |
+|---|---|
+| A1 | `test_tools_publish_healthy_files_and_preserve_failed_surfaces` |
+| A2 | `test_skill_reader_sees_one_complete_snapshot_during_reload` |
+| A3 | `test_reload_discovering_two_hundred_tools_and_fifty_skills_meets_lag_budget` |
+| A4 | `test_preview_leaves_generation_surfaces_and_events_unchanged` |
+| A5 | `test_picker_offers_the_reload_command_and_registry_reload_arguments`, `test_submitting_each_reload_form_calls_the_async_service`, `test_workflow_reload_submission_uses_the_session_service` |
+| A6 | `test_reload_order_and_replay_generations` writes two events to JSONL and replays the log. |
+| A7 | `test_reload_migration_has_no_previous_callback_names` |
+
+`test_headless_workflow_stream_runs_each_nonempty_stdin_line` asserts the
+headless JSON report. `test_reload_runs_during_an_active_turn_without_queuing`
+asserts live TUI dispatch. `test_tool_reload_uses_source_even_when_timestamp_and_size_match`
+covers original and reloaded tool behavior.

@@ -263,7 +263,7 @@ the same session, with a human deciding what code runs; see
 - [WFC-02 — Model-facing workflow tools (proposed)](workflow-composition/WFC-02-model-facing-workflow-tools.md)
 - [WFC-03 — A durable stack: kernel events, checkpoint links, exactly-once return (proposed)](workflow-composition/WFC-03-durable-stack-events-and-resume.md)
 - [WFC-04 — Subagents that run a workflow (proposed)](workflow-composition/WFC-04-workflow-running-subagents.md)
-- [WFC-05 — One session reload service (proposed)](workflow-composition/WFC-05-session-reload-service.md)
+- [WFC-05 — One session reload service (implemented)](workflow-composition/WFC-05-session-reload-service.md)
 - [WFC-06 — `create_workflow`: activate, complete, trust, reload, use (proposed)](workflow-composition/WFC-06-create-workflow-activate-complete-reload.md)
 - [WFC-07 — `create_tools`: rename `make_agenthicc_tool`, one or several tools per run (proposed)](workflow-composition/WFC-07-create-tools-workflow.md)
 - [WFC-08 — A live tool surface (proposed)](workflow-composition/WFC-08-live-tool-surface.md)

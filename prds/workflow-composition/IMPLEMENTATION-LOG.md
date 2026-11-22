@@ -7,7 +7,7 @@ Branch `feat/workflow-composition` starts at `5100c8c` from fetched
 |---|---|---|
 | Setup | Complete | `4deacb1` adds the series and its index block. Parsed all 15 front-matter blocks and resolved the series links. `2b9902a` applies the separate guidance patch. Hooks installed. Strict MkDocs, Ruff and mypy passed. |
 | 0 | M0 pushed | `a04bfb4` records three spikes and four amendments. The tool-surface follow-up also demonstrates dispatch after a same-turn schema refresh. See milestone gate results below. |
-| 1 | In progress | WFC-14 foundation landed. WFC-05 and the WFC-13 harness are pending. |
+| 1 | In progress | WFC-14 foundation and WFC-05 landed. WFC-13 harness in progress. |
 | 2 | Pending | WFC-11 and WFC-10. |
 | 3 | Pending | WFC-01 and the publish connection. |
 | 4 | Pending | WFC-02. |
@@ -23,7 +23,7 @@ Branch `feat/workflow-composition` starts at `5100c8c` from fetched
 | WFC-02 | Spike complete | Optional string mapping confirmed. |
 | WFC-03 | Pending | — |
 | WFC-04 | Spike complete | Nested mapping confirmed with a correction to optional keys in the published schema. |
-| WFC-05 | In progress | Reload service, immutable value holders, kernel replay, and filesystem and lag coverage. Session entry points and command tests are pending. |
+| WFC-05 | Implemented | `c757516`, `7bd642c`. Both runners use the service. See the PRD for A1–A7 evidence. |
 | WFC-06 | Pending | — |
 | WFC-07 | Pending | — |
 | WFC-08 | Spike complete | Same-turn refresh verified by updating the provider schema list and the dispatch map together. |
@@ -89,3 +89,12 @@ A concurrent recheck alongside the documentation gates measured 42.2 ms p95.
 After checking host load, the same performance test passed in isolation
 without a budget change. Ruff, mypy, the type-safety audit, strict MkDocs, and
 `llms_check` passed.
+
+The WFC-05 runtime selection passed 733 tests on Python 3.13. The isolated
+200-tool and 50-skill benchmark passed again after the runtime integration.
+The legacy names test, Ruff, mypy, the type-safety audit, strict MkDocs and
+`llms_check` passed.
+
+Whole-repository combined line and branch coverage must stay above 80%.
+The existing 81.5% CI floor is kept. Series-wide coverage evidence is pending
+the full run.

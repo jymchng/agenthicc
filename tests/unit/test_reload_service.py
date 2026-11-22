@@ -160,3 +160,19 @@ async def test_cancelled_preview_keeps_discovery_exclusive_until_the_thread_retu
     assert (await following).generation == 1
     assert calls == [1, 2]
     await reloader.close()
+
+
+def test_reload_migration_has_no_previous_callback_names() -> None:
+    root = Path(__file__).resolve().parents[2]
+    surfaces = ("skills", "tools", "workflows", "commands")
+    removed = tuple(f"_reload_{surface}" for surface in surfaces) + tuple(
+        f"reload_{surface}=" for surface in surfaces
+    )
+    found: list[str] = []
+    for directory in ("src", "tests", "docs"):
+        for source in (root / directory).rglob("*"):
+            if source.suffix not in {".md", ".py", ".txt"} or not source.is_file():
+                continue
+            if any(name in source.read_text(encoding="utf-8") for name in removed):
+                found.append(source.relative_to(root).as_posix())
+    assert found == []

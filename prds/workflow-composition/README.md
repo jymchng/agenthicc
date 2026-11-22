@@ -14,7 +14,7 @@ the architecture, the dependency table and the delivery order.
 | [WFC-02](WFC-02-model-facing-workflow-tools.md) | Model-facing workflow tools — list, enter, inspect; `WorkflowInvocation` | 1 | P0 |
 | [WFC-03](WFC-03-durable-stack-events-and-resume.md) | A durable stack — kernel events, checkpoint links, exactly-once return | 1, 6 | P1 |
 | [WFC-04](WFC-04-workflow-running-subagents.md) | Subagents that run a workflow | 2 | P1 |
-| [WFC-05](WFC-05-session-reload-service.md) | One session reload service for tools, skills, workflows and commands | 3, 4, 5 | P0 |
+| [WFC-05](WFC-05-session-reload-service.md) | One session reload service for tools, skills, workflows and commands (implemented) | 3, 4, 5 | P0 |
 | [WFC-06](WFC-06-create-workflow-activate-complete-reload.md) | `create_workflow`: activate, complete, trust, reload, use | 3 | P1 |
 | [WFC-07](WFC-07-create-tools-workflow.md) | `create_tools` — rename `make_agenthicc_tool`; one or several tools per run | 4 | P0 |
 | [WFC-08](WFC-08-live-tool-surface.md) | A live tool surface — new tools callable on the next request | 4 | P0 |
@@ -70,6 +70,6 @@ at each milestone, then open one pull request to `main`, watch CI and merge.
 
 ## Status
 
-All PRDs are **Proposed**; nothing is implemented. When a PRD ships, add an
+WFC-05 is implemented. The remaining PRDs keep their proposed status until their acceptance criteria pass. When a PRD ships, add an
 "Implementation status" section with per-criterion evidence, as the SUBAGENT
 and TUIR series do, and update the table above.
