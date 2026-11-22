@@ -214,25 +214,52 @@ prompts, integrations, and tests.
 
 ## Built-in worker roles
 
-The role is a prompt plus a static tool allow-list. The parent session's actual
-visible tools are a second ceiling, so naming a tool in a role does not make a
-tool available if the current phase or mode removed it.
+A role is a prompt plus a tool rule. The working roles (`implementer`,
+`executor`, `tester`, `documenter`) behave like the main agent: they **inherit
+every tool the parent session exposes** and run under the session's agent turn
+limit (`execution.max_agent_turns`). The investigative roles (`explorer`,
+`planner`, `reviewer`, `verifier`, `researcher`) keep a static read-only
+allow-list, because "this role cannot write" must not rest on a prompt. "Every
+tool" excludes the parent's session control plane — workflow phase transitions,
+`spawn_worker_agents` and `ask_user` (the `control` capability) and the parent's
+own `spawn_subagents`: a worker reaches the parent through `ask_parent` and
+`send_parent_message`, and gets a nested `spawn_subagents` only when
+`subagents.max_depth` allows one. In both
+cases the parent session's actual visible tools, mode and capability policy are
+the ceiling, so a role never gains a tool the current phase or mode removed.
 
 | Role | Intended work | Mutation / execution |
 |---|---|---|
 | `explorer` | Read files, search, inspect git history, report evidence | Read-only |
 | `planner` | Produce a numbered implementation plan from repository facts | Read-only |
-| `implementer` | Make one focused file change and verify it | File writes/patches, no shell |
-| `executor` | Carry out an implementation/build/compile task end to end | File writes plus shell/commands/tests |
-| `tester` | Write and run focused tests | File writes plus test/command tools |
+| `implementer` | Make one focused file change and verify it | Every parent tool |
+| `executor` | Carry out an implementation/build/compile task end to end | Every parent tool |
+| `tester` | Write and run focused tests | Every parent tool |
 | `reviewer` | Inspect a change for correctness, security, and regressions | Read-only, including git read |
-| `documenter` | Update scoped documentation and report changed files | Documentation/file writes |
+| `documenter` | Update scoped documentation and report changed files | Every parent tool |
 | `verifier` | Adversarially check an invariant or acceptance criterion | Read and test tools; no writes |
 | `researcher` | Answer a technical question from local source and docs | Read/search-oriented |
 
 The provider schema's enum contains the registered type names, and the tool
-description lists each name with its description. Names are exact: `research` can
-be registered as a custom type and is not an alias for `researcher`.
+description lists each name with a capability tag and its description:
+
+```text
+- explorer [read-only]: Read-only codebase exploration and evidence gathering.
+- reviewer [runs commands]: Review code for correctness, clarity, security issues, and bugs.
+- implementer [edits files, runs commands]: Implement a narrowly scoped code change and verify it.
+- implementer [unavailable in this session: implementer needs a file-changing tool but the Plan policy blocks it]: …
+```
+
+The tag is computed from the tools the type would actually receive in **this**
+session — its allow-list, the parent's visible tools, the type's `deny_tools`
+and the Safe/Plan/Yolo policy — so the parent model is never offered an
+`implementer` it cannot use. Only tools that change the **workspace** count as
+"edits files": `send_email` or `create_event` do not. A task for an unavailable
+type is refused before any worker, panel row or provider call, with
+`status: "refused"`, the reason in `error`, and the type names in
+`unavailable_types`; a mixed pool is refused as a whole so the parent can
+re-plan. Names are exact: `research` can be registered as a custom type and is
+not an alias for `researcher`.
 
 User and project Markdown agent definitions with `mode: subagent` (or `mode: all`)
 are projected into a session-owned registry alongside built-ins and trusted
@@ -243,11 +270,41 @@ for the format and trust rules.
 
 ### Role-specific success rules
 
-Most roles succeed when they return non-empty final prose. `implementer` and
-other write-capable roles should be instructed to make the change, but the
-strict mutation-evidence rule currently applies to the built-in
-`implementer`: it must successfully invoke at least one mutating tool. A prose
-claim such as “I would update the file” is reported as a failed implementer.
+A worker's success is decided from what the runtime **observed**, never from its
+prose. Each type declares `completion_evidence`:
+
+| Value | A worker succeeds only if it made… | Built-in types |
+|---|---|---|
+| `none` | no requirement; its text is the product | explorer, planner, reviewer, verifier, researcher, documenter |
+| `mutation` | at least one successful workspace-mutating tool call | `implementer` |
+| `action` | at least one successful mutating **or** command-running tool call | `executor`, `tester` |
+
+A call counts only if its result is not `ok: false`, and only tools that change
+the **workspace** count (`send_email` and `create_event` do not). A claim such as
+"I would update the file" fails an `implementer` with
+`stop_reason="missing_mutation"` (`missing_action` for the other two), after one
+provider call and no hidden retry. A custom type defaults to `none`; a Markdown
+definition that overrides a built-in name keeps that built-in's rule.
+
+**A refused change is reported with its cause.** When a mutating or command call
+is refused by policy — `approval_denied`, `blocked_by_mode`, `outside_workspace`
+or `permission_denied` — and the worker made no successful change, it fails with
+`error_code="mutation_refused"` and the message
+`write_file was refused (approval_denied); no change was made`, for **every**
+type. The refusal is also in `SubagentResult.blocked_calls`. The worker's own
+account ("I wrote out.txt") is kept only as partial output.
+
+**A cut-off run is a failure.** A worker that uses its whole turn limit ends with
+`stop_reason="max_turns"` (message `reached its N-turn limit before finishing`),
+and a reply stopped by the output-token limit with `output_truncated`. Neither
+starts another provider run; the text so far is partial output.
+
+**An empty answer is not a result.** If a worker returns no final prose, it gets
+one finalisation turn. If it is still empty and it changed or ran something, the
+tool-call summary (`Executed tool call(s): write_file. Affected path(s): a.txt.`)
+is its result, because the work was the product. If it changed nothing, it fails
+with `stop_reason="empty_response"` and the tool inventory is kept as partial
+output, so a `verifier` with no verdict is never shown as `✓`.
 
 A tool call the model writes as *text* is never executed. Some gateways return
 their own call markup in the assistant text when they fail to parse it — for
@@ -260,10 +317,36 @@ the error `the model wrote a write_file call as text instead of calling the
 tool; it was not executed`. The markup is never passed to the parent as a
 result. Detection lives in `agenthicc.subagents.textual_tool_calls`.
 
-If a provider returns no final prose after tool calls, the worker synthesizes a
-bounded summary such as `Executed tool call(s): read_file.`. If it returns no
-prose and calls no tools, the worker fails with
-`agent returned no final summary and executed no tools`.
+### What the parent sees: the evidence line
+
+A worker's own account ("I updated `src/x.py`") is a claim. Each worker's
+section of the digest therefore ends with one deterministic line of what the
+runtime **observed** it do, so the parent can check instead of trusting or
+redoing the work:
+
+```text
+=== implementer #1 (✓ 41.2s) ===
+Added the --fast flag and its test.
+[evidence: changed src/cli.py, tests/test_cli.py · ran run_tests ×2, grep_files · 7 turns]
+
+=== documenter #1 (✗ write_file was refused (approval_denied); no change was made) ===
+[failed: write_file was refused (approval_denied); no change was made]
+I wrote docs/guide.md.
+[evidence: ran write_file · refused write_file: approval_denied · 2 turns]
+```
+
+`changed` lists only paths whose mutating call **succeeded** (at most 5, then
+`(+N more)`); a refused or failed write is never a change. `ran` lists tools by
+call count, ties by first use (at most 6). `refused` lists calls the runtime
+refused by policy, with the error code (at most 3). The line never contains
+worker prose, and each item is flattened and bounded to 120 characters. It is
+omitted for a worker that ran no tools and answered in one turn, and for one
+that never started. A type with a custom `SubagentAggregator` keeps full control
+of its own section and gets no evidence line.
+
+The same facts are in the `worker_finished` / `worker_failed` event payload
+(`changed_paths`, `blocked_calls`, `turns`) and in the journal's worker record.
+Records written before these fields existed simply lack them.
 
 ### Structured result contracts
 
@@ -347,6 +430,64 @@ This is a ceiling, not a grant. A role can still fail because the parent phase
 did not expose a required tool, because the mode blocks it, because workspace
 authorization denies the path, or because the user denies approval. The
 returned aggregate preserves those failures for the parent to reason about.
+
+## Parallel implementation in isolated git worktrees
+
+Delegate independent work in parallel: workers cannot see this conversation, so
+put file paths, interfaces and acceptance checks in `task` / `context`, and give
+each worker **different files**. Two workers that edit one directory race, and
+the last write silently wins — measured against the shared-directory behaviour,
+both reported `✓` and one change was gone. So when two or more workers in a pool
+can change files and the workspace is inside a git repository, each runs in its
+**own git worktree**:
+
+1. The pool snapshots the parent's *current working state* — uncommitted and
+   untracked, non-ignored files included — as one commit built through a
+   temporary index. The parent's index, `HEAD` and branch are never touched; a
+   clean tree snapshots to `HEAD`.
+2. Each working worker gets a worktree of that snapshot under
+   `~/.agenthicc/worktrees/<repository>/`. Every tool derives its root from the
+   task-local workspace policy, so the worker's file tools, commands and git all
+   act inside its worktree; nothing about the tools changes. Investigative
+   workers (`explorer`, `planner`, `reviewer`, `verifier`, `researcher`) never get
+   one.
+3. As each worker finishes, git records what it changed — whichever tool
+   changed it, so a file made by `run_bash` counts as evidence and appears in
+   `changed_paths` — and the worker's patch is applied to your workspace with
+   `git apply`. `git apply` is all-or-nothing and needs no clean tree, so your own
+   uncommitted work is preserved and no merge commit is made. Patches apply one
+   at a time on top of each other: edits to *different parts* of one file compose,
+   and only genuine overlaps conflict.
+4. A patch that does not apply makes that worker `ok=False` with
+   `error_code="integration_conflict"`; its branch and worktree are **kept** and
+   the evidence line says where: `NOT applied: kept on branch agenthicc/… at
+   /home/you/.agenthicc/worktrees/…`. When two workers overlap, the one that
+   finishes first is applied. A failed worker that changed something is kept the
+   same way. Everything else is removed when the pool ends, including on
+   cancellation.
+
+`subagents.isolation` (an operator setting, never a model argument) chooses the
+behaviour:
+
+| Value | Behaviour |
+|---|---|
+| `auto` (default) | isolate when ≥ 2 workers can change files and the workspace is in a git repository; otherwise run shared and say so in the digest (`=== Note ===`) |
+| `worktree` | isolate even one worker; refuse the pool (`status: "refused"`) when the workspace is not a git repository |
+| `shared` | every worker uses the one workspace, as before |
+
+Limits to know about:
+
+- A worktree contains tracked and untracked files but not git-ignored ones, so a
+  `.venv` or `node_modules` is absent. A worker that runs tests there uses the
+  project's on-demand tooling (for example `uv run`).
+- Isolation binds the *workspace policy*, not a sandbox. A worker in Yolo mode
+  that is given an absolute path inside your repository can still write there;
+  tell workers to use relative paths. Safe mode asks first, and Plan mode denies.
+- A type whose `permissions.workspace_paths` narrows the scope runs shared.
+- A retry of a worker (see [Controlling pools](#controlling-pools-from-the-model))
+  runs in your workspace, not in a fresh worktree.
+- After a crash, `git worktree list` and `git worktree prune` find and clear
+  orphaned worktrees; `git branch --list 'agenthicc/*'` lists their branches.
 
 ## Memory and provider calls
 
@@ -1071,17 +1212,23 @@ phase-specific `allowed_tool_names` set can still exclude it.
 
 ### An implementer says it completed but `ok` is false
 
-The implementer must make a successful mutating tool call. Check that the
-parent phase exposed `write_file`, `patch_file`, or another write-capable
-tool, that the active mode permits it, and that the provider actually emitted
-the tool call instead of prose-only output.
+Read `stop_reason` and `error_code`. `missing_mutation` means the model never
+made a successful mutating call (it described the change instead).
+`mutation_refused` means it tried and the runtime refused: the message names the
+tool and the code (`approval_denied` — a person or broker said no;
+`blocked_by_mode` — Plan mode; `outside_workspace`). `max_turns` and
+`output_truncated` mean the run was cut off. The `blocked_calls` field lists each
+refusal.
 
-### A worker fails immediately with no available tools
+### A task is refused with `unavailable_types`
 
-The role allow-list and parent-visible list have an empty intersection. This
-is expected for an implementer in a read-only phase. Choose a read-only role
-for investigation, or run the implementation phase with the intended mode
-and tools exposed.
+A type that must change files (`implementer`) or act (`executor`, `tester`) is
+refused when the session has no usable tool that could do so — for example
+`implementer needs a file-changing tool but the Plan policy blocks it`. The
+refusal happens at admission, before any worker or provider call, and the type
+is tagged `unavailable in this session` in the tool description. Choose a
+read-only role for investigation, or run the implementation phase with the
+intended mode and tools exposed.
 
 ### Safe mode does not show an approval
 
@@ -1098,6 +1245,24 @@ provider leaked its call format; the worker now gets one correction and fails
 with `unexecuted_tool_call` if it repeats it (see
 [Role-specific success rules](#role-specific-success-rules)). Also check that
 the parent mode exposes the write tool: in Plan mode no worker receives one.
+
+### Two workers edited the same file
+
+With `subagents.isolation = "shared"`, or in a directory that is not a git
+repository, workers share one workspace and the last write wins — the digest
+says `=== Note ===` when isolation was wanted but unavailable. In a repository
+each worker has its own worktree: the first to finish is applied and the other
+is `integration_conflict`, with its work kept on the branch the evidence line
+names. Re-run that task against the new state, or inspect the kept worktree.
+
+### Orphaned worktrees
+
+A pool removes its worktrees when it ends. Only a crash can leave one behind.
+`git worktree list` shows them, `git worktree prune` clears the ones whose
+directories are gone, and `git branch --list 'agenthicc/*'` lists their
+branches. A worktree named in a worker's `NOT applied` evidence line is kept on
+purpose; remove it with `git worktree remove <path>` and `git branch -D <branch>`
+when you no longer need it.
 
 ### A repeated call returns old results
 

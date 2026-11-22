@@ -4458,6 +4458,7 @@ class SubagentSettings:
     collect_wait_max_s: float = 60.0
     background_enabled: bool = True
     on_clarification: Literal["queue", "fail"] | None = None
+    isolation: Literal["auto", "worktree", "shared"] = "auto"
 
     def on_clarification_for(self, *, interactive: bool) -> Literal["queue", "fail"]: ...
     depth_limits: Mapping[int, SubagentDepthLimit]
@@ -5325,7 +5326,14 @@ class SubagentTypeSpec
 
 Fields: `name`, `allowed_tools`, `max_turns`, `system_prompt`,
 `max_turn_time_s`, `model`, `policy`, `description` (defaults to an empty string
-for plugin compatibility), `effort`, `context`, `output_schema`, and `permissions`.
+for plugin compatibility), `effort`, `context`, `output_schema`, `permissions`,
+and `completion_evidence`. `allowed_tools=None` means the worker inherits every
+tool its parent session exposes (mode, phase and capability policy still apply);
+`max_turns=None` means the session's `execution.max_agent_turns`.
+`completion_evidence` is `"none"` (default; the text is the product),
+`"mutation"` (a successful workspace-mutating tool call is required) or
+`"action"` (a successful mutating or command-running call is required); the
+runtime observes it, the model's prose never satisfies it.
 `effort` is provider reasoning effort, `context` is the optional worker memory
 token budget, `output_schema` is a bounded JSON Schema contract required from
 workers of that type, and `permissions` narrows the inherited execution policy.
@@ -5371,7 +5379,19 @@ class SubagentResult
 Fields: `task_id`, `agent_type`, `label`, `ok`, `text`, `error`,
 `duration_ms`, `tool_calls`, `changed_paths`, `error_code`, and `value` (optional
 validated structured JSON object), plus lifecycle fields `partial`, `stop_reason`,
-`undelivered_messages`, and `not_started`.
+`undelivered_messages`, and `not_started`. `blocked_calls` lists mutating or
+command calls the runtime refused by policy (`"write_file: approval_denied"`),
+and `turns` is the provider turns the worker used. A worker that was refused and
+made no successful change fails with `error_code="mutation_refused"`; one cut off
+by its turn limit or the output-token limit fails with `stop_reason` `max_turns`
+or `output_truncated`. The digest ends each worker's section with a deterministic
+evidence line (`[evidence: changed … · ran … · refused … · N turns]`) built from
+what the runtime observed, never from the worker's prose; `evidence_footer(result)`
+renders it. A worker that ran in its own git worktree (SUBAGENT-15) also carries
+`integration` (`applied`, `conflict`, `kept` or `none`; empty when it shared the
+workspace) and, when its changes were not applied, `branch` and `workspace` naming
+where they are preserved; the evidence line then says `applied to your workspace`
+or `NOT applied: kept on branch … at …`.
 
 ### AggregatedResult
 
@@ -6046,7 +6066,13 @@ are resolved against operator defaults and inherited parent values; explicit
 hidden and rejected unless ``subagents.allow_call_overrides`` is enabled.
 Worker context is clamped to the selected model window, provider/model are
 recorded in usage accounting, and effective routing participates in resume
-fingerprints.
+fingerprints. The tool description tags each type with what it can do in this
+session (`read-only`, `edits files`, `runs commands`, or `unavailable in this
+session: <reason>`), computed from the type's tools, the parent's visible tools
+and the Safe/Plan/Yolo policy; a task for an unavailable type is refused at
+admission with `status="refused"` and `unavailable_types`, before any worker or
+provider call. Only tools that change the workspace count as "edits files"
+(network `write` tools such as `send_email` do not).
 
 ## Extension trust and plugin dependencies — `agenthicc.plugins`
 

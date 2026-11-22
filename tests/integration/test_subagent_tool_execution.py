@@ -52,6 +52,7 @@ def _implementer_registry(*tool_names: str) -> SubagentTypeRegistry:
             max_turns=3,
             system_prompt="Make the requested change with the available tools.",
             max_turn_time_s=10.0,
+            completion_evidence="mutation",
         )
     )
     return registry
@@ -669,10 +670,11 @@ async def test_implementer_prose_without_a_tool_is_reported_as_failure() -> None
     assert result["succeeded"] == 0
     assert result["failed"] == 1
     assert "no mutation was recorded" in str(result["results"])
+    assert len(transport.calls) == 1
 
 
-async def test_empty_final_response_gets_a_tool_execution_summary() -> None:
-    """Tool work remains visible even when a provider omits final prose."""
+async def test_empty_final_response_is_a_failure_that_keeps_the_tool_inventory() -> None:
+    """A text-product worker with no answer is not a success (SUBAGENT-12)."""
     invoked: list[str] = []
 
     @tool()
@@ -697,8 +699,11 @@ async def test_empty_final_response_gets_a_tool_execution_summary() -> None:
         timeout_s=30,
     )
 
-    assert result["ok"] is True
+    assert result["ok"] is False
     assert invoked == ["chapter-9"]
+    assert "no final answer" in str(result["results"])
+    # What ran stays visible to the parent as partial output.
+    assert "[partial output; stop reason: empty_response]" in str(result["results"])
     assert "Executed tool call(s): lookup_fact." in str(result["results"])
 
 
@@ -816,7 +821,13 @@ async def test_subagent_inherits_parent_policy(parent_mode: str) -> None:
     )
 
     assert result["ok"] is False
-    assert result["failed"] == 1
+    if parent_mode == "Plan":
+        # Plan blocks every write tool, so an implementer cannot work at all:
+        # it is refused at admission, before any worker or approval request.
+        assert result["status"] == "refused"
+        assert result["unavailable_types"] == ["implementer"]
+    else:
+        assert result["failed"] == 1
     assert changed == []
     assert approvals == (["approved_change"] if parent_mode == "Safe" else [])
     assert parent_state.active_mode().name == parent_mode

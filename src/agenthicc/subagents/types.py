@@ -15,7 +15,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from agenthicc.result_contracts import JSONMapping, normalize_output_schema
 
@@ -31,6 +31,12 @@ __all__ = [
     "SubagentTypeRegistry",
     "SubagentTypeSpec",
 ]
+
+#: What a worker must have *done*, as observed by the runtime, before it may
+#: report success (SUBAGENT-12): ``none`` (text is the product), ``mutation``
+#: (a successful workspace-mutating tool call) or ``action`` (a successful
+#: mutating or execute-capability tool call).
+CompletionEvidence = Literal["none", "mutation", "action"]
 
 # Research and build tasks can legitimately take longer than a normal agent
 # turn. The spawn_subagents tool exposes this as its default invocation
@@ -84,15 +90,27 @@ class SubagentTypeSpec:
         Unique type identifier used in ``spawn_subagents(tasks=[{"type": name, ...}])``.
     allowed_tools:
         Provider tool names this type may call.  The pool filters the session's
-        visible tools down to this set before building the subagent.
+        visible tools down to this set before building the subagent.  ``None``
+        means the worker inherits **every** tool the parent session exposes,
+        exactly as the main agent has them; the parent's mode, phase and
+        capability policy still apply.
     max_turns:
         Maximum LLM sub-turns (tool-call → response cycles) per worker.
+        ``None`` means the session's own agent turn limit
+        (``ExecutionSettings.max_agent_turns``), so a delegated implementation
+        is not cut off sooner than the main agent would be.
     system_prompt:
         Full system prompt injected as the ``@agent(system=...)`` argument.
         Must be a self-contained instruction — the task description is appended
         as the first user message, not here.
     max_turn_time_s:
         Wall-clock timeout per worker execution.  Default: one hour.
+    completion_evidence:
+        ``"none"`` (default): the worker's text is its product.
+        ``"mutation"``: success requires a successful workspace-mutating tool
+        call.  ``"action"``: success requires a successful mutating or
+        execute-capability tool call.  The runtime observes this; the model's
+        prose never satisfies it.
 
     A role is not a separate conversation participant with access to the
     parent's transcript.  The worker gets a fresh memory sized from ``context``
@@ -102,8 +120,8 @@ class SubagentTypeSpec:
     """
 
     name: str
-    allowed_tools: frozenset[str]
-    max_turns: int
+    allowed_tools: frozenset[str] | None
+    max_turns: int | None
     system_prompt: str
     max_turn_time_s: float = DEFAULT_SUBAGENT_TIMEOUT_S
     #: Optional per-definition model; empty inherits the parent model.
@@ -116,6 +134,8 @@ class SubagentTypeSpec:
     output_schema: JSONMapping | None = None
     #: Additional type-specific permission constraints; never grants access.
     permissions: SubagentPermissionConstraints | None = None
+    #: Observed work a worker needs before it may report success.
+    completion_evidence: CompletionEvidence = "none"
 
     def __post_init__(self) -> None:
         if self.output_schema is not None:
@@ -221,6 +241,9 @@ _EXPLORER_TOOLS = frozenset(
         "git_blame",
         "git_grep",
         "get_file_info",
+        "batch_read",
+        "git_diff",
+        "git_status",
     }
 )
 
@@ -230,50 +253,19 @@ _PLANNER_TOOLS = frozenset(
         "list_directory",
         "search_files",
         "grep_files",
-    }
-)
-
-_IMPLEMENTER_TOOLS = frozenset(
-    {
-        "read_file",
-        "write_file",
-        "patch_file",
-        "append_file",
-        "list_directory",
-        "search_files",
-        "grep_files",
-        "run_python_expr",
+        "batch_read",
         "get_file_info",
+        "git_log",
+        "git_status",
     }
 )
 
-# ``executor`` is the subagent equivalent of the built-in workflow executor
-# role.  It deliberately has the implementer's write tools plus the command
-# tools required for build/compile tasks.  The parent session still supplies
-# the mode/capability-filtered tool list, so adding a name here cannot bypass
-# the active security ceiling.
-_EXECUTOR_TOOLS = _IMPLEMENTER_TOOLS | frozenset(
-    {
-        "run_bash",
-        "run_command",
-        "run_python",
-        "run_tests",
-    }
-)
-
-_TESTER_TOOLS = frozenset(
-    {
-        "read_file",
-        "write_file",
-        "patch_file",
-        "run_tests",
-        "run_bash",
-        "run_python_expr",
-        "list_directory",
-        "search_files",
-        "grep_files",
-    }
-)
+# The working roles (``implementer``, ``executor``, ``tester``, ``documenter``)
+# declare no tool list and no turn limit: like the main agent they inherit every
+# tool the parent session exposes and the session's agent turn limit. The
+# parent's mode, phase and capability policy are still the ceiling, so naming
+# nothing here cannot widen what the session allows. The read-only roles keep
+# explicit lists because their read-only guarantee must not rest on a prompt.
 
 _REVIEWER_TOOLS = frozenset(
     {
@@ -284,16 +276,11 @@ _REVIEWER_TOOLS = frozenset(
         "git_diff",
         "git_log",
         "run_python_expr",
-    }
-)
-
-_DOCUMENTER_TOOLS = frozenset(
-    {
-        "read_file",
-        "write_file",
-        "patch_file",
-        "search_files",
-        "list_directory",
+        "batch_read",
+        "get_file_info",
+        "git_show",
+        "git_blame",
+        "git_status",
     }
 )
 
@@ -306,6 +293,10 @@ _VERIFIER_TOOLS = frozenset(
         "run_python_expr",
         "git_diff",
         "git_log",
+        "batch_read",
+        "get_file_info",
+        "git_show",
+        "git_status",
     }
 )
 
@@ -315,6 +306,8 @@ _RESEARCHER_TOOLS = frozenset(
         "search_files",
         "grep_files",
         "list_directory",
+        "batch_read",
+        "get_file_info",
     }
 )
 
@@ -336,26 +329,29 @@ _BUILTIN_SPECS: list[SubagentTypeSpec] = [
     SubagentTypeSpec(
         name="implementer",
         description="Implement a narrowly scoped code change and verify it.",
-        allowed_tools=_IMPLEMENTER_TOOLS,
-        max_turns=20,
+        allowed_tools=None,
+        max_turns=None,
         system_prompt=_IMPLEMENTER_PROMPT,
         max_turn_time_s=180.0,
+        completion_evidence="mutation",
     ),
     SubagentTypeSpec(
         name="executor",
         description="Carry out an implementation or build task end to end.",
-        allowed_tools=_EXECUTOR_TOOLS,
-        max_turns=24,
+        allowed_tools=None,
+        max_turns=None,
         system_prompt=_EXECUTOR_PROMPT,
         max_turn_time_s=300.0,
+        completion_evidence="action",
     ),
     SubagentTypeSpec(
         name="tester",
         description="Write and run tests for the requested component.",
-        allowed_tools=_TESTER_TOOLS,
-        max_turns=20,
+        allowed_tools=None,
+        max_turns=None,
         system_prompt=_TESTER_PROMPT,
         max_turn_time_s=180.0,
+        completion_evidence="action",
     ),
     SubagentTypeSpec(
         name="reviewer",
@@ -367,8 +363,8 @@ _BUILTIN_SPECS: list[SubagentTypeSpec] = [
     SubagentTypeSpec(
         name="documenter",
         description="Write or update accurate documentation for the requested change.",
-        allowed_tools=_DOCUMENTER_TOOLS,
-        max_turns=15,
+        allowed_tools=None,
+        max_turns=None,
         system_prompt=_DOCUMENTER_PROMPT,
         max_turn_time_s=150.0,
     ),

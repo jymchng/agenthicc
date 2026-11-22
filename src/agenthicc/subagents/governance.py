@@ -53,7 +53,9 @@ def validate_depth_tiers(
             type_models = set(allowed_models)
         else:
             type_models = None
-        prior_tools = set(spec.allowed_tools)
+        prior_tools: set[str] | None = (
+            None if spec.allowed_tools is None else set(spec.allowed_tools)
+        )
         prior_models = type_models
         for depth in sorted(settings.depth_tiers):
             tier = settings.depth_tiers[depth].get(type_name)
@@ -61,7 +63,7 @@ def validate_depth_tiers(
                 continue
             if tier.allowed_tools is not None:
                 requested_tools = set(tier.allowed_tools)
-                if not requested_tools <= prior_tools:
+                if prior_tools is not None and not requested_tools <= prior_tools:
                     extra = ", ".join(sorted(requested_tools - prior_tools))
                     raise ValueError(
                         f"subagents.depth_tiers.{depth}.{type_name}.allowed_tools grants "

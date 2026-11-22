@@ -26,6 +26,7 @@ from agenthicc.subagents.types import (
     SubagentTypeSpec,
     _build_default_registry,
 )
+from agenthicc.tools.fs.agent_tools import write_file
 from agenthicc.tools.workspace_access import WorkspaceAccessPolicy, WorkspaceScope
 from agenthicc.tui.conversation_store import AppState
 from agenthicc.tui.runtime.mode_manager import build_default_registry
@@ -157,36 +158,39 @@ class TestSubagentTypeSpec:
     def test_explorer_no_write_tools(self) -> None:
         spec = DEFAULT_REGISTRY.get("explorer")
         assert spec is not None
+        assert spec.allowed_tools is not None
         write_tools = {"write_file", "patch_file", "append_file", "delete_file"}
         assert not (spec.allowed_tools & write_tools), "explorer must not have write tools"
 
-    def test_implementer_has_write_tools(self) -> None:
+    def test_implementer_inherits_every_parent_tool(self) -> None:
         spec = DEFAULT_REGISTRY.get("implementer")
         assert spec is not None
-        assert "write_file" in spec.allowed_tools
-        assert "patch_file" in spec.allowed_tools
+        assert spec.allowed_tools is None  # SUBAGENT-12: behaves like the main agent
+        assert spec.max_turns is None  # ... under the session's own turn limit
+        assert spec.completion_evidence == "mutation"
 
-    def test_executor_can_build_and_verify(self) -> None:
+    def test_executor_inherits_every_parent_tool_and_keeps_its_timeout(self) -> None:
         spec = DEFAULT_REGISTRY.get("executor")
         assert spec is not None
-        assert {"write_file", "run_bash", "run_command", "run_tests"} <= spec.allowed_tools
+        assert spec.allowed_tools is None
+        assert spec.completion_evidence == "action"
         assert spec.max_turn_time_s == 300.0
 
-    def test_tester_has_execute_tools(self) -> None:
+    def test_tester_inherits_every_parent_tool(self) -> None:
         spec = DEFAULT_REGISTRY.get("tester")
         assert spec is not None
-        assert "run_tests" in spec.allowed_tools
-        assert "run_bash" in spec.allowed_tools
+        assert spec.allowed_tools is None
+        assert spec.completion_evidence == "action"
 
     def test_planner_no_write_or_execute(self) -> None:
         spec = DEFAULT_REGISTRY.get("planner")
-        assert spec is not None
+        assert spec is not None and spec.allowed_tools is not None
         prohibited = {"write_file", "patch_file", "run_bash", "run_tests"}
         assert not (spec.allowed_tools & prohibited)
 
     def test_reviewer_no_write(self) -> None:
         spec = DEFAULT_REGISTRY.get("reviewer")
-        assert spec is not None
+        assert spec is not None and spec.allowed_tools is not None
         assert "write_file" not in spec.allowed_tools
         assert "patch_file" not in spec.allowed_tools
 
@@ -194,7 +198,10 @@ class TestSubagentTypeSpec:
         for name in DEFAULT_REGISTRY.names():
             spec = DEFAULT_REGISTRY.get(name)
             assert spec is not None
-            assert "read_file" in spec.allowed_tools, f"{name} must have read_file"
+            # ``None`` inherits every parent tool, which includes read_file.
+            assert spec.allowed_tools is None or "read_file" in spec.allowed_tools, (
+                f"{name} must have read_file"
+            )
 
     def test_output_schema_is_normalized_on_type_registration(self) -> None:
         schema: dict[str, object] = {
@@ -657,7 +664,7 @@ class TestSubagentWorkerRouting:
             configs.append(kwargs["config_override"])
             if first_error is not None and len(configs) == 1:
                 raise first_error
-            return SimpleNamespace(content="worker output")
+            return SimpleNamespace(content="worker output", turns=1, stop_reason="end_turn")
 
         monkeypatch.setattr(agents_module, "agent", agent_decorator)
         monkeypatch.setattr(agents_module, "use_tools", use_tools)
@@ -717,10 +724,10 @@ class TestSubagentWorkerRouting:
             *(
                 spec.allowed_tools
                 for spec in (DEFAULT_REGISTRY.get(name) for name in DEFAULT_REGISTRY.names())
-                if spec is not None
+                if spec is not None and spec.allowed_tools is not None
             )
         )
-        tool_names.add("spawn_subagents")
+        tool_names |= {"spawn_subagents", "write_file"}  # the working roles inherit these
         all_tools = [SimpleNamespace(name=name) for name in sorted(tool_names)]
 
         for name in DEFAULT_REGISTRY.names():
@@ -1103,10 +1110,10 @@ class TestSpawnSubagentsTool:
         type_schema = schema["properties"]["tasks"]["items"]["properties"]["type"]
 
         assert type_schema["enum"] == ["focused_reviewer"]
-        assert "focused_reviewer: Reviews API compatibility risks." in meta.description
-        assert (
-            "focused_reviewer: Reviews API compatibility risks." in meta.parameters["description"]
-        )
+        # The parent also sees what the type can do in this session.
+        line = "focused_reviewer [read-only]: Reviews API compatibility risks."
+        assert line in meta.description
+        assert line in meta.parameters["description"]
 
     def test_tool_schema_exposes_one_hour_default_timeout(self) -> None:
         fn = self._make_tool()
@@ -1313,8 +1320,9 @@ class TestSpawnSubagentsTool:
             "type"
         ]
         assert type_schema["enum"] == ["security_researcher"]
-        assert "security_researcher: Review security-sensitive changes and report evidence." in (
-            meta.description
+        assert (
+            "security_researcher [read-only]: Review security-sensitive changes and report evidence."
+            in (meta.description)
         )
         assert "security_researcher" in meta.parameters["description"]
 
@@ -1324,7 +1332,7 @@ class TestSpawnSubagentsTool:
         class FakeRunner:
             _transport = None
 
-        fn = make_spawn_subagents_tool(FakeRunner(), "test-model", [])
+        fn = make_spawn_subagents_tool(FakeRunner(), "test-model", [write_file])
         fake_result = AggregatedResult(
             pool_id="pool-executor",
             total=1,
@@ -1353,7 +1361,7 @@ class TestSpawnSubagentsTool:
 
         conv = ConversationStore()
         conv.begin_turn("agent", "t1")
-        fn = make_spawn_subagents_tool(FakeRunner(), "test-model", [], conv_store=conv)
+        fn = make_spawn_subagents_tool(FakeRunner(), "test-model", [write_file], conv_store=conv)
         fake_result = AggregatedResult(
             pool_id="pool-timeout",
             total=1,

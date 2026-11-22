@@ -559,10 +559,26 @@ class FailClosedGate:
     hook, then runs the tool. A gate that raised would therefore be bypassed.
     Subclasses implement :meth:`decide`; any exception it raises (other than
     cancellation) aborts the call with ``error_code="internal"`` (TOOLR-07).
+
+    A gate refuses a call through :meth:`refuse`, which also tells
+    :attr:`refusal_observer` the tool and error code. A subagent worker uses
+    that to report *why* a change did not happen instead of trusting the
+    model's account of it (SUBAGENT-12).
     """
 
-    async def before_tool_call(self, ctx: ToolCallContext) -> object:
+    #: Called with ``(tool_name, error_code)`` each time this gate refuses a call.
+    refusal_observer: Callable[[str, str], None] | None = None
+
+    def refuse(self, ctx: ToolCallContext, payload: dict[str, object]) -> object:
+        """Abort *ctx*'s call with *payload* and report the refusal."""
         from lauren_ai._tools._hooks import BeforeToolHookDecision
+
+        observer = self.refusal_observer
+        if observer is not None:
+            observer(ctx.tool_name, str(payload.get("error_code") or payload.get("code") or ""))
+        return BeforeToolHookDecision.abort(payload)
+
+    async def before_tool_call(self, ctx: ToolCallContext) -> object:
 
         try:
             return await self.decide(ctx)
@@ -580,7 +596,8 @@ class FailClosedGate:
                     "gate": type(self).__name__,
                     "error": type(exc).__name__,
                 }
-            return BeforeToolHookDecision.abort(
+            return self.refuse(
+                ctx,
                 {
                     "ok": False,
                     "error_code": "internal",
@@ -588,7 +605,7 @@ class FailClosedGate:
                         f"The permission check for '{ctx.tool_name}' failed "
                         f"({type(exc).__name__}); the tool was not run."
                     ),
-                }
+                },
             )
 
     async def decide(self, ctx: ToolCallContext) -> object:
@@ -671,12 +688,13 @@ class ApprovalGate(FailClosedGate):
                 access_metadata["mode"] = policy.mode_name
                 metadata["workspace_access"] = access_metadata
             if not path_result.allowed:
-                return BeforeToolHookDecision.abort(
+                return self.refuse(
+                    ctx,
                     {
                         "ok": False,
                         "code": path_result.code,
                         "error": f"{path_result.code}: {path_result.error}",
-                    }
+                    },
                 )
             if path_result.approval_handled:
                 return BeforeToolHookDecision.proceed()
@@ -701,7 +719,7 @@ class ApprovalGate(FailClosedGate):
         response = await self._service.request_approval(req)
         if response.allowed:
             return BeforeToolHookDecision.proceed()
-        return BeforeToolHookDecision.abort(denial_payload(ctx.tool_name, response.message))
+        return self.refuse(ctx, denial_payload(ctx.tool_name, response.message))
 
 
 #: What each capability that needs approval asks before, in reading order.

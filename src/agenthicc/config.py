@@ -1290,6 +1290,11 @@ class SubagentSettings:
     #: it follows the session: ``queue`` when a person can answer (the TUI),
     #: ``fail`` otherwise (headless, background and detached sessions).
     on_clarification: Literal["queue", "fail"] | None = None
+    #: Where workers that can change files run (SUBAGENT-15): ``auto`` gives
+    #: each its own git worktree when two or more can change files and the
+    #: workspace is a git repository; ``worktree`` always does (and refuses the
+    #: pool when it cannot); ``shared`` keeps every worker in one directory.
+    isolation: Literal["auto", "worktree", "shared"] = "auto"
     depth_limits: Mapping[int, SubagentDepthLimit] = field(default_factory=dict)
     depth_tiers: Mapping[int, Mapping[str, SubagentDepthTier]] = field(default_factory=dict)
 
@@ -1357,6 +1362,8 @@ class SubagentSettings:
             raise ValueError("subagents.on_clarification must be 'queue' or 'fail'")
         if self.on_budget_exceeded not in {"abort", "drain"}:
             raise ValueError("subagents.on_budget_exceeded must be 'abort' or 'drain'")
+        if self.isolation not in {"auto", "worktree", "shared"}:
+            raise ValueError("subagents.isolation must be 'auto', 'worktree' or 'shared'")
         if (
             isinstance(self.stop_grace_s, bool)
             or not isinstance(self.stop_grace_s, (int, float))
@@ -2159,6 +2166,7 @@ class AgenthiccConfig:
                 "collect_wait_max_s": self.subagents.collect_wait_max_s,
                 "background_enabled": self.subagents.background_enabled,
                 "on_clarification": self.subagents.on_clarification,
+                "isolation": self.subagents.isolation,
                 "max_budget": {
                     key: value
                     for key, value in (
@@ -2977,6 +2985,9 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
     on_clarification = subagent_data.get("on_clarification")
     if on_clarification is not None and on_clarification not in {"queue", "fail"}:
         raise ValueError("subagents.on_clarification must be 'queue' or 'fail'")
+    isolation = subagent_data.get("isolation", "auto")
+    if not isinstance(isolation, str) or isolation not in {"auto", "worktree", "shared"}:
+        raise ValueError("subagents.isolation must be 'auto', 'worktree' or 'shared'")
     collect_wait_max_s = subagent_data.get("collect_wait_max_s", 60.0)
     if isinstance(collect_wait_max_s, bool) or not isinstance(collect_wait_max_s, (int, float)):
         raise ValueError("subagents.collect_wait_max_s must be a number")
@@ -3007,6 +3018,7 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
         collect_wait_max_s=float(collect_wait_max_s),
         background_enabled=background_enabled,
         on_clarification=cast(Literal["queue", "fail"] | None, on_clarification),
+        isolation=cast(Literal["auto", "worktree", "shared"], isolation),
     )
 
     # [workflows] section — dict[workflow_name, dict[str, Any]] (PRD-111)

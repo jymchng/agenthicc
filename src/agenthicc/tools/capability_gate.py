@@ -81,7 +81,5 @@ class ToolCapabilityGate(FailClosedGate):
                     f"which is blocked in {mode.name} mode. "
                     f"Switch to Yolo mode or annotate it as read-only."
                 )
-            return BeforeToolHookDecision.abort(
-                {"ok": False, "error_code": "blocked_by_mode", "error": error}
-            )
+            return self.refuse(ctx, {"ok": False, "error_code": "blocked_by_mode", "error": error})
         return BeforeToolHookDecision.proceed()
