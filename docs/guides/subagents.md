@@ -241,7 +241,24 @@ the ceiling, so a role never gains a tool the current phase or mode removed.
 | `researcher` | Answer a technical question from local source and docs | Read/search-oriented |
 
 The provider schema's enum contains the registered type names, and the tool
-description lists each name with its description. Names are exact: `research` can be registered as a custom type and is
+description lists each name with a capability tag and its description:
+
+```text
+- explorer [read-only]: Read-only codebase exploration and evidence gathering.
+- reviewer [runs commands]: Review code for correctness, clarity, security issues, and bugs.
+- implementer [edits files, runs commands]: Implement a narrowly scoped code change and verify it.
+- implementer [unavailable in this session: implementer needs a file-changing tool but the Plan policy blocks it]: …
+```
+
+The tag is computed from the tools the type would actually receive in **this**
+session — its allow-list, the parent's visible tools, the type's `deny_tools`
+and the Safe/Plan/Yolo policy — so the parent model is never offered an
+`implementer` it cannot use. Only tools that change the **workspace** count as
+"edits files": `send_email` or `create_event` do not. A task for an unavailable
+type is refused before any worker, panel row or provider call, with
+`status: "refused"`, the reason in `error`, and the type names in
+`unavailable_types`; a mixed pool is refused as a whole so the parent can
+re-plan. Names are exact: `research` can be registered as a custom type and is
 not an alias for `researcher`.
 
 User and project Markdown agent definitions with `mode: subagent` (or `mode: all`)
@@ -1114,13 +1131,15 @@ tool and the code (`approval_denied` — a person or broker said no;
 `output_truncated` mean the run was cut off. The `blocked_calls` field lists each
 refusal.
 
-### A worker fails immediately with no available tools
+### A task is refused with `unavailable_types`
 
-A type that must change files (`implementer`) or act (`executor`, `tester`)
-fails before any provider call when the session has no usable tool that could
-do so — for example `implementer needs a file-changing tool but the Plan policy
-blocks it`. Choose a read-only role for investigation, or run the implementation
-phase with the intended mode and tools exposed.
+A type that must change files (`implementer`) or act (`executor`, `tester`) is
+refused when the session has no usable tool that could do so — for example
+`implementer needs a file-changing tool but the Plan policy blocks it`. The
+refusal happens at admission, before any worker or provider call, and the type
+is tagged `unavailable in this session` in the tool description. Choose a
+read-only role for investigation, or run the implementation phase with the
+intended mode and tools exposed.
 
 ### Safe mode does not show an approval
 

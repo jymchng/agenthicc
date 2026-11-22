@@ -272,7 +272,7 @@ async def test_a_custom_type_defaults_to_no_evidence_requirement(tmp_path: Path)
     assert len(transport.calls) == 1
 
 
-async def test_a_type_that_needs_a_write_tool_fails_fast_when_policy_blocks_it(
+async def test_a_type_that_needs_a_write_tool_is_refused_when_policy_blocks_it(
     tmp_path: Path,
 ) -> None:
     transport = MockTransport()
@@ -280,8 +280,9 @@ async def test_a_type_that_needs_a_write_tool_fails_fast_when_policy_blocks_it(
     result = await _spawn("implementer", transport, tmp_path, mode="Plan")
 
     assert result["ok"] is False
-    assert "implementer needs a file-changing tool but the Plan policy blocks it" in _results(
-        result
+    assert result["status"] == "refused"
+    assert "implementer needs a file-changing tool but the Plan policy blocks it" in str(
+        result["error"]
     )
     assert transport.calls == []  # no provider call was spent
 

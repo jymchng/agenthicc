@@ -6058,7 +6058,13 @@ are resolved against operator defaults and inherited parent values; explicit
 hidden and rejected unless ``subagents.allow_call_overrides`` is enabled.
 Worker context is clamped to the selected model window, provider/model are
 recorded in usage accounting, and effective routing participates in resume
-fingerprints.
+fingerprints. The tool description tags each type with what it can do in this
+session (`read-only`, `edits files`, `runs commands`, or `unavailable in this
+session: <reason>`), computed from the type's tools, the parent's visible tools
+and the Safe/Plan/Yolo policy; a task for an unavailable type is refused at
+admission with `status="refused"` and `unavailable_types`, before any worker or
+provider call. Only tools that change the workspace count as "edits files"
+(network `write` tools such as `send_email` do not).
 
 ## Extension trust and plugin dependencies — `agenthicc.plugins`
 

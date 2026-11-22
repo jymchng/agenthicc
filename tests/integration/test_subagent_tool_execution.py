@@ -821,7 +821,13 @@ async def test_subagent_inherits_parent_policy(parent_mode: str) -> None:
     )
 
     assert result["ok"] is False
-    assert result["failed"] == 1
+    if parent_mode == "Plan":
+        # Plan blocks every write tool, so an implementer cannot work at all:
+        # it is refused at admission, before any worker or approval request.
+        assert result["status"] == "refused"
+        assert result["unavailable_types"] == ["implementer"]
+    else:
+        assert result["failed"] == 1
     assert changed == []
     assert approvals == (["approved_change"] if parent_mode == "Safe" else [])
     assert parent_state.active_mode().name == parent_mode

@@ -241,6 +241,9 @@ _EXPLORER_TOOLS = frozenset(
         "git_blame",
         "git_grep",
         "get_file_info",
+        "batch_read",
+        "git_diff",
+        "git_status",
     }
 )
 
@@ -250,6 +253,10 @@ _PLANNER_TOOLS = frozenset(
         "list_directory",
         "search_files",
         "grep_files",
+        "batch_read",
+        "get_file_info",
+        "git_log",
+        "git_status",
     }
 )
 
@@ -269,6 +276,11 @@ _REVIEWER_TOOLS = frozenset(
         "git_diff",
         "git_log",
         "run_python_expr",
+        "batch_read",
+        "get_file_info",
+        "git_show",
+        "git_blame",
+        "git_status",
     }
 )
 
@@ -281,6 +293,10 @@ _VERIFIER_TOOLS = frozenset(
         "run_python_expr",
         "git_diff",
         "git_log",
+        "batch_read",
+        "get_file_info",
+        "git_show",
+        "git_status",
     }
 )
 
@@ -290,6 +306,8 @@ _RESEARCHER_TOOLS = frozenset(
         "search_files",
         "grep_files",
         "list_directory",
+        "batch_read",
+        "get_file_info",
     }
 )
 

@@ -45,7 +45,13 @@ from agenthicc.subagents.budget import (
     parse_budget,
     resolve_budget,
 )
-from agenthicc.subagents.pool import SubagentTask, _redact_result_value
+from agenthicc.subagents.pool import (
+    SubagentTask,
+    _redact_result_value,
+    tool_tags,
+    type_surface,
+    unusable_reason,
+)
 from agenthicc.subagents.types import SubagentTypeRegistry, SubagentTypeSpec
 from agenthicc.tools.base import tool_name
 
@@ -238,6 +244,39 @@ def make_spawn_subagents_tool(
     )
     continuation_registry = registry_for_session(conversation_id, conv_store)
 
+    def _surface(agent_type: str) -> tuple[list[object], frozenset[str], str] | None:
+        spec = _registry.get(agent_type)
+        if spec is None:
+            return None
+        tools, blocked = type_surface(
+            spec, all_tools, tool_registry, (effective_policy, spec.policy)
+        )
+        mode = spec.policy if spec.policy is not None else effective_policy
+        return tools, blocked, mode.mode_name if mode is not None else ""
+
+    def _type_unavailable(agent_type: str) -> str:
+        """Why *agent_type* cannot do its job in this session, or ``""``."""
+        surface = _surface(agent_type)
+        spec = _registry.get(agent_type)
+        if surface is None or spec is None:
+            return ""
+        tools, blocked, mode_name = surface
+        return unusable_reason(spec, tools, blocked, mode_name=mode_name)
+
+    type_tags: dict[str, str] = {}
+    for _type_name in _registry.names():
+        _surface_info = _surface(_type_name)
+        _spec = _registry.get(_type_name)
+        if _surface_info is None or _spec is None:
+            continue
+        _tools, _blocked, _mode = _surface_info
+        _reason = unusable_reason(_spec, _tools, _blocked, mode_name=_mode)
+        type_tags[_type_name] = (
+            f"unavailable in this session: {_reason}"
+            if _reason
+            else ", ".join(tool_tags(_tools, _blocked))
+        )
+
     @tool_read
     @_tool()
     async def spawn_subagents(
@@ -427,6 +466,22 @@ def make_spawn_subagents_tool(
 
         if not subagent_tasks:
             return {"ok": False, "error": "tasks list is empty", **pool_metadata}
+
+        # SUBAGENT-13: refuse a type that cannot do its job in this session
+        # before any worker, panel row, ledger entry or provider call exists.
+        unavailable: dict[str, str] = {}
+        for requested_type in dict.fromkeys(task.agent_type for task in subagent_tasks):
+            reason = _type_unavailable(requested_type)
+            if reason:
+                unavailable[requested_type] = reason
+        if unavailable:
+            return {
+                "ok": False,
+                "status": "refused",
+                "error": "; ".join(unavailable.values()),
+                "unavailable_types": list(unavailable),
+                **pool_metadata,
+            }
 
         for task in subagent_tasks:
             signature = (task.agent_type, task.task_description)
@@ -965,7 +1020,12 @@ def make_spawn_subagents_tool(
             **pool_metadata,
         }
 
-    _augment_type_schema(spawn_subagents, _registry, allow_call_overrides=_allow_call_overrides)
+    _augment_type_schema(
+        spawn_subagents,
+        _registry,
+        allow_call_overrides=_allow_call_overrides,
+        type_tags=type_tags,
+    )
     # The turn runner registers these alongside spawn_subagents.  Attaching
     # them keeps this factory backwards compatible for lightweight callers that
     # only need the original callable.
@@ -1215,8 +1275,14 @@ def _augment_type_schema(
     registry: SubagentTypeRegistry,
     *,
     allow_call_overrides: bool = False,
+    type_tags: Mapping[str, str] | None = None,
 ) -> None:
-    """Add this session's types and operator-enabled routing inputs to metadata."""
+    """Add this session's types and operator-enabled routing inputs to metadata.
+
+    *type_tags* maps a type name to what it can do in this session
+    (``edits files, runs commands``, ``read-only`` or ``unavailable …``); the
+    parent model sees it in front of each type's description.
+    """
 
     try:
         metadata = object.__getattribute__(tool, "__lauren_ai_tool__")
@@ -1275,7 +1341,8 @@ def _augment_type_schema(
         spec = registry.get(name)
         if spec is not None:
             text = spec.description or "No description provided."
-            descriptions.append(f"- {name}: {text}")
+            tag = (type_tags or {}).get(name)
+            descriptions.append(f"- {name} [{tag}]: {text}" if tag else f"- {name}: {text}")
     try:
         raw_description = object.__getattribute__(metadata, "description")
     except AttributeError:

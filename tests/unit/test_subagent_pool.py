@@ -26,6 +26,7 @@ from agenthicc.subagents.types import (
     SubagentTypeSpec,
     _build_default_registry,
 )
+from agenthicc.tools.fs.agent_tools import write_file
 from agenthicc.tools.workspace_access import WorkspaceAccessPolicy, WorkspaceScope
 from agenthicc.tui.conversation_store import AppState
 from agenthicc.tui.runtime.mode_manager import build_default_registry
@@ -1109,10 +1110,10 @@ class TestSpawnSubagentsTool:
         type_schema = schema["properties"]["tasks"]["items"]["properties"]["type"]
 
         assert type_schema["enum"] == ["focused_reviewer"]
-        assert "focused_reviewer: Reviews API compatibility risks." in meta.description
-        assert (
-            "focused_reviewer: Reviews API compatibility risks." in meta.parameters["description"]
-        )
+        # The parent also sees what the type can do in this session.
+        line = "focused_reviewer [read-only]: Reviews API compatibility risks."
+        assert line in meta.description
+        assert line in meta.parameters["description"]
 
     def test_tool_schema_exposes_one_hour_default_timeout(self) -> None:
         fn = self._make_tool()
@@ -1319,8 +1320,9 @@ class TestSpawnSubagentsTool:
             "type"
         ]
         assert type_schema["enum"] == ["security_researcher"]
-        assert "security_researcher: Review security-sensitive changes and report evidence." in (
-            meta.description
+        assert (
+            "security_researcher [read-only]: Review security-sensitive changes and report evidence."
+            in (meta.description)
         )
         assert "security_researcher" in meta.parameters["description"]
 
@@ -1330,7 +1332,7 @@ class TestSpawnSubagentsTool:
         class FakeRunner:
             _transport = None
 
-        fn = make_spawn_subagents_tool(FakeRunner(), "test-model", [])
+        fn = make_spawn_subagents_tool(FakeRunner(), "test-model", [write_file])
         fake_result = AggregatedResult(
             pool_id="pool-executor",
             total=1,
@@ -1359,7 +1361,7 @@ class TestSpawnSubagentsTool:
 
         conv = ConversationStore()
         conv.begin_turn("agent", "t1")
-        fn = make_spawn_subagents_tool(FakeRunner(), "test-model", [], conv_store=conv)
+        fn = make_spawn_subagents_tool(FakeRunner(), "test-model", [write_file], conv_store=conv)
         fake_result = AggregatedResult(
             pool_id="pool-timeout",
             total=1,

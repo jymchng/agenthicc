@@ -805,15 +805,18 @@ def _tool_capability_values(tool: object) -> frozenset[str]:
 
 
 def _is_mutating_tool(tool: object) -> bool:
-    """Return whether *tool* is known to change workspace state.
+    """Return whether *tool* changes **workspace** state.
 
     Capability metadata is authoritative for decorated tools.  A tool that
-    fallback preserves the contract for legacy Tool objects and for callers
-    that pass a compatible callable without Agenthicc metadata.
+    carries the ``network`` capability acts on a remote service (``send_email``,
+    ``create_event``), not on the workspace, so it never counts as a file
+    mutation.  The name fallback preserves the contract for legacy Tool objects
+    and for callers that pass a compatible callable without Agenthicc metadata.
     """
     if tool_name(tool) in _MUTATING_TOOL_NAMES:
         return True
-    return "write" in _tool_capability_values(tool)
+    capabilities = _tool_capability_values(tool)
+    return "write" in capabilities and "network" not in capabilities
 
 
 def _is_control_tool(tool: object) -> bool:
@@ -871,6 +874,49 @@ def unusable_reason(
     else:
         blocker = "none is available to this session"
     return f"{spec.name} needs {wanted} but {blocker}"
+
+
+def type_surface(
+    spec: SubagentTypeSpec,
+    all_tools: Sequence[object],
+    tool_registry: ToolRegistry | None,
+    policies: Sequence[SubagentExecutionPolicy | None],
+) -> tuple[list[object], frozenset[str]]:
+    """The tools a worker of *spec* would receive, and the capabilities blocked for it.
+
+    This is the same intersection the worker computes (the type's declared
+    tools, its ``deny_tools``, and every policy's capability scope), evaluated
+    before a worker exists so the parent can be told what each type can do and
+    a type that cannot do its job can be refused (SUBAGENT-13).
+    """
+    allowed = _expand_allowed(spec.allowed_tools, tool_registry)
+    denied = spec.permissions.deny_tools if spec.permissions is not None else frozenset()
+    active = [policy for policy in policies if policy is not None]
+    tools = [
+        tool
+        for tool in all_tools
+        if (allowed is None or tool_name(tool) in allowed)
+        and not (allowed is None and _is_control_tool(tool))
+        and tool_name(tool) != "spawn_subagents"
+        and tool_name(tool) not in denied
+        and all(policy.capability_scope.is_tool_allowed(tool_name(tool)) for policy in active)
+    ]
+    blocked: frozenset[str] = frozenset().union(*(policy.blocked_capabilities for policy in active))
+    return tools, blocked
+
+
+def tool_tags(
+    tools: Sequence[object],
+    blocked_capabilities: frozenset[str] = frozenset(),
+) -> tuple[str, ...]:
+    """Short capability tags for the model-facing catalog (SUBAGENT-13)."""
+    usable = [tool for tool in tools if not _policy_blocks(tool, blocked_capabilities)]
+    tags: list[str] = []
+    if any(_is_mutating_tool(tool) for tool in usable):
+        tags.append("edits files")
+    if any(_is_executing_tool(tool) for tool in usable):
+        tags.append("runs commands")
+    return tuple(tags) if tags else ("read-only",)
 
 
 def _limit_stop_reason(stop_reason: str, turns: int, max_turns: int) -> str:

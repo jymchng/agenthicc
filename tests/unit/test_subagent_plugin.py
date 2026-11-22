@@ -506,7 +506,10 @@ def test_definition_description_reaches_spawn_tool_description_and_enum() -> Non
     tool = make_spawn_subagents_tool(object(), "model-a", [], registry=registry)
     metadata = object.__getattribute__(tool, "__lauren_ai_tool__")
     description = metadata.description
-    assert "- release_auditor: Audit release notes against the merged changes." in description
+    assert (
+        "- release_auditor [read-only]: Audit release notes against the merged changes."
+        in description
+    )
     assert "release_auditor: No description provided." not in description
     item = metadata.parameters["input_schema"]["properties"]["tasks"]["items"]
     assert "release_auditor" in item["properties"]["type"]["enum"]
