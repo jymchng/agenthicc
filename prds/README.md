@@ -206,6 +206,7 @@ carries an implementation-status section with per-goal evidence.
 - [SUBAGENT-11 — Model-facing background spawn, collection and worker control (implemented, pending merge of #7–#13)](SUBAGENT-11-model-facing-pool-control.md)
 - [SUBAGENT-12 — Subagents behave like the main agent, and report truthfully (implemented)](SUBAGENT-12-truthful-worker-outcomes.md)
 - [SUBAGENT-13 — Tool surfaces that match the role, and a capability-aware type catalog (implemented)](SUBAGENT-13-role-complete-tool-surfaces.md)
+- [SUBAGENT-14 — Parent-verifiable worker evidence in the spawn digest (implemented)](SUBAGENT-14-parent-verifiable-worker-evidence.md)
 - [SUBAGENT series — coverage and scope audit (historical)](SUBAGENT-series-audit.md)
 - [SUBAGENT series — closure audit, criterion by criterion (2026-11-04)](SUBAGENT-series-closure-audit.md)
 

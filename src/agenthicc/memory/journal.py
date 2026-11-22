@@ -1066,6 +1066,8 @@ class ConversationJournal:
         attempt: int = 1,
         cleanup_error: str = "",
         not_started: bool = False,
+        blocked_calls: list[str] | None = None,
+        turns: int = 0,
     ) -> None:
         """Persist one worker result, including its complete final text.
 
@@ -1092,6 +1094,10 @@ class ConversationJournal:
         }
         if error_code:
             entry["error_code"] = error_code
+        if blocked_calls:
+            entry["blocked_calls"] = list(blocked_calls)
+        if turns > 0:
+            entry["turns"] = int(turns)
         if value is not None:
             entry["value"] = dict(value)
         if status is not None:

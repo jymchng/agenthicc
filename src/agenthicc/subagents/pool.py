@@ -969,6 +969,59 @@ def _redact_result_value(value: JSONMapping) -> JSONMapping:
     return cast(JSONMapping, redacted)
 
 
+#: Bounds for the one evidence line under each worker in the digest (SUBAGENT-14).
+_FOOTER_MAX_PATHS = 5
+_FOOTER_MAX_TOOLS = 6
+_FOOTER_MAX_REFUSALS = 3
+_FOOTER_ITEM_CHARS = 120
+
+
+def _footer_item(value: str) -> str:
+    """One path, tool or refusal, bounded so a hostile name cannot flood the digest."""
+    flat = " ".join(value.split())
+    return flat if len(flat) <= _FOOTER_ITEM_CHARS else flat[: _FOOTER_ITEM_CHARS - 1] + "…"
+
+
+def evidence_footer(result: SubagentResult) -> str:
+    """One deterministic line of what the runtime observed a worker do.
+
+    The parent model reads the digest, not the event log, so a worker's own
+    account ("I updated src/x.py") must sit next to what actually happened:
+    paths whose mutating call *succeeded*, the tools it ran, the calls the
+    runtime refused, and the provider turns it used. It never contains worker
+    prose. A worker that ran nothing and answered in one turn has no footer.
+    """
+    if result.not_started or (not result.tool_calls and result.turns <= 1):
+        return ""
+    parts: list[str] = []
+    if result.changed_paths:
+        shown = [_footer_item(path) for path in result.changed_paths[:_FOOTER_MAX_PATHS]]
+        extra = len(result.changed_paths) - len(shown)
+        parts.append("changed " + ", ".join(shown) + (f" (+{extra} more)" if extra > 0 else ""))
+    if result.tool_calls:
+        counts: dict[str, int] = {}
+        for name in result.tool_calls:
+            counts[name] = counts.get(name, 0) + 1
+        first_use = {name: index for index, name in reversed(list(enumerate(result.tool_calls)))}
+        ranked = sorted(counts, key=lambda name: (-counts[name], first_use[name]))
+        shown_tools = [
+            _footer_item(f"{name} ×{counts[name]}" if counts[name] > 1 else name)
+            for name in ranked[:_FOOTER_MAX_TOOLS]
+        ]
+        extra_tools = len(ranked) - len(shown_tools)
+        parts.append(
+            "ran " + ", ".join(shown_tools) + (f" (+{extra_tools} more)" if extra_tools > 0 else "")
+        )
+    if result.blocked_calls:
+        parts.append(
+            "refused "
+            + ", ".join(_footer_item(call) for call in result.blocked_calls[:_FOOTER_MAX_REFUSALS])
+        )
+    if result.turns > 0:
+        parts.append(f"{result.turns} turn" + ("" if result.turns == 1 else "s"))
+    return "[evidence: " + " · ".join(parts) + "]" if parts else ""
+
+
 def _tool_call_summary(
     tool_calls: tuple[str, ...],
     changed_paths: tuple[str, ...],
@@ -3614,6 +3667,8 @@ class SubagentPool:
             duration_ms=result.duration_ms,
             tool_calls=list(result.tool_calls),
             changed_paths=list(result.changed_paths),
+            blocked_calls=list(result.blocked_calls),
+            turns=result.turns,
             status=resolved_status,
             error_code=result.error_code,
             value=result.value,
@@ -3712,6 +3767,8 @@ class SubagentPool:
             "duration_ms": result.duration_ms,
             "tool_calls": list(result.tool_calls),
             "changed_paths": list(result.changed_paths),
+            "blocked_calls": list(result.blocked_calls),
+            "turns": result.turns,
             **(
                 {"tool_registration_failures": list(result.tool_registration_failures)}
                 if result.tool_registration_failures
@@ -3836,6 +3893,9 @@ def _aggregate(
             body = f"[failed: {result.error}]"
         if result.partial:
             body = f"[partial output; stop reason: {result.stop_reason or 'unspecified'}]\n{body}"
+        footer = evidence_footer(result)
+        if footer:
+            body = f"{body}\n{footer}"
         sections.append(f"{header}\n{body}")
 
     if not_started:

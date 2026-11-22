@@ -317,6 +317,37 @@ the error `the model wrote a write_file call as text instead of calling the
 tool; it was not executed`. The markup is never passed to the parent as a
 result. Detection lives in `agenthicc.subagents.textual_tool_calls`.
 
+### What the parent sees: the evidence line
+
+A worker's own account ("I updated `src/x.py`") is a claim. Each worker's
+section of the digest therefore ends with one deterministic line of what the
+runtime **observed** it do, so the parent can check instead of trusting or
+redoing the work:
+
+```text
+=== implementer #1 (✓ 41.2s) ===
+Added the --fast flag and its test.
+[evidence: changed src/cli.py, tests/test_cli.py · ran run_tests ×2, grep_files · 7 turns]
+
+=== documenter #1 (✗ write_file was refused (approval_denied); no change was made) ===
+[failed: write_file was refused (approval_denied); no change was made]
+I wrote docs/guide.md.
+[evidence: ran write_file · refused write_file: approval_denied · 2 turns]
+```
+
+`changed` lists only paths whose mutating call **succeeded** (at most 5, then
+`(+N more)`); a refused or failed write is never a change. `ran` lists tools by
+call count, ties by first use (at most 6). `refused` lists calls the runtime
+refused by policy, with the error code (at most 3). The line never contains
+worker prose, and each item is flattened and bounded to 120 characters. It is
+omitted for a worker that ran no tools and answered in one turn, and for one
+that never started. A type with a custom `SubagentAggregator` keeps full control
+of its own section and gets no evidence line.
+
+The same facts are in the `worker_finished` / `worker_failed` event payload
+(`changed_paths`, `blocked_calls`, `turns`) and in the journal's worker record.
+Records written before these fields existed simply lack them.
+
 ### Structured result contracts
 
 A subagent definition may declare an `output:` JSON Schema object (see the

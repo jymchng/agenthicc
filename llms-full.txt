@@ -5383,7 +5383,10 @@ command calls the runtime refused by policy (`"write_file: approval_denied"`),
 and `turns` is the provider turns the worker used. A worker that was refused and
 made no successful change fails with `error_code="mutation_refused"`; one cut off
 by its turn limit or the output-token limit fails with `stop_reason` `max_turns`
-or `output_truncated`.
+or `output_truncated`. The digest ends each worker's section with a deterministic
+evidence line (`[evidence: changed … · ran … · refused … · N turns]`) built from
+what the runtime observed, never from the worker's prose; `evidence_footer(result)`
+renders it.
 
 ### AggregatedResult
 
