@@ -30,6 +30,8 @@ if TYPE_CHECKING:
     from agenthicc.runners.session_context import SessionContext
     from agenthicc.runners.session_lease import SessionOwnerLease
     from agenthicc.runners.workflow_profile import ResumeProviderProfile
+    from agenthicc.runners.workflow_stack import WorkflowDelivery, WorkflowFrame
+    from agenthicc.workflows.plugin import WorkflowPlugin
 
 __all__ = ["WorkflowExecutionResult", "execute_workflow", "run_headless_workflow"]
 
@@ -222,7 +224,154 @@ async def execute_workflow(
     resume_plan: ResumePlan | None = None,
     profile_override: str | None = None,
 ) -> WorkflowExecutionResult:
-    """Execute one registered workflow using an existing session context.
+    """Execute a registered workflow and deliver any child return in order."""
+    from agenthicc.runners.workflow_stack import (
+        WorkflowDelivery,
+        WorkflowStackError,
+        workflow_return,
+    )
+    from agenthicc.workflows.checkpoint import workflow_fingerprint
+
+    stack = session.workflow_stack
+    frame = stack.top
+    registered = session.workflow_registry.get(workflow_name)
+    workflow = frame.definition if frame.depth else registered
+    if workflow is None:
+        available = ", ".join(sorted(session.workflow_registry.names())) or "none"
+        raise ValueError(f"Unknown workflow: {workflow_name!r}. Available: {available}")
+    if session.agent_runner is None and resume_run_id is None:
+        raise RuntimeError(
+            "No LLM configured. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, or configure Ollama."
+        )
+    if not intent.strip():
+        raise ValueError("Workflow intent must not be empty")
+    if resume_run_id is not None and session.session_conversation is None:
+        raise ValueError("workflow resume requires the durable session conversation")
+    if frame.depth:
+        if frame.workflow_name != workflow_name:
+            raise WorkflowStackError("frame_not_current", "The called workflow must finish first.")
+        if resume_run_id is not None and resume_run_id != frame.run_id:
+            raise WorkflowStackError(
+                "frame_not_current", "Resume the current child workflow first."
+            )
+        if (
+            resume_run_id is not None
+            and registered is not None
+            and workflow_fingerprint(workflow) != workflow_fingerprint(registered)
+        ):
+            raise ValueError(
+                f"PLUGIN_INCOMPATIBLE: Workflow {workflow_name!r} changed since it paused."
+            )
+        if frame.status == "paused":
+            if resume_run_id != frame.run_id:
+                raise WorkflowStackError(
+                    "frame_not_running", "Resume the current child workflow first."
+                )
+            frame = stack.resume(frame.frame_id)
+    else:
+        stack.set_base(workflow.name)
+        frame = stack.top
+
+    conversation = session.app_state.conversation
+    conversation.workflow_stack.set(stack.summaries())
+    try:
+        result, outcome = await _execute_registered_workflow(
+            session,
+            workflow,
+            workflow_name,
+            intent,
+            frame,
+            completed_turns=completed_turns,
+            resume_run_id=resume_run_id,
+            continuation=continuation,
+            resume_plan=resume_plan,
+            profile_override=profile_override,
+        )
+    except BaseException:
+        if frame.depth:
+            stack.pause(frame.frame_id)
+            conversation.workflow_stack.set(stack.summaries())
+        raise
+    if frame.depth:
+        if result.status == "complete":
+            returned = workflow_return(frame, outcome, session.app_state.workflow_run())
+            parent = stack.complete(frame.frame_id, returned)
+            conversation.workflow_stack.set(stack.summaries())
+            returned = await session.authored.publish_return(returned, outcome)
+            stack.queue_return(WorkflowDelivery(parent.frame_id, frame.run_id, returned))
+            delivery = stack.take_return()
+            if delivery is not None:
+                await _deliver_headless_return(session, delivery, completed_turns + 1)
+        else:
+            stack.pause(frame.frame_id)
+            conversation.workflow_stack.set(stack.summaries())
+    return result
+
+
+async def _deliver_headless_return(
+    session: SessionContext, delivery: WorkflowDelivery, completed_turns: int
+) -> None:
+    """Give the now-current parent one turn carrying its child's result."""
+    from agenthicc.agents.selection import turn_agent
+    from agenthicc.runners.agent_turn import _run_agent_turn
+    from agenthicc.runners.session_tools import session_tools
+
+    stack = session.workflow_stack
+    name = stack.top.workflow_name if stack.depth else stack.base_dispatch_name
+    text = delivery.result.as_system_block()
+    service = session.session_service
+    if service is not None:
+        await service.publish(
+            session.session_id,
+            source="headless",
+            kind="turn_queued",
+            payload={"text": text, "client_id": "workflow-return", "idempotency_key": delivery.key},
+            turn_id=delivery.key,
+        )
+    if name is not None:
+        await execute_workflow(session, name, text, completed_turns=completed_turns)
+        return
+
+    agent = turn_agent(session.agents_registry, session.app_state.agent(), session.cfg)
+    await _run_agent_turn(
+        text,
+        session.agent_runner,
+        session.processor,
+        session_memory=session.session_memory,
+        conversation_id=session.session_id,
+        max_agent_turns=agent.max_agent_turns,
+        conv_store=session.app_state.conversation,
+        app_state=session.app_state,
+        exec_cfg=agent.exec_cfg,
+        skills=session.reload.skills,
+        skill_permissions=session.cfg.agents.skill_permissions_for(agent.spec.name),
+        mention_cache=session.mention_cache,
+        project_plugin_tools=[*session.reload.tools.current().value, *session_tools(session)],
+        mcp_registry=session.mcp_registry,
+        subagent_registry=session.subagent_registry,
+        active_agent=agent.spec.name,
+        completed_turns=completed_turns,
+        approval_svc=session.approval_svc,
+        agent_spec=agent.spec,
+        agent_config=session.cfg,
+        workspace_access=session.workspace_access,
+    )
+
+
+async def _execute_registered_workflow(
+    session: SessionContext,
+    workflow_cls: type[WorkflowPlugin],
+    workflow_name: str,
+    intent: str,
+    frame: WorkflowFrame,
+    *,
+    completed_turns: int,
+    resume_run_id: str | None,
+    continuation: str | None,
+    resume_plan: ResumePlan | None,
+    profile_override: str | None,
+) -> tuple[WorkflowExecutionResult, object | None]:
+    """Drive one workflow run without dispatching its parent's return turn.
 
     The processor must already be running before this function is called. A
     *continuation* is new user text supplied while resuming a checkpoint; it is
@@ -236,23 +385,10 @@ async def execute_workflow(
     from agenthicc.runners.workflow_checkpoint_store import WorkflowCheckpointStore
     from agenthicc.runners.workflow_handle import WorkflowRunHandle
 
-    workflow_cls = session.workflow_registry.get(workflow_name)
-    if workflow_cls is None:
-        available = ", ".join(sorted(session.workflow_registry.names())) or "none"
-        raise ValueError(f"Unknown workflow: {workflow_name!r}. Available: {available}")
-    if session.agent_runner is None and resume_run_id is None:
-        raise RuntimeError(
-            "No LLM configured. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, or configure Ollama."
-        )
-    if not intent.strip():
-        raise ValueError("Workflow intent must not be empty")
-
     workflow_handle = None
     resuming = resume_run_id is not None
     session_conversation = session.session_conversation
     session_service = session.session_service
-    if resuming and session_conversation is None:
-        raise ValueError("workflow resume requires the durable session conversation")
     if session_conversation is not None:
         # Detached execution and foreground workflow resume share the same
         # provider-history gate. Try deterministic local journal repair before
@@ -273,7 +409,7 @@ async def execute_workflow(
                     f"(issues: {detail}); workflow execution was not started."
                 ),
                 failure_category="tool_history_recovery_required",
-            )
+            ), None
         # The turn boundary: announce background pools that finished since the
         # session last ran (recovery already marked unfinished ones interrupted).
         from agenthicc.subagents.delivery import deliver_session_background_notices
@@ -282,13 +418,18 @@ async def execute_workflow(
         checkpoint_store = WorkflowCheckpointStore(session.session_id)
         if resuming:
             from agenthicc.runners.workflow_recovery import WorkflowRecoveryCoordinator
+            from agenthicc.workflows.registry import WorkflowRegistry
 
             coordinator = WorkflowRecoveryCoordinator(
                 session.session_id,
                 checkpoint_store=checkpoint_store,
             )
+            resume_registry = session.workflow_registry
+            if frame.depth:
+                resume_registry = WorkflowRegistry()
+                resume_registry.register(workflow_cls)
             records = coordinator.inspect(
-                workflow_registry=session.workflow_registry,
+                workflow_registry=resume_registry,
                 conversation=session_conversation,
                 provider_profile=None,
                 workspace_root=str(getattr(session.workspace_scope, "primary_root", "") or ""),
@@ -323,7 +464,7 @@ async def execute_workflow(
                 else ""
             )
             workflow_handle = WorkflowRunHandle.create(
-                run_id=uuid.uuid4().hex,
+                run_id=frame.run_id if frame.depth else uuid.uuid4().hex,
                 workflow=workflow_cls,
                 conversation=session_conversation,
                 intent=intent,
@@ -366,7 +507,7 @@ async def execute_workflow(
                 phases=(),
                 error=str(exc),
                 failure_category=exc.code,
-            )
+            ), None
         except Exception as exc:  # noqa: BLE001 - never dispatch an unresolved provider
             workflow_handle.release_claim()
             return WorkflowExecutionResult(
@@ -380,7 +521,7 @@ async def execute_workflow(
                     f"({type(exc).__name__})."
                 ),
                 failure_category="provider_profile_invalid",
-            )
+            ), None
     effective_intent = (
         workflow_handle.original_intent if resuming and workflow_handle is not None else intent
     )
@@ -429,6 +570,8 @@ async def execute_workflow(
                 )
             )
             workflow_handle.claim(f"headless:{os.getpid()}:{workflow_handle.run_id}")
+            session.workflow_stack.attach_run(workflow_handle.run_id, workflow_handle.current_phase)
+            session.app_state.conversation.workflow_stack.set(session.workflow_stack.summaries())
             if _phase_specs:
                 workflow_handle.update_phase(_phase_specs[0].name, 0, 0)
             else:
@@ -543,7 +686,11 @@ async def execute_workflow(
                 bind_workflow_execution,
             )
 
-            with bind_workflow_execution(workflow_handle.run_id, resume_plan=resume_plan):
+            with bind_workflow_execution(
+                workflow_handle.run_id,
+                resume_plan=resume_plan,
+                policy=frame.policy if frame.depth else None,
+            ):
                 runner_result = (
                     await runner.resume(workflow_handle.context)
                     if resuming
@@ -589,7 +736,11 @@ async def execute_workflow(
             "resuming",
         }:
             workflow_run_after_return = session.app_state.workflow_run()
-            if getattr(workflow_run_after_return, "status", None) != "failed":
+            if not (
+                workflow_run_after_return is not None
+                and workflow_run_after_return.run_id == workflow_handle.run_id
+                and workflow_run_after_return.status == "failed"
+            ):
                 workflow_handle.mark_terminal("complete")
                 if workflow_handle.checkpoint_supported:
                     workflow_handle.save_checkpoint(reason="complete")
@@ -650,7 +801,15 @@ async def execute_workflow(
         remove_phase_sink()
         remove_failure_subscription()
     workflow_run = session.app_state.workflow_run()
+    if (
+        workflow_handle is not None
+        and workflow_run is not None
+        and workflow_run.run_id != workflow_handle.run_id
+    ):
+        workflow_run = None
     status = (workflow_run.status if workflow_run is not None else "") or "failed"
+    if error is None and workflow_handle is not None and workflow_handle.lifecycle == "complete":
+        status = "complete"
     if error is None and status == "failed":
         fail_reason = getattr(runner_result, "fail_reason", "")
         if isinstance(fail_reason, str) and fail_reason:
@@ -765,7 +924,10 @@ async def execute_workflow(
             raise
     if workflow_handle is not None:
         workflow_handle.release_claim()
-    return result
+    outcome = runner_result
+    if outcome is None and workflow_handle is not None:
+        outcome = workflow_handle.context
+    return result, outcome
 
 
 async def run_headless_workflow(

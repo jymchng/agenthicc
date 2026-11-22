@@ -767,7 +767,11 @@ def _reload_action_matches(prefix: str) -> list[str]:
 
 
 def _workflow_action_matches(prefix: str) -> list[str]:
-    return [action for action in ("runs", "reload") if action.startswith(prefix.casefold())]
+    return [
+        action
+        for action in ("runs", "reload", "call", "return --abandon")
+        if action.startswith(prefix.casefold())
+    ]
 
 
 def _workflow_selector_busy_policy(args: str) -> BusyPolicy:
@@ -1984,8 +1988,8 @@ BUILTIN_COMMANDS: list[Command] = [
     Command(
         name="/workflow",
         group="Workflows",
-        description="Switch workflow, or resume the latest saved run",
-        argument_hint="<name> | reload | resume [run-id] | reset [run-id]",
+        description="Select, call, or resume a workflow",
+        argument_hint="<name> | call <name> <intent> | return --abandon | reload | resume [run-id] | reset [run-id]",
         busy_policy_resolver=_workflow_selector_busy_policy,
         # No handler: /workflow is intercepted in TUISession.route() before
         # dispatch_slash() so it can access session-local state.  The entry

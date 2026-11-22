@@ -11,6 +11,8 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
+from tests.session_fakes import session_context
+
 import pytest
 
 from agenthicc.background import (
@@ -228,7 +230,8 @@ def test_killed_worker_continue_then_detach_uses_same_session_and_updated_config
         payload={"text": "continue the existing goal"},
     )
     mode = SimpleNamespace(name="Yolo", default_workflow="goal_flow")
-    ctx = SimpleNamespace(
+    ctx = session_context(
+        initial_workflow="goal_flow",
         session_id=session_id,
         config_path=str(changed_config),
         cfg=SimpleNamespace(
@@ -253,7 +256,6 @@ def test_killed_worker_continue_then_detach_uses_same_session_and_updated_config
     foreground = SimpleNamespace(
         announce_backgrounded=lambda sid, status: announced.append((sid, status)),
         _ctx=ctx,
-        _workflow_override="",
         _input_session=input_session,
         _agent_task=None,
         # The /background handoff state TUISession declares.

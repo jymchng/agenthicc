@@ -161,6 +161,12 @@ deterministic.
 
 ## Workflows
 
+### Workflow stack
+
+The session's base workflow and any called workflows. The top frame runs
+while its ancestors are suspended. A completed child passes a bounded
+`WorkflowReturn` with its summary, phase outputs and publication receipts.
+
 ### Workflow plugin
 
 A runnable, multi-phase process — `goal_flow`, `code_plan`, and so on —

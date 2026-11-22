@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import InitVar, dataclass, field
+from functools import cached_property
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -45,6 +46,7 @@ if TYPE_CHECKING:
     from agenthicc.runners.run_coordinator import ResumePlan
     from agenthicc.runners.reload import ReloadService
     from agenthicc.runners.authored import AuthoredPublisher
+    from agenthicc.runners.workflow_stack import WorkflowStack
     from asyncio import Task
 
 
@@ -109,7 +111,7 @@ class SessionContext:
     #: separately so a reload can restore built-ins after a plugin is removed.
     command_plugin_names: InitVar[tuple[str, ...]] = ()
     reload: ReloadService = field(init=False)
-    authored: AuthoredPublisher = field(init=False)
+    _workspace_root: Path = field(init=False, repr=False)
 
     # ── client-neutral session boundary (PRD-150) ───────────────────────────
     session_service: "SessionService | None" = None
@@ -127,9 +129,9 @@ class SessionContext:
     cfg_secret_overrides: tuple[str, ...] = ()
 
     # ── invocation selection ────────────────────────────────────────────────
-    #: Explicit ``--workflow`` selection for the initial TUI turn.  Headless
-    #: callers use CLIContext.workflow_name directly when dispatching lines.
-    initial_workflow: str | None = None
+    #: Explicit ``--workflow`` selection for the base frame.
+    initial_workflow: InitVar[str | None] = None
+    workflow_stack: WorkflowStack = field(init=False)
 
     # ── workspace access (PRD-168) ──────────────────────────────────────────
     #: Canonical roots shared by filesystem tools, commands, mentions, and
@@ -160,11 +162,14 @@ class SessionContext:
         skills: dict[str, SkillDef],
         project_plugins: PluginToolSet,
         command_plugin_names: tuple[str, ...],
+        initial_workflow: str | None,
     ) -> None:
-        from agenthicc.runners.authored import AuthoredPublisher
         from agenthicc.runners.reload import ReloadService
+        from agenthicc.runners.workflow_stack import WorkflowStack
+        from agenthicc.subagents.policy import SubagentExecutionPolicy
 
         root = self.workspace_scope.primary_root if self.workspace_scope is not None else Path.cwd()
+        self._workspace_root = root
         default_skill_directory = self.cfg.skills.default_skill_directory
         self.reload = ReloadService(
             processor=self.processor,
@@ -180,8 +185,28 @@ class SessionContext:
             tools=project_plugins.all_tools,
             command_plugin_names=command_plugin_names,
         )
-        self.authored = AuthoredPublisher(
-            root, self.reload, self.processor, policy=self.cfg.security.authored_extension_policy
+        policy = SubagentExecutionPolicy.from_app_state(
+            self.app_state, workspace_scope_identity=str(root)
+        )
+        assert policy is not None
+        self.workflow_stack = WorkflowStack(
+            policy,
+            mode_default=self.app_state.active_mode().default_workflow,
+            selection=initial_workflow,
+            max_depth=self.cfg.workflow_stack_max_depth,
+        )
+        self.app_state.conversation.workflow_stack.set(self.workflow_stack.summaries())
+
+    @cached_property
+    def authored(self) -> AuthoredPublisher:
+        """Load the publisher on the first publication or operator action."""
+        from agenthicc.runners.authored import AuthoredPublisher
+
+        return AuthoredPublisher(
+            self._workspace_root,
+            self.reload,
+            self.processor,
+            policy=self.cfg.security.authored_extension_policy,
         )
 
     @property

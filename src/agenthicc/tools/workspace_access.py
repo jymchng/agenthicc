@@ -421,12 +421,14 @@ class WorkspaceAccessPolicy:
 
     @property
     def mode_name(self) -> str:
+        from agenthicc.runners.workflow_execution_context import effective_workflow_mode_name
+
         value = self._mode_provider() if self._mode_provider is not None else "Safe"
         try:
             name = object.__getattribute__(value, "name")
         except AttributeError:
             name = value
-        return name if isinstance(name, str) else "Safe"
+        return effective_workflow_mode_name(name if isinstance(name, str) else "Safe")
 
     @property
     def mode(self) -> WorkspaceAccessMode:

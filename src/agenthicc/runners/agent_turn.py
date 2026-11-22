@@ -1479,6 +1479,7 @@ class AgentTurnRunner:
         from agenthicc.runners.prompt_contract import PromptBlock
         from agenthicc.runners.skill_runner import SkillAwareRunner
         from agenthicc.runners.tool_populator import populate_agent_tools as _populate
+        from agenthicc.runners.workflow_execution_context import current_workflow_policy
         from agenthicc.skills.tools import (
             SKILL_CONTEXT_GUIDANCE,
             SKILL_TOOL_NAMES,
@@ -1517,6 +1518,9 @@ class AgentTurnRunner:
             registry.register(list_skills, source="builtin")
             registry.register(use_skill, source="builtin")
         excluded_capabilities = ctx.excluded_capabilities
+        workflow_policy = current_workflow_policy()
+        if workflow_policy is not None:
+            excluded_capabilities |= workflow_policy.blocked_capabilities
         allowed_tool_names = ctx.allowed_tool_names
         gate_state = ctx.app_state
         agent_section = ""

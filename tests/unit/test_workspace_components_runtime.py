@@ -47,7 +47,11 @@ def _state() -> MagicMock:
     conv.background_dnd.return_value = False
     conv.background_toast.return_value = None
     conv.cost_usd.return_value = 1.25
-    conv.workflow_override.return_value = "daily [safe]"
+    from agenthicc.runners.workflow_stack import WorkflowFrameSummary
+
+    conv.workflow_stack.return_value = (
+        WorkflowFrameSummary("root", "daily [safe]", "", 0, "running", None),
+    )
     conv.notification.return_value = "first\nsecond"
     state.active_mode.return_value = SimpleNamespace(name="Auto", badge="A", color="green")
     state.keymap.return_value = Keymap.build(DEFAULT_ACTIONS)

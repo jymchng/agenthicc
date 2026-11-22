@@ -1,6 +1,6 @@
 ---
 title: "WFC-01: A workflow call stack — enter a workflow, then return to the one you left"
-status: Proposed
+status: Implemented
 version: 1.0.0
 date: 2026-11-22
 repository: jymchng/agenthicc
@@ -212,3 +212,23 @@ WFC-01" note.
 | A runner-phased parent cannot be paused mid-phase to host a child. | v1 allows entry only from free-form agent frames and workflows that opt in (WFC-02). Phased workflows are valid children. |
 | Return delivery lost between pop and turn start. | Idempotent key now; durable replay in WFC-03. |
 | Operators confused by an implicit return. | Entry/return transcript blocks and a breadcrumb (WFC-12). |
+
+## Implementation status
+
+`SessionContext` owns the stack used by the TUI and `execute_workflow`.
+`/workflow call` starts a resolved child and `/workflow return --abandon`
+discards a paused child. The parent receives a synthetic turn keyed by its
+frame ID and the child run ID. A successful publication refreshes the
+session before that turn starts. WFC-02 adds model-facing calls and WFC-03
+persists the stack and delivery across a restart.
+
+| Criteria | Verification |
+|---|---|
+| A1, A2 | `test_workflow_call_returns_to_direct_agent`, `test_headless_workflow_call_returns_with_the_same_frame_identity`, `test_stack_suspends_pauses_resumes_and_returns_to_base`, and `test_two_child_phases_return_once_to_the_parent`. |
+| A3, A5 | `test_failed_child_keeps_selection_locked_until_operator_action` covers both resume and abandon. `test_paused_frame_pins_its_definition_and_rejects_changed_topology` covers the active definition through registry replacement. |
+| A4 | `test_stack_rejects_capability_depth_and_reentrancy_without_changing_frames` checks distinct refusals before creating a run. |
+| A6 | The same rejection test exercises Plan admission. `test_child_scope_applies_after_a_session_mode_change` covers the task-local mode and workspace ceiling. |
+| A7, A8 | The selector search over `src`, `tests` and `docs` is empty. Mypy and the type audit run at M3. |
+
+`test_authored_return_loads_skill_before_the_parent_request` exercises the
+handoff to WFC-11 publication with a runner-approved skill.

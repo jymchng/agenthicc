@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Callable, Literal
 from agenthicc.reactive import Signal, Computed
 
 if TYPE_CHECKING:
+    from agenthicc.runners.workflow_stack import WorkflowFrameSummary
     import asyncio as _asyncio
     from agenthicc.tools.approval import ApprovalRequest
     from agenthicc.tui.workspace.notice import Notice, Severity
@@ -332,8 +333,10 @@ class ConversationStore:
         self._transient_notice_handle: _asyncio.TimerHandle | None = None
         self.loop_status: Signal[str | None] = Signal(None, name="loop_status")
         """Persistent footer projection for an active session ``/loop``."""
-        self.workflow_override: Signal[str | None] = Signal(None, name="workflow_override")
-        """Name of the /workflow-selected override (PRD-114).  None = mode default."""
+        self.workflow_stack: Signal[tuple[WorkflowFrameSummary, ...]] = Signal(
+            (), name="workflow_stack"
+        )
+        """Immutable summaries of the foreground workflow frames."""
         self.transcript_loading: Signal[bool] = Signal(False, name="transcript_loading")
         """True while a resumed session transcript is being replayed."""
         self.compaction_active: Signal[bool] = Signal(False, name="compaction_active")

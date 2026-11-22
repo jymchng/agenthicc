@@ -12,6 +12,21 @@ journal-backed provider memory is reused across phase turns. The reactive
 in a typed workflow context and is checkpointed separately when the runner
 supports resumable state.
 
+### Call a workflow and return
+
+`/workflow <name>` selects the base workflow for subsequent messages.
+`/workflow reset` returns the base to the active mode’s default.
+Use `/workflow call <name> <intent>` to run a child for a specific task.
+The session suspends the parent, runs the child, then gives the parent one
+turn containing the child’s summary, phase outputs and publication receipts.
+The session publishes and reloads approved artifacts before that turn.
+
+The child inherits the parent’s capability ceiling and approvals. While a
+child is active, the base selection is locked. If the child pauses, use
+`/workflow resume` to continue it or `/workflow return --abandon` to return
+to the parent with an abandoned result. The default depth is four child
+frames. Set `workflows.max_stack_depth` to change it.
+
 ### Outer session ownership
 
 The workflow lease is nested inside the durable session owner lease. The TUI,
@@ -49,13 +64,13 @@ terminal boundary. If the process disappears while a checkpoint is `running` or
 plugin fingerprint, profile, workspace, journal cursor, and typed context, and
 offers it without invoking the model.
 
-Use `/workflow resume` to continue the latest eligible recoverable run. The
-run ID is optional: the command is equivalent to
-`/workflow resume <latest-run-id>`. An ordinary message continues the selected
+Use `/workflow resume` to continue the current paused child, or the latest
+eligible recoverable run at the base. Pass a run ID to select a saved base run.
+An ordinary message continues the selected
 paused run using the same policy as an Esc pause; it never silently creates a
 fresh phase-one run. Use
-`/workflow reset` to always clear the session-local workflow override so
-subsequent turns use the active mode's default workflow. Use
+`/workflow reset` at the base to return subsequent turns to the active mode's
+default workflow. Use
 `/workflow reset <run-id>` to write a terminal discarded checkpoint for a
 saved run that is not currently attached. For a paused `create_workflow` run
 with a pending authoring transaction, reset first restores the approved original
@@ -123,12 +138,12 @@ and no workflow phase starts. Provider runners are forked lazily for the
 selected execution settings, without constructing the session's previous
 provider configuration.
 
-A successful interactive `/workflow resume [run-id]` also selects the workflow
+A successful interactive base-frame `/workflow resume [run-id]` also selects the workflow
 stored in that validated checkpoint for the rest of the current TUI session.
 The footer shows the same `⬡ workflow-name` selection, and subsequent ordinary
 messages use it instead of a different invocation selection or mode default.
 This selection remains after the resumed run completes, pauses again, or
-fails. Choose another workflow with `/workflow <name>` or clear the override
+fails. Choose another workflow with `/workflow <name>` or clear the selection
 with `/workflow reset`. Merely discovering a checkpoint, an ambiguous lookup,
 or a failed claim/restore does not change the current selection.
 
@@ -291,8 +306,8 @@ plan → execute → review → summarize
 ```
 
 The generic `WorkflowRunner` executes `WorkflowPlugin` phase specifications.
-Workflow selection is influenced by the active mode, registry mappings, and the
-session-local `/workflow` override.
+The active frame selects the workflow. Registry mappings and the active mode
+resolve the base selection when the operator has made no explicit choice.
 
 ### `ui_ux_pro_max`
 

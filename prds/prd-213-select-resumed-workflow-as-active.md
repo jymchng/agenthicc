@@ -18,6 +18,10 @@ tags:
 
 # PRD-213 — Select the resumed workflow as the active workflow
 
+WFC-01 retains sticky selection when resuming a base run. A called workflow
+returns to its parent on completion. See
+[WFC-01](workflow-composition/WFC-01-workflow-call-stack.md).
+
 ## 1. Summary
 
 When a user resumes a durable workflow with `/workflow resume [run-id]`,

@@ -218,7 +218,7 @@ class _Inputs:
     workers: tuple[int, int] | None
     #: The running workflow: name, phase number, phase count, phase, status.
     workflow: tuple[str, int, int, str, str] | None
-    workflow_override: str
+    workflow_stack_label: str
     startup: str
     terminal_count: int
     usage_status: str
@@ -341,9 +341,9 @@ def _builtin_parts(inputs: _Inputs) -> list[_Part]:
         done, total = inputs.workers
         label = f"{done} of {total} workers" if reader else f"{done}/{total} workers"
         parts.append(_Part(5, (_form(label if reader else _tint("agent", label)),)))
-    if inputs.workflow_override:
+    if inputs.workflow_stack_label:
         parts.append(
-            _Part(5, (_form(_tint("info", f"workflow {escape(inputs.workflow_override)}")),))
+            _Part(5, (_form(_tint("info", f"workflow {escape(inputs.workflow_stack_label)}")),))
         )
     if inputs.terminal_count:
         word = "terminal" if inputs.terminal_count == 1 else "terminals"
@@ -589,6 +589,10 @@ class StatusLine:
         from agenthicc.config import ExecutionSettings
 
         usage_status = _signal_text(conv, "usage_status", "unavailable")
+        frames = conv.workflow_stack()
+        stack_label = " › ".join(frame.workflow_name for frame in frames)
+        if stack_label == "default":
+            stack_label = ""
         return _Inputs(
             reader=reader,
             needs_you=_signal_int(conv, "background_needs_you"),
@@ -600,7 +604,7 @@ class StatusLine:
             model=short_model(model, ExecutionSettings.provider) if model else "",
             workers=workers,
             workflow=workflow,
-            workflow_override=_signal_text(conv, "workflow_override"),
+            workflow_stack_label=stack_label,
             startup=self._startup_text(),
             terminal_count=(
                 _signal_int(conv, "terminal_running_count")

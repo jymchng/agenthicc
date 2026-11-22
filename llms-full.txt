@@ -3252,6 +3252,22 @@ dangerous-permissions flag.
 
 ## Workflow execution — `agenthicc.workflows`
 
+### WorkflowStack
+
+`agenthicc.runners.workflow_stack.WorkflowStack` owns the session's base and
+called workflow frames. Resolve a `WorkflowCall` before calling `push`, use
+`pause` and `resume` for the current child, and use `complete` or `abandon` to
+return to its parent. `summaries()` supplies the reactive UI projection.
+`workflows.max_stack_depth` defaults to four child frames.
+
+### WorkflowFrame and WorkflowReturn
+
+`WorkflowFrame` records the frame and run IDs, parent, workflow, origin,
+status, depth, intent and effective policy. A child retains its resolved plugin.
+`WorkflowReturn.as_system_block()` formats the bounded summary, phase outputs
+and publication receipts for the synthetic parent turn. Delivery uses the
+stable key `return:<parent_frame_id>:<child_run_id>`.
+
 ### PhaseSpec
 
 Declarative phase metadata for generic `WorkflowRunner` execution. It carries

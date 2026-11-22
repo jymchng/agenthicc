@@ -9,11 +9,11 @@ from __future__ import annotations
 
 import asyncio
 import time
-from types import SimpleNamespace
 
 import pytest
 
 from agenthicc.tui.conversation_store import AppState, RunningTool
+from tests.session_fakes import session_context
 
 pytestmark = pytest.mark.unit
 
@@ -31,7 +31,7 @@ def _session(monkeypatch: pytest.MonkeyPatch) -> tuple[object, AppState, list[st
     monkeypatch.setattr(integration, "_handoff", lambda session: calls.append("handoff") or True)
     state = AppState.create()
     session = TUISession.__new__(TUISession)
-    session._ctx = SimpleNamespace(app_state=state)  # type: ignore[attr-defined]
+    session._ctx = session_context(app_state=state)  # type: ignore[attr-defined]
     session._msg_queue = _Queue()  # type: ignore[attr-defined]
     session._agent_task = None  # type: ignore[attr-defined]
     session._pending_model = None  # type: ignore[attr-defined]

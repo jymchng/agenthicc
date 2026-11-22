@@ -154,7 +154,7 @@ def test_workflow_resume_without_id_selects_latest_and_uses_explicit_guard(
         current_phase="architecture",
     )
     ctx.workflow_registry.register(Demo)  # type: ignore[arg-type]
-    session._set_workflow_override("stale-workflow")
+    session._select_base_workflow("stale-workflow")
     session._workflow_handle = Handle()  # type: ignore[assignment]
     session._select_latest_workflow_record = lambda: record  # type: ignore[method-assign]
 
@@ -162,8 +162,8 @@ def test_workflow_resume_without_id_selects_latest_and_uses_explicit_guard(
     notification = ctx.app_state.conversation.notification() or ""
     assert "run_already_claimed" in notification
     assert "latest-run" in notification
-    assert session._workflow_override == "stale-workflow"
-    assert ctx.app_state.conversation.workflow_override() == "stale-workflow"
+    assert ctx.workflow_stack.base_dispatch_name == "stale-workflow"
+    assert ctx.app_state.conversation.workflow_stack()[-1].workflow_name == "stale-workflow"
 
 
 def test_workflow_resume_rejects_more_than_one_run_id_argument() -> None:
@@ -199,20 +199,20 @@ def test_workflow_claim_error_is_reported_without_repeating_exception_type(
             )
 
     ctx.workflow_registry.register(Demo)  # type: ignore[arg-type]
-    session._set_workflow_override("stale-workflow")
+    session._select_base_workflow("stale-workflow")
     session._workflow_handle = ClaimedHandle()  # type: ignore[assignment]
 
     assert session._handle_workflow_resume(None) is True
     notification = ctx.app_state.conversation.notification() or ""
     assert "run_already_claimed" in notification
     assert "WorkflowClaimError:" not in notification
-    assert session._workflow_override == "stale-workflow"
-    assert ctx.app_state.conversation.workflow_override() == "stale-workflow"
+    assert ctx.workflow_stack.base_dispatch_name == "stale-workflow"
+    assert ctx.app_state.conversation.workflow_stack()[-1].workflow_name == "stale-workflow"
 
 
 def test_ambiguous_resume_does_not_change_workflow_selection() -> None:
     session, ctx, _workspace, _input = _make_session()
-    session._set_workflow_override("existing-selection")
+    session._select_base_workflow("existing-selection")
     session._workflow_recovery_records = {
         "run-a": SimpleNamespace(run_id="run-a"),  # type: ignore[dict-item]
         "run-b": SimpleNamespace(run_id="run-b"),  # type: ignore[dict-item]
@@ -222,8 +222,8 @@ def test_ambiguous_resume_does_not_change_workflow_selection() -> None:
     assert session._handle_workflow_resume(None) is True
 
     assert "Multiple workflows can be resumed" in (ctx.app_state.conversation.notification() or "")
-    assert session._workflow_override == "existing-selection"
-    assert ctx.app_state.conversation.workflow_override() == "existing-selection"
+    assert ctx.workflow_stack.base_dispatch_name == "existing-selection"
+    assert ctx.app_state.conversation.workflow_stack()[-1].workflow_name == "existing-selection"
 
 
 @pytest.mark.parametrize("run_id", [None, "invalid-run-id"])
@@ -231,12 +231,12 @@ def test_missing_resume_candidate_does_not_change_workflow_selection(
     run_id: str | None,
 ) -> None:
     session, ctx, _workspace, _input = _make_session()
-    session._set_workflow_override("existing-selection")
+    session._select_base_workflow("existing-selection")
 
     assert session._handle_workflow_resume(run_id) is True
 
-    assert session._workflow_override == "existing-selection"
-    assert ctx.app_state.conversation.workflow_override() == "existing-selection"
+    assert ctx.workflow_stack.base_dispatch_name == "existing-selection"
+    assert ctx.app_state.conversation.workflow_stack()[-1].workflow_name == "existing-selection"
 
 
 def test_unavailable_resume_workflow_does_not_change_workflow_selection() -> None:
@@ -250,14 +250,14 @@ def test_unavailable_resume_workflow_does_not_change_workflow_selection() -> Non
         context = object()
         claim_owner_id = "already-owned"
 
-    session._set_workflow_override("existing-selection")
+    session._select_base_workflow("existing-selection")
     session._workflow_handle = UnavailableHandle()  # type: ignore[assignment]
 
     assert session._handle_workflow_resume("unavailable-run") is True
 
     assert "not available to resume" in (ctx.app_state.conversation.notification() or "")
-    assert session._workflow_override == "existing-selection"
-    assert ctx.app_state.conversation.workflow_override() == "existing-selection"
+    assert ctx.workflow_stack.base_dispatch_name == "existing-selection"
+    assert ctx.app_state.conversation.workflow_stack()[-1].workflow_name == "existing-selection"
 
 
 def test_resume_checkpoint_transition_failure_preserves_workflow_selection(
@@ -302,14 +302,14 @@ def test_resume_checkpoint_transition_failure_preserves_workflow_selection(
 
     handle = Handle()
     ctx.workflow_registry.register(Demo)  # type: ignore[arg-type]
-    session._set_workflow_override("previous-workflow")
+    session._select_base_workflow("previous-workflow")
     session._workflow_handle = handle  # type: ignore[assignment]
 
     assert session._handle_workflow_resume(handle.run_id) is True
 
     assert handle.released is True
-    assert session._workflow_override == "previous-workflow"
-    assert ctx.app_state.conversation.workflow_override() == "previous-workflow"
+    assert ctx.workflow_stack.base_dispatch_name == "previous-workflow"
+    assert ctx.app_state.conversation.workflow_stack()[-1].workflow_name == "previous-workflow"
 
 
 def test_resume_refreshes_checkpoint_index_and_resolves_claim_diagnostic_id(
@@ -459,7 +459,7 @@ async def test_tui_can_pause_and_resume_the_same_workflow_run_repeatedly(
     handle.mark_paused()
     handle.save_checkpoint(reason="initial")
     session._workflow_handle = handle
-    session._set_workflow_override("stale-workflow")
+    session._select_base_workflow("stale-workflow")
 
     try:
         for attempt in range(2):
@@ -469,10 +469,10 @@ async def test_tui_can_pause_and_resume_the_same_workflow_run_repeatedly(
                 # The ordinary continuation path has its own guards and must
                 # establish the same selection before dispatch as the slash
                 # command path.
-                session._set_workflow_override("stale-workflow")
+                session._select_base_workflow("stale-workflow")
                 assert session._start_workflow_continuation("continue the run") is True
-            assert session._workflow_override == Demo.name
-            assert ctx.app_state.conversation.workflow_override() == Demo.name
+            assert ctx.workflow_stack.base_dispatch_name == Demo.name
+            assert ctx.app_state.conversation.workflow_stack()[-1].workflow_name == Demo.name
             status = Text.from_markup(StatusLine(ctx.app_state).markup(200)).plain
             assert f"workflow {Demo.name}" in status
             await asyncio.sleep(0)
@@ -486,8 +486,8 @@ async def test_tui_can_pause_and_resume_the_same_workflow_run_repeatedly(
             assert checkpoint.status == "paused"
             assert store.claim_owner(handle.run_id) is not None
             assert session._workflow_handle is handle
-            assert session._workflow_override == Demo.name
-            assert ctx.app_state.conversation.workflow_override() == Demo.name
+            assert ctx.workflow_stack.base_dispatch_name == Demo.name
+            assert ctx.app_state.conversation.workflow_stack()[-1].workflow_name == Demo.name
         assert Demo.resume_calls == 2
     finally:
         handle.release_claim()
@@ -559,13 +559,13 @@ async def test_resumed_workflow_selection_wins_for_the_next_ordinary_turn() -> N
 
     ctx.workflow_registry.register(SelectedWorkflow)
     ctx.workflow_registry.register(ModeDefaultWorkflow)
-    session._set_workflow_override(SelectedWorkflow.name)
+    session._select_base_workflow(SelectedWorkflow.name)
 
     await session.run_turn("continue after resume")
 
     assert calls == ["continue after resume"]
-    assert session._workflow_override == SelectedWorkflow.name
-    assert ctx.app_state.conversation.workflow_override() == SelectedWorkflow.name
+    assert ctx.workflow_stack.base_dispatch_name == SelectedWorkflow.name
+    assert ctx.app_state.conversation.workflow_stack()[-1].workflow_name == SelectedWorkflow.name
 
 
 def test_session_incomplete_workflow_notification_only_targets_active_runs() -> None:

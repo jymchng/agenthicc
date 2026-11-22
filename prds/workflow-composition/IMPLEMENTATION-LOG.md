@@ -196,3 +196,37 @@ The verified M2 gate on Python 3.13 passed:
 The logs are `/var/tmp/agenthicc-wfc-m2-*.log`. Windows and combined
 line and branch coverage remain CI gates. The whole-repository coverage
 floor in CI is 81.5%.
+
+## M3 verification
+
+WFC-01 connected the TUI and headless executor to the session's workflow
+stack. The tests exercise the normal base, child phase outputs, a synthetic
+return with a stable delivery key, typed failure, resume, abandon, and
+selection refusal while the child is active. A paused child retains its
+loaded definition through registry removal and refuses a replacement with
+an incompatible topology. A headless script completed two child phases
+and sent the parent's model exactly one return block. A separate TUI test
+received a published skill on the parent's first request.
+
+The first full run found three fixtures that lacked the new session stack,
+and an E2E reset assertion that expected an empty selection despite a mode
+default. The first-frame probe counted 387 modules against a budget of 386.
+The publisher is now constructed when a publication or operator action
+first needs it. The probe counted 381 modules after that change. The
+provider script was corrected to check phase history in the captured
+request. The integration and E2E tests exercise the same runtime paths as
+the session commands.
+
+The final checks passed on Python 3.13:
+
+- 6,268 unit tests with 15 skips, 419 integration tests, and 239 E2E tests
+  with two skips.
+- Nine performance tests, Ruff check and format, mypy on 424 source files,
+  the type audit against `origin/main`, strict MkDocs, and `llms_check`.
+- Zero legacy workflow-selector references across source, tests and docs.
+  The type audit reduced the `getattr` count from 459 to 456.
+
+During the serial recheck, the transcript E2E test observed a collapsed
+command while expecting the expanded view. The individual test and the
+isolated full E2E suite passed with no source or assertion changes. The
+verification logs are `/var/tmp/agenthicc-wfc-m3-*.log`.

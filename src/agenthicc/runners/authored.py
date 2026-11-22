@@ -6,7 +6,7 @@ import asyncio
 from contextlib import ExitStack
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
 
 from agenthicc.kernel.events import Event
 from agenthicc.plugins.authored import AuthoredArtifactStore, AuthoredError
@@ -25,6 +25,7 @@ if TYPE_CHECKING:
         PublishedArtifact,
     )
     from agenthicc.runners.reload import ReloadReport, ReloadService, ReloadSurface
+    from agenthicc.runners.workflow_stack import WorkflowReturn
 
 
 _SURFACES: dict[ArtifactKind, ReloadSurface] = {
@@ -33,6 +34,12 @@ _SURFACES: dict[ArtifactKind, ReloadSurface] = {
     "tool": "tools",
     "workflow": "workflows",
 }
+
+
+@runtime_checkable
+class AuthoredWorkflowOutcome(Protocol):
+    @property
+    def authored_run(self) -> AuthoredRun | None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,6 +165,18 @@ class AuthoredPublisher:
         except asyncio.CancelledError:
             await asyncio.gather(task, return_exceptions=True)
             raise
+
+    async def publish_return(self, result: WorkflowReturn, outcome: object) -> WorkflowReturn:
+        """Attach a completed workflow's verified publication receipt to its return."""
+        run = outcome.authored_run if isinstance(outcome, AuthoredWorkflowOutcome) else None
+        if run is None:
+            return result
+        publication = await self.publish(run)
+        return replace(
+            result,
+            summary=f"{result.summary}\n{publication.summary()}",
+            artifacts=publication.artifacts,
+        )
 
     async def reject(self, run_id: str) -> AuthoredPublication:
         async with self._lock:

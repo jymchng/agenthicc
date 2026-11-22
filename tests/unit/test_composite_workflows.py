@@ -240,24 +240,22 @@ def test_composite_plugin_registered_in_registry() -> None:
 
 
 @pytest.mark.unit
-def test_workflow_override_signal_on_conversation_store() -> None:
-    """ConversationStore.workflow_override signal exists and defaults to None."""
+def test_workflow_stack_signal_on_conversation_store() -> None:
     from agenthicc.tui.conversation_store import ConversationStore
 
     store = ConversationStore()
-    assert hasattr(store, "workflow_override")
-    assert store.workflow_override() is None
+    assert store.workflow_stack() == ()
 
 
 @pytest.mark.unit
-def test_workflow_override_signal_settable() -> None:
+def test_workflow_stack_signal_projects_frame_summaries() -> None:
+    from agenthicc.runners.workflow_stack import WorkflowFrameSummary
     from agenthicc.tui.conversation_store import ConversationStore
 
     store = ConversationStore()
-    store.workflow_override.set("code_plan_docs")
-    assert store.workflow_override() == "code_plan_docs"
-    store.workflow_override.set(None)
-    assert store.workflow_override() is None
+    summary = WorkflowFrameSummary("root", "code_plan_docs", "run", 0, "running", "review")
+    store.workflow_stack.set((summary,))
+    assert store.workflow_stack() == (summary,)
 
 
 # ── create-workflow skill in bootstrap ────────────────────────────────────────

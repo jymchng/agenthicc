@@ -1923,6 +1923,7 @@ class AgenthiccConfig:
     loops: LoopSettings = field(default_factory=LoopSettings)
     ui: UISettings = field(default_factory=UISettings)
     subagents: SubagentSettings = field(default_factory=SubagentSettings)
+    workflow_stack_max_depth: int = 4
 
     def to_system_settings(self) -> SystemSettings:
         """Reflect execution settings into the kernel ``SystemSettings``."""
@@ -2109,6 +2110,7 @@ class AgenthiccConfig:
             "security": vars(self.security).copy(),
             "tools": tool_values,
             "plugins": vars(self.plugins).copy(),
+            "workflows": {"max_stack_depth": self.workflow_stack_max_depth},
             "subagents": {
                 "default_model": self.subagents.default_model,
                 "default_effort": self.subagents.default_effort,
@@ -2957,11 +2959,18 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
         isolation=cast(Literal["auto", "worktree", "shared"], isolation),
     )
 
-    # [workflows] section — dict[workflow_name, dict[str, Any]] (PRD-111)
+    workflow_options = _section(data.get("workflows"))
+    workflow_stack_max_depth = workflow_options.get("max_stack_depth", 4)
+    if (
+        isinstance(workflow_stack_max_depth, bool)
+        or not isinstance(workflow_stack_max_depth, int)
+        or workflow_stack_max_depth < 0
+    ):
+        raise ValueError("workflows.max_stack_depth must be a nonnegative integer")
     workflows: dict[str, dict[str, object]] = {
         str(name): _section(params)
-        for name, params in _section(data.get("workflows")).items()
-        if isinstance(params, Mapping)
+        for name, params in workflow_options.items()
+        if name != "max_stack_depth" and isinstance(params, Mapping)
     }
 
     raw_providers = data.get("providers")
@@ -2988,6 +2997,7 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
         skills=skills,
         agents=agents,
         workflows=workflows,
+        workflow_stack_max_depth=workflow_stack_max_depth,
         ui=ui,
         subagents=subagents,
     )

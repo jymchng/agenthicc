@@ -213,6 +213,16 @@ Environment variables are safer for credentials:
 Current provider defaults are defined by `PROVIDER_DEFAULT_MODELS`; consult
 the code rather than hard-coding them in support material.
 
+## Workflow calls
+
+Set the maximum number of child frames in a foreground workflow stack. The
+base frame has depth zero. A value of zero prevents new calls.
+
+```toml
+[workflows]
+max_stack_depth = 4
+```
+
 ## Workflow authoring
 
 Set the repair budget for new authoring runs in the workflow settings.

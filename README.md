@@ -487,6 +487,8 @@ Agents can discover and read skills during a turn with `list_skills` and `use_sk
 
 In a registry overlay, press Enter on an entry to open its details. Press Enter again on the details page to place the invocation in the input panel: `/workflow <name>` for workflows, the command's canonical `/name` for commands, and `$<skill-name>` for skills. The text is prepared but not submitted.
 
+Use `/workflow call <name> <intent>` to run a workflow for one task and return its result to the current agent. See the [workflow guide](./docs/guides/workflows.md#call-a-workflow-and-return).
+
 ### Installing skills
 
 Install validated skills from a local path, direct HTTPS `SKILL.md` URL, or a generic GitHub repository with `agenthicc skills add SOURCE`. Both `https://github.com/owner/repo.git` and `owner/repo` sources are supported; repository sources discover and install all valid skills by default. Use `--skill NAME[,NAME]` to select specific skills, `--all` to make full installation explicit, and `--global` for user-global scope. Existing skill directories are never overwritten. Review downloaded instructions before invoking a newly installed skill.

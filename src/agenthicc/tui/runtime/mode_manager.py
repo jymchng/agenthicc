@@ -574,9 +574,10 @@ def phase_mode(
     execute phase entered from Plan the write and exec tools its Yolo or
     Safe override exists to enable.
     """
-    if not override or manager is None:
-        return active
-    return manager.resolve(override)
+    from agenthicc.runners.workflow_execution_context import effective_workflow_mode
+
+    mode = active if not override or manager is None else manager.resolve(override)
+    return effective_workflow_mode(mode)
 
 
 def mode_style(mode: RuntimeMode) -> str:

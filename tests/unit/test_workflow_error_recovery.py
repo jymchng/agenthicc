@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -17,6 +16,7 @@ from agenthicc.workflows.checkpoint import CheckpointValidationError
 from agenthicc.workflows.code_plan.definition import CodePlan
 from agenthicc.workflows.code_plan.state import CodePlanContext, CodePlanState
 from agenthicc.workflows.plugin import WorkflowContext
+from tests.session_fakes import session_context
 
 from .test_session_workflow_durability import _conversation
 
@@ -425,7 +425,7 @@ def test_tui_failure_boundary_projects_paused_and_releases_error_claim(tmp_path:
         handle.update_phase("plan")
         handle.claim("tui:test")
         session = object.__new__(TUISession)
-        session._ctx = SimpleNamespace(app_state=AppState.create())
+        session._ctx = session_context(app_state=AppState.create())
         session._workflow_handle = handle
         session._publish_session_event = lambda *_args, **_kwargs: None
         session._release_workflow_claim = lambda current: current.release_claim()

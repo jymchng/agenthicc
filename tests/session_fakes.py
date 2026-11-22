@@ -12,9 +12,12 @@ from agenthicc.commands.registry import UnifiedCommandRegistry
 from agenthicc.kernel import AppState, EventProcessor
 from agenthicc.runners.reload import ReloadService, SurfaceHolder
 from agenthicc.runners.session_context import SessionContext
+from agenthicc.runners.workflow_stack import WorkflowStack
+from agenthicc.subagents.policy import SubagentExecutionPolicy
 from agenthicc.subagents.types import DEFAULT_REGISTRY, SubagentTypeRegistry
 from agenthicc.workflows.registry import WorkflowRegistry
 from agenthicc.tui.trigger import TriggerManager
+from agenthicc.tui.conversation_store import AppState as TUIAppState
 from agenthicc.workflows.config import WorkflowConfig
 
 
@@ -49,7 +52,20 @@ def session_context(**fields: object) -> SimpleNamespace:
     have all of them. A session always has a trigger registry, so the stand-in
     carries an empty one unless the test supplies its own.
     """
-    context = _stand_in(SessionContext, {"trigger_registry": TriggerManager(), **fields})
+    context = _stand_in(
+        SessionContext, {"trigger_registry": TriggerManager(), "authored": None, **fields}
+    )
+    if "workflow_stack" not in fields:
+        supplied_state = fields.get("app_state")
+        state = supplied_state if isinstance(supplied_state, TUIAppState) else TUIAppState.create()
+        policy = SubagentExecutionPolicy.from_app_state(state)
+        assert policy is not None
+        selected = fields.get("initial_workflow")
+        context.workflow_stack = WorkflowStack(
+            policy,
+            mode_default=state.active_mode().default_workflow,
+            selection=selected if isinstance(selected, str) else None,
+        )
     if "reload" not in fields:
         kernel = fields.get("processor")
         workflows = fields.get("workflow_registry")

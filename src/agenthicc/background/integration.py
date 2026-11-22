@@ -162,9 +162,7 @@ def _handoff(session: TUISession) -> bool:
         ctx.console.print("Cannot background this session before it has a user request.")
         return True
     mode = ctx.app_state.active_mode()
-    workflow_name = str(
-        getattr(session, "_workflow_override", "") or getattr(mode, "default_workflow", "") or ""
-    )
+    workflow_name = ctx.workflow_stack.base_dispatch_name or ""
     settings = load_background_settings(config=getattr(ctx.cfg, "background", None))
     if not background_enabled(settings):
         ctx.console.print("Background agents are disabled by configuration.")

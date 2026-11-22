@@ -121,8 +121,10 @@ async def test_latest_checkpoint_resume_rehydrates_selection_before_dispatch(
         assert conversation.memory.validate_tool_history().ok
         # This assertion is synchronous with the accepted persisted transition:
         # it does not wait for the scheduled agent task to run.
-        assert session._workflow_override == RecoveredWorkflow.name
-        assert ctx.app_state.conversation.workflow_override() == RecoveredWorkflow.name
+        assert ctx.workflow_stack.base_dispatch_name == RecoveredWorkflow.name
+        assert (
+            ctx.app_state.conversation.workflow_stack()[-1].workflow_name == RecoveredWorkflow.name
+        )
         assert session._workflow_handle is not None
         assert session._workflow_handle.run_id == "restart-run"
 
@@ -149,8 +151,10 @@ async def test_latest_checkpoint_resume_rehydrates_selection_before_dispatch(
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
-        assert session._workflow_override == RecoveredWorkflow.name
-        assert ctx.app_state.conversation.workflow_override() == RecoveredWorkflow.name
+        assert ctx.workflow_stack.base_dispatch_name == RecoveredWorkflow.name
+        assert (
+            ctx.app_state.conversation.workflow_stack()[-1].workflow_name == RecoveredWorkflow.name
+        )
     finally:
         if session._agent_task is not None and not session._agent_task.done():
             session._agent_task.cancel()
@@ -164,7 +168,7 @@ async def test_continuation_resume_queues_message_before_resume_started(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     session, ctx, _workspace, _input = _make_session()
-    session._set_workflow_override("stale-workflow")
+    session._select_base_workflow("stale-workflow")
     selection = SimpleNamespace(
         config=ctx.cfg,
         profile_name="",
@@ -220,8 +224,8 @@ async def test_continuation_resume_queues_message_before_resume_started(
     session._workflow_handle = Handle()  # type: ignore[assignment]
 
     assert session._start_workflow_continuation("continue the saved work") is True
-    assert session._workflow_override == RecoveredWorkflow.name
-    assert ctx.app_state.conversation.workflow_override() == RecoveredWorkflow.name
+    assert ctx.workflow_stack.base_dispatch_name == RecoveredWorkflow.name
+    assert ctx.app_state.conversation.workflow_stack()[-1].workflow_name == RecoveredWorkflow.name
 
     task = session._agent_task
     assert task is not None

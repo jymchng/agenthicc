@@ -659,12 +659,13 @@ class ApprovalGate(FailClosedGate):
 
     async def decide(self, ctx: ToolCallContext) -> object:
         from lauren_ai._tools._hooks import BeforeToolHookDecision
+        from agenthicc.runners.workflow_execution_context import effective_workflow_mode
         from agenthicc.tools.capabilities import (
             CAPABILITIES_KEY,
             classify_tool_capabilities,
         )
 
-        mode = self._app_state.active_mode()
+        mode = effective_workflow_mode(self._app_state.active_mode())
         required = mode.approval_required
         raw_caps = ctx.get_metadata(CAPABILITIES_KEY)
         tool_caps = classify_tool_capabilities(raw_caps)

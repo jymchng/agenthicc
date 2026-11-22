@@ -132,7 +132,7 @@ behaves. Consolidating or formalizing this boundary is PRD-138 P0.3.
 ## Workflow and agent path
 
 1. A submitted message is routed through `TUISession`.
-2. The active mode and optional `/workflow` override select a workflow.
+2. The top frame of the session's `WorkflowStack` selects a workflow.
 3. A `WorkflowPlugin` exposes phase specifications and a runner.
 4. A phase selects an agent role, model override, tool capabilities, and
    transition policy.
@@ -141,6 +141,13 @@ behaves. Consolidating or formalizing this boundary is PRD-138 P0.3.
 6. Tool and workflow events update the kernel and reactive presentation.
 7. Completion, rejection, error, or interruption determines the next phase or
    resume plan.
+
+The TUI and headless executor share a session-owned `WorkflowStack`. Its base
+resolves the operator's selection or the active mode's default. Call frames
+retain their resolved plugin and their parent's capability ceiling. The run
+handle owns phase progress and checkpoints, while the stack owns suspension,
+pause and return. A completed child gives its parent a `WorkflowReturn` via a
+synthetic turn keyed by the parent frame and child run IDs.
 
 At the provider boundary, `AgentTurnRunner` passes one memory instance through
 the shared `lauren-ai` transaction API. `run()` and `run_stream()` validate

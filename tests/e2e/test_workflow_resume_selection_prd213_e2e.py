@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -15,7 +14,7 @@ from agenthicc.tui.runtime import RuntimeMode
 from rich.text import Text
 
 from agenthicc.tui.workspace.components import StatusLine
-from agenthicc.workflows.plugin import PhaseSpec, WorkflowContext, WorkflowPlugin
+from agenthicc.workflows.plugin import PhaseSpec, WorkflowContext, WorkflowPlugin, WorkflowRun
 
 from tests.unit.test_tui_session_coverage import _make_session
 
@@ -54,12 +53,20 @@ async def test_resume_selects_footer_and_next_turn_until_explicit_reset(
                     calls.append(("resume", "saved-run"))
                     handle.mark_terminal("complete")
                     handle.save_checkpoint(reason="e2e completed")
-                    ctx.app_state.workflow_run.set(SimpleNamespace(status="complete"))
+                    ctx.app_state.workflow_run.set(
+                        WorkflowRun(
+                            handle.run_id,
+                            cls.name,
+                            "finish saved work",
+                            current_phase="work",
+                            status="complete",
+                        )
+                    )
                     return context
 
                 async def run(self, text: str) -> None:
                     calls.append(("run", text))
-                    ctx.app_state.workflow_run.set(SimpleNamespace(status="running"))
+                    ctx.app_state.workflow_run.set(WorkflowRun("fresh-run", cls.name, text, "work"))
 
             return Runner()
 
@@ -94,8 +101,8 @@ async def test_resume_selects_footer_and_next_turn_until_explicit_reset(
 
     try:
         assert session.route("/workflow resume saved-run") is True
-        assert session._workflow_override == ResumedWorkflow.name
-        assert ctx.app_state.conversation.workflow_override() == ResumedWorkflow.name
+        assert ctx.workflow_stack.base_dispatch_name == ResumedWorkflow.name
+        assert ctx.app_state.conversation.workflow_stack()[-1].workflow_name == ResumedWorkflow.name
 
         status = Text.from_markup(StatusLine(ctx.app_state).markup(200)).plain
 
@@ -106,8 +113,8 @@ async def test_resume_selects_footer_and_next_turn_until_explicit_reset(
         await resume_task
         assert calls == [("resume", "saved-run")]
         assert session._workflow_handle is None
-        assert session._workflow_override == ResumedWorkflow.name
-        assert ctx.app_state.conversation.workflow_override() == ResumedWorkflow.name
+        assert ctx.workflow_stack.base_dispatch_name == ResumedWorkflow.name
+        assert ctx.app_state.conversation.workflow_stack()[-1].workflow_name == ResumedWorkflow.name
 
         # Avoid writing a new test run into the user's default session store;
         # the completed checkpoint has already been verified above.
@@ -116,11 +123,12 @@ async def test_resume_selects_footer_and_next_turn_until_explicit_reset(
         session._workflow_recovery_errors = {}
         await session.run_turn("ordinary follow-up")
         assert calls[-1] == ("run", "ordinary follow-up")
-        assert session._workflow_override == ResumedWorkflow.name
+        assert ctx.workflow_stack.base_dispatch_name == ResumedWorkflow.name
 
-        session._reset_workflow_to_mode_default()
-        assert session._workflow_override is None
-        assert ctx.app_state.conversation.workflow_override() is None
+        ctx.app_state.active_mode.set(RuntimeMode("Plan", default_workflow="mode_default"))
+        session._select_base_workflow(None)
+        assert ctx.workflow_stack.base_dispatch_name == "mode_default"
+        assert ctx.app_state.conversation.workflow_stack()[-1].workflow_name == "mode_default"
     finally:
         session._release_workflow_claim(handle)
         conversation.close()

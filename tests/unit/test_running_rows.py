@@ -135,12 +135,11 @@ class _Handle:
 
 
 def _session(state: AppState) -> object:
-    from types import SimpleNamespace
-
     from agenthicc.runners.tui_session import TUISession
+    from tests.session_fakes import session_context
 
     session = TUISession.__new__(TUISession)
-    session._ctx = SimpleNamespace(app_state=state)  # type: ignore[attr-defined]
+    session._ctx = session_context(app_state=state)  # type: ignore[attr-defined]
     return session
 
 

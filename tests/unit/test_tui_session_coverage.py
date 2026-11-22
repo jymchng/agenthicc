@@ -196,8 +196,8 @@ def test_completed_background_subagent_is_delivered_once(tmp_path: Path) -> None
 def test_tui_initial_workflow_selection_is_visible_and_active() -> None:
     session, ctx, _workspace, _input = _make_session(initial_workflow="demo")
 
-    assert session._workflow_override == "demo"
-    assert ctx.app_state.conversation.workflow_override() == "demo"
+    assert ctx.workflow_stack.base_dispatch_name == "demo"
+    assert ctx.app_state.conversation.workflow_stack()[-1].workflow_name == "demo"
 
 
 def test_workflow_run_listing_is_newest_first_and_resume_delegates() -> None:
@@ -575,22 +575,22 @@ async def test_tui_routing_workflow_commands_and_skill_refresh(
     assert session.route("/unknown") is True
 
     assert session._handle_workflow_command("") is True
-    assert session._workflow_override is None
+    assert ctx.workflow_stack.base_dispatch_name is None
     assert session._handle_workflow_command("missing") is True
     from agenthicc.workflows.create_workflow.definition import CreateWorkflow
 
     ctx.workflow_registry.register(CreateWorkflow)
     assert session.route("/workflow create_workflow") is True
-    assert session._workflow_override == "create_workflow"
+    assert ctx.workflow_stack.base_dispatch_name == "create_workflow"
     ctx.workflow_registry.register(type("Demo", (), {"name": "demo", "mode_bindings": ()}))  # type: ignore[arg-type]
     assert session._handle_workflow_command("demo") is True
-    assert session._workflow_override == "demo"
+    assert ctx.workflow_stack.base_dispatch_name == "demo"
     from agenthicc.runners.workflow_recovery import WorkflowRecoveryRecord
 
     session._workflow_recovery_records["paused-run"] = WorkflowRecoveryRecord(run_id="paused-run")
     assert session._handle_workflow_command("reset") is True
-    assert session._workflow_override is None
-    assert ctx.app_state.conversation.workflow_override() is None
+    assert ctx.workflow_stack.base_dispatch_name is None
+    assert ctx.app_state.conversation.workflow_stack()[-1].workflow_name == "default"
 
     skill = SkillDef("Coverage", "coverage", Path("."), description="test", aliases=("cov",))
     ctx.cmd_registry.register(Command("$old", "old", source_id="skill:old", group="Skills"))
@@ -719,8 +719,7 @@ async def test_tui_workflow_refresh_preserves_registry_identity_and_resets_remov
         name = "new_workflow"
 
     ctx.workflow_registry.register(OldWorkflow)
-    session._workflow_override = "old_workflow"
-    ctx.app_state.conversation.workflow_override.set("old_workflow")
+    session._select_base_workflow("old_workflow")
     replacement = WorkflowRegistry()
     replacement.register(NewWorkflow)
     original_registry = ctx.workflow_registry
@@ -740,8 +739,8 @@ async def test_tui_workflow_refresh_preserves_registry_identity_and_resets_remov
     assert ctx.workflow_registry is original_registry
     assert ctx.workflow_registry.get("old_workflow") is None
     assert ctx.workflow_registry.get("new_workflow") is NewWorkflow
-    assert session._workflow_override is None
-    assert ctx.app_state.conversation.workflow_override() is None
+    assert ctx.workflow_stack.base_dispatch_name is None
+    assert ctx.app_state.conversation.workflow_stack()[-1].workflow_name == "default"
 
 
 def test_tui_routes_dollar_skills_and_rejects_legacy_slash() -> None:
@@ -1316,7 +1315,7 @@ async def test_build_session_context_fresh_and_resume_paths(
     assert fresh.session_id and fresh.agent_runner is None
     assert fresh.mode_manager.active_name == "Plan"
     assert fresh.app_state.active_mode().name == "Plan"
-    assert fresh.initial_workflow == "startup_workflow"
+    assert fresh.workflow_stack.base_dispatch_name == "startup_workflow"
     assert "playwright_open" in {tool.__name__ for tool in fresh.browser_tools}
     assert fresh.mode_manager.set_by_name("Yolo") is not None
     session_id = fresh.session_id
