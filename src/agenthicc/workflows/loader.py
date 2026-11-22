@@ -17,9 +17,10 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from agenthicc.workflows.plugin import WorkflowPlugin
 
 log = logging.getLogger(__name__)
@@ -108,9 +109,21 @@ def load_builtin_workflows() -> list[type[WorkflowPlugin]]:
     return [load_builtin_workflow(item) for item in _BUILTIN_WORKFLOW_DESCRIPTORS]
 
 
+WorkflowLoadCode = Literal[
+    "pending_marker",
+    "untrusted",
+    "untrusted_modified",
+    "import_error",
+    "invalid_manifest",
+    "name_conflict",
+]
+
+
 def load_python_workflows(
     path: Path,
     source: str = "user",
+    *,
+    on_skip: Callable[[Path, WorkflowLoadCode], None] | None = None,
 ) -> list[type[WorkflowPlugin]]:
     """Import a trusted workflow file or package and return its plugin classes.
 
@@ -127,12 +140,19 @@ def load_python_workflows(
 
         marker = path / PENDING_MARKER_NAME
         if marker.exists() or marker.is_symlink():
+            if on_skip is not None:
+                on_skip(path, "pending_marker")
             return []
     sources = sorted(path.rglob("*.py")) if path.is_dir() else [path]
     untrusted = [
         source_file for source_file in sources if not trust.permits(source_file, kind="workflow")
     ]
     if untrusted:
+        if on_skip is not None:
+            for source_file in untrusted:
+                refusal = trust.check(source_file, kind="workflow")
+                modified = refusal is not None and refusal.reason == "changed since it was trusted"
+                on_skip(source_file, "untrusted_modified" if modified else "untrusted")
         return []
     try:
         from agenthicc.workflows.plugin import WorkflowPlugin
@@ -150,9 +170,13 @@ def load_python_workflows(
                 ):
                     seen.add(obj)
                     results.append(obj)
+        if not results and on_skip is not None:
+            on_skip(path, "invalid_manifest")
         return results
     except Exception as exc:  # noqa: BLE001
         log.warning("Failed to load Python workflows from %s: %s", path, exc)
+        if on_skip is not None:
+            on_skip(path, "import_error")
         return []
 
 

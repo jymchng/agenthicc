@@ -101,6 +101,14 @@ asyncio.Queue → root_reducer(state, event)
 `restore_from_log()` replays valid JSONL entries and skips malformed entries
 according to the current recovery policy.
 
+### Extension reload generation
+
+`SessionReloaded` records the published surfaces, changed names, and bounded
+discovery diagnostics. The pure kernel reducer advances
+`AppState.reload_generation`. Replaying the event log recovers the same
+generation sequence. Extension discovery runs off the loop, and the session
+publishes each candidate at a single event-loop boundary.
+
 ## State boundary
 
 The TUI has a second `AppState` in `tui/conversation_store.py`. It is a reactive

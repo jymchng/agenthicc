@@ -1,4 +1,12 @@
-"""Event and Effect types for the event-sourced kernel (PRD-01)."""
+"""Event and Effect types for the event-sourced kernel (PRD-01).
+
+SessionReloaded payload:
+    generation: Positive integer assigned to this publication.
+    reason: One of command, workflow_return, startup or api.
+    requested, published: Sorted lists of surface names.
+    changes_summary: Changed item names, surfaces and change kinds.
+    diagnostics: Bounded source paths, codes, messages and optional digests.
+"""
 
 from __future__ import annotations
 

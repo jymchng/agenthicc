@@ -23,7 +23,7 @@ Branch `feat/workflow-composition` starts at `5100c8c` from fetched
 | WFC-02 | Spike complete | Optional string mapping confirmed. |
 | WFC-03 | Pending | — |
 | WFC-04 | Spike complete | Nested mapping confirmed with a correction to optional keys in the published schema. |
-| WFC-05 | Pending | — |
+| WFC-05 | In progress | Reload service, immutable value holders, kernel replay, and filesystem and lag coverage. Session entry points and command tests are pending. |
 | WFC-06 | Pending | — |
 | WFC-07 | Pending | — |
 | WFC-08 | Spike complete | Same-turn refresh verified by updating the provider schema list and the dispatch map together. |
@@ -77,3 +77,15 @@ and unit checks passed. The remote tracking ref matched the local commit.
   277 tests. Ruff check and format, mypy (414 files), the type-safety audit,
   strict MkDocs and `llms_check` passed. Searches found no previous scoped
   writer symbols or private repair counter in active code and documentation.
+
+## WFC-05 service and event
+
+The service, real filesystem integration, kernel contract, and lag selection
+passed 10 tests. `test_reload_discovering_two_hundred_tools_and_fifty_skills_meets_lag_budget`
+used the TUIR monitor with the specified 50 ms maximum and 10 ms p95 bounds.
+Session construction, command migration and complete WFC-05 acceptance remain
+in step 1.
+A concurrent recheck alongside the documentation gates measured 42.2 ms p95.
+After checking host load, the same performance test passed in isolation
+without a budget change. Ruff, mypy, the type-safety audit, strict MkDocs, and
+`llms_check` passed.

@@ -181,6 +181,15 @@ def _tool_registered(state: AppState, event: Event) -> tuple[AppState, list[Effe
     return state.with_tool(reg), []
 
 
+def _session_reloaded(state: AppState, event: Event) -> tuple[AppState, list[Effect]]:
+    generation = event.payload.get("generation")
+    if not isinstance(generation, int) or isinstance(generation, bool) or generation <= 0:
+        raise ValueError("SessionReloaded generation must be a positive integer")
+    if generation <= state.reload_generation:
+        return state, []
+    return replace(state, reload_generation=generation), []
+
+
 _HANDLERS: dict[str, ReducerFn] = {
     "IntentCreated": _intent_created,
     "IntentStatusChanged": _intent_status_changed,
@@ -192,6 +201,7 @@ _HANDLERS: dict[str, ReducerFn] = {
     "WorkflowRunResumed": _workflow_run_resumed,
     "WorkflowRunDiscarded": _workflow_run_discarded,
     "ToolRegistered": _tool_registered,
+    "SessionReloaded": _session_reloaded,
 }
 
 #: Event types that change kernel state, each through its handler above.

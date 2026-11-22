@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from agenthicc.workflows.loader import BuiltinWorkflowDescriptor
+    from agenthicc.workflows.loader import BuiltinWorkflowDescriptor, WorkflowLoadCode
     from agenthicc.workflows.plugin import WorkflowEntry, WorkflowPlugin
 
 log = logging.getLogger(__name__)
@@ -113,6 +113,13 @@ class WorkflowRegistry:
     def names(self) -> list[str]:
         return [*self._entries.keys(), *[name for name in self._lazy if name not in self._entries]]
 
+    def source_paths(self) -> dict[str, str | None]:
+        """Read registered source paths without materializing lazy workflows."""
+        return {
+            **{name: lazy.path for name, lazy in self._lazy.items()},
+            **{name: entry.path for name, entry in self._entries.items()},
+        }
+
     def mode_default_map(self) -> dict[str, str]:
         """Return ``{mode_name: workflow_name}`` for the first binding per mode."""
         from agenthicc.tui.runtime.mode_manager import canonical_mode_name
@@ -184,6 +191,7 @@ def build_workflow_registry(
     user_dir: Path | None = None,
     *,
     load_external: bool = True,
+    on_skip: Callable[[Path, WorkflowLoadCode], None] | None = None,
 ) -> WorkflowRegistry:
     """Build the registry: builtin → user-global → project-local.
 
@@ -210,8 +218,8 @@ def build_workflow_registry(
         )
 
     if load_external:
-        _scan_workflow_dir(user_dir / "workflows", "user", registry)
-        _scan_workflow_dir(project_dir / "workflows", "project", registry)
+        _scan_workflow_dir(user_dir / "workflows", "user", registry, on_skip)
+        _scan_workflow_dir(project_dir / "workflows", "project", registry, on_skip)
 
     return registry
 
@@ -220,6 +228,7 @@ def _scan_workflow_dir(
     directory: Path,
     source: str,
     registry: WorkflowRegistry,
+    on_skip: Callable[[Path, WorkflowLoadCode], None] | None,
 ) -> None:
     if not directory.exists():
         return
@@ -240,6 +249,8 @@ def _scan_workflow_dir(
 
         marker = path / PENDING_MARKER_NAME if path.is_dir() else None
         if marker is not None and (marker.exists() or marker.is_symlink()):
+            if on_skip is not None:
+                on_skip(path, "pending_marker")
             continue
         is_python_file = path.is_file() and path.suffix == ".py"
         is_workflow_package = path.is_dir() and (path / "runner.py").is_file()
@@ -253,7 +264,11 @@ def _scan_workflow_dir(
                 path,
             )
         try:
-            for plugin_cls in load_python_workflows(path, source):
+            for plugin_cls in load_python_workflows(path, source, on_skip=on_skip):
+                if on_skip is not None and plugin_cls.name in registry.names():
+                    on_skip(path, "name_conflict")
                 registry.register(plugin_cls, source=source, path=str(path))
         except Exception as exc:  # noqa: BLE001
             log.warning("Failed to load workflow(s) from %s: %s", path, exc)
+            if on_skip is not None:
+                on_skip(path, "import_error")

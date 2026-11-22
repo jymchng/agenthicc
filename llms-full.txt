@@ -300,6 +300,12 @@ every `Event.create` literal in the source tree and asserts it is declared.
 
 ---
 
+### SessionReloaded
+
+A kernel event containing the session reload generation, reason, requested
+and published surfaces, changed names, and bounded diagnostics. The pure
+reducer advances `AppState.reload_generation` monotonically.
+
 ### UnknownEventError
 
 ```python
@@ -8054,3 +8060,64 @@ Rich presentation state.
 
 Named HTTP adapter contract for future IDE/ACP clients with the same
 client-neutral snapshot and event semantics.
+
+## Session extension reload
+
+### ReloadSurface
+
+An extension surface, one of `"skills"`, `"tools"`, `"workflows"` and
+`"commands"`.
+
+### RELOAD_SURFACES
+
+The four surfaces in publication order. Skills precede tools and workflows.
+Commands publish last so they can refer to the refreshed skills.
+
+### ReloadReason
+
+The reason a caller requested a reload. Values are `"command"`,
+`"workflow_return"`, `"startup"` and `"api"`.
+
+### SurfaceSnapshot
+
+A frozen generation and value pair. Tools use a tuple and skills use a
+read-only mapping.
+
+### SurfaceHolder
+
+A lock-free reader of the currently published `SurfaceSnapshot`.
+`current()` returns the entire snapshot in one read.
+
+### ReloadChange
+
+One item's surface, canonical name and operation. The operation is
+`added`, `updated`, `removed` or `unchanged`.
+
+### ReloadDiagnostic
+
+A bounded source diagnostic with a stable code and an optional digest for
+untrusted or changed source files.
+
+### ReloadReport
+
+The generation, reason, requested and published surfaces, changes, and
+diagnostics. `ok` is true when every requested surface published.
+`to_dict()` produces the event payload.
+
+### ReloadService
+
+`agenthicc.runners.reload.ReloadService` serializes extension discovery and
+publication. `reload(surfaces, reason=...)` coalesces concurrent requests that
+the active reload covers. `preview(surfaces)` discovers and reports the
+candidate without publishing it. `close()` waits for active discovery.
+
+### WorkflowLoadCode
+
+Stable source diagnostic codes supplied to the `on_skip` callback for Python
+workflow discovery. This includes pending packages, trust, import, manifest,
+and name conflicts.
+
+### WorkflowRegistry.source_paths
+
+Returns a mapping of workflow names to source paths without importing
+lazy built-in workflows.

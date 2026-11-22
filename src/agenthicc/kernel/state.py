@@ -119,6 +119,7 @@ class AppState:
     settings: SystemSettings
     policy: SecurityPolicy
     agent_types: dict[str, type] = field(default_factory=dict)
+    reload_generation: int = 0
 
     @classmethod
     def create(

@@ -1,0 +1,119 @@
+"""Session reload reports, serialization, and concurrent request behavior."""
+
+from __future__ import annotations
+
+import asyncio
+from pathlib import Path
+from threading import Event
+from typing import TYPE_CHECKING
+
+import pytest
+
+from agenthicc.commands import build_builtin_registry
+from agenthicc.runners.reload import ReloadService
+from agenthicc.skills.loader import SkillDiscoveryResult
+from agenthicc.subagents.types import DEFAULT_REGISTRY
+from agenthicc.workflows.registry import WorkflowRegistry
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+    from agenthicc.commands.command import Command
+    from agenthicc.kernel.processor import EventProcessor
+    from agenthicc.runners.reload import ReloadSurface, _Candidate
+    from agenthicc.skills.loader import SkillDef
+
+pytestmark = pytest.mark.unit
+
+
+@pytest.fixture
+def reloader(tmp_path: Path, running_processor: EventProcessor) -> ReloadService:
+    return ReloadService(
+        processor=running_processor,
+        project_dir=tmp_path / "project",
+        user_dir=tmp_path / "user",
+        workflow_registry=WorkflowRegistry(),
+        command_registry=build_builtin_registry(),
+        subagent_registry=DEFAULT_REGISTRY.copy(),
+    )
+
+
+async def test_preview_leaves_generation_surfaces_and_events_unchanged(
+    reloader: ReloadService, running_processor: EventProcessor
+) -> None:
+    events = running_processor.subscribe_events()
+    old = reloader.skills.current()
+
+    report = await reloader.preview(frozenset({"skills"}))
+    await running_processor.drain()
+
+    assert report.requested == frozenset({"skills"})
+    assert report.published == frozenset()
+    assert report.generation == reloader.generation == 0
+    assert reloader.skills.current() is old
+    assert events.empty()
+    await reloader.close()
+
+
+async def test_covered_reload_calls_share_one_discovery_and_report(
+    reloader: ReloadService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    started = Event()
+    release = Event()
+    calls: list[str] = []
+
+    def discover(*, project_dir: Path, user_dir: Path) -> SkillDiscoveryResult:
+        calls.append("skills")
+        started.set()
+        assert release.wait(5)
+        return SkillDiscoveryResult({})
+
+    monkeypatch.setattr("agenthicc.skills.loader.discover_skills_with_diagnostics", discover)
+    first = asyncio.create_task(reloader.reload(frozenset({"skills", "commands"}), reason="api"))
+    try:
+        assert await asyncio.to_thread(started.wait, 5)
+        # The first request is in the discovery thread. Enter the second
+        # request before allowing that thread to finish.
+        second = asyncio.create_task(reloader.reload(frozenset({"skills"}), reason="command"))
+        await asyncio.sleep(0)
+    finally:
+        release.set()
+    result, joined = await asyncio.gather(first, second)
+
+    assert result is joined
+    assert calls == ["skills"]
+    assert result.generation == 1
+    assert result.published == frozenset({"skills", "commands"})
+    assert result.ok
+    await reloader.close()
+
+
+async def test_reload_order_and_replay_generations(
+    reloader: ReloadService, running_processor: EventProcessor, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agenthicc.kernel.reducer import root_reducer
+    from agenthicc.kernel.state import AppState
+
+    observed_order: list[str] = []
+    discover = reloader._discover
+
+    def observe(
+        surface: ReloadSurface, commands: tuple[Command, ...], skills: Mapping[str, SkillDef]
+    ) -> _Candidate:
+        observed_order.append(surface)
+        return discover(surface, commands, skills)
+
+    monkeypatch.setattr(reloader, "_discover", observe)
+    events = running_processor.subscribe_events()
+    await reloader.reload(frozenset({"commands", "skills", "workflows", "tools"}), reason="api")
+    await reloader.reload(frozenset({"skills"}), reason="api")
+    await running_processor.drain()
+
+    assert observed_order == ["skills", "tools", "workflows", "commands", "skills"]
+    state = AppState.create()
+    for generation in (1, 2):
+        state, effects = root_reducer(state, events.get_nowait())
+        assert state.reload_generation == generation
+        assert effects == []
+    assert events.empty()
+    await reloader.close()
