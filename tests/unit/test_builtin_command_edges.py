@@ -20,7 +20,6 @@ from agenthicc.commands.builtins import (
     _cmd_workflows,
     _mcp_busy_policy,
     _read_only_without_args,
-    _reloadable_list_policy,
     _workflows_busy_policy,
 )
 from agenthicc.commands.command import CommandContext, UsageSnapshot
@@ -55,11 +54,9 @@ def test_builtin_busy_policy_helpers() -> None:
     assert _mcp_busy_policy("status") is BusyPolicy.IMMEDIATE_READ_ONLY
     assert _mcp_busy_policy("connect") is BusyPolicy.QUEUE
     assert _mcp_busy_policy("reload") is BusyPolicy.QUEUE
-    assert _reloadable_list_policy("") is BusyPolicy.IMMEDIATE_READ_ONLY
-    assert _reloadable_list_policy("reload") is BusyPolicy.IMMEDIATE_CONTROL
     assert _workflows_busy_policy("") is BusyPolicy.IMMEDIATE_READ_ONLY
     assert _workflows_busy_policy("runs") is BusyPolicy.IMMEDIATE_READ_ONLY
-    assert _workflows_busy_policy("reload") is BusyPolicy.IMMEDIATE_CONTROL
+    assert _workflows_busy_policy("reload") is BusyPolicy.QUEUE
 
 
 @pytest.mark.asyncio

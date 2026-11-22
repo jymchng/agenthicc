@@ -44,6 +44,7 @@ def test_workflow_argument_completion_lists_registered_names() -> None:
     assert [match.value for match in matches] == [
         "/workflow code_review",
         "/workflow docs",
+        "/workflow reload",
         "/workflow reset",
         "/workflow resume",
     ]
@@ -77,7 +78,12 @@ def test_workflow_completion_tracks_registry_replacement() -> None:
         match.value for match in trigger.get_matches("workflow ", TriggerContext(cwd=Path(".")))
     ]
 
-    assert values == ["/workflow docs", "/workflow reset", "/workflow resume"]
+    assert values == [
+        "/workflow docs",
+        "/workflow reload",
+        "/workflow reset",
+        "/workflow resume",
+    ]
 
 
 async def test_picker_space_enters_workflow_name_completion() -> None:
@@ -101,6 +107,7 @@ async def test_picker_space_enters_workflow_name_completion() -> None:
     assert [match.value for match in overlay.matches] == [
         "/workflow code_review",
         "/workflow docs",
+        "/workflow reload",
         "/workflow reset",
         "/workflow resume",
     ]

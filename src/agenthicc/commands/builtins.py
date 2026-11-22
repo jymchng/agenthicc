@@ -755,19 +755,11 @@ def _mcp_busy_policy(args: str) -> BusyPolicy:
     )
 
 
-def _reloadable_list_policy(args: str) -> BusyPolicy:
-    """Allow list operations and session-owned reloads during a turn."""
-    action = args.strip().lower()
-    if action == "reload":
-        return BusyPolicy.IMMEDIATE_CONTROL
-    return BusyPolicy.QUEUE if action else BusyPolicy.IMMEDIATE_READ_ONLY
-
-
 def _workflows_busy_policy(args: str) -> BusyPolicy:
-    """Keep recovery inspection and session-owned reloads immediate."""
-    if args.strip().lower() == "runs":
-        return BusyPolicy.IMMEDIATE_READ_ONLY
-    return _reloadable_list_policy(args)
+    """Keep recovery inspection immediate and defer registry mutation."""
+    return (
+        BusyPolicy.IMMEDIATE_READ_ONLY if args.strip().lower() in {"", "runs"} else BusyPolicy.QUEUE
+    )
 
 
 def _reload_action_matches(prefix: str) -> list[str]:
@@ -1716,7 +1708,7 @@ BUILTIN_COMMANDS: list[Command] = [
         description="List all registered commands with their source",
         argument_hint="[reload]",
         busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
-        busy_policy_resolver=_reloadable_list_policy,
+        busy_policy_resolver=_read_only_without_args,
         completions_factory=_reload_action_matches,
         handler=_cmd_commands,
     ),
@@ -1726,7 +1718,7 @@ BUILTIN_COMMANDS: list[Command] = [
         description="List all tools registered for this session",
         argument_hint="[reload]",
         busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
-        busy_policy_resolver=_reloadable_list_policy,
+        busy_policy_resolver=_read_only_without_args,
         completions_factory=_reload_action_matches,
         handler=_cmd_tools,
     ),
@@ -1841,7 +1833,7 @@ BUILTIN_COMMANDS: list[Command] = [
         description="List or reload available skills",
         argument_hint="[reload]",
         busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
-        busy_policy_resolver=_reloadable_list_policy,
+        busy_policy_resolver=_read_only_without_args,
         completions_factory=_reload_action_matches,
         handler=_cmd_skills,
     ),

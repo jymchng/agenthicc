@@ -242,7 +242,8 @@ streaming. `/cancel` and `/interrupt` use the same control owner as `Ctrl+C`;
 `/bg` and `/background` use the existing background-session handoff when that
 integration is enabled.
 
-Extension reload commands also run immediately while an agent is active.
+`/reload` and `/workflow reload` also run immediately while an agent is active.
+The `reload` action on the other registry commands follows the normal queue.
 The service builds the new surface off the loop and publishes it for
 subsequent consumers. Normal text, `$skill` invocations, workflow selection,
 model changes, `/compact`, `/replay` and MCP actions remain deferred.

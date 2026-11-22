@@ -31,7 +31,7 @@ Branch `feat/workflow-composition` starts at `5100c8c` from fetched
 | WFC-10 | Pending | — |
 | WFC-11 | Spike complete | Sandboxed import, read-only workspace, network isolation and bounds confirmed. |
 | WFC-12 | Pending | — |
-| WFC-13 | Harness ready | Scripted provider, request snapshots, isolated real sessions, and a test-only failure trigger. S1–S9 remain to be integrated. |
+| WFC-13 | Harness ready | `7536d33` adds a scripted provider, request snapshots, isolated real sessions, and a test-only failure trigger. S1–S9 remain to be integrated. |
 | WFC-14 | Foundation | Shared scoped tools, deterministic verdict and persisted budget adopted by `create_workflow`. Sandbox validation and tool and skill adoption follow WFC-11, WFC-07 and WFC-09. |
 
 ## M0 verification
@@ -111,3 +111,20 @@ provider interface. These three tests passed on Python 3.13:
 
 Ruff and mypy passed across the source and harness. The failure trigger is
 test-only. S7 still needs a real subprocess crash and restart scenario.
+
+## M1 verification
+
+The initial full unit suite reported 8 failures, 6,228 passes and 15 skips.
+The background command fixture lacked the session reload service. Two busy
+command tests found that older reload actions had moved out of the queue.
+The checkpoint codec reported the missing budget before the invalid state.
+One runtime mode assertion still required a Yolo override and three picker
+assertions omitted the new `/workflow reload` action. The log is
+`/var/tmp/agenthicc-wfc-m1-unit.log`.
+
+The background fixture now uses the shared session setup. The legacy actions
+keep their queue behavior and the dedicated reload command runs during an
+active turn. Malformed checkpoint state takes precedence over the repair
+budget check. The mode and picker tests cover the intended behavior. These
+corrections passed 78 targeted tests, Ruff and mypy. The full recheck is
+pending.

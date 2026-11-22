@@ -410,10 +410,6 @@ def context_from_payload(
             raise CheckpointValidationError(
                 "create_workflow checkpoint is missing canonical authoring state; start a new run"
             )
-        try:
-            repair_budget = RepairBudget.from_payload(fields.get("repair_budget"))
-        except ValueError as exc:
-            raise CheckpointValidationError(f"{exc}; start a new run") from exc
         raw_state = fields.get("state")
         try:
             state = _decode_enum(raw_state, CreateWorkflowState)
@@ -427,6 +423,10 @@ def context_from_payload(
             )
         except AuthoringError as exc:
             raise CheckpointValidationError(str(exc)) from exc
+        try:
+            repair_budget = RepairBudget.from_payload(fields.get("repair_budget"))
+        except ValueError as exc:
+            raise CheckpointValidationError(f"{exc}; start a new run") from exc
 
         intent = fields.get("intent")
         run_id = fields.get("run_id")
