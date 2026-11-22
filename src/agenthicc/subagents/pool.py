@@ -87,6 +87,7 @@ if TYPE_CHECKING:
     from agenthicc.memory.journal import ConversationJournal
     from agenthicc.plugins.registry import ToolRegistry
     from agenthicc.runners.retry import RetryConfig
+    from agenthicc.subagents.isolation import PoolIsolation, WorkerWorkspace
     from agenthicc.runners.usage_ledger import UsageLedger
     from agenthicc.tools.approval import (
         ApprovalBroker,
@@ -594,6 +595,13 @@ class SubagentResult:
     blocked_calls: tuple[str, ...] = ()
     #: Provider turns the worker used across every run it made (SUBAGENT-14).
     turns: int = 0
+    #: What happened to the worker's changes when it ran in its own git worktree
+    #: (SUBAGENT-15): ``applied``, ``conflict``, ``kept`` or ``none``; empty when
+    #: it shared the parent's workspace.
+    integration: str = ""
+    #: Where changes that were not applied are preserved (branch and worktree).
+    branch: str = ""
+    workspace: str = ""
 
 
 def _worker_context_window(
@@ -794,6 +802,15 @@ _MAX_BLOCKED_CALLS = 8
 
 #: The session turn limit when no execution settings were supplied.
 _DEFAULT_SESSION_TURNS = 200
+
+#: Added to the system prompt of a worker running in its own git worktree.
+_WORKSPACE_SECTION = (
+    "\n\n## WORKSPACE\n"
+    "Your working directory is an isolated git worktree of the project. Other workers "
+    "cannot see your edits and you cannot see theirs; your changes are applied to the "
+    "main workspace when you finish. Use paths relative to your working directory and "
+    "do not write outside it."
+)
 
 
 def _tool_capability_values(tool: object) -> frozenset[str]:
@@ -1016,6 +1033,13 @@ def evidence_footer(result: SubagentResult) -> str:
         parts.append(
             "refused "
             + ", ".join(_footer_item(call) for call in result.blocked_calls[:_FOOTER_MAX_REFUSALS])
+        )
+    if result.integration == "applied":
+        parts.append("applied to your workspace")
+    elif result.integration in {"conflict", "kept"}:
+        parts.append(
+            f"NOT applied: kept on branch {_footer_item(result.branch)} "
+            f"at {_footer_item(result.workspace)}"
         )
     if result.turns > 0:
         parts.append(f"{result.turns} turn" + ("" if result.turns == 1 else "s"))
@@ -1532,6 +1556,13 @@ class SubagentWorker:
         )
         self._communication = communication
         self.label = f"{spec.name} #{index}"
+        #: The session's own workspace policy, kept so a worktree policy can be derived.
+        self._parent_workspace_access = workspace_access
+        self._pool_isolation: PoolIsolation | None = None
+        self._worker_workspace: WorkerWorkspace | None = None
+        #: Paths git recorded this worker changing, whatever tool changed them.
+        self._git_changed: tuple[str, ...] = ()
+        self._harvested = False
         self._tool_calls: list[str] = []
         #: Successful workspace-mutating calls (tool names), as observed.
         self._successful_mutations: list[str] = []
@@ -1570,10 +1601,104 @@ class SubagentWorker:
             return 0
         return await self._communication.undelivered_count(self._task.task_id)
 
+    def bind_workspace(self, isolation: PoolIsolation, workspace: WorkerWorkspace) -> None:
+        """Run this worker in its own git worktree (SUBAGENT-15).
+
+        Every tool resolves its root from the task-local workspace policy, so the
+        worker's files, commands and git all act inside *workspace*. Extra roots
+        the session granted stay, except any that lie inside the repository the
+        worktree was cut from: those would let a worker write past its isolation.
+        """
+        from agenthicc.tools.workspace_access import WorkspaceScope
+
+        parent = self._parent_workspace_access
+        if parent is None:
+            raise ValueError("a worker needs the session's workspace policy to be isolated")
+        repository = isolation.repository
+        extra = [
+            root
+            for root in parent.scope.allowed_roots
+            if root != parent.scope.primary_root and not root.is_relative_to(repository)
+        ]
+        scope = WorkspaceScope.create(workspace.path, extra)
+        self._pool_isolation = isolation
+        self._worker_workspace = workspace
+        self._workspace_access = _make_child_workspace_access(
+            parent, self._app_state, self._approval_svc, scope=scope
+        )
+
+    async def _harvest(self) -> None:
+        """Read what git recorded this worker changing (once)."""
+        if self._pool_isolation is None or self._worker_workspace is None or self._harvested:
+            return
+        self._harvested = True
+        try:
+            harvest = await self._pool_isolation.harvest(self._worker_workspace.task_id)
+        except (OSError, RuntimeError):
+            log.warning("could not read %s's worktree changes", self.label, exc_info=True)
+            return
+        self._git_changed = harvest.changed_paths
+
+    async def _integrate(self, result: SubagentResult) -> SubagentResult:
+        """Apply this worker's changes to the parent's workspace and report the outcome."""
+        isolation, workspace = self._pool_isolation, self._worker_workspace
+        if isolation is None or workspace is None:
+            return result
+        await self._harvest()
+        result = replace(result, changed_paths=self._git_changed or result.changed_paths)
+        try:
+            outcome = await isolation.integrate_one(workspace.task_id, result.ok)
+        except (OSError, RuntimeError) as exc:
+            isolation.preserve(workspace.task_id)  # never delete work we could not place
+            return replace(
+                result,
+                ok=False,
+                error=f"could not apply this worker's changes: {exc}",
+                error_code="integration_error",
+                stop_reason="integration_error",
+                integration="kept",
+                branch=workspace.branch,
+                workspace=str(workspace.root),
+            )
+        if outcome.state == "conflict":
+            where = ", ".join(outcome.conflict_paths) or "the patch"
+            return replace(
+                result,
+                ok=False,
+                error=(
+                    f"its changes conflict with the workspace in {where}; "
+                    f"they are kept on branch {outcome.branch} at {outcome.workspace}"
+                ),
+                error_code="integration_conflict",
+                stop_reason="integration_conflict",
+                integration=outcome.state,
+                branch=outcome.branch,
+                workspace=outcome.workspace,
+            )
+        return replace(
+            result,
+            integration=outcome.state,
+            branch=outcome.branch,
+            workspace=outcome.workspace,
+        )
+
     async def run(self) -> SubagentResult:
         """Execute the task; return SubagentResult regardless of success/failure."""
         self._registration_failures = ()
-        result = await self._run()
+        token = None
+        if self._worker_workspace is not None and self._workspace_access is not None:
+            from agenthicc.tools.workspace_access import set_current_workspace_access
+
+            token = set_current_workspace_access(self._workspace_access)
+        try:
+            result = await self._run()
+            if self._worker_workspace is not None:
+                result = await self._integrate(result)
+        finally:
+            if token is not None:
+                from agenthicc.tools.workspace_access import reset_current_workspace_access
+
+                reset_current_workspace_access(token)
         if self._registration_failures:
             result = replace(result, tool_registration_failures=self._registration_failures)
         return result
@@ -1594,14 +1719,19 @@ class SubagentWorker:
         """The observed facts every result carries, whatever its outcome."""
         return {
             "tool_calls": tuple(self._tool_calls),
-            "changed_paths": tuple(dict.fromkeys(self._changed_paths)),
+            # In a worktree git is the authority: it also sees what a command changed.
+            "changed_paths": (
+                self._git_changed
+                if self._harvested and self._worker_workspace is not None
+                else tuple(dict.fromkeys(self._changed_paths))
+            ),
             "blocked_calls": tuple(self._blocked_calls),
             "turns": self._turns,
         }
 
     def _has_success_evidence(self) -> bool:
         """Whether the runtime observed work that satisfies this type's rule."""
-        if self._successful_mutations:
+        if self._successful_mutations or self._git_changed:
             return True
         return self._spec.completion_evidence == "action" and bool(self._successful_executions)
 
@@ -1615,6 +1745,7 @@ class SubagentWorker:
         ``completion_evidence`` rule, the turn/output limits and the policy
         refusals recorded by the evidence hook do (SUBAGENT-12).
         """
+        await self._harvest()
         evidence = self._evidence_fields()
         base: _ResultBase = {
             "task_id": self._task.task_id,
@@ -1951,6 +2082,8 @@ class SubagentWorker:
             system += "\n\n" + self._policy.prompt_section()
             if self._policy.system_prompt_suffix:
                 system += "\n\n" + self._policy.system_prompt_suffix
+        if self._worker_workspace is not None:
+            system += _WORKSPACE_SECTION
         if self._communication is not None:
             system += (
                 "\n\n## AGENT COMMUNICATION\n"
@@ -2458,6 +2591,10 @@ class SubagentPool:
                     f"Repeated subagent task in ancestry: {rendered_chain}"
                 )
         self.pool_id = uuid.uuid4().hex
+        #: Per-worker git worktrees for this pool, when it uses them (SUBAGENT-15).
+        self._isolation: PoolIsolation | None = None
+        self._workspaces: dict[str, WorkerWorkspace] = {}
+        self._isolation_note = ""
         self._tasks = tasks
         self._parent_runner = parent_runner
         self._parent_model = parent_model
@@ -2790,7 +2927,7 @@ class SubagentPool:
         runs on the same model, budget scope, depth and event sinks as the
         attempt it repeats.
         """
-        return SubagentWorker(
+        worker = SubagentWorker(
             task=task,
             spec=spec,
             index=index,
@@ -2837,6 +2974,10 @@ class SubagentPool:
             conversation_journal=self._journal,
             subagent_registry=self._registry,
         )
+        workspace = self._workspaces.get(task.task_id)
+        if workspace is not None and self._isolation is not None:
+            worker.bind_workspace(self._isolation, workspace)
+        return worker
 
     def retry_refusal(self, worker_id: str) -> str:
         """Why ``retry_worker(worker_id)`` would refuse, or ``""`` when it may run.
@@ -3044,6 +3185,7 @@ class SubagentPool:
             raise SubagentAdmissionError(refusal)
         _ACTIVE_POOLS[self.pool_id] = self
         try:
+            await self._prepare_isolation()
             if self._journal is not None:
                 self._journal.subagent_pool_started(
                     pool_id=self.pool_id,
@@ -3056,7 +3198,81 @@ class SubagentPool:
                 )
             return await self._run_admitted()
         finally:
+            await self._release_isolation()
             _ACTIVE_POOLS.pop(self.pool_id, None)
+
+    def _can_change_workspace(self, task: SubagentTask) -> bool:
+        """Whether *task*'s worker holds a usable file-changing tool in this session.
+
+        Command-only roles (a reviewer or verifier running ``run_tests``) are not
+        isolated: they check the parent's real tree, and a worktree lacks the
+        git-ignored files (``.venv``, build output) their checks depend on.
+        """
+        spec = self._registry.get(task.agent_type)
+        if spec is None:
+            return False
+        permissions = spec.permissions
+        if permissions is not None and permissions.workspace_paths is not None:
+            return False  # a narrowed path scope is not reproducible in a worktree
+        tools, blocked = type_surface(
+            spec, self._all_tools, self._tool_registry, (self._policy, spec.policy)
+        )
+        return any(_is_mutating_tool(tool) and not _policy_blocks(tool, blocked) for tool in tools)
+
+    async def _prepare_isolation(self) -> None:
+        """Give each file-changing worker its own git worktree (SUBAGENT-15).
+
+        ``subagents.isolation``: ``shared`` never isolates; ``auto`` isolates when
+        two or more workers can change files and the workspace is a git
+        repository, otherwise running shared (and saying so in the digest);
+        ``worktree`` isolates even one worker and refuses the pool when it cannot.
+        """
+        settings = self._subagent_settings
+        mode = settings.isolation if settings is not None else "auto"
+        if mode == "shared":
+            return
+        working = [task for task in self._tasks if self._can_change_workspace(task)]
+        if not working or (mode == "auto" and len(working) < 2):
+            return
+        from agenthicc.subagents.isolation import IsolationError, PoolIsolation, git_repository_for
+
+        access = self._workspace_access
+        reason = ""
+        isolation: PoolIsolation | None = None
+        workspaces: dict[str, WorkerWorkspace] = {}
+        if access is None:
+            reason = "this session has no workspace policy to bind a worktree to"
+        else:
+            root = access.scope.primary_root
+            if await asyncio.to_thread(git_repository_for, root) is None:
+                reason = f"{root} is not inside a git repository"
+            else:
+                try:
+                    isolation = await asyncio.to_thread(
+                        PoolIsolation,
+                        root,
+                        session_id=self._conversation_id,
+                        pool_id=self.pool_id,
+                    )
+                    workspaces = await isolation.prepare([task.task_id for task in working])
+                except IsolationError as exc:
+                    reason = str(exc)
+        if reason or isolation is None:
+            if mode == "worktree":
+                raise SubagentAdmissionError(f"subagents.isolation is 'worktree' but {reason}")
+            self._isolation_note = (
+                f"Workers that can change files shared one workspace ({reason}), so edits "
+                "to the same file can overwrite one another."
+            )
+            return
+        self._isolation, self._workspaces = isolation, workspaces
+
+    async def _release_isolation(self) -> None:
+        """Remove this pool's worktrees, keeping those holding unapplied work."""
+        isolation, self._isolation = self._isolation, None
+        self._workspaces = {}
+        if isolation is not None:
+            await isolation.cleanup()
 
     async def _run_admitted(self) -> AggregatedResult:
         """Execute all tasks concurrently; return the aggregated result."""
@@ -3434,11 +3650,11 @@ class SubagentPool:
                     )
                 )
 
+        digest = _aggregate(self.pool_id, results, self._registry)
+        if self._isolation_note:
+            digest = replace(digest, text=f"{digest.text}\n\n=== Note ===\n{self._isolation_note}")
         aggregated = self._with_usage(
-            replace(
-                _aggregate(self.pool_id, results, self._registry),
-                budget_exceeded_reason=self._budget_exceeded_reason,
-            )
+            replace(digest, budget_exceeded_reason=self._budget_exceeded_reason)
         )
         await self._emit_pool_completed(aggregated)
         # The finished pool stays on the panel while it has rows to show.
@@ -3777,6 +3993,14 @@ class SubagentPool:
             "done": self._state.done,
             "total": self._state.total,
         }
+        if result.integration:
+            fields.update(
+                {
+                    "integration": result.integration,
+                    "branch": result.branch,
+                    "workspace": result.workspace,
+                }
+            )
         if request is not None or result.partial or result.undelivered_messages:
             fields.update(
                 {

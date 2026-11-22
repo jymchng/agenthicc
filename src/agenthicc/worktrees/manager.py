@@ -9,9 +9,12 @@ filesystem powers.
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
+import tempfile
 import uuid
+from collections.abc import Mapping
 from dataclasses import replace
 from dataclasses import dataclass
 from pathlib import Path
@@ -60,6 +63,29 @@ class WorktreeInspection:
     diff: str = ""
 
 
+@dataclass(frozen=True)
+class PatchResult:
+    """Outcome of applying a worker's patch to the repository's working tree."""
+
+    ok: bool
+    conflict_paths: tuple[str, ...] = ()
+    message: str = ""
+
+
+#: The identity git records on commits agenthicc makes for a subagent pool.
+_AGENT_IDENTITY: dict[str, str] = {
+    "GIT_AUTHOR_NAME": "agenthicc",
+    "GIT_AUTHOR_EMAIL": "agenthicc@localhost",
+    "GIT_COMMITTER_NAME": "agenthicc",
+    "GIT_COMMITTER_EMAIL": "agenthicc@localhost",
+}
+
+_APPLY_FAILED = re.compile(r"^error: patch failed: (?P<path>.+?):\d+$")
+_APPLY_REJECTED = re.compile(
+    r"^error: (?P<path>.+?): (?:patch does not apply|already exists in working directory|"
+    r"No such file or directory)$"
+)
+
 _SAFE_PART = re.compile(r"[^A-Za-z0-9._-]+")
 
 
@@ -94,7 +120,14 @@ class WorktreeManager:
             raise RepositoryError(f"Git returned no repository root for {path}")
         return Path(raw).resolve()
 
-    def _run(self, args: list[str], *, cwd: Path | None = None, check: bool = True) -> str:
+    def _run(
+        self,
+        args: list[str],
+        *,
+        cwd: Path | None = None,
+        check: bool = True,
+        env: Mapping[str, str] | None = None,
+    ) -> str:
         try:
             result = subprocess.run(
                 ["git", *args],
@@ -103,6 +136,7 @@ class WorktreeManager:
                 text=True,
                 timeout=60,
                 check=False,
+                env=None if env is None else {**os.environ, **env},
             )
         except (OSError, subprocess.SubprocessError) as exc:
             raise WorktreeError(f"Git command failed to start: {exc}") from exc
@@ -158,8 +192,14 @@ class WorktreeManager:
         base_commit: str | None = None,
         worktree_id: str | None = None,
         branch_name: str | None = None,
+        require_clean: bool = True,
     ) -> WorktreeRecord:
-        """Create one branch/worktree from an immutable clean repository base."""
+        """Create one branch/worktree from an immutable repository base.
+
+        *require_clean* (default) refuses a dirty repository, which the durable
+        coordinator relies on. A caller whose base is a snapshot of the working
+        state rather than ``HEAD`` (:meth:`snapshot_commit`) passes ``False``.
+        """
 
         base = self.validate_base(base_commit or self.head())
         stable_id = worktree_id or uuid.uuid4().hex[:16]
@@ -228,7 +268,8 @@ class WorktreeManager:
             task_id=task_id,
         )
         try:
-            self.ensure_clean()
+            if require_clean:
+                self.ensure_clean()
             try:
                 branch_check = subprocess.run(
                     ["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"],
@@ -270,6 +311,112 @@ class WorktreeManager:
                 check=False,
             )
             raise
+
+    def snapshot_commit(self) -> str:
+        """A commit of the repository's *current working state*, built off to the side.
+
+        A clean repository snapshots to ``HEAD``. Otherwise the commit holds
+        ``HEAD`` plus every uncommitted and untracked, non-ignored change, built
+        through a temporary index so the repository's own index, ``HEAD`` and
+        working tree are never touched. A worker started from it sees what the
+        parent sees.
+        """
+        head = self.head()
+        if self.is_clean():
+            return head
+        try:
+            excluded = ":(exclude)" + self.root.relative_to(self.repository).as_posix()
+            pathspec = [".", excluded]
+        except ValueError:
+            pathspec = ["."]
+        with tempfile.TemporaryDirectory(prefix="agenthicc-snapshot-") as scratch:
+            env = {"GIT_INDEX_FILE": str(Path(scratch) / "index"), **_AGENT_IDENTITY}
+            self._run(["read-tree", "HEAD"], env=env)
+            self._run(["add", "-A", "--", *pathspec], env=env)
+            tree = self._run(["write-tree"], env=env).splitlines()[0].strip()
+            commit = self._run(
+                ["commit-tree", tree, "-p", head, "-m", "agenthicc subagent snapshot"], env=env
+            )
+        return commit.splitlines()[0].strip()
+
+    def commit_all(self, path: Path, message: str) -> str:
+        """Commit everything in the worktree at *path*; return its ``HEAD``.
+
+        Repository hooks are skipped: this is an automatic checkpoint of a
+        worker's files, not a human commit.
+        """
+        self._run(["add", "-A"], cwd=path)
+        staged = subprocess.run(
+            ["git", "diff", "--cached", "--quiet"],
+            cwd=str(path),
+            capture_output=True,
+            timeout=60,
+            check=False,
+        )
+        if staged.returncode == 1:
+            self._run(
+                ["-c", "commit.gpgsign=false", "commit", "-q", "--no-verify", "-m", message],
+                cwd=path,
+                env=_AGENT_IDENTITY,
+            )
+        return self.head(cwd=path)
+
+    def changed_files(self, base: str, head: str, path: Path) -> list[str]:
+        """Repository-relative paths that differ between *base* and *head*."""
+        raw = self._run(["diff", "--name-only", "--no-renames", "-z", base, head], cwd=path)
+        return [name for name in raw.split("\0") if name]
+
+    def diff_patch(self, base: str, head: str) -> bytes:
+        """The binary-safe patch from *base* to *head*."""
+        try:
+            result = subprocess.run(
+                [
+                    "git",
+                    "diff",
+                    "--binary",
+                    "--full-index",
+                    "--no-renames",
+                    "--no-ext-diff",
+                    base,
+                    head,
+                ],
+                cwd=str(self.repository),
+                capture_output=True,
+                timeout=120,
+                check=True,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise WorktreeError(f"git diff {base[:8]}..{head[:8]} failed: {exc}") from exc
+        return result.stdout
+
+    def apply_patch(self, patch: bytes) -> PatchResult:
+        """Apply *patch* to the repository's working tree, all of it or none of it.
+
+        Only the working tree changes: not the index, ``HEAD`` or any branch, and
+        the tree need not be clean, so the caller's uncommitted work is kept.
+        """
+        if not patch:
+            return PatchResult(ok=True)
+        try:
+            result = subprocess.run(
+                ["git", "apply", "--whitespace=nowarn", "-"],
+                cwd=str(self.repository),
+                input=patch,
+                capture_output=True,
+                timeout=120,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise WorktreeError(f"git apply failed to run: {exc}") from exc
+        if result.returncode == 0:
+            return PatchResult(ok=True)
+        stderr = result.stderr.decode("utf-8", "replace")
+        paths: list[str] = []
+        for line in stderr.splitlines():
+            match = _APPLY_FAILED.match(line) or _APPLY_REJECTED.match(line)
+            if match and match.group("path") not in paths:
+                paths.append(match.group("path"))
+        return PatchResult(ok=False, conflict_paths=tuple(paths), message=stderr.strip()[:2000])
 
     def inspect(self, record: WorktreeRecord) -> WorktreeInspection:
         path = Path(record.path).resolve()

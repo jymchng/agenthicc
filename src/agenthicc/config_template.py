@@ -270,6 +270,7 @@ def build_commented_config_template() -> str:
     _field(lines, "max_total_time_s", 600.0, "wall-clock budget for one pool")
     _field(lines, "on_budget_exceeded", "drain", "abort or let active workers finish")
     _field(lines, "stop_grace_s", 5.0, "worker cleanup grace period")
+    _field(lines, "isolation", "auto", "auto | worktree | shared: where file-changing workers run")
     _comment(lines, '[subagents.depth_limits."2"]')
     _comment(lines, "max_tasks = 12")
     _comment(lines, "max_concurrent = 4")

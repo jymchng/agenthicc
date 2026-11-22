@@ -4458,6 +4458,7 @@ class SubagentSettings:
     collect_wait_max_s: float = 60.0
     background_enabled: bool = True
     on_clarification: Literal["queue", "fail"] | None = None
+    isolation: Literal["auto", "worktree", "shared"] = "auto"
 
     def on_clarification_for(self, *, interactive: bool) -> Literal["queue", "fail"]: ...
     depth_limits: Mapping[int, SubagentDepthLimit]
@@ -5386,7 +5387,11 @@ by its turn limit or the output-token limit fails with `stop_reason` `max_turns`
 or `output_truncated`. The digest ends each worker's section with a deterministic
 evidence line (`[evidence: changed … · ran … · refused … · N turns]`) built from
 what the runtime observed, never from the worker's prose; `evidence_footer(result)`
-renders it.
+renders it. A worker that ran in its own git worktree (SUBAGENT-15) also carries
+`integration` (`applied`, `conflict`, `kept` or `none`; empty when it shared the
+workspace) and, when its changes were not applied, `branch` and `workspace` naming
+where they are preserved; the evidence line then says `applied to your workspace`
+or `NOT applied: kept on branch … at …`.
 
 ### AggregatedResult
 

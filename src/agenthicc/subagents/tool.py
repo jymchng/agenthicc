@@ -69,6 +69,16 @@ if TYPE_CHECKING:
 
 __all__ = ["make_spawn_subagents_tool"]
 
+#: Shown to the parent model in the tool description (SUBAGENT-15): how to use a
+#: pool to hasten work without two workers overwriting each other.
+_PARALLEL_GUIDANCE = (
+    "Delegate independent work in parallel. Workers cannot see this conversation: put file "
+    "paths, interfaces and acceptance checks in `task` / `context`. Give each worker different "
+    "files. When more than one can change files, each runs in its own git worktree and its "
+    "changes are applied to your workspace as it finishes; overlapping edits are reported as "
+    "conflicts."
+)
+
 _MODEL_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}$")
 _EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh")
 
@@ -1348,7 +1358,7 @@ def _augment_type_schema(
     except AttributeError:
         raw_description = ""
     base_description = raw_description if isinstance(raw_description, str) else ""
-    description = base_description
+    description = f"{base_description}\n\n{_PARALLEL_GUIDANCE}" if base_description else ""
     if descriptions:
         description += "\n\nAvailable subagent types:\n" + "\n".join(descriptions)
     metadata.description = description

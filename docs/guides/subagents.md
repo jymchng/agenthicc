@@ -431,6 +431,64 @@ did not expose a required tool, because the mode blocks it, because workspace
 authorization denies the path, or because the user denies approval. The
 returned aggregate preserves those failures for the parent to reason about.
 
+## Parallel implementation in isolated git worktrees
+
+Delegate independent work in parallel: workers cannot see this conversation, so
+put file paths, interfaces and acceptance checks in `task` / `context`, and give
+each worker **different files**. Two workers that edit one directory race, and
+the last write silently wins — measured against the shared-directory behaviour,
+both reported `✓` and one change was gone. So when two or more workers in a pool
+can change files and the workspace is inside a git repository, each runs in its
+**own git worktree**:
+
+1. The pool snapshots the parent's *current working state* — uncommitted and
+   untracked, non-ignored files included — as one commit built through a
+   temporary index. The parent's index, `HEAD` and branch are never touched; a
+   clean tree snapshots to `HEAD`.
+2. Each working worker gets a worktree of that snapshot under
+   `~/.agenthicc/worktrees/<repository>/`. Every tool derives its root from the
+   task-local workspace policy, so the worker's file tools, commands and git all
+   act inside its worktree; nothing about the tools changes. Investigative
+   workers (`explorer`, `planner`, `reviewer`, `verifier`, `researcher`) never get
+   one.
+3. As each worker finishes, git records what it changed — whichever tool
+   changed it, so a file made by `run_bash` counts as evidence and appears in
+   `changed_paths` — and the worker's patch is applied to your workspace with
+   `git apply`. `git apply` is all-or-nothing and needs no clean tree, so your own
+   uncommitted work is preserved and no merge commit is made. Patches apply one
+   at a time on top of each other: edits to *different parts* of one file compose,
+   and only genuine overlaps conflict.
+4. A patch that does not apply makes that worker `ok=False` with
+   `error_code="integration_conflict"`; its branch and worktree are **kept** and
+   the evidence line says where: `NOT applied: kept on branch agenthicc/… at
+   /home/you/.agenthicc/worktrees/…`. When two workers overlap, the one that
+   finishes first is applied. A failed worker that changed something is kept the
+   same way. Everything else is removed when the pool ends, including on
+   cancellation.
+
+`subagents.isolation` (an operator setting, never a model argument) chooses the
+behaviour:
+
+| Value | Behaviour |
+|---|---|
+| `auto` (default) | isolate when ≥ 2 workers can change files and the workspace is in a git repository; otherwise run shared and say so in the digest (`=== Note ===`) |
+| `worktree` | isolate even one worker; refuse the pool (`status: "refused"`) when the workspace is not a git repository |
+| `shared` | every worker uses the one workspace, as before |
+
+Limits to know about:
+
+- A worktree contains tracked and untracked files but not git-ignored ones, so a
+  `.venv` or `node_modules` is absent. A worker that runs tests there uses the
+  project's on-demand tooling (for example `uv run`).
+- Isolation binds the *workspace policy*, not a sandbox. A worker in Yolo mode
+  that is given an absolute path inside your repository can still write there;
+  tell workers to use relative paths. Safe mode asks first, and Plan mode denies.
+- A type whose `permissions.workspace_paths` narrows the scope runs shared.
+- A retry of a worker (see [Controlling pools](#controlling-pools-from-the-model))
+  runs in your workspace, not in a fresh worktree.
+- After a crash, `git worktree list` and `git worktree prune` find and clear
+  orphaned worktrees; `git branch --list 'agenthicc/*'` lists their branches.
+
 ## Memory and provider calls
 
 Each worker gets fresh `ShortTermMemory` sized by the effective context budget.
@@ -1187,6 +1245,24 @@ provider leaked its call format; the worker now gets one correction and fails
 with `unexecuted_tool_call` if it repeats it (see
 [Role-specific success rules](#role-specific-success-rules)). Also check that
 the parent mode exposes the write tool: in Plan mode no worker receives one.
+
+### Two workers edited the same file
+
+With `subagents.isolation = "shared"`, or in a directory that is not a git
+repository, workers share one workspace and the last write wins — the digest
+says `=== Note ===` when isolation was wanted but unavailable. In a repository
+each worker has its own worktree: the first to finish is applied and the other
+is `integration_conflict`, with its work kept on the branch the evidence line
+names. Re-run that task against the new state, or inspect the kept worktree.
+
+### Orphaned worktrees
+
+A pool removes its worktrees when it ends. Only a crash can leave one behind.
+`git worktree list` shows them, `git worktree prune` clears the ones whose
+directories are gone, and `git branch --list 'agenthicc/*'` lists their
+branches. A worktree named in a worker's `NOT applied` evidence line is kept on
+purpose; remove it with `git worktree remove <path>` and `git branch -D <branch>`
+when you no longer need it.
 
 ### A repeated call returns old results
 
