@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from agenthicc.memory.router import MemoryRouter
     from agenthicc.memory.vector import SemanticIndex
     from collections.abc import Mapping
-    from agenthicc.runners.reload import SurfaceHolder
+    from agenthicc.runners.reload import ReloadService, SurfaceHolder
     from agenthicc.tools.base import ToolLike
     from agenthicc.tools.surface import ToolSurfaceHolder
     from agenthicc.skills.loader import SkillDef
@@ -86,6 +86,8 @@ class WorkflowConfig:
     workspace_access: "WorkspaceAccessPolicy | None" = None
     """Mode-aware path policy shared with all phase turns and tools."""
     startup: "StartupCoordinator | None" = None
+    reload_service: "ReloadService | None" = None
+    """The session owner used to preview discovery of staged extensions."""
     """Session-owned readiness coordinator for deferred dependencies."""
     required_startup_phases: tuple[str, ...] = ()
     """Readiness phases a custom workflow must await before its first turn."""

@@ -74,5 +74,7 @@ def test_every_built_in_workflow_runs_its_turns_through_a_checked_runner() -> No
         if path.parent.name in runner_modules:
             continue
         source = path.read_text(encoding="utf-8")
-        assert "CodePlanRunner" in source or "PhaseRunner" in source, path
+        assert any(
+            name in source for name in ("CodePlanRunner", "PhaseRunner", "run_authoring_phase")
+        ), path
     assert issubclass(CodePlanRunner, BaseWorkflowRunner)

@@ -4,19 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import asdict, dataclass, field
 from enum import StrEnum
-from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from lauren_ai import tool
-from lauren_ai._memory import ShortTermMemory
 from lauren_ai._tools import TOOL_META, ToolMeta
 
 from agenthicc.plugins.authored import AuthoredArtifactStore, _reserved_names
 from agenthicc.plugins.authored_types import AuthoredRun, PublishedArtifact, StagedArtifact
-from agenthicc.runners.agent_turn import _run_agent_turn
-from agenthicc.runners.prompt_contract import build_workflow_prompt_contract
 from agenthicc.tools.base import tool_name
 from agenthicc.tools.capabilities import tool_control
 from agenthicc.tools.errors import ToolErrorCode, tool_error
@@ -25,6 +21,7 @@ from agenthicc.workflows.authoring.scoped_tools import (
     make_scoped_reader_tools,
     make_scoped_writer_tools,
 )
+from agenthicc.workflows.authoring.staged_runner import drive_staged_run, run_authoring_phase
 from agenthicc.workflows.authoring.verdict import ValidationReport, decide
 from agenthicc.workflows.base_runner import BaseWorkflowRunner
 from agenthicc.workflows.create_tools.plan import (
@@ -39,6 +36,8 @@ from agenthicc.workflows.create_tools.validation import validate_modules
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+
+    from lauren_ai._memory import ShortTermMemory
 
     from agenthicc.tools.base import ToolLike
     from agenthicc.workflows.config import WorkflowConfig
@@ -113,52 +112,22 @@ class CreateToolsRunner(BaseWorkflowRunner):
     async def resume(self, context: object) -> CreateToolsContext:
         if not isinstance(context, CreateToolsContext):
             raise TypeError("create_tools requires a CreateToolsContext.")
-        ctx = context
-        if ctx.shared_memory is None:
-            ctx.shared_memory = self._cfg.session_memory or ShortTermMemory(
-                max_tokens=self._cfg.cfg.execution.effective_usable_budget()
-            )
-        workspace = self._cfg.workspace_scope
-        store = AuthoredArtifactStore(workspace.primary_root if workspace else Path.cwd())
-        handle = self._cfg.workflow_handle
-        if ctx.state is CreateToolsState.COMPLETE and ctx.authored_run is None:
-            self._finalize(ctx)
-        while not ctx.state.is_terminal:
-            phase = ctx.state
-            ctx.phase_iteration += 1
-            if handle is not None:
-                handle.attach_context(ctx)
-                handle.update_phase(phase.value, PHASES.index(phase.value), ctx.phase_iteration)
-            match phase:
-                case CreateToolsState.ANALYZE:
-                    await self._analyze(ctx, store)
-                case CreateToolsState.GENERATE:
-                    await self._generate(ctx, store)
-                case CreateToolsState.VALIDATE:
-                    await self._validate(ctx, store)
-                case CreateToolsState.FINALIZE:
-                    self._finalize(ctx)
-            if handle is not None:
-                handle.attach_context(ctx)
-                if ctx.state.is_terminal:
-                    handle.persist_context_transition()
-                else:
-                    handle.update_phase(
-                        ctx.state.value, PHASES.index(ctx.state.value), ctx.phase_iteration
-                    )
-                    handle.persist_context_transition()
-        if ctx.state is CreateToolsState.FAILED:
-            await asyncio.to_thread(store.discard_staging, ctx.run_id)
-            if handle is not None:
-                handle.failure_kind = (
-                    "repair_budget_exhausted"
-                    if ctx.fail_reason.startswith("repair budget exhausted")
-                    else "phase_execution"
-                )
-                handle.mark_terminal("failed", error=ctx.fail_reason)
-                if handle.checkpoint_supported:
-                    handle.save_checkpoint(reason=handle.failure_kind)
-        return ctx
+        if context.state is CreateToolsState.COMPLETE and context.authored_run is None:
+            self._finalize(context)
+        return await drive_staged_run(
+            self._cfg, context, PHASES, self._advance, workflow_name="create_tools"
+        )
+
+    async def _advance(self, ctx: CreateToolsContext, store: AuthoredArtifactStore) -> None:
+        match ctx.state:
+            case CreateToolsState.ANALYZE:
+                await self._analyze(ctx, store)
+            case CreateToolsState.GENERATE:
+                await self._generate(ctx, store)
+            case CreateToolsState.VALIDATE:
+                await self._validate(ctx, store)
+            case CreateToolsState.FINALIZE:
+                self._finalize(ctx)
 
     async def _analyze(self, ctx: CreateToolsContext, store: AuthoredArtifactStore) -> None:
         existing = await asyncio.to_thread(store.records)
@@ -366,35 +335,12 @@ class CreateToolsRunner(BaseWorkflowRunner):
         instructions: str,
         tools: Sequence[ToolLike],
     ) -> None:
-        name = ctx.state.value
-        execution = self._cfg.cfg.execution
-        if self._cfg.params is not None:
-            model = self._cfg.params.model_for_phase(name, execution.model)
-            execution = replace(execution, model=model)
-        contract = build_workflow_prompt_contract(
+        await run_authoring_phase(
+            self._cfg,
+            ctx,
             workflow_name="create_tools",
-            stable_system_prefix=CACHE_CONTRACT,
-            phase_prompt=instructions,
-            stable_tools=(),
-            phase_tools=tools,
-            execution=execution,
-        )
-        await _run_agent_turn(
-            text,
-            runner=self._cfg.agent_runner,
-            processor=self._cfg.processor,
-            session_memory=ctx.shared_memory,
-            conversation_id=self._cfg.conversation_id,
-            max_agent_turns=10,
-            conv_store=self._cfg.conv_store,
-            app_state=self._cfg.app_state,
-            exec_cfg=execution,
-            extra_tools=list(tools),
-            allowed_tool_names=frozenset(map(tool_name, tools)),
-            approval_svc=self._cfg.approval_svc,
-            workspace_access=self._cfg.workspace_access,
-            next_queued_message=self._cfg.next_queued_message,
-            prompt_contract=contract,
-            tool_surface_generation=self._cfg.tool_surface.current().generation,
-            usage_ledger=self._cfg.usage_ledger,
+            cache_contract=CACHE_CONTRACT,
+            text=text,
+            instructions=instructions,
+            tools=tools,
         )

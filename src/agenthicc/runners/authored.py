@@ -38,6 +38,13 @@ _SURFACES: dict[ArtifactKind, ReloadSurface] = {
 }
 
 
+def _publication_surfaces(kinds: set[ArtifactKind]) -> frozenset[ReloadSurface]:
+    surfaces = {_SURFACES[kind] for kind in kinds}
+    if "skill" in kinds:
+        surfaces.add("commands")
+    return frozenset(surfaces)
+
+
 @runtime_checkable
 class AuthoredWorkflowOutcome(Protocol):
     @property
@@ -193,6 +200,14 @@ class AuthoredPublisher:
         if publication.reload_report is not None:
             summary.append(publication.reload_report.summary())
         for artifact in publication.artifacts:
+            if artifact.kind == "skill" and artifact.state == "loaded":
+                skill = self._reload.skills.current().value.get(artifact.name)
+                if skill is not None:
+                    model_invocable = not skill.disable_model_invocation and not skill.model
+                    topics = ", ".join(skill.suggested_topics) or skill.description
+                    summary.append(
+                        f"${skill.slug} · {topics} · model_invocable={str(model_invocable).lower()}"
+                    )
             if artifact.kind != "workflow" or artifact.state != "loaded":
                 continue
             loaded = registry.get(artifact.name)
@@ -238,7 +253,7 @@ class AuthoredPublisher:
             installed, report = await self._reload_transaction(
                 store,
                 mutation,
-                frozenset({_SURFACES[prior.artifact.kind]}),
+                _publication_surfaces({prior.artifact.kind}),
                 removing=action == "remove",
             )
             for artifact in installed:
@@ -301,7 +316,7 @@ class AuthoredPublisher:
             installed, report = await self._reload_transaction(
                 store,
                 store.commit(run, source_root=source_root, approved_by=approved_by),
-                frozenset(_SURFACES[item.artifact.kind] for item in run.candidates),
+                _publication_surfaces({item.artifact.kind for item in run.candidates}),
             )
         except _ReloadFailed as exc:
             failed = _failed(run, exc.code, str(exc), "load_failed")

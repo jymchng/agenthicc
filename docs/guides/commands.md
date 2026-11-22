@@ -336,6 +336,11 @@ agent project-specific guidance for producing a `Command` export. Review the
 generated code, trust it with `agenthicc trust add`, and reload the command
 registry.
 
+Use `/workflow call create_skills <intent>` to author skill triggers.
+Published skills appear in the `$` picker as soon as the session reloads them.
+Each skill may declare an `argumentHint` for the command row.
+[Authoring skills](plugins.md#skills)
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |

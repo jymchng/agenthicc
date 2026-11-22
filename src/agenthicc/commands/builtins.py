@@ -1612,7 +1612,7 @@ def _build_skill_command(slug: str, skill: SkillDef) -> Command:
     return Command(
         name=f"${slug}",
         description=skill.description or skill.name,
-        argument_hint="[args…]",
+        argument_hint=skill.argument_hint or "[args…]",
         group="Skills",
         handler=_make_skill_handler(slug, skill),
         aliases=tuple(f"${alias}" for alias in skill.aliases),

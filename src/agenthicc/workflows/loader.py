@@ -68,6 +68,11 @@ _BUILTIN_WORKFLOW_DESCRIPTORS = (
         "goal_flow", "agenthicc.workflows.goal_flow.runner", "GoalFlowWorkflow"
     ),
     BuiltinWorkflowDescriptor(
+        "create_skills",
+        "agenthicc.workflows.create_skills.definition",
+        "CreateSkills",
+    ),
+    BuiltinWorkflowDescriptor(
         "create_tools",
         "agenthicc.workflows.create_tools.definition",
         "CreateTools",

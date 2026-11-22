@@ -261,7 +261,8 @@ def _skill_commands(
     diagnostics: list[ReloadDiagnostic] = []
     for slug, skill in skills.items():
         command = _build_skill_command(slug, skill)
-        if any(registry.get(name) is not None for name in (command.name, *command.aliases)):
+        triggers = (command.name, *command.aliases, *(f"/{alias}" for alias in skill.aliases))
+        if any(registry.get(name) is not None for name in triggers):
             diagnostics.append(
                 ReloadDiagnostic(
                     "skills",
@@ -388,11 +389,16 @@ class ReloadService:
             await asyncio.shield(flight.task)
         raise RuntimeError("session reload service is closed")
 
-    async def preview(self, surfaces: frozenset[ReloadSurface]) -> ReloadReport:
+    async def preview(
+        self,
+        surfaces: frozenset[ReloadSurface],
+        *,
+        staged_skills: Mapping[str, SkillDef] | None = None,
+    ) -> ReloadReport:
         async with self._discovery_lock:
             if self._closed:
                 raise RuntimeError("session reload service is closed")
-            return await self._collect(surfaces, "api", preview=True)
+            return await self._collect(surfaces, "api", preview=True, staged_skills=staged_skills)
 
     async def close(self) -> None:
         self._closed = True
@@ -418,6 +424,7 @@ class ReloadService:
         *,
         preview: bool,
         before_publish: Callable[[ReloadReport], Awaitable[bool]] | None = None,
+        staged_skills: Mapping[str, SkillDef] | None = None,
     ) -> ReloadReport:
         generation = self._generation + 1
         ready: dict[ReloadSurface, _Candidate] = {}
@@ -429,7 +436,9 @@ class ReloadService:
             if surface not in surfaces:
                 continue
             try:
-                candidate = await self._discover_off_loop(surface, commands, skill_snapshot)
+                candidate = await self._discover_off_loop(
+                    surface, commands, skill_snapshot, staged_skills
+                )
             except Exception:  # noqa: BLE001 - a failed discovery keeps the surface intact
                 diagnostics.append(
                     ReloadDiagnostic(
@@ -480,8 +489,11 @@ class ReloadService:
         surface: ReloadSurface,
         commands: tuple[Command, ...],
         skills: Mapping[str, SkillDef],
+        staged_skills: Mapping[str, SkillDef] | None,
     ) -> _Candidate:
-        work = asyncio.create_task(asyncio.to_thread(self._discover, surface, commands, skills))
+        work = asyncio.create_task(
+            asyncio.to_thread(self._discover, surface, commands, skills, staged_skills)
+        )
         try:
             return await asyncio.shield(work)
         except asyncio.CancelledError:
@@ -495,10 +507,11 @@ class ReloadService:
         surface: ReloadSurface,
         commands: tuple[Command, ...],
         skill_snapshot: Mapping[str, SkillDef],
+        staged_skills: Mapping[str, SkillDef] | None,
     ) -> _Candidate:
         match surface:
             case "skills":
-                return self._scan_skills(commands)
+                return self._scan_skills(commands, staged_skills)
             case "tools":
                 return self._scan_tools()
             case "workflows":
@@ -506,23 +519,59 @@ class ReloadService:
             case "commands":
                 return self._scan_commands(commands, skill_snapshot)
 
-    def _scan_skills(self, commands: tuple[Command, ...]) -> _Candidate:
+    def _scan_skills(
+        self,
+        commands: tuple[Command, ...],
+        staged_skills: Mapping[str, SkillDef] | None,
+    ) -> _Candidate:
         from agenthicc.commands.registry import UnifiedCommandRegistry
-        from agenthicc.skills.loader import discover_skills_with_diagnostics
+        from agenthicc.skills.loader import (
+            SkillDiagnostic,
+            _resolve_skill_aliases,
+            canonical_skill_name,
+            discover_skills_with_diagnostics,
+        )
 
         found = discover_skills_with_diagnostics(
             project_dir=self._project_dir,
             user_dir=self._skill_user_dir,
         )
+        found_skills = dict(found.skills)
+        skill_diagnostics = list(found.diagnostics)
+        if staged_skills is not None:
+            occupied = {
+                canonical_skill_name(trigger)
+                for slug, skill in found_skills.items()
+                if slug not in staged_skills
+                for trigger in skill.command_names
+            }
+            for skill in staged_skills.values():
+                clashes = occupied.intersection(map(canonical_skill_name, skill.command_names))
+                if clashes:
+                    skill_diagnostics.append(
+                        SkillDiagnostic(
+                            skill.path,
+                            "alias-conflict",
+                            f"Skill triggers already in use: {', '.join(sorted(clashes))}.",
+                            "error",
+                        )
+                    )
+            found_skills.update(staged_skills)
+            skill_diagnostics.extend(_resolve_skill_aliases(found_skills))
         diagnostics: list[ReloadDiagnostic] = []
-        for item in found.diagnostics:
+        for item in skill_diagnostics:
             if item.severity != "info":
                 code: _DiagnosticCode = (
                     "name_conflict" if "conflict" in item.code else "invalid_manifest"
                 )
                 diagnostics.append(
                     ReloadDiagnostic(
-                        "skills", str(item.path), code, f"Skill discovery: {item.code}."
+                        "skills",
+                        str(item.path),
+                        code,
+                        item.message
+                        if code == "name_conflict"
+                        else f"Skill discovery: {item.code}.",
                     )
                 )
         if any(item.code in {"invalid-skill-root", "scan-error"} for item in found.diagnostics):
@@ -530,9 +579,9 @@ class ReloadService:
 
         registry = UnifiedCommandRegistry()
         registry.register_many([command for command in commands if not command.is_skill])
-        diagnostics.extend(_skill_commands(registry, found.skills))
-        skills = MappingProxyType(dict(found.skills))
-        versions = {name: _digest(skill.path / "SKILL.md") for name, skill in found.skills.items()}
+        diagnostics.extend(_skill_commands(registry, found_skills))
+        skills = MappingProxyType(found_skills)
+        versions = {name: _digest(skill.path / "SKILL.md") for name, skill in found_skills.items()}
 
         def apply(generation: int) -> None:
             self._command_registry.replace_with(registry)

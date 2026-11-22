@@ -822,6 +822,7 @@ async def _execute_registered_workflow(
             cfg=selected_config,
             skills=session.reload.skills,
             tool_surface=session.reload.tools,
+            reload_service=session.reload,
             mcp_registry=session.mcp_registry,
             mention_cache=session.mention_cache,
             agents_registry=session.agents_registry,

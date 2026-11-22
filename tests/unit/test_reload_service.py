@@ -104,10 +104,13 @@ async def test_reload_order_and_replay_generations(
     discover = reloader._discover
 
     def observe(
-        surface: ReloadSurface, commands: tuple[Command, ...], skills: Mapping[str, SkillDef]
+        surface: ReloadSurface,
+        commands: tuple[Command, ...],
+        skills: Mapping[str, SkillDef],
+        staged_skills: Mapping[str, SkillDef] | None,
     ) -> _Candidate:
         observed_order.append(surface)
-        return discover(surface, commands, skills)
+        return discover(surface, commands, skills, staged_skills)
 
     monkeypatch.setattr(reloader, "_discover", observe)
     events = running_processor.subscribe_events()

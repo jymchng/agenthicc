@@ -137,6 +137,20 @@ resume rules.
 
 ## Skills
 
+Use `/workflow call create_skills <intent>` to author several skills in one
+run. The agent can enter it with `enter_workflow`. It writes the planned
+`SKILL.md` and Markdown support files through a bounded staging writer. The
+skill loader verifies the metadata and the session checks trigger collisions
+before publication. Each skill's tools are limited to the caller's scope.
+
+In auto mode, the session publishes the whole set and updates the skill
+picker and the model's `list_skills` inventory before returning. Under the
+stage-only policy, `/authored approve <run-id>` publishes the reviewed set.
+`/authored reject <run-id>` discards it. Model overrides require a reason in
+the plan and restrict activation to the operator. Advisory diagnostics for
+risky instructions are recorded with the published skill.
+
+
 Skills are directories with `SKILL.md` metadata and body text. They can add
 tools, prompt instructions, and explicit trigger behaviour. The loader supports
 project and user scopes; the project copy wins. Discovery is deterministic and

@@ -240,3 +240,7 @@ Every diagnostic carries a path, a code, a message, and a severity.
 - [Documentation fact base](../docs/reference/fact-base.md) — where documented claims are verified against source
 - [Configuration guide](../docs/guides/configuration.md) — `[skills]` settings and precedence
 - [Extensions guide](../docs/guides/plugins.md) — tools, agents, modes, and MCP servers alongside skills
+
+Use `/workflow call create_skills <intent>` to author project-local skills.
+The workflow validates the complete set and can publish it to the current
+session. See the [skill authoring guide](../docs/guides/plugins.md#skills).

@@ -12,8 +12,8 @@ Branch `feat/workflow-composition` starts at `5100c8c` from fetched
 | 3 | M3 pushed | WFC-01 and the publish connection. The remote tip matched `f0eb339`. |
 | 4 | M4 pushed | WFC-02 workflow entry and inspection. The remote tip matched `4c5e0cc`. |
 | 5 | M5 pushed | WFC-06 authoring, publication, and immediate use. Pre-push checks passed and the remote tip matched `35165f3`. |
-| 6 | M6 verified locally | WFC-08 is in `ab27d2d`. WFC-07 and S4 passed the complete local gate. |
-| 7 | Pending | WFC-09. |
+| 6 | M6 pushed | WFC-08 and WFC-07 passed the complete local gate and pre-push hooks. The remote tip matched `b24f9dc`. |
+| 7 | M7 verified locally | WFC-09 and S5 passed the full local gate. |
 | 8 | Pending | WFC-04 and WFC-03. |
 | 9 | Pending | WFC-12 and WFC-13 close-out. |
 
@@ -27,12 +27,12 @@ Branch `feat/workflow-composition` starts at `5100c8c` from fetched
 | WFC-06 | Implemented | Session-owned publication, exact predecessor checks, and the S3 acceptance scenario. WFC-04 exercises the workflow-worker integration. |
 | WFC-07 | Implemented | Plans and validates the complete tool set, then publishes it before the parent resumes. S4 observes immediate dispatch and atomic failure. |
 | WFC-08 | Implemented | Direct requests, phase entry, and worker spawn read the shared tool generation. WFC-07 exercises the author-and-call scenario. |
-| WFC-09 | Pending | — |
+| WFC-09 | Implemented | The real loader checks the staged skill set before publication. S5 covers live model use, the skill picker, alias collision, advisories, and operator rejection. |
 | WFC-10 | Implemented | `ed01cf0`. Provider discovery and use share the live skill registry. |
 | WFC-11 | Runtime ready | `6958a4b` isolates validation and smoke. `59e893a` adds publication, operator controls and recovery. The canonical lease uses the same store. The workflow return connection and downstream authoring scenarios remain in their scheduled steps. |
 | WFC-12 | Pending | — |
 | WFC-13 | Harness ready | `7536d33` adds a scripted provider, request snapshots, isolated real sessions, and a test-only failure trigger. S1–S9 remain to be integrated. |
-| WFC-14 | Foundation | Shared scoped tools, deterministic verdict and persisted budget adopted by `create_workflow`. Sandbox validation and tool and skill adoption follow WFC-11, WFC-07 and WFC-09. |
+| WFC-14 | Implemented | Workflow, tool, and skill authors share scoped staging writers, deterministic verdicts, and persisted repair budgets. Executable candidates go through the isolated loader check. |
 
 ## M0 verification
 
@@ -315,3 +315,20 @@ The verification logs are `/var/tmp/agenthicc-wfc-m5-*.log`.
   workflow reduced the mypy module suppression metric from six to five.
 - The repository coverage floor is 81.5%. The full coverage measurement is
   the CI gate specified by the implementation prompt.
+
+## M7 verification
+
+- S5 published two skills, reloaded their command entries and inventory, and
+  applied the skill's tool restrictions on the next provider request after
+  activation. The test uses the existing dollar-trigger picker. An alias
+  matching the built-in help command was refused in preview. The stage-only
+  case rejected the entire set through the operator command.
+- The shared parser and discovery agreed on 200 generated cases. The focused
+  prototype passed 156 checks. During prototyping, checking canonical skill
+  triggers against slash commands incorrectly refused the existing
+  `$release-notes` name. The final collision test checks the actual canonical
+  command and both spellings of each alias.
+- The full milestone run passed 6,310 unit tests with 15 skips, 431 integration
+  tests, and 248 E2E tests with two skips. Ruff check and format, mypy, type
+  audit, strict MkDocs, and the public-symbol check passed.
+- All nine performance tests passed.

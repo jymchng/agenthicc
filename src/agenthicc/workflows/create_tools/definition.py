@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING
 
 from agenthicc.workflows.authoring.budget import RepairBudget
-from agenthicc.workflows.authoring.verdict import Finding, ValidationReport
+from agenthicc.workflows.authoring.verdict import ValidationReport
 from agenthicc.workflows.create_tools.plan import decode_plan
 from agenthicc.workflows.create_tools.runner import (
     CreateToolsContext,
@@ -86,7 +86,7 @@ class CreateTools(WorkflowPlugin):
             "phase_iteration": context.phase_iteration,
             "plans": [plan.to_dict() for plan in context.plans],
             "predecessors": dict(context.predecessors),
-            "reports": {module: asdict(report) for module, report in context.reports.items()},
+            "reports": {module: report.to_dict() for module, report in context.reports.items()},
             "static_only": context.static_only,
             "fail_reason": context.fail_reason,
         }
@@ -107,17 +107,6 @@ class CreateTools(WorkflowPlugin):
         plans = tuple(decode_plan(item) for item in raw_plans if isinstance(item, dict))
         if len(plans) != len(raw_plans):
             raise ValueError("Invalid create_tools plan in checkpoint.")
-        reports: dict[str, ValidationReport] = {}
-        for module, raw in raw_reports.items():
-            if not isinstance(module, str) or not isinstance(raw, dict):
-                raise ValueError("Invalid create_tools report.")
-            findings = raw.get("findings")
-            digest = raw.get("digest")
-            if not isinstance(findings, (list, tuple)) or not isinstance(digest, str):
-                raise ValueError("Invalid create_tools report.")
-            reports[module] = ValidationReport(
-                digest, tuple(Finding(**item) for item in findings if isinstance(item, dict))
-            )
         return CreateToolsContext(
             intent=str(payload.get("intent", "")),
             run_id=str(payload.get("run_id", "")),
@@ -126,7 +115,10 @@ class CreateTools(WorkflowPlugin):
             phase_iteration=payload_int(payload.get("phase_iteration"), 0),
             plans=plans,
             predecessors={str(name): str(digest) for name, digest in raw_prior.items()},
-            reports=reports,
+            reports={
+                str(module): ValidationReport.from_payload(raw)
+                for module, raw in raw_reports.items()
+            },
             static_only=payload.get("static_only") is True,
             fail_reason=str(payload.get("fail_reason", "")),
             shared_memory=memory,

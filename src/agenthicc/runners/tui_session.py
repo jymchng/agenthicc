@@ -1841,6 +1841,7 @@ class TUISession:
             cfg=ctx.cfg,
             skills=ctx.reload.skills,
             tool_surface=ctx.reload.tools,
+            reload_service=ctx.reload,
             mcp_registry=ctx.mcp_registry,
             mention_cache=ctx.mention_cache,
             agents_registry=ctx.agents_registry,

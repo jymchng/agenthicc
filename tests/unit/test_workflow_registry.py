@@ -130,6 +130,7 @@ class TestBuildWorkflowRegistry:
             "copy_website",
             "create_workflow",
             "goal_flow",
+            "create_skills",
             "create_tools",
             "make_book",
             "reconstruct_site",

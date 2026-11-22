@@ -8322,3 +8322,44 @@ workers pin the generation selected at spawn.
 effective tool registry, and execution policy at spawn. The spawn tool can
 resolve this selection from a live session or use its parent worker's pinned
 selection.
+
+
+### SkillValidation
+
+A record containing the parsed `SkillDef`, when available, and the canonical
+loader diagnostics. `ok` is true when a skill was parsed without errors.
+
+### validate_skill_dir
+
+`agenthicc.skills.loader.validate_skill_dir(path, *, source)` parses one skill
+directory through the same implementation used by discovery.
+
+### CreateSkills
+
+The built-in `create_skills` workflow stages a complete project skill set.
+The session publishes validated skills and refreshes commands and skill
+inventory before returning to its parent.
+
+### CreateSkillsContext
+
+The typed run cursor, planned skills, exact file inventory, validation
+reports, and per-run repair budget.
+
+### CreateSkillsParams
+
+Per-phase model overrides for design, write, and validate.
+
+### CreateSkillsRunner
+
+The driver for the four skill authoring phases. It uses the session's command
+and skill preview against staged sources and delegates publication to the
+session.
+
+### CreateSkillsState
+
+The phase or terminal outcome of a skill authoring run.
+
+### SkillPlan
+
+The agreed slug, metadata, tool restrictions, and Markdown support files for
+one skill in the set.

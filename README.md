@@ -47,6 +47,7 @@ All ten registered workflows, including the parallel_code_plan coordinator:
 | `create_workflow` | Author new workflows interactively |
 | `goal_flow` | Clarify an intent into an ordered goal list, then implement and verify each goal before summarizing |
 | `create_tools` | Author and publish one or more project-local tools |
+| `create_skills` | Author and publish reusable project skills |
 | `make_book` | Write a technical book chapter by chapter, one phase per chapter |
 | `copy_website` | Study a website with Playwright and rebuild it as a mobile-friendly Next.js application |
 | `reconstruct_site` | Reconstruct a reference website through evidence-first responsive research, implementation, and validation phases |
@@ -490,7 +491,7 @@ The kernel `AppState` and the reactive TUI `AppState` are different types with d
 
 Explicit skills use the `$skill-name` or `$alias` trigger; `/` remains reserved for commands. `/commands` lists slash commands only; use `/skills` to inspect discovered skills. The former `/skill-name` spelling is not executed.
 
-Agents can discover and read skills during a turn with `list_skills` and `use_skill`. The skill’s frontmatter controls whether the agent can load it. See [skills and plugins](./docs/guides/plugins.md#skills).
+Use `/workflow call create_skills <intent>` to author reusable project skills. The session validates the full set and reloads published skills before the parent resumes. Agents can discover and read skills during a turn with `list_skills` and `use_skill`. The skill’s frontmatter controls whether the agent can load it. See [skills and plugins](./docs/guides/plugins.md#skills).
 
 In a registry overlay, press Enter on an entry to open its details. Press Enter again on the details page to place the invocation in the input panel: `/workflow <name>` for workflows, the command's canonical `/name` for commands, and `$<skill-name>` for skills. The text is prepared but not submitted.
 
