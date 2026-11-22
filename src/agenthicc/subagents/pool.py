@@ -147,6 +147,38 @@ _FINAL_RESPONSE_CONTRACT = (
     "Do not finish with only a list such as 'Executed tool call(s): read_file'."
 )
 
+#: Where a cut-off reply is saved, relative to the parent session's workspace root.
+#: The directory carries its own ``.gitignore``, so nothing in it is ever committed.
+_OVERFLOW_DIR = Path(".agenthicc") / "subagent-output"
+
+
+def _long_output_section(limit_tokens: int) -> str:
+    """Tell a worker that can write files what to do with content too long to reply."""
+    return (
+        "\n\n## LONG OUTPUT\n"
+        f"One reply can hold about {limit_tokens:,} tokens. A longer reply is cut off and "
+        "your task fails. When the content you must produce is long — a large file, a full "
+        "rewrite, a long report — write it to a file in the workspace with a write tool, "
+        "reread enough of it to confirm it is complete, and put that file's path and a short "
+        "summary in your final response instead of the content. This applies even when the "
+        "task asks for full or verbatim content. Content that fits comfortably in one reply "
+        "goes in the final response as usual."
+    )
+
+
+def _overflow_file_name(task_id: str, attempt: int) -> str:
+    """A file name for one attempt's cut-off reply; *task_id* is model-influenced."""
+    safe = "".join(char if char.isalnum() or char in "._-" else "_" for char in task_id)
+    return f"{safe.strip('.') or 'worker'}-attempt{attempt}.md"
+
+
+def _write_overflow_file(directory: Path, name: str, text: str) -> None:
+    directory.mkdir(parents=True, exist_ok=True)
+    guard = directory.parent / ".gitignore"
+    if not guard.exists():
+        guard.write_text("*\n", encoding="utf-8")
+    (directory / name).write_text(text, encoding="utf-8")
+
 
 def _set_tool_input_schema(tool: object, schema: JSONMapping) -> None:
     """Set a dynamic result tool's provider schema to its declared contract."""
@@ -589,6 +621,9 @@ class SubagentResult:
     #: Where changes that were not applied are preserved (branch and worktree).
     branch: str = ""
     workspace: str = ""
+    #: Where a reply cut off by the output-token limit was saved, relative to the
+    #: parent's workspace root; empty when nothing was saved.
+    output_file: str = ""
 
 
 def _worker_context_window(
@@ -1703,6 +1738,32 @@ class SubagentWorker:
     def _evidence_required(self) -> bool:
         return self._spec.completion_evidence != "none"
 
+    async def _save_cut_off_reply(self, text: str) -> str:
+        """Save a reply the output-token limit cut off; return where, or ``""``.
+
+        The file lives under the parent session's workspace root, which the
+        parent can read, and never in a worker's git worktree, whose files are
+        applied back as changes. Saving is a convenience: a failure to save is
+        logged and leaves the worker's failure exactly as it was.
+        """
+        access = self._parent_workspace_access
+        if access is None or not text.strip():
+            return ""
+        root = access.scope.primary_root
+        target = root / _OVERFLOW_DIR / self._pool_id
+        attempt = self._progress.attempt if self._progress is not None else 1
+        name = _overflow_file_name(self._task.task_id, attempt)
+        # The scope decides: a ``.agenthicc`` that is a symlink out of the
+        # workspace must not redirect the write.
+        if not access.scope.resolve(target / name, operation="write", probe_exists=False).in_scope:
+            return ""
+        try:
+            await asyncio.to_thread(_write_overflow_file, target, name, text)
+        except OSError:
+            log.exception("failed to save the cut-off reply of %s", self.label)
+            return ""
+        return str((_OVERFLOW_DIR / self._pool_id / name).as_posix())
+
     async def _finalise(self, text: str, duration_ms: float) -> SubagentResult:
         """Decide a finished run's outcome from what the runtime observed.
 
@@ -1721,7 +1782,12 @@ class SubagentWorker:
         }
 
         def failed(
-            *, error: str, stop_reason: str, text: str = "", error_code: str = ""
+            *,
+            error: str,
+            stop_reason: str,
+            text: str = "",
+            error_code: str = "",
+            output_file: str = "",
         ) -> SubagentResult:
             return SubagentResult(
                 ok=False,
@@ -1730,6 +1796,7 @@ class SubagentWorker:
                 partial=bool(text),
                 stop_reason=stop_reason,
                 error_code=error_code,
+                output_file=output_file,
                 undelivered_messages=undelivered,
                 **base,
             )
@@ -1750,13 +1817,16 @@ class SubagentWorker:
             )
 
         if self._limit_stop == "output_truncated":
+            saved = await self._save_cut_off_reply(text)
             return failed(
                 error=(
                     f"{self._spec.name}'s reply was cut off by the output-token limit; "
                     "what it wrote is incomplete"
+                    + (f"; the partial reply is saved at {saved}" if saved else "")
                 ),
                 stop_reason="output_truncated",
                 text=partial_text,
+                output_file=saved,
             )
 
         if self._spec.output_schema is not None:
@@ -2050,6 +2120,8 @@ class SubagentWorker:
             )
         if self._spec.output_schema is None:
             system += _FINAL_RESPONSE_CONTRACT
+            if mutating_tools:
+                system += _long_output_section(_worker_output_tokens(self._execution_settings))
         else:
             system += (
                 "\n\n## STRUCTURED RESULT CONTRACT\n"

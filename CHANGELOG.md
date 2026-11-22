@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — long subagent output goes to a file
+
+- **A cut-off reply is saved.** When a worker's reply stops at the output-token
+  limit, the partial text is written to
+  `.agenthicc/subagent-output/<pool id>/<task id>-attempt<N>.md` under the parent
+  session's workspace root (never in a worker's git worktree). The failure names
+  the path and `SubagentResult.output_file` carries it. The worker still fails: an
+  incomplete reply is not a result. The directory is self-ignoring (`.gitignore`
+  with `*`), saving is skipped if the path would leave the workspace, and a failed
+  save never changes the failure.
+- **Workers are told to use a file for long output.** A worker with a write tool
+  gets a `## LONG OUTPUT` section naming its reply limit: content too long for one
+  reply is written to a file, checked, and returned by path, even when the task asks
+  for full or verbatim content.
+
 ### Removed — subagents have no limits
 
 A subagent pool died after ten minutes, and eight of its nine workers ran out of
