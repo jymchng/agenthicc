@@ -157,9 +157,10 @@ and their callers updated in the same change.
 ## Amendment — 2026-11-22
 
 Lauren-ai 1.6.2 computes provider schemas once before the loop in both
-`run` and `run_stream`. In the spike a tool replaced the agent's registered
-tool map. The next request in the same run still advertised the earlier map.
-The first request in the next run advertised the replacement. Apply the
-fallback in §5.2 and omit the tool-boundary refresh. A7 is inapplicable.
-The first request after a return is still covered by §5.3 and A1.
-Evidence is `test_lauren_snapshots_tool_schemas_at_start_of_run`.
+`run` and `run_stream`. Replacing the agent's tool map alone leaves the old
+schemas on the next request. The follow-up probe retained the list returned by
+`_get_tool_schemas` and updated it in place alongside the tool map before
+the next request. Both loops then advertised and successfully dispatched the
+new tool in the same run. Use the existing tool-boundary runner hook to refresh
+that list for WFC-08 A7 and to narrow it for WFC-10. Keep the new-turn guarantee
+in §5.3. Evidence is `test_lauren_tool_schema_refresh_between_requests`.
