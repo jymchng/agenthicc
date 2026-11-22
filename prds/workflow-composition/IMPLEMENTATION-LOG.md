@@ -13,7 +13,7 @@ Branch `feat/workflow-composition` starts at `5100c8c` from fetched
 | 4 | M4 pushed | WFC-02 workflow entry and inspection. The remote tip matched `4c5e0cc`. |
 | 5 | M5 pushed | WFC-06 authoring, publication, and immediate use. Pre-push checks passed and the remote tip matched `35165f3`. |
 | 6 | M6 pushed | WFC-08 and WFC-07 passed the complete local gate and pre-push hooks. The remote tip matched `b24f9dc`. |
-| 7 | M7 verified locally | WFC-09 and S5 passed the full local gate. |
+| 7 | M7 pushed | WFC-09 and S5 passed the full local gate and push hooks. The remote tip matched `d983ae5`. |
 | 8 | Pending | WFC-04 and WFC-03. |
 | 9 | Pending | WFC-12 and WFC-13 close-out. |
 
@@ -22,7 +22,7 @@ Branch `feat/workflow-composition` starts at `5100c8c` from fetched
 | WFC-01 | Implemented | `f0eb339`. See the PRD for stack, child resume and return-delivery evidence. |
 | WFC-02 | Implemented | Model entry, pending handoff, and status in the TUI and headless workflow owner. See the PRD for A1–A6 evidence. |
 | WFC-03 | Pending | — |
-| WFC-04 | Spike complete | Nested mapping confirmed with a correction to optional keys in the published schema. |
+| WFC-04 | Implemented | The S2 worker tests passed for disjoint parallel staging, cancellation, mixed tasks, typed failure, and parent-owned publication. |
 | WFC-05 | Implemented | `c757516`, `7bd642c`. Both runners use the service. See the PRD for A1–A7 evidence. |
 | WFC-06 | Implemented | Session-owned publication, exact predecessor checks, and the S3 acceptance scenario. WFC-04 exercises the workflow-worker integration. |
 | WFC-07 | Implemented | Plans and validates the complete tool set, then publishes it before the parent resumes. S4 observes immediate dispatch and atomic failure. |
@@ -332,3 +332,12 @@ The verification logs are `/var/tmp/agenthicc-wfc-m5-*.log`.
   tests, and 248 E2E tests with two skips. Ruff check and format, mypy, type
   audit, strict MkDocs, and the public-symbol check passed.
 - All nine performance tests passed.
+
+## WFC-04 verification
+
+The focused run passed 519 unit, integration, and E2E tests on Python 3.13.
+It covers headless workflow execution, worker dispatch, stack sessions, and
+the self-extension scenarios. Ruff check and format, mypy on 438 source files,
+the type-audit ratchet, strict MkDocs, and the public-symbol check passed.
+The logs are `/var/tmp/agenthicc-wfc-m8-wfc04-*.log`. The full M8 gate follows
+durable stack recovery.

@@ -8363,3 +8363,26 @@ The phase or terminal outcome of a skill authoring run.
 
 The agreed slug, metadata, tool restrictions, and Markdown support files for
 one skill in the set.
+
+
+### WorkflowWorker
+
+A subagent that runs a pinned workflow and typed parameters. It inherits the
+worker policy, uses a separate conversation and checkpoint root, and reports
+a bounded return with phases and staged artifacts. The parent session handles
+publication.
+
+### WorkflowTaskSelection
+
+The eligible definition and parameters pinned when a workflow worker is
+admitted. Mutating and authoring workflows require an isolated worktree.
+
+### WorkflowTaskRefusal
+
+The workflow name, typed refusal code, and reason for one rejected worker task.
+
+### run_workflow_core
+
+`agenthicc.runners.workflow_execution.run_workflow_core` builds and invokes a
+workflow runner under its execution binding. Headless session owners and
+workflow workers both use it with their own handles and workspace policies.

@@ -16,6 +16,7 @@ from agenthicc.tools.approval import ApprovalRequest
 from agenthicc.tools.capabilities import tool_control, tool_read
 
 if TYPE_CHECKING:
+    from agenthicc.runners.workflow_execution import WorkflowWorkerRuntime
     from collections.abc import Callable, Iterator
 
     from agenthicc.config import AgenthiccConfig
@@ -124,6 +125,7 @@ class WorkflowToolScope:
         approval: ApprovalBroker | None,
         headless: bool,
         worker_frame: FrameListing | None = None,
+        worker_runtime: WorkflowWorkerRuntime | None = None,
     ) -> None:
         self.stack = stack
         self.registry = registry
@@ -132,6 +134,7 @@ class WorkflowToolScope:
         self._approval = approval
         self._headless = headless
         self._worker_frame = worker_frame
+        self.worker_runtime = worker_runtime
         self._pending: WorkflowCall | None = None
         self._lock = asyncio.Lock()
 
@@ -143,6 +146,7 @@ class WorkflowToolScope:
             active_mode=self._active_mode,
             approval=None,
             headless=self._headless,
+            worker_runtime=self.worker_runtime,
             worker_frame={
                 "frame_id": frame_id,
                 "name": agent_type,
@@ -159,6 +163,10 @@ class WorkflowToolScope:
     @property
     def pending(self) -> WorkflowCall | None:
         return self._pending
+
+    @property
+    def is_worker(self) -> bool:
+        return self._worker_frame is not None
 
     def _allows_call(self, plugin: type[WorkflowPlugin]) -> EntryRefusal | None:
         if not plugin.invocation.agent_callable:

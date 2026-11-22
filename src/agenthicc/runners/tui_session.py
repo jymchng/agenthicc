@@ -2108,6 +2108,7 @@ class TUISession:
         return True
 
     def _make_workflow_tools(self) -> WorkflowToolScope:
+        from agenthicc.runners.workflow_execution import WorkflowWorkerRuntime
         from agenthicc.workflows.stack_tools import WorkflowToolScope
 
         ctx = self._ctx
@@ -2118,6 +2119,7 @@ class TUISession:
             active_mode=ctx.app_state.active_mode,
             approval=ctx.approval_svc,
             headless=False,
+            worker_runtime=WorkflowWorkerRuntime(self._wf_config_base, ctx.authored),
         )
 
     def _suspend_workflow_for_child(self) -> None:

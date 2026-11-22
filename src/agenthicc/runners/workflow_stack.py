@@ -110,6 +110,16 @@ class WorkflowReturn:
         )
         return "\n".join(lines)
 
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "frame_id": self.frame_id,
+            "workflow_name": self.workflow_name,
+            "status": self.status,
+            "summary": self.summary,
+            "outputs": dict(self.outputs),
+            "artifacts": [artifact.to_dict() for artifact in self.artifacts],
+        }
+
 
 @dataclass(frozen=True, slots=True)
 class WorkflowCall:

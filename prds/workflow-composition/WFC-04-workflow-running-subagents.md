@@ -1,6 +1,6 @@
 ---
 title: "WFC-04: Subagents that run a workflow"
-status: Proposed
+status: Implemented
 version: 1.0.0
 date: 2026-11-22
 repository: jymchng/agenthicc
@@ -185,3 +185,18 @@ key required. Use concrete runtime field types and extend the existing
 and `params`. This preserves the mapping encoding shared with WFC-02
 and allows existing callers to omit new fields. Evidence is
 `test_nested_workflow_params_schema_requires_optional_keys_in_raw_schema`.
+
+## Implementation status
+
+| Criterion | Evidence |
+|---|---|
+| A1 | `test_workflow_worker_stages_tools_in_its_own_worktree` exercises the real tool author in stage-only and automatic publication modes. |
+| A2 | `test_parallel_tool_authors_keep_their_staging_separate` synchronizes two authors and inspects both worktrees and the main workspace. |
+| A3 | `test_interactive_worker_request_does_not_start_or_refuse_its_sibling` observes the typed refusal and the ordinary worker's completion. |
+| A4 | `test_failed_workflow_worker_reports_the_failure_and_executed_phases` observes a budget-exhausted authoring run in the pool result. |
+| A5 | The blocked-write case of `test_each_ineligible_workflow_has_a_deterministic_refusal` checks the admission policy. |
+| A6 | Workflow tasks use the pool's existing task, timeout, and turn limits. The source diff adds no numeric limits to this path. |
+| A7 | One `run_workflow_core` definition is called from headless execution and `WorkflowWorker`. Both entry points are exercised by the focused test run. |
+
+The real worker test also covers cancellation with staging retained and
+parent-owned publication of a workflow authored inside a worker worktree.

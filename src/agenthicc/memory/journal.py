@@ -1067,6 +1067,7 @@ class ConversationJournal:
         not_started: bool = False,
         blocked_calls: list[str] | None = None,
         turns: int = 0,
+        workflow: Mapping[str, object] | None = None,
     ) -> None:
         """Persist one worker result, including its complete final text.
 
@@ -1121,6 +1122,8 @@ class ConversationJournal:
             entry["cleanup_error"] = str(cleanup_error)[:240]
         if not_started:
             entry["not_started"] = True
+        if workflow is not None:
+            entry["workflow"] = dict(workflow)
         self._write(entry)
 
     def subagent_pool_result(
@@ -1205,6 +1208,7 @@ class ConversationJournal:
         failed: int,
         text: str,
         values: list[Mapping[str, object]] | None = None,
+        workflow_returns: tuple[dict[str, object], ...] = (),
     ) -> None:
         """Persist a terminal pool aggregate, including partial failures."""
         entry: dict[str, object] = {
@@ -1220,6 +1224,8 @@ class ConversationJournal:
         }
         if values is not None:
             entry["values"] = [dict(value) for value in values]
+        if workflow_returns:
+            entry["workflow_returns"] = list(workflow_returns)
         self._write(entry)
 
     def subagent_pool_cancelled(self, *, pool_id: str, reason: str = "session closed") -> None:

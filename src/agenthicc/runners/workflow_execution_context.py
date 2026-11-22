@@ -14,8 +14,10 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Iterator
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Mapping
     from agenthicc.runners.run_coordinator import ResumePlan
     from agenthicc.subagents.policy import SubagentExecutionPolicy
+    from agenthicc.tools.base import ToolLike
     from agenthicc.tui.runtime.mode_manager import RuntimeMode
 
 
@@ -26,6 +28,8 @@ class _WorkflowExecution:
     resume_plan_consumed: bool = False
     policy: SubagentExecutionPolicy | None = None
     model_request: str = ""
+    observe_tool: Callable[[str, Mapping[str, object], object], None] | None = None
+    worker_tools: tuple[ToolLike, ...] = ()
 
 
 _current_execution: ContextVar[_WorkflowExecution | None] = ContextVar(
@@ -40,13 +44,20 @@ def bind_workflow_execution(
     resume_plan: "ResumePlan | None" = None,
     policy: SubagentExecutionPolicy | None = None,
     model_request: str = "",
+    observe_tool: Callable[[str, Mapping[str, object], object], None] | None = None,
+    worker_tools: tuple[ToolLike, ...] = (),
 ) -> Iterator[None]:
     """Bind a workflow ID and optionally one plan for its first agent turn."""
 
     if not isinstance(run_id, str) or not run_id.strip():
         raise ValueError("workflow run_id must be a non-empty string")
     execution = _WorkflowExecution(
-        run_id=run_id, resume_plan=resume_plan, policy=policy, model_request=model_request
+        run_id=run_id,
+        resume_plan=resume_plan,
+        policy=policy,
+        model_request=model_request,
+        observe_tool=observe_tool,
+        worker_tools=worker_tools,
     )
     token = _current_execution.set(execution)
     try:
@@ -58,6 +69,16 @@ def bind_workflow_execution(
 def current_workflow_policy() -> SubagentExecutionPolicy | None:
     execution = _current_execution.get()
     return execution.policy if execution is not None else None
+
+
+def current_workflow_tool_observer() -> Callable[[str, Mapping[str, object], object], None] | None:
+    execution = _current_execution.get()
+    return execution.observe_tool if execution is not None else None
+
+
+def current_workflow_worker_tools() -> tuple[ToolLike, ...]:
+    execution = _current_execution.get()
+    return execution.worker_tools if execution is not None else ()
 
 
 def current_workflow_request() -> str:

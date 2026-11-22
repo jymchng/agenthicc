@@ -780,6 +780,11 @@ class _ToolOutputCaptureHook(LifecycleHook):
         result: object,
         ctx: ToolCallContext,
     ) -> AfterToolHookDecision:
+        from agenthicc.runners.workflow_execution_context import current_workflow_tool_observer
+
+        observer = current_workflow_tool_observer()
+        if observer is not None:
+            observer(ctx.tool_name, ctx.tool_input, result)
         self._outputs[ctx.tool_use_id] = _capture_tool_result(
             ctx.tool_name,
             ctx.tool_input,
@@ -1491,6 +1496,7 @@ class AgentTurnRunner:
         from agenthicc.runners.workflow_execution_context import (
             current_workflow_policy,
             current_workflow_request,
+            current_workflow_worker_tools,
         )
         from agenthicc.skills.tools import (
             SKILL_CONTEXT_GUIDANCE,
@@ -1532,21 +1538,24 @@ class AgentTurnRunner:
         # read the shared catalog and can observe a reload between requests.
         holder = ctx.tool_surface
         catalog = holder.current() if holder is not None else None
-        session_controls: list[ToolLike] = []
+        session_controls = list(current_workflow_worker_tools())
+        workflow_tools = current_workflow_tools()
+        workflow_worker = workflow_tools is not None and workflow_tools.is_worker
 
         def registry_for(surface: ToolSurface | None) -> ToolRegistry:
             discovered = surface.tools if surface is not None else ()
             result = build_registry(
-                agent_name=ctx.active_agent or "default",
+                agent_name=None if workflow_worker else ctx.active_agent or "default",
                 extra_tools=[*discovered, *(ctx.extra_tools or []), *mcp_tools],
             )
             if self._skill_state is not None:
                 result.register(list_skills, source="builtin")
                 result.register(use_skill, source="builtin")
-            if current_workflow_tools() is not None:
-                result.register(list_workflows, source="builtin")
+            if workflow_tools is not None:
                 result.register(workflow_status, source="builtin")
-                result.register(enter_workflow, source="builtin")
+                if not workflow_worker:
+                    result.register(list_workflows, source="builtin")
+                    result.register(enter_workflow, source="builtin")
             result.register_many(session_controls, source="builtin")
             return result
 
@@ -1556,6 +1565,25 @@ class AgentTurnRunner:
         if workflow_policy is not None:
             excluded_capabilities |= workflow_policy.blocked_capabilities
         allowed_tool_names = ctx.allowed_tool_names
+        if workflow_worker and workflow_policy is not None:
+            from agenthicc.tools.capabilities import ToolCapability
+
+            phase_controls = {
+                tool_name(tool)
+                for tool in ctx.extra_tools or ()
+                if ToolCapability.CONTROL in get_tool_capabilities(tool)
+            }
+            phase_controls.update(map(tool_name, session_controls))
+            scoped_names = frozenset(
+                name
+                for name in registry.names
+                if workflow_policy.capability_scope.is_tool_allowed(name)
+                or name in phase_controls
+                or name == "workflow_status"
+            )
+            allowed_tool_names = (
+                scoped_names if allowed_tool_names is None else scoped_names & allowed_tool_names
+            )
         gate_state = ctx.app_state
         agent_section = ""
         if ctx.agent_spec is not None:
@@ -1786,7 +1814,7 @@ class AgentTurnRunner:
 
         # PRD-124: inject spawn_subagents into every turn so any agent can
         # optionally spawn a concurrent subagent pool.
-        if ctx.runner is not None:
+        if ctx.runner is not None and not workflow_worker:
             from agenthicc.runners.retry import RetryConfig
             from agenthicc.subagents.policy import SubagentExecutionPolicy
             from agenthicc.subagents.tool import SubagentToolSelection, make_spawn_subagents_tool

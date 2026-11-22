@@ -26,7 +26,7 @@ import hashlib
 import json
 import re
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, TypedDict, cast
 
 from agenthicc.config import SubagentSettings
@@ -41,12 +41,19 @@ from agenthicc.subagents.policy import SubagentExecutionPolicy
 from agenthicc.tools.surface import ToolSurface
 from agenthicc.subagents.pool import (
     SubagentTask,
+    _is_mutating_tool,
     _redact_result_value,
     tool_tags,
     type_surface,
     unusable_reason,
 )
 from agenthicc.subagents.types import SubagentTypeRegistry, SubagentTypeSpec
+from agenthicc.subagents.workflow_task import (
+    WorkflowTaskAdmission,
+    WorkflowTaskRefusal,
+    WorkflowTaskSelection,
+    workflow_task_admission,
+)
 from agenthicc.tools.base import tool_name
 
 if TYPE_CHECKING:
@@ -100,6 +107,8 @@ class _SpawnTaskInput(TypedDict):
     # while its current TypedDict walker does not yet understand PEP 655's
     # ``NotRequired`` marker.
     context: str | None
+    workflow: str | None
+    params: dict[str, str] | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -302,6 +311,8 @@ def make_spawn_subagents_tool(
                    - type (str): Agent type name.
                    - task (str): Description of what this subagent should do.
                    - context (str, optional): Additional background context.
+                   - workflow (str, optional): Run an eligible named workflow.
+                   - params (mapping, optional): String parameters for that workflow.
             max_concurrent: Maximum number of subagents running at once; it must not exceed the configured pool limit.
             timeout_s: Maximum wall-clock seconds for each worker in this call
                        (default 3600, or one hour).
@@ -434,6 +445,7 @@ def make_spawn_subagents_tool(
 
         # Validate and convert task dicts into SubagentTask dataclasses.
         subagent_tasks: list[SubagentTask] = []
+        requested_workflows: dict[str, tuple[str, object]] = {}
         for i, raw in enumerate(tasks):
             if not isinstance(raw, dict):
                 return {
@@ -462,6 +474,16 @@ def make_spawn_subagents_tool(
                     context=context,
                 )
             )
+            workflow_name = raw_mapping.get("workflow")
+            if workflow_name is not None:
+                if not isinstance(workflow_name, str) or not workflow_name.strip():
+                    return {"ok": False, "error": f"tasks[{i}].workflow must be a name"}
+                requested_workflows[f"task-{i}"] = (
+                    workflow_name.strip(),
+                    raw_mapping.get("params"),
+                )
+            elif raw_mapping.get("params") is not None:
+                return {"ok": False, "error": f"tasks[{i}].params requires a workflow"}
 
         if not subagent_tasks:
             return {"ok": False, "error": "tasks list is empty", **pool_metadata}
@@ -481,8 +503,44 @@ def make_spawn_subagents_tool(
             if spawn_policy is not None:
                 spawn_policy = spawn_policy.restrict_by(None, allowed_tools=skill_use.visible_names)
         spawn_selection = SubagentToolSelection(spawn_surface, selection.registry, spawn_policy)
+        if requested_workflows:
+            from agenthicc.workflows.stack_tools import current_workflow_tools
+
+            scope = current_workflow_tools()
+            for index, task in enumerate(subagent_tasks):
+                request = requested_workflows.get(task.task_id)
+                if request is None:
+                    continue
+                workflow_name, arguments = request
+                spec = _registry.get(task.agent_type)
+                assert spec is not None
+                tools, blocked = type_surface(
+                    spec, spawn_surface.tools, selection.registry, (spawn_policy, spec.policy)
+                )
+                picked: WorkflowTaskAdmission
+                if scope is None or scope.worker_runtime is None:
+                    picked = WorkflowTaskRefusal(
+                        workflow_name,
+                        "workflow_runtime_unavailable",
+                        "This agent has no active workflow runtime.",
+                    )
+                else:
+                    picked = workflow_task_admission(
+                        workflow_name,
+                        arguments,
+                        scope.registry,
+                        scope.worker_runtime.config.cfg,
+                        blocked,
+                        can_write=any(_is_mutating_tool(tool) for tool in tools),
+                    )
+                if isinstance(picked, WorkflowTaskSelection):
+                    subagent_tasks[index] = replace(task, workflow=picked)
+                else:
+                    subagent_tasks[index] = replace(task, workflow_refusal=picked)
         unavailable: dict[str, str] = {}
-        for requested_type in dict.fromkeys(task.agent_type for task in subagent_tasks):
+        for requested_type in dict.fromkeys(
+            task.agent_type for task in subagent_tasks if task.task_id not in requested_workflows
+        ):
             reason = _type_unavailable(requested_type, spawn_selection)
             if reason:
                 unavailable[requested_type] = reason
@@ -649,7 +707,11 @@ def make_spawn_subagents_tool(
                     "results": "This logical turn already started this subagent pool.",
                 }
 
-        cached = _find_cached_result(conv_store, fp, journal=conversation_journal)
+        cached = (
+            _find_cached_result(conv_store, fp, journal=conversation_journal)
+            if not requested_workflows
+            else None
+        )
         if cached is not None:
             cached_values = _find_cached_values(
                 conv_store,
@@ -929,6 +991,11 @@ def make_spawn_subagents_tool(
             "results": result.text,
             "values": structured_values,
             "usage": result.usage.to_dict(),
+            **(
+                {"workflow_returns": list(result.workflow_returns)}
+                if result.workflow_returns
+                else {}
+            ),
             **pool_metadata,
         }
 
@@ -1243,7 +1310,9 @@ def _augment_type_schema(
     # than forcing providers to send an empty context string.
     required = item_schema.get("required")
     if isinstance(required, list):
-        item_schema["required"] = [name for name in required if name != "context"]
+        item_schema["required"] = [
+            name for name in required if name not in {"context", "workflow", "params"}
+        ]
     type_schema = item_properties.get("type")
     if isinstance(type_schema, dict):
         type_schema["enum"] = _known_type_names(registry)

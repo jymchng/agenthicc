@@ -1368,6 +1368,7 @@ def _finished_pool_payload(handle: PoolHandle) -> dict[str, object]:
         "failed": result.failed,
         "results": result.text,
         "values": [dict(value) for value in result.values],
+        **({"workflow_returns": list(result.workflow_returns)} if result.workflow_returns else {}),
         "usage": result.usage.to_dict(),
     }
 
@@ -1412,6 +1413,7 @@ def _journaled_pool_payload(
 
     text = record.get("text", "")
     values = record.get("values", [])
+    workflow_returns = record.get("workflow_returns")
     failed = count("failed")
     return {
         "ok": status == "completed" and failed == 0,
@@ -1424,4 +1426,5 @@ def _journaled_pool_payload(
         "values": [dict(value) for value in values if isinstance(value, Mapping)]
         if isinstance(values, list)
         else [],
+        **({"workflow_returns": workflow_returns} if isinstance(workflow_returns, list) else {}),
     }

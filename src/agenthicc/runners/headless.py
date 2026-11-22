@@ -21,6 +21,7 @@ from agenthicc.runners.failure_kinds import failure_reason, reported_failure
 from agenthicc.runners.workflow_handle import classify_workflow_failure
 
 if TYPE_CHECKING:
+    from agenthicc.runners.workflow_execution import WorkflowWorkerRuntime
     from lauren_ai._agents._runner import AgentRunnerBase
 
     from agenthicc.cli.context import CLIContext
@@ -328,6 +329,7 @@ async def _execute_workflow_turn(
         active_mode=lambda: session.app_state.active_mode(),
         approval=session.approval_svc,
         headless=True,
+        worker_runtime=_workflow_worker_runtime(session),
     )
     try:
         with bind_workflow_tools(tools):
@@ -452,6 +454,34 @@ async def _deliver_headless_return(
     return None
 
 
+def _workflow_worker_runtime(session: SessionContext) -> WorkflowWorkerRuntime:
+    from agenthicc.runners.workflow_execution import WorkflowWorkerRuntime
+    from agenthicc.workflows.config import WorkflowConfig
+
+    config = WorkflowConfig(
+        conv_store=session.app_state.conversation,
+        app_state=session.app_state,
+        processor=session.processor,
+        agent_runner=session.agent_runner,
+        approval_svc=session.approval_svc,
+        cfg=session.cfg,
+        skills=session.reload.skills,
+        tool_surface=session.reload.tools,
+        reload_service=session.reload,
+        mcp_registry=session.mcp_registry,
+        mention_cache=session.mention_cache,
+        agents_registry=session.agents_registry,
+        subagent_registry=session.subagent_registry,
+        memory_router=session.memory_router,
+        semantic_index=session.semantic_index,
+        conversation_id=session.session_id,
+        usage_ledger=session.usage_ledger,
+        workspace_scope=session.workspace_scope,
+        workspace_access=session.workspace_access,
+    )
+    return WorkflowWorkerRuntime(config, session.authored)
+
+
 async def _run_headless_agent_turn(
     session: SessionContext, text: str, completed_turns: int
 ) -> None:
@@ -469,6 +499,7 @@ async def _run_headless_agent_turn(
         active_mode=session.app_state.active_mode,
         approval=session.approval_svc,
         headless=True,
+        worker_runtime=_workflow_worker_runtime(session),
     )
     conversation = session.session_conversation
     owner = (
@@ -844,7 +875,6 @@ async def _execute_registered_workflow(
                 phase.name: phase.terminal_wait_policy for phase in workflow_cls.phases
             },
         )
-        runner = workflow_cls.build_runner(workflow_config, session.mode_manager)
         if session_service is not None:
             await session_service.publish(
                 session.session_id,
@@ -852,24 +882,18 @@ async def _execute_registered_workflow(
                 kind="workflow_started",
                 payload={"workflow": workflow_name, "intent": effective_intent},
             )
-        if workflow_handle is not None:
-            from agenthicc.runners.workflow_execution_context import (
-                bind_workflow_execution,
-            )
+        from agenthicc.runners.workflow_execution import run_workflow_core
 
-            with bind_workflow_execution(
-                workflow_handle.run_id,
-                resume_plan=resume_plan,
-                policy=frame.policy if frame.depth else None,
-                model_request=frame.model_request(),
-            ):
-                runner_result = (
-                    await runner.resume(workflow_handle.context)
-                    if resuming
-                    else await runner.run(intent)
-                )
-        else:
-            runner_result = await runner.run(intent)
+        runner_result = await run_workflow_core(
+            workflow_cls,
+            workflow_config,
+            session.mode_manager,
+            intent,
+            resume=resuming,
+            resume_plan=resume_plan,
+            policy=frame.policy if frame.depth else None,
+            model_request=frame.model_request(),
+        )
         # Specialized runners may intentionally return a typed FAILED state
         # after a phase-local agent/provider exception. That is not successful
         # completion: convert it to the same durable failure boundary used by
