@@ -156,7 +156,6 @@ spawn_subagents(
     timeout_s: float = 3600.0,
     model: str | None = None,  # operator-gated
     effort: str | None = None,  # operator-gated
-    budget: Budget | None = None,  # cost_usd / wall_clock_s (no token limit)
     background: bool = False,  # return "running" at once; see Background pools
 ) -> dict[str, object]
 ```
@@ -294,10 +293,10 @@ or `permission_denied` — and the worker made no successful change, it fails wi
 type. The refusal is also in `SubagentResult.blocked_calls`. The worker's own
 account ("I wrote out.txt") is kept only as partial output.
 
-**A cut-off run is a failure.** A worker that uses its whole turn limit ends with
-`stop_reason="max_turns"` (message `reached its N-turn limit before finishing`),
-and a reply stopped by the output-token limit with `output_truncated`. Neither
-starts another provider run; the text so far is partial output.
+**A cut-off reply is a failure.** A worker has no turn limit, so the only cut-off
+is a reply stopped by the output-token limit, which ends with
+`stop_reason="output_truncated"`. It starts no further provider run; the text so
+far is partial output.
 
 **An empty answer is not a result.** If a worker returns no final prose, it gets
 one finalisation turn. If it is still empty and it changed or ran something, the
@@ -590,100 +589,48 @@ at once. The number of task entries is separately bounded by
 `subagents.max_workers` (32 by default). Results are collected in the original
 task order even if workers finish in a different order.
 
-The pool also enforces aggregate budgets across all workers. There is no token
-budget: a subagent may use as many tokens as its task needs, and each worker
-may write as much in one reply as the main agent (`[execution]
-max_output_tokens`, not lauren-ai's 4,096-token default). Tokens are still
-counted and reported. A configuration that sets `subagents.max_tokens` or
-`subagents.max_budget.tokens` is refused at load and names the key.
+**Subagents have no limits.** A worker may use as many turns, tool calls, model
+calls, tokens, minutes and dollars as its task needs, and a pool has no
+aggregate ceiling on any of them: no turn limit, no tool-call or iteration
+budget, no total-time budget and no cost budget. Each worker may write as much
+in one reply as the main agent (`[execution] max_output_tokens`, not
+lauren-ai's 4,096-token default). The only bounds left are structural:
+`max_workers`, `max_concurrent`, `max_tasks`, `max_active_pools` and
+`max_depth`, plus the per-worker `timeout_s` below. Stopping a pool is
+something a person or the parent does on purpose (`stop_subagents`, or the
+panel), never something the runtime does for you because a counter ran out.
 
-| Setting | Default | Counts |
-|---|---:|---|
-| `subagents.max_tool_calls` | 256 | Tool calls started by workers |
-| `subagents.max_iterations` | 128 | Provider model calls made by workers (each completed call counts) |
-| `subagents.max_total_time_s` | 600 seconds | Elapsed wall-clock time before the pool budget action triggers |
-
-Each count may reach its configured limit; the pool crosses the budget when the
-next event would exceed it. The first exceeded budget becomes the pool's
-`budget_exceeded_reason`. `on_budget_exceeded = "drain"` (the default) lets
-running workers finish and prevents queued workers from starting; `"abort"`
-cancels running workers, subject to `stop_grace_s`. A budget-limited aggregate
-is reported with `status: "budget_exceeded"` and is never written as a
-successful resume-cache result, even if all workers happened to finish
-successfully during drain. The durable pool journal records it as `stopped`,
-with its counts, the aggregate of the workers that ran and the crossed limit,
-and the pool completion event and TUI summary include the reason. The wall-clock
-limit is a stop threshold, not a hard completion deadline:
-`drain` can take longer while active workers wind down, and `abort` may use the
-configured cleanup grace period.
-
-These values can be set in `agenthicc.toml`:
+The settings that used to cap a pool — `subagents.max_tool_calls`,
+`subagents.max_iterations`, `subagents.max_total_time_s`,
+`subagents.max_tokens`, `subagents.max_budget` and
+`subagents.on_budget_exceeded` — were removed. A configuration that still sets
+one is refused at load and names the key, and `spawn_subagents` no longer takes
+a `budget` argument or a type a `max_turns`.
 
 ```toml
 [subagents]
 max_workers = 32
 max_concurrent = 4
-max_tool_calls = 256
-max_iterations = 128
-max_total_time_s = 600.0
-on_budget_exceeded = "drain" # abort | drain
 stop_grace_s = 5.0
 ```
 
-### Pool usage and declared budgets
+### Pool usage
 
-Every pool reports what it spent. A worker's provider calls are recorded in the
-session usage ledger under a run id that names its pool
+Usage is counted and reported, never limited. A worker's provider calls are
+recorded in the session usage ledger under a run id that names its pool
 (`<parent run>:<pool id>:subagent:<task id>`), so a pool's usage is the sum of
 its workers' completed ledger records — the same records the session total is
-built from, never a second meter. The tool result carries:
+built from, never a second meter. The tool result and the
+`SubagentPoolCompleted` kernel event carry:
 
 - `usage`: `input_tokens`, `output_tokens`, `cache_read_tokens`,
   `cache_write_tokens`, `total_tokens` (input plus output), `calls`,
   `cost_usd` and `cost_status`. Cost is summed only over calls with a known
   cost; if any call's cost is unknown, `cost_status` is `unavailable` and
   `cost_usd` is `null`, never `0`.
-- `budget`: the same `usage`, the effective `limits`, the `declared` values,
-  where each limit came from (`sources`: `declared`, `settings_ceiling` or
-  `operator`), any `clamped_from` values, and — when a limit stopped the pool —
-  `crossed` (`reason`, `unit`, `source`, `stop_mode`).
 
-The `SubagentPoolCompleted` kernel event and the `subagent_pool_done` scroll
-event carry the same `budget` report. It holds counts and limits only, never
-prompt or result text.
-
-The model may declare a tighter budget for one call:
-
-```json
-{"tasks": [...], "budget": {"cost_usd": 0.25, "wall_clock_s": 120}}
-```
-
-Either or both of `cost_usd` and `wall_clock_s` may be given; `tokens` is
-refused, because subagents have no token limit. A declaration can only lower
-limits:
-
-- A declared `wall_clock_s` replaces `subagents.max_total_time_s` only when it
-  is lower; a larger value leaves the operator ceiling in force and reports its
-  source as `operator`.
-- `subagents.max_budget` caps what a call may declare. A larger declaration is
-  clamped down to it and reported in `clamped_from`.
-- A malformed budget — an unknown key, `tokens`, or a non-finite or
-  non-positive number — is refused before any worker starts, naming the field
-  (`budget_field`).
-- `cost_usd` is refused when the session has no usage ledger, or when a worker
-  would run on a model with no known price. lauren-ai prices unlisted models
-  at a flat fallback rate, and a limit metered against a guess is not a limit.
-
-Crossing an effective limit — declared or operator — is answered by the same
-stop policy as any operator ceiling (`on_budget_exceeded`). When a budget was
-declared or a limit was crossed, the `results` text ends with one line that
-states usage against the limits and names a crossed limit and its source, for
-example `CROSSED max_cost_usd_exceeded (declared limit)`. A pool that declared
-nothing and crossed nothing keeps exactly the text it always had.
-
-The panel's summary line shows cost against a declared cost budget — for
-example `$0.12/$0.50` — and omits it otherwise. It is the first part
-dropped at narrow widths.
+It holds counts only, never prompt or result text. The panel's summary line
+shows workers and their state; it shows no cost or token total.
 
 `timeout_s` is a finite, positive per-worker wall-clock deadline for this
 invocation and defaults to one hour. It overrides the role's
@@ -874,7 +821,7 @@ conversation journal or no supervised task owner. The
 session cancels them during shutdown. Ctrl+B is offered only while the parent
 turn is streaming and at least one subagent worker is active.
 
-A completed, budget-stopped, cancelled, or crash-interrupted background pool is
+A completed, cancelled, or crash-interrupted background pool is
 announced at the next logical-turn boundary with a short notice. It is not
 inserted into an already-running provider loop. Stable message IDs make the
 notice idempotent across resume and compaction, so it is not delivered twice.
@@ -893,16 +840,13 @@ collect the results:
 | Journal status | Notice says |
 |---|---|
 | `completed` | `completed (2/2 succeeded, 0 failed)` |
-| `stopped` | `was stopped by the pool budget: max_tool_calls_exceeded (1/2 succeeded, 1 failed)` |
 | `cancelled` | `was cancelled when the session closed (…)` |
 | `interrupted` | `was interrupted when the session stopped (…)` |
 
 …followed by `Its results are not included here: call
-collect_subagent_results(pool_id="…") to read them.` Only the governor's fixed
-stop reasons are ever quoted. A pool ended by an operator ceiling is journaled
-as `stopped`, with its counts, the aggregate of the workers that ran, and the
-crossed ceiling; `cancelled` is reserved for a session close. A turn that is
-re-driven after such a pool replays the same counts and text from the journal.
+collect_subagent_results(pool_id="…") to read them.` `cancelled` is reserved for
+a session close. A turn that is re-driven after a finished pool replays the same
+counts and text from the journal.
 
 ### The model backgrounds a pool
 
@@ -943,9 +887,7 @@ interactive (TUI) session, where a person can answer at the next turn, and
   running`.
 - `retry_subagent(pool_id, worker_id)` re-runs a failed or cancelled worker of
   a finished pool as a new attempt with the original type, model, policy,
-  pool scope and depth. It refuses a pool still running, a pool stopped by its
-  budget or wall-clock limit, a pool whose token, tool-call, iteration or cost
-  budget is already used up, a retry that would exceed
+  pool scope and depth. It refuses a pool still running, a retry that would exceed
   `subagents.max_active_pools` (a retry reactivates its pool), a worker that
   succeeded or never started, and an unknown worker, each with its reason.
 
@@ -965,7 +907,7 @@ without blocking unless asked to wait:
 - `wait=true` waits up to `timeout_s` seconds, capped by
   `subagents.collect_wait_max_s` (default 60, at most 3600). A pool still
   running then returns the snapshot with `timed_out: true`; it never raises.
-- A finished pool returns its results — `status` (`completed` or `stopped`),
+- A finished pool returns its results — `status` (`completed`),
   counts, `results`, `values`, `usage` — identically on every call.
 - A pool with no live handle — finished in an earlier turn, or left by a
   process that restarted — is read from this conversation's journal, including
@@ -1026,7 +968,7 @@ Ctrl+O (or `/subagents`) moves focus from the prompt to the panel: ↑/↓ selec
 a worker — the session's earlier pools are listed below the current one —,
 Enter opens its transcript and Esc returns to the prompt. Earlier pools come
 from the conversation journal, with each pool's status (`completed`,
-`stopped`, `cancelled`, `interrupted`) in its header, so a restored session
+`cancelled`, `interrupted`) in its header, so a restored session
 lists a pool a crash interrupted even when it left no transcripts; the
 transcripts add each worker's activity. In a transcript, ←
 and → move to its siblings, `f` follows new events, and Esc (or ↑ at the top)
@@ -1141,8 +1083,8 @@ cut value says so: the main text carries `truncated: true` and its untruncated
 
 `SubagentPoolState.diagnostics(now)` derives, from fields that already exist and
 with no new meter: each worker's `elapsed_s` and `timeout_ratio`, the pool's
-`wall_clock_s`, `success_rate_by_type`, `budget_ratio` (usage over a declared
-token or cost budget), `stuck_workers` — workers `running` past 80 %
+`wall_clock_s` (how long it has run — a measurement, not a limit),
+`success_rate_by_type`, `stuck_workers` — workers `running` past 80 %
 (`STUCK_TIMEOUT_FRACTION`) of their time limit; a `waiting` worker is not stuck —
 and `transcript_write_failures`. `stuck_workers` and `transcript_write_failures`
 also appear on `SubagentPoolCompleted` and `subagent_pool_done`.
@@ -1171,7 +1113,6 @@ registry.register(
         name="api_reviewer",
         description="Reviews API changes for compatibility and security.",
         allowed_tools=frozenset({"read_file", "search_files", "grep_files"}),
-        max_turns=6,
         system_prompt=(
             "Review API changes for compatibility and security. "
             "End with APPROVED or NEEDS CHANGES and evidence."
@@ -1216,8 +1157,8 @@ Read `stop_reason` and `error_code`. `missing_mutation` means the model never
 made a successful mutating call (it described the change instead).
 `mutation_refused` means it tried and the runtime refused: the message names the
 tool and the code (`approval_denied` — a person or broker said no;
-`blocked_by_mode` — Plan mode; `outside_workspace`). `max_turns` and
-`output_truncated` mean the run was cut off. The `blocked_calls` field lists each
+`blocked_by_mode` — Plan mode; `outside_workspace`). `output_truncated` means
+the reply was cut off at the output-token limit. The `blocked_calls` field lists each
 refusal.
 
 ### A task is refused with `unavailable_types`

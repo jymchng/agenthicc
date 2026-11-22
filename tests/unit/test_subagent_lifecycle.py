@@ -130,7 +130,7 @@ async def test_drain_finishes_running_worker_and_does_not_start_queued_worker(
     run = asyncio.create_task(pool.run())
     await asyncio.wait_for(_ControlledWorker.started["running"].wait(), timeout=1)
 
-    pool.request_pool_stop(mode="drain", source="budget", reason="budget_exceeded")
+    pool.request_pool_stop(mode="drain", source="user", reason="not needed")
     _ControlledWorker.release["running"].set()
     result = await run
 
@@ -385,7 +385,6 @@ async def test_stopping_a_worker_waiting_on_approval_withdraws_only_its_prompt()
         SubagentTypeSpec(
             name="writer",
             allowed_tools=frozenset({"write_note"}),
-            max_turns=4,
             system_prompt="Write the note.",
         )
     )
@@ -495,7 +494,7 @@ async def test_a_retried_worker_keeps_its_pool_scope_model_and_policy() -> None:
     from lauren_ai._transport import Completion, TokenUsage
 
     from agenthicc.runners.usage_ledger import UsageLedger
-    from agenthicc.subagents.budget import worker_usage
+    from agenthicc.subagents.usage import worker_usage
     from agenthicc.subagents.policy import SubagentExecutionPolicy
     from agenthicc.subagents.types import SubagentTypeRegistry, SubagentTypeSpec
     from agenthicc.tui.conversation_store import AppState
@@ -534,7 +533,6 @@ async def test_a_retried_worker_keeps_its_pool_scope_model_and_policy() -> None:
         SubagentTypeSpec(
             name="researcher",
             allowed_tools=frozenset(),
-            max_turns=2,
             system_prompt="Research.",
             model="worker-model",
             policy=read_only,
@@ -581,7 +579,6 @@ def _registry_for(tool_names: frozenset[str]) -> object:
         SubagentTypeSpec(
             name="researcher",
             allowed_tools=tool_names,
-            max_turns=4,
             system_prompt="Research.",
         )
     )
@@ -796,24 +793,6 @@ class _FailingWorker(_ControlledWorker):
         return SubagentResult(
             self._task.task_id, self._task.agent_type, self.label, False, "", error="broke"
         )
-
-
-@pytest.mark.asyncio
-async def test_a_retry_is_refused_when_the_pool_budget_is_used_up(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """SUBAGENT-11 criterion 14: a ceiling the new attempt would start past refuses it."""
-    monkeypatch.setattr(pool_module, "SubagentWorker", _FailingWorker)
-    pool = _pool([SubagentTask("w", "researcher", "a")], max_concurrent=1)
-    await pool.run()
-    assert pool.retry_refusal("w") == ""
-
-    before = pool.lifecycle("w")
-    pool._tool_call_count = pool._max_tool_calls
-    refusal = pool.retry_refusal("w")
-    assert "budget is used up" in refusal and "max_tool_calls" in refusal
-    assert await pool.retry_worker("w") is None
-    assert pool.lifecycle("w") == before
 
 
 @pytest.mark.asyncio

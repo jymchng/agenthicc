@@ -48,7 +48,6 @@ async def test_executor_delegation_returns_a_successful_aggregate() -> None:
         "succeeded",
         "failed",
         "error",
-        "budget_exceeded_reason",
         "results",
     } <= result.keys()
     assert result["ok"] is True
@@ -58,5 +57,5 @@ async def test_executor_delegation_returns_a_successful_aggregate() -> None:
     assert result["succeeded"] == 1
     assert result["failed"] == 0
     assert result["error"] == ""
-    assert result["budget_exceeded_reason"] == ""
+    assert "budget_exceeded_reason" not in result
     assert "artifact ready" in result["results"]

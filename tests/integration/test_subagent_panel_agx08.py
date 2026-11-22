@@ -43,7 +43,6 @@ def _registry(name: str, *tool_names: str) -> SubagentTypeRegistry:
         SubagentTypeSpec(
             name=name,
             allowed_tools=frozenset(tool_names),
-            max_turns=3,
             system_prompt="Use the tool and report what you found.",
             max_turn_time_s=20.0,
         )

@@ -941,8 +941,7 @@ def reported_call_cost(value: object) -> float | None:
     """The cost a provider-call signal reports, or ``None`` when it reports none.
 
     lauren-ai's ``ModelCallComplete.cost_usd`` defaults to ``0.0``; that default
-    is treated as missing information, never as a free call. Subagent budgets
-    meter cost through this same function so they agree with the ledger.
+    is treated as missing information, never as a free call.
     """
     number = _finite_float(value)
     return number if number is not None and number > 0 else None

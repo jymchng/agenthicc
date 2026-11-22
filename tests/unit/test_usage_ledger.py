@@ -285,7 +285,7 @@ def _worker_call(
     complete: bool = True,
     parent_run_id: str = "turn-1",
 ) -> None:
-    from agenthicc.subagents.budget import worker_run_id
+    from agenthicc.subagents.usage import worker_run_id
 
     call = ledger.begin_call(
         run_id=worker_run_id(parent_run_id, pool_id, task_id),
@@ -299,7 +299,7 @@ def _worker_call(
 
 
 def test_pool_total_is_the_sum_of_its_workers_records_and_a_subset_of_the_session() -> None:
-    from agenthicc.subagents.budget import pool_usage, worker_usage
+    from agenthicc.subagents.usage import pool_usage, worker_usage
 
     ledger = UsageLedger("session")
     _worker_call(ledger, pool_id="pool-a", task_id="task-0", usage=_usage(100, 20), cost=0.01)
@@ -325,7 +325,7 @@ def test_pool_total_is_the_sum_of_its_workers_records_and_a_subset_of_the_sessio
 
 
 def test_two_pools_of_one_parent_run_have_disjoint_totals() -> None:
-    from agenthicc.subagents.budget import pool_usage
+    from agenthicc.subagents.usage import pool_usage
 
     ledger = UsageLedger("session")
     _worker_call(ledger, pool_id="pool-a", task_id="task-0", usage=_usage(10, 1))
@@ -336,7 +336,7 @@ def test_two_pools_of_one_parent_run_have_disjoint_totals() -> None:
 
 
 def test_unknown_cost_is_unavailable_not_zero() -> None:
-    from agenthicc.subagents.budget import pool_usage
+    from agenthicc.subagents.usage import pool_usage
 
     ledger = UsageLedger("session")
     _worker_call(ledger, pool_id="pool-a", task_id="task-0", usage=_usage(10, 1), cost=0.01)
@@ -350,7 +350,7 @@ def test_unknown_cost_is_unavailable_not_zero() -> None:
 
 
 def test_provisional_calls_are_excluded_so_the_total_is_monotone() -> None:
-    from agenthicc.subagents.budget import pool_usage
+    from agenthicc.subagents.usage import pool_usage
 
     ledger = UsageLedger("session")
     _worker_call(ledger, pool_id="pool-a", task_id="task-0", usage=_usage(10, 1))
@@ -374,7 +374,7 @@ def test_provisional_calls_are_excluded_so_the_total_is_monotone() -> None:
 
 
 def test_no_ledger_or_no_records_reports_an_empty_unavailable_usage() -> None:
-    from agenthicc.subagents.budget import PoolUsage, pool_usage
+    from agenthicc.subagents.usage import PoolUsage, pool_usage
 
     assert pool_usage(None, "pool-a") == PoolUsage()
     assert pool_usage(UsageLedger("session"), "pool-a").cost_status == "unavailable"

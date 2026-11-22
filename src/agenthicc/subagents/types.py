@@ -94,11 +94,6 @@ class SubagentTypeSpec:
         means the worker inherits **every** tool the parent session exposes,
         exactly as the main agent has them; the parent's mode, phase and
         capability policy still apply.
-    max_turns:
-        Maximum LLM sub-turns (tool-call → response cycles) per worker.
-        ``None`` means the session's own agent turn limit
-        (``ExecutionSettings.max_agent_turns``), so a delegated implementation
-        is not cut off sooner than the main agent would be.
     system_prompt:
         Full system prompt injected as the ``@agent(system=...)`` argument.
         Must be a self-contained instruction — the task description is appended
@@ -121,7 +116,6 @@ class SubagentTypeSpec:
 
     name: str
     allowed_tools: frozenset[str] | None
-    max_turns: int | None
     system_prompt: str
     max_turn_time_s: float = DEFAULT_SUBAGENT_TIMEOUT_S
     #: Optional per-definition model; empty inherits the parent model.
@@ -316,21 +310,18 @@ _BUILTIN_SPECS: list[SubagentTypeSpec] = [
         name="explorer",
         description="Read-only codebase exploration and evidence gathering.",
         allowed_tools=_EXPLORER_TOOLS,
-        max_turns=15,
         system_prompt=_EXPLORER_PROMPT,
     ),
     SubagentTypeSpec(
         name="planner",
         description="Analyze the request and produce a file-scoped implementation plan.",
         allowed_tools=_PLANNER_TOOLS,
-        max_turns=10,
         system_prompt=_PLANNER_PROMPT,
     ),
     SubagentTypeSpec(
         name="implementer",
         description="Implement a narrowly scoped code change and verify it.",
         allowed_tools=None,
-        max_turns=None,
         system_prompt=_IMPLEMENTER_PROMPT,
         max_turn_time_s=180.0,
         completion_evidence="mutation",
@@ -339,7 +330,6 @@ _BUILTIN_SPECS: list[SubagentTypeSpec] = [
         name="executor",
         description="Carry out an implementation or build task end to end.",
         allowed_tools=None,
-        max_turns=None,
         system_prompt=_EXECUTOR_PROMPT,
         max_turn_time_s=300.0,
         completion_evidence="action",
@@ -348,7 +338,6 @@ _BUILTIN_SPECS: list[SubagentTypeSpec] = [
         name="tester",
         description="Write and run tests for the requested component.",
         allowed_tools=None,
-        max_turns=None,
         system_prompt=_TESTER_PROMPT,
         max_turn_time_s=180.0,
         completion_evidence="action",
@@ -357,14 +346,12 @@ _BUILTIN_SPECS: list[SubagentTypeSpec] = [
         name="reviewer",
         description="Review code for correctness, clarity, security issues, and bugs.",
         allowed_tools=_REVIEWER_TOOLS,
-        max_turns=10,
         system_prompt=_REVIEWER_PROMPT,
     ),
     SubagentTypeSpec(
         name="documenter",
         description="Write or update accurate documentation for the requested change.",
         allowed_tools=None,
-        max_turns=None,
         system_prompt=_DOCUMENTER_PROMPT,
         max_turn_time_s=150.0,
     ),
@@ -372,7 +359,6 @@ _BUILTIN_SPECS: list[SubagentTypeSpec] = [
         name="verifier",
         description="Adversarially verify a requirement using source evidence and tests.",
         allowed_tools=_VERIFIER_TOOLS,
-        max_turns=12,
         system_prompt=_VERIFIER_PROMPT,
         max_turn_time_s=150.0,
     ),
@@ -380,7 +366,6 @@ _BUILTIN_SPECS: list[SubagentTypeSpec] = [
         name="researcher",
         description="Research a technical question and return a concise answer with sources.",
         allowed_tools=_RESEARCHER_TOOLS,
-        max_turns=8,
         system_prompt=_RESEARCHER_PROMPT,
     ),
 ]
@@ -402,7 +387,6 @@ class SubagentTypeRegistry:
         DEFAULT_REGISTRY.register(SubagentTypeSpec(
             name="security_reviewer",
             allowed_tools=frozenset({"read_file", "grep_files"}),
-            max_turns=8,
             system_prompt="You are a security-focused reviewer...",
         ))
 

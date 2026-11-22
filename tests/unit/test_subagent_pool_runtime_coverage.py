@@ -147,7 +147,7 @@ async def test_real_pool_run_emits_state_and_normalizes_results(
     assert pool_completed.payload["succeeded"] == 1
     assert pool_completed.payload["failed"] == 2
     assert pool_completed.payload["text"] == result.text
-    assert pool_completed.payload["budget_exceeded_reason"] == ""
+    assert "budget_exceeded_reason" not in pool_completed.payload
     # The finished pool stays published for the panel, with nothing running.
     state = app.conversation.subagent_pool_state()
     assert state is not None and state.finished_at is not None and not state.active
@@ -229,7 +229,6 @@ async def test_every_kind_a_real_pool_emits_is_in_the_lifecycle_table(tmp_path) 
         SubagentTypeSpec(
             name="researcher",
             allowed_tools=frozenset({"lookup"}),
-            max_turns=3,
             system_prompt="Use lookup.",
             max_turn_time_s=10.0,
         )

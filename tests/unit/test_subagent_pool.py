@@ -129,7 +129,6 @@ class TestSubagentTypeRegistry:
         spec = SubagentTypeSpec(
             name="custom",
             allowed_tools=frozenset({"read_file"}),
-            max_turns=5,
             system_prompt="You are custom.",
         )
         reg.register(spec)
@@ -138,16 +137,16 @@ class TestSubagentTypeRegistry:
 
     def test_register_replaces_existing(self) -> None:
         reg = SubagentTypeRegistry()
-        s1 = SubagentTypeSpec("x", frozenset(), 1, "v1")
-        s2 = SubagentTypeSpec("x", frozenset(), 2, "v2")
+        s1 = SubagentTypeSpec("x", frozenset(), "v1")
+        s2 = SubagentTypeSpec("x", frozenset(), "v2")
         reg.register(s1)
         reg.register(s2)
         assert reg.get("x") is s2
 
     def test_names_returns_list(self) -> None:
         reg = SubagentTypeRegistry()
-        reg.register(SubagentTypeSpec("a", frozenset(), 1, ""))
-        reg.register(SubagentTypeSpec("b", frozenset(), 1, ""))
+        reg.register(SubagentTypeSpec("a", frozenset(), ""))
+        reg.register(SubagentTypeSpec("b", frozenset(), ""))
         assert set(reg.names()) == {"a", "b"}
 
 
@@ -166,7 +165,6 @@ class TestSubagentTypeSpec:
         spec = DEFAULT_REGISTRY.get("implementer")
         assert spec is not None
         assert spec.allowed_tools is None  # SUBAGENT-12: behaves like the main agent
-        assert spec.max_turns is None  # ... under the session's own turn limit
         assert spec.completion_evidence == "mutation"
 
     def test_executor_inherits_every_parent_tool_and_keeps_its_timeout(self) -> None:
@@ -209,7 +207,7 @@ class TestSubagentTypeSpec:
             "properties": {"summary": {"type": "string"}},
         }
 
-        spec = SubagentTypeSpec("reporter", frozenset(), 1, "", output_schema=schema)
+        spec = SubagentTypeSpec("reporter", frozenset(), "", output_schema=schema)
         schema["properties"] = {}
 
         assert spec.output_schema == {
@@ -231,7 +229,7 @@ class TestSubagentTypeSpec:
             )
 
     def test_max_turn_time_default(self) -> None:
-        spec = SubagentTypeSpec("t", frozenset(), 5, "")
+        spec = SubagentTypeSpec("t", frozenset(), "")
         assert spec.max_turn_time_s == 3_600.0
 
 
@@ -609,7 +607,6 @@ class TestSubagentWorkerTimeout:
         spec = SubagentTypeSpec(
             name="short",
             allowed_tools=frozenset(),
-            max_turns=1,
             system_prompt="",
         )
         worker = pool_module.SubagentWorker(
@@ -685,7 +682,6 @@ class TestSubagentWorkerRouting:
         spec = SubagentTypeSpec(
             name="delegating",
             allowed_tools=frozenset({"spawn_subagents"}),
-            max_turns=1,
             system_prompt="Delegate focused work.",
         )
         registry = SubagentTypeRegistry()
@@ -758,7 +754,6 @@ class TestSubagentWorkerRouting:
         spec = SubagentTypeSpec(
             name="tiered_worker",
             allowed_tools=frozenset({"read_file", "write_file"}),
-            max_turns=1,
             system_prompt="Use only tools allowed at this depth.",
             model="inherit",
         )
@@ -850,7 +845,6 @@ class TestSubagentWorkerRouting:
         spec = SubagentTypeSpec(
             name="operator_defaulted",
             allowed_tools=frozenset(),
-            max_turns=1,
             system_prompt="",
         )
         worker = SubagentWorker(
@@ -885,7 +879,6 @@ class TestSubagentWorkerRouting:
         inherit_spec = SubagentTypeSpec(
             name="parent_model_worker",
             allowed_tools=frozenset(),
-            max_turns=1,
             system_prompt="",
             model="inherit",
         )
@@ -905,7 +898,6 @@ class TestSubagentWorkerRouting:
         call_spec = SubagentTypeSpec(
             name="call_override_worker",
             allowed_tools=frozenset(),
-            max_turns=1,
             system_prompt="",
             model="type-model",
             effort="high",
@@ -936,7 +928,6 @@ class TestSubagentWorkerRouting:
         spec = SubagentTypeSpec(
             name="routed",
             allowed_tools=frozenset(),
-            max_turns=1,
             system_prompt="",
             model="routed-model",
             effort="high",
@@ -981,7 +972,6 @@ class TestSubagentWorkerRouting:
         spec = SubagentTypeSpec(
             name="effort_worker",
             allowed_tools=frozenset(),
-            max_turns=1,
             system_prompt="",
             effort="high",
         )
@@ -1049,7 +1039,6 @@ class TestSpawnSubagentsTool:
                 name="research",
                 description="Research a focused technical question.",
                 allowed_tools=frozenset(),
-                max_turns=1,
                 system_prompt="Research the requested topic.",
             )
         )
@@ -1069,7 +1058,6 @@ class TestSpawnSubagentsTool:
             failed=0,
             text="research complete",
             values=(),
-            budget_exceeded_reason="",
         )
         with (
             patch.object(SubagentPool, "__init__", new=capture_init),
@@ -1099,7 +1087,6 @@ class TestSpawnSubagentsTool:
                 name="focused_reviewer",
                 description="Reviews API compatibility risks.",
                 allowed_tools=frozenset(),
-                max_turns=1,
                 system_prompt="Review APIs.",
             )
         )
@@ -1167,7 +1154,6 @@ class TestSpawnSubagentsTool:
                 failed=0,
                 text="done",
                 values=(),
-                budget_exceeded_reason="",
             )
             with (
                 patch.object(SubagentPool, "__init__", new=capture_init),
@@ -1233,7 +1219,6 @@ class TestSpawnSubagentsTool:
             failed=0,
             text="routed",
             values=(),
-            budget_exceeded_reason="",
         )
         fn = make_spawn_subagents_tool(
             object(),
@@ -1275,7 +1260,6 @@ class TestSpawnSubagentsTool:
             failed=0,
             text="done",
             values=(),
-            budget_exceeded_reason="",
         )
         with (
             patch.object(SubagentPool, "__init__", new=capture_init),
@@ -1309,7 +1293,6 @@ class TestSpawnSubagentsTool:
                 name="security_researcher",
                 description="Review security-sensitive changes and report evidence.",
                 allowed_tools=frozenset(),
-                max_turns=1,
                 system_prompt="research",
             )
         )
@@ -1340,7 +1323,6 @@ class TestSpawnSubagentsTool:
             failed=0,
             text="compiled",
             values=(),
-            budget_exceeded_reason="",
         )
         with patch(
             "agenthicc.subagents.pool.SubagentPool.run",
@@ -1369,7 +1351,6 @@ class TestSpawnSubagentsTool:
             failed=1,
             text="=== executor #1 (✗ timed out after 300s) ===",
             values=(),
-            budget_exceeded_reason="",
         )
         with patch(
             "agenthicc.subagents.pool.SubagentPool.run",
@@ -1679,7 +1660,6 @@ async def test_worker_refuses_a_denied_capability_tool_through_its_own_gate() ->
         SubagentTypeSpec(
             name="writer",
             allowed_tools=frozenset({"write_note"}),
-            max_turns=4,
             system_prompt="Write the note.",
             permissions=SubagentPermissionConstraints(deny_capabilities=frozenset({"write"})),
         )
@@ -1803,66 +1783,6 @@ async def test_two_pools_in_one_parent_run_are_accounted_separately() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_declared_cost_limit_is_metered_and_crossing_it_stops_the_pool() -> None:
-    from agenthicc.runners.usage_ledger import UsageLedger
-    from agenthicc.subagents.budget import PoolBudget, resolve_budget
-
-    ledger = UsageLedger("session")
-    budget = resolve_budget(
-        PoolBudget(cost_usd=0.001),
-        ceiling=PoolBudget(),
-        operator_wall_clock_s=600.0,
-    )
-    published: list[float] = []
-    app = AppState.create()
-    pool = _ledger_pool(
-        {"priced": (100_000, 10_000)},
-        ledger,
-        model="claude-sonnet-4-5",
-        budget=budget,
-        conv_store=app.conversation,
-    )
-
-    def record_cost() -> None:
-        state = app.conversation.subagent_pool_state()
-        if state is not None:
-            published.append(state.cost_usd)
-
-    app.conversation.subagent_pool_state.subscribe(record_cost)
-
-    result = await pool.run()
-
-    assert result.budget_exceeded_reason == "max_cost_usd_exceeded"
-    assert result.usage.cost_usd == pytest.approx(pool._cost_spent)
-    assert result.usage.cost_usd > 0.001
-    state = app.conversation.subagent_pool_state()
-    assert state is not None and state.budget_cost_usd == 0.001
-    assert max(published) == pytest.approx(pool._cost_spent)
-
-
-@pytest.mark.asyncio
-async def test_a_pool_without_a_cost_limit_publishes_no_cost() -> None:
-    from agenthicc.runners.usage_ledger import UsageLedger
-
-    app = AppState.create()
-    pool = _ledger_pool(
-        {"priced": (100, 10)},
-        UsageLedger("session"),
-        model="claude-sonnet-4-5",
-        conv_store=app.conversation,
-    )
-
-    result = await pool.run()
-
-    state = app.conversation.subagent_pool_state()
-    assert state is not None
-    assert state.budget_cost_usd is None
-    assert state.cost_usd == 0.0
-    assert result.budget is None
-    assert result.usage.cost_status == "estimated"
-
-
-@pytest.mark.asyncio
 async def test_a_type_declared_policy_narrows_the_first_attempt() -> None:
     """A type declared read-only cannot write, even under a Yolo parent.
 
@@ -1915,7 +1835,6 @@ async def test_a_type_declared_policy_narrows_the_first_attempt() -> None:
         SubagentTypeSpec(
             name="reader",
             allowed_tools=frozenset({"write_note"}),
-            max_turns=4,
             system_prompt="Read only.",
             policy=read_only,
         )
@@ -2105,7 +2024,6 @@ def test_stuck_workers_counts_long_running_workers_but_not_waiting_ones() -> Non
             ),
         ),
         started_at=now - 200,
-        budget_cost_usd=1.0,
     )
 
     assert state.stuck_workers(now) == 1
@@ -2113,7 +2031,7 @@ def test_stuck_workers_counts_long_running_workers_but_not_waiting_ones() -> Non
     assert diagnostics["stuck_workers"] == 1
     assert diagnostics["wall_clock_s"] == 200.0
     assert diagnostics["success_rate_by_type"] == {"tester": 1.0}
-    assert diagnostics["budget_ratio"] == 0.0
+    assert "budget_ratio" not in diagnostics
     workers = diagnostics["workers"]
     assert isinstance(workers, dict)
     assert workers["d"] == {"elapsed_s": 10.0, "timeout_ratio": 0.1}
