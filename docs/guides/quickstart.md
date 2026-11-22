@@ -174,7 +174,7 @@ owner is deliberately protected.
 
 The README's workflow table under-reports the registry. The builtin table
 declares eight: `code_plan` (alias `Plan`), `copy_website`, `create_workflow`,
-`goal_flow`, `make_agenthicc_tool`, `make_book`, `reconstruct_site`, and
+`goal_flow`, `create_tools`, `make_book`, `reconstruct_site`, and
 `site_imitate`. Always confirm with a real listing rather than quoting a table.
 
 ### Headless without a workflow

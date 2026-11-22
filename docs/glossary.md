@@ -425,9 +425,9 @@ An external tool provider reached over the Model Context Protocol.
 ### Project tool
 
 A tool defined inside the user's project rather than shipped with agenthicc.
-`make_agenthicc_tool` is the workflow that scaffolds one.
+`create_tools` is the workflow that scaffolds one.
 
-**Provenance:** `agenthicc.workflows.MakeToolRunner` · `src/agenthicc/workflows/make_agenthicc_tool/runner.py:342`
+**Provenance:** `agenthicc.workflows.CreateToolsRunner` · `src/agenthicc/workflows/create_tools/runner.py`
 
 ## Memory
 
@@ -544,7 +544,7 @@ is visible at load time.
 ### Bootstrap skill
 
 A skill shipped with agenthicc that provides slash commands — including
-`/create-tools` and `/create-commands`, which exist as bootstrap skills rather
+`/create-commands`, which exists as a bootstrap skill rather
 than as `BUILTIN_COMMANDS` entries.
 
 **Provenance:** `agenthicc.skills.bootstrap` · `src/agenthicc/skills/bootstrap.py`

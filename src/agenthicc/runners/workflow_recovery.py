@@ -606,6 +606,11 @@ class WorkflowRecoveryCoordinator:
         provider_profile: str | None,
         workspace_root: str | None,
     ) -> tuple[str | None, str | None]:
+        if checkpoint.workflow_name == "make_agenthicc_tool":
+            return (
+                "PLUGIN_INCOMPATIBLE",
+                "This workflow was renamed to create_tools; start a new run.",
+            )
         if workflow_registry is not None:
             workflow = workflow_registry.get(checkpoint.workflow_name)
             if workflow is None:

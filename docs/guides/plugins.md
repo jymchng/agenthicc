@@ -228,11 +228,10 @@ precedence, and reload behavior. `/workflow` and
 `/compact` demonstrate the session-stateful case that requires a built-in
 interceptor.
 
-The default `/create-tools <instructions>` and `/create-commands <instructions>`
-skills guide the agent to author these extensions using the existing lauren-ai
-tool convention and unified command registry. They do not establish trust or
-replace review of executable project code, and they do not replace capability,
-approval, testing, or documentation work.
+The `create_tools` workflow stages project tools for deterministic validation
+and session-owned publication. The `/create-commands <instructions>` skill
+guides the agent through the unified command registry. See the
+[tool authoring guide](tools.md#author-tools-with-create_tools).
 
 The `create_workflow` runner gives its authoring agent a bounded package
 writer scoped to the run’s pending candidate. Deterministic validation

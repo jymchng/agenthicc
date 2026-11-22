@@ -101,7 +101,7 @@ layer and needs both event and presentation tests.
 | `site_imitate` | Visual imitation path (complementary to `copy_website`; not an alias) |
 | `goal_flow` | Dynamic goal list with `append_goal`/`insert_goal` mutation tools and stable-ID records |
 | `make_book` | Long-form document authoring |
-| `make_agenthicc_tool` | Scaffolds a project-local agenthicc tool |
+| `create_tools` | Scaffolds a project-local agenthicc tool |
 
 Reliable detail per package:
 

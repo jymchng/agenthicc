@@ -343,7 +343,7 @@ registry.
 | A command in `.agenthicc/commands/` is not available | Project extension discovery is deferred until after the first TUI frame | Wait for the shell phase to be `ready`, then `/commands reload` |
 | A slash command you wrote is never suggested | It was not discovered or its name collides | Check for a name collision with a builtin, and inspect the discovery result rather than the log tail |
 | `/workflow` or `/compact` errors when invoked | Both carry `handler=None` deliberately | They are intercepted in `TUISession.route()`; their registry entries exist so the picker can display and complete them |
-| A documented command is missing from autocomplete | It is not in `BUILTIN_COMMANDS` | The registry holds 23 entries; `/background` (alias `/bg`) is injected separately and `/create-tools` and `/create-commands` come from bootstrap skills |
+| A documented command is missing from autocomplete | It is not in `BUILTIN_COMMANDS` | The registry holds 23 entries; `/background` (alias `/bg`) is injected separately and `/create-commands` comes from a bootstrap skill |
 | A project command is skipped as untrusted | It has no trust record, or it changed since it was trusted | Review it, run `agenthicc trust add .agenthicc/commands/<file>.py`, then `/commands reload` |
 | Arguments are not parsed as expected | There is no shared argument grammar | Use the command's own `argument_hint` and handler; do not assume shell-style quoting |
 | A command's output interleaves badly during a turn | Commands that print while a turn renders | Prefer structured state updates over direct printing in a long-running turn |

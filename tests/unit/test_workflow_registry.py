@@ -130,7 +130,7 @@ class TestBuildWorkflowRegistry:
             "copy_website",
             "create_workflow",
             "goal_flow",
-            "make_agenthicc_tool",
+            "create_tools",
             "make_book",
             "reconstruct_site",
             "site_imitate",

@@ -166,6 +166,9 @@ class _HeadlessProcessor:
         self._events: list[dict[str, object]] = []
 
     async def emit(self, event: Event) -> None:
+        self.emit_nowait(event)
+
+    def emit_nowait(self, event: Event) -> None:
         self._events.append({"type": event.event_type, "payload": dict(event.payload)})
 
     def get_state(self) -> None:

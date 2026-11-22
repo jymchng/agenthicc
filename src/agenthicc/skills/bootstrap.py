@@ -220,53 +220,6 @@ Types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`, `perf`, `ci`.
 - Never mention file names in the subject unless the change is trivially
   file-scoped (e.g. `docs(README): fix typo`).
 """,
-    "create-tools": """\
----
-name: Create Tools
-description: Design and implement lauren-ai tools from user instructions
-source: default
-version: 1
-disallowAutoTriggering: true
----
-
-You are an expert agenthicc and lauren-ai tool author. Create the tools
-requested by the user below, keeping them inside the repository's existing
-tool and security boundaries.
-
-## User instructions
-
-{args}
-
-## Required process
-
-1. Read the relevant existing tool modules and tests before editing anything.
-2. Clarify ambiguity in the requested contract by making the smallest safe
-   assumption and stating it before implementation.
-3. Implement a function-form `@tool()` or a no-argument class-form `@tool()`
-   with `run`, and export the callable through `TOOLS` from a focused module
-   under `.agenthicc/tools/`. `Tool`/`ToolBase` are explicit executor
-   contracts, not automatic `TOOLS` discovery contracts.
-4. Attach capability metadata. A `ToolContext` parameter is injected by
-   lauren-ai and is hidden from the model schema. Use `WorkspaceView` and
-   `NetworkGuard` when the runtime supplies them; fail closed when a required
-   guard is unavailable. Use `agenthicc_http_client()` for bounded HTTP
-   timeouts and return structured recoverable errors for transient failures.
-5. Preserve fail-closed security defaults. Do not add credential logging,
-   unrestricted filesystem access, shell execution, or automatic dependency
-   installation merely to make the tool work. Remember that the current TUI
-   plugin path does not automatically inject a `ToolSandbox` or show the tool
-   trust prompt.
-6. Add tests for success, denial, malformed input, timeout or transient
-   failure where relevant, and retry/idempotency behaviour for side effects.
-7. Update the relevant README/guide and plugin documentation. Run the focused
-   tests and the repository checks required by the changed surface.
-
-## Completion report
-
-Finish with the created tool names, files, capabilities, tests run, and the
-manual code-review, trust, or configuration step the user must perform before
-using them.
-""",
     "create-commands": """\
 ---
 name: Create Commands
@@ -315,6 +268,12 @@ configuration step required before the commands appear in the TUI.
 _MARKER_FILE = "default_skills.json"
 
 _RETIRED: dict[str, frozenset[str]] = {
+    "create-tools": frozenset(
+        {
+            "83d822086db627389a48bf72c2fda618abbe68f51e7dd7b8e7b14b91fffa0126",
+            "8c4aef7c7a3eb318f36329ea28ed5767f4fb83ebd1442a9cb40beb0234d2085b",
+        }
+    ),
     "create-workflow": frozenset(
         {
             "c2921fc6deec048ef3e6b24cd6dadc30664375daedb51a714e3cd58a171c37b5",

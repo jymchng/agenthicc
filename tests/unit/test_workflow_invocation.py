@@ -40,12 +40,15 @@ def test_builtin_invocation_capabilities_are_declared_individually() -> None:
     assert available["create_workflow"].agent_callable
     assert available["create_workflow"].subagent_eligible
     assert available["create_workflow"].publishes == ("workflow",)
+    assert available["create_tools"].agent_callable
+    assert available["create_tools"].subagent_eligible
+    assert available["create_tools"].publishes == ("tool",)
     assert available["code_plan"].agent_callable and available["code_plan"].interactive
     assert not available["code_plan"].subagent_eligible
     assert all(
         invocation == WorkflowInvocation()
         for name, invocation in available.items()
-        if name not in {"create_workflow", "code_plan"}
+        if name not in {"create_workflow", "create_tools", "code_plan"}
     )
 
 

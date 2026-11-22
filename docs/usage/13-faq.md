@@ -58,7 +58,7 @@ internal-only.
 ## What workflows are built in?
 
 Eight: `code_plan` (alias `Plan`), `copy_website`, `create_workflow`,
-`goal_flow`, `make_agenthicc_tool`, `make_book`, `reconstruct_site`, and
+`goal_flow`, `create_tools`, `make_book`, `reconstruct_site`, and
 `site_imitate`. Run `agenthicc workflows list` rather than trusting a table.
 
 ## Can I add my own tools?

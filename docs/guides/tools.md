@@ -106,19 +106,23 @@ loaded project tool. The tool name, description, annotations, and docstring
 are used to build the schema shown to lauren-ai. `@tool()` must include the
 parentheses.
 
-## Author a tool with `/create-tools`
+## Author tools with `create_tools`
 
-For an agent-generated tool, invoke the project-authoring skill with its intent:
+Call the built-in workflow with the behavior and outputs you want.
 
 ```text
-/create-tools Create a tool that checks the configured Cloakbrowser endpoint
-and returns a bounded recoverable status object.
+/workflow call create_tools Create tools that report word and character counts.
 ```
 
-The skill guides the agent to generate a complete raw Python module, including
-the `@tool` decorator and a literal `TOOLS` export. Review the generated code,
-trust it with `agenthicc trust add .agenthicc/tools/<file>.py`, and run
-`/tools reload`.
+The agent can also call it with `enter_workflow`. Submit a plan for the
+whole set, then write the Python modules through the scoped staging tools.
+The runtime checks the exports, signatures, dependencies, and capabilities
+before reviewing the set. A shared repair budget limits retries. If any
+module fails validation, the session publishes none of them.
+
+Under the auto policy, the session publishes the validated bytes and reloads
+the tools before it returns to the parent. Under the stage-only policy,
+`/authored approve <run-id>` publishes the reviewed set.
 
 Use `/tools` in the interactive session to inspect the effective tool catalog,
 or `/tools reload` to rescan project and user-global tool plugins without
@@ -421,17 +425,6 @@ Useful repository contracts are covered by
 `tests/unit/test_plugin_security.py`,
 `tests/unit/test_tool_executor_contract.py`, and
 `tests/unit/test_sandbox.py`.
-
-For the prompt-driven authoring skill, submit its instructions directly:
-
-```text
-/create-tools Create a tool that reports the current project status.
-```
-
-The `/create-tools` skill is independent of `create_workflow`; it gives the
-agent project-specific guidance for producing a Lauren `@tool`-decorated
-`TOOLS` export. Review the generated code, trust it with `agenthicc trust add`,
-and reload the tool registry with `/reload tools` or `/tools reload`.
 
 ## Try it
 

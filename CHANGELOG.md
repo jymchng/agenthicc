@@ -19,6 +19,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Startup removes unchanged seeded copies and reports edited copies it
   leaves in place.
 
+### Changed — tool authoring
+
+- **Breaking.** `create_tools` replaces `make_agenthicc_tool` and the seeded
+  `$create-tools` skill. Start a new run with
+  `/workflow call create_tools <intent>`. It validates and publishes the set
+  together, then reloads it before the parent resumes.
+
 ### Added — long subagent output goes to a file
 
 - **A cut-off reply is saved.** When a worker's reply stops at the output-token

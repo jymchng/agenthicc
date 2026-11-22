@@ -763,11 +763,11 @@ requirements and to wait for answers instead of guessing. The
 `describe_prompt_cache_contract`, `show_workflow_template`, and
 `validate_workflow_cache_contract` inspection tools expose these rules during
 authoring; strict validation rejects a generated custom runner that omits them.
-The built-in `make_agenthicc_tool` runner also passes one immutable contract to
+The built-in `create_tools` runner also passes one immutable contract to
 every analyze, generate, validate, and finalize turn, keeping its tool plan,
 generated source path, validation report, and retry state in dynamic context.
 The same boundary is used by every built-in workflow, including `code_plan`,
-`create_workflow`, `site_imitate`, `make_agenthicc_tool`, and `make_book`.
+`create_workflow`, `site_imitate`, `create_tools`, and `make_book`.
 
 The runtime records only redacted contract fingerprints and cache epochs in the
 conversation journal and workflow checkpoint. A phase change does not change
@@ -1221,9 +1221,10 @@ run `/workflows reload` after changing the Python workflow. Provider selection
 remains session-wide; a generated workflow must not claim to support per-phase
 provider switching.
 
-Project tools and slash commands are separate plugin surfaces. Use the
-`/create-tools` and `/create-commands` skills when those extensions are needed;
-they are not workflow definitions and are not phases of `create_workflow`.
+Use `/workflow call create_tools <intent>` to author tools and
+`/create-commands <instructions>` to author slash commands. The session
+reloads newly published tools before delivering the workflow return.
+[Tool authoring](tools.md#author-tools-with-create_tools)
 
 ## Inspect tools and workflows
 

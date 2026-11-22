@@ -1414,8 +1414,7 @@ BUILTIN_COMMANDS entries: 23
 ```
 
 That count is *not* the whole command surface: `/background` (alias `/bg`) is
-injected separately by the background integration, and `/create-tools` and
-`/create-commands` come from bootstrap skills.
+injected separately by the background integration, and `/create-commands` comes from a bootstrap skill.
 
 ## Troubleshooting
 

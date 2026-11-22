@@ -46,7 +46,7 @@ All ten registered workflows, including the parallel_code_plan coordinator:
 | `code_plan` | Plan-and-execute code changes with approval gates |
 | `create_workflow` | Author new workflows interactively |
 | `goal_flow` | Clarify an intent into an ordered goal list, then implement and verify each goal before summarizing |
-| `make_agenthicc_tool` | Scaffold an agenthicc-compatible tool plugin under `.agenthicc/tools/` |
+| `create_tools` | Author and publish one or more project-local tools |
 | `make_book` | Write a technical book chapter by chapter, one phase per chapter |
 | `copy_website` | Study a website with Playwright and rebuild it as a mobile-friendly Next.js application |
 | `reconstruct_site` | Reconstruct a reference website through evidence-first responsive research, implementation, and validation phases |
@@ -251,7 +251,7 @@ Transient provider failures are rendered as compact retry notices showing the at
 | `/cancel`, `/clear`, `/expand` | Control the current session or output |
 | `/mcp`, `/skills [reload]` | Inspect MCP and skills; reload or open their overlay |
 | `/usage` | Show durable session usage, cost quality, run state, and queued input |
-| `/create-tools <instructions>` | Ask the agent to create lauren-ai tools |
+| `/workflow call create_tools <intent>` | Author and validate a set of tools in the current session |
 | `/create-commands <instructions>` | Ask the agent to create slash commands |
 
 `/tools reload` refreshes trusted tool plugins and reports discovery errors.
@@ -368,13 +368,13 @@ checkpoint codecs, resume the saved state, and re-raise ordinary errors to the
 framework failure finalizer. Simple unconditional graphs may use the generic
 runner.
 
-The built-in `make_agenthicc_tool` workflow follows the same boundary across
-its analyze, generate, validate, and finalize phases; tool plans, generated
-paths, validation reports, and retry state remain dynamic rather than changing
-the reusable system prefix.
+The built-in `create_tools` workflow follows the same boundary across
+its analyze, generate, and validate phases. Tool plans, generated paths,
+validation reports, and retry state remain dynamic. Finalize stages the
+validated set for publication.
 
 All built-in workflow runners use this boundary: `code_plan`, `create_workflow`,
-`site_imitate`, `make_agenthicc_tool`, and `make_book`.
+`site_imitate`, `create_tools`, and `make_book`.
 
 `make_book` phase handoffs use one required argument: a concise `summary`.
 The agent writes the TOC manifest, research, many visual assets, chapters, and

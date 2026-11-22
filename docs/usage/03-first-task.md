@@ -70,7 +70,7 @@ code_plan [builtin] — Plan → Execute → Review → Summary
 copy_website [builtin]
 create_workflow [builtin]
 goal_flow [builtin]
-make_agenthicc_tool [builtin]
+create_tools [builtin]
 make_book [builtin]
 reconstruct_site [builtin]
 site_imitate [builtin]

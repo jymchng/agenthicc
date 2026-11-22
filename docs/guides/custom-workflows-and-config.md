@@ -460,7 +460,7 @@ Configuration is valid: legacy execution settings (anthropic/deepseek-v4.1-flash
 ### Eight builtins, and the README says five
 
 `code_plan` (alias `Plan`), `copy_website`, `create_workflow`, `goal_flow`,
-`make_agenthicc_tool`, `make_book`, `reconstruct_site`, `site_imitate`. Do not
+`create_tools`, `make_book`, `reconstruct_site`, `site_imitate`. Do not
 quote a five-row table; run `workflows list`.
 
 ### Phase declarations are the contract

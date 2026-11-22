@@ -169,7 +169,7 @@ def _reserved_names(kind: ArtifactKind) -> frozenset[str]:
             frozenset(map(tool_name, AGENT_TOOLS))
             | SKILL_TOOL_NAMES
             | WORKFLOW_TOOL_NAMES
-            | {"reload_tools"}
+            | {"reload_tools", "spawn_subagents"}
         )
     if kind == "workflow":
         from agenthicc.workflows.loader import builtin_workflow_descriptors
@@ -286,7 +286,8 @@ class AuthoredArtifactStore:
                 previous = inventory.get(relative)
                 if previous is not None and previous[1] != data:
                     raise AuthoredError("changed_bytes", "Shared source changed after validation.")
-                inventory[relative] = (path, data, artifact)
+                if previous is None or previous[2].supersedes is None:
+                    inventory[relative] = (path, data, artifact)
             if content_digest(candidate_files) != artifact.digest:
                 raise AuthoredError("changed_bytes", f"{artifact.name} changed after validation.")
         return inventory, tuple(workflows)
@@ -323,6 +324,13 @@ class AuthoredArtifactStore:
         with InterProcessLock(self._lock):
             self._recover_pending()
             self._discard_candidates(run, view)
+
+    def discard_staging(self, run_id: str) -> None:
+        """Remove an unfinished source set that has no publication ticket."""
+        with InterProcessLock(self._lock):
+            if self._stage_ticket(run_id).exists():
+                raise AuthoredError("publication_pending", "A staged approval owns this run.")
+            self._discard(run_id, self._workspace)
 
     def _discard_candidates(self, run: AuthoredRun, view: WorkspaceView) -> None:
         from agenthicc.plugins.trust import override_extension_trust

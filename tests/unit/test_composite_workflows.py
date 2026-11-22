@@ -262,35 +262,15 @@ def test_workflow_stack_signal_projects_frame_summaries() -> None:
 
 
 @pytest.mark.unit
-def test_create_tools_and_commands_skills_in_defaults() -> None:
-    from agenthicc.skills.bootstrap import _DEFAULTS
+def test_bootstrap_reserves_only_the_current_command_authoring_skill(tmp_path) -> None:
+    from agenthicc.skills.bootstrap import _DEFAULTS, _RETIRED, bootstrap_default_skills
 
-    assert "create-tools" in _DEFAULTS
-    assert "create-commands" in _DEFAULTS
-    assert "{args}" in _DEFAULTS["create-tools"]
-    assert "{args}" in _DEFAULTS["create-commands"]
-
-
-@pytest.mark.unit
-def test_create_extension_skills_preserve_security_and_registry_guidance() -> None:
-    from agenthicc.skills.bootstrap import _DEFAULTS
-
-    tools = _DEFAULTS["create-tools"]
     commands = _DEFAULTS["create-commands"]
-    assert "WorkspaceView" in tools
-    assert "NetworkGuard" in tools
-    assert "TOOLS" in tools
+    assert "{args}" in commands
     assert "CommandContext" in commands
     assert "COMMANDS" in commands
     assert "trust" in commands.lower()
 
-
-@pytest.mark.unit
-def test_bootstrap_includes_the_current_authoring_skills(tmp_path) -> None:
-    from agenthicc.skills.bootstrap import _DEFAULTS, bootstrap_default_skills
-
-    n = bootstrap_default_skills(global_dir=tmp_path)
-    assert n == len(_DEFAULTS)
-    assert not (tmp_path / "skills" / "create-workflow").exists()
-    assert (tmp_path / "skills" / "create-tools" / "SKILL.md").exists()
+    assert bootstrap_default_skills(global_dir=tmp_path) == len(_DEFAULTS)
+    assert all(not (tmp_path / "skills" / slug).exists() for slug in _RETIRED)
     assert (tmp_path / "skills" / "create-commands" / "SKILL.md").exists()

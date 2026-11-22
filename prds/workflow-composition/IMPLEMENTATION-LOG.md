@@ -12,7 +12,7 @@ Branch `feat/workflow-composition` starts at `5100c8c` from fetched
 | 3 | M3 pushed | WFC-01 and the publish connection. The remote tip matched `f0eb339`. |
 | 4 | M4 pushed | WFC-02 workflow entry and inspection. The remote tip matched `4c5e0cc`. |
 | 5 | M5 pushed | WFC-06 authoring, publication, and immediate use. Pre-push checks passed and the remote tip matched `35165f3`. |
-| 6 | Pending | WFC-08 and WFC-07. |
+| 6 | M6 verified locally | WFC-08 is in `ab27d2d`. WFC-07 and S4 passed the complete local gate. |
 | 7 | Pending | WFC-09. |
 | 8 | Pending | WFC-04 and WFC-03. |
 | 9 | Pending | WFC-12 and WFC-13 close-out. |
@@ -25,7 +25,7 @@ Branch `feat/workflow-composition` starts at `5100c8c` from fetched
 | WFC-04 | Spike complete | Nested mapping confirmed with a correction to optional keys in the published schema. |
 | WFC-05 | Implemented | `c757516`, `7bd642c`. Both runners use the service. See the PRD for A1–A7 evidence. |
 | WFC-06 | Implemented | Session-owned publication, exact predecessor checks, and the S3 acceptance scenario. WFC-04 exercises the workflow-worker integration. |
-| WFC-07 | Pending | — |
+| WFC-07 | Implemented | Plans and validates the complete tool set, then publishes it before the parent resumes. S4 observes immediate dispatch and atomic failure. |
 | WFC-08 | Implemented | Direct requests, phase entry, and worker spawn read the shared tool generation. WFC-07 exercises the author-and-call scenario. |
 | WFC-09 | Pending | — |
 | WFC-10 | Implemented | `ed01cf0`. Provider discovery and use share the live skill registry. |
@@ -295,3 +295,23 @@ The verification logs are `/var/tmp/agenthicc-wfc-m5-*.log`.
   the public-symbol check passed. The four superseded snapshot names are
   absent from active source and tests.
 - WFC-07 supplies the remaining end-to-end author-and-call scenario.
+
+## M6 verification
+
+- WFC-08 is in `ab27d2d`. WFC-07 replaces the single-tool scaffold and its
+  seeded skill with the callable `create_tools` workflow. The session
+  publishes only the entire validated set and reloads its exact bytes before
+  resuming the parent. S4 covers three tools in two modules, a successful
+  invocation on the first resumed request, and one failing module exhausting
+  the shared repair budget without publication.
+- Initial unit failures exposed an outdated schema count and invocation table,
+  two noncanonical error codes, a missing queued-input callback, and a
+  migration fixture saving a conflicting checkpoint revision. Three cassette
+  tests failed because the replay processor lacked `emit_nowait`. The focused
+  tests and the cassette replays passed after the fixes.
+- The full rerun passed 6,298 unit tests with 15 skips, 431 integration tests,
+  245 E2E tests with two skips, and all nine performance tests. Ruff check and format, mypy, the type-audit
+  ratchet, strict MkDocs, and the public-symbol check passed. Removing the old
+  workflow reduced the mypy module suppression metric from six to five.
+- The repository coverage floor is 81.5%. The full coverage measurement is
+  the CI gate specified by the implementation prompt.

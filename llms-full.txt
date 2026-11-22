@@ -3986,9 +3986,40 @@ One artefact produced by a phase, recorded in `CreateWorkflowContext.artifacts`
 keyed by `phase`. Kinds are `design` (or `exit`), `workflow_file`,
 `validation_report`, and `summary`.
 
-Project tools and commands are separate plugin surfaces. The
-`/create-tools` and `/create-commands` skills are not workflow definitions and
-are not registered as `create_*` workflow phases.
+### CreateTools
+
+The `create_tools` workflow stages a set of tool modules, validates the whole
+set, and returns staged artifacts for the session to publish and reload.
+It can be invoked by the agent through `enter_workflow`.
+
+### CreateToolsContext
+
+Carries the typed plans, module validation reports, and shared repair budget
+across all phases. The checkpoint codec restores this state with the
+already-open conversation memory.
+
+### CreateToolsParams
+
+Provides per-phase model overrides for analyze, generate, and validate.
+
+### CreateToolsRunner
+
+Owns the analyze, generate, validate, and finalize loop. Finalize stages
+artifacts for publication. The session exposes successfully loaded tools on
+the parent's next request.
+
+### CreateToolsState
+
+The authoring phase or terminal outcome.
+
+### ToolParam
+
+A tool parameter with an annotation, default expression, and description.
+
+### ToolPlan
+
+A validated plan for one member of a tool set, including its module,
+parameters, capabilities, dependencies, and publication metadata.
 
 ### CreateWorkflowState
 
