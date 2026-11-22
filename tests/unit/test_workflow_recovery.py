@@ -216,16 +216,14 @@ def test_retired_tool_workflow_checkpoint_explains_how_to_start_again(tmp_path: 
         store, handle = _running_checkpoint(tmp_path, conversation)
         checkpoint = store.load(handle.run_id)
         assert checkpoint is not None
-        store.save(
-            replace(
-                checkpoint, workflow_name="make_agenthicc_tool", revision=checkpoint.revision + 1
-            )
-        )
+        legacy = checkpoint.to_dict()
+        legacy.update(schema_version=1, workflow_name="make_agenthicc_tool")
+        store.path_for(checkpoint.run_id).write_text(json.dumps(legacy), encoding="utf-8")
         coordinator = WorkflowRecoveryCoordinator("session-recovery", checkpoint_store=store)
 
         (record,) = coordinator.inspect(workflow_registry=WorkflowRegistry())
         assert not record.recoverable
-        assert record.error_code == "PLUGIN_INCOMPATIBLE"
+        assert record.error_code == "checkpoint_corrupt"
         assert "renamed to create_tools" in record.display_error
     finally:
         conversation.close()

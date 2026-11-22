@@ -336,6 +336,7 @@ class ConversationStore:
         self.workflow_stack: Signal[tuple[WorkflowFrameSummary, ...]] = Signal(
             (), name="workflow_stack"
         )
+        self.staged_authored_sets: Signal[int] = Signal(0, name="staged_authored_sets")
         """Immutable summaries of the foreground workflow frames."""
         self.transcript_loading: Signal[bool] = Signal(False, name="transcript_loading")
         """True while a resumed session transcript is being replayed."""

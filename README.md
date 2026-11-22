@@ -243,7 +243,8 @@ Transient provider failures are rendered as compact retry notices showing the at
 | `/inbox [filters]` | Review and answer exact background approvals, questions, and input requests |
 | `/ps [terminal-id]`, `/stop [terminal-id\|all]` | Inspect or stop owned background terminals; `/ps` is paginated and `/ps --json` returns all records; `/stop` stops all |
 | `/mode [name]` | Choose or change the operating mode (a picker without a name) |
-| `/workflow <name> \| resume [run-id] \| reset [run-id]` | Select a workflow, resume the latest eligible run when `run-id` is omitted, or reset a workflow. Use `/workflow call create_workflow <intent>` to author a project workflow. |
+| `/workflow [stack]`, `/workflow <name>` | Inspect the workflow stack or select a base workflow. `/workflow resume` continues a saved run and `/workflow reset` clears the selection. |
+| `/catalog`, `/reload report` | See the agent's capability catalog or inspect the last reload's diagnostics |
 | `/model [provider] [model]` | Choose the provider and model from a picker (or directly); applies from the next turn, no restart |
 | `/config` | Open the configuration overlay |
 | `/init` | Preview or explicitly write managed project `AGENTS.md` guidance |

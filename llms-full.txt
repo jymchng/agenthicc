@@ -3801,6 +3801,66 @@ Duplex adapter in `runners/tui_session.py`. It records stack transitions in
 the kernel, updates the reactive conversation stack, and reconciles pending
 returns with the conversation journal.
 
+### WorkflowReturn
+
+A bounded status, summary, outputs, and authored artifact receipts from a
+completed, failed, or abandoned child.
+
+### WorkflowDelivery
+
+A return packet paired with its caller frame ID and child run ID. Its
+`key` identifies the synthetic conversation turn across restart.
+
+### WorkflowStack.restore_frames
+
+Adopts a validated frame chain in base-to-child order.
+
+### WorkflowCheckpointStore.save_return
+
+Writes the immutable return packet beside the child checkpoint.
+
+### WorkflowCheckpointStore.load_return
+
+Validates and reads the packet for the given child run ID.
+
+### workflow_child_policy
+
+Intersects a workflow's phase capabilities with its caller's policy.
+
+### workflow_digest
+
+Returns the first 16 hexadecimal characters of the SHA-256 digest of text.
+
+### bind_workflow_return
+
+Binds the return key to the next parent agent turn.
+
+### consume_workflow_return_key
+
+Reads and clears the return key at the agent turn boundary.
+
+### CapabilityCatalog
+
+The session-owned catalog built from callable workflows, permitted skills,
+the provider-visible tools, and installed provenance.
+
+### CatalogEntry
+
+One workflow, skill, or new tool in the bounded catalog.
+
+### render_capability_catalog
+
+Renders entries in a fixed 1,500-character budget. The final line reports
+the number of omitted entries and the inventory tools.
+
+### WorkflowToolScope.callable_workflows
+
+Iterates workflows admitted by the current frame's invocation and policy.
+
+### SkillUseState.callable_skills
+
+Returns loaded skills whose frontmatter and agent permissions allow model use.
+
 ### WorkflowRecoveryChain
 
 An ordered tuple of recoverable checkpoints and an optional missing parent

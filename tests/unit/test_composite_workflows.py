@@ -253,7 +253,9 @@ def test_workflow_stack_signal_projects_frame_summaries() -> None:
     from agenthicc.tui.conversation_store import ConversationStore
 
     store = ConversationStore()
-    summary = WorkflowFrameSummary("root", "code_plan_docs", "run", 0, "running", "review")
+    summary = WorkflowFrameSummary(
+        "root", "code_plan_docs", "run", 0, "running", "review", "selection"
+    )
     store.workflow_stack.set((summary,))
     assert store.workflow_stack() == (summary,)
 

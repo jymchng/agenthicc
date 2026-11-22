@@ -15,6 +15,8 @@ supports resumable state.
 ### Call a workflow and return
 
 `/workflow <name>` selects the base workflow for subsequent messages.
+`/workflow` shows the active frames and `/workflow stack` includes run IDs
+and origins.
 `/workflow reset` returns the base to the active mode’s default.
 Use `/workflow call <name> <intent>` to run a child for a specific task.
 The session suspends the parent, runs the child, then gives the parent one
@@ -41,6 +43,11 @@ Safe mode asks the operator before accepting the entry. Plan mode allows
 workflows whose declared phases stay within its read-only ceiling. Headless
 agent entry excludes workflows that declare an interactive human gate.
 Workers can inspect their own workflow status.
+
+The model's capability catalog lists workflows admitted by the current frame,
+model-invocable skills, and newly published tools available to that agent.
+Use `/catalog` to inspect the same text. The catalog is bounded to 1,500
+characters and points to the inventory tools when entries are omitted.
 
 Set `WorkflowPlugin.invocation` to a `WorkflowInvocation` declaration to opt
 in. Supply `when_to_use` and `returns` for discovery, set

@@ -98,17 +98,14 @@ def _generate(
     script.expect(
         "confirm generation",
         lambda request: any(staged.glob("*/tool/reverse_text.py")),
-        tool_call("confirm_generation_complete", {}, use_id=f"confirmed-{attempt}"),
+        tool_call("confirm_tools_generated", {}, use_id=f"confirmed-{attempt}"),
     )
     script.expect(
         "finish generation", lambda request: request.contains("ok"), reply("Wrote both modules.")
     )
 
 
-async def test_create_tools_publishes_and_dispatches_on_the_first_parent_request(
-    authored_session: AuthoredSession,
-    script: ScriptedTransport,
-) -> None:
+def _queue_valid_authoring(authored_session: AuthoredSession, script: ScriptedTransport) -> None:
     _enter(script)
     _submit(script)
     _generate(script, authored_session)
@@ -122,12 +119,21 @@ async def test_create_tools_publishes_and_dispatches_on_the_first_parent_request
         lambda request: not authored_session.trust.records(),
         reply("All three tools match the plan."),
     )
+
+
+async def test_create_tools_publishes_and_dispatches_on_the_first_parent_request(
+    authored_session: AuthoredSession,
+    script: ScriptedTransport,
+) -> None:
+    _queue_valid_authoring(authored_session, script)
     script.expect(
         "the first parent request sees all three tools",
         lambda request: (
             request.contains("[WORKFLOW RETURN]")
             and request.contains("loaded")
             and set(_NAMES) <= set(request.tools)
+            and request.contains("New tools this session")
+            and all(request.contains(f"{name} [new this session]") for name in _NAMES)
         ),
         tool_call("count_words", {}),
     )
@@ -139,6 +145,8 @@ async def test_create_tools_publishes_and_dispatches_on_the_first_parent_request
 
     result = await authored_session.run("default", "Create the tools and use one.")
     assert result.status == "complete", result.error
+    assert not set(_NAMES).intersection(script.requests[0].tools)
+    assert not script.requests[0].contains("New tools this session")
     assert authored_session.context.workflow_stack.depth == 0
     assert {
         record.artifact.name for record in authored_session.context.authored.store().records()

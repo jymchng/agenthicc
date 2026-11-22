@@ -120,6 +120,18 @@ class SkillUseState:
             rows.append(row)
         return rows
 
+    def callable_skills(self) -> tuple[SkillDef, ...]:
+        """Return the loaded skills the current actor can invoke."""
+        return tuple(
+            skill
+            for skill in filter_skills_for_agent(
+                self.surface.current().value, self.agent, self.permissions
+            ).values()
+            if not skill.disable_model_invocation
+            and not skill.model
+            and skill._model_content is not None
+        )
+
     async def use(self, name: str, args: list[str]) -> dict[str, object]:
         """Resolve a skill in one snapshot and narrow the turn after rendering."""
         snapshot = self.surface.current()

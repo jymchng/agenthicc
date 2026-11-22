@@ -59,6 +59,7 @@ PROJECTION_EVENT_TYPES: frozenset[str] = frozenset(
         # AuthoredPublished carries that run_id, every loaded receipt, and the reload report.
         "AuthoredArtifactStateChanged",
         "AuthoredPublished",
+        "AuthoredStagingChanged",
         # The processor's own report of an event the reducer refused.
         "KernelEventRejected",
         "McpCatalogPublished",

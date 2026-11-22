@@ -1,6 +1,6 @@
 ---
 title: "WFC-12: A capability catalog for the agent, and operator visibility for the stack and reloads"
-status: Proposed
+status: Implemented
 version: 1.0.0
 date: 2026-11-22
 repository: jymchng/agenthicc
@@ -183,3 +183,24 @@ WFC-01.
 | The catalog nudges the model to over-use workflows. | `when_to_use` is one sentence; approval and depth guards remain; the catalog is omitted when nothing is callable. |
 | Prompt-cache invalidation. | Volatile placement, byte-stable reuse, A3. |
 | Operator overload on busy sessions. | One-line notices by default; details on demand. |
+
+## Amendment — 2026-11-22
+
+The catalog uses the reload generation to refresh its sources and prints
+identical text when the available entries are unchanged. The footer uses
+the active terminal theme for its breadcrumb and staged indicator. The
+operator can reopen diagnostic details with `/reload report`.
+
+
+## Implementation status
+
+| Criterion | Evidence |
+| --- | --- |
+| A1 | `test_create_tools_publishes_and_dispatches_on_the_first_parent_request` observes each new tool in the resumed model catalog. |
+| A2 | `test_catalog_budget_preserves_matching_skills_and_new_tools`. |
+| A3 | `test_catalog_command_matches_the_model_and_survives_an_unchanged_reload`. |
+| A4 | `test_status_projects_nested_workflow_phase_and_staged_set_count` exercises the active and returned frames at several widths. |
+| A5 | `test_picker_exposes_workflow_composition_controls`, `test_catalog_command_matches_the_model_and_survives_an_unchanged_reload`, `test_failed_child_keeps_selection_locked_until_operator_action`, and `test_authored_picker_and_operator_commands_restore_previous_behavior`. |
+| A6 | `test_reload_report_shows_path_code_digest_and_no_file_contents`. |
+| A7 | `test_plan_catalog_lists_only_eligible_read_only_workflows`. |
+| A8 | `test_headless_publication_and_cli_approval` checks the publication and staging paths. `test_status_projects_nested_workflow_phase_and_staged_set_count` checks the staged badge. |

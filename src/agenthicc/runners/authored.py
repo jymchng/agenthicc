@@ -228,6 +228,7 @@ class AuthoredPublisher:
                 run_id, tuple(replace(item.artifact, state="rejected") for item in run.candidates)
             )
             self._notify(result)
+            await self._refresh_staged_count()
             return result
 
     async def change_version(
@@ -302,7 +303,19 @@ class AuthoredPublisher:
             except (OSError, ValueError):
                 result = _failed(run, "publish_failed", "Authored publication failed.", "rejected")
             self._notify(result)
+            await self._refresh_staged_count()
             return result
+
+    async def _refresh_staged_count(self) -> None:
+        if self._policy != "stage_only":
+            return
+        try:
+            staged = await asyncio.to_thread(self.store().staged_runs)
+        except (OSError, ValueError):
+            return
+        self._processor.emit_nowait(
+            Event.create("AuthoredStagingChanged", {"staged_sets": len(staged)})
+        )
 
     async def _commit(
         self,

@@ -17,6 +17,16 @@ UnifiedCommandRegistry
         └── TUISession → CommandDispatcher → handler or menu
 ```
 
+## Inspect workflows and extensions
+
+Use `/workflow` to see active frames and `/workflow stack` for their origins
+and run IDs. `/workflow return --abandon` returns a paused child to its caller.
+`/catalog` prints the model's current capability catalog.
+
+`/reload` accepts optional surface names. Open `/reload report` to see the
+last report, including source paths, diagnostic codes, and available digests.
+`/authored list` shows installed and staged extensions.
+
 ## Create a working command
 
 Create `.agenthicc/commands/greet.py`:

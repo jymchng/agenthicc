@@ -96,6 +96,7 @@ if TYPE_CHECKING:
     from agenthicc.runners.session_context import SessionContext
     from agenthicc.runners.startup import StartupCoordinator
     from agenthicc.runners.workflow_handle import WorkflowRunHandle
+    from agenthicc.plugins.registry import ToolRegistry
     from agenthicc.runners.workflow_stack import WorkflowCall, WorkflowDelivery, WorkflowFrame
     from agenthicc.workflows.stack_tools import WorkflowToolScope
     from agenthicc.runners.workflow_profile import ResumeProviderProfile
@@ -1041,6 +1042,10 @@ async def _build_session_context_impl(
                         {"summary": summary},
                         event_id=kernel_event.event_id,
                     )
+            if not headless and kernel_event.event_type == "AuthoredStagingChanged":
+                count = kernel_event.payload.get("staged_sets")
+                if type(count) is int and cfg.security.authored_extension_policy == "stage_only":
+                    app_state.conversation.staged_authored_sets.set(count)
 
     kernel_projection_task = asyncio.create_task(
         _project_kernel_events(), name=f"session-kernel-projection-{session_id}"
@@ -1152,6 +1157,14 @@ async def _build_session_context_impl(
 
     # ── reactive state ────────────────────────────────────────────────────────
     app_state = AppState.create()
+    if not headless and cfg.security.authored_extension_policy == "stage_only":
+        from agenthicc.plugins.authored import AuthoredArtifactStore
+
+        try:
+            staged = await asyncio.to_thread(AuthoredArtifactStore(Path.cwd()).staged_runs)
+        except (OSError, ValueError):
+            staged = ()
+        app_state.conversation.staged_authored_sets.set(len(staged))
     app_state.conversation.model_name.set(model_label)
     app_state.conversation.session_id.set(session_id)
     app_state.conversation.current_directory.set(str(Path.cwd()))
@@ -1698,7 +1711,11 @@ class WorkflowStackBridge:
         self._project()
 
     def _project(self) -> None:
-        from agenthicc.runners.workflow_stack import WorkflowFrameSummary, WorkflowFrameStatus
+        from agenthicc.runners.workflow_stack import (
+            FrameOrigin,
+            WorkflowFrameStatus,
+            WorkflowFrameSummary,
+        )
 
         context = self._context
         active = {frame.frame_id for frame in context.workflow_stack.frames}
@@ -1711,6 +1728,7 @@ class WorkflowStackBridge:
                 frame.depth,
                 cast("WorkflowFrameStatus", frame.status),
                 frame.phase,
+                cast("FrameOrigin", frame.origin),
             )
             for frame in kernel.workflow_frames
             if frame.frame_id in active and frame.status in {"running", "paused", "suspended"}
@@ -2318,6 +2336,15 @@ class TUISession:
             self._ctx.app_state.conversation.notify_transient(str(exc))
             return False
         self._project_workflow_stack()
+        self._ctx.app_state.conversation.append_event(
+            "workflow_frame",
+            {
+                "name": frame.workflow_name,
+                "action": "entered",
+                "origin": frame.origin,
+                "text": frame.intent[:240],
+            },
+        )
         self._schedule_workflow_turn(frame.intent, "workflow-call")
         return True
 
@@ -2334,6 +2361,7 @@ class TUISession:
             approval=ctx.approval_svc,
             headless=False,
             worker_runtime=WorkflowWorkerRuntime(self._wf_config_base, ctx.authored),
+            catalog=ctx.capability_catalog,
         )
 
     def _suspend_workflow_for_child(self) -> None:
@@ -2383,6 +2411,7 @@ class TUISession:
         result = workflow_return(
             child, result_context, self._ctx.app_state.workflow_run(), status=status
         )
+        summary = result.summary
         parent = stack.complete(child.frame_id, result)
         self._workflow_handle = None
         if status == "completed":
@@ -2392,6 +2421,10 @@ class TUISession:
         delivery = WorkflowDelivery(parent.frame_id, child.run_id, result)
         self._ctx.workflow_bridge.record_return(delivery)
         await self._ctx.processor.flush_events()
+        self._ctx.app_state.conversation.append_event(
+            "workflow_frame",
+            {"name": child.workflow_name, "action": "returned", "text": summary},
+        )
         stack.queue_return(delivery)
 
     def _pause_workflow_child(self) -> None:
@@ -2482,6 +2515,10 @@ class TUISession:
     async def _finish_workflow_abandonment(self, delivery: WorkflowDelivery) -> None:
         try:
             await self._ctx.processor.flush_events()
+            self._ctx.app_state.conversation.append_event(
+                "workflow_frame",
+                {"name": delivery.result.workflow_name, "action": "abandoned"},
+            )
             self._ctx.workflow_stack.queue_return(delivery)
         except OSError as exc:
             self._ctx.app_state.conversation.notify_transient(
@@ -4427,6 +4464,8 @@ class TUISession:
             close_overlay=self._workspace.overlays.hide,
             set_pending_replay=self._set_pending_replay,
             reload=self._request_extension_reload,
+            reload_report=ctx.reload.last_report,
+            capability_catalog=lambda: self._describe_capability_catalog(tool_registry),
             authored=ctx.authored if command_name == "/authored" else None,
             start_task=lambda coro: self._tasks.start(coro, name="extension-command"),
             set_input_text=self._set_input_text,
@@ -4657,9 +4696,51 @@ class TUISession:
             )
         return report
 
+    def _describe_capability_catalog(self, registry: ToolRegistry) -> str:
+        from agenthicc.agents.selection import AgentUnavailable, turn_agent
+        from agenthicc.runners.agent_turn import _effective_agent_tool_names
+        from agenthicc.skills.tools import SkillUseState, use_skill
+        from agenthicc.workflows.stack_tools import enter_workflow
+
+        ctx = self._ctx
+        catalog = ctx.capability_catalog
+        scope = self._make_workflow_tools()
+        captured = catalog.current(scope)
+        if captured is not None:
+            return captured
+        try:
+            agent = turn_agent(ctx.agents_registry, ctx.app_state.agent(), ctx.cfg)
+        except AgentUnavailable:
+            return ""
+        registry.register_many((enter_workflow, use_skill), source="builtin")
+        mode = ctx.app_state.active_mode()
+        names = _effective_agent_tool_names(
+            agent.spec, registry, ctx.app_state, excluded_capabilities=mode.blocked_capabilities
+        )
+        skills = SkillUseState(
+            ctx.reload.skills,
+            agent=agent.spec.name,
+            permissions=ctx.cfg.agents.skill_permissions_for(agent.spec.name),
+        )
+        return catalog.render(scope, skills.callable_skills(), names, self._last_submitted_text)
+
     def _handle_workflow_command(self, args: str) -> bool:
         """Handle /workflow <name> | reset | resume [run-id]."""
         name = args.strip()
+        if name in {"", "stack"}:
+            from rich.text import Text
+
+            frames = self._ctx.app_state.conversation.workflow_stack()
+            rows: list[str] = []
+            for frame in frames:
+                details: list[str] = [frame.status]
+                if frame.phase is not None:
+                    details.append(frame.phase)
+                if name == "stack":
+                    details.extend((frame.origin, frame.run_id or frame.frame_id))
+                rows.append("  " * frame.depth + f"{frame.workflow_name} · " + " · ".join(details))
+            self._ctx.console.print(Text("\n".join(rows) or "No active workflow."))
+            return True
         if name.casefold() == "reload":
             return self.dispatch_slash("/workflows reload")
         conv = self._ctx.app_state.conversation
@@ -4714,7 +4795,7 @@ class TUISession:
                 "Finish or abandon the running workflow first (/workflow return --abandon)."
             )
             return True
-        if not name or name == "reset" or name.startswith("reset "):
+        if name == "reset" or name.startswith("reset "):
             requested_reset_id = name.partition(" ")[2].strip() or None
             # `/workflow reset` must always clear the session-local selector.
             # Recovery records are a separate durable-run decision and must

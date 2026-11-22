@@ -219,6 +219,7 @@ class _Inputs:
     #: The running workflow: name, phase number, phase count, phase, status.
     workflow: tuple[str, int, int, str, str] | None
     workflow_stack_label: str
+    staged_authored_sets: int
     startup: str
     terminal_count: int
     usage_status: str
@@ -344,6 +345,12 @@ def _builtin_parts(inputs: _Inputs) -> list[_Part]:
     if inputs.workflow_stack_label:
         parts.append(
             _Part(5, (_form(_tint("info", f"workflow {escape(inputs.workflow_stack_label)}")),))
+        )
+    if inputs.staged_authored_sets:
+        count = inputs.staged_authored_sets
+        label = f"{count} staged"
+        parts.append(
+            _Part(5, (_form(label if reader else _tint("warning", f"{g.diamond} {label}")),))
         )
     if inputs.terminal_count:
         word = "terminal" if inputs.terminal_count == 1 else "terminals"
@@ -590,9 +597,13 @@ class StatusLine:
 
         usage_status = _signal_text(conv, "usage_status", "unavailable")
         frames = conv.workflow_stack()
-        stack_label = " › ".join(frame.workflow_name for frame in frames)
-        if stack_label == "default":
+        stack_label = f" {glyphs().right} ".join(frame.workflow_name for frame in frames)
+        if len(frames) > 1 and workflow is not None and workflow[0] == frames[-1].workflow_name:
+            _, index, total, phase, status = workflow
+            workflow = (stack_label, index, total, phase, status)
             stack_label = ""
+        elif frames and frames[-1].phase:
+            stack_label += f" {glyphs().sep} {frames[-1].phase}"
         return _Inputs(
             reader=reader,
             needs_you=_signal_int(conv, "background_needs_you"),
@@ -605,6 +616,7 @@ class StatusLine:
             workers=workers,
             workflow=workflow,
             workflow_stack_label=stack_label,
+            staged_authored_sets=_signal_int(conv, "staged_authored_sets"),
             startup=self._startup_text(),
             terminal_count=(
                 _signal_int(conv, "terminal_running_count")

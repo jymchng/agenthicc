@@ -11,7 +11,7 @@ from .registry import UnifiedCommandRegistry
 if TYPE_CHECKING:
     from agenthicc.runners.model_switch import ModelChoice
     from agenthicc.skills.loader import SkillDef
-    from agenthicc.runners.reload import ReloadSurface
+    from agenthicc.runners.reload import ReloadReport, ReloadSurface
     from agenthicc.tui.workspace.dialog import DialogSettings
     from agenthicc.tui.workspace.overlay import Overlay
     from agenthicc.tui.workspace.picker import PickerRow
@@ -775,7 +775,18 @@ def _workflow_action_matches(prefix: str) -> list[str]:
 
 
 def _workflow_selector_busy_policy(args: str) -> BusyPolicy:
-    return BusyPolicy.IMMEDIATE_CONTROL if args.strip().lower() == "reload" else BusyPolicy.QUEUE
+    action = args.strip().lower()
+    if action in {"", "stack"}:
+        return BusyPolicy.IMMEDIATE_READ_ONLY
+    return BusyPolicy.IMMEDIATE_CONTROL if action == "reload" else BusyPolicy.QUEUE
+
+
+def _workflow_selector_actions(prefix: str) -> list[str]:
+    return [
+        action
+        for action in ("stack", "call", "return --abandon", "resume", "reset", "reload")
+        if action.startswith(prefix.casefold())
+    ]
 
 
 def _history_busy_policy(args: str) -> BusyPolicy:
@@ -905,9 +916,7 @@ def _request_reload(ctx: CommandContext, surfaces: frozenset[ReloadSurface], tit
         except Exception:  # noqa: BLE001 - the command reports an unavailable reload
             _present_registry_result(ctx, title, "Reload failed. Existing extensions were kept.")
             return
-        lines = [report.summary()]
-        lines.extend(f"{item.path} — {item.message}" for item in report.diagnostics)
-        _present_registry_result(ctx, title, "\n".join(lines))
+        _present_registry_result(ctx, title, _reload_result_text(report))
 
     start(run())
     return True
@@ -916,12 +925,44 @@ def _request_reload(ctx: CommandContext, surfaces: frozenset[ReloadSurface], tit
 def _cmd_reload(ctx: CommandContext) -> bool:
     from agenthicc.runners.reload import parse_reload_surfaces
 
+    if ctx.args.strip() == "report":
+        report = ctx.reload_report
+        _present_registry_result(
+            ctx, "Reload", _reload_result_text(report) if report else "No reload report yet."
+        )
+        return True
     try:
         surfaces = parse_reload_surfaces(ctx.args)
     except ValueError as exc:
         _present_registry_result(ctx, "Reload", str(exc))
         return True
     return _request_reload(ctx, surfaces, "Reload")
+
+
+def _reload_result_text(report: ReloadReport) -> str:
+    lines = [report.summary()]
+    lines.extend(
+        f"{item.path} · {item.code}"
+        + (f" · {item.digest[:12]}" if item.digest else "")
+        + f" · {item.message}"
+        for item in report.diagnostics
+    )
+    return "\n".join(lines)
+
+
+def _cmd_catalog(ctx: CommandContext) -> bool:
+    from rich.text import Text
+
+    catalog = ctx.capability_catalog() if ctx.capability_catalog is not None else ""
+    ctx.console.print(Text(catalog or "No model-callable capabilities."))
+    return True
+
+
+def _authored_busy_policy(args: str) -> BusyPolicy:
+    action = args.split(maxsplit=1)[:1]
+    return (
+        BusyPolicy.IMMEDIATE_READ_ONLY if action in ([], ["list"], ["diff"]) else BusyPolicy.QUEUE
+    )
 
 
 def _authored_action_matches(prefix: str) -> list[str]:
@@ -1763,8 +1804,13 @@ BUILTIN_COMMANDS: list[Command] = [
         name="/reload",
         group="Configuration",
         description="Reload skills, tools, workflows or commands",
-        argument_hint="[skills tools workflows commands]",
+        argument_hint="[skills tools workflows commands|report]",
         busy_policy=BusyPolicy.IMMEDIATE_CONTROL,
+        busy_policy_resolver=lambda args: (
+            BusyPolicy.IMMEDIATE_READ_ONLY
+            if args.strip() == "report"
+            else BusyPolicy.IMMEDIATE_CONTROL
+        ),
         handler=_cmd_reload,
     ),
     Command(
@@ -1772,8 +1818,16 @@ BUILTIN_COMMANDS: list[Command] = [
         group="Configuration",
         description="Inspect, approve, or restore authored extensions",
         argument_hint="[list|diff|approve|reject|rollback|remove]",
+        busy_policy_resolver=_authored_busy_policy,
         completions_factory=_authored_action_matches,
         handler=_cmd_authored,
+    ),
+    Command(
+        name="/catalog",
+        group="Configuration",
+        description="Show the capabilities available to the agent",
+        busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
+        handler=_cmd_catalog,
     ),
     Command(
         name="/commands",
@@ -1988,9 +2042,10 @@ BUILTIN_COMMANDS: list[Command] = [
     Command(
         name="/workflow",
         group="Workflows",
-        description="Select, call, or resume a workflow",
-        argument_hint="<name> | call <name> <intent> | return --abandon | reload | resume [run-id] | reset [run-id]",
+        description="Inspect, select, call, or resume a workflow",
+        argument_hint="stack | <name> | call <name> <intent> | return --abandon | reload | resume [run-id] | reset [run-id]",
         busy_policy_resolver=_workflow_selector_busy_policy,
+        completions_factory=_workflow_selector_actions,
         # No handler: /workflow is intercepted in TUISession.route() before
         # dispatch_slash() so it can access session-local state.  The entry
         # exists here solely so the trigger picker displays and completes it.

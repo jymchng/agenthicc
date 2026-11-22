@@ -16,6 +16,7 @@ from agenthicc.tools.approval import ApprovalRequest
 from agenthicc.tools.capabilities import tool_control, tool_read
 
 if TYPE_CHECKING:
+    from agenthicc.agents.catalog import CapabilityCatalog
     from agenthicc.runners.workflow_execution import WorkflowWorkerRuntime
     from collections.abc import Callable, Iterator
 
@@ -23,7 +24,7 @@ if TYPE_CHECKING:
     from agenthicc.runners.workflow_stack import WorkflowStack
     from agenthicc.tools.approval import ApprovalBroker
     from agenthicc.tui.runtime.mode_manager import RuntimeMode
-    from agenthicc.workflows.plugin import WorkflowPlugin
+    from agenthicc.workflows.plugin import WorkflowEntry, WorkflowPlugin
     from agenthicc.workflows.registry import WorkflowRegistry
 
 
@@ -126,6 +127,7 @@ class WorkflowToolScope:
         headless: bool,
         worker_frame: FrameListing | None = None,
         worker_runtime: WorkflowWorkerRuntime | None = None,
+        catalog: CapabilityCatalog | None = None,
     ) -> None:
         self.stack = stack
         self.registry = registry
@@ -135,6 +137,7 @@ class WorkflowToolScope:
         self._headless = headless
         self._worker_frame = worker_frame
         self.worker_runtime = worker_runtime
+        self.catalog = catalog
         self._pending: WorkflowCall | None = None
         self._lock = asyncio.Lock()
 
@@ -147,6 +150,7 @@ class WorkflowToolScope:
             approval=None,
             headless=self._headless,
             worker_runtime=self.worker_runtime,
+            catalog=self.catalog,
             worker_frame={
                 "frame_id": frame_id,
                 "name": agent_type,
@@ -168,6 +172,10 @@ class WorkflowToolScope:
     def is_worker(self) -> bool:
         return self._worker_frame is not None
 
+    @property
+    def mode_name(self) -> str:
+        return self._active_mode().name
+
     def _allows_call(self, plugin: type[WorkflowPlugin]) -> EntryRefusal | None:
         if not plugin.invocation.agent_callable:
             return _refuse("not_agent_callable")
@@ -182,10 +190,10 @@ class WorkflowToolScope:
             return _refuse("not_allowed_from_frame")
         return None
 
-    def inventory(self) -> list[WorkflowListing]:
+    def callable_workflows(self) -> Iterator[WorkflowEntry]:
+        """Yield the workflows eligible under the current frame and ceiling."""
         if self._worker_frame is not None:
-            return []
-        rows: list[WorkflowListing] = []
+            return
         for name in sorted(self.registry.names()):
             entry = self.registry.get_entry(name)
             if entry is None or self._allows_call(entry.plugin_cls) is not None:
@@ -199,8 +207,15 @@ class WorkflowToolScope:
                 self.stack.validate(call)
             except WorkflowStackError:
                 continue
+            yield entry
+
+    def inventory(self) -> list[WorkflowListing]:
+        rows: list[WorkflowListing] = []
+        for entry in self.callable_workflows():
+            workflow = entry.plugin_cls
+            invocation = workflow.invocation
             try:
-                params = workflow.build_params(self._config.workflows.get(name, {}))
+                params = workflow.build_params(self._config.workflows.get(workflow.name, {}))
                 keys = [item.name for item in fields(params) if not item.name.startswith("_")]
             except (TypeError, ValueError):
                 keys = []

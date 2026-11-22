@@ -199,7 +199,7 @@ class CreateToolsRunner(BaseWorkflowRunner):
 
         @tool_control
         @tool()
-        async def confirm_generation_complete() -> dict[str, object]:
+        async def confirm_tools_generated() -> dict[str, object]:
             """Confirm that the planned Python modules have been written."""
             nonlocal completed
             completed = True
@@ -220,10 +220,10 @@ class CreateToolsRunner(BaseWorkflowRunner):
             "capability decorator or one set_metadata declaration with a frozenset of "
             "ToolCapability members. Use annotated JSON object results, Args docstrings, "
             "literal DEPENDENCIES, WorkspaceView for paths, and the shared guarded HTTP client. "
-            "Call confirm_generation_complete once all modules are ready.",
+            "Call confirm_tools_generated once all modules are ready.",
             [
                 *(tool for tool in tools if tool_name(tool) in {"read_file", "write_file"}),
-                confirm_generation_complete,
+                confirm_tools_generated,
             ],
         )
         if completed:

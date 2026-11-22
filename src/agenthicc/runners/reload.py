@@ -319,6 +319,7 @@ class ReloadService:
         self._flight: _Flight | None = None
         self._published: set[ReloadSurface] = set()
         self._closed = False
+        self.last_report: ReloadReport | None = None
 
     @property
     def skills(self) -> SurfaceHolder[Mapping[str, SkillDef]]:
@@ -482,6 +483,7 @@ class ReloadService:
             self._published.update(ready)
             self._generation = generation
             self._processor.emit_nowait(Event.create("SessionReloaded", proposed.to_dict()))
+        self.last_report = proposed
         return proposed
 
     async def _discover_off_loop(

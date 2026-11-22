@@ -74,7 +74,12 @@ def test_builtins_have_explicit_immediate_read_only_inventory() -> None:
         ("/mcp reload", BusyPolicy.QUEUE),
         ("/model", BusyPolicy.IMMEDIATE_READ_ONLY),
         ("/model openai gpt-5", BusyPolicy.QUEUE),
+        ("/workflow", BusyPolicy.IMMEDIATE_READ_ONLY),
+        ("/workflow stack", BusyPolicy.IMMEDIATE_READ_ONLY),
         ("/workflow demo", BusyPolicy.QUEUE),
+        ("/catalog", BusyPolicy.IMMEDIATE_READ_ONLY),
+        ("/reload report", BusyPolicy.IMMEDIATE_READ_ONLY),
+        ("/authored list", BusyPolicy.IMMEDIATE_READ_ONLY),
         ("/compact", BusyPolicy.QUEUE),
         ("ordinary request", BusyPolicy.QUEUE),
     ],
@@ -150,4 +155,5 @@ def test_busy_picker_labels_immediate_and_queued_commands() -> None:
     matches = {item.value: item for item in trigger.get_matches("", ctx)}
 
     assert "[runs now]" in matches["/usage"].detail
-    assert "[queues while busy]" in matches["/workflow"].detail
+    assert "[runs now]" in matches["/workflow"].detail
+    assert "[queues while busy]" in matches["/compact"].detail

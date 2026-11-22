@@ -1,0 +1,26 @@
+── compact ──
+ · review entered by agent
+   Review the [draft] release notes
+
+ · review returned
+   Found two missing entries
+
+ · release abandoned
+
+── normal ──
+ · review entered by agent
+   Review the [draft] release notes
+
+ · review returned
+   Found two missing entries
+
+ · release abandoned
+
+── verbose ──
+ · review entered by agent
+   Review the [draft] release notes
+
+ · review returned
+   Found two missing entries
+
+ · release abandoned

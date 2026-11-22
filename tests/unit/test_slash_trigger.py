@@ -421,6 +421,21 @@ def test_picker_exposes_every_canonical_builtin_command():
     assert "/compact" in {match.value for match in matches}
 
 
+@pytest.mark.parametrize(
+    ("query", "value"),
+    [
+        ("workflow st", "/workflow stack"),
+        ("workflow ret", "/workflow return --abandon"),
+        ("rel", "/reload"),
+        ("cat", "/catalog"),
+        ("authored li", "/authored list"),
+    ],
+)
+def test_picker_exposes_workflow_composition_controls(query: str, value: str) -> None:
+    picker = SlashCommandTrigger(build_builtin_registry())
+    assert value in {match.value for match in picker.get_matches(query, CTX)}
+
+
 # ── SlashCommandTrigger char ──────────────────────────────────────────────────
 
 

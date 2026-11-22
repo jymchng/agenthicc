@@ -161,6 +161,34 @@ deterministic.
 
 ## Workflows
 
+### Frame
+
+An active or suspended position in a session's workflow stack. A frame carries
+the workflow name, phase, parent link, run identity, origin, and policy.
+
+**Provenance:** `WorkflowFrame` · `src/agenthicc/runners/workflow_stack.py:196`
+
+### Return packet
+
+The bounded summary, outputs, and artifact receipts a child gives its caller.
+Its parent-frame and child-run IDs identify the resumed conversation turn.
+
+**Provenance:** `WorkflowReturn` and `WorkflowDelivery` · `src/agenthicc/runners/workflow_stack.py:94`
+
+### Generation
+
+The publication revision of an extension surface. A session uses it to read
+tools and skills from complete reload results.
+
+**Provenance:** `ReloadReport.generation` · `src/agenthicc/runners/reload.py:112`
+
+### Catalog
+
+A bounded list of workflows and skills the agent can use and tools published
+during the session. `/catalog` shows the current frame's list.
+
+**Provenance:** `CapabilityCatalog` · `src/agenthicc/agents/catalog.py:97`
+
 ### Workflow stack
 
 The session's base workflow and any called workflows. The top frame runs

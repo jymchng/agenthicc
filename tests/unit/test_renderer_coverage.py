@@ -100,6 +100,16 @@ CASES: dict[str, list[dict[str, object]]] = {
             "summary": "skill release-notes · 7c1fb2d6d919 · loaded · /authored rollback release-notes"
         }
     ],
+    "workflow_frame": [
+        {
+            "name": "review",
+            "action": "entered",
+            "origin": "agent",
+            "text": "Review the [draft] release notes",
+        },
+        {"name": "review", "action": "returned", "text": "Found two missing entries"},
+        {"name": "release", "action": "abandoned"},
+    ],
     "background_handoff": [{"session_id": "6b9f7614-8ca1-4d2e", "status": "running"}],
     "compaction_status": [
         {"status": "started", "before_tokens": 9000},

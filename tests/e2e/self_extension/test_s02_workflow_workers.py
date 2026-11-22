@@ -143,7 +143,7 @@ async def test_workflow_worker_stages_tools_in_its_own_worktree(
             any(project.glob(".agenthicc/worktrees/*/.agenthicc/.staging/*/tool/fixture_probe.py"))
             and not (project / ".agenthicc/tools/fixture_probe.py").exists()
         ),
-        tool_call("confirm_generation_complete", {}),
+        tool_call("confirm_tools_generated", {}),
     )
     script.expect("finish generation", lambda request: request.contains("ok"), reply("Written."))
     script.expect(
@@ -396,7 +396,7 @@ async def test_parallel_tool_authors_keep_their_staging_separate(
             ),
             reply("Planned."),
             tool_call("write_file", {"path": f"{name}.py", "content": _module(name)}),
-            tool_call("confirm_generation_complete", {}),
+            tool_call("confirm_tools_generated", {}),
             reply("Written."),
             tool_call("approve_tools", {}),
             reply("Approved."),
@@ -447,7 +447,7 @@ async def test_parallel_tool_authors_keep_their_staging_separate(
             if isinstance(schemas, list)
             else set()
         )
-        if not (names & {"submit_tools_plan", "confirm_generation_complete", "approve_tools"}):
+        if not (names & {"submit_tools_plan", "confirm_tools_generated", "approve_tools"}):
             return await complete(messages, **kwargs)
         text = repr(messages) + str(kwargs.get("system", ""))
         label = next(label for label in scripts if f"fixture-{label}" in text)
@@ -530,8 +530,8 @@ async def test_failed_workflow_worker_reports_the_failure_and_executed_phases(
     )
     script.expect(
         "confirm generation",
-        lambda request: "confirm_generation_complete" in request.tools,
-        tool_call("confirm_generation_complete", {}),
+        lambda request: "confirm_tools_generated" in request.tools,
+        tool_call("confirm_tools_generated", {}),
     )
     script.expect("finish generation", lambda request: request.contains("ok"), reply("Written."))
     script.expect(

@@ -1493,6 +1493,7 @@ class AgentTurnRunner:
         Returns (agent_instance, active_runner).
         """
         from lauren_ai._agents import agent as agent_decorator
+        from lauren_ai._agents import AGENT_META
         from lauren_ai._agents import use_tools
         from lauren_ai._agents._runner import AgentRunnerBase as _RunnerBase
 
@@ -1990,6 +1991,39 @@ class AgentTurnRunner:
             if description:
                 self._runtime_dynamic_blocks.insert(0, PromptBlock("AVAILABLE TOOLS", description))
 
+        capabilities = workflow_tools.catalog if workflow_tools is not None else None
+        capability_generation = capabilities.generation if capabilities is not None else -1
+
+        def capability_text(tools: Sequence[ToolLike]) -> str:
+            if capabilities is None or workflow_tools is None:
+                return ""
+            state = self._skill_state
+            mode = gate_state.active_mode() if gate_state is not None else None
+            blocked = mode.blocked_capabilities if mode is not None else frozenset()
+            names = {
+                name
+                for item in tools
+                for name in (tool_name(item),)
+                if not (get_tool_capabilities(item) & blocked)
+                and (state is None or state.permitted(name))
+            }
+            return capabilities.render(
+                workflow_tools,
+                state.callable_skills() if state is not None else (),
+                names,
+                ctx.text,
+            )
+
+        capability_block = capability_text(visible_tools)
+        if capability_block:
+            if prompt_contract is not None:
+                self._runtime_dynamic_blocks.append(
+                    PromptBlock("CAPABILITY CATALOG", capability_block)
+                )
+            else:
+                meta = cast("AgentMeta", vars(type(agent_instance))[AGENT_META])
+                meta.system = (meta.system or "") + f"\n\n{capability_block}"
+
         self._visible_tools = list(visible_tools)
         if self._skill_state is not None:
             self._skill_state.configure_tools(map(tool_name, visible_tools))
@@ -1998,9 +2032,10 @@ class AgentTurnRunner:
             live_tools = holder
 
             def refresh(meta: AgentMeta) -> bool:
-                nonlocal catalog
+                nonlocal catalog, capability_generation
                 surface = live_tools.current()
-                if surface is catalog:
+                generation = capabilities.generation if capabilities is not None else -1
+                if surface is catalog and generation == capability_generation:
                     return False
                 updated, visible, _ = resolve_surface(surface)
                 visible_names = {tool_name(item) for item in visible}
@@ -2016,12 +2051,16 @@ class AgentTurnRunner:
                     + (self._skill_suffix or "")
                     + (f"\n\n{description}" if description else "")
                 )
+                block = capability_text(visible)
+                if block and prompt_contract is None:
+                    meta.system += f"\n\n{block}"
                 self._visible_tools = visible
                 self._tool_registry = updated
                 update_tool_presentations(visible)
                 if self._skill_state is not None:
                     self._skill_state.configure_tools(visible_names)
                 catalog = surface
+                capability_generation = generation
                 return True
 
             active_runner.refresh_tool_meta = refresh

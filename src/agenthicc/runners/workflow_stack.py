@@ -231,6 +231,7 @@ class WorkflowFrameSummary:
     depth: int
     status: WorkflowFrameStatus
     phase: str | None
+    origin: FrameOrigin
 
 
 @runtime_checkable
@@ -362,6 +363,7 @@ class WorkflowStack:
                 frame.depth,
                 frame.status,
                 frame.phase,
+                frame.origin,
             )
             for frame in self._frames
         )

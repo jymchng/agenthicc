@@ -2211,6 +2211,15 @@ class SubagentWorker:
             )
         if self._task.context:
             system = f"{system}\n\n[ADDITIONAL CONTEXT]\n{self._task.context}"
+        if workflow_tools is not None and workflow_tools.catalog is not None:
+            capabilities = workflow_tools.catalog.render(
+                workflow_tools,
+                skill_use.callable_skills() if skill_use is not None else (),
+                visible_names,
+                self._task.task_description,
+            )
+            if capabilities:
+                system += f"\n\n{capabilities}"
 
         # Construct the @agent class and runner.
         @agent_decorator(model=self._model_id, system=system)

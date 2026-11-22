@@ -744,6 +744,10 @@ class WorkflowCheckpoint:
             raise CheckpointValidationError("checkpoint must be a JSON object")
         schema = raw.get("schema_version")
         links = {"frame_id", "parent_run_id", "origin"}
+        if schema == 1 and raw.get("workflow_name") == "make_agenthicc_tool":
+            raise CheckpointValidationError(
+                "This workflow was renamed to create_tools. Start a new run."
+            )
         if schema == 1 or (schema == CHECKPOINT_SCHEMA_VERSION and links - raw.keys()):
             raise CheckpointValidationError(
                 "Start a new run. This checkpoint predates workflow stacks."

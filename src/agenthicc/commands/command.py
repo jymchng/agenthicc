@@ -131,6 +131,8 @@ class CommandContext:
     close_overlay: "Callable[[], None] | None" = None
     set_pending_replay: "Callable[[str], None] | None" = None
     reload: "Callable[[frozenset[ReloadSurface]], Awaitable[ReloadReport]] | None" = None
+    reload_report: "ReloadReport | None" = None
+    capability_catalog: "Callable[[], str] | None" = None
     authored: "AuthoredPublisher | None" = None
     start_task: "Callable[[Coroutine[object, object, None]], object] | None" = None
     set_input_text: "Callable[[str], None] | None" = None

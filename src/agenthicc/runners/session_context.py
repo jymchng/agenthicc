@@ -10,9 +10,11 @@ from collections.abc import Iterable
 from dataclasses import InitVar, dataclass, field
 from functools import cached_property
 from pathlib import Path
+from time import time
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from agenthicc.agents.catalog import CapabilityCatalog
     from rich.console import Console
     from lauren_ai._agents._runner import AgentRunnerBase
     from agenthicc.memory.journaled import JournaledShortTermMemory
@@ -134,6 +136,7 @@ class SessionContext:
     initial_workflow: InitVar[str | None] = None
     workflow_stack: WorkflowStack = field(init=False)
     workflow_bridge: WorkflowStackBridge = field(init=False, repr=False)
+    opened_at: float = field(init=False, default_factory=time, repr=False)
 
     # ── workspace access (PRD-168) ──────────────────────────────────────────
     #: Canonical roots shared by filesystem tools, commands, mentions, and
@@ -214,6 +217,12 @@ class SessionContext:
             self.processor,
             policy=self.cfg.security.authored_extension_policy,
         )
+
+    @cached_property
+    def capability_catalog(self) -> CapabilityCatalog:
+        from agenthicc.agents.catalog import CapabilityCatalog
+
+        return CapabilityCatalog(self._workspace_root, self.session_id, self.reload, self.opened_at)
 
     @property
     def session_memory(self) -> "JournaledShortTermMemory":

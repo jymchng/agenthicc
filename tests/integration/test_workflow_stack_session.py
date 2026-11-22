@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, replace
 from enum import Enum
+from io import StringIO
 from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import Mock
@@ -14,6 +15,7 @@ import pytest
 from lauren_ai._agents._runner import AgentRunnerBase
 from lauren_ai._transport import Completion, TokenUsage
 from lauren_ai._transport._mock import MockTransport
+from rich.console import Console
 
 from agenthicc.plugins.authored_types import (
     AuthoredRun,
@@ -116,7 +118,9 @@ async def stack_session(
         transport = MockTransport()
         context.agent_runner = AgentRunnerBase(transport=transport)
         context.workflow_registry.register(ChildWorkflow)
-        session = TUISession(context, Mock(spec=Workspace), Mock(spec=UnifiedInputSession))
+        workspace = Mock(spec=Workspace)
+        workspace.overlays = Mock()
+        session = TUISession(context, workspace, Mock(spec=UnifiedInputSession))
         processor_task = asyncio.create_task(context.processor.run(), name="workflow-stack-test")
         try:
             yield session, context, transport
@@ -181,6 +185,81 @@ async def test_headless_workflow_call_returns_with_the_same_frame_identity(
     assert context.workflow_stack.depth == 0
     assert len(transport.calls) == 1
     assert repr(transport.calls[0].messages).count("[WORKFLOW RETURN]") == 1
+
+
+async def test_catalog_command_matches_the_model_and_survives_an_unchanged_reload(
+    stack_session: tuple[TUISession, SessionContext, MockTransport],
+) -> None:
+    session, context, transport = stack_session
+    output = StringIO()
+    context.console = Console(file=output, width=200, force_terminal=False)
+    _reply(transport, "Reviewed the project.")
+    await execute_workflow(context, "default", "Review the project.")
+    catalog = context.capability_catalog.current(session._make_workflow_tools())
+    assert catalog and catalog in str(transport.calls[0].system)
+    assert session.route("/catalog")
+    assert output.getvalue().strip() == catalog
+    await context.processor.drain()
+    assert session.route("/workflow stack")
+    assert context.workflow_stack.base.frame_id in output.getvalue()
+    assert context.workflow_stack.top.workflow_name == "default"
+
+    await context.reload.reload(frozenset({"workflows"}), reason="command")
+    _reply(transport, "Reviewed it again.")
+    await execute_workflow(context, "default", "Review the project.")
+    assert context.capability_catalog.current(session._make_workflow_tools()) == catalog
+    assert catalog in str(transport.calls[1].system)
+
+
+async def test_plan_catalog_lists_only_eligible_read_only_workflows(
+    stack_session: tuple[TUISession, SessionContext, MockTransport],
+) -> None:
+    from agenthicc.workflows.plugin import WorkflowInvocation
+
+    session, context, _transport = stack_session
+
+    class ReadOnly(ChildWorkflow):
+        name = "readonly_fixture"
+        invocation = WorkflowInvocation(agent_callable=True)
+
+    class Mutating(ChildWorkflow):
+        name = "mutating_fixture"
+        invocation = WorkflowInvocation(agent_callable=True)
+        phases = [PhaseSpec("edit", allowed_capabilities=frozenset({ToolCapability.WRITE}))]
+
+    context.workflow_registry.register(ReadOnly)
+    context.workflow_registry.register(Mutating)
+    context.mode_manager.set_by_name("Plan")
+    session._select_base_workflow("default")
+    output = StringIO()
+    context.console = Console(file=output, width=200, force_terminal=False)
+    assert session.route("/catalog")
+    assert "readonly_fixture" in output.getvalue()
+    assert "mutating_fixture" not in output.getvalue()
+
+
+async def test_reload_report_shows_path_code_digest_and_no_file_contents(
+    stack_session: tuple[TUISession, SessionContext, MockTransport],
+) -> None:
+    from agenthicc.tui.workspace.overlays.registry_list import RegistryMessageOverlay
+
+    session, context, _transport = stack_session
+    tools = Path(".agenthicc/tools")
+    tools.mkdir(parents=True)
+    source = tools / "report_refusal.py"
+    source.write_text("raise RuntimeError('private fixture text')\n", encoding="utf-8")
+    report = await context.reload.reload(frozenset({"tools"}), reason="command")
+    diagnostic = next(item for item in report.diagnostics if item.code == "untrusted")
+    assert diagnostic.digest
+    assert session.route("/reload report")
+    overlay = session._workspace.overlays.show.call_args.args[0]
+    assert isinstance(overlay, RegistryMessageOverlay)
+    output = StringIO()
+    Console(file=output, width=200, force_terminal=False).print(overlay.render())
+    assert source.name in output.getvalue()
+    assert "untrusted" in output.getvalue()
+    assert diagnostic.digest[:12] in output.getvalue()
+    assert "private fixture text" not in output.getvalue()
 
 
 async def test_authored_return_loads_skill_before_the_parent_request(

@@ -190,6 +190,7 @@ class Workspace:
             self._state.workflow_run,  # PRD-81: workflow progress
             conv.live_tool_overflow,  # overflow bridge row
             conv.workflow_stack,
+            conv.staged_authored_sets,
             conv.compaction_active,  # PRD-119: compaction on/off toggle
             conv.compaction_progress,  # a multi-call compaction's measured steps
             conv.handoff_pending,  # /background waiting for the running tool call

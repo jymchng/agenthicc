@@ -56,9 +56,25 @@ class _WorkflowResumeTransitionError(RuntimeError):
     """A resume could not durably transition before dispatch."""
 
 
-def _emit_authored_json(event: Event) -> None:
+def _emit_extension_json(event: Event) -> None:
     if event.event_type == "AuthoredPublished":
         print(json.dumps({**event.payload, "event": "authored_published"}), flush=True)
+    elif event.event_type == "SessionReloaded" and event.payload.get("reason") != "command":
+        print(json.dumps({**event.payload, "event": "reload"}), flush=True)
+    elif event.event_type == "workflow_frame_returned" or (
+        event.event_type in {"workflow_frame_pushed", "workflow_frame_state_changed"}
+        and event.payload.get("depth") != 0
+    ):
+        print(
+            json.dumps(
+                {
+                    **event.payload,
+                    "event": "workflow_frame",
+                    "action": event.event_type.removeprefix("workflow_frame_"),
+                }
+            ),
+            flush=True,
+        )
 
 
 @dataclass(frozen=True)
@@ -380,6 +396,7 @@ async def _execute_workflow_turn(
         approval=session.approval_svc,
         headless=True,
         worker_runtime=_workflow_worker_runtime(session),
+        catalog=session.capability_catalog,
     )
     try:
         with bind_workflow_tools(tools):
@@ -582,6 +599,7 @@ async def _run_headless_agent_turn(
         approval=session.approval_svc,
         headless=True,
         worker_runtime=_workflow_worker_runtime(session),
+        catalog=session.capability_catalog,
     )
     conversation = session.session_conversation
     owner = (
@@ -1259,7 +1277,7 @@ async def run_headless_workflow(
     )
     terminal_token = None
     processor_task: asyncio.Task[object] | None = None
-    remove_authored_sink = session.processor.add_sink(_emit_authored_json)
+    remove_extension_sink = session.processor.add_sink(_emit_extension_json)
     try:
         session.app_state.cli_flags = ctx.flags
         session.approval_svc = _HeadlessApprovalService(ctx.flags.dangerously_skip_permissions)
@@ -1304,7 +1322,7 @@ async def run_headless_workflow(
         try:
             await _close_headless_session(session, processor_task, cassette_base)
         finally:
-            remove_authored_sink()
+            remove_extension_sink()
 
 
 async def _run_headless_workflow_stream(ctx: "CLIContext") -> None:
@@ -1331,7 +1349,7 @@ async def _run_headless_workflow_stream(ctx: "CLIContext") -> None:
     )
     terminal_token = None
     processor_task: asyncio.Task[object] | None = None
-    remove_authored_sink = session.processor.add_sink(_emit_authored_json)
+    remove_extension_sink = session.processor.add_sink(_emit_extension_json)
     try:
         session.app_state.cli_flags = ctx.flags
         session.approval_svc = _HeadlessApprovalService(ctx.flags.dangerously_skip_permissions)
@@ -1456,7 +1474,7 @@ async def _run_headless_workflow_stream(ctx: "CLIContext") -> None:
         try:
             await _close_headless_session(session, processor_task, cassette_base)
         finally:
-            remove_authored_sink()
+            remove_extension_sink()
 
 
 async def _close_headless_session(

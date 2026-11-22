@@ -10,6 +10,7 @@ from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, cast
 
 from agenthicc.commands.registry import UnifiedCommandRegistry
+from agenthicc.agents.catalog import CapabilityCatalog
 from agenthicc.kernel import AppState, Event, EventProcessor
 from agenthicc.runners.reload import ReloadService, SurfaceHolder
 from agenthicc.runners.session_context import SessionContext
@@ -106,6 +107,9 @@ def session_context(**fields: object) -> SimpleNamespace:
             skills=skills,
             tools=tools,
         )
+    context.capability_catalog = CapabilityCatalog(
+        Path.cwd(), context.session_id, context.reload, context.opened_at
+    )
     return context
 
 
