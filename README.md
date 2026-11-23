@@ -791,7 +791,8 @@ troubleshooting steps.
 
 All built-in worker roles inherit the parent turn's available tools. That
 includes all 56 built-ins when available to the parent. Mode, phase, skill,
-and explicitly configured worker permissions still apply.
+and explicitly configured worker permissions still apply. Workers can send
+status updates to the parent during a background run.
 
 An eligible workflow can also run as a subagent task. The parent session
 handles publication of the worker's staged artifacts.

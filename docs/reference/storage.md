@@ -306,6 +306,10 @@ Subagent communication uses the same journal without entering provider memory:
 
 - `agent_message_event` records bounded sent, delivered, acknowledged,
   rejected, and question lifecycle transitions for one authenticated pool;
+- A background pool records whether its worker updates can wake the owning
+  direct session. Each delivered update uses its message ID in the provider
+  journal so a resumed session can recover undelivered updates and skip ones
+  already inserted.
 - pending `ask_parent`/`ask_peer` requests can be rehydrated by
   `AgentMessageBroker.rehydrate(active_workers=...)`; workers not present in
   that live set receive an explicit `orphaned` outcome instead of leaving a

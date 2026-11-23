@@ -596,6 +596,11 @@ available control-plane operations are:
 | `stop_subagents` | main → pool | Stop one worker (abort) or a whole pool (drain) |
 | `retry_subagent` | main → pool | Re-run one failed or cancelled worker of a finished pool |
 
+Parent-directed status updates reach the foreground agent as untrusted worker
+data. A foreground spawn includes them in its tool result. A background pool
+can deliver an update at the next safe tool boundary or wake an idle direct
+session. `collect_subagent_results` also includes the pool's updates.
+
 The clarification flow is deliberately non-reentrant:
 
 ```text
