@@ -42,6 +42,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol, TypedDict, cast
 
+from agenthicc.memory.journal import persist_journal_record
 from agenthicc.result_contracts import (
     JSONMapping,
     JSONValue,
@@ -1711,6 +1712,8 @@ class SubagentWorker:
 
     async def run(self) -> SubagentResult:
         """Execute the task; return SubagentResult regardless of success/failure."""
+        from agenthicc.runners.agent_turn_context import bind_turn_notices
+
         self._registration_failures = ()
         token = None
         if self._worker_workspace is not None and self._workspace_access is not None:
@@ -1718,7 +1721,8 @@ class SubagentWorker:
 
             token = set_current_workspace_access(self._workspace_access)
         try:
-            result = await self._run()
+            with bind_turn_notices(None):
+                result = await self._run()
             if self._worker_workspace is not None:
                 result = await self._integrate(result)
         finally:
@@ -2909,8 +2913,8 @@ class SubagentPool:
         self._lifecycles: dict[str, WorkerLifecycle] = {}
         self._results: dict[str, SubagentResult] = {}
         self._background_requested = asyncio.Event()
-        #: Set once the pool has journaled its start and published its workers.
-        self._running = asyncio.Event()
+        self.detach_available = True
+        self._backgrounded = False
         self._redactor: _Redactor | None = None
 
     @property
@@ -2920,18 +2924,24 @@ class SubagentPool:
 
     def request_background(self) -> bool:
         """Detach the active pool from its parent tool call (Ctrl+B)."""
-        if not self._state.active:
+        if (
+            not self.detach_available
+            or not self._state.active
+            or self._background_requested.is_set()
+        ):
             return False
         self._background_requested.set()
         return True
 
+    def disable_detach(self) -> None:
+        """Project that this pool is now running in the background."""
+        self.detach_available = False
+        self._backgrounded = True
+        self._publish()
+
     async def wait_for_background_request(self) -> None:
         """Wait until the composer requests that this pool run in background."""
         await self._background_requested.wait()
-
-    async def wait_until_running(self) -> None:
-        """Wait until the pool's start is journaled and its workers are published."""
-        await self._running.wait()
 
     def lifecycle(self, worker_id: str) -> WorkerLifecycle | None:
         """Return the worker's authoritative lifecycle record."""
@@ -3259,7 +3269,8 @@ class SubagentPool:
             self._publish()
             await self._emit_pool_completed(aggregate)
             if self._journal is not None:
-                self._journal.subagent_pool_finished(
+                await persist_journal_record(
+                    self._journal.subagent_pool_finished,
                     pool_id=aggregate.pool_id,
                     total=aggregate.total,
                     succeeded=aggregate.succeeded,
@@ -3297,7 +3308,9 @@ class SubagentPool:
             "Raise subagents.max_active_pools to admit another pool."
         )
 
-    async def run(self) -> AggregatedResult:
+    async def run(
+        self, *, on_running: Callable[[], Awaitable[None]] | None = None
+    ) -> AggregatedResult:
         """Admit the pool process-wide, then execute its workers."""
         refusal = self._admission_refusal()
         if refusal:
@@ -3306,7 +3319,8 @@ class SubagentPool:
         try:
             await self._prepare_isolation()
             if self._journal is not None:
-                self._journal.subagent_pool_started(
+                await persist_journal_record(
+                    self._journal.subagent_pool_started,
                     pool_id=self.pool_id,
                     fingerprint=self._task_fingerprint,
                     parent_run_id=self._parent_run_id,
@@ -3315,10 +3329,25 @@ class SubagentPool:
                         for task in self._tasks
                     ],
                 )
-            return await self._run_admitted()
+            return await self._run_admitted(on_running)
+        except asyncio.CancelledError:
+            if self._journal is not None:
+                try:
+                    await persist_journal_record(
+                        self._journal.subagent_pool_cancelled, pool_id=self.pool_id
+                    )
+                except OSError:
+                    log.exception(
+                        "failed to persist cancellation for subagent pool %s", self.pool_id
+                    )
+            raise
         finally:
             await self._release_isolation()
             _ACTIVE_POOLS.pop(self.pool_id, None)
+            store = self._conv_store
+            if store is not None:
+                store.subagent_foreground.set(store.subagent_foreground() - {self.pool_id})
+                store.subagent_last_activity.pop(self.pool_id, None)
 
     def _can_change_workspace(self, task: SubagentTask) -> bool:
         """Whether *task*'s worker holds a usable file-changing tool in this session.
@@ -3420,7 +3449,9 @@ class SubagentPool:
         if isolation is not None:
             await isolation.cleanup()
 
-    async def _run_admitted(self) -> AggregatedResult:
+    async def _run_admitted(
+        self, on_running: Callable[[], Awaitable[None]] | None
+    ) -> AggregatedResult:
         """Execute all tasks concurrently; return the aggregated result."""
         if self._conv_store is not None:
             for pool_id, pool in tuple(_RETRYABLE_POOLS.items()):
@@ -3507,11 +3538,13 @@ class SubagentPool:
             started_at=time.time(),
         )
         self._publish()
-        self._running.set()
         try:
+            if on_running is not None:
+                await on_running()
             result = await self._run(workers, worker_states, progress)
             if self._journal is not None:
-                self._journal.subagent_pool_finished(
+                await persist_journal_record(
+                    self._journal.subagent_pool_finished,
                     pool_id=result.pool_id,
                     total=result.total,
                     succeeded=result.succeeded,
@@ -3524,11 +3557,10 @@ class SubagentPool:
         except asyncio.CancelledError:
             if self._journal is not None:
                 try:
-                    self._persist_cancelled_workers()
-                    self._journal.subagent_pool_cancelled(pool_id=self.pool_id)
+                    await self._persist_cancelled_workers()
                 except OSError:
                     log.exception(
-                        "failed to persist cancellation for subagent pool %s", self.pool_id
+                        "failed to persist cancelled workers for subagent pool %s", self.pool_id
                     )
             raise
         finally:
@@ -3626,7 +3658,7 @@ class SubagentPool:
                 self._set_lifecycle(lifecycle)
                 progress[worker_id].finished(result, stopped=phase in {"cancelled", "drained"})
                 self._results[worker_id] = result
-                self._persist_worker_result(
+                await self._persist_worker_result(
                     result,
                     status=(
                         "cancelled"
@@ -3838,7 +3870,7 @@ class SubagentPool:
                 await self._isolation.release_if_clean(result.task_id)
             results[index] = result
             self._results[result.task_id] = result
-            self._persist_worker_result(result)
+            await self._persist_worker_result(result)
 
     # ── TUI helpers ──────────────────────────────────────────────────────────
 
@@ -3848,6 +3880,18 @@ class SubagentPool:
 
     def _publish(self) -> None:
         self._set_pool_state(self._state)
+        store = self._conv_store
+        if store is None:
+            return
+        foreground = store.subagent_foreground()
+        if self._state.active and self.detach_available:
+            store.subagent_foreground.set(foreground | {self.pool_id})
+        elif self.pool_id in foreground:
+            store.subagent_foreground.set(foreground - {self.pool_id})
+        if self._state.active and self._backgrounded:
+            store.subagent_last_activity[self.pool_id] = time.time()
+        else:
+            store.subagent_last_activity.pop(self.pool_id, None)
 
     def _set_lifecycle(self, lifecycle: WorkerLifecycle) -> None:
         """Replace one authoritative lifecycle record and publish its snapshot."""
@@ -4033,7 +4077,7 @@ class SubagentPool:
 
         await self._processor.emit(Event.create(kernel_type, event.payload()))
 
-    def _persist_worker_result(
+    async def _persist_worker_result(
         self,
         result: SubagentResult,
         *,
@@ -4047,7 +4091,8 @@ class SubagentPool:
         )
         lifecycle = self._lifecycles.get(result.task_id)
         request = lifecycle.stop_request if lifecycle is not None else None
-        self._journal.subagent_worker_result(
+        await persist_journal_record(
+            self._journal.subagent_worker_result,
             pool_id=self.pool_id,
             fingerprint=self._task_fingerprint,
             task_id=result.task_id,
@@ -4077,7 +4122,7 @@ class SubagentPool:
             workflow=result.workflow_payload(),
         )
 
-    def _persist_cancelled_workers(self) -> None:
+    async def _persist_cancelled_workers(self) -> None:
         """Persist explicit cancellation outcomes for workers still in flight."""
         if self._journal is None:
             return
@@ -4090,7 +4135,8 @@ class SubagentPool:
             )
             if task is None:
                 continue
-            self._journal.subagent_worker_result(
+            await persist_journal_record(
+                self._journal.subagent_worker_result,
                 pool_id=self.pool_id,
                 fingerprint=self._task_fingerprint,
                 task_id=task.task_id,

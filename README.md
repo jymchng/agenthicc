@@ -772,7 +772,10 @@ You can set the provider, model, base URL, and execution options in `.agenthicc/
 ## Subagents
 
 The built-in `spawn_subagents` tool delegates independent tasks to typed,
-concurrent workers. Workers inherit an immutable snapshot of the parent turn's
+concurrent workers. Direct terminal turns keep working while a pool runs. A
+completion reaches the next tool boundary or starts an idle turn so the model
+can collect the results. Set `subagents.spawn_mode = "foreground"` to wait for
+the pool. Workers inherit an immutable snapshot of the parent turn's
 effective mode, tool ceiling, capability gate, approval service, workspace
 policy, provider options, and usage accounting; each still has isolated
 short-term memory. Workers can exchange bounded messages with the main agent

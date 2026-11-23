@@ -26,6 +26,7 @@ from agenthicc.tools.capabilities import tool_control
 
 if TYPE_CHECKING:
     from agenthicc.memory.journal import ConversationJournal
+    from agenthicc.runners.agent_turn_context import TurnInputReason
     from agenthicc.subagents.pool import SubagentPool
 
 MessageKind = Literal[
@@ -203,6 +204,7 @@ class AgentMessageBroker:
         self._lock = asyncio.Lock()
         self._message_event = asyncio.Event()
         self._pending_event = asyncio.Event()
+        self.on_parent_question: Callable[[], None] | None = None
         self._closed = False
         #: When set, questions to the parent are refused with this status.
         self._parent_refusal = ""
@@ -363,6 +365,8 @@ class AgentMessageBroker:
             self._questions[envelope.message_id] = record
             self._pending_event.set()
             self._record("question_wait_started", self._question_projection(record))
+            if recipient == "main" and self.on_parent_question is not None:
+                self.on_parent_question()
             return self._question_projection(record)
 
     async def answer_question(
@@ -836,10 +840,36 @@ class PoolContinuationRegistry:
 
     def __init__(self) -> None:
         self._handles: dict[str, PoolHandle] = {}
+        self._terminal_callback: Callable[[], None] | None = None
+        self._activity_callback: Callable[[], None] | None = None
+
+    def on_terminal(self, callback: Callable[[], None] | None) -> None:
+        """Bind the session's wake hint after a background pool task ends."""
+        self._terminal_callback = callback
+
+    def on_activity(self, callback: Callable[[], None] | None) -> None:
+        """Bind the hint for background pool starts and worker questions."""
+        self._activity_callback = callback
+
+    def _notify_activity(self) -> None:
+        if self._activity_callback is not None:
+            self._activity_callback()
+
+    def mark_backgrounded(self, pool_id: str) -> None:
+        handle = self._handles[pool_id]
+        handle.backgrounded = True
+        handle.broker.on_parent_question = self._notify_activity
+        self._notify_activity()
 
     def register(self, handle: PoolHandle) -> None:
         self._handles.pop(handle.pool_id, None)
         self._handles[handle.pool_id] = handle
+
+        def terminal(_task: asyncio.Task[object]) -> None:
+            if handle.backgrounded and self._terminal_callback is not None:
+                self._terminal_callback()
+
+        handle.task.add_done_callback(terminal)
         finished = [pool_id for pool_id, item in self._handles.items() if item.task.done()]
         for pool_id in finished[: max(0, len(finished) - MAX_FINISHED_POOL_HANDLES)]:
             self._handles.pop(pool_id, None)
@@ -1101,8 +1131,8 @@ def make_parent_communication_tools(
         question a worker is waiting on. A finished pool returns its results,
         the same way every time you ask, including after the session resumed.
         wait=true waits up to timeout_s seconds (capped by the configured
-        maximum) and, if the pool is still running, returns the running
-        snapshot with timed_out=true. Do not poll: you are notified when a
+        maximum). A queued message or notice interrupts the wait so the parent
+        can respond. Avoid blocking and polling: you are notified when a
         background pool finishes.
 
         Args:
@@ -1133,7 +1163,37 @@ def make_parent_communication_tools(
                 raise CommunicationError("unknown subagent pool for this session")
             return _journaled_pool_payload(journal, pool_id)
         if wait and not handle.task.done() and bound > 0:
-            await asyncio.wait({handle.task}, timeout=bound)
+            from agenthicc.runners.agent_turn_context import current_turn_input_subscriber
+
+            subscribe_input = current_turn_input_subscriber()
+            if subscribe_input is None:
+                await asyncio.wait({handle.task}, timeout=bound)
+            else:
+                loop = asyncio.get_running_loop()
+                ready: asyncio.Future[TurnInputReason | None] = loop.create_future()
+
+                def finish(reason: "TurnInputReason | None" = None) -> None:
+                    if not ready.done():
+                        ready.set_result(reason)
+
+                def pool_finished(_task: asyncio.Task[object]) -> None:
+                    finish()
+
+                unsubscribe = subscribe_input(finish)
+                handle.task.add_done_callback(pool_finished)
+                timeout = loop.call_later(bound, finish)
+                try:
+                    reason = await ready
+                finally:
+                    unsubscribe()
+                    timeout.cancel()
+                    handle.task.remove_done_callback(pool_finished)
+
+                if reason is not None and not handle.task.done():
+                    return {
+                        **_running_pool_payload(handle, timed_out=False),
+                        "interrupted": reason,
+                    }
         if not handle.task.done():
             return _running_pool_payload(handle, timed_out=wait)
         return _finished_pool_payload(handle)

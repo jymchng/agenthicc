@@ -229,6 +229,8 @@ async def test_resumed_tui_replays_transcript_before_accepting_input(
     session._agent_task = None
     session._msg_queue = ctx.app_state.conversation.queue
     session._tasks = SupervisedTasks("test tui session")
+    session._subagent_notices = None
+    session._subagent_reconciler = None
     session._wire_approval_overlay = lambda: None
     session._start_attention_routing = lambda: None
     # The post-frame agent runtime and account check are covered elsewhere.

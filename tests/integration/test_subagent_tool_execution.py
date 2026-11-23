@@ -17,7 +17,9 @@ from agenthicc.tools.surface import ToolSurface
 from agenthicc.kernel import AppState as KernelAppState
 from agenthicc.kernel import EventProcessor
 from agenthicc.memory.journal import ConversationJournal
-from agenthicc.runners.agent_turn_context import bind_background_task_owner
+from agenthicc.runners.agent_turn_context import bind_background_task_owner, bind_turn_notices
+from agenthicc.subagents.communication import registry_for_session
+from agenthicc.subagents.delivery import JournalNoticeSource
 from agenthicc.subagents.pool import active_pool
 from agenthicc.subagents.tool import make_spawn_subagents_tool
 from agenthicc.subagents.types import SubagentTypeRegistry, SubagentTypeSpec
@@ -442,6 +444,8 @@ async def test_ctrl_b_backgrounds_a_pool_and_keeps_it_session_owned(
     tmp_path,
 ) -> None:
     """A durable receipt detaches workers, which remain owned by the session."""
+    from agenthicc.config import SubagentSettings
+
     release = asyncio.Event()
 
     @tool()
@@ -470,10 +474,12 @@ async def test_ctrl_b_backgrounds_a_pool_and_keeps_it_session_owned(
         parent_run_id="turn-1",
         conversation_journal=journal,
         conv_store=conv_store,
+        subagent_settings=SubagentSettings(spawn_mode="foreground"),
     )
 
+    source = JournalNoticeSource(journal, registry_for_session("conversation-1", conv_store))
     try:
-        with bind_background_task_owner(supervisor, interactive=True):
+        with bind_turn_notices(source), bind_background_task_owner(supervisor, interactive=True):
             spawn_task = asyncio.create_task(
                 spawn(
                     tasks=[{"type": "researcher", "task": "Wait for the test release."}],
@@ -1136,7 +1142,7 @@ async def test_pool_completed_event_carries_usage() -> None:
     assert "budget_exceeded_reason" not in completed
 
 
-async def test_backgrounding_without_a_supervisor_is_refused_and_stops_the_pool(
+async def test_pool_without_a_supervisor_stays_foreground(
     tmp_path,
 ) -> None:
     """SUBAGENT-11 goal 2: a background pool must be owned; it never runs unowned."""
@@ -1173,17 +1179,16 @@ async def test_backgrounding_without_a_supervisor_is_refused_and_stops_the_pool(
         state = conv_store.subagent_pool_state()
         assert state is not None
         pool = active_pool(state.pool_id)
-        assert pool is not None and pool.request_background()
+        assert pool is not None and not pool.request_background()
+        assert not spawn_task.done()
 
+        release.set()
         receipt = await asyncio.wait_for(spawn_task, timeout=5)
-
-        assert receipt["ok"] is False
-        assert receipt["status"] == "background_unavailable"
-        assert "supervised background task owner" in receipt["error"]
-        # The pool was not left running unowned.
+        assert receipt["ok"] is True
+        assert receipt["status"] == "completed"
         assert active_pool(state.pool_id) is None
         lifecycle = journal.fold_subagent_pool_lifecycle()[0]
-        assert lifecycle["status"] == "cancelled"
+        assert lifecycle["status"] == "completed"
         assert lifecycle["backgrounded"] is False
     finally:
         release.set()
@@ -1198,7 +1203,7 @@ def _control_tools(spawn: object) -> dict[str, object]:
     return {getattr(item, "__name__", ""): item for item in tools}
 
 
-async def test_a_model_requested_background_pool_returns_running_at_once(tmp_path) -> None:
+async def test_background_capable_turn_returns_running_at_once(tmp_path) -> None:
     release = asyncio.Event()
 
     @tool()
@@ -1223,19 +1228,19 @@ async def test_a_model_requested_background_pool_returns_running_at_once(tmp_pat
         conversation_journal=journal,
         conv_store=conv_store,
     )
+    source = JournalNoticeSource(journal, registry_for_session("conversation-1", conv_store))
     try:
-        with bind_background_task_owner(supervisor, interactive=True):
+        with bind_turn_notices(source), bind_background_task_owner(supervisor, interactive=True):
             receipt = await asyncio.wait_for(
                 spawn(  # type: ignore[operator]
                     tasks=[{"type": "researcher", "task": "Wait."}],
                     timeout_s=30,
-                    background=True,
                 ),
                 timeout=1,
             )
 
         assert receipt["status"] == "running"
-        assert "Do not sleep, poll" in receipt["results"]
+        assert "poll, sleep, or redo" in receipt["results"]
         assert [row["worker_id"] for row in receipt["workers"]] == ["task-0"]
         kinds = [record["kind"] for record in journal.fold_subagent_pool_lifecycle()]
         lifecycle = journal.fold_subagent_pool_lifecycle()[0]
@@ -1255,44 +1260,6 @@ async def test_a_model_requested_background_pool_returns_running_at_once(tmp_pat
         journal.close()
 
 
-async def test_a_model_requested_background_is_refused_when_it_cannot_be_owned(tmp_path) -> None:
-    from agenthicc.config import SubagentSettings
-
-    transport = MockTransport()
-    journal = ConversationJournal(tmp_path / "conversation-journal.jsonl")
-    spawn = make_spawn_subagents_tool(
-        AgentRunnerBase(transport=transport),
-        "mock-model",
-        SubagentToolSelection(ToolSurface(0, tuple([]))),
-        registry=_registry("not-a-parent-tool"),
-        conversation_id="conversation-1",
-        conversation_journal=journal,
-    )
-    unowned = await spawn(  # type: ignore[operator]
-        tasks=[{"type": "researcher", "task": "x"}], timeout_s=30, background=True
-    )
-    assert unowned["status"] == "background_unavailable"
-
-    disabled = make_spawn_subagents_tool(
-        AgentRunnerBase(transport=transport),
-        "mock-model",
-        SubagentToolSelection(ToolSurface(0, tuple([]))),
-        registry=_registry("not-a-parent-tool"),
-        conversation_id="conversation-1",
-        conversation_journal=journal,
-        subagent_settings=SubagentSettings(background_enabled=False),
-    )
-    with bind_background_task_owner(SupervisedTasks("disabled"), interactive=True):
-        refused = await disabled(  # type: ignore[operator]
-            tasks=[{"type": "researcher", "task": "x"}], timeout_s=30, background=True
-        )
-    assert refused["status"] == "refused"
-    assert "subagents.background_enabled" in refused["error"]
-    assert transport.calls == []
-    assert journal.fold_subagent_pool_lifecycle() == []
-    journal.close()
-
-
 @pytest.mark.parametrize(
     ("setting", "interactive"),
     [("fail", True), (None, False)],
@@ -1309,6 +1276,7 @@ async def test_on_clarification_fail_ends_a_backgrounded_workers_wait_at_once(
     transport.queue_response(_final("Waiting for the parent.", "after-ask"))
     journal = ConversationJournal(tmp_path / "conversation-journal.jsonl")
     supervisor = SupervisedTasks("clarification fail")
+    store = ConversationStore()
     spawn = make_spawn_subagents_tool(
         AgentRunnerBase(transport=transport),
         "mock-model",
@@ -1317,15 +1285,18 @@ async def test_on_clarification_fail_ends_a_backgrounded_workers_wait_at_once(
         conversation_id="conversation-1",
         parent_run_id="turn-1",
         conversation_journal=journal,
-        conv_store=ConversationStore(),
+        conv_store=store,
         subagent_settings=SubagentSettings(on_clarification=setting),
     )
+    source = JournalNoticeSource(journal, registry_for_session("conversation-1", store))
     try:
-        with bind_background_task_owner(supervisor, interactive=interactive):
+        with (
+            bind_turn_notices(source),
+            bind_background_task_owner(supervisor, interactive=interactive),
+        ):
             receipt = await spawn(  # type: ignore[operator]
                 tasks=[{"type": "researcher", "task": "Ask first."}],
                 timeout_s=30,
-                background=True,
             )
         assert receipt["status"] == "running"
         # The worker is not left waiting out the 300 s message timeout.
@@ -1617,16 +1588,17 @@ async def test_two_background_pools_collect_independently_and_stay_on_the_panel(
         conv_store=conv_store,
     )
     collect = _control_tools(spawn)["collect_subagent_results"]
+    source = JournalNoticeSource(journal, registry_for_session("conv", conv_store))
     try:
-        with bind_background_task_owner(supervisor, interactive=True):
+        with bind_turn_notices(source), bind_background_task_owner(supervisor, interactive=True):
             first = await spawn(  # type: ignore[operator]
-                tasks=[{"type": "researcher", "task": "alpha"}], timeout_s=30, background=True
+                tasks=[{"type": "researcher", "task": "alpha"}], timeout_s=30
             )
             # Criterion 9: the running background pool is on the panel's signal.
             shown = conv_store.subagent_pool_state()
             assert shown is not None and shown.pool_id == first["pool_id"] and shown.active
             second = await spawn(  # type: ignore[operator]
-                tasks=[{"type": "researcher", "task": "beta"}], timeout_s=30, background=True
+                tasks=[{"type": "researcher", "task": "beta"}], timeout_s=30
             )
         assert first["pool_id"] != second["pool_id"]
 

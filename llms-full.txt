@@ -4698,7 +4698,7 @@ class SubagentSettings:
     max_workers: int = 32
     stop_grace_s: float = 5.0
     collect_wait_max_s: float = 60.0
-    background_enabled: bool = True
+    spawn_mode: SpawnMode = "background"
     on_clarification: Literal["queue", "fail"] | None = None
     isolation: Literal["auto", "worktree", "shared"] = "auto"
 
@@ -5872,32 +5872,42 @@ Sum of a pool's completed ledger records.
 
 Sum of one worker's completed records across attempts.
 
+### PendingNotice
+
+A runtime-authored completion or question with a stable `message_id`,
+`kind`, `pool_id`, and provider-facing `text`.
+
+### NoticeSource
+
+A session-owned protocol with `claim() -> tuple[PendingNotice, ...]` and
+`has_pending() -> bool`. The journal fold supplies the terminal background
+pools, and the continuation registry supplies questions from live workers.
+The TUI delivers notices at a tool boundary, on a regular turn, or in an
+idle wake. Durable message IDs and delivery records prevent duplicate
+provider memory entries.
+
+### SpawnMode
+
+`Literal["background", "foreground"]` in `agenthicc.subagents.spawn_mode`.
+
+### resolve_spawn_mode
+
+`resolve_spawn_mode(settings, *, owner, journal, notices, in_workflow_phase)`
+returns background only when the operator enables it, a supervised owner
+and durable journal exist, a notice source is bound, and the turn is direct.
+
+### SubagentSettings.spawn_mode
+
+Defaults to `"background"`. Use `"foreground"` to wait for the worker pool.
+An owned foreground pool in the TUI can be detached with Ctrl+B.
+
 ### Background completion notices — `agenthicc.subagents.delivery`
 
-```python
-def background_pool_notice(record: Mapping[str, object]) -> str: ...
-def deliver_background_pool_notices(
-    journal: ConversationJournal,
-    memory: JournaledShortTermMemory,
-    conversation: ConversationStore | None = None,
-) -> tuple[str, ...]: ...
-```
-
-Notice, then pull (SUBAGENT-11 goal 5). A finished background pool is announced
-at the next logical-turn boundary by a runtime-authored notice — pool id,
-status, real counts, a known stop reason — that contains **no worker text** and
-ends by asking the model to call `collect_subagent_results(pool_id=…)`. The
-results therefore reach the parent only as a tool result. `TUISession` calls
-`deliver_background_pool_notices` (exactly once per pool, stable message ids,
-journaled delivery); background workers and headless workflow runs call
-`deliver_session_background_notices(session) -> tuple[str, ...]`, which applies
-the same provider-ready gate. Both return the delivered pool ids.
-
-`bind_background_task_owner(owner, *, interactive: bool)` (in
-`agenthicc.runners.agent_turn_context`) binds the supervisor for background
-pools and whether the session is interactive; `current_session_interactive()`
-reads it, and `SubagentSettings.on_clarification_for(interactive=...)` resolves
-an unset `on_clarification` to `queue` (interactive) or `fail`.
+The runtime provides the pool ID, terminal status, and worker counts.
+Worker output reaches the parent through `collect_subagent_results(pool_id)`.
+A reopened session delivers pending notices on the first user turn.
+Runners without a TUI can deliver terminal notices through
+`deliver_session_background_notices(session)`.
 
 ### background_pool_notice
 

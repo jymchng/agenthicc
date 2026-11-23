@@ -92,6 +92,7 @@ class UsageCategory(StrEnum):
     """Billable session activity categories."""
 
     AGENT = "agent"
+    WAKE = "wake"
     SUBAGENT = "subagent"
     COMPACTION = "compaction"
 
@@ -530,6 +531,7 @@ class UsageLedger:
         run_id: str,
         usage: object | None,
         cost_usd: float | None = None,
+        category: str = UsageCategory.AGENT,
     ) -> None:
         """Repair only the residual of a cumulative run-completion signal."""
         target = UsageValues.from_provider(usage)
@@ -546,7 +548,7 @@ class UsageLedger:
             run_id=run_id,
             provider="unknown",
             model="unknown",
-            category=UsageCategory.AGENT,
+            category=category,
         )
         self.complete(
             call,
@@ -564,9 +566,12 @@ class UsageLedger:
             call = UsageCall(record.record_id, record.run_id, record.call_index)
             self.complete(call, source=UsageSource.RECONCILED, lifecycle=lifecycle)
 
-    def snapshot(self) -> UsageSnapshot:
+    def snapshot(self, *, category: UsageCategory | None = None) -> UsageSnapshot:
         """Return a consistent aggregate of completed and provisional calls."""
-        return self._aggregate([*self._records.values(), *self._active.values()])
+        records = [*self._records.values(), *self._active.values()]
+        if category is not None:
+            records = [record for record in records if record.category == category]
+        return self._aggregate(records)
 
     def completed_snapshot(self) -> UsageSnapshot:
         """Return the aggregate of completed calls only."""
@@ -620,7 +625,7 @@ class UsageLedger:
         latest: UsageRecord | None = None
         for record in (*self._records.values(), *self._active.values()):
             if (
-                record.category != UsageCategory.AGENT
+                record.category not in (UsageCategory.AGENT, UsageCategory.WAKE)
                 or record.input_tokens is None
                 or record.source in (UsageSource.RUN_COMPLETE, UsageSource.LEGACY)
             ):
@@ -857,7 +862,9 @@ class UsageRunTracker:
     def on_run_complete(self, signal: object) -> None:
         usage = getattr(signal, "total_usage", None)
         cost = _finite_float(getattr(signal, "total_cost_usd", None))
-        self.ledger.reconcile_run(run_id=self.run_id, usage=usage, cost_usd=cost)
+        self.ledger.reconcile_run(
+            run_id=self.run_id, usage=usage, cost_usd=cost, category=self.category
+        )
 
     def finalize(self, lifecycle: str) -> None:
         self.ledger.finalize_run(self.run_id, lifecycle=lifecycle)

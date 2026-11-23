@@ -51,8 +51,9 @@ def test_session_helpers_project_terminal_usage_and_event_publication(
     assert isinstance(fallback, UsageSnapshot)
     assert fallback.queue_depth == 0
     ctx.usage_ledger = SimpleNamespace(
-        snapshot=lambda: SimpleNamespace(
+        snapshot=lambda *, category=None: SimpleNamespace(
             input_tokens=1,
+            total_tokens=3,
             output_tokens=2,
             cost_usd=0.1,
             usage_status="ok",

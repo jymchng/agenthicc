@@ -196,6 +196,11 @@ class Workspace:
             conv.handoff_pending,  # /background waiting for the running tool call
             conv.subagent_pool_state,  # PRD-124: subagent pool progress
             conv.subagent_rows,  # AGX-08: finished panel rows expire
+            conv.subagent_foreground,
+            conv.subagent_background_running,
+            conv.subagent_finished_pending,
+            conv.subagent_wake_paused,
+            conv.subagent_activity_ages,
             conv.terminal_waiting,  # PRD-149: owned terminal wait
             conv.terminal_wait_label,
             conv.terminal_wait_elapsed_s,
@@ -565,12 +570,14 @@ class Workspace:
     def _subagent_rows(self, cols: int, plain: bool) -> list[Line]:
         """The subagent panel below the bordered input area while a pool has rows."""
         pool = self._state.conversation.subagent_pool_state()
+        lines: list[Line] = []
+        for pool_id, age in self._state.conversation.subagent_activity_ages():
+            lines += self._markup(f"[dim]Pool {pool_id[:8]} · activity {age}s ago[/dim]", cols)
         if pool is None:
-            return []
+            return lines
         from agenthicc.tui.workspace.subagent_panel import panel_lines
 
         hint = self._state.keymap().hint("subagents.focus")
-        lines: list[Line] = []
         for row in panel_lines(
             pool,
             cols,

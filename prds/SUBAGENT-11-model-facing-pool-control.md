@@ -27,6 +27,10 @@ tags:
 
 # SUBAGENT-11: Model-facing background spawn, collection and worker control
 
+> [SUBAGENT-16](subagents-nov/SUBAGENT-16-non-blocking-subagents-by-default.md)
+> supersedes the model-facing spawn flag, turn-start-only delivery, and
+> foreground default. The collection, lifecycle, and trust contracts still apply.
+
 ## Implementation status (2026-11-03)
 
 **Closed (2026-11-04).** Every §6 criterion now maps to a passing test, listed

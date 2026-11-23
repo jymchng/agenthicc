@@ -36,6 +36,7 @@ from agenthicc.tools.mcp_server_config import McpServerConfig
 if TYPE_CHECKING:
     from lauren_ai._config import LLMConfig
     from agenthicc.skills.loader import SkillPermissionSet
+    from agenthicc.subagents.spawn_mode import SpawnMode
 
 __all__ = [
     "DEFAULT_QUESTION_TIMEOUT_S",
@@ -1249,8 +1250,8 @@ class SubagentSettings:
     stop_grace_s: float = 5.0
     #: Upper bound in seconds for ``collect_subagent_results(wait=True)``.
     collect_wait_max_s: float = 60.0
-    #: Whether the model may request ``spawn_subagents(background=True)``.
-    background_enabled: bool = True
+    #: Background when the session can deliver a completion notice.
+    spawn_mode: SpawnMode = "background"
     #: What a backgrounded worker's question to the parent does: wait for an
     #: answer (``queue``) or end the worker's wait at once (``fail``). Unset,
     #: it follows the session: ``queue`` when a person can answer (the TUI),
@@ -1313,8 +1314,8 @@ class SubagentSettings:
         ):
             raise ValueError("subagents.collect_wait_max_s must be greater than 0 and at most 3600")
         object.__setattr__(self, "collect_wait_max_s", float(self.collect_wait_max_s))
-        if not isinstance(self.background_enabled, bool):
-            raise ValueError("subagents.background_enabled must be true or false")
+        if self.spawn_mode not in ("background", "foreground"):
+            raise ValueError("subagents.spawn_mode must be 'background' or 'foreground'")
         if self.on_clarification not in {None, "queue", "fail"}:
             raise ValueError("subagents.on_clarification must be 'queue' or 'fail'")
         if self.isolation not in {"auto", "worktree", "shared"}:
@@ -2122,7 +2123,7 @@ class AgenthiccConfig:
                 "max_concurrent": self.subagents.max_concurrent,
                 "max_active_pools": self.subagents.max_active_pools,
                 "collect_wait_max_s": self.subagents.collect_wait_max_s,
-                "background_enabled": self.subagents.background_enabled,
+                "spawn_mode": self.subagents.spawn_mode,
                 "on_clarification": self.subagents.on_clarification,
                 "isolation": self.subagents.isolation,
                 "depth_limits": {
@@ -2926,9 +2927,11 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
     stop_grace_s = subagent_data.get("stop_grace_s", 5.0)
     if isinstance(stop_grace_s, bool) or not isinstance(stop_grace_s, (int, float)):
         raise ValueError("subagents.stop_grace_s must be a finite non-negative number")
-    background_enabled = subagent_data.get("background_enabled", True)
-    if not isinstance(background_enabled, bool):
-        raise ValueError("subagents.background_enabled must be true or false")
+    if "background_enabled" in subagent_data:
+        raise ValueError("subagents.background_enabled was replaced by subagents.spawn_mode")
+    spawn_mode = subagent_data.get("spawn_mode", "background")
+    if spawn_mode not in ("background", "foreground"):
+        raise ValueError("subagents.spawn_mode must be 'background' or 'foreground'")
     on_clarification = subagent_data.get("on_clarification")
     if on_clarification is not None and on_clarification not in {"queue", "fail"}:
         raise ValueError("subagents.on_clarification must be 'queue' or 'fail'")
@@ -2954,7 +2957,7 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
         max_workers=_subagent_int("max_workers", 32),
         stop_grace_s=float(stop_grace_s),
         collect_wait_max_s=float(collect_wait_max_s),
-        background_enabled=background_enabled,
+        spawn_mode=spawn_mode,
         on_clarification=cast(Literal["queue", "fail"] | None, on_clarification),
         isolation=cast(Literal["auto", "worktree", "shared"], isolation),
     )

@@ -111,3 +111,10 @@ agenthicc agents --run RUN_ID --json
 The run ID is not substituted for a session or orchestration ID. Existing
 worktree controls remain authoritative for Git state, and a completed or dirty
 worktree is never removed merely because its worker process disappeared.
+
+## Waiting for subagent results
+
+A direct terminal turn receives a background pool receipt and can keep
+working. Completion reaches the current turn at a tool boundary or starts an
+idle turn so the agent can collect the results. A workflow phase waits for
+its delegates before it can move to the next phase.

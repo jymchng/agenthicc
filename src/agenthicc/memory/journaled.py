@@ -127,11 +127,17 @@ class JournaledShortTermMemory(ShortTermMemory):
         before = len(self._messages)
         super().add_user(content)
         added = self._messages[before:]
-        for index, message in enumerate(added):
-            self._journal.append_message(
-                message,
-                message_id=message_id if index == 0 else f"{message_id}:{index}",
-            )
+        persisted = before
+        try:
+            for index, message in enumerate(added):
+                self._journal.append_message(
+                    message,
+                    message_id=message_id if index == 0 else f"{message_id}:{index}",
+                )
+                persisted += 1
+        except BaseException:
+            del self._messages[persisted:]
+            raise
         return bool(added)
 
     def add_assistant(self, completion: object) -> None:

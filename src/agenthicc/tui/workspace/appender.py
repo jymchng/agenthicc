@@ -1071,6 +1071,13 @@ def _render_user_message(self: ScrollBufferAppender, ev: ConversationEvent) -> N
     from rich.text import Text
 
     p, g = palette(), glyphs()
+    source = ev.payload.get("source")
+    if source in ("subagent_completion", "subagent_question"):
+        summary = _text(ev.payload, "summary") or _text(ev.payload, "text")
+        self._open_block("notice")
+        self._print(Text(f"↩ {summary}", style=p.muted), highlight=False)
+        self._gap_pending = True
+        return
     lines = _text(ev.payload, "text").splitlines() or [""]
     whole = self._wrap and self._tool_detail() == "verbose"  # the transcript view, expanded
     if len(lines) > USER_BAND_LINES and not whole:

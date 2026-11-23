@@ -27,7 +27,7 @@ import json
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, TypedDict, cast
+from typing import TYPE_CHECKING, Literal, TypedDict, cast
 
 from agenthicc.config import SubagentSettings
 from agenthicc.result_contracts import project_result_value, validate_result_value
@@ -37,6 +37,7 @@ from agenthicc.subagents.communication import (
     make_parent_communication_tools,
     registry_for_session,
 )
+from agenthicc.subagents.spawn_mode import SpawnMode, background_receipt_text, current_spawn_mode
 from agenthicc.subagents.policy import SubagentExecutionPolicy
 from agenthicc.tools.surface import ToolSurface
 from agenthicc.subagents.pool import (
@@ -299,12 +300,10 @@ def make_spawn_subagents_tool(
         timeout_s: float = DEFAULT_SUBAGENT_TIMEOUT_S,
         model: str | None = None,
         effort: str | None = None,
-        background: bool = False,
     ) -> dict[str, object]:
-        """Spawn multiple specialized subagents concurrently and return their aggregated results.
+        """Spawn multiple specialized subagents concurrently.
 
         Each subagent runs in isolation with its own memory and a filtered tool set.
-        Results are returned as a labelled plain-text digest you can reason over.
 
         Args:
             tasks: List of task objects. Each must have:
@@ -318,10 +317,6 @@ def make_spawn_subagents_tool(
                        (default 3600, or one hour).
             model: Optional model override; available only when the operator enables it.
             effort: Optional reasoning-effort override; available only when enabled.
-            background: Return at once and let the pool run in the background. You
-                    are notified when it finishes; then call
-                    collect_subagent_results(pool_id). Do not sleep, poll for
-                    progress or redo the workers' tasks meanwhile.
         """
         pool_depth = parent_depth + 1
         if pool_depth > _settings.max_depth:
@@ -570,28 +565,6 @@ def make_spawn_subagents_tool(
 
         pool_metadata["tasks_used"] = len(subagent_tasks)
 
-        if not isinstance(background, bool):
-            return {"ok": False, "error": "background must be true or false", **pool_metadata}
-        if background:
-            from agenthicc.runners.agent_turn_context import current_background_task_owner
-
-            if not _settings.background_enabled:
-                return {
-                    "ok": False,
-                    "status": "refused",
-                    "error": "background subagent pools are disabled (subagents.background_enabled)",
-                    **pool_metadata,
-                }
-            if conversation_journal is None or current_background_task_owner() is None:
-                return {
-                    "ok": False,
-                    "status": "background_unavailable",
-                    "error": (
-                        "Background subagents require a durable conversation journal and a "
-                        "supervised background task owner; run the pool in the foreground."
-                    ),
-                    **pool_metadata,
-                }
         # PRD-124 Phase 4: check resume cache before spawning. The fingerprint
         # includes type, task, and context, while remaining order-insensitive.
         # Routing and permission changes invalidate cached worker results.
@@ -783,127 +756,97 @@ def make_spawn_subagents_tool(
             max_workers=_settings.max_workers,
             stop_grace_s=_settings.stop_grace_s,
         )
-        from agenthicc.runners.agent_turn_context import current_background_task_owner
+        from agenthicc.memory.journal import persist_journal_record
+        from agenthicc.runners.agent_turn_context import (
+            current_background_task_owner,
+            current_session_interactive,
+        )
 
         task_owner = current_background_task_owner()
+        mode = current_spawn_mode(_settings, conversation_journal)
+        pool.detach_available = (
+            mode == "foreground" and task_owner is not None and conversation_journal is not None
+        )
+        communication = pool.communication
+        backgrounded = False
+        ready: asyncio.Future[dict[str, object]] = asyncio.get_running_loop().create_future()
+
+        async def detach(status: Literal["running", "backgrounded"]) -> dict[str, object]:
+            nonlocal backgrounded
+            assert conversation_journal is not None and task_owner is not None
+            background_receipt: dict[str, object] = {
+                "ok": True,
+                "status": status,
+                "pool_id": pool.pool_id,
+                "total": len(subagent_tasks),
+                "succeeded": 0,
+                "failed": 0,
+                "error": "",
+                "workers": [
+                    {"worker_id": worker.worker_id, "label": worker.label}
+                    for worker in pool.state.workers
+                ],
+                "results": background_receipt_text(pool.pool_id, len(subagent_tasks)),
+                **pool_metadata,
+            }
+            await persist_journal_record(
+                conversation_journal.subagent_pool_backgrounded,
+                pool_id=pool.pool_id,
+                tool_result=background_receipt,
+            )
+            backgrounded = True
+            pool.disable_detach()
+            if communication is not None:
+                policy = _settings.on_clarification_for(interactive=current_session_interactive())
+                if policy == "fail":
+                    await communication.refuse_parent_questions("unanswerable_in_background")
+                continuation_registry.mark_backgrounded(pool.pool_id)
+            return background_receipt
+
+        async def start_in_background() -> None:
+            ready.set_result(await detach("running"))
+
+        run_pool = pool.run(on_running=start_in_background) if mode == "background" else pool.run()
         if task_owner is None:
-            pool_task = asyncio.create_task(pool.run(), name=f"subagent-pool-{pool.pool_id}")
+            pool_task = asyncio.create_task(run_pool, name=f"subagent-pool-{pool.pool_id}")
         else:
-            pool_task = task_owner.start(pool.run(), name=f"subagent-pool-{pool.pool_id}")
-        # Every pool is reachable by this conversation's control tools from
-        # the moment it starts (SUBAGENT-11 goal 7), scoped by its lineage.
-        if communication_broker := pool.communication:
+            pool_task = task_owner.start(run_pool, name=f"subagent-pool-{pool.pool_id}")
+        if communication is not None:
             continuation_registry.register(
                 PoolHandle(
                     pool_id=pool.pool_id,
                     conversation_id=conversation_id,
-                    broker=communication_broker,
+                    broker=communication,
                     task=cast(asyncio.Task[object], pool_task),
                     pool=pool,
                     lineage=owner_lineage,
                 )
             )
-        if background:
-            # Ask for the background only once the pool has journaled its start,
-            # so the backgrounded record always follows the started one.
-            running = asyncio.create_task(pool.wait_until_running())
-            await asyncio.wait(
-                {cast(asyncio.Task[object], pool_task), cast(asyncio.Task[object], running)},
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            running.cancel()
-            await asyncio.gather(running, return_exceptions=True)
-            if not pool_task.done():
-                pool.request_background()
-        pending_task: asyncio.Task[list[dict[str, object]]] | None = None
-        background_task = asyncio.create_task(
-            pool.wait_for_background_request(), name=f"subagent-background-{pool.pool_id}"
+        foreground = mode == "foreground"
+        pending_task = (
+            asyncio.create_task(communication.wait_for_pending())
+            if foreground and communication is not None
+            else None
         )
-        communication = pool.communication
-        if communication is not None:
-            pending_task = asyncio.create_task(communication.wait_for_pending())
-        waiters: set[asyncio.Task[object]] = {
-            cast(asyncio.Task[object], pool_task),
-            cast(asyncio.Task[object], background_task),
-        }
-        if pending_task is not None:
-            waiters.add(cast(asyncio.Task[object], pending_task))
-        backgrounded = False
+        background_task = (
+            asyncio.create_task(pool.wait_for_background_request())
+            if pool.detach_available
+            else None
+        )
+        waiters: set[asyncio.Future[object]] = {cast(asyncio.Future[object], pool_task)}
+        for watcher in (pending_task, background_task, ready if not foreground else None):
+            if watcher is not None:
+                waiters.add(cast(asyncio.Future[object], watcher))
         try:
-            done, _pending = await asyncio.wait(
-                waiters,
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            if pool_task in done or pool_task.done():
-                result = await pool_task
-            elif background_task in done:
-                background_receipt: dict[str, object] = {
-                    "ok": True,
-                    # "running" answers the model's own background request;
-                    # "backgrounded" records that the user pressed Ctrl+B.
-                    "status": "running" if background else "backgrounded",
-                    "pool_id": pool.pool_id,
-                    "total": len(subagent_tasks),
-                    "succeeded": 0,
-                    "failed": 0,
-                    "error": "",
-                    "workers": [
-                        {"worker_id": worker.worker_id, "label": worker.label}
-                        for worker in pool.state.workers
-                    ],
-                    "results": (
-                        f"Subagent pool {pool.pool_id} is running in the background. You "
-                        "will be notified when it finishes; then call "
-                        f'collect_subagent_results(pool_id="{pool.pool_id}"). Do not sleep, '
-                        "poll for progress, or duplicate its work meanwhile."
-                    ),
-                    **pool_metadata,
-                }
-                if conversation_journal is None or task_owner is None:
-                    # A background pool outlives this call, so it must be
-                    # recoverable (a journal) and owned (a supervisor that holds
-                    # the task and awaits it at shutdown). Never fall back to an
-                    # unowned task that can be collected or leak.
-                    pool_task.cancel()
-                    await asyncio.gather(pool_task, return_exceptions=True)
-                    missing = (
-                        "a durable conversation journal"
-                        if conversation_journal is None
-                        else "a supervised background task owner"
-                    )
-                    return {
-                        "ok": False,
-                        "status": "background_unavailable",
-                        "pool_id": pool.pool_id,
-                        "total": len(subagent_tasks),
-                        "succeeded": 0,
-                        "failed": 0,
-                        "error": f"Background subagents require {missing}.",
-                        "results": "",
-                        **pool_metadata,
-                    }
-                conversation_journal.subagent_pool_backgrounded(
-                    pool_id=pool.pool_id,
-                    tool_result=background_receipt,
-                )
-                backgrounded = True
-                handle = continuation_registry.get(pool.pool_id)
-                if handle is not None:
-                    handle.backgrounded = True
-                from agenthicc.runners.agent_turn_context import current_session_interactive
-
-                policy = _settings.on_clarification_for(interactive=current_session_interactive())
-                if policy == "fail" and communication is not None:
-                    # Nobody will answer a backgrounded worker's question:
-                    # end the waits now instead of after the message timeout.
-                    await communication.refuse_parent_questions("unanswerable_in_background")
-                return background_receipt
-            elif (
-                pending_task is not None
+            done, _ = await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
+            if ready in done:
+                return ready.result()
+            if background_task in done and not pool_task.done():
+                return await detach("backgrounded")
+            if (
+                pending_task in done
+                and not pool_task.done()
                 and communication is not None
-                and pending_task in done
-                # The broker also wakes this waiter when the finishing pool
-                # closes it; that is not a question, so collect the result.
                 and (questions := communication.pending_questions(recipient="main"))
             ):
                 return {
@@ -1004,6 +947,7 @@ def make_spawn_subagents_tool(
         _registry,
         allow_call_overrides=_allow_call_overrides,
         type_tags=type_tags,
+        mode=current_spawn_mode(_settings, conversation_journal),
     )
     # The turn runner registers these alongside spawn_subagents.  Attaching
     # them keeps this factory backwards compatible for lightweight callers that
@@ -1255,6 +1199,7 @@ def _augment_type_schema(
     *,
     allow_call_overrides: bool = False,
     type_tags: Mapping[str, str] | None = None,
+    mode: SpawnMode,
 ) -> None:
     """Add this session's types and operator-enabled routing inputs to metadata.
 
@@ -1329,7 +1274,13 @@ def _augment_type_schema(
     except AttributeError:
         raw_description = ""
     base_description = raw_description if isinstance(raw_description, str) else ""
-    description = f"{base_description}\n\n{_PARALLEL_GUIDANCE}" if base_description else ""
+    mode_text = (
+        "Returns a receipt when the pool starts. Continue working or end the turn. "
+        "Collect only after a notice; do not poll, sleep, redo work, or guess results."
+        if mode == "background"
+        else "Blocks until the pool finishes and returns the aggregated results."
+    )
+    description = f"{base_description}\n\n{mode_text}\n\n{_PARALLEL_GUIDANCE}"
     if descriptions:
         description += "\n\nAvailable subagent types:\n" + "\n".join(descriptions)
     metadata.description = description

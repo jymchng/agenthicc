@@ -91,6 +91,9 @@ class UsageSnapshot:
     unavailable_calls: int = 0
     provisional_calls: int = 0
     durability_status: str = "durable"
+    agent_tokens: int = 0
+    wake_tokens: int = 0
+    wake_calls: int = 0
 
     @property
     def total_tokens(self) -> int:
@@ -125,6 +128,7 @@ class CommandContext:
     startup: "StartupCoordinator | None" = None
     frame_stats: "Callable[[], FrameStats | None] | None" = None
     loop_lag: "Callable[[], LoopLagMonitor | None] | None" = None
+    wake_recoveries: "Callable[[], int] | None" = None
     keymap_service: "KeymapService | None" = None
     set_pending_skill: "Callable[[str], None] | None" = None
     set_pending_menu: "Callable[[Overlay], None] | None" = None

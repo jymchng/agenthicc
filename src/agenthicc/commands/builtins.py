@@ -533,6 +533,13 @@ def _cmd_usage(ctx: CommandContext) -> bool:
         f"durability={snapshot.durability_status}",
         markup=False,
     )
+    if snapshot.wake_calls:
+        calls_label = "call" if snapshot.wake_calls == 1 else "calls"
+        ctx.console.print(
+            f"Ordinary agent turns: {snapshot.agent_tokens:,} tokens. "
+            f"Subagent wakes: {snapshot.wake_tokens:,} tokens ({snapshot.wake_calls:,} {calls_label}).",
+            markup=False,
+        )
     return True
 
 
@@ -1139,6 +1146,8 @@ def _cmd_keybindings(ctx: CommandContext) -> bool:
 def _cmd_perf(ctx: CommandContext) -> bool:
     """Show how many frames the live block drew and what they cost (AGX-11)."""
     stats = ctx.frame_stats() if ctx.frame_stats is not None else None
+    if ctx.wake_recoveries is not None:
+        ctx.console.print(f"Subagent wakes recovered: {ctx.wake_recoveries()}", markup=False)
     if stats is None:
         ctx.notify("warning", "Rendering diagnostics are unavailable.")
         return True

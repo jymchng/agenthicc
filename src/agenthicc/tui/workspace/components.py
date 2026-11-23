@@ -211,6 +211,7 @@ class _Inputs:
     needs_you: int
     hub_key: str
     background_running: int
+    subagent_status: tuple[str, ...]
     dnd: bool
     context_tokens: int
     context_window: int
@@ -279,6 +280,10 @@ def _static_parts(inputs: _Inputs) -> tuple[_Part, ...]:
     # state and attention, shortened rather than dropped when the line is narrow.
     if inputs.workflow is not None:
         parts.append(_workflow_part(inputs.workflow, reader))
+    for label in inputs.subagent_status:
+        parts.append(
+            _Part(2, (_form(escape(label) if reader else _tint("muted", f"{g.diamond} {label}")),))
+        )
 
     if inputs.user_line:
         # 3–7 replaced by the user's status-line command (TUX-02 §2.3).
@@ -604,11 +609,19 @@ class StatusLine:
             stack_label = ""
         elif frames and frames[-1].phase:
             stack_label += f" {glyphs().sep} {frames[-1].phase}"
+        subagent_status: list[str] = []
+        if count := conv.subagent_background_running():
+            subagent_status.append(f"{count} running")
+        if conv.subagent_wake_paused():
+            subagent_status.append("subagent wakes paused")
+        elif count := conv.subagent_finished_pending():
+            subagent_status.append(f"{count} finished, resuming…")
         return _Inputs(
             reader=reader,
             needs_you=_signal_int(conv, "background_needs_you"),
             hub_key=_hub_key(app),
             background_running=_signal_int(conv, "background_running"),
+            subagent_status=tuple(subagent_status),
             dnd=_signal_bool(conv, "background_dnd"),
             context_tokens=_signal_int(conv, "context_tokens"),
             context_window=_signal_int(conv, "context_window"),
@@ -1178,10 +1191,8 @@ class ComposerFrame:
         pool = _signal(conv, "subagent_pool_state")
         if pool is not None:
             conditions.add("subagents")
-            from agenthicc.subagents.pool import SubagentPoolState
-
-            if isinstance(pool, SubagentPoolState) and pool.active:
-                conditions.add("subagents_running")
+        if _signal(conv, "subagent_foreground"):
+            conditions.add("subagents_foreground")
         keymap = app.keymap()
         found = tuple(
             (hint.keys, hint.label)

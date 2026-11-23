@@ -1,44 +1,54 @@
-"""Notify the parent that a background subagent pool has finished.
-
-A foreground pool returns its aggregate to the parent as the
-``spawn_subagents`` tool result. A pool moved to the background finishes after
-that call has returned, so the parent is told at its next logical-turn boundary
-instead (SUBAGENT-11 goal 5, "notice, then pull").
-
-The notice is composed entirely by the runtime — the pool id, its terminal
-status and the real worker counts — and it contains **no worker-authored text**.
-Worker output is untrusted (workers read web pages, files and other tools'
-output), and the notice is appended in the user role, the most trusted position
-in the parent's context. The results themselves reach the parent only as the
-output of ``collect_subagent_results``, a tool the parent calls, so worker text
-stays in the tool role exactly as it does for a foreground pool.
-
-Every session runner delivers at its turn boundary through one function — the
-TUI through :func:`deliver_background_pool_notices` and the background worker
-and headless workflow runner through :func:`deliver_session_background_notices`
-— so every runner delivers identically.
-"""
+"""Durable, runtime-authored notices for background subagents."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import TYPE_CHECKING
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Literal, Protocol
 
 if TYPE_CHECKING:
     from agenthicc.memory.journal import ConversationJournal
+    from agenthicc.memory.journaled import JournaledShortTermMemory
     from agenthicc.runners.session_context import SessionContext
     from agenthicc.runners.session_conversation import SessionConversation
-    from agenthicc.memory.journaled import JournaledShortTermMemory
     from agenthicc.subagents.communication import PoolContinuationRegistry
     from agenthicc.tui.conversation_store import ConversationStore
 
+WAKE_TURN_PREFIX = "subagent-wake:"
+
 __all__ = [
+    "NoticeSource",
+    "PendingNotice",
     "background_pool_notice",
     "background_question_notice",
     "deliver_background_pool_notices",
     "deliver_background_question_notices",
     "deliver_session_background_notices",
 ]
+
+
+@dataclass(frozen=True, slots=True)
+class PendingNotice:
+    """A runtime-authored message carrying only trusted pool metadata."""
+
+    message_id: str
+    kind: Literal["completion", "question"]
+    pool_id: str
+    text: str
+    summary: str = ""
+    recorded_at: float = 0.0
+
+
+class NoticeSource(Protocol):
+    """Session-owned source of undelivered notices in journal order."""
+
+    def claim(self) -> tuple[PendingNotice, ...]:
+        """Read pending notices. Delivery acknowledges them after persistence."""
+        ...
+
+    def has_pending(self) -> bool:
+        """Whether a notice is available at a tool boundary."""
+        ...
 
 
 def _count(record: Mapping[str, object], key: str) -> int:
@@ -57,12 +67,7 @@ def _status_text(status: str) -> str:
 
 
 def background_pool_notice(record: Mapping[str, object]) -> str:
-    """Return the runtime-authored notice for one terminal background pool.
-
-    *record* is a folded pool lifecycle record from the conversation journal:
-    ``pool_id``, ``status`` and, when known, ``total``, ``succeeded`` and
-    ``failed``. Its ``text`` is deliberately never read.
-    """
+    """Compose a completion notice without reading worker output."""
     pool_id = str(record.get("pool_id", ""))[:128]
     status = str(record.get("status", "interrupted"))
     return (
@@ -73,43 +78,8 @@ def background_pool_notice(record: Mapping[str, object]) -> str:
     )
 
 
-def deliver_background_pool_notices(
-    journal: ConversationJournal,
-    memory: JournaledShortTermMemory,
-    conversation: ConversationStore | None = None,
-) -> tuple[str, ...]:
-    """Deliver each undelivered terminal background pool exactly once.
-
-    Appends one notice per pool to provider *memory* under a stable message
-    id, mirrors it into the reactive *conversation* when one exists, and
-    records the delivery in the journal so a resume or compaction never
-    delivers it twice. Returns the delivered pool ids.
-    """
-    delivered: list[str] = []
-    for record in journal.completed_background_subagent_pools():
-        pool_id = record.get("pool_id")
-        if not isinstance(pool_id, str) or not pool_id:
-            continue
-        message = background_pool_notice(record)
-        message_id = f"subagent-completion:{pool_id}"
-        memory.add_user_once(message, message_id=message_id)
-        if conversation is not None:
-            conversation.append_event(
-                "user_message",
-                {"text": message, "source": "subagent_completion"},
-                event_id=message_id,
-            )
-        journal.subagent_pool_notification_delivered(pool_id=pool_id, message_id=message_id)
-        delivered.append(pool_id)
-    return tuple(delivered)
-
-
 def background_question_notice(pool_id: str, worker_id: str, question_id: str) -> str:
-    """The runtime-authored notice that a backgrounded worker awaits an answer.
-
-    Identifiers only: the question itself is worker-authored, so it is read
-    through ``collect_subagent_results`` (the tool role), never placed here.
-    """
+    """Compose a question notice without reading the worker's question."""
     return (
         f"A worker ({worker_id[:64]}) of background subagent pool {pool_id[:128]} is waiting "
         f"for your answer to question {question_id[:64]}. Call "
@@ -118,52 +88,134 @@ def background_question_notice(pool_id: str, worker_id: str, question_id: str) -
     )
 
 
+def _completions(journal: ConversationJournal) -> tuple[PendingNotice, ...]:
+    notices: list[PendingNotice] = []
+    for record in journal.completed_background_subagent_pools():
+        pool_id = record.get("pool_id")
+        if not isinstance(pool_id, str) or not pool_id:
+            continue
+        succeeded = _count(record, "succeeded")
+        total = _count(record, "total")
+        status = str(record.get("status", "interrupted"))
+        label = {
+            "interrupted": "Subagents interrupted",
+            "cancelled": "Subagents cancelled",
+        }.get(status, "Subagents finished")
+        at = record.get("at")
+        notices.append(
+            PendingNotice(
+                f"subagent-completion:{pool_id}",
+                "completion",
+                pool_id,
+                background_pool_notice(record),
+                f"{label} — pool {pool_id[:8]} · {succeeded}/{total} succeeded",
+                float(at) if isinstance(at, (float, int)) else 0.0,
+            )
+        )
+    return tuple(notices)
+
+
+def _questions(
+    registry: PoolContinuationRegistry, journal: ConversationJournal
+) -> tuple[PendingNotice, ...]:
+    notices: list[PendingNotice] = []
+    for handle in registry.handles():
+        if not handle.backgrounded or handle.task.done():
+            continue
+        for question in handle.broker.pending_questions(recipient="main"):
+            question_id = question.get("question_id")
+            if not isinstance(question_id, str) or not question_id:
+                continue
+            message_id = f"subagent-question:{question_id}"
+            if journal.has_message_id(message_id):
+                continue
+            worker_id = str(question.get("worker_id", ""))
+            envelope = handle.broker.message(question_id)
+            notices.append(
+                PendingNotice(
+                    message_id,
+                    "question",
+                    handle.pool_id,
+                    background_question_notice(handle.pool_id, worker_id, question_id),
+                    f"Subagent question — pool {handle.pool_id[:8]} · {worker_id[:64]}",
+                    envelope.created_at if envelope is not None else 0.0,
+                )
+            )
+    return tuple(notices)
+
+
+@dataclass(frozen=True, slots=True)
+class JournalNoticeSource:
+    """Combine durable terminal pools and still-live worker questions."""
+
+    journal: ConversationJournal
+    registry: PoolContinuationRegistry
+
+    def claim(self) -> tuple[PendingNotice, ...]:
+        return tuple(
+            sorted(
+                (*_completions(self.journal), *_questions(self.registry, self.journal)),
+                key=lambda notice: notice.recorded_at,
+            )
+        )
+
+    def has_pending(self) -> bool:
+        return bool(self.claim())
+
+
+def deliver_notices(
+    notices: tuple[PendingNotice, ...],
+    memory: JournaledShortTermMemory,
+    conversation: ConversationStore | None,
+) -> None:
+    """Append messages before acknowledging delivery, using stable IDs."""
+    for notice in notices:
+        memory.add_user_once(notice.text, message_id=notice.message_id)
+        if conversation is not None:
+            conversation.append_event(
+                "user_message",
+                {
+                    "text": notice.text,
+                    "source": f"subagent_{notice.kind}",
+                    "summary": notice.summary,
+                },
+                event_id=notice.message_id,
+            )
+        if notice.kind == "completion":
+            memory.journal.subagent_pool_notification_delivered(
+                pool_id=notice.pool_id, message_id=notice.message_id
+            )
+    if notices and conversation is not None:
+        pending = memory.journal.completed_background_subagent_pools()
+        conversation.subagent_finished_pending.set(len(pending))
+
+
+def deliver_background_pool_notices(
+    journal: ConversationJournal,
+    memory: JournaledShortTermMemory,
+    conversation: ConversationStore | None = None,
+) -> tuple[str, ...]:
+    """Deliver undelivered terminal pools and return the pool IDs."""
+    notices = _completions(journal)
+    deliver_notices(notices, memory, conversation)
+    return tuple(notice.pool_id for notice in notices)
+
+
 def deliver_background_question_notices(
     registry: PoolContinuationRegistry,
     memory: JournaledShortTermMemory,
     conversation: ConversationStore | None = None,
 ) -> tuple[str, ...]:
-    """Tell the parent, once per question, that a backgrounded worker is waiting.
-
-    Under ``subagents.on_clarification = "queue"`` a backgrounded worker's
-    question stays open; without this notice nothing would surface it until
-    the message timeout. Returns the ids of the questions announced.
-    """
-    announced: list[str] = []
-    for handle in registry.handles():
-        if not handle.backgrounded or handle.task.done():
-            continue
-        for question in handle.broker.pending_questions(recipient="main"):
-            question_id = str(question.get("question_id", ""))
-            if not question_id:
-                continue
-            message_id = f"subagent-question:{question_id}"
-            notice = background_question_notice(
-                handle.pool_id, str(question.get("worker_id", "")), question_id
-            )
-            if not memory.add_user_once(notice, message_id=message_id):
-                continue
-            if conversation is not None:
-                conversation.append_event(
-                    "user_message",
-                    {"text": notice, "source": "subagent_question"},
-                    event_id=message_id,
-                )
-            announced.append(question_id)
-    return tuple(announced)
+    """Deliver pending live worker questions and return the question IDs."""
+    notices = _questions(registry, memory.journal)
+    deliver_notices(notices, memory, conversation)
+    return tuple(notice.message_id.removeprefix("subagent-question:") for notice in notices)
 
 
 def deliver_session_background_notices(session: SessionContext) -> tuple[str, ...]:
-    """Deliver a session's finished background pools at its turn boundary.
-
-    For runners without a ``TUISession`` (background workers, headless
-    workflows). Skipped while the conversation's tool history is not
-    provider-ready, as ``TUISession`` does. Returns the delivered pool ids.
-    """
+    """Deliver terminal background pools at a non-interactive turn boundary."""
     from agenthicc.memory.journaled import JournaledShortTermMemory
 
-    # Typed non-optional on SessionContext, but a session built without a
-    # durable conversation (as some runner paths allow) has none.
     conversation: SessionConversation | None = session.session_conversation
     if conversation is None or not conversation.tool_history_recovery.provider_ready:
         return ()

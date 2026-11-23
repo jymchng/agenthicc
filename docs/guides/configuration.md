@@ -305,7 +305,7 @@ max_workers = 32            # maximum workers admitted by one pool
                             # time or cost limit)
 stop_grace_s = 5.0          # cleanup grace for cancelled workers
 collect_wait_max_s = 60.0   # cap for collect_subagent_results(wait=true), at most 3600
-background_enabled = true   # allow spawn_subagents(background=true)
+spawn_mode = "background"   # background | foreground
 isolation = "auto"          # auto | worktree | shared: give each file-changing worker its own git worktree
 # on_clarification = "queue" # backgrounded worker questions: queue | fail;
                             # unset: queue in the TUI, fail when headless/background
@@ -320,6 +320,11 @@ isolation = "auto"          # auto | worktree | shared: give each file-changing 
 # allowed_tools = ["read_file", "search_files"]
 # allowed_models = ["model-id"]
 ```
+
+`spawn_mode = "background"` lets a direct terminal turn continue after it
+receives a pool receipt. Foreground mode waits for the aggregate. Workflow
+phases, headless sessions, and service turns resolve to foreground. Remove the
+superseded Boolean background setting when migrating an older configuration.
 
 A definition's `model`, `effort`, and `context` values take precedence over
 these operator defaults, except `model: inherit`, which explicitly selects the

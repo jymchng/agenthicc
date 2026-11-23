@@ -86,6 +86,10 @@ class AgentCapabilityScope:
             if fnmatch.fnmatch(tool_name, pattern):
                 return False
         if self.allowed_tools is not None:
+            # Projected tool surfaces are sets of exact names. Preserve the
+            # wildcard path for pattern entries and names containing glob syntax.
+            if tool_name in self.allowed_tools and not any(char in tool_name for char in "*?["):
+                return True
             return any(fnmatch.fnmatch(tool_name, p) for p in self.allowed_tools)
         return True
 

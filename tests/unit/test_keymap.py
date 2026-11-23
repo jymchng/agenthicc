@@ -131,7 +131,7 @@ def test_hints_are_the_applicable_actions_by_priority() -> None:
         hint.label
         for hint in keymap.hints(
             "composer",
-            frozenset({"running", "subagents_running"}),
+            frozenset({"running", "subagents_foreground"}),
         )
     ]
     assert "background pool" in background
