@@ -15,90 +15,18 @@ import inspect
 import logging
 import sys
 from contextlib import contextmanager
-from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
 from typing import TYPE_CHECKING, Literal
 
 from agenthicc.plugins.source import execute_extension_source
+from agenthicc.workflows.registry import BuiltinWorkflowDescriptor, builtin_workflow_descriptors
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
     from agenthicc.workflows.plugin import WorkflowPlugin
 
 log = logging.getLogger(__name__)
-
-
-@dataclass(frozen=True)
-class BuiltinWorkflowDescriptor:
-    """Import-free metadata for a built-in workflow.
-
-    Registry construction is on the interactive startup path.  Keeping the
-    module and attribute name here lets the registry expose workflow names and
-    mode bindings without importing every workflow implementation.  The
-    implementation is imported only when the workflow is selected (or when a
-    caller explicitly asks for all plugin classes).
-    """
-
-    name: str
-    module: str
-    attribute: str
-    mode_bindings: tuple[str, ...] = ()
-
-
-_BUILTIN_WORKFLOW_DESCRIPTORS = (
-    BuiltinWorkflowDescriptor(
-        "code_plan", "agenthicc.workflows.code_plan.definition", "CodePlan", ("Plan",)
-    ),
-    BuiltinWorkflowDescriptor(
-        "parallel_code_plan",
-        "agenthicc.workflows.parallel_code_plan.definition",
-        "ParallelCodePlan",
-        ("Plan",),
-    ),
-    BuiltinWorkflowDescriptor(
-        "copy_website", "agenthicc.workflows.copy_website", "CopyWebsiteWorkflow"
-    ),
-    BuiltinWorkflowDescriptor(
-        "create_workflow",
-        "agenthicc.workflows.create_workflow.definition",
-        "CreateWorkflow",
-    ),
-    BuiltinWorkflowDescriptor(
-        "goal_flow", "agenthicc.workflows.goal_flow.runner", "GoalFlowWorkflow"
-    ),
-    BuiltinWorkflowDescriptor(
-        "create_skills",
-        "agenthicc.workflows.create_skills.definition",
-        "CreateSkills",
-    ),
-    BuiltinWorkflowDescriptor(
-        "create_tools",
-        "agenthicc.workflows.create_tools.definition",
-        "CreateTools",
-    ),
-    BuiltinWorkflowDescriptor(
-        "make_book",
-        "agenthicc.workflows.make_book.runner",
-        "MakeBookWorkflow",
-    ),
-    BuiltinWorkflowDescriptor(
-        "reconstruct_site", "agenthicc.workflows.reconstruct_site", "ReconstructSiteWorkflow"
-    ),
-    BuiltinWorkflowDescriptor(
-        "site_imitate", "agenthicc.workflows.site_imitate.runner", "SiteImitateWorkflow"
-    ),
-    BuiltinWorkflowDescriptor(
-        "ui_ux_pro_max",
-        "agenthicc.workflows.ui_ux_pro_max.definition",
-        "UiUxProMax",
-    ),
-)
-
-
-def builtin_workflow_descriptors() -> tuple[BuiltinWorkflowDescriptor, ...]:
-    """Return built-in metadata without importing workflow implementations."""
-    return _BUILTIN_WORKFLOW_DESCRIPTORS
 
 
 def load_builtin_workflow(descriptor: BuiltinWorkflowDescriptor) -> type[WorkflowPlugin]:
@@ -114,7 +42,7 @@ def load_builtin_workflow(descriptor: BuiltinWorkflowDescriptor) -> type[Workflo
 
 def load_builtin_workflows() -> list[type[WorkflowPlugin]]:
     """Return every built-in :class:`WorkflowPlugin` definition."""
-    return [load_builtin_workflow(item) for item in _BUILTIN_WORKFLOW_DESCRIPTORS]
+    return [load_builtin_workflow(item) for item in builtin_workflow_descriptors()]
 
 
 WorkflowLoadCode = Literal[

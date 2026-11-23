@@ -19,8 +19,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from agenthicc.plugins.source import execute_extension_source
-
 if TYPE_CHECKING:
     from .command import Command
 
@@ -92,6 +90,8 @@ def _load_command_file(path: Path) -> CommandLoadResult:
         return CommandLoadResult(path=path, error=str(exc))
     if missing:
         return CommandLoadResult(path=path, missing_deps=missing)
+
+    from agenthicc.plugins.source import execute_extension_source
 
     # ── Step 3: import, once ──────────────────────────────────────────────────
     # Imports from agenthicc.commands.command are done lazily below to avoid

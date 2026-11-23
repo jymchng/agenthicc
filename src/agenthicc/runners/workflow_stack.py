@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import json
 from collections import deque
 from dataclasses import dataclass, field, replace
-import json
+from hashlib import sha256
 from itertools import islice
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
@@ -88,6 +89,11 @@ def _bounded(text: str, maximum: int) -> str:
     if len(text) <= maximum:
         return text
     return text[: maximum - len(marker)] + marker
+
+
+def workflow_digest(text: str) -> str:
+    """Return the stable digest written to the kernel log."""
+    return sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
 @dataclass(frozen=True, slots=True)

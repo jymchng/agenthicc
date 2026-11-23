@@ -49,7 +49,7 @@ runpy.run_module("agenthicc", run_name="__main__", alter_sys=True)
 """
 
 # Loaded only after the first frame: the agent runtime, provider HTTP stacks,
-# the account keyring, optional integrations and Rich's emoji table.
+# the account keyring, optional integrations, workflow execution and Rich's emoji table.
 _DENIED = (
     "lauren_ai",
     "lauren",
@@ -66,7 +66,10 @@ _DENIED = (
     "agenthicc.tools.cloakbrowser",
     "agenthicc.memory.journaled",
     "agenthicc.memory.vector",
+    "agenthicc.plugins.source",
     "agenthicc.runners.agent_turn",
+    "agenthicc.runners.workflow_return_delivery",
+    "agenthicc.workflows.loader",
     "rich._emoji_codes",
 )
 

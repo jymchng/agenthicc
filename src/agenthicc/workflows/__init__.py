@@ -15,7 +15,10 @@ _LAZY_EXPORTS: Final[dict[str, tuple[str, str]]] = {
     "BaseWorkflowRunner": ("agenthicc.workflows.base_runner", "BaseWorkflowRunner"),
     "WorkflowConfig": ("agenthicc.workflows.config", "WorkflowConfig"),
     "load_builtin_workflows": ("agenthicc.workflows.loader", "load_builtin_workflows"),
-    "builtin_workflow_descriptors": ("agenthicc.workflows.loader", "builtin_workflow_descriptors"),
+    "builtin_workflow_descriptors": (
+        "agenthicc.workflows.registry",
+        "builtin_workflow_descriptors",
+    ),
     "load_builtin_workflow": ("agenthicc.workflows.loader", "load_builtin_workflow"),
     "load_python_workflows": ("agenthicc.workflows.loader", "load_python_workflows"),
     "PhaseRunRecord": ("agenthicc.workflows.plugin", "PhaseRunRecord"),

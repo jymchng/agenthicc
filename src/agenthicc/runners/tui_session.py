@@ -1737,7 +1737,7 @@ class WorkflowStackBridge:
 
     def sync(self) -> None:
         from agenthicc.kernel import Event
-        from agenthicc.runners.workflow_return_delivery import workflow_digest
+        from agenthicc.runners.workflow_stack import workflow_digest
 
         context = self._context
         frames = context.workflow_stack.frames
@@ -1795,7 +1795,7 @@ class WorkflowStackBridge:
     def record_return(self, delivery: WorkflowDelivery) -> None:
         from agenthicc.kernel import Event
         from agenthicc.runners.workflow_checkpoint_store import WorkflowCheckpointStore
-        from agenthicc.runners.workflow_return_delivery import workflow_digest
+        from agenthicc.runners.workflow_stack import workflow_digest
 
         context = self._context
         WorkflowCheckpointStore(context.session_id).save_return(delivery)
@@ -1817,7 +1817,7 @@ class WorkflowStackBridge:
         """Reconcile the return packet, event log, and accepted conversation turns."""
         from agenthicc.kernel import Event
         from agenthicc.runners.workflow_checkpoint_store import WorkflowCheckpointStore
-        from agenthicc.runners.workflow_return_delivery import workflow_digest
+        from agenthicc.runners.workflow_stack import workflow_digest
         from agenthicc.workflows.checkpoint import CheckpointValidationError
 
         context = self._context

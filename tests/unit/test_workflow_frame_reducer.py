@@ -3,7 +3,7 @@
 from collections.abc import Mapping
 
 from agenthicc.kernel import AppState, Event, root_reducer
-from agenthicc.runners.workflow_return_delivery import workflow_digest
+from agenthicc.runners.workflow_stack import workflow_digest
 
 
 def _push(frame: str, parent: str | None, depth: int) -> Event:

@@ -18,8 +18,6 @@ from agenthicc.plugins.deps import (
 from agenthicc.plugins.trust import current_extension_trust
 from agenthicc.tools.base import tool_name
 
-from agenthicc.plugins.source import execute_extension_source
-
 if TYPE_CHECKING:
     from agenthicc.subagents.types import SubagentTypeRegistry, SubagentTypeSpec
 
@@ -147,6 +145,8 @@ def _load_plugin_file(
         return LoadResult(path=path, error=str(exc))
     if missing:
         return LoadResult(path=path, missing_deps=missing)
+
+    from agenthicc.plugins.source import execute_extension_source
 
     plugin_subagent_registry = subagent_registry.copy() if subagent_registry is not None else None
     # Import the plugin, once.

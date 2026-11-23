@@ -424,3 +424,24 @@ with 15 skips, 434 integration tests, 263 E2E tests with two skips, and all
 nine performance tests. Logs are in `/var/tmp/agenthicc-wfc-m9-final-*.log`.
 Strict MkDocs still reports the existing unlisted question-timeouts guide
 and a missing troubleshooting anchor as informational diagnostics.
+
+### PR checks
+
+The first PR run failed `tui.first_prompt.modules` with 380 imports and a
+limit of 377. The same Python 3.12 probe reproduced the count locally. A clean
+baseline imported 372 modules. Built-in workflow descriptors now live with
+the registry, plugin source execution loads at the actual import boundary,
+and the pure stack computes its journal digests. The first-frame regression
+test checks that the three execution modules stay unloaded. `nox -s perf`
+passed at 377 with the existing budget and CI-style terminal settings.
+
+The initial CI coverage job measured 83.01% combined statement and branch
+coverage against the 81.5% floor. It passed 7,026 tests with 28 skips. The
+performance probe was the sole failure in that run. The startup, extension
+loading, registry, reducer and durable-return rerun passed 73 tests on
+Python 3.12 after the fix.
+
+The final local rerun after that source change passed 6,340 unit tests with
+15 skips, 434 integration tests, 263 E2E tests with two skips, and nine
+performance tests. Ruff, mypy, the type audit, strict MkDocs, public symbols,
+and typing contracts passed. Logs are in `/var/tmp/agenthicc-wfc-pr32-startup-*.log`.
