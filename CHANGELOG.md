@@ -16,8 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `/workflow stack`, `/catalog`, and `/reload report` expose the current frame,
   model capabilities, and extension diagnostics.
 - **Breaking.** Use `/workflow reset` to clear a workflow selection.
-  `/workflow` now shows the stack. Checkpoints that predate workflow stacks
-  require a new run.
+  `/workflow` now shows the stack.
+- **Fixed.** Compatible checkpoints saved before workflow stacks can resume
+  at the saved phase and upgrade to the current format on save.
 
 ### Changed — workflow authoring
 

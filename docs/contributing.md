@@ -86,12 +86,14 @@ Every Nox session runs on nox's uv backend and installs the project and its one
 in the base package; the project declares no `tui`, `api`, or `all` extra. List
 the sessions with `uv run nox --list`: `tests`, `tests_unit` and
 `tests_integration` (each on Python 3.11, 3.12 and 3.13, e.g.
-`tests_unit-3.12`), `tests_e2e`, `tests_windows`, `coverage`, `lint`, `format`,
+`tests_unit-3.12`), `tests_e2e`, `tests_windows`, `workflow_recovery`, `coverage`, `lint`, `format`,
 `typecheck`, `typecheck_contracts`, `type_audit`, `docs`, `build`,
 `build_check`, `llms_check`, `clean`.
 
 The integration matrix also runs workflow scenarios S2, S4, and S9 on
 each supported Python.
+`uv run nox -s workflow_recovery` checks compatibility with saved checkpoint
+formats and the guarded resume path. Required checks includes this gate.
 
 `.github/workflows/ci.yml` runs every gate on pull requests to `main`/`dev` and
 on pushes to those branches, and ends in one aggregate **Required checks** job,

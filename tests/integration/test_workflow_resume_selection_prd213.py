@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -12,19 +13,31 @@ from agenthicc.runners.session_conversation import SessionConversation
 from agenthicc.runners.workflow_checkpoint_store import WorkflowCheckpointStore
 from agenthicc.runners.workflow_handle import WorkflowRunHandle
 from agenthicc.runners.workflow_recovery import WorkflowRecoveryCoordinator
+from agenthicc.tui.runtime.commands import SendMessageCommand
 from rich.text import Text
 
 from agenthicc.tui.workspace.components import StatusLine
 from agenthicc.workflows.plugin import PhaseSpec, WorkflowContext, WorkflowPlugin
 
 from tests.unit.test_tui_session_coverage import _make_session
+from tests.workflow_checkpoints import schema_one_payload
 
 pytestmark = pytest.mark.integration
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("schema_version", "continuation"),
+    [
+        pytest.param(1, None, id="flat-resume-command"),
+        pytest.param(1, "continue the saved work", id="flat-continuation"),
+        pytest.param(2, None, id="stack-resume-command"),
+    ],
+)
 async def test_latest_checkpoint_resume_rehydrates_selection_before_dispatch(
     tmp_path: Path,
+    schema_version: int,
+    continuation: str | None,
 ) -> None:
     """A restarted TUI derives selection from disk, not its mode/default selector."""
     session, ctx, _workspace, _input = _make_session(initial_workflow="stale-workflow")
@@ -37,32 +50,37 @@ async def test_latest_checkpoint_resume_rehydrates_selection_before_dispatch(
     ctx.session_memory = conversation.memory
     from agenthicc.memory.tool_history import ToolHistoryRecoveryState
 
-    conversation.memory.restore(
-        [
-            {"role": "user", "content": "inspect"},
-            {
-                "role": "assistant",
-                "content": [{"type": "tool_use", "id": "late-call", "name": "Read", "input": {}}],
-            },
-            {
-                "role": "assistant",
-                "content": [{"type": "tool_use", "id": "later-call", "name": "Read", "input": {}}],
-            },
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": "later-call",
-                        "content": "later result",
-                    }
-                ],
-            },
-        ]
-    )
-    conversation.memory._tool_history_recovery = ToolHistoryRecoveryState(
-        "repair_required", ("non_adjacent_results",), True
-    )
+    if continuation is None:
+        conversation.memory.restore(
+            [
+                {"role": "user", "content": "inspect"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "tool_use", "id": "late-call", "name": "Read", "input": {}}
+                    ],
+                },
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "tool_use", "id": "later-call", "name": "Read", "input": {}}
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "later-call",
+                            "content": "later result",
+                        }
+                    ],
+                },
+            ]
+        )
+        conversation.memory._tool_history_recovery = ToolHistoryRecoveryState(
+            "repair_required", ("non_adjacent_results",), True
+        )
     store = WorkflowCheckpointStore(conversation.conversation_id, root=tmp_path / "checkpoints")
     session._workflow_recovery = WorkflowRecoveryCoordinator(
         conversation.conversation_id,
@@ -93,7 +111,12 @@ async def test_latest_checkpoint_resume_rehydrates_selection_before_dispatch(
     handle.update_phase("work", 0, 2)
     handle.request_pause()
     handle.mark_paused(reason="integration setup")
-    handle.save_checkpoint(reason="integration setup")
+    if schema_version == 1:
+        handle.mark_resuming()
+    checkpoint = handle.save_checkpoint(reason="integration setup")
+    path = store.path_for(handle.run_id)
+    if schema_version == 1:
+        path.write_text(json.dumps(schema_one_payload(checkpoint)), encoding="utf-8")
 
     # Simulate a process restart: no attached handle, but a stale invocation
     # selection is still present in this new TUI session.
@@ -116,7 +139,11 @@ async def test_latest_checkpoint_resume_rehydrates_selection_before_dispatch(
     ctx.session_service = SessionService()
 
     try:
-        assert session._handle_workflow_resume(None) is True
+        if continuation is None:
+            assert session.route("/workflow resume") is True
+        else:
+            await session.handle_send(SendMessageCommand(text=continuation))
+        assert session._agent_task is not None, ctx.app_state.conversation.notification()
         assert conversation.tool_history_recovery.provider_ready is True
         assert conversation.memory.validate_tool_history().ok
         # This assertion is synchronous with the accepted persisted transition:
@@ -127,6 +154,16 @@ async def test_latest_checkpoint_resume_rehydrates_selection_before_dispatch(
         )
         assert session._workflow_handle is not None
         assert session._workflow_handle.run_id == "restart-run"
+        assert session._workflow_handle.claim_owner_id is not None
+        assert store.claim_owner(handle.run_id) == session._workflow_handle.claim_owner_id
+        upgraded = json.loads(path.read_bytes())
+        assert upgraded["schema_version"] == 2
+        assert upgraded["frame_id"] == handle.run_id
+        assert upgraded["parent_run_id"] is None
+        assert upgraded["origin"] == "selection"
+        assert upgraded["status"] == "resuming"
+        assert upgraded["phase_iteration"] == 2
+        assert upgraded["revision"] > checkpoint.revision
 
         status = Text.from_markup(StatusLine(ctx.app_state).markup(200)).plain
 
@@ -144,7 +181,8 @@ async def test_latest_checkpoint_resume_rehydrates_selection_before_dispatch(
                 },
             )
         ]
-        assert published[0][0] == "session_readiness_changed"
+        first_event = "session_readiness_changed" if continuation is None else "turn_queued"
+        assert published[0][0] == first_event
 
         task = session._agent_task
         assert task is not None

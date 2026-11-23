@@ -70,6 +70,21 @@ def tests_e2e(session: nox.Session) -> None:
     session.run("pytest", "tests/e2e", *session.posargs)
 
 
+@nox.session(python=PRIMARY_PYTHON)
+def workflow_recovery(session: nox.Session) -> None:
+    """Verify saved checkpoint compatibility and guarded workflow resume."""
+    _install_dev(session)
+    session.run(
+        "pytest",
+        "tests/unit/test_workflow_recovery_chain.py",
+        "tests/unit/test_workflow_recovery.py",
+        "tests/integration/test_workflow_resume_selection_prd213.py",
+        "tests/e2e/test_workflow_resume_latest_prd188_e2e.py",
+        "tests/e2e/test_workflow_resume_recovery_e2e.py::test_process_restart_resume_calls_typed_runner_resume_once",
+        *session.posargs,
+    )
+
+
 @nox.session(python=PRIMARY_PYTHON, name="tests_performance")
 def tests_performance(session: nox.Session) -> None:
     """Run the performance budgets (never under coverage, which slows every call)."""

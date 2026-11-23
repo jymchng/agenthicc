@@ -743,37 +743,17 @@ class WorkflowCheckpoint:
         if not isinstance(raw, dict):
             raise CheckpointValidationError("checkpoint must be a JSON object")
         schema = raw.get("schema_version")
-        links = {"frame_id", "parent_run_id", "origin"}
-        if schema == 1 and raw.get("workflow_name") == "make_agenthicc_tool":
-            raise CheckpointValidationError(
-                "This workflow was renamed to create_tools. Start a new run."
-            )
-        if schema == 1 or (schema == CHECKPOINT_SCHEMA_VERSION and links - raw.keys()):
-            raise CheckpointValidationError(
-                "Start a new run. This checkpoint predates workflow stacks."
-            )
-        if schema != CHECKPOINT_SCHEMA_VERSION:
+        if type(schema) is not int or schema not in (1, CHECKPOINT_SCHEMA_VERSION):
             raise CheckpointValidationError(f"unsupported checkpoint schema: {schema!r}")
-        frame_id, parent_run_id, raw_origin = raw["frame_id"], raw["parent_run_id"], raw["origin"]
-        if (
-            not isinstance(frame_id, str)
-            or not frame_id
-            or (
-                parent_run_id is not None
-                and (not isinstance(parent_run_id, str) or not parent_run_id)
+        links = {"frame_id", "parent_run_id", "origin"}
+        if schema == 1 and links & raw.keys():
+            raise CheckpointValidationError(
+                "schema-1 checkpoint contains unexpected workflow stack fields"
             )
-        ):
-            raise CheckpointValidationError("invalid workflow checkpoint frame links")
-        origin: FrameOrigin
-        match raw_origin:
-            case "selection":
-                origin = "selection"
-            case "user":
-                origin = "user"
-            case "agent":
-                origin = "agent"
-            case _:
-                raise CheckpointValidationError("invalid workflow checkpoint origin")
+        if schema == CHECKPOINT_SCHEMA_VERSION and (missing_links := links - raw.keys()):
+            raise CheckpointValidationError(
+                f"checkpoint is missing workflow stack fields: {', '.join(sorted(missing_links))}"
+            )
         required = (
             "run_id",
             "workflow_name",
@@ -796,6 +776,35 @@ class WorkflowCheckpoint:
         canonical = json.dumps(unsigned, sort_keys=True, separators=(",", ":"))
         if expected != hashlib.sha256(canonical.encode("utf-8")).hexdigest():
             raise CheckpointValidationError("checkpoint content hash mismatch")
+        if schema == 1:
+            if raw["workflow_name"] == "make_agenthicc_tool":
+                raise CheckpointValidationError(
+                    "This workflow was renamed to create_tools. Start a new run."
+                )
+            # Schema 1 recorded flat workflow selections. Use the existing
+            # run ID as a stable base frame and leave disk untouched until a
+            # normal checkpoint save, such as the claimed resume transition.
+            raw = {**raw, "frame_id": raw["run_id"], "parent_run_id": None, "origin": "selection"}
+        frame_id, parent_run_id, raw_origin = raw["frame_id"], raw["parent_run_id"], raw["origin"]
+        if (
+            not isinstance(frame_id, str)
+            or not frame_id
+            or (
+                parent_run_id is not None
+                and (not isinstance(parent_run_id, str) or not parent_run_id)
+            )
+        ):
+            raise CheckpointValidationError("invalid workflow checkpoint frame links")
+        origin: FrameOrigin
+        match raw_origin:
+            case "selection":
+                origin = "selection"
+            case "user":
+                origin = "user"
+            case "agent":
+                origin = "agent"
+            case _:
+                raise CheckpointValidationError("invalid workflow checkpoint origin")
         if not all(
             isinstance(raw[key], str)
             for key in (

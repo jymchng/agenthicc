@@ -57,6 +57,14 @@ retaining fail-closed checks for generic or explicitly declared owner
 mismatches. Unit, disk-backed integration, and process-restart E2E coverage
 exercise the `create_workflow` generate-phase case and the mismatch paths.
 
+## WFC-03 pre-stack checkpoint recovery
+
+The checkpoint decoder verifies the original checksum before upgrading a
+schema-1 flat checkpoint to a base frame. Recovery validates the existing
+workflow and phase topology, and persists the new format at the next saved
+revision. The workflow checkpoint compatibility gate exercises both the
+resume command and ordinary continuation for an interrupted flat run.
+
 ## PRD-185 dynamic `goal_flow` audit — 2026-08-31
 
 Resolved in the current implementation. `goal_flow` now owns a canonical

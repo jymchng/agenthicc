@@ -29,6 +29,7 @@ from agenthicc.workflows.create_workflow.state import (
 )
 from agenthicc.workflows.plugin import PhaseSpec, WorkflowContext, WorkflowPlugin
 from agenthicc.workflows.registry import WorkflowRegistry
+from tests.workflow_checkpoints import schema_one_payload
 
 pytestmark = pytest.mark.unit
 
@@ -216,8 +217,7 @@ def test_retired_tool_workflow_checkpoint_explains_how_to_start_again(tmp_path: 
         store, handle = _running_checkpoint(tmp_path, conversation)
         checkpoint = store.load(handle.run_id)
         assert checkpoint is not None
-        legacy = checkpoint.to_dict()
-        legacy.update(schema_version=1, workflow_name="make_agenthicc_tool")
+        legacy = schema_one_payload(replace(checkpoint, workflow_name="make_agenthicc_tool"))
         store.path_for(checkpoint.run_id).write_text(json.dumps(legacy), encoding="utf-8")
         coordinator = WorkflowRecoveryCoordinator("session-recovery", checkpoint_store=store)
 

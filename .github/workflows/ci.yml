@@ -206,6 +206,21 @@ jobs:
       - run: uv tool install nox==2026.7.11
       - run: nox -s "tests_integration-${{ matrix.python-version }}" -- -q
 
+  workflow-recovery:
+    name: Workflow checkpoint compatibility
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4
+        with:
+          enable-cache: false
+          version: "0.12.4"
+      - run: uv tool install nox==2026.7.11
+      - run: nox -s workflow_recovery -- -q
+
   e2e:
     name: E2E and performance tests
     runs-on: ubuntu-latest
@@ -309,7 +324,7 @@ jobs:
   required:
     name: Required checks
     if: always()
-    needs: [lint, typecheck, type-audit, llms, docs, perf, unit, integration, e2e, windows, coverage]
+    needs: [lint, typecheck, type-audit, llms, docs, perf, unit, integration, workflow-recovery, e2e, windows, coverage]
     runs-on: ubuntu-latest
     steps:
       - name: Fail unless every gate succeeded

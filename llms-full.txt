@@ -3755,7 +3755,7 @@ Serializable workflow checkpoints and context codecs (PRD-156).
 ### CHECKPOINT_SCHEMA_VERSION
 
 ```python
-CHECKPOINT_SCHEMA_VERSION = 1
+CHECKPOINT_SCHEMA_VERSION = 2
 ```
 
 ### CheckpointValidationError
@@ -3786,7 +3786,9 @@ class WorkflowCheckpoint
 
 Workflow checkpoints carry `run_id`, `frame_id`, a nullable `parent_run_id`,
 and `origin`, plus workflow context, topology, lifecycle, and journal cursor.
-Schema version 2 requires the stack fields.
+Schema version 2 requires the stack fields. `from_dict` verifies a flat
+schema-1 checkpoint's checksum before deriving a base frame from its run ID.
+The next checkpoint save at a higher revision writes schema 2.
 
 Versioned workflow metadata pointing into session history.
 
