@@ -9,6 +9,8 @@ from lauren_ai._tools import tool
 from lauren_ai._transport import Completion, TokenUsage
 from lauren_ai._transport._mock import MockTransport
 
+from agenthicc.subagents.tool import SubagentToolSelection
+from agenthicc.tools.surface import ToolSurface
 from agenthicc.subagents.tool import make_spawn_subagents_tool
 from agenthicc.subagents.types import SubagentTypeRegistry, SubagentTypeSpec
 from agenthicc.tools.approval import ApprovalGate
@@ -133,10 +135,10 @@ async def test_a_worker_never_writes_when_its_approval_gate_fails() -> None:
     spawn = make_spawn_subagents_tool(
         AgentRunnerBase(transport=transport),
         "mock-model",
-        [write_thing],
+        SubagentToolSelection(ToolSurface(0, tuple([write_thing]))),
         registry=registry,
         app_state=_app("Safe"),
-        approval_svc=_BrokenApprovals(),  # type: ignore[arg-type]
+        approval_svc=_BrokenApprovals(),
     )
 
     result = await spawn(tasks=[{"type": "implementer", "task": "Write a.txt"}], timeout_s=30)  # type: ignore[operator]

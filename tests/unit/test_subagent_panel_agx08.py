@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 from rich.console import Console
 
+from agenthicc.tools.surface import ToolSurface
 from agenthicc.subagents.pool import FINISHED_ROW_S, SubagentPoolState, WorkerState
 from agenthicc.subagents.transcripts import (
     TranscriptEvent,
@@ -782,7 +783,7 @@ async def test_a_failed_transcript_write_is_counted_and_reported_once(
         [SubagentTask("a", "explorer", "x"), SubagentTask("b", "explorer", "y")],
         parent_runner=SimpleNamespace(_transport=None),
         parent_model="mock-model",
-        all_tools=[],
+        tool_surface=ToolSurface(0, tuple([])),
         conv_store=app.conversation,
         registry=DEFAULT_REGISTRY,
         transcript_root=tmp_path / "subagents",

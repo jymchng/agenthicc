@@ -147,6 +147,9 @@ def test_workflow_context_codec_and_custom_codec_failures() -> None:
 def test_checkpoint_from_dict_rejects_schema_identity_and_numeric_errors() -> None:
     checkpoint = WorkflowCheckpoint(
         run_id="run",
+        frame_id="run",
+        parent_run_id=None,
+        origin="selection",
         workflow_name="demo",
         conversation_id="session",
         intent="intent",

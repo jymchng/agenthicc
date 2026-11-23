@@ -19,6 +19,7 @@ import re
 import time
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, TypeVar, cast
@@ -586,11 +587,14 @@ if TYPE_CHECKING:
     from agenthicc.mentions.parser import Mention
     from agenthicc.plugins.registry import ToolRegistry
     from agenthicc.runners.prompt_contract import PromptContract
+    from agenthicc.runners.reload import SurfaceHolder
     from agenthicc.runners.usage_ledger import UsageLedger, UsageRunTracker
     from agenthicc.skills.loader import SkillDef, SkillPermissionSet
+    from agenthicc.skills.tools import SkillUseState
     from agenthicc.subagents.types import SubagentTypeRegistry
     from agenthicc.tools.approval import ApprovalBroker
     from agenthicc.tools.base import ToolLike
+    from agenthicc.tools.surface import ToolSurface, ToolSurfaceHolder
     from agenthicc.tools.mcp import McpToolRegistry
     from agenthicc.tools.mcp_manager import McpSessionManager
     from agenthicc.tools.workspace_access import WorkspaceAccessPolicy
@@ -776,6 +780,11 @@ class _ToolOutputCaptureHook(LifecycleHook):
         result: object,
         ctx: ToolCallContext,
     ) -> AfterToolHookDecision:
+        from agenthicc.runners.workflow_execution_context import current_workflow_tool_observer
+
+        observer = current_workflow_tool_observer()
+        if observer is not None:
+            observer(ctx.tool_name, ctx.tool_input, result)
         self._outputs[ctx.tool_use_id] = _capture_tool_result(
             ctx.tool_name,
             ctx.tool_input,
@@ -953,6 +962,7 @@ class AgentTurnRunner:
 
     def __init__(self, ctx: AgentTurnContext) -> None:
         self._ctx = ctx
+        self._workflow_return_key: str | None = None
 
         # Mutable state shared between methods and signal-handler closures.
         self._intent_id: str = ""
@@ -983,6 +993,7 @@ class AgentTurnRunner:
 
         # Content produced during the turn.
         self._skill_suffix: str = ""
+        self._skill_state = self._make_skill_state()
         self._runtime_dynamic_blocks: list[PromptBlock] = []
         self._cache_summary: str | None = None
         self._usage_tracker: UsageRunTracker | None = None
@@ -995,9 +1006,35 @@ class AgentTurnRunner:
         self._spawn_tool: Callable[..., Awaitable[dict[str, object]]] | None = None
         self._definition_agent_errors: dict[str, str] = {}
         self._visible_tools: list[ToolLike] = []
-        self._tool_registry: object | None = None
+        self._tool_registry: ToolRegistry | None = None
 
     # ── public entry point ────────────────────────────────────────────────────
+
+    def _make_skill_state(self) -> SkillUseState | None:
+        from agenthicc.kernel.events import Event
+        from agenthicc.skills.tools import SkillUseState
+
+        ctx = self._ctx
+        if ctx.skills is None:
+            return None
+
+        def record(payload: dict[str, object]) -> None:
+            ctx.processor.emit_nowait(
+                Event.create("SkillUsed", {"turn_id": self._intent_id, **payload})
+            )
+
+        return SkillUseState(
+            ctx.skills,
+            agent=ctx.active_agent or "default",
+            permissions=ctx.skill_permissions,
+            permission_lookup=(
+                ctx.agent_config.agents.skill_permissions_for
+                if ctx.agent_config is not None
+                else None
+            ),
+            project=self._workspace_root(),
+            on_use=record,
+        )
 
     def _project_legacy_recovery(self) -> None:
         """Project a repair found outside lauren-ai's signal bus once."""
@@ -1014,6 +1051,8 @@ class AgentTurnRunner:
 
     async def run(self) -> None:
         """Execute the full agent turn under its session workspace policy."""
+        from agenthicc.skills.tools import bind_skill_use
+
         ctx = self._ctx
         workspace_access = ctx.workspace_access
         if workspace_access is None:
@@ -1028,7 +1067,12 @@ class AgentTurnRunner:
 
             policy_token = set_current_workspace_access(ctx.workspace_access)
         try:
-            await self._run_impl()
+            with (
+                bind_skill_use(self._skill_state)
+                if self._skill_state is not None
+                else nullcontext()
+            ):
+                await self._run_impl()
         finally:
             if policy_token is not None:
                 from agenthicc.tools.workspace_access import reset_current_workspace_access
@@ -1166,17 +1210,24 @@ class AgentTurnRunner:
 
     async def _emit_intent_created(self) -> None:
         from agenthicc.kernel import Event
+        from agenthicc.runners.workflow_return_delivery import consume_workflow_return_key
 
         # PRD-129 Phase 3: a resumed turn reuses its original id so the durable
         # tool ledger and journal turn markers line up.
-        self._intent_id = self._ctx.resume_turn_id or uuid.uuid4().hex
+        resumed = self._ctx.resume_turn_id
+        self._workflow_return_key = consume_workflow_return_key()
+        if resumed is not None and resumed.startswith("return:"):
+            self._workflow_return_key = resumed
+        self._intent_id = self._ctx.resume_turn_id or self._workflow_return_key or uuid.uuid4().hex
         self._agent_id = f"agent-{self._intent_id[:8]}"
         await self._ctx.processor.emit(
             Event.create(
                 "IntentCreated",
                 {
                     "intent_id": self._intent_id,
-                    "raw_text": self._ctx.text,
+                    "raw_text": "[Workflow return]"
+                    if self._workflow_return_key
+                    else self._ctx.text,
                 },
             )
         )
@@ -1367,6 +1418,10 @@ class AgentTurnRunner:
 
     async def _inject_mentions(self) -> str:
         """Resolve file mentions and collect ``@agent:NAME`` invocations."""
+        from agenthicc.runners.workflow_execution_context import current_workflow_request
+
+        if current_workflow_request():
+            return self._ctx.text
         from agenthicc.mentions.injector import (
             InjectionConfig,
             build_context_prefix,
@@ -1408,6 +1463,10 @@ class AgentTurnRunner:
 
     def _inject_skills(self) -> None:
         """Find matching skills and build self._skill_suffix."""
+        from agenthicc.runners.workflow_execution_context import current_workflow_request
+
+        if current_workflow_request():
+            return
         from agenthicc.skills.loader import filter_skills_for_agent
         from agenthicc.skills.runner import (
             find_matching_skills,
@@ -1416,7 +1475,7 @@ class AgentTurnRunner:
 
         ctx = self._ctx
         available_skills = filter_skills_for_agent(
-            ctx.skills or {},
+            ctx.skills.current().value if ctx.skills is not None else {},
             ctx.active_agent or "default",
             ctx.skill_permissions,
         )
@@ -1434,16 +1493,37 @@ class AgentTurnRunner:
         Returns (agent_instance, active_runner).
         """
         from lauren_ai._agents import agent as agent_decorator
+        from lauren_ai._agents import AGENT_META
         from lauren_ai._agents import use_tools
         from lauren_ai._agents._runner import AgentRunnerBase as _RunnerBase
 
         from agenthicc.agents.plugin import BASE_SYSTEM_PROMPT as _BASE
         from agenthicc.plugins.registry import build_registry
         from agenthicc.runners.prompt_contract import PromptBlock
+        from agenthicc.runners.skill_runner import SkillAwareRunner
         from agenthicc.runners.tool_populator import populate_agent_tools as _populate
+        from agenthicc.runners.workflow_execution_context import (
+            current_workflow_policy,
+            current_workflow_request,
+            current_workflow_worker_tools,
+        )
+        from agenthicc.skills.tools import (
+            SKILL_CONTEXT_GUIDANCE,
+            SKILL_TOOL_NAMES,
+            list_skills,
+            use_skill,
+        )
         from agenthicc.tools.capabilities import (
             get_tool_capabilities,
             is_exploratory_tool,
+        )
+        from agenthicc.tools.surface import ToolSurface
+
+        from agenthicc.workflows.stack_tools import (
+            current_workflow_tools,
+            enter_workflow,
+            list_workflows,
+            workflow_status,
         )
 
         published_failures: set[str] = set()
@@ -1462,15 +1542,57 @@ class AgentTurnRunner:
 
         ctx = self._ctx
 
-        # Tool registry
         mcp_tools = ctx.mcp_registry.all_tools() if ctx.mcp_registry is not None else []
-        project_tools: list[ToolLike] = [*(ctx.project_plugin_tools or []), *mcp_tools]
-        registry = build_registry(
-            agent_name=ctx.active_agent or "default",
-            project_plugin_tools=project_tools,
-        )
+        # A phase supplies its already restricted tool list. Direct turns
+        # read the shared catalog and can observe a reload between requests.
+        holder = ctx.tool_surface
+        catalog = holder.current() if holder is not None else None
+        session_controls = list(current_workflow_worker_tools())
+        workflow_tools = current_workflow_tools()
+        workflow_worker = workflow_tools is not None and workflow_tools.is_worker
+
+        def registry_for(surface: ToolSurface | None) -> ToolRegistry:
+            discovered = surface.tools if surface is not None else ()
+            result = build_registry(
+                agent_name=None if workflow_worker else ctx.active_agent or "default",
+                extra_tools=[*discovered, *(ctx.extra_tools or []), *mcp_tools],
+            )
+            if self._skill_state is not None:
+                result.register(list_skills, source="builtin")
+                result.register(use_skill, source="builtin")
+            if workflow_tools is not None:
+                result.register(workflow_status, source="builtin")
+                if not workflow_worker:
+                    result.register(list_workflows, source="builtin")
+                    result.register(enter_workflow, source="builtin")
+            result.register_many(session_controls, source="builtin")
+            return result
+
+        registry = registry_for(catalog)
         excluded_capabilities = ctx.excluded_capabilities
+        workflow_policy = current_workflow_policy()
+        if workflow_policy is not None:
+            excluded_capabilities |= workflow_policy.blocked_capabilities
         allowed_tool_names = ctx.allowed_tool_names
+        if workflow_worker and workflow_policy is not None:
+            from agenthicc.tools.capabilities import ToolCapability
+
+            phase_controls = {
+                tool_name(tool)
+                for tool in ctx.extra_tools or ()
+                if ToolCapability.CONTROL in get_tool_capabilities(tool)
+            }
+            phase_controls.update(map(tool_name, session_controls))
+            scoped_names = frozenset(
+                name
+                for name in registry.names
+                if workflow_policy.capability_scope.is_tool_allowed(name)
+                or name in phase_controls
+                or name == "workflow_status"
+            )
+            allowed_tool_names = (
+                scoped_names if allowed_tool_names is None else scoped_names & allowed_tool_names
+            )
         gate_state = ctx.app_state
         agent_section = ""
         if ctx.agent_spec is not None:
@@ -1484,6 +1606,22 @@ class AgentTurnRunner:
                     ctx.app_state,
                 )
             )
+
+        def resolve_surface(
+            surface: ToolSurface,
+        ) -> tuple[ToolRegistry, list[ToolLike], AppState | None]:
+            updated = registry_for(surface)
+            allowed = ctx.allowed_tool_names
+            blocked = ctx.excluded_capabilities
+            mode_state = ctx.app_state
+            if workflow_policy is not None:
+                blocked |= workflow_policy.blocked_capabilities
+            if ctx.agent_spec is not None:
+                allowed, blocked, mode_state, _ = _agent_restrictions(
+                    ctx.agent_spec, updated, allowed, blocked, ctx.app_state
+                )
+            return updated, _visible_tools_for_agent(updated, allowed, blocked), mode_state
+
         visible_tools = _visible_tools_for_agent(
             registry,
             allowed_tool_names,
@@ -1498,6 +1636,8 @@ class AgentTurnRunner:
 
         # System prompt
         effective_base = _BASE
+        if visible_names & SKILL_TOOL_NAMES:
+            effective_base += f"\n\n{SKILL_CONTEXT_GUIDANCE}"
         mcp_prompt = getattr(ctx.mcp_registry, "prompt_instructions", None)
         if callable(mcp_prompt):
             prompt_text = mcp_prompt()
@@ -1556,6 +1696,13 @@ class AgentTurnRunner:
                     )
                 )
 
+        model_request = current_workflow_request()
+        if model_request:
+            if prompt_contract is not None:
+                self._runtime_dynamic_blocks.append(PromptBlock("WORKFLOW CALL", model_request))
+            else:
+                system += f"\n\n## WORKFLOW CALL\n{model_request}"
+
         @agent_decorator(model=self._model_id, system=system)
         @use_tools(*visible_tools)
         class _AgenthiccAgent:  # type: ignore[type-var]  # lauren-ai decorator cannot infer dynamic class
@@ -1577,17 +1724,21 @@ class AgentTurnRunner:
                 self._workspace_root(),
             )
         ]
-        self._tool_presentations.clear()
-        self._tool_presentations.update(
-            {
-                tool_name(tool): presentation
-                for tool in visible_tools
-                if (presentation := presentation_from_metadata(tool)) is not None
+
+        def update_tool_presentations(tools: Sequence[ToolLike]) -> None:
+            self._tool_presentations.clear()
+            self._tool_presentations.update(
+                {
+                    tool_name(tool): presentation
+                    for tool in tools
+                    if (presentation := presentation_from_metadata(tool)) is not None
+                }
+            )
+            self._exploratory_tools = {
+                tool_name(tool) for tool in tools if is_exploratory_tool(tool)
             }
-        )
-        self._exploratory_tools = {
-            tool_name(tool) for tool in visible_tools if is_exploratory_tool(tool)
-        }
+
+        update_tool_presentations(visible_tools)
         if gate_state is not None:
             from agenthicc.tools.capability_gate import ToolCapabilityGate
 
@@ -1600,12 +1751,18 @@ class AgentTurnRunner:
 
         hooks = order_global_hooks(hooks)
 
-        runner_class: type[AgentRunnerBase] = _RunnerBase
+        runner_class: type[AgentRunnerBase] = (
+            SkillAwareRunner
+            if self._skill_state is not None
+            or holder is not None
+            or ctx.tool_surface_generation is not None
+            else _RunnerBase
+        )
         next_queued_message = ctx.next_queued_message
         if next_queued_message is not None:
             claim_queued_message = next_queued_message
 
-            class _QueuedInputRunner(_RunnerBase):
+            class _QueuedInputRunner(SkillAwareRunner):
                 """Commit tool results before injecting the next queued input.
 
                 Lauren-ai's stream loop normally commits the returned tool
@@ -1666,10 +1823,10 @@ class AgentTurnRunner:
 
         # PRD-124: inject spawn_subagents into every turn so any agent can
         # optionally spawn a concurrent subagent pool.
-        if ctx.runner is not None:
+        if ctx.runner is not None and not workflow_worker:
             from agenthicc.runners.retry import RetryConfig
             from agenthicc.subagents.policy import SubagentExecutionPolicy
-            from agenthicc.subagents.tool import make_spawn_subagents_tool
+            from agenthicc.subagents.tool import SubagentToolSelection, make_spawn_subagents_tool
 
             _ec = _execution(ctx.exec_cfg)
             _subagent_retry = RetryConfig(
@@ -1678,16 +1835,35 @@ class AgentTurnRunner:
                 base_delay_s=_ec.transport_retry_base_delay_s,
                 max_total_duration_s=_ec.transport_retry_max_total_s,
             )
-            _subagent_policy = SubagentExecutionPolicy.from_app_state(
-                gate_state,
-                visible_tool_names=frozenset(tool_name(item) for item in visible_tools),
-                system_prompt_suffix=ctx.system_prompt_suffix,
-                workspace_scope_identity=(
-                    str(ctx.workspace_access.scope.primary_root)
-                    if ctx.workspace_access is not None
-                    else ""
-                ),
-            )
+
+            def select_subagent_tools() -> SubagentToolSelection:
+                source = holder.current() if holder is not None else None
+                if holder is not None and source is not None and source is not catalog:
+                    selected_registry, selected, selected_state = resolve_surface(source)
+                else:
+                    selected_registry = self._tool_registry or registry
+                    selected = (
+                        self._visible_tools if self._tool_registry is not None else visible_tools
+                    )
+                    selected_state = gate_state
+                pinned = tuple(tool for tool in selected if tool not in session_controls)
+                surface = ToolSurface(
+                    source.generation if source is not None else ctx.tool_surface_generation or 0,
+                    pinned,
+                    selected_registry.sources,
+                )
+                policy = SubagentExecutionPolicy.from_app_state(
+                    selected_state,
+                    visible_tool_names=frozenset(map(tool_name, pinned)),
+                    system_prompt_suffix=ctx.system_prompt_suffix,
+                    workspace_scope_identity=(
+                        str(ctx.workspace_access.scope.primary_root)
+                        if ctx.workspace_access is not None
+                        else ""
+                    ),
+                )
+                return SubagentToolSelection(surface, selected_registry, policy)
+
             definition_registry = self._build_definition_subagent_registry(
                 registry,
                 visible_tools,
@@ -1728,7 +1904,7 @@ class AgentTurnRunner:
             spawn_tool = make_spawn_subagents_tool(
                 parent_runner=ctx.runner,
                 parent_model=self._model_id,
-                all_tools=list(visible_tools),
+                tool_source=select_subagent_tools,
                 app_state=ctx.app_state,
                 processor=ctx.processor,
                 conv_store=ctx.conv_store,
@@ -1736,7 +1912,6 @@ class AgentTurnRunner:
                 conversation_id=ctx.conversation_id,
                 parent_run_id=self._intent_id,
                 conversation_journal=getattr(ctx.session_memory, "journal", None),
-                tool_registry=registry,
                 registry=definition_registry,
                 retry_config=_subagent_retry,
                 provider_options={
@@ -1747,7 +1922,6 @@ class AgentTurnRunner:
                 },
                 approval_svc=ctx.approval_svc,
                 workspace_access=ctx.workspace_access,
-                policy=_subagent_policy,
                 provider=_provider,
                 execution_settings=_ec,
                 subagent_settings=_subagent_settings,
@@ -1755,6 +1929,7 @@ class AgentTurnRunner:
                 allowed_models=_allowed_models,
             )
             registry.register(spawn_tool, source="builtin")
+            session_controls.append(spawn_tool)
             spawn_name = tool_name(spawn_tool)
             if (allowed_tool_names is None or spawn_name in allowed_tool_names) and not (
                 get_tool_capabilities(spawn_tool) & excluded_capabilities
@@ -1768,6 +1943,7 @@ class AgentTurnRunner:
                 )
                 for communication_tool in communication_tools:
                     registry.register(communication_tool, source="builtin")
+                    session_controls.append(communication_tool)
                     communication_name = tool_name(communication_tool)
                     if (
                         allowed_tool_names is None or communication_name in allowed_tool_names
@@ -1815,8 +1991,106 @@ class AgentTurnRunner:
             if description:
                 self._runtime_dynamic_blocks.insert(0, PromptBlock("AVAILABLE TOOLS", description))
 
+        capabilities = workflow_tools.catalog if workflow_tools is not None else None
+        capability_generation = capabilities.generation if capabilities is not None else -1
+
+        def capability_text(tools: Sequence[ToolLike]) -> str:
+            if capabilities is None or workflow_tools is None:
+                return ""
+            state = self._skill_state
+            mode = gate_state.active_mode() if gate_state is not None else None
+            blocked = mode.blocked_capabilities if mode is not None else frozenset()
+            names = {
+                name
+                for item in tools
+                for name in (tool_name(item),)
+                if not (get_tool_capabilities(item) & blocked)
+                and (state is None or state.permitted(name))
+            }
+            return capabilities.render(
+                workflow_tools,
+                state.callable_skills() if state is not None else (),
+                names,
+                ctx.text,
+            )
+
+        capability_block = capability_text(visible_tools)
+        if capability_block:
+            if prompt_contract is not None:
+                self._runtime_dynamic_blocks.append(
+                    PromptBlock("CAPABILITY CATALOG", capability_block)
+                )
+            else:
+                meta = cast("AgentMeta", vars(type(agent_instance))[AGENT_META])
+                meta.system = (meta.system or "") + f"\n\n{capability_block}"
+
         self._visible_tools = list(visible_tools)
+        if self._skill_state is not None:
+            self._skill_state.configure_tools(map(tool_name, visible_tools))
         self._tool_registry = registry
+        if holder is not None and isinstance(active_runner, SkillAwareRunner):
+            live_tools = holder
+
+            def refresh(meta: AgentMeta) -> bool:
+                nonlocal catalog, capability_generation
+                surface = live_tools.current()
+                generation = capabilities.generation if capabilities is not None else -1
+                if surface is catalog and generation == capability_generation:
+                    return False
+                updated, visible, _ = resolve_surface(surface)
+                visible_names = {tool_name(item) for item in visible}
+                description = updated.describe(
+                    excluded_names=[name for name in updated.names if name not in visible_names]
+                )
+                meta.tools = {}
+                populate_agent_tools(agent_instance, visible)
+                meta.system = (
+                    effective_base
+                    + (f"\n\n{agent_section}" if agent_section else "")
+                    + (f"\n\n{ctx.system_prompt_suffix}" if ctx.system_prompt_suffix else "")
+                    + (self._skill_suffix or "")
+                    + (f"\n\n{description}" if description else "")
+                )
+                block = capability_text(visible)
+                if block and prompt_contract is None:
+                    meta.system += f"\n\n{block}"
+                self._visible_tools = visible
+                self._tool_registry = updated
+                update_tool_presentations(visible)
+                if self._skill_state is not None:
+                    self._skill_state.configure_tools(visible_names)
+                catalog = surface
+                capability_generation = generation
+                return True
+
+            active_runner.refresh_tool_meta = refresh
+        recorded_generation = ctx.tool_surface_generation or 0
+        if (catalog is not None or ctx.tool_surface_generation is not None) and isinstance(
+            active_runner, SkillAwareRunner
+        ):
+            from agenthicc.kernel import Event
+
+            last_selection: tuple[int, tuple[str, ...]] | None = None
+
+            def observe(meta: AgentMeta) -> None:
+                nonlocal last_selection
+                generation = catalog.generation if catalog is not None else recorded_generation
+                selection = (generation, tuple(meta.tools))
+                if selection == last_selection:
+                    return
+                last_selection = selection
+                ctx.processor.emit_nowait(
+                    Event.create(
+                        "TurnToolSurfaceSelected",
+                        {
+                            "intent_id": self._intent_id,
+                            "tool_surface_generation": generation,
+                            "tool_names": list(selection[1]),
+                        },
+                    )
+                )
+
+            active_runner.observe_tool_meta = observe
         return agent_instance, active_runner
 
     def _build_definition_subagent_registry(
@@ -2716,7 +2990,14 @@ class AgentTurnRunner:
         # PRD-129 Phase 3: mark the turn's start + rollback point in the journal.
         # On a crash the absence of a matching turn_completed (written in the
         # finally below) flags this turn for resumption.
-        if _journal is not None and ctx.session_memory is not None:
+        if (
+            _journal is not None
+            and ctx.session_memory is not None
+            and (
+                self._workflow_return_key is None
+                or not _journal.has_started_turn(self._workflow_return_key)
+            )
+        ):
             from agenthicc.runners.workflow_execution_context import (
                 current_workflow_run_id,
             )
@@ -2729,6 +3010,29 @@ class AgentTurnRunner:
                 base_cursor=getattr(_journal, "cursor", None),
                 workflow_run_id=current_workflow_run_id(),
             )
+        seeded_workflow_return = self._workflow_return_key is not None and isinstance(
+            ctx.session_memory, JournaledShortTermMemory
+        )
+        if self._workflow_return_key is not None and isinstance(
+            ctx.session_memory, JournaledShortTermMemory
+        ):
+            incomplete = ctx.session_memory.journal.resume_state() if ctx.resume_turn_id else None
+            return_message = (
+                incomplete.user_message
+                if incomplete is not None and incomplete.turn_id == self._workflow_return_key
+                else agent_text
+            )
+            ctx.session_memory.add_user_once(return_message, message_id=self._workflow_return_key)
+        if self._workflow_return_key is not None and not any(
+            frame.delivered and frame.return_key == self._workflow_return_key
+            for frame in ctx.processor.get_state().workflow_frames
+        ):
+            from agenthicc.kernel import Event
+
+            await ctx.processor.emit(
+                Event.create("workflow_return_delivered", {"return_key": self._workflow_return_key})
+            )
+            await ctx.processor.flush_events()
 
         # PRD-182: retries must preserve the committed provider/tool prefix.
         # Step-aware lauren-ai runners advance an explicit checkpoint; older
@@ -2737,7 +3041,7 @@ class AgentTurnRunner:
         _attempt_number = [0]
         _partial_stream_text: list[str] = []
         _stream_seeded_user = [False]
-        _resume_existing_turn = [ctx.resume_turn_id is not None]
+        _resume_existing_turn = [ctx.resume_turn_id is not None or seeded_workflow_return]
         _safe_snapshot_includes_user = [False]
         _partial_fragment_recorded = [False]
         _output_attempt_start = [
@@ -3384,9 +3688,9 @@ async def _run_agent_turn(
     conv_store: ConversationStore | None = None,
     app_state: AppState | None = None,
     exec_cfg: ExecutionSettings | None = None,
-    skills: dict[str, SkillDef] | None = None,
+    skills: SurfaceHolder[Mapping[str, SkillDef]] | None = None,
     mention_cache: MentionCache | None = None,
-    project_plugin_tools: list[ToolLike] | None = None,
+    extra_tools: list[ToolLike] | None = None,
     mcp_registry: McpToolRegistry | McpSessionManager | None = None,
     active_agent: str | None = None,
     subagent_registry: "SubagentTypeRegistry | None" = None,
@@ -3412,10 +3716,12 @@ async def _run_agent_turn(
     browser_manager: object | None = None,
     workspace_access: WorkspaceAccessPolicy | None = None,
     provider_diagnostic_context: dict[str, str | int] | None = None,
+    tool_surface: ToolSurfaceHolder | None = None,
+    tool_surface_generation: int | None = None,
 ) -> None:
     """Thin shim — constructs AgentTurnContext and delegates to AgentTurnRunner.
 
-    All existing call sites continue to work without modification.
+    The session's live skill holder is shared with the agent and its workers.
     """
     if session_memory is None:
         from lauren_ai._memory import ShortTermMemory as _ShortTermMemory
@@ -3452,7 +3758,9 @@ async def _run_agent_turn(
         skills=skills,
         skill_permissions=skill_permissions,
         mention_cache=mention_cache,
-        project_plugin_tools=project_plugin_tools,
+        extra_tools=extra_tools,
+        tool_surface=tool_surface,
+        tool_surface_generation=tool_surface_generation,
         mcp_registry=mcp_registry,
         active_agent=active_agent,
         agent_spec=agent_spec,
@@ -3479,3 +3787,10 @@ async def _run_agent_turn(
         provider_diagnostic_context=provider_diagnostic_context,
     )
     await AgentTurnRunner(ctx).run()
+
+    from agenthicc.runners.workflow_execution_context import current_workflow_run_id
+    from agenthicc.workflows.stack_tools import WorkflowHandoff, current_workflow_tools
+
+    scope = current_workflow_tools()
+    if scope is not None and scope.pending is not None and current_workflow_run_id() is not None:
+        raise WorkflowHandoff()

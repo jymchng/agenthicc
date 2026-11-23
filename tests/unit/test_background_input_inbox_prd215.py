@@ -837,6 +837,8 @@ def test_background_command_router_uses_target_registry_and_rejects_ui_only_comm
 
     from agenthicc.background.worker import _dispatch_background_command
     from agenthicc.commands import build_builtin_registry
+    from agenthicc.workflows.registry import WorkflowRegistry
+    from tests.session_fakes import session_context
 
     events: list[tuple[str, dict[str, object], str | None]] = []
 
@@ -846,13 +848,12 @@ def test_background_command_router_uses_target_registry_and_rejects_ui_only_comm
         ) -> None:
             events.append((kind, payload, event_id))
 
-    session = SimpleNamespace(
+    session = session_context(
         cmd_registry=build_builtin_registry(),
         model_label="openai/test-model",
         session_id="target-session",
         cfg=AgenthiccConfig(),  # /status reads it for the pre-flight rows (TUX-03)
-        skills={},
-        workflow_registry=object(),
+        workflow_registry=WorkflowRegistry(),
         mode_manager=object(),
         terminal_manager=None,
         app_state=SimpleNamespace(conversation=Conversation()),

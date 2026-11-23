@@ -82,7 +82,7 @@ async def test_a_message_is_delivered_at_the_next_tool_boundary(running_processo
             "initial request",
             runner,
             running_processor,
-            project_plugin_tools=[inspect_item],
+            extra_tools=[inspect_item],
             next_queued_message=session._next_queued_message,
         )
     )
@@ -144,7 +144,7 @@ async def test_a_message_joins_a_running_workflow_at_the_next_tool_boundary(
             "implement goal 3",
             runner,
             running_processor,
-            project_plugin_tools=[inspect_item],
+            extra_tools=[inspect_item],
             next_queued_message=session._next_queued_message,
         )
     )

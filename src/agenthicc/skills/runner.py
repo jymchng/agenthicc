@@ -15,7 +15,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from agenthicc.skills.loader import SkillDef
+    from collections.abc import Mapping
+    from agenthicc.skills.loader import SkillDef, SkillModelContent
 
 __all__ = [
     "render_context_commands",
@@ -84,7 +85,7 @@ def maybe_load_reference(body: str, skill_dir: Path) -> str:
 
 def find_matching_skills(
     user_message: str,
-    skills: dict[str, SkillDef],
+    skills: Mapping[str, SkillDef],
 ) -> list[SkillDef]:
     """Return skills whose suggested_topics overlap with words in user_message."""
     words = set(re.findall(r"\w+", user_message.lower()))
@@ -104,11 +105,17 @@ def process_skill_body(
     args: list[str],
     session_id: str = "",
     effort: str = "medium",
+    *,
+    content: SkillModelContent | None = None,
 ) -> str:
     """Produce the final skill body by running all processing steps in order."""
-    body = skill.body
+    body = content.body if content is not None else skill.body
     body = render_context_commands(body)
     body = substitute_args(body, args, session_id=session_id, effort=effort)
-    body = maybe_load_reference(body, skill.path)
-    body += load_template(skill.path)
+    if content is None:
+        return maybe_load_reference(body, skill.path) + load_template(skill.path)
+    reference = content.reference if content.reference is not None else "[reference.md not found]"
+    body = body.replace("{reference}", reference)
+    if content.template is not None:
+        body += "\n\n---\n\n" + content.template.strip()
     return body

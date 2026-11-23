@@ -1135,15 +1135,13 @@ async def _run_direct_turn(
         conv_store=app_state.conversation,
         app_state=app_state,
         exec_cfg=agent.exec_cfg,
-        skills=session.skills,
+        skills=session.reload.skills,
         skill_permissions=cfg.agents.skill_permissions_for(agent.spec.name),
         mention_cache=session.mention_cache,
         # AGI-03: the same session tools as a foreground turn, so a background
         # agent can ask the operator (ask_user → the inbox) and use memory.
-        project_plugin_tools=[
-            *list(getattr(session.project_plugins, "all_tools", ())),
-            *session_tools(session),
-        ],
+        extra_tools=list(session_tools(session)),
+        tool_surface=session.reload.tools,
         mcp_registry=session.mcp_registry,
         subagent_registry=session.subagent_registry,
         active_agent=agent.spec.name,
@@ -1377,7 +1375,7 @@ def _dispatch_background_command(
         console=console,
         config=session.cfg,
         session_id=session.session_id,
-        skills=session.skills,
+        skills=session.reload.skills.current().value,
         command_registry=registry,
         workflow_registry=session.workflow_registry,
         mode_manager=session.mode_manager,

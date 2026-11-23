@@ -79,6 +79,137 @@ def _intent_status_changed(state: AppState, event: Event) -> tuple[AppState, lis
     ]
 
 
+def _turn_tool_surface_selected(state: AppState, event: Event) -> tuple[AppState, list[Effect]]:
+    old = state.intents.get(_payload_str(event.payload, "intent_id"))
+    if old is None:
+        return state, []
+    generation = event.payload.get("tool_surface_generation")
+    names = event.payload.get("tool_names")
+    if (
+        type(generation) is not int
+        or generation < 0
+        or not isinstance(names, list)
+        or any(not isinstance(name, str) for name in names)
+    ):
+        raise ValueError("TurnToolSurfaceSelected requires a generation and tool names")
+    return state.with_intent(
+        replace(
+            old,
+            metadata={
+                **old.metadata,
+                "tool_surface_generation": generation,
+                "tool_names": list(names),
+            },
+        )
+    ), []
+
+
+def _workflow_frame_pushed(state: AppState, event: Event) -> tuple[AppState, list[Effect]]:
+    from agenthicc.kernel.state import WorkflowFrameRecord
+
+    payload = event.payload
+    frame_id = _payload_str(payload, "frame_id")
+    if any(frame.frame_id == frame_id for frame in state.workflow_frames):
+        return state, []
+    parent = _payload_optional_str(payload, "parent_frame_id")
+    depth = payload.get("depth")
+    if type(depth) is not int or depth < 0:
+        raise ValueError("A workflow frame needs a nonnegative integer depth.")
+    status = _payload_str(payload, "status", default="running")
+    if status not in {"running", "paused", "suspended"}:
+        raise ValueError("Invalid active workflow frame status.")
+    record = WorkflowFrameRecord(
+        frame_id,
+        parent,
+        _payload_str(payload, "workflow_name"),
+        _payload_str(payload, "run_id"),
+        _payload_str(payload, "origin"),
+        depth,
+        _payload_str(payload, "intent_digest"),
+        status=status,
+        phase=_payload_optional_str(payload, "phase"),
+    )
+    previous = tuple(
+        replace(frame, status="suspended") if frame.frame_id == parent else frame
+        for frame in state.workflow_frames
+    )
+    return replace(state, workflow_frames=(*previous, record)), []
+
+
+def _workflow_frame_state_changed(state: AppState, event: Event) -> tuple[AppState, list[Effect]]:
+    frame_id = _payload_str(event.payload, "frame_id")
+    status = _payload_str(event.payload, "status")
+    if status not in {"running", "paused", "suspended"}:
+        raise ValueError("Invalid active workflow frame status.")
+    phase = _payload_optional_str(event.payload, "phase")
+    workflow_name = _payload_str(event.payload, "workflow_name")
+    run_id = _payload_str(event.payload, "run_id")
+    parent = _payload_optional_str(event.payload, "parent_frame_id")
+    depth = event.payload.get("depth")
+    if type(depth) is not int or depth < 0:
+        raise ValueError("A workflow frame needs a nonnegative integer depth.")
+    return replace(
+        state,
+        workflow_frames=tuple(
+            replace(
+                frame,
+                status=status,
+                phase=phase,
+                workflow_name=workflow_name,
+                run_id=run_id,
+                parent_frame_id=parent,
+                depth=depth,
+            )
+            if frame.frame_id == frame_id and not frame.summary_digest
+            else frame
+            for frame in state.workflow_frames
+        ),
+    ), []
+
+
+def _workflow_frame_returned(state: AppState, event: Event) -> tuple[AppState, list[Effect]]:
+    payload = event.payload
+    frame_id = _payload_str(payload, "frame_id")
+    record = next((frame for frame in state.workflow_frames if frame.frame_id == frame_id), None)
+    if record is None or record.summary_digest:
+        return state, []
+    status = _payload_str(payload, "status")
+    if status not in {"completed", "failed", "abandoned"}:
+        raise ValueError("Invalid workflow return status.")
+    names = payload.get("artifact_names")
+    if not isinstance(names, list) or any(not isinstance(item, str) for item in names):
+        raise ValueError("A workflow return needs artifact names.")
+    finished = replace(
+        record,
+        status=status,
+        phase=None,
+        summary_digest=_payload_str(payload, "summary_digest"),
+        artifact_names=tuple(names),
+    )
+    frames = tuple(
+        finished
+        if frame.frame_id == frame_id
+        else replace(frame, status="running")
+        if frame.frame_id == record.parent_frame_id
+        else frame
+        for frame in state.workflow_frames
+    )
+    return replace(state, workflow_frames=frames), []
+
+
+def _workflow_return_delivered(state: AppState, event: Event) -> tuple[AppState, list[Effect]]:
+    key = _payload_str(event.payload, "return_key")
+    return replace(
+        state,
+        workflow_frames=tuple(
+            replace(frame, delivered=True)
+            if frame.return_key == key and frame.summary_digest
+            else frame
+            for frame in state.workflow_frames
+        ),
+    ), []
+
+
 # ── WorkflowRun (live-session events, PRD-94) ────────────────────────────
 
 
@@ -181,9 +312,23 @@ def _tool_registered(state: AppState, event: Event) -> tuple[AppState, list[Effe
     return state.with_tool(reg), []
 
 
+def _session_reloaded(state: AppState, event: Event) -> tuple[AppState, list[Effect]]:
+    generation = event.payload.get("generation")
+    if not isinstance(generation, int) or isinstance(generation, bool) or generation <= 0:
+        raise ValueError("SessionReloaded generation must be a positive integer")
+    if generation <= state.reload_generation:
+        return state, []
+    return replace(state, reload_generation=generation), []
+
+
 _HANDLERS: dict[str, ReducerFn] = {
     "IntentCreated": _intent_created,
     "IntentStatusChanged": _intent_status_changed,
+    "TurnToolSurfaceSelected": _turn_tool_surface_selected,
+    "workflow_frame_pushed": _workflow_frame_pushed,
+    "workflow_frame_state_changed": _workflow_frame_state_changed,
+    "workflow_frame_returned": _workflow_frame_returned,
+    "workflow_return_delivered": _workflow_return_delivered,
     # PRD-94: live-session workflow run tracking
     "WorkflowRunStarted": _workflow_run_started,
     "WorkflowPhaseCompleted": _workflow_phase_completed,
@@ -192,6 +337,7 @@ _HANDLERS: dict[str, ReducerFn] = {
     "WorkflowRunResumed": _workflow_run_resumed,
     "WorkflowRunDiscarded": _workflow_run_discarded,
     "ToolRegistered": _tool_registered,
+    "SessionReloaded": _session_reloaded,
 }
 
 #: Event types that change kernel state, each through its handler above.

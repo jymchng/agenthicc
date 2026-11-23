@@ -45,7 +45,7 @@ once that date has passed:
 ```
 
 The six bundled workflow runners that subclass `CodePlanRunner` but drive their
-own state machine (`copy_website`, `goal_flow`, `make_agenthicc_tool`,
+own state machine (`copy_website`, `goal_flow`, `create_tools`,
 `make_book`, `reconstruct_site/phase_impl` and `site_imitate`) carry the only
 such directives: their `run()`, `resume()` and phase signatures differ from
 `CodePlanRunner`'s. PRD-250 WS-4.2 replaces that inheritance with a generic

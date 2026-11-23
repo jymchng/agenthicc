@@ -18,7 +18,7 @@ import re
 import time
 from dataclasses import field
 from collections.abc import Collection, Iterable, Mapping
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from agenthicc.tools.base import tool_name
 from agenthicc.tools.capabilities import ToolCapability, get_tool_capabilities
@@ -118,6 +118,20 @@ def phase_transition_instruction(
 
 
 # ── WorkflowParams — per-workflow tunable parameters (PRD-111) ───────────────
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class WorkflowInvocation:
+    """Entry, delegation and publication declared by a workflow plugin."""
+
+    when_to_use: str = ""
+    returns: str = ""
+    agent_callable: bool = False
+    subagent_eligible: bool = False
+    interactive: bool = False
+    reentrant: bool = False
+    allows_child_workflows: bool = False
+    publishes: tuple[Literal["tool", "skill", "workflow", "command"], ...] = ()
 
 
 @dataclasses.dataclass
@@ -417,6 +431,7 @@ class WorkflowPlugin:
     description: str = ""
     mode_bindings: list[str] = []
     phases: list[PhaseSpec] = []
+    invocation: WorkflowInvocation = WorkflowInvocation()
     max_total_phase_runs: int = 0
     """Hard ceiling on total phase runs (0 = no cap)."""
     required_startup_phases: tuple[str, ...] = ()

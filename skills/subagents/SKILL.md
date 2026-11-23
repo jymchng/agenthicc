@@ -120,6 +120,12 @@ aggregate.
 
 ---
 
+A task can include `workflow` and optional string-valued `params`.
+Choose an eligible, noninteractive workflow and a type whose permissions
+cover its phases. Check the resulting `workflow_returns` for each worker's
+phases and artifact states. The worker stages authored files in its worktree.
+The parent session owns publication.
+
 ## Isolation model
 
 The worker isolation rules are stated in the tool docstring (`subagents/tool.py:105-115`)

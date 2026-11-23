@@ -2,9 +2,9 @@
 
 Extensions are discovered from project-local `.agenthicc/` directories and
 user-global `~/.agenthicc/` directories. Project definitions generally shadow
-user definitions with the same name. Python extensions are executable code, so
-a project extension is imported only after you have reviewed and trusted its
-exact content — see [Trust and dependencies](#trust-and-dependencies).
+user definitions with the same name. Project Python extensions execute only
+when the trust store records their exact content. Operators and the
+authored-extension publisher use that same trust store.
 
 ## Trust and dependencies
 
@@ -43,6 +43,29 @@ literal `DEPENDENCIES = ["package>=1.0"]` or a `<stem>.requirements.txt` file
 beside it. Agenthicc reads both without executing the plugin, never installs
 them, and skips a plugin whose requirements are missing — so a trusted plugin is
 imported exactly once, after its dependencies are known to be present.
+
+## Authored extensions
+
+An authoring workflow submits a complete set with a runner-owned validation
+verdict. Under the default `auto` policy, the session checks the exact bytes,
+installs the set in the project, records trust for Python files, and reloads
+the affected surfaces. The session announces the published set and its digest.
+The same capability checks and call-time approvals apply when an authored
+tool runs. See [Security](security.md#authored-publication).
+
+Discovery in other sessions skips provisional installs. A later publication
+reconciles any interrupted install using the last committed provenance and
+trust records.
+
+Set `security.authored_extension_policy = "stage_only"` to approve the exact
+staged bytes yourself. `/authored list` shows the run ID. Use
+`/authored approve <run-id>` to publish it or `/authored reject <run-id>` to discard
+it. The CLI has the same actions under `agenthicc authored`.
+
+`/authored diff <name>` shows the changed lines. Use
+`/authored rollback <name> [digest]` to recover an approved version or
+`/authored remove <name>` to remove an extension. Tools that share a module
+are updated and rolled back together.
 
 ## Tools
 
@@ -114,6 +137,20 @@ resume rules.
 
 ## Skills
 
+Use `/workflow call create_skills <intent>` to author several skills in one
+run. The agent can enter it with `enter_workflow`. It writes the planned
+`SKILL.md` and Markdown support files through a bounded staging writer. The
+skill loader verifies the metadata and the session checks trigger collisions
+before publication. Each skill's tools are limited to the caller's scope.
+
+In auto mode, the session publishes the whole set and updates the skill
+picker and the model's `list_skills` inventory before returning. Under the
+stage-only policy, `/authored approve <run-id>` publishes the reviewed set.
+`/authored reject <run-id>` discards it. Model overrides require a reason in
+the plan and restrict activation to the operator. Advisory diagnostics for
+risky instructions are recorded with the published skill.
+
+
 Skills are directories with `SKILL.md` metadata and body text. They can add
 tools, prompt instructions, and explicit trigger behaviour. The loader supports
 project and user scopes; the project copy wins. Discovery is deterministic and
@@ -183,6 +220,18 @@ skills and any non-informational discovery diagnostics; a failed scan leaves
 the current session unchanged. The former `/skill-name` spelling is not
 accepted.
 
+An agent can also use `list_skills` to search the live inventory and `use_skill`
+to read instructions during a turn. Agents see skills added by a session reload
+on their next call. Set `disable_model_invocation: true` to reserve a skill for
+human activation. A skill that declares `model` also requires `$skill-name`
+activation. `maxTurnDepth` applies only to `$skill-name`, and
+`disallowAutoTriggering` controls matching on user text.
+
+When an agent uses a skill, `tools` and `disabledTools` can limit which tools it
+can call for the rest of the turn. Every call continues to follow the active
+mode and its approval rules. The returned instructions identify their source
+and digest. Loading the same skill again in the turn returns its digest.
+
 ## Commands
 
 Command plugins expose `COMMAND` and/or `COMMANDS` and are loaded from command directories. A
@@ -193,11 +242,24 @@ precedence, and reload behavior. `/workflow` and
 `/compact` demonstrate the session-stateful case that requires a built-in
 interceptor.
 
-The default `/create-tools <instructions>` and `/create-commands <instructions>`
-skills guide the agent to author these extensions using the existing lauren-ai
-tool convention and unified command registry. They do not establish trust or
-replace review of executable project code, and they do not replace capability,
-approval, testing, or documentation work.
+The `create_tools` workflow stages project tools for deterministic validation
+and session-owned publication. The `/create-commands <instructions>` skill
+guides the agent through the unified command registry. See the
+[tool authoring guide](tools.md#author-tools-with-create_tools).
+
+The `create_workflow` runner gives its authoring agent a bounded package
+writer scoped to the run’s pending candidate. Deterministic validation
+and model review must both approve the same content digest. See the
+[workflow authoring guide](workflows.md#budgets) for repair and resume.
+
+## Refresh a live session
+
+Use `/reload` to refresh tools, skills, workflows and commands. Pass surface
+names to refresh a subset. The service performs discovery off the event loop
+and skips untrusted code. It reports bounded diagnostics for trust, import
+and dependency failures and namespace conflicts. Tool and command entry
+modules reload from current source bytes even when their timestamp and size
+match the previous version.
 
 ## MCP servers
 

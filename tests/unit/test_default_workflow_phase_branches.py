@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from types import MappingProxyType
+from agenthicc.tools.surface import ToolSurface, ToolSurfaceHolder
+from agenthicc.runners.reload import SurfaceHolder
 import asyncio
 from types import SimpleNamespace
 
@@ -45,8 +48,8 @@ def _config():
             ),  # type: ignore[arg-type]
             approval_svc=Approval(),  # type: ignore[arg-type]
             cfg=cfg,
-            skills={},
-            plugin_tools=[],
+            skills=SurfaceHolder(MappingProxyType({})),
+            tool_surface=ToolSurfaceHolder(ToolSurface(0, ())),
             mcp_registry=None,
             mention_cache=SimpleNamespace(),  # type: ignore[arg-type]
             agents_registry=SimpleNamespace(get_role_system_prompt=lambda role: f"role:{role}"),  # type: ignore[arg-type]
@@ -72,7 +75,7 @@ class ParallelFailure(WorkflowPlugin):
 
 
 async def _call_named_tools(kwargs: dict[str, object], name: str, arg: str) -> None:
-    tools = kwargs.get("project_plugin_tools", [])
+    tools = kwargs.get("extra_tools", [])
     for tool in tools:  # type: ignore[union-attr]
         if getattr(tool, "__name__", "") == name:
             await tool(arg)  # type: ignore[operator]
@@ -89,7 +92,7 @@ async def test_phase_specific_continuations_and_results(monkeypatch: pytest.Monk
         suffix = kwargs.get("system_prompt_suffix")
         if isinstance(suffix, str):
             prompts.append(suffix)
-        tools = kwargs.get("project_plugin_tools", [])
+        tools = kwargs.get("extra_tools", [])
         assert any(getattr(tool, "__name__", "") == "ask_user" for tool in tools)  # type: ignore[union-attr]
         await _call_named_tools(kwargs, "request_plan_approval", "plan")
         await _call_named_tools(kwargs, "finalize_plan", "plan")
@@ -402,7 +405,11 @@ async def test_workflow_loop_unknown_parallel_cancel_and_human_paths(
 
     filtered_runner = WorkflowRunner(
         Branches,
-        replace(config, plugin_tools=[writes, plain], mcp_registry=BadMcp()),
+        replace(
+            config,
+            tool_surface=ToolSurfaceHolder(ToolSurface(0, tuple([writes, plain]))),
+            mcp_registry=BadMcp(),
+        ),
         mode,
     )
     filtered = filtered_runner._filter_tools(

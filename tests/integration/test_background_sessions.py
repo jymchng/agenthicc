@@ -27,7 +27,7 @@ from agenthicc.background.worker import (
 )
 from agenthicc.background.settings import BackgroundSettings
 from agenthicc.kernel import Event
-from agenthicc.tui.conversation_store import ConversationEvent
+from agenthicc.tui.conversation_store import AppState as TUIAppState, ConversationEvent
 from tests.session_fakes import session_context
 
 pytestmark = pytest.mark.integration
@@ -114,16 +114,16 @@ class _AppState:
 
 
 class _Session:
-    def __init__(self) -> None:
+    def __init__(self, app_state: TUIAppState | None = None) -> None:
         from agenthicc.agents.registry import build_agents_registry
         from agenthicc.commands import build_builtin_registry
 
         # Start from every SessionContext field at its default, as the worker
         # reads them directly; the fields below are the ones this fake drives.
-        vars(self).update(vars(session_context()))
+        vars(self).update(vars(session_context(app_state=app_state)))
         self.session_id = "worker-session"
         self.processor = _Processor()
-        self.app_state = _AppState()
+        self.app_state = app_state if app_state is not None else _AppState()
         self.agents_registry = build_agents_registry(load_external=False)
         self.agent_runner = object()
         # A real configuration: ``/status`` reads it for the pre-flight rows (TUX-03).
@@ -139,7 +139,6 @@ class _Session:
         self.workflow_registry = object()
         self.terminal_manager = None
         self.mention_cache = object()
-        self.project_plugins = SimpleNamespace(all_tools=[])
         self.mcp_registry = None
         self.approval_svc = object()
         self.memory_router = None
@@ -2199,7 +2198,6 @@ async def test_project_workflow_runs_through_background_worker(monkeypatch, tmp_
         encoding="utf-8",
     )
 
-    from agenthicc.tui.conversation_store import AppState as TUIAppState
     from agenthicc.workflows.registry import build_workflow_registry
 
     registry = build_workflow_registry(
@@ -2222,8 +2220,7 @@ async def test_project_workflow_runs_through_background_worker(monkeypatch, tmp_
             artifact_dir=str(artifact),
         )
     )
-    fake_session = _Session()
-    fake_session.app_state = TUIAppState.create()
+    fake_session = _Session(TUIAppState.create())
     fake_session.workflow_registry = registry
     fake_session.agents_registry = object()
     fake_session.mode_manager = SimpleNamespace(active_name="Safe")

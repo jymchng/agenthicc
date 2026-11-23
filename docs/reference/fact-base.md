@@ -200,7 +200,7 @@ command-shaped entry point rather than entries in `BUILTIN_COMMANDS`:
 
 | Command | Evidence |
 |---|---|
-| `/create-tools <instructions>` | `src/agenthicc/skills/bootstrap.py:222` |
+| `/workflow call create_tools <intent>` | `src/agenthicc/workflows/create_tools/definition.py` |
 | `/create-commands <instructions>` | `src/agenthicc/skills/bootstrap.py:269` |
 
 ---
@@ -216,7 +216,7 @@ Declared in the lazy builtin table, each entry as
 | `copy_website` | `agenthicc.workflows.copy_website` | `loader.py:50` |
 | `create_workflow` | `agenthicc.workflows.create_workflow.definition` | `loader.py:53` |
 | `goal_flow` | `agenthicc.workflows.goal_flow.runner` | `loader.py:58` |
-| `make_agenthicc_tool` | `agenthicc.workflows.make_agenthicc_tool.runner` | `loader.py:61` |
+| `create_tools` | `agenthicc.workflows.create_tools.definition` | `loader.py:72` |
 | `make_book` | `agenthicc.workflows.make_book.runner` | `loader.py:66` |
 | `reconstruct_site` | `agenthicc.workflows.reconstruct_site` | `loader.py:71` |
 | `site_imitate` | `agenthicc.workflows.site_imitate.runner` | `loader.py:74` |
@@ -326,7 +326,7 @@ skills against anything else produces files that silently lose their metadata.
 
 | Rule | Constraint | Evidence |
 |---|---|---|
-| Allowed frontmatter fields | `name`, `description`, `author`, `tags`, `suggestedTopics`, `disallowAutoTriggering`, `tools`, `disabledTools`, `maxTurnDepth`, `model`, `aliases`, `allowedAgents`, `deniedAgents`, `permissions`, `source`, `version` | `src/agenthicc/skills/loader.py:31-50` |
+| Allowed frontmatter fields | `name`, `description`, `author`, `tags`, `suggestedTopics`, `disallowAutoTriggering`, `disable_model_invocation`, `tools`, `disabledTools`, `maxTurnDepth`, `model`, `aliases`, `allowedAgents`, `deniedAgents`, `permissions`, `source`, `version` | `src/agenthicc/skills/loader.py:31-50` |
 | Field aliases accepted | e.g. `suggested_topics`/`topics`, `alias`, `allowed_agents`/`allowAgents`/`allow_agents` | `loader.py:51-59` |
 | Canonical name length limit | 64 | `loader.py:28` |
 | Description length limit | 1 536 | `loader.py:29` |
@@ -446,7 +446,7 @@ Checked specifically because they are counter-intuitive. Do not delete these.
 
 | Claim | Verification |
 |---|---|
-| `/create-tools` and `/create-commands` exist | Provided as bootstrap skills, `src/agenthicc/skills/bootstrap.py:222,269` |
+| `/create-commands` | Bootstrap skill, `src/agenthicc/skills/bootstrap.py` |
 | `/bg`, `/background` and `/detach` exist | `/bg` and `/detach` are aliases of `/background`, registered in `src/agenthicc/commands/builtins.py` and intercepted by `TUISession.dispatch_slash` |
 | A TUI command picker sees `/workflow` and `/compact` | Both are registry entries with `handler=None`, intercepted in `TUISession.route()` |
 | `name_that_ui.py` exists | Present at `src/agenthicc/workflows/name_that_ui.py` — older notes said it was missing |

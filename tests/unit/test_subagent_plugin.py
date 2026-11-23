@@ -7,6 +7,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from agenthicc.subagents.tool import SubagentToolSelection
+from agenthicc.tools.surface import ToolSurface
 from agenthicc.agents.definitions import AgentSpec, DefinitionError, parse_definition
 from agenthicc.agents.registry import AgentsRegistry, CatalogEntry
 from agenthicc.runners.agent_turn import AgentTurnRunner
@@ -455,7 +457,11 @@ def test_depth_tier_narrowing_is_accepted_and_widening_is_rejected() -> None:
 
     assert callable(
         make_spawn_subagents_tool(
-            object(), "model-a", [], registry=registry, subagent_settings=narrowed
+            object(),
+            "model-a",
+            SubagentToolSelection(ToolSurface(0, tuple([]))),
+            registry=registry,
+            subagent_settings=narrowed,
         )
     )
 
@@ -464,7 +470,11 @@ def test_depth_tier_narrowing_is_accepted_and_widening_is_rejected() -> None:
     )
     with pytest.raises(ValueError, match="grants tools outside the type or inherited profile"):
         make_spawn_subagents_tool(
-            object(), "model-a", [], registry=registry, subagent_settings=widened_tools
+            object(),
+            "model-a",
+            SubagentToolSelection(ToolSurface(0, tuple([]))),
+            registry=registry,
+            subagent_settings=widened_tools,
         )
 
     widened_models = SubagentSettings(
@@ -473,7 +483,11 @@ def test_depth_tier_narrowing_is_accepted_and_widening_is_rejected() -> None:
     )
     with pytest.raises(ValueError, match="grants models outside the type or inherited profile"):
         make_spawn_subagents_tool(
-            object(), "model-a", [], registry=registry, subagent_settings=widened_models
+            object(),
+            "model-a",
+            SubagentToolSelection(ToolSurface(0, tuple([]))),
+            registry=registry,
+            subagent_settings=widened_models,
         )
 
 
@@ -499,7 +513,9 @@ def test_definition_description_reaches_spawn_tool_description_and_enum() -> Non
     assert spec is not None
     assert spec.description == "Audit release notes against the merged changes."
 
-    tool = make_spawn_subagents_tool(object(), "model-a", [], registry=registry)
+    tool = make_spawn_subagents_tool(
+        object(), "model-a", SubagentToolSelection(ToolSurface(0, tuple([]))), registry=registry
+    )
     metadata = object.__getattribute__(tool, "__lauren_ai_tool__")
     description = metadata.description
     assert (

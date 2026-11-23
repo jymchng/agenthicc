@@ -16,6 +16,17 @@ from agenthicc.workflows.registry import WorkflowRegistry
 
 pytestmark = pytest.mark.unit
 
+_WORKFLOW_OPTIONS = [
+    "/workflow call",
+    "/workflow code_review",
+    "/workflow docs",
+    "/workflow reload",
+    "/workflow reset",
+    "/workflow resume",
+    "/workflow return --abandon",
+    "/workflow stack",
+]
+
 
 class _CodeWorkflow(WorkflowPlugin):
     name = "code_review"
@@ -41,14 +52,10 @@ def _trigger() -> SlashCommandTrigger:
 def test_workflow_argument_completion_lists_registered_names() -> None:
     matches = _trigger().get_matches("workflow ", TriggerContext(cwd=Path(".")))
 
-    assert [match.value for match in matches] == [
-        "/workflow code_review",
-        "/workflow docs",
-        "/workflow reset",
-        "/workflow resume",
-    ]
-    assert matches[0].label == "/workflow code_review"
-    assert matches[0].detail == "Review a code change"
+    assert [match.value for match in matches] == _WORKFLOW_OPTIONS
+    code_review = matches[1]
+    assert code_review.label == "/workflow code_review"
+    assert code_review.detail == "Review a code change"
 
 
 def test_workflow_argument_completion_filters_by_name_prefix() -> None:
@@ -77,7 +84,15 @@ def test_workflow_completion_tracks_registry_replacement() -> None:
         match.value for match in trigger.get_matches("workflow ", TriggerContext(cwd=Path(".")))
     ]
 
-    assert values == ["/workflow docs", "/workflow reset", "/workflow resume"]
+    assert values == [
+        "/workflow call",
+        "/workflow docs",
+        "/workflow reload",
+        "/workflow reset",
+        "/workflow resume",
+        "/workflow return --abandon",
+        "/workflow stack",
+    ]
 
 
 async def test_picker_space_enters_workflow_name_completion() -> None:
@@ -98,14 +113,12 @@ async def test_picker_space_enters_workflow_name_completion() -> None:
     overlay = session.picker
     assert isinstance(overlay, TriggerPickerOverlay)
     assert overlay.fragment == "workflow "
-    assert [match.value for match in overlay.matches] == [
-        "/workflow code_review",
-        "/workflow docs",
-        "/workflow reset",
-        "/workflow resume",
-    ]
+    assert [match.value for match in overlay.matches] == _WORKFLOW_OPTIONS
 
     await session._dispatch(Key.CHAR, "c")
+    assert [match.value for match in overlay.matches] == ["/workflow call", "/workflow code_review"]
+
+    await session._dispatch(Key.CHAR, "o")
     assert [match.value for match in overlay.matches] == ["/workflow code_review"]
 
     await session._dispatch(Key.TAB, "")
@@ -113,10 +126,18 @@ async def test_picker_space_enters_workflow_name_completion() -> None:
     assert session._buf.text == "/workflow code_review"
 
 
-def test_workflow_argument_completion_requires_a_live_registry() -> None:
+def test_workflow_controls_are_available_without_a_live_registry() -> None:
     trigger = SlashCommandTrigger(build_builtin_registry())
+    matches = trigger.get_matches("workflow ", TriggerContext(cwd=Path(".")))
 
-    assert trigger.get_matches("workflow ", TriggerContext(cwd=Path("."))) == []
+    assert [match.value for match in matches] == [
+        "/workflow call",
+        "/workflow reload",
+        "/workflow reset",
+        "/workflow resume",
+        "/workflow return --abandon",
+        "/workflow stack",
+    ]
 
 
 def test_command_completion_factory_uses_the_same_picker_continuation() -> None:

@@ -1615,6 +1615,7 @@ class SecuritySettings:
     #: host instead of only ``network_allow_list``. Private and loopback
     #: addresses stay blocked either way (TOOLR-05).
     network_allow_all: bool = False
+    authored_extension_policy: Literal["auto", "stage_only"] = "auto"
 
 
 @dataclass
@@ -1922,6 +1923,7 @@ class AgenthiccConfig:
     loops: LoopSettings = field(default_factory=LoopSettings)
     ui: UISettings = field(default_factory=UISettings)
     subagents: SubagentSettings = field(default_factory=SubagentSettings)
+    workflow_stack_max_depth: int = 4
 
     def to_system_settings(self) -> SystemSettings:
         """Reflect execution settings into the kernel ``SystemSettings``."""
@@ -2108,6 +2110,7 @@ class AgenthiccConfig:
             "security": vars(self.security).copy(),
             "tools": tool_values,
             "plugins": vars(self.plugins).copy(),
+            "workflows": {"max_stack_depth": self.workflow_stack_max_depth},
             "subagents": {
                 "default_model": self.subagents.default_model,
                 "default_effort": self.subagents.default_effort,
@@ -2740,10 +2743,14 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
     )
 
     se = _section(data.get("security"))
+    authored_policy = se.get("authored_extension_policy", "auto")
+    if authored_policy not in ("auto", "stage_only"):
+        raise ValueError("security.authored_extension_policy must be 'auto' or 'stage_only'")
     security = SecuritySettings(
         allowed_paths=_as_string_list(se.get("allowed_paths"), ("/workspace",)),
         network_allow_list=_as_string_list(se.get("network_allow_list")),
         network_allow_all=_as_bool(se.get("network_allow_all"), False),
+        authored_extension_policy="stage_only" if authored_policy == "stage_only" else "auto",
     )
 
     beh = _section(data.get("behaviour"))
@@ -2952,11 +2959,18 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
         isolation=cast(Literal["auto", "worktree", "shared"], isolation),
     )
 
-    # [workflows] section — dict[workflow_name, dict[str, Any]] (PRD-111)
+    workflow_options = _section(data.get("workflows"))
+    workflow_stack_max_depth = workflow_options.get("max_stack_depth", 4)
+    if (
+        isinstance(workflow_stack_max_depth, bool)
+        or not isinstance(workflow_stack_max_depth, int)
+        or workflow_stack_max_depth < 0
+    ):
+        raise ValueError("workflows.max_stack_depth must be a nonnegative integer")
     workflows: dict[str, dict[str, object]] = {
         str(name): _section(params)
-        for name, params in _section(data.get("workflows")).items()
-        if isinstance(params, Mapping)
+        for name, params in workflow_options.items()
+        if name != "max_stack_depth" and isinstance(params, Mapping)
     }
 
     raw_providers = data.get("providers")
@@ -2983,6 +2997,7 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
         skills=skills,
         agents=agents,
         workflows=workflows,
+        workflow_stack_max_depth=workflow_stack_max_depth,
         ui=ui,
         subagents=subagents,
     )
@@ -3071,7 +3086,11 @@ def load_config(
         if found_user_file is not None:
             merged = deep_merge(merged, _load_toml_with_extends(found_user_file))
 
-    # 3. Per-project config — overrides user-global.
+    user_requires_staging = (
+        _section(merged.get("security")).get("authored_extension_policy") == "stage_only"
+    )
+
+    # 3. Per-project config — overrides user-global except for the user's publication gate.
     # config_path (from --config or AGENTHICC_CONFIG) takes priority over project_path.
     effective_project = config_path or project_path
     if effective_project is not None:
@@ -3089,6 +3108,11 @@ def load_config(
                     _load_toml_with_extends(found_project_file), found_project_file
                 ),
             )
+
+    if user_requires_staging:
+        security_values = _section(merged.get("security"))
+        security_values["authored_extension_policy"] = "stage_only"
+        merged["security"] = security_values
 
     # 4. Environment variable overrides (AGENTHICC_*) — override both config files
     if env_overrides:

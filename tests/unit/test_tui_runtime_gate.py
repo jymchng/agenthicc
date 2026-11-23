@@ -66,7 +66,6 @@ def _session(conversation: _Conversation) -> tuple[TUISession, SimpleNamespace, 
         approval_svc=approval,
         cfg=AgenthiccConfig(),
         skills={},
-        project_plugins=SimpleNamespace(all_tools=[]),
         mcp_registry=None,
         mention_cache=SimpleNamespace(),
         cmd_registry=build_builtin_registry(),
@@ -81,7 +80,6 @@ def _session(conversation: _Conversation) -> tuple[TUISession, SimpleNamespace, 
         console=Console(record=True),
         startup=StartupCoordinator(),
         resumed=False,
-        command_plugin_names=set(),
     )
     session = TUISession(ctx, _Workspace(app), _Input())
     started: list[str] = []

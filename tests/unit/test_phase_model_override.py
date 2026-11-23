@@ -19,7 +19,6 @@ def _make_runner(plan_model="", execute_model="", review_model="", summary_model
     mock_cfg.app_state.workflow_run.return_value = None
     mock_cfg.app_state.update_workflow_phase = MagicMock()
     mock_cfg.app_state.active_mode.return_value = MagicMock(blocked_capabilities=frozenset())
-    mock_cfg.plugin_tools = []
     mock_cfg.mcp_registry = None
     mock_cfg.approval_svc = None
     mock_cfg.memory_router = None
@@ -60,9 +59,9 @@ def test_resolve_model_uses_exec_cfg_model_when_set() -> None:
         conv_store=None,
         app_state=None,
         exec_cfg=exec_cfg,
-        skills={},
+        skills=None,
         mention_cache=MagicMock(),
-        project_plugin_tools=[],
+        extra_tools=[],
         mcp_registry=None,
         active_agent="auto",
         completed_turns=0,
@@ -102,9 +101,9 @@ def test_resolve_model_falls_back_to_transport_when_exec_cfg_empty() -> None:
         conv_store=None,
         app_state=None,
         exec_cfg=exec_cfg,
-        skills={},
+        skills=None,
         mention_cache=MagicMock(),
-        project_plugin_tools=[],
+        extra_tools=[],
         mcp_registry=None,
         active_agent="auto",
         completed_turns=0,
@@ -140,9 +139,9 @@ def test_resolve_model_falls_back_to_transport_when_exec_cfg_is_none() -> None:
         conv_store=None,
         app_state=None,
         exec_cfg=None,
-        skills={},
+        skills=None,
         mention_cache=MagicMock(),
-        project_plugin_tools=[],
+        extra_tools=[],
         mcp_registry=None,
         active_agent="auto",
         completed_turns=0,

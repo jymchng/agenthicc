@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+from hashlib import sha256
 from pathlib import Path
 from typing import cast
 
@@ -219,53 +220,6 @@ Types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`, `perf`, `ci`.
 - Never mention file names in the subject unless the change is trivially
   file-scoped (e.g. `docs(README): fix typo`).
 """,
-    "create-tools": """\
----
-name: Create Tools
-description: Design and implement lauren-ai tools from user instructions
-source: default
-version: 1
-disallowAutoTriggering: true
----
-
-You are an expert agenthicc and lauren-ai tool author. Create the tools
-requested by the user below, keeping them inside the repository's existing
-tool and security boundaries.
-
-## User instructions
-
-{args}
-
-## Required process
-
-1. Read the relevant existing tool modules and tests before editing anything.
-2. Clarify ambiguity in the requested contract by making the smallest safe
-   assumption and stating it before implementation.
-3. Implement a function-form `@tool()` or a no-argument class-form `@tool()`
-   with `run`, and export the callable through `TOOLS` from a focused module
-   under `.agenthicc/tools/`. `Tool`/`ToolBase` are explicit executor
-   contracts, not automatic `TOOLS` discovery contracts.
-4. Attach capability metadata. A `ToolContext` parameter is injected by
-   lauren-ai and is hidden from the model schema. Use `WorkspaceView` and
-   `NetworkGuard` when the runtime supplies them; fail closed when a required
-   guard is unavailable. Use `agenthicc_http_client()` for bounded HTTP
-   timeouts and return structured recoverable errors for transient failures.
-5. Preserve fail-closed security defaults. Do not add credential logging,
-   unrestricted filesystem access, shell execution, or automatic dependency
-   installation merely to make the tool work. Remember that the current TUI
-   plugin path does not automatically inject a `ToolSandbox` or show the tool
-   trust prompt.
-6. Add tests for success, denial, malformed input, timeout or transient
-   failure where relevant, and retry/idempotency behaviour for side effects.
-7. Update the relevant README/guide and plugin documentation. Run the focused
-   tests and the repository checks required by the changed surface.
-
-## Completion report
-
-Finish with the created tool names, files, capabilities, tests run, and the
-manual code-review, trust, or configuration step the user must perform before
-using them.
-""",
     "create-commands": """\
 ---
 name: Create Commands
@@ -307,236 +261,31 @@ requested by the user below using the canonical unified command registry.
 Finish with the command names, files, arguments, tests run, and any trust or
 configuration step required before the commands appear in the TUI.
 """,
-    "create-workflow": """\
----
-name: Create Workflow
-description: Guide the LLM to write a new agenthicc workflow plugin
-source: default
-version: 1
-disallowAutoTriggering: true
----
-
-You are an expert agenthicc workflow author.
-
-## Your job
-
-Help the user write a new agenthicc workflow plugin, either from scratch or
-by extending an existing one such as ``code_plan``.
-
-## Workflow plugin basics
-
-Every workflow is a ``WorkflowPlugin`` subclass placed in
-``.agenthicc/workflows/<name>/runner.py``. The directory may also contain
-``__init__.py`` and workflow-specific tools/helpers such as ``tools.py``. The
-minimal entry-point structure:
-
-```python
-from agenthicc.workflows.plugin import PhaseSpec, WorkflowPlugin
-
-class MyWorkflow(WorkflowPlugin):
-    name          = "my_workflow"
-    description   = "What this workflow does."
-    mode_bindings = ["Yolo"]   # mode that auto-triggers it; [] = manual only
-    phases        = [
-        PhaseSpec(name="step1", agent_type="auto", max_turns=20),
-        PhaseSpec(name="step2", agent_type="auto", max_turns=10, next=None),
-    ]
-```
-
-Activate with ``/workflow my_workflow`` in the TUI.
-
-## Custom runners and typed TOML configuration
-
-Use the generic ``WorkflowRunner`` and inherited
-``WorkflowPlugin.build_runner()`` when the declared ``PhaseSpec`` graph fully
-describes the behavior. Every phase should include a literal
-``system_prompt_override`` that states its objective, required tools, inputs,
-outputs, verification, completion signal, and handoff. Write a custom runner
-only when the workflow needs orchestration, context transformation,
-post-processing, or a composite ``code_plan`` flow that the phase graph cannot
-express. Override ``WorkflowPlugin.build_runner(config, mode_manager)`` so the
-registry constructs that custom runner. A direct custom lifecycle is valid;
-call ``super()`` only when intentionally composing the parent runner.
-
-```python
-from agenthicc.workflows.plugin import PhaseSpec, WorkflowPlugin
-
-class MyWorkflow(WorkflowPlugin):
-    name = "my_workflow"
-    phases = [
-        PhaseSpec(
-            name="step1",
-            system_prompt_override=(
-                "Use the runtime task and configured tools to perform step 1. "
-                "Return verified output and state what the next phase needs."
-            ),
-        )
-    ]
-```
-
-For values that should be changed without editing Python, use a typed
-``WorkflowParams`` dataclass and ``build_params()``:
-
-```python
-from collections.abc import Mapping
-from dataclasses import dataclass
-from agenthicc.workflows.plugin import WorkflowParams, WorkflowPlugin
-
-@dataclass
-class MyParams(WorkflowParams):
-    plan_model: str = ""
-    execute_model: str = ""
-
-    def get_phase_models(self) -> dict[str, str]:
-        return {"plan": self.plan_model, "execute": self.execute_model}
-
-def _text(source: Mapping[str, object], key: str) -> str:
-    value = source.get(key, "")
-    return value.strip() if isinstance(value, str) else ""
-
-class MyWorkflow(WorkflowPlugin):
-    name = "my_workflow"
-
-    @classmethod
-    def build_params(cls, source: Mapping[str, object]) -> WorkflowParams:
-        return MyParams(
-            plan_model=_text(source, "plan_model"),
-            execute_model=_text(source, "execute_model"),
-        )
-```
-
-The corresponding project configuration is normally
-``.agenthicc/agenthicc.toml``:
-
-```toml
-[execution]
-provider = "anthropic"
-model = "claude-sonnet-4-5"
-
-[workflows.my_workflow]
-plan_model = ""
-execute_model = "claude-haiku-4-5"
-```
-
-``[workflows.<name>]`` is passed to ``build_params()``. Empty model values use
-the global execution model. Provider, credentials, and ``base_url`` are
-session-wide; do not invent per-phase provider keys. Never put API keys in a
-generated workflow or TOML template. The authoring workflow writes the Python
-artifact directly to ``.agenthicc/workflows/<name>/runner.py`` and does not modify
-configuration, so present any required TOML as a copy-ready template and tell
-the user which config file to update and when to restart the session.
-
-## PhaseSpec key fields
-
-| Field | Purpose |
-|---|---|
-| ``name`` | Unique within the workflow; used in ``next`` and ``on_reject`` |
-| ``agent_type`` | ``"auto"``, ``"planner"``, ``"executor"``, ``"reviewer"``, ``"explorer"``, ``"verifier"``, ``"human"`` |
-| ``next`` | Next phase name; ``None`` ends the workflow |
-| ``on_reject`` | Phase to jump to when ``approved=False`` |
-| ``max_turns`` | LLM sub-turns limit |
-| ``mode_override`` | E.g. ``"Yolo"`` to unlock write tools for one phase |
-| ``system_prompt_override`` | Replaces the role's default system prompt entirely |
-| ``output_schema`` | ``"plan"``, ``"review_result"``, or ``"free_text"`` |
-| ``max_iterations`` | Retry ceiling per phase; ``-1`` = unlimited |
-
-## Extending code_plan (composite workflow)
-
-To add phases after all four code_plan phases:
-
-```python
-from agenthicc.workflows.code_plan import CodePlanRunner
-from agenthicc.workflows.code_plan.definition import CodePlan
-from agenthicc.workflows.plugin import WorkflowPlugin
-
-class MyExtendedRunner(CodePlanRunner):
-    workflow_name = "my_extended_workflow"
-    total_phases = 5
-
-    async def run(self, intent: str):
-        ctx = await super().run(intent)  # runs Plan→Execute→Review→Summary
-        # ctx.plan, ctx.execute_summary, ctx.review_summary, ctx.shared_memory
-        await self.run_phase(
-            intent=intent,
-            text=f"[PLAN]\\n{ctx.plan}\\n\\nDo extra work here.",
-            system_prompt="You are doing extra post-implementation work.",
-            mode="Yolo",
-            max_turns=10,
-            shared_memory=ctx.shared_memory,
-        )
-
-class MyExtendedWorkflow(CodePlan):
-    name          = "my_extended_workflow"
-    mode_bindings = ["Plan"]
-
-    @classmethod
-    def build_runner(cls, config, mode_manager):
-        return MyExtendedRunner(config, mode_manager)
-```
-
-## run_phase() API (CodePlanRunner only)
-
-| Parameter | Type | Description |
-|---|---|---|
-| ``intent`` | ``str`` | Original user intent |
-| ``text`` | ``str`` | User-turn text for this phase |
-| ``system_prompt`` | ``str`` | Full system prompt for this phase |
-| ``mode`` | ``str \\| None`` | Mode override (e.g. ``"Yolo"``); restored after |
-| ``max_turns`` | ``int`` | LLM sub-turn limit (default 10) |
-| ``shared_memory`` | ``ShortTermMemory \\| None`` | Pass ``ctx.shared_memory`` to carry full context |
-
-## Common patterns
-
-**Plan + Execute only (no review):**
-```python
-phases = [
-    PhaseSpec(name="plan", agent_type="planner", output_schema="plan", next="execute"),
-    PhaseSpec(name="execute", agent_type="executor", mode_override="Yolo"),
-]
-```
-
-**Retry loop:**
-```python
-PhaseSpec(name="review", agent_type="reviewer",
-          output_schema="review_result",
-          on_reject="execute", max_iterations=3)
-```
-
-**Human approval gate:**
-```python
-PhaseSpec(name="human_check", agent_type="human", next="execute", on_reject="plan")
-```
-
-## File placement
-
-```
-.agenthicc/workflows/my_workflow/runner.py    ← project-local (preferred)
-~/.agenthicc/workflows/my_workflow/runner.py  ← user-global
-```
-
-## Activate
-
-```
-/workflow my_workflow_name
-/workflow reset   ← revert to mode default
-```
-
-## What to produce
-
-1. The complete ``.agenthicc/workflows/<name>/`` package, with ``runner.py``
-   as its entry point and local tools/helpers alongside it.
-2. A custom runner when the workflow needs behavior beyond the declarative
-   phase graph, including context-preserving ``run()`` and ``resume()``.
-3. A typed ``WorkflowParams``/``build_params()`` implementation when TOML
-   configuration is required.
-4. A copy-ready TOML template, with no secrets, and the exact file to update.
-5. A brief explanation of each phase's purpose and how to activate it.
-""",
 }
 
 # ── marker file helpers ───────────────────────────────────────────────────────
 
 _MARKER_FILE = "default_skills.json"
+
+_RETIRED: dict[str, frozenset[str]] = {
+    "create-tools": frozenset(
+        {
+            "83d822086db627389a48bf72c2fda618abbe68f51e7dd7b8e7b14b91fffa0126",
+            "8c4aef7c7a3eb318f36329ea28ed5767f4fb83ebd1442a9cb40beb0234d2085b",
+        }
+    ),
+    "create-workflow": frozenset(
+        {
+            "c2921fc6deec048ef3e6b24cd6dadc30664375daedb51a714e3cd58a171c37b5",
+            "a7c788d4c1ba89ecd01daa0b0151ad917de9906caa0361a6c98f87fe968305fc",
+            "ac34c66736ead9e82b6c18581fe76d78f5f6a0b04770f7e41b3e55de7152e8da",
+            "618850452672d403f47b7f2873e3104c954d74c114703bad92a70909261d9cc3",
+            "41287bd53aa182afd4be480115b21098a31f23732ad871b55215cfaacb933385",
+            "84be4cf8ff094ef898e75c6f3a8349ebe51b6f4539918fb5e2c919a0f3a93190",
+            "da82e0f7930423255b569dbb18e121a33132483cd29d25bdf8839886711799e7",
+        }
+    ),
+}
 
 
 def _load_markers(global_dir: Path) -> dict[str, str]:
@@ -557,6 +306,39 @@ def _load_markers(global_dir: Path) -> dict[str, str]:
 def _save_markers(global_dir: Path, markers: dict[str, str]) -> None:
     marker_path = global_dir / _MARKER_FILE
     marker_path.write_text(json.dumps(markers, indent=2), encoding="utf-8")
+
+
+def _retire_seeded_skills(skills_dir: Path, markers: dict[str, str]) -> bool:
+    changed = False
+    for slug, seed_digests in _RETIRED.items():
+        if markers.get(slug) != "installed":
+            continue
+        directory = skills_dir / slug
+        source = directory / "SKILL.md"
+        try:
+            if not directory.exists() and not directory.is_symlink():
+                markers[slug] = "deleted"
+            elif (
+                not skills_dir.is_symlink()
+                and not directory.is_symlink()
+                and directory.is_dir()
+                and tuple(directory.iterdir()) == (source,)
+                and not source.is_symlink()
+                and source.is_file()
+                and source.stat().st_size <= 16_384
+                and sha256(source.read_text(encoding="utf-8").encode()).hexdigest() in seed_digests
+            ):
+                source.unlink()
+                directory.rmdir()
+                markers[slug] = "deleted"
+            else:
+                markers[slug] = "retained"
+                log.warning("Retained edited retired default skill %s at %s", slug, directory)
+        except (OSError, UnicodeError) as exc:
+            log.warning("Could not retire default skill %s at %s: %s", slug, directory, exc)
+            continue
+        changed = True
+    return changed
 
 
 # ── public API ────────────────────────────────────────────────────────────────
@@ -582,7 +364,7 @@ def bootstrap_default_skills(
 
     markers = _load_markers(root)
     installed_count = 0
-    markers_dirty = False
+    markers_dirty = _retire_seeded_skills(skills_dir, markers)
 
     for slug, skill_md_content in _DEFAULTS.items():
         if markers.get(slug) == "deleted":

@@ -4,14 +4,16 @@ Every test here wires at least one real collaborator rather than a stub:
 
 * a real :class:`~agenthicc.kernel.processor.EventProcessor` receiving the
   workflow lifecycle events;
-* a real :class:`~agenthicc.tools.approval.ApprovalService` driving the design
-  approval gate through ``pending_approval`` / ``respond``;
+* a real :class:`~agenthicc.tools.approval.ApprovalService` on the authoring session;
 * real TOML config through :func:`~agenthicc.config.load_config`;
 * the real workflow loader and registry importing the file the run produced.
 """
 
 from __future__ import annotations
 
+from types import MappingProxyType
+from agenthicc.tools.surface import ToolSurface, ToolSurfaceHolder
+from agenthicc.runners.reload import SurfaceHolder
 import asyncio
 import dataclasses
 from pathlib import Path
@@ -23,6 +25,7 @@ import pytest
 from agenthicc.config import AgenthiccConfig, load_config
 from agenthicc.kernel import AppState as KernelAppState
 from agenthicc.kernel import EventProcessor, SecurityPolicy, SystemSettings
+from agenthicc.plugins.authored import AuthoredArtifactStore
 from agenthicc.tools.approval import ApprovalService
 from agenthicc.tui.conversation_store import AppState
 from agenthicc.workflows.config import WorkflowConfig
@@ -65,12 +68,15 @@ _GENERATED_SOURCE = '''\
 
 from __future__ import annotations
 
-from agenthicc.workflows.plugin import PhaseSpec, WorkflowPlugin
+from collections.abc import Mapping
+
+from agenthicc.workflows.plugin import PhaseSpec, WorkflowInvocation, WorkflowParams, WorkflowPlugin
 
 
 class DocReview(WorkflowPlugin):
     name = "doc_review"
     description = "Draft a document, then review it."
+    invocation = WorkflowInvocation(when_to_use="Review a document.", returns="The draft and review.")
     mode_bindings = []
     phases = [
         PhaseSpec(
@@ -88,6 +94,12 @@ class DocReview(WorkflowPlugin):
             system_prompt_override="You are in the REVIEW phase. Check the document.",
         ),
     ]
+
+    @classmethod
+    def build_params(cls, source: Mapping[str, object]) -> WorkflowParams:
+        if source:
+            raise ValueError("This workflow takes no parameters.")
+        return WorkflowParams()
 '''
 
 _BROKEN_SOURCE = '''\
@@ -122,8 +134,8 @@ def _workflow_config(
         ),  # type: ignore[arg-type]
         approval_svc=approval_svc,
         cfg=cfg,
-        skills={},
-        plugin_tools=[],
+        skills=SurfaceHolder(MappingProxyType({})),
+        tool_surface=ToolSurfaceHolder(ToolSurface(0, ())),
         mcp_registry=None,
         mention_cache=SimpleNamespace(),  # type: ignore[arg-type]
         agents_registry=SimpleNamespace(),  # type: ignore[arg-type]
@@ -187,7 +199,6 @@ def _authoring_turn(
     async def run_turn(_text: str, **kwargs: object) -> None:
         tools = _by_name(kwargs["tools"])
         if "finalize_design" in tools:
-            await _call(kwargs["tools"], "request_design_approval", "draft → review", "doc_review")
             await _call(kwargs["tools"], "finalize_design", "draft → review", "doc_review")
         elif "mark_generation_complete" in tools:
             await _call(kwargs["tools"], "write_file", "runner.py", sources.pop(0))
@@ -242,7 +253,7 @@ async def test_full_run_against_a_real_processor(tmp_path: Path, processor) -> N
     await processor.drain()
 
     assert ctx.workflow_name == "doc_review"
-    assert ctx.repair_cycles == 0
+    assert ctx.repair_budget.used == 0
     assert set(ctx.artifacts) == {"design", "generate", "validate", "summarize"}
     assert runner._cfg.app_state.workflow_run().status == "complete"
     published = tmp_path / ".agenthicc" / "workflows" / "doc_review" / "runner.py"
@@ -251,7 +262,8 @@ async def test_full_run_against_a_real_processor(tmp_path: Path, processor) -> N
     assert ctx.package_manifest is not None
     assert ctx.package_manifest.workflow_name == "doc_review"
     assert ctx.package_manifest.target_path == str(published.parent)
-    assert ctx.publication["status"] == "committed"
+    assert ctx.publication["status"] == "staged"
+    assert ctx.authored_run is not None
     assert ctx.publication["catalog_snapshot_id"]
     assert ctx.publication["validation_evidence_id"]
 
@@ -268,7 +280,7 @@ async def test_repair_loop_against_a_real_processor(tmp_path: Path, processor) -
     ctx = await runner.run("build me a doc review workflow")
     await processor.drain()
 
-    assert ctx.repair_cycles == 1
+    assert ctx.repair_budget.used == 1
     assert ctx.validation_summary == "imports and matches the design"
     assert runner._cfg.app_state.workflow_run().status == "complete"
     assert ctx.artifacts["validate"].metadata["ok"] is True
@@ -286,7 +298,7 @@ async def test_deterministic_check_overrides_a_wrong_approval(tmp_path: Path, pr
     ctx = await runner.run("build me a doc review workflow")
     await processor.drain()
 
-    assert ctx.repair_cycles == 1
+    assert ctx.repair_budget.used == 1
     # The second generation ran inside repair cycle 1, i.e. the wrong approval
     # was re-routed instead of finishing the run.
     assert ctx.artifacts["generate"].metadata["repair_cycle"] == 1
@@ -298,18 +310,22 @@ async def test_deterministic_check_overrides_a_wrong_approval(tmp_path: Path, pr
 
 
 async def test_generated_workflow_is_discovered_by_the_real_registry(
-    tmp_path: Path, processor
+    untrusted_project: Path, processor
 ) -> None:
-    runner = _runner(tmp_path, processor)
+    runner = _runner(untrusted_project, processor)
     runner._run_turn = _authoring_turn(  # type: ignore[method-assign]
-        tmp_path, sources=[_GENERATED_SOURCE], verdicts=["approve"]
+        untrusted_project, sources=[_GENERATED_SOURCE], verdicts=["approve"]
     )
     ctx = await runner.run("build me a doc review workflow")
     await processor.drain()
 
+    assert ctx.authored_run is not None
+    assert load_python_workflows(Path(ctx.generated_path), source="project") == []
+    with AuthoredArtifactStore(untrusted_project).commit(ctx.authored_run):
+        pass
     registry = build_workflow_registry(
-        project_dir=tmp_path / ".agenthicc",
-        user_dir=tmp_path / "no-user-dir",
+        project_dir=untrusted_project / ".agenthicc",
+        user_dir=untrusted_project / "no-user-dir",
     )
     entry = registry.get_entry("doc_review")
     assert entry is not None
@@ -322,15 +338,18 @@ async def test_generated_workflow_is_discovered_by_the_real_registry(
 
 
 async def test_generated_workflow_loads_through_load_python_workflows(
-    tmp_path: Path, processor
+    untrusted_project: Path, processor
 ) -> None:
-    runner = _runner(tmp_path, processor)
+    runner = _runner(untrusted_project, processor)
     runner._run_turn = _authoring_turn(  # type: ignore[method-assign]
-        tmp_path, sources=[_GENERATED_SOURCE], verdicts=["approve"]
+        untrusted_project, sources=[_GENERATED_SOURCE], verdicts=["approve"]
     )
     ctx = await runner.run("build me a doc review workflow")
     await processor.drain()
 
+    assert ctx.authored_run is not None
+    with AuthoredArtifactStore(untrusted_project).commit(ctx.authored_run):
+        pass
     plugins = load_python_workflows(Path(ctx.generated_path), source="project")
     assert [plugin.name for plugin in plugins] == ["doc_review"]
     assert plugins[0].build_params({}) is not None
@@ -359,17 +378,22 @@ async def test_cache_stable_template_round_trips_through_real_validator(tmp_path
     assert report.phase_names == ("plan", "verify", "report")
 
 
-async def test_generated_workflow_does_not_shadow_the_builtins(tmp_path: Path, processor) -> None:
-    runner = _runner(tmp_path, processor)
+async def test_generated_workflow_does_not_shadow_the_builtins(
+    untrusted_project: Path, processor
+) -> None:
+    runner = _runner(untrusted_project, processor)
     runner._run_turn = _authoring_turn(  # type: ignore[method-assign]
-        tmp_path, sources=[_GENERATED_SOURCE], verdicts=["approve"]
+        untrusted_project, sources=[_GENERATED_SOURCE], verdicts=["approve"]
     )
-    await runner.run("build me a doc review workflow")
+    ctx = await runner.run("build me a doc review workflow")
     await processor.drain()
 
+    assert ctx.authored_run is not None
+    with AuthoredArtifactStore(untrusted_project).commit(ctx.authored_run):
+        pass
     registry = build_workflow_registry(
-        project_dir=tmp_path / ".agenthicc",
-        user_dir=tmp_path / "no-user-dir",
+        project_dir=untrusted_project / ".agenthicc",
+        user_dir=untrusted_project / "no-user-dir",
     )
     assert {"code_plan", "create_workflow", "doc_review"} <= set(registry.names())
     code_plan = registry.get_entry("code_plan")
@@ -380,30 +404,14 @@ async def test_generated_workflow_does_not_shadow_the_builtins(tmp_path: Path, p
 # ── real approval service ─────────────────────────────────────────────────────
 
 
-async def test_design_gate_uses_the_real_approval_service(tmp_path: Path, processor) -> None:
+async def test_authoring_new_workflow_uses_no_design_approval(tmp_path: Path, processor) -> None:
     app = AppState.create()
     approval = ApprovalService(app)
     runner = _runner(tmp_path, processor, approval_svc=approval, app=app)
 
-    async def responder() -> None:
-        """Approve the first plan_review request that appears."""
-        for _ in range(200):
-            pending = app.pending_approval()
-            if pending is not None:
-                assert pending.kind == "plan_review"
-                assert pending.tool_input["workflow_name"] == "doc_review"
-                approval.respond(True, message="looks good")
-                return
-            await asyncio.sleep(0.005)
-        raise AssertionError("no approval request was ever raised")
-
     async def run_turn(_text: str, **kwargs: object) -> None:
-        task = asyncio.create_task(responder())
-        try:
-            await _call(kwargs["tools"], "request_design_approval", "draft → review", "doc_review")
-            await _call(kwargs["tools"], "finalize_design", "draft → review", "doc_review")
-        finally:
-            await task
+        result = await _call(kwargs["tools"], "finalize_design", "draft → review", "doc_review")
+        assert isinstance(result, dict) and result["ok"] is True
 
     runner._run_turn = run_turn  # type: ignore[method-assign]
     from agenthicc.workflows.create_workflow.state import CreateWorkflowContext
@@ -414,52 +422,14 @@ async def test_design_gate_uses_the_real_approval_service(tmp_path: Path, proces
     assert app.pending_approval() is None
 
 
-async def test_denied_design_blocks_the_handoff_with_the_real_service(
-    tmp_path: Path, processor
-) -> None:
-    app = AppState.create()
-    approval = ApprovalService(app)
-    runner = _runner(tmp_path, processor, approval_svc=approval, app=app)
-
-    async def responder() -> None:
-        for _ in range(200):
-            if app.pending_approval() is not None:
-                approval.respond(False, message="too vague")
-                return
-            await asyncio.sleep(0.005)
-        raise AssertionError("no approval request was ever raised")
-
-    async def run_turn(_text: str, **kwargs: object) -> None:
-        task = asyncio.create_task(responder())
-        try:
-            denied = await _call(
-                kwargs["tools"], "request_design_approval", "draft → review", "doc_review"
-            )
-            assert isinstance(denied, dict)
-            assert denied["approved"] is False
-            blocked = await _call(
-                kwargs["tools"], "finalize_design", "draft → review", "doc_review"
-            )
-            assert isinstance(blocked, dict)
-            assert blocked["ok"] is False
-        finally:
-            await task
-
-    runner._run_turn = run_turn  # type: ignore[method-assign]
-    from agenthicc.workflows.create_workflow.state import CreateWorkflowContext
-
-    ctx = CreateWorkflowContext(intent="build doc_review", run_id="run", shared_memory=MagicMock())
-    assert await runner._design(ctx) is CreateWorkflowState.FAILED
-    assert "without calling finalize_design()" in ctx.fail_reason
-
-
 # ── real TOML config ──────────────────────────────────────────────────────────
 
 
 def test_authoring_budgets_come_from_real_toml(tmp_path: Path) -> None:
     toml = tmp_path / "agenthicc.toml"
     toml.write_text(
-        "[execution]\nauthoring_max_generation_attempts = 6\nauthoring_max_phase_turns = 9\n",
+        "[execution]\nauthoring_max_generation_attempts = 6\nauthoring_max_phase_turns = 9\n"
+        "[workflows.authoring]\nmax_repair_cycles = 2\n",
         encoding="utf-8",
     )
     cfg = load_config(project_path=toml, user_path=tmp_path / "missing.toml")
@@ -474,8 +444,8 @@ def test_authoring_budgets_come_from_real_toml(tmp_path: Path) -> None:
         agent_runner=SimpleNamespace(_transport=None),  # type: ignore[arg-type]
         approval_svc=None,
         cfg=cfg,
-        skills={},
-        plugin_tools=[],
+        skills=SurfaceHolder(MappingProxyType({})),
+        tool_surface=ToolSurfaceHolder(ToolSurface(0, ())),
         mcp_registry=None,
         mention_cache=SimpleNamespace(),  # type: ignore[arg-type]
         agents_registry=SimpleNamespace(),  # type: ignore[arg-type]
@@ -483,7 +453,7 @@ def test_authoring_budgets_come_from_real_toml(tmp_path: Path) -> None:
     runner = CreateWorkflowRunner(config)
     assert runner._max_attempts == 6
     assert runner._max_phase_turns == 9
-    assert runner._max_repair_cycles == 6
+    assert runner._initial_repair_budget.max_cycles == 2
 
 
 def test_phase_models_come_from_real_toml(tmp_path: Path) -> None:
@@ -505,8 +475,8 @@ def test_phase_models_come_from_real_toml(tmp_path: Path) -> None:
         agent_runner=SimpleNamespace(_transport=None),  # type: ignore[arg-type]
         approval_svc=None,
         cfg=base,
-        skills={},
-        plugin_tools=[],
+        skills=SurfaceHolder(MappingProxyType({})),
+        tool_surface=ToolSurfaceHolder(ToolSurface(0, ())),
         mcp_registry=None,
         mention_cache=SimpleNamespace(),  # type: ignore[arg-type]
         agents_registry=SimpleNamespace(),  # type: ignore[arg-type]

@@ -21,6 +21,7 @@ from agenthicc.workflows.payload import (
 )
 
 if TYPE_CHECKING:
+    from agenthicc.runners.workflow_stack import FrameOrigin
     from lauren_ai._memory import ShortTermMemory
     from agenthicc.workflows.plugin import PhaseOutput, WorkflowPlugin
 
@@ -36,7 +37,7 @@ __all__ = [
     "workflow_fingerprint",
 ]
 
-CHECKPOINT_SCHEMA_VERSION = 1
+CHECKPOINT_SCHEMA_VERSION = 2
 
 
 class CheckpointValidationError(ValueError):
@@ -400,6 +401,9 @@ def context_from_payload(
             phase_iteration=payload_int(fields.get("phase_iteration"), 0),
         )
     if kind == "CreateWorkflowContext":
+        from agenthicc.plugins.authored_types import PublishedArtifact, _digest
+        from agenthicc.workflows.authoring.budget import RepairBudget
+
         if (
             "state" not in fields
             or "authoring_lease" not in fields
@@ -421,6 +425,20 @@ def context_from_payload(
             )
         except AuthoringError as exc:
             raise CheckpointValidationError(str(exc)) from exc
+        try:
+            repair_budget = RepairBudget.from_payload(fields.get("repair_budget"))
+        except ValueError as exc:
+            raise CheckpointValidationError(f"{exc}; start a new run") from exc
+        previous_digest = fields.get("previous_authored_digest")
+        if previous_digest is not None:
+            if not isinstance(previous_digest, str) or lease is None or not lease.replacing:
+                raise CheckpointValidationError("workflow checkpoint has the wrong predecessor")
+            try:
+                _digest(previous_digest)
+            except ValueError as exc:
+                raise CheckpointValidationError(
+                    "workflow checkpoint has an invalid predecessor"
+                ) from exc
 
         intent = fields.get("intent")
         run_id = fields.get("run_id")
@@ -486,16 +504,31 @@ def context_from_payload(
             ).hexdigest()
             if evidence_id != expected_evidence_id:
                 raise CheckpointValidationError("validation evidence fingerprint is invalid")
-            if publication.get("status") != "committed":
-                raise CheckpointValidationError(f"{state.name} checkpoint has no committed package")
+            if publication.get("status") != "staged":
+                raise CheckpointValidationError(f"{state.name} checkpoint has no staged package")
             if (
                 publication.get("package_fingerprint") != manifest.fingerprint
-                or publication.get("published_path") != lease.target_path
+                or publication.get("target_path") != lease.target_path
                 or publication.get("validation_evidence_id") != evidence_id
             ):
                 raise CheckpointValidationError(
                     "publication record does not match validated package evidence"
                 )
+            try:
+                artifact = PublishedArtifact.from_payload(publication.get("artifact"))
+            except ValueError as exc:
+                raise CheckpointValidationError("staged package receipt is invalid") from exc
+            prefix = f".agenthicc/workflows/{workflow_name}"
+            if (
+                artifact.kind != "workflow"
+                or artifact.name != workflow_name
+                or artifact.state != "staged"
+                or artifact.files != tuple(f"{prefix}/{item.path}" for item in manifest.files)
+                or artifact.supersedes != previous_digest
+                or not isinstance(publication.get("session_id"), str)
+                or not isinstance(publication.get("model"), str)
+            ):
+                raise CheckpointValidationError("staged package receipt has the wrong identity")
             if not isinstance(fields.get("validation_summary"), str) or not fields.get(
                 "validation_summary"
             ):
@@ -527,13 +560,14 @@ def context_from_payload(
             rejection_reason=str(fields.get("rejection_reason", "")),
             suggestion=str(fields.get("suggestion", "")),
             fail_reason=str(fields.get("fail_reason", "")),
-            repair_cycles=payload_int(fields.get("repair_cycles"), 0),
+            repair_budget=repair_budget,
+            repair_exhausted=fields.get("repair_exhausted") is True,
             artifacts=artifacts,
             command_outcomes=(payload_mappings(fields.get("command_outcomes"))),
             shared_memory=memory,
             state=state,
             phase_iteration=payload_int(fields.get("phase_iteration"), 0),
-            plan_version=str(fields.get("plan_version", "create_workflow.v1")),
+            plan_version=str(fields.get("plan_version", "create_workflow.v2")),
             phase_attempts={
                 str(key): payload_int(value, 0)
                 for key, value in payload_mapping(fields.get("phase_attempts")).items()
@@ -549,10 +583,10 @@ def context_from_payload(
             selected_tools=payload_strings(fields.get("selected_tools")),
             dependency_summary=payload_mapping(fields.get("dependency_summary")),
             authoring_lease=lease,
+            previous_authored_digest=previous_digest,
             package_manifest=manifest,
             validation_evidence=validation_evidence,
             publication=publication,
-            question_metadata=payload_mapping(fields.get("question_metadata")),
         )
     if kind == "CustomContext" and workflow is not None:
         custom_context = workflow.checkpoint_context_from_payload(fields, memory)
@@ -563,14 +597,17 @@ def context_from_payload(
 
 
 def workflow_fingerprint(plugin: type[WorkflowPlugin]) -> str:
-    """Return a stable fingerprint for the declared workflow topology."""
+    """Return a stable fingerprint for the workflow topology and invocation."""
+    from agenthicc.workflows.plugin import WorkflowInvocation
+
     topology = [
         {"name": phase.name, "next": phase.next, "on_reject": phase.on_reject}
         for phase in plugin.phases
     ]
-    raw = json.dumps(
-        {"name": plugin.name, "phases": topology}, sort_keys=True, separators=(",", ":")
-    )
+    shape: dict[str, object] = {"name": plugin.name, "phases": topology}
+    if plugin.invocation != WorkflowInvocation():
+        shape["invocation"] = dataclasses.asdict(plugin.invocation)
+    raw = json.dumps(shape, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
@@ -593,6 +630,9 @@ class WorkflowCheckpoint:
     conversation_cursor: int
     context: dict[str, object]
     plugin_fingerprint: str
+    frame_id: str
+    parent_run_id: str | None
+    origin: FrameOrigin
     revision: int = 0
     reason: str = ""
     browser: dict[str, object] = field(default_factory=dict)
@@ -622,8 +662,7 @@ class WorkflowCheckpoint:
     pause_reason: str = "none"
     failure_kind: str | None = None
     failure_message: str | None = None
-    # Independent provider disposition metadata. These optional fields are
-    # additive so schema-v1 checkpoints written before PRD-196 remain valid.
+    # Independent provider disposition metadata for provider-related failures.
     failure_retryable: bool | None = None
     failure_provider: str | None = None
     failure_model: str | None = None
@@ -633,17 +672,15 @@ class WorkflowCheckpoint:
     resumable: bool | None = None
     last_safe_boundary: str | None = None
     error_revision: int = 0
-    # The topology actually used by the runner.  These optional fields keep
-    # schema-v1 checkpoints readable while allowing profile-aware runners to
-    # distinguish an active index from the registry's full index.
+    # The topology actually used by the runner, including profile-specific
+    # phases that need a different index from the registry's full graph.
     topology_version: str = ""
     topology_fingerprint: str = ""
     topology_profile: str = ""
     topology_phase_names: tuple[str, ...] = ()
     created_at: float = field(default_factory=time.time)
     # ``updated_at`` is the durable activity clock used when selecting the
-    # latest recoverable run.  It is optional on disk for schema-v1
-    # compatibility; old records fall back to ``created_at`` when loaded.
+    # latest recoverable run.
     updated_at: float = field(default_factory=time.time)
     schema_version: int = CHECKPOINT_SCHEMA_VERSION
 
@@ -651,6 +688,9 @@ class WorkflowCheckpoint:
         payload: dict[str, object] = {
             "schema_version": self.schema_version,
             "run_id": self.run_id,
+            "frame_id": self.frame_id,
+            "parent_run_id": self.parent_run_id,
+            "origin": self.origin,
             "workflow_name": self.workflow_name,
             "conversation_id": self.conversation_id,
             "intent": self.intent,
@@ -703,8 +743,37 @@ class WorkflowCheckpoint:
         if not isinstance(raw, dict):
             raise CheckpointValidationError("checkpoint must be a JSON object")
         schema = raw.get("schema_version")
+        links = {"frame_id", "parent_run_id", "origin"}
+        if schema == 1 and raw.get("workflow_name") == "make_agenthicc_tool":
+            raise CheckpointValidationError(
+                "This workflow was renamed to create_tools. Start a new run."
+            )
+        if schema == 1 or (schema == CHECKPOINT_SCHEMA_VERSION and links - raw.keys()):
+            raise CheckpointValidationError(
+                "Start a new run. This checkpoint predates workflow stacks."
+            )
         if schema != CHECKPOINT_SCHEMA_VERSION:
             raise CheckpointValidationError(f"unsupported checkpoint schema: {schema!r}")
+        frame_id, parent_run_id, raw_origin = raw["frame_id"], raw["parent_run_id"], raw["origin"]
+        if (
+            not isinstance(frame_id, str)
+            or not frame_id
+            or (
+                parent_run_id is not None
+                and (not isinstance(parent_run_id, str) or not parent_run_id)
+            )
+        ):
+            raise CheckpointValidationError("invalid workflow checkpoint frame links")
+        origin: FrameOrigin
+        match raw_origin:
+            case "selection":
+                origin = "selection"
+            case "user":
+                origin = "user"
+            case "agent":
+                origin = "agent"
+            case _:
+                raise CheckpointValidationError("invalid workflow checkpoint origin")
         required = (
             "run_id",
             "workflow_name",
@@ -894,6 +963,9 @@ class WorkflowCheckpoint:
         )
         return cls(
             run_id=str(raw["run_id"]),
+            frame_id=frame_id,
+            parent_run_id=parent_run_id,
+            origin=origin,
             workflow_name=str(raw["workflow_name"]),
             conversation_id=str(raw["conversation_id"]),
             intent=str(raw["intent"]),

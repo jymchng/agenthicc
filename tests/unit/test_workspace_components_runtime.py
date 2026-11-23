@@ -47,7 +47,11 @@ def _state() -> MagicMock:
     conv.background_dnd.return_value = False
     conv.background_toast.return_value = None
     conv.cost_usd.return_value = 1.25
-    conv.workflow_override.return_value = "daily [safe]"
+    from agenthicc.runners.workflow_stack import WorkflowFrameSummary
+
+    conv.workflow_stack.return_value = (
+        WorkflowFrameSummary("root", "daily [safe]", "", 0, "running", None, "selection"),
+    )
     conv.notification.return_value = "first\nsecond"
     state.active_mode.return_value = SimpleNamespace(name="Auto", badge="A", color="green")
     state.keymap.return_value = Keymap.build(DEFAULT_ACTIONS)
@@ -108,6 +112,55 @@ def test_status_reports_deferred_startup_without_claiming_readiness() -> None:
     line = _plain(components.StatusLine(_real(), coordinator).markup(120))
 
     assert "extensions loading" in line
+
+
+@pytest.mark.parametrize("glyph_set", ["unicode", "ascii"])
+def test_status_projects_nested_workflow_phase_and_staged_set_count(glyph_set: str) -> None:
+    from agenthicc.runners.workflow_stack import WorkflowFrameSummary
+    from agenthicc.tui.rendering import visible_len
+    from agenthicc.tui.theme import current_theme, resolve_theme, use_theme
+    from agenthicc.workflows.plugin import WorkflowRun
+
+    state = _real()
+    conversation = state.conversation
+    root = WorkflowFrameSummary("root", "default", "", 0, "suspended", None, "selection")
+    child = WorkflowFrameSummary("child", "create_tools", "run", 1, "running", "generate", "agent")
+    conversation.workflow_stack.set((root, child))
+    state.workflow_run.set(
+        WorkflowRun(
+            "run",
+            "create_tools",
+            "create an example",
+            "generate",
+            current_phase_index=1,
+            total_phases=4,
+            status="running",
+        )
+    )
+    conversation.staged_authored_sets.set(2)
+    line = components.StatusLine(state)
+    previous = current_theme()
+    theme, _ = resolve_theme("dark", glyph_set, env={"NO_COLOR": "1"}, encoding="utf-8")
+    use_theme(theme)
+    try:
+        rendered = _plain(line.markup(200))
+        assert f"default {theme.glyphs.right} create_tools" in rendered
+        assert "Generate" in rendered and "2/4" in rendered
+        assert f"{theme.glyphs.diamond} 2 staged" in rendered
+        assert visible_len(line.markup(40)) <= 40
+    finally:
+        use_theme(previous)
+    conversation.workflow_stack.set(
+        (WorkflowFrameSummary("root", "default", "", 0, "running", None, "selection"),)
+    )
+    conversation.staged_authored_sets.set(0)
+    state.workflow_run.set(None)
+    rendered = _plain(line.markup(160))
+    assert (
+        "workflow default" in rendered
+        and "create_tools" not in rendered
+        and "staged" not in rendered
+    )
 
 
 def test_status_preserves_priority_and_fits_display_cells() -> None:

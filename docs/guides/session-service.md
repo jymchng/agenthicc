@@ -38,6 +38,11 @@ and does not queue a second turn or repeat a control side effect. An
 `expected_sequence` makes concurrent conflicting writes fail closed with a
 `stale_sequence` error.
 
+A workflow return uses `return:<parent-frame-id>:<child-run-id>` as its turn
+ID and queue idempotency key. Replayed enqueue requests reuse the original
+queue event. The conversation journal records acceptance of that turn while
+the kernel log records return delivery.
+
 ## CLI
 
 ```bash

@@ -9,6 +9,9 @@ inside the registry, so no filter can expose a real tool behind a stub.
 
 from __future__ import annotations
 
+from types import MappingProxyType
+from agenthicc.tools.surface import ToolSurface, ToolSurfaceHolder
+from agenthicc.runners.reload import SurfaceHolder
 import asyncio
 from dataclasses import replace
 from types import SimpleNamespace
@@ -126,8 +129,8 @@ def _workflow_runner() -> tuple[WorkflowRunner, list[str]]:
         agent_runner=SimpleNamespace(),  # type: ignore[arg-type]
         approval_svc=None,
         cfg=AgenthiccConfig(),
-        skills={},
-        plugin_tools=[stage_change, inspect_change],
+        skills=SurfaceHolder(MappingProxyType({})),
+        tool_surface=ToolSurfaceHolder(ToolSurface(0, tuple([stage_change, inspect_change]))),
         mcp_registry=None,
         mention_cache=SimpleNamespace(),  # type: ignore[arg-type]
         agents_registry=SimpleNamespace(),  # type: ignore[arg-type]
@@ -175,15 +178,15 @@ _REPLAY_GROUP = ToolGroup(
 
 
 def test_override_replaces_the_builtin_catalog() -> None:
-    real = build_registry(agent_name=None, project_plugin_tools=[])
+    real = build_registry(agent_name=None, extra_tools=[])
     assert "run_bash" in real.names
 
     with override_builtin_tools([_REPLAY_GROUP]):
-        replaced = build_registry(agent_name="auto", project_plugin_tools=[inspect_change])
+        replaced = build_registry(agent_name="auto", extra_tools=[inspect_change])
 
     assert sorted(replaced.names) == ["inspect_change", "write_file"]
     assert replaced.tools[replaced.names.index("write_file")] is write_file
-    assert "run_bash" in build_registry(agent_name=None, project_plugin_tools=[]).names
+    assert "run_bash" in build_registry(agent_name=None, extra_tools=[]).names
 
 
 def test_override_never_discovers_plugins_from_disk(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -194,7 +197,7 @@ def test_override_never_discovers_plugins_from_disk(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr("agenthicc.plugins.discovery.discover_agent_tools", forbidden)
 
     with override_builtin_tools([_REPLAY_GROUP]):
-        registry = build_registry(agent_name="auto", project_plugin_tools=None)
+        registry = build_registry(agent_name="auto", extra_tools=None)
 
     assert registry.names == ["write_file"]
 
@@ -204,7 +207,7 @@ async def test_override_is_inherited_by_tasks_created_inside_it() -> None:
 
     async def build_later() -> list[str]:
         await proceed.wait()
-        return build_registry(agent_name=None, project_plugin_tools=[]).names
+        return build_registry(agent_name=None, extra_tools=[]).names
 
     with override_builtin_tools([_REPLAY_GROUP]):
         task = asyncio.create_task(build_later())
@@ -212,4 +215,4 @@ async def test_override_is_inherited_by_tasks_created_inside_it() -> None:
     proceed.set()
 
     assert await task == ["write_file"]
-    assert "run_bash" in build_registry(agent_name=None, project_plugin_tools=[]).names
+    assert "run_bash" in build_registry(agent_name=None, extra_tools=[]).names

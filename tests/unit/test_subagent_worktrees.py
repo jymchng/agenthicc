@@ -10,6 +10,8 @@ from lauren_ai._agents._runner import AgentRunnerBase
 from lauren_ai._transport import Completion, TokenUsage
 from lauren_ai._transport._mock import MockTransport
 
+from agenthicc.subagents.tool import SubagentToolSelection
+from agenthicc.tools.surface import ToolSurface
 from agenthicc.agent_tools import AGENT_TOOLS
 from agenthicc.config import SubagentSettings
 from agenthicc.subagents.tool import make_spawn_subagents_tool
@@ -80,10 +82,10 @@ async def _spawn(
     spawn = make_spawn_subagents_tool(
         AgentRunnerBase(transport=transport),
         "mock-model",
-        list(AGENT_TOOLS),
+        SubagentToolSelection(ToolSurface(0, tuple(list(AGENT_TOOLS)))),
         app_state=state,
         workspace_access=policy,
-        subagent_settings=SubagentSettings(isolation=isolation),  # type: ignore[arg-type]
+        subagent_settings=SubagentSettings(isolation=isolation),
     )
     token = set_current_workspace_access(policy)
     try:
@@ -338,7 +340,9 @@ def test_the_isolation_setting_is_validated() -> None:
 
 def test_the_spawn_description_tells_the_parent_how_to_parallelise(tmp_path: Path) -> None:
     spawn = make_spawn_subagents_tool(
-        AgentRunnerBase(transport=MockTransport()), "mock-model", list(AGENT_TOOLS)
+        AgentRunnerBase(transport=MockTransport()),
+        "mock-model",
+        SubagentToolSelection(ToolSurface(0, tuple(list(AGENT_TOOLS)))),
     )
 
     description = str(spawn.__lauren_ai_tool__.parameters["description"])  # type: ignore[attr-defined]
@@ -367,7 +371,7 @@ async def test_the_worker_event_carries_the_integration_outcome(repo: Path) -> N
     spawn = make_spawn_subagents_tool(
         AgentRunnerBase(transport=transport),
         "mock-model",
-        list(AGENT_TOOLS),
+        SubagentToolSelection(ToolSurface(0, tuple(list(AGENT_TOOLS)))),
         app_state=state,
         workspace_access=policy,
         conv_store=store,

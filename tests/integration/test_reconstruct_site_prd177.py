@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from agenthicc.tools.surface import ToolSurface, ToolSurfaceHolder
 from agenthicc.tools.sandbox import WorkspaceScope
 from agenthicc.workflows.loader import builtin_workflow_descriptors, load_builtin_workflow
 from agenthicc.workflows.reconstruct_site import (
@@ -36,14 +37,14 @@ def _config(tmp_path: Path, params: ReconstructSiteParams) -> SimpleNamespace:
         app_state=app_state,
         agent_runner=SimpleNamespace(),
         cfg=SimpleNamespace(execution=execution),
-        all_plugin_tools=lambda: [],
+        extension_tools=lambda: [],
         params=params,
         session_memory=object(),
         workflow_handle=None,
         workspace_scope=WorkspaceScope.create(tmp_path),
         browser_manager=None,
         browser_tools=(),
-        plugin_tools=[],
+        tool_surface=ToolSurfaceHolder(ToolSurface(0, ())),
         mcp_registry=None,
         memory_router=None,
         semantic_index=None,
@@ -132,7 +133,7 @@ def test_tool_bundle_is_filtered_by_the_phase_mode_not_cached_across_modes(
     app = AppState.create()
     manager = ModeManager(app_state=app, default_name="Plan")
     config.app_state = app
-    config.all_plugin_tools = lambda: [write_fixture]
+    config.extension_tools = lambda: [write_fixture]
     runner = ReconstructSiteRunner(config, manager)
 
     caller_mode = {tool_name(item) for item in runner._base_tools()}
@@ -154,7 +155,7 @@ def test_stable_tool_bundle_is_compiled_once_until_explicit_epoch_change(
     assert first == second
     assert runner._tool_cache_epoch == 0
 
-    runner.invalidate_tool_bundle_cache(reason="mcp_reload")
+    runner.invalidate_phase_tools(reason="mcp_reload")
     third = runner._base_tools()
     assert runner._tool_cache_epoch == 1
     assert [getattr(item, "__name__", "") for item in third] == [

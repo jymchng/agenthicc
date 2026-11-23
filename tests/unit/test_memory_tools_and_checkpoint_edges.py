@@ -156,6 +156,9 @@ def test_checkpoint_round_trips_phase_outputs_and_custom_codec() -> None:
 def test_checkpoint_from_dict_validates_schema_identity_numbers_and_status() -> None:
     checkpoint = WorkflowCheckpoint(
         run_id="run",
+        frame_id="run",
+        parent_run_id=None,
+        origin="selection",
         workflow_name="demo",
         conversation_id="session",
         intent="intent",

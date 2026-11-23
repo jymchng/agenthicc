@@ -214,5 +214,5 @@ def test_write_capable_builtin_phases_do_not_override_runtime_mode() -> None:
     create_workflow = {phase.name: phase.mode_override for phase in CreateWorkflow.phases}
 
     assert code_plan["execute"] is None
-    assert create_workflow["generate"] == "Yolo"
+    assert create_workflow["generate"] is None
     assert "Auto" not in {value for value in (*code_plan.values(), *create_workflow.values())}

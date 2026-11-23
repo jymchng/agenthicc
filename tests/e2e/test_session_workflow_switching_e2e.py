@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from types import MappingProxyType
+from agenthicc.tools.surface import ToolSurface, ToolSurfaceHolder
+from agenthicc.runners.reload import SurfaceHolder
 import asyncio
 import importlib.util
 from pathlib import Path
@@ -64,8 +67,8 @@ def _config(
         ),  # type: ignore[arg-type]
         approval_svc=None,
         cfg=AgenthiccConfig(),
-        skills={},
-        plugin_tools=[],
+        skills=SurfaceHolder(MappingProxyType({})),
+        tool_surface=ToolSurfaceHolder(ToolSurface(0, ())),
         mcp_registry=None,
         mention_cache=MagicMock(),
         agents_registry=MagicMock(),

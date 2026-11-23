@@ -65,6 +65,14 @@ integrated. The coordinator's initial commit is immutable in the manifest; if
 the coordinator branch changes unexpectedly, dispatch stops and asks for
 reconciliation.
 
+## Run separate workflow tasks
+
+Set `workflow` on each task that should run an eligible workflow. The worker's
+role still governs its tool access. Mutating workflows use separate worktrees.
+Each authoring worker leaves its own staged artifacts, which the parent
+validates for publication and reloads on success. Staged outputs stay in
+their worktree until the parent consumes them.
+
 ## Conflict and recovery
 
 Integration uses a regular Git merge. When it conflicts, Agenthicc aborts the

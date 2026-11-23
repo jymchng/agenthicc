@@ -16,6 +16,7 @@ __all__ = [
     "SystemSettings",
     "ToolRegistration",
     "Workflow",
+    "WorkflowFrameRecord",
     "WorkflowNode",
 ]
 
@@ -105,6 +106,30 @@ class SystemSettings:
     snapshot_path: str = ".agenthicc/snapshot.json"
 
 
+@dataclass(frozen=True, slots=True)
+class WorkflowFrameRecord:
+    """Durable workflow identity, stack link, and delivery state."""
+
+    frame_id: str
+    parent_frame_id: str | None
+    workflow_name: str
+    run_id: str
+    origin: str
+    depth: int
+    intent_digest: str
+    status: str = "running"
+    phase: str | None = None
+    summary_digest: str = ""
+    artifact_names: tuple[str, ...] = ()
+    delivered: bool = False
+
+    @property
+    def return_key(self) -> str | None:
+        if self.parent_frame_id is None:
+            return None
+        return f"return:{self.parent_frame_id}:{self.run_id}"
+
+
 @dataclass(frozen=True)
 class AppState:
     """Immutable kernel state. ``with_*`` helpers return updated copies that
@@ -119,6 +144,8 @@ class AppState:
     settings: SystemSettings
     policy: SecurityPolicy
     agent_types: dict[str, type] = field(default_factory=dict)
+    reload_generation: int = 0
+    workflow_frames: tuple[WorkflowFrameRecord, ...] = ()
 
     @classmethod
     def create(

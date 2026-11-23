@@ -36,6 +36,7 @@ import sys
 import time
 import uuid
 from copy import deepcopy
+from contextlib import nullcontext
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -76,9 +77,15 @@ from agenthicc.subagents.types import (
     SubagentTypeRegistry,
     SubagentTypeSpec,
 )
-from agenthicc.tools.base import tool_name
+from agenthicc.tools.base import ToolLike, tool_name
+from agenthicc.tools.surface import ToolSurface
 
 if TYPE_CHECKING:
+    from agenthicc.workflows.stack_tools import WorkflowToolScope
+    from agenthicc.plugins.authored_types import PublishedArtifact
+    from agenthicc.runners.workflow_stack import WorkflowReturn
+    from agenthicc.subagents.workflow_task import WorkflowTaskRefusal, WorkflowTaskSelection
+    from agenthicc.subagents.workflow_worker import WorkflowWorkerReceipt
     from lauren_ai._agents._runner import AgentRunnerBase
     from lauren_ai._transport import TokenUsage
     from agenthicc.config import ExecutionSettings, SubagentSettings
@@ -566,6 +573,8 @@ class SubagentTask:
     agent_type: str
     task_description: str
     context: str = ""
+    workflow: WorkflowTaskSelection | None = None
+    workflow_refusal: WorkflowTaskRefusal | None = None
 
 
 class _EvidenceFields(TypedDict):
@@ -624,6 +633,23 @@ class SubagentResult:
     #: Where a reply cut off by the output-token limit was saved, relative to the
     #: parent's workspace root; empty when nothing was saved.
     output_file: str = ""
+    workflow_return: WorkflowReturn | None = None
+    workflow_phases: tuple[str, ...] = ()
+    workflow_name: str = ""
+    published_artifacts: tuple[PublishedArtifact, ...] = ()
+
+    def workflow_payload(self) -> dict[str, object] | None:
+        if not self.workflow_name:
+            return None
+        return {
+            "task_id": self.task_id,
+            "workflow_name": self.workflow_name,
+            "phases": list(self.workflow_phases),
+            "return": self.workflow_return.to_dict() if self.workflow_return else None,
+            "publication": [item.to_dict() for item in self.published_artifacts],
+            "error_code": self.error_code,
+            "error": self.error,
+        }
 
 
 def _worker_context_window(
@@ -788,6 +814,7 @@ class AggregatedResult:
     not_started_workers: tuple[str, ...] = ()
     #: The pool's completed ledger spend (SUBAGENT-06).
     usage: PoolUsage = field(default_factory=PoolUsage)
+    workflow_returns: tuple[dict[str, object], ...] = ()
 
 
 _MUTATING_TOOL_NAMES = frozenset(
@@ -1338,7 +1365,7 @@ class SubagentWorker:
         index: int,
         parent_runner: AgentRunnerBase,
         parent_model: str,
-        all_tools: list[object],
+        tool_surface: ToolSurface,
         app_state: AppState | None = None,
         registry: ToolRegistry | None = None,
         retry_config: "RetryConfig | None" = None,
@@ -1459,7 +1486,7 @@ class SubagentWorker:
             or (self._effective_effort and self._model_id != self._parent_model)
         )
         self._effort_fallback_used = False
-        self._all_tools = all_tools
+        self._tool_surface = tool_surface
         permissions = spec.permissions
         parent_workspace_scope = workspace_access.scope if workspace_access is not None else None
         workspace_paths = permissions.workspace_paths if permissions is not None else None
@@ -1467,7 +1494,7 @@ class SubagentWorker:
 
         inherited_policy = policy or SubagentExecutionPolicy.from_app_state(
             app_state,
-            visible_tool_names=frozenset(tool_name(item) for item in all_tools),
+            visible_tool_names=frozenset(tool_name(item) for item in tool_surface.tools),
         )
         workspace_identity = (
             self._workspace_scope.scope_id
@@ -1517,7 +1544,7 @@ class SubagentWorker:
         if approval_svc is not None and progress is not None:
             approvals = _RequesterApprovals(approval_svc, progress)
         self._approval_svc = approvals
-        inherited_names = frozenset(tool_name(item) for item in all_tools)
+        inherited_names = frozenset(tool_name(item) for item in tool_surface.tools)
         inherited_scope = (
             self._policy.capability_scope
             if self._policy is not None
@@ -1530,7 +1557,7 @@ class SubagentWorker:
                 )
             )
         )
-        inherited_names = frozenset(tool_name(item) for item in all_tools)
+        inherited_names = frozenset(tool_name(item) for item in tool_surface.tools)
         nested_spawn_allowed = (
             depth < max_depth
             and _declares(_expand_allowed(spec.allowed_tools, registry), "spawn_subagents")
@@ -1967,7 +1994,7 @@ class SubagentWorker:
                 undelivered_messages=await self._undelivered_message_count(),
             )
 
-    def _filtered_tools(self) -> list[object]:
+    def _filtered_tools(self) -> list[ToolLike]:
         """Return the concrete tools allowed by this worker's effective scope.
 
         A worker that inherits every parent tool (``allowed_tools=None``) never
@@ -1978,11 +2005,61 @@ class SubagentWorker:
         inherits_all = self._effective_allowed is None
         return [
             tool
-            for tool in self._all_tools
+            for tool in self._tool_surface.tools
             if self._capability_scope.is_tool_allowed(tool_name(tool))
-            and tool_name(tool) != "spawn_subagents"
+            and tool_name(tool) not in {"spawn_subagents", "enter_workflow", "reload_tools"}
             and not (inherits_all and _is_control_tool(tool))
         ]
+
+    def _nested_spawn_tools(self, inherited_tools: Sequence[ToolLike]) -> tuple[ToolLike, ...]:
+        """Create the same depth-limited controls for either kind of worker."""
+        if (
+            self._depth < self._max_depth
+            and _declares(self._effective_allowed, "spawn_subagents")
+            and self._capability_scope.is_tool_allowed("spawn_subagents")
+        ):
+            from agenthicc.subagents.tool import SubagentToolSelection, make_spawn_subagents_tool
+
+            nested_spawn = make_spawn_subagents_tool(
+                parent_runner=self._parent_runner,
+                parent_model=self._model_id,
+                tool_source=SubagentToolSelection(
+                    ToolSurface(
+                        self._tool_surface.generation,
+                        tuple(inherited_tools),
+                        self._tool_surface.sources,
+                    ),
+                    self._registry,
+                    self._policy,
+                ),
+                app_state=self._app_state,
+                processor=self._processor,
+                conv_store=self._conv_store,
+                registry=self._subagent_registry,
+                retry_config=self._retry_config,
+                usage_ledger=self._usage_ledger,
+                conversation_id=self._conversation_id,
+                parent_run_id=f"{self._parent_run_id}:worker:{self._task.task_id}",
+                provider_options=self._provider_options,
+                approval_svc=self._approval_svc,
+                workspace_access=self._workspace_access,
+                conversation_journal=self._conversation_journal,
+                provider=self._provider,
+                execution_settings=self._execution_settings,
+                subagent_settings=self._subagent_settings,
+                default_model=self._default_model,
+                allowed_models=self._allowed_models,
+                parent_depth=self._depth,
+                parent_pool_id=self._pool_id,
+                ancestry=(*self._ancestry, (self._task.agent_type, self._task.task_description)),
+                owner_lineage=(*self._owner_lineage, f"{self._pool_id}:{self._task.task_id}"),
+            )
+            nested_tool = cast(_SpawnSubagentsWithCommunicationTools, nested_spawn)
+            companion = cast(
+                "Sequence[ToolLike]", nested_tool.__agenthicc_subagent_communication_tools__
+            )
+            return (nested_spawn, *companion)
+        return ()
 
     async def _execute(self) -> str:
         """Build an isolated agent and run the task. Returns response content."""
@@ -1999,49 +2076,29 @@ class SubagentWorker:
         )
 
         from agenthicc.runners.tool_populator import populate_agent_tools
+        from agenthicc.runners.skill_runner import SkillAwareRunner
+        from agenthicc.skills.tools import (
+            SKILL_CONTEXT_GUIDANCE,
+            SKILL_TOOL_NAMES,
+            bind_skill_use,
+            current_skill_use,
+        )
+        from agenthicc.workflows.stack_tools import bind_workflow_tools, current_workflow_tools
 
         # Filter the full tool list to the expanded effective scope. Communication
         # tools are session-bound control-plane tools and are added separately;
         # they never expand the file/command/network tool surface.
-        filtered = self._filtered_tools()
-        if (
-            self._depth < self._max_depth
-            and _declares(self._effective_allowed, "spawn_subagents")
-            and self._capability_scope.is_tool_allowed("spawn_subagents")
-        ):
-            from agenthicc.subagents.tool import make_spawn_subagents_tool
-
-            nested_spawn = make_spawn_subagents_tool(
-                parent_runner=self._parent_runner,
-                parent_model=self._model_id,
-                all_tools=list(filtered),
-                app_state=self._app_state,
-                processor=self._processor,
-                conv_store=self._conv_store,
-                registry=self._subagent_registry,
-                tool_registry=self._registry,
-                retry_config=self._retry_config,
-                usage_ledger=self._usage_ledger,
-                conversation_id=self._conversation_id,
-                parent_run_id=f"{self._parent_run_id}:worker:{self._task.task_id}",
-                provider_options=self._provider_options,
-                approval_svc=self._approval_svc,
-                workspace_access=self._workspace_access,
-                conversation_journal=self._conversation_journal,
-                policy=self._policy,
-                provider=self._provider,
-                execution_settings=self._execution_settings,
-                subagent_settings=self._subagent_settings,
-                default_model=self._default_model,
-                allowed_models=self._allowed_models,
-                parent_depth=self._depth,
-                parent_pool_id=self._pool_id,
-                ancestry=(*self._ancestry, (self._task.agent_type, self._task.task_description)),
-                owner_lineage=(*self._owner_lineage, f"{self._pool_id}:{self._task.task_id}"),
+        inherited_tools = self._filtered_tools()
+        filtered: list[object] = list(inherited_tools)
+        parent_workflow_tools = current_workflow_tools()
+        workflow_tools = (
+            parent_workflow_tools.for_worker(
+                f"{self._pool_id}:{self._task.task_id}", self._task.agent_type
             )
-            filtered.append(nested_spawn)
-            nested_tool = cast(_SpawnSubagentsWithCommunicationTools, nested_spawn)
-            filtered.extend(nested_tool.__agenthicc_subagent_communication_tools__)
+            if parent_workflow_tools is not None
+            else None
+        )
+        filtered.extend(self._nested_spawn_tools(inherited_tools))
         if self._communication is not None:
             filtered.extend(make_child_communication_tools(self._communication, self._task.task_id))
         if self._spec.output_schema is not None:
@@ -2104,6 +2161,29 @@ class SubagentWorker:
         # explicit prevents a role's usual "brief summary" instruction from
         # discarding a task that explicitly requests complete content.
         system = self._spec.system_prompt
+        parent_skill_use = current_skill_use()
+        visible_names = frozenset(map(tool_name, filtered))
+        skill_use = None
+        if parent_skill_use is not None and SKILL_TOOL_NAMES & visible_names:
+
+            def record_skill_use(payload: dict[str, object]) -> None:
+                from agenthicc.kernel.events import Event
+
+                if self._processor is not None:
+                    self._processor.emit_nowait(
+                        Event.create(
+                            "SkillUsed",
+                            {
+                                "turn_id": self._task.task_id,
+                                "pool_id": self._pool_id,
+                                **payload,
+                            },
+                        )
+                    )
+
+            skill_use = parent_skill_use.for_agent(self._task.agent_type, on_use=record_skill_use)
+            skill_use.configure_tools(visible_names)
+            system += "\n\n" + SKILL_CONTEXT_GUIDANCE
         if self._policy is not None:
             system += "\n\n" + self._policy.prompt_section()
             if self._policy.system_prompt_suffix:
@@ -2131,6 +2211,15 @@ class SubagentWorker:
             )
         if self._task.context:
             system = f"{system}\n\n[ADDITIONAL CONTEXT]\n{self._task.context}"
+        if workflow_tools is not None and workflow_tools.catalog is not None:
+            capabilities = workflow_tools.catalog.render(
+                workflow_tools,
+                skill_use.callable_skills() if skill_use is not None else (),
+                visible_names,
+                self._task.task_description,
+            )
+            if capabilities:
+                system += f"\n\n{capabilities}"
 
         # Construct the @agent class and runner.
         @agent_decorator(model=self._model_id, system=system)
@@ -2242,7 +2331,8 @@ class SubagentWorker:
                     + _token_count(_usage_field(usage, "output_tokens"))
                 )
 
-        runner = _RunnerBase(
+        runner_class = SkillAwareRunner if skill_use is not None else _RunnerBase
+        runner = runner_class(
             # OpenAI-compatible endpoints may return nullable usage fields.
             # Lauren's non-streaming runner adds those fields directly, so
             # isolate each worker behind the normalising proxy.
@@ -2328,6 +2418,15 @@ class SubagentWorker:
             )
 
         async def _run_once(message: str, config_override: AgentConfig) -> None:
+            with (
+                bind_skill_use(skill_use) if skill_use is not None else nullcontext(),
+                bind_workflow_tools(workflow_tools)
+                if workflow_tools is not None
+                else nullcontext(),
+            ):
+                await _run_provider(message, config_override)
+
+        async def _run_provider(message: str, config_override: AgentConfig) -> None:
             if usage_tracker is not None:
                 response = await runner.run(
                     agent_instance,
@@ -2521,6 +2620,124 @@ def retryable_pool(pool_id: str) -> SubagentPool | None:
     return pool
 
 
+class WorkflowWorker(SubagentWorker):
+    """Run a pinned workflow using the pool's existing worker lifecycle."""
+
+    _workflow_receipt: WorkflowWorkerReceipt | None = None
+    _workflow_scope: WorkflowToolScope | None = None
+
+    def bind_workflow_scope(self, scope: WorkflowToolScope | None) -> None:
+        self._workflow_scope = scope
+
+    def _workflow_run_id(self) -> str:
+        attempt = self._progress.attempt if self._progress is not None else 1
+        suffix = f"-a{attempt}" if attempt > 1 else ""
+        index = self._task.task_id.removeprefix("task-")
+        return f"sub-{self._pool_id}-{index}{suffix}"
+
+    def _observe_workflow_tool(
+        self, name: str, arguments: Mapping[str, object], result: object
+    ) -> None:
+        self._tool_calls.append(name)
+        if isinstance(result, Mapping) and result.get("ok") is False:
+            code = result.get("error_code")
+            if isinstance(code, str) and code in _REFUSAL_ERROR_CODES:
+                self._record_refusal(name, code)
+            return
+        if name in _MUTATING_TOOL_NAMES:
+            self._successful_mutations.append(name)
+            self._changed_paths.extend(self._display_paths(name, arguments))
+        if name in {"run_command", "run_bash", "run_python", "run_tests"}:
+            self._successful_executions.append(name)
+
+    async def _execute(self) -> str:
+        from agenthicc.subagents.workflow_worker import execute_worker_workflow
+
+        selected = self._task.workflow
+        scope = self._workflow_scope
+        state = self._app_state
+        policy = self._policy
+        journal = self._conversation_journal
+        if (
+            selected is None
+            or scope is None
+            or scope.worker_runtime is None
+            or policy is None
+            or state is None
+            or journal is None
+        ):
+            raise RuntimeError("The worker cannot open a scoped workflow runtime.")
+        if selected.requires_worktree and self._worker_workspace is None:
+            raise RuntimeError("This workflow requires its own worktree.")
+        tools = tuple(self._filtered_tools())
+        names = frozenset(map(tool_name, tools))
+        policy = policy.restrict_by(None, allowed_tools=names)
+        intent = self._task.task_description
+        if self._task.context:
+            intent += f"\n\nWorker context: {self._task.context}"
+        self._workflow_receipt = await execute_worker_workflow(
+            scope.worker_runtime,
+            selected,
+            run_id=self._workflow_run_id(),
+            intent=intent,
+            root=journal.path.parent / "subagents" / self._pool_id / "workflow-runs",
+            workflow_scope=scope,
+            runner=self._parent_runner,
+            model=self._model_id,
+            memory_tokens=self._memory_tokens,
+            state=state,
+            policy=policy,
+            tools=ToolSurface(self._tool_surface.generation, tools, self._tool_surface.sources),
+            approval=self._approval_svc,
+            workspace=self._workspace_access,
+            observe=self._observe_workflow_tool,
+            control_tools=self._nested_spawn_tools(tools),
+        )
+        return self._workflow_receipt.result.summary
+
+    async def _harvest(self) -> None:
+        selected = self._task.workflow
+        if selected is not None and selected.definition.invocation.publishes:
+            return  # Publication reads staged sources directly from the worker.
+        await super()._harvest()
+
+    async def _run(self) -> SubagentResult:
+        self._workflow_receipt = None
+        result = await super()._run()
+        receipt = self._workflow_receipt
+        if receipt is None:
+            return result
+        if receipt.reason:
+            result = replace(result, ok=False, error=receipt.reason, error_code="workflow_failed")
+        return replace(
+            result,
+            workflow_return=receipt.result,
+            workflow_phases=receipt.phases,
+            workflow_name=receipt.result.workflow_name,
+        )
+
+    async def _integrate(self, result: SubagentResult) -> SubagentResult:
+        selected = self._task.workflow
+        if selected is None or not selected.definition.invocation.publishes:
+            return await super()._integrate(result)
+        workspace = self._worker_workspace
+        isolation = self._pool_isolation
+        if workspace is None or isolation is None:
+            return result
+        stage = workspace.path / ".agenthicc" / ".staging" / self._workflow_run_id()
+        receipt = self._workflow_receipt
+        if (
+            stage.is_dir()
+            or self._successful_mutations
+            or (receipt is not None and receipt.run is not None)
+        ):
+            isolation.preserve(workspace.task_id)
+            return replace(
+                result, integration="kept", workspace=str(workspace.path), branch=workspace.branch
+            )
+        return result
+
+
 class SubagentPool:
     """Runs a set of SubagentTasks concurrently bounded by *max_concurrent*.
 
@@ -2533,7 +2750,7 @@ class SubagentPool:
         tasks: list[SubagentTask],
         parent_runner: AgentRunnerBase,
         parent_model: str,
-        all_tools: list[object],
+        tool_surface: ToolSurface,
         max_concurrent: int = 4,
         app_state: AppState | None = None,
         processor: EventProcessor | None = None,
@@ -2608,9 +2825,14 @@ class SubagentPool:
         self._workspaces: dict[str, WorkerWorkspace] = {}
         self._isolation_note = ""
         self._tasks = tasks
+        from agenthicc.workflows.stack_tools import current_workflow_tools
+
+        self._workflow_scope = (
+            current_workflow_tools() if any(task.workflow is not None for task in tasks) else None
+        )
         self._parent_runner = parent_runner
         self._parent_model = parent_model
-        self._all_tools = all_tools
+        self._tool_surface = tool_surface
         self._provider = provider
         self._default_model = default_model
         self._default_effort = default_effort
@@ -2852,13 +3074,14 @@ class SubagentPool:
         runs on the same model, budget scope, depth and event sinks as the
         attempt it repeats.
         """
-        worker = SubagentWorker(
+        worker_type = WorkflowWorker if task.workflow is not None else SubagentWorker
+        worker = worker_type(
             task=task,
             spec=spec,
             index=index,
             parent_runner=self._parent_runner,
             parent_model=self._parent_model,
-            all_tools=self._all_tools,
+            tool_surface=self._tool_surface,
             app_state=self._app_state,
             registry=self._tool_registry,
             retry_config=self._retry_config,
@@ -2902,6 +3125,8 @@ class SubagentPool:
         workspace = self._workspaces.get(task.task_id)
         if workspace is not None and self._isolation is not None:
             worker.bind_workspace(self._isolation, workspace)
+        if isinstance(worker, WorkflowWorker):
+            worker.bind_workflow_scope(self._workflow_scope)
         return worker
 
     def retry_refusal(self, worker_id: str) -> str:
@@ -2944,6 +3169,15 @@ class SubagentPool:
         spec = self._worker_specs[worker_id]
         index = self._worker_indices[worker_id]
         progress = self._progress[worker_id]
+        if task.workflow is not None:
+            _ACTIVE_POOLS[self.pool_id] = self
+            try:
+                await self._prepare_isolation((task,))
+            except BaseException:
+                await self._release_isolation()
+                _ACTIVE_POOLS.pop(self.pool_id, None)
+                raise
+            task = next(item for item in self._tasks if item.task_id == worker_id)
 
         lifecycle = replace(
             lifecycle,
@@ -2970,6 +3204,7 @@ class SubagentPool:
                         state.label,
                         state.agent_type,
                         task_item.task_description,
+                        self._tool_surface.generation,
                     )
                     for state, task_item in zip(self._state.workers, self._tasks, strict=True)
                 ],
@@ -3012,6 +3247,13 @@ class SubagentPool:
             ordered_results = [
                 self._results[item.task_id] for item in self._tasks if item.task_id in self._results
             ]
+            if not was_cancelled:
+                retried = [result]
+                await self._publish_workflow_artifacts(retried)
+                result = retried[0]
+                ordered_results = [
+                    result if item.task_id == worker_id else item for item in ordered_results
+                ]
             aggregate = self._with_usage(_aggregate(self.pool_id, ordered_results, self._registry))
             self._state = replace(self._state, finished_at=time.time())
             self._publish()
@@ -3024,11 +3266,13 @@ class SubagentPool:
                     failed=aggregate.failed,
                     text=aggregate.text,
                     values=[dict(value) for value in aggregate.values],
+                    workflow_returns=aggregate.workflow_returns,
                 )
             if was_cancelled:
                 raise asyncio.CancelledError
             return result
         finally:
+            await self._release_isolation()
             if self._transcripts is not None:
                 self._transcripts.finish(time.time())
                 await self._transcripts.aclose()
@@ -3090,11 +3334,11 @@ class SubagentPool:
         if permissions is not None and permissions.workspace_paths is not None:
             return False  # a narrowed path scope is not reproducible in a worktree
         tools, blocked = type_surface(
-            spec, self._all_tools, self._tool_registry, (self._policy, spec.policy)
+            spec, self._tool_surface.tools, self._tool_registry, (self._policy, spec.policy)
         )
         return any(_is_mutating_tool(tool) and not _policy_blocks(tool, blocked) for tool in tools)
 
-    async def _prepare_isolation(self) -> None:
+    async def _prepare_isolation(self, selected: Sequence[SubagentTask] | None = None) -> None:
         """Give each file-changing worker its own git worktree (SUBAGENT-15).
 
         ``subagents.isolation``: ``shared`` never isolates; ``auto`` isolates when
@@ -3104,10 +3348,21 @@ class SubagentPool:
         """
         settings = self._subagent_settings
         mode = settings.isolation if settings is not None else "auto"
-        if mode == "shared":
-            return
-        working = [task for task in self._tasks if self._can_change_workspace(task)]
-        if not working or (mode == "auto" and len(working) < 2):
+        tasks = self._tasks if selected is None else selected
+        required = [
+            task for task in tasks if task.workflow is not None and task.workflow.requires_worktree
+        ]
+        ordinary = [
+            task
+            for task in tasks
+            if task.workflow is None
+            and task.workflow_refusal is None
+            and self._can_change_workspace(task)
+        ]
+        if mode == "shared" or (mode == "auto" and len(ordinary) < 2):
+            ordinary = []
+        working = [*required, *ordinary]
+        if not working:
             return
         from agenthicc.subagents.isolation import IsolationError, PoolIsolation, git_repository_for
 
@@ -3123,18 +3378,34 @@ class SubagentPool:
                 reason = f"{root} is not inside a git repository"
             else:
                 try:
-                    isolation = await asyncio.to_thread(
+                    created = await asyncio.to_thread(
                         PoolIsolation,
                         root,
                         session_id=self._conversation_id,
                         pool_id=self.pool_id,
+                        worktree_root=root / ".agenthicc" / "worktrees" if required else None,
                     )
-                    workspaces = await isolation.prepare([task.task_id for task in working])
+                    workspaces = await created.prepare([task.task_id for task in working])
+                    isolation = created
                 except IsolationError as exc:
                     reason = str(exc)
         if reason or isolation is None:
+            if required:
+                from agenthicc.subagents.workflow_task import WorkflowTaskRefusal
+
+                for task in required:
+                    assert task.workflow is not None
+                    position = self._tasks.index(task)
+                    self._tasks[position] = replace(
+                        task,
+                        workflow=None,
+                        workflow_refusal=WorkflowTaskRefusal(
+                            task.workflow.definition.name, "workflow_workspace_unavailable", reason
+                        ),
+                    )
             if mode == "worktree":
-                raise SubagentAdmissionError(f"subagents.isolation is 'worktree' but {reason}")
+                if ordinary:
+                    raise SubagentAdmissionError(f"subagents.isolation is 'worktree' but {reason}")
             self._isolation_note = (
                 f"Workers that can change files shared one workspace ({reason}), so edits "
                 "to the same file can overwrite one another."
@@ -3213,7 +3484,11 @@ class SubagentPool:
             self._transcripts.start(
                 [
                     WorkerRecord(
-                        state.worker_id, state.label, state.agent_type, task.task_description
+                        state.worker_id,
+                        state.label,
+                        state.agent_type,
+                        task.task_description,
+                        self._tool_surface.generation,
                     )
                     for state, task in zip(worker_states, self._tasks, strict=True)
                 ],
@@ -3243,6 +3518,7 @@ class SubagentPool:
                     failed=result.failed,
                     text=result.text,
                     values=[dict(value) for value in result.values],
+                    workflow_returns=result.workflow_returns,
                 )
             return result
         except asyncio.CancelledError:
@@ -3365,6 +3641,22 @@ class SubagentPool:
 
             async with semaphore:
                 lifecycle = self._lifecycles[worker_id]
+                refusal = worker._task.workflow_refusal
+                if refusal is not None:
+                    return await _finish(
+                        SubagentResult(
+                            task_id=worker_id,
+                            agent_type=worker._task.agent_type,
+                            label=worker.label,
+                            ok=False,
+                            text="",
+                            error=refusal.reason,
+                            error_code=refusal.code,
+                            not_started=True,
+                            workflow_name=refusal.workflow_name,
+                        ),
+                        phase="failed",
+                    )
                 request = lifecycle.stop_request
                 if request is not None and lifecycle.phase in {"requested", "cancelling"}:
                     phase: WorkerLifecyclePhase = (
@@ -3504,6 +3796,7 @@ class SubagentPool:
                     )
                 )
 
+        await self._publish_workflow_artifacts(results)
         digest = _aggregate(self.pool_id, results, self._registry)
         if self._isolation_note:
             digest = replace(digest, text=f"{digest.text}\n\n=== Note ===\n{self._isolation_note}")
@@ -3515,6 +3808,37 @@ class SubagentPool:
         if self._communication is not None:
             await self._communication.close(reason="pool_completed")
         return aggregated
+
+    async def _publish_workflow_artifacts(self, results: list[SubagentResult]) -> None:
+        scope = self._workflow_scope
+        runtime = scope.worker_runtime if scope is not None else None
+        if runtime is None:
+            return
+        for index, result in enumerate(results):
+            worker = self._workers.get(result.task_id)
+            if not result.ok or not result.workspace or not isinstance(worker, WorkflowWorker):
+                continue
+            receipt = worker._workflow_receipt
+            task = worker._task.workflow
+            if receipt is None or receipt.run is None or task is None:
+                continue
+            publication = await runtime.publisher.publish(
+                replace(receipt.run, session_id=runtime.config.conversation_id),
+                source_root=Path(result.workspace),
+                allowed_kinds=task.definition.invocation.publishes,
+            )
+            result = replace(result, published_artifacts=publication.artifacts)
+            if publication.error_code is not None:
+                result = replace(
+                    result, ok=False, error_code=publication.error_code, error=publication.summary()
+                )
+            elif self._isolation is not None and all(
+                item.state == "loaded" for item in publication.artifacts
+            ):
+                await self._isolation.release_if_clean(result.task_id)
+            results[index] = result
+            self._results[result.task_id] = result
+            self._persist_worker_result(result)
 
     # ── TUI helpers ──────────────────────────────────────────────────────────
 
@@ -3750,6 +4074,7 @@ class SubagentPool:
             attempt=lifecycle.attempt if lifecycle is not None else 1,
             cleanup_error=lifecycle.cleanup_error if lifecycle is not None else "",
             not_started=result.not_started,
+            workflow=result.workflow_payload(),
         )
 
     def _persist_cancelled_workers(self) -> None:
@@ -3816,6 +4141,7 @@ class SubagentPool:
                 fields={
                     "type": worker._task.agent_type,
                     "label": worker.label,
+                    "tool_surface_generation": self._tool_surface.generation,
                     **self._display_fields(
                         "task", worker._task.task_description, _MAX_DISPLAY_TASK_CHARS
                     ),
@@ -3927,7 +4253,9 @@ def _aggregate(
     registry: SubagentTypeRegistry = DEFAULT_REGISTRY,
 ) -> AggregatedResult:
     """Produce labelled-concatenation text from a list of results."""
-    started_results = [result for result in results if not result.not_started]
+    started_results = [
+        result for result in results if not result.not_started or result.workflow_name
+    ]
     not_started = tuple(result.label for result in results if result.not_started)
     succeeded = sum(1 for result in started_results if result.ok)
     failed = len(started_results) - succeeded
@@ -3998,6 +4326,9 @@ def _aggregate(
         text=text,
         values=values,
         not_started_workers=not_started,
+        workflow_returns=tuple(
+            payload for result in results if (payload := result.workflow_payload()) is not None
+        ),
     )
 
 
@@ -4008,7 +4339,7 @@ async def run_pool(
     tasks: list[SubagentTask],
     parent_runner: AgentRunnerBase,
     parent_model: str,
-    all_tools: list[object],
+    tool_surface: ToolSurface,
     max_concurrent: int = 4,
     app_state: AppState | None = None,
     processor: EventProcessor | None = None,
@@ -4040,7 +4371,7 @@ async def run_pool(
         tasks=tasks,
         parent_runner=parent_runner,
         parent_model=parent_model,
-        all_tools=all_tools,
+        tool_surface=tool_surface,
         max_concurrent=max_concurrent,
         app_state=app_state,
         processor=processor,

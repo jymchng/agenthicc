@@ -22,7 +22,8 @@ other per-session artifact lives **inside** it.
 | `<id>/loop.lock` | `runners.loop_scheduler.LoopStore` | Short atomic loop-record write lock | OS advisory lock; never held while an agent turn or scheduler callback runs |
 | `<id>/.owner` | `SessionOwnerLease` | One live process owner for the whole durable session | Atomic claim/release; stale recovery only when process death is proven |
 | `<id>/.owner.lock` | `SessionOwnerLease` | Short per-session critical section for owner publication, stale replacement, and release | OS advisory lock; never held for the session lifetime |
-| `<id>/workflows/<run>/checkpoint.json` | `WorkflowCheckpointStore` | Versioned workflow context, semantic phase cursor, active topology version/fingerprint/profile/name snapshot, plugin fingerprint, journal cursor, and non-secret provider/profile/workspace identity | Rehydrate an explicitly acknowledged paused or interrupted workflow |
+| `<id>/workflows/<run>/checkpoint.json` | `WorkflowCheckpointStore` | Versioned workflow context, frame identity, caller run ID, origin, semantic phase cursor, topology, journal cursor, and non-secret provider/profile/workspace identity | Rehydrate a paused or interrupted workflow and its callers |
+| `<id>/workflows/<run>/return.json` | `WorkflowCheckpointStore` | Immutable bounded return packet, including artifacts and the parent frame and child run IDs | Recover the same parent turn after a restart |
 | `<id>/workflows/<run>/recovery-error.json` | `WorkflowCheckpointStore` | Bounded, redacted diagnostic for setup, context, or checkpoint-storage failures that cannot produce a typed checkpoint | Display diagnosis after restart; never resumable by itself |
 | `<id>/workflows/<run>/.claim` | `WorkflowCheckpointStore` | Atomic live-owner lease metadata (PID/host/owner/process-start identity only) | Prevent duplicate resume; reclaim only provably dead local claims |
 | `~/.agenthicc/session-service/index.json` | `SessionEventStore` | Bounded redacted metadata projection: id, project root, lifecycle, timestamps, sequence, capabilities, and file fingerprint | Atomic rebuild from authoritative service JSONL files; never used as event truth |
@@ -367,6 +368,14 @@ against the checkpoint. Registry membership, plugin fingerprint, topology,
 phase/index, conversation cursor, and single-owner claim checks remain
 independent fail-closed guards.
 
+### Workflow stack checkpoint links
+
+Schema version 2 requires `frame_id`, `parent_run_id` (nullable), and
+`origin`. A checkpoint that predates these fields is rejected with a
+message to start a new run. The kernel event log reconstructs the stack
+projection and delivered markers. The conversation journal provides the
+durable start receipt for each keyed parent turn.
+
 ### Active workflow checkpoint topology
 
 `WorkflowCheckpoint.phase_index` is an index into the active phase graph for
@@ -420,6 +429,10 @@ retry/rejection data, and redacted cache diagnostics. They exclude the
 open files, callbacks, and credentials. Resume attaches the already-open
 session memory and preserves its conversation ID; persistence never copies the
 conversation and does not guarantee a provider cache hit.
+
+`create_workflow` checkpoints require a repair budget with the original
+cycle allowance and usage. The workflow records an exhausted budget as a
+terminal failure. A checkpoint missing the budget cannot resume.
 
 The session's existing `ConversationJournal` also records a redacted
 `workflow_phase_boundary` index after a completed checkpoint is durable.
@@ -627,6 +640,10 @@ clarification/INIT run.
 | Project memory | `.agenthicc/memory/project.db` | Namespaced KV and artifacts |
 | Workspace file cache | `.agenthicc/cache/file-cache.db` | Freshness-validated file contents |
 | Extension trust | `~/.agenthicc/trust.json` | Resolved path → SHA-256 records for trusted project extensions (`agenthicc trust`); owner-only, written atomically, never stored in a repository |
+| Authored staging | `.agenthicc/.staging/<run-id>/` | Candidate files kept out of discovery until publication |
+| Authored provenance | `.agenthicc/authored.json` | The project's view of installed artifacts and their validated digests |
+| Authored versions | `.agenthicc/authored/versions/<name>/<digest>/` | Up to five previous approved versions per artifact |
+| Authored authorization | `~/.agenthicc/authored/<workspace-digest>/` | Operator-owned approval tickets, version identities, and pending-install recovery snapshots |
 | Global memory | `~/.agenthicc/global.db` | User-wide KV values |
 
 These locations are fixed; no setting relocates them. An unreadable trust

@@ -38,6 +38,10 @@ import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import MappingProxyType
+
+from agenthicc.tools.surface import ToolSurface, ToolSurfaceHolder
+from agenthicc.runners.reload import SurfaceHolder
 from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
@@ -162,6 +166,9 @@ class _HeadlessProcessor:
         self._events: list[dict[str, object]] = []
 
     async def emit(self, event: Event) -> None:
+        self.emit_nowait(event)
+
+    def emit_nowait(self, event: Event) -> None:
         self._events.append({"type": event.event_type, "payload": dict(event.payload)})
 
     def get_state(self) -> None:
@@ -369,8 +376,8 @@ async def run_headless_replay(
             agent_runner=agent_runner,
             approval_svc=approvals,
             cfg=run_cfg,
-            skills={},
-            plugin_tools=[],
+            skills=SurfaceHolder(MappingProxyType({})),
+            tool_surface=ToolSurfaceHolder(ToolSurface(0, ())),
             mcp_registry=None,
             mention_cache=MentionCache(),
             agents_registry=agents_registry,  # type: ignore[arg-type]

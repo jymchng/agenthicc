@@ -251,6 +251,29 @@ per-candidate path authorization on the event loop (a 93.7 s stall); see
 - [TUIR-04 — An event-loop lag budget (proposed)](tui-responsiveness/TUIR-04-event-loop-lag-budget.md)
 - [TUIR-05 — The attention badge says what it counts (proposed)](tui-responsiveness/TUIR-05-attention-badge-says-what-it-counts.md)
 
+### WFC series — workflow composition and agent self-extension
+
+Agents that enter a workflow and return from it, spawn subagents that run a
+workflow, and create workflows, tools and skills that are validated and reloaded
+in the same session. See
+[`workflow-composition/`](workflow-composition/README.md). Start with
+[WFC-00](workflow-composition/WFC-00-programme-and-study.md).
+
+- [WFC-01 — A workflow call stack (implemented)](workflow-composition/WFC-01-workflow-call-stack.md)
+- [WFC-02 — Model-facing workflow tools (implemented)](workflow-composition/WFC-02-model-facing-workflow-tools.md)
+- [WFC-03 — A durable stack: kernel events, checkpoint links, exactly-once return (implemented)](workflow-composition/WFC-03-durable-stack-events-and-resume.md)
+- [WFC-04 — Subagents that run a workflow (implemented)](workflow-composition/WFC-04-workflow-running-subagents.md)
+- [WFC-05 — One session reload service (implemented)](workflow-composition/WFC-05-session-reload-service.md)
+- [WFC-06 — `create_workflow`: activate, complete, trust, reload, use (implemented)](workflow-composition/WFC-06-create-workflow-activate-complete-reload.md)
+- [WFC-07 — `create_tools` (implemented)](workflow-composition/WFC-07-create-tools-workflow.md)
+- [WFC-08 — A live tool surface (implemented)](workflow-composition/WFC-08-live-tool-surface.md)
+- [WFC-09 — `create_skills` (implemented)](workflow-composition/WFC-09-create-skills-workflow.md)
+- [WFC-10 — Model-invocable skills (implemented)](workflow-composition/WFC-10-model-invocable-skills.md)
+- [WFC-11 — Automatic trust, provenance and rollback for authored extensions (implemented)](workflow-composition/WFC-11-authored-extension-trust-and-provenance.md)
+- [WFC-12 — A capability catalog and operator visibility (implemented)](workflow-composition/WFC-12-capability-catalog-and-operator-visibility.md)
+- [WFC-13 — End-to-end acceptance suite (implemented)](workflow-composition/WFC-13-end-to-end-acceptance-suite.md)
+- [WFC-14 — A shared authoring contract: runner-owned validation, scoped generation, bounded repair (implemented)](workflow-composition/WFC-14-shared-authoring-contract.md)
+
 ### PRD-220–239 — OpenCode, Claude Code, and Codex feature study
 
 These 20 PRDs originated as proposals from an evidence-based comparison of the

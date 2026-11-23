@@ -12,6 +12,62 @@ journal-backed provider memory is reused across phase turns. The reactive
 in a typed workflow context and is checkpointed separately when the runner
 supports resumable state.
 
+### Call a workflow and return
+
+`/workflow <name>` selects the base workflow for subsequent messages.
+`/workflow` shows the active frames and `/workflow stack` includes run IDs
+and origins.
+`/workflow reset` returns the base to the active mode’s default.
+Use `/workflow call <name> <intent>` to run a child for a specific task.
+The session suspends the parent, runs the child, then gives the parent one
+turn containing the child’s summary, phase outputs and publication receipts.
+The session publishes and reloads approved artifacts before that turn.
+
+The child inherits the parent’s capability ceiling and approvals. While a
+child is active, the base selection is locked. If the child pauses, use
+`/workflow resume` to continue it or `/workflow return --abandon` to return
+to the parent with an abandoned result. The default depth is four child
+frames. Set `workflows.max_stack_depth` to change it.
+
+### Let the agent call a workflow
+
+The agent can use `list_workflows` to find callable workflows that fit its
+current frame and permissions. It can then use
+`enter_workflow(workflow, intent, params=None)` to request one. The optional
+parameters are a map of strings validated by the target workflow. The session
+starts the child after the current agent turn finishes successfully and
+delivers the result to the parent when the child returns. `workflow_status`
+shows the current phase and recent returns.
+
+Safe mode asks the operator before accepting the entry. Plan mode allows
+workflows whose declared phases stay within its read-only ceiling. Headless
+agent entry excludes workflows that declare an interactive human gate.
+Workers can inspect their own workflow status.
+
+The model's capability catalog lists workflows admitted by the current frame,
+model-invocable skills, and newly published tools available to that agent.
+Use `/catalog` to inspect the same text. The catalog is bounded to 1,500
+characters and points to the inventory tools when entries are omitted.
+
+Set `WorkflowPlugin.invocation` to a `WorkflowInvocation` declaration to opt
+in. Supply `when_to_use` and `returns` for discovery, set
+`agent_callable=True` for model entry, and set `interactive=True` when the
+workflow needs a human decision. `allows_child_workflows=True` lets an active
+workflow call another workflow. Its runner needs checkpoint support so the
+session can resume the same run. Use `reentrant=True` only for workflows that
+support repeated frames on the same stack. Changes to this declaration affect
+checkpoint compatibility.
+
+After a restart, `/workflow resume` offers the deepest recoverable child in
+each saved chain. The caller stays suspended until the child returns. A
+missing caller is reported and the child is offered as a base workflow.
+Cycles and chains deeper than the configured limit are reported as recovery
+errors. Checkpoints written before workflow stacks require a new run.
+
+If the session stops after recording a return, reopening the session
+continues the parent turn using the same return key. A journal entry
+that already accepted this turn is reused on recovery.
+
 ### Outer session ownership
 
 The workflow lease is nested inside the durable session owner lease. The TUI,
@@ -49,13 +105,13 @@ terminal boundary. If the process disappears while a checkpoint is `running` or
 plugin fingerprint, profile, workspace, journal cursor, and typed context, and
 offers it without invoking the model.
 
-Use `/workflow resume` to continue the latest eligible recoverable run. The
-run ID is optional: the command is equivalent to
-`/workflow resume <latest-run-id>`. An ordinary message continues the selected
+Use `/workflow resume` to continue the current paused child, or the latest
+eligible recoverable run at the base. Pass a run ID to select a saved base run.
+An ordinary message continues the selected
 paused run using the same policy as an Esc pause; it never silently creates a
 fresh phase-one run. Use
-`/workflow reset` to always clear the session-local workflow override so
-subsequent turns use the active mode's default workflow. Use
+`/workflow reset` at the base to return subsequent turns to the active mode's
+default workflow. Use
 `/workflow reset <run-id>` to write a terminal discarded checkpoint for a
 saved run that is not currently attached. For a paused `create_workflow` run
 with a pending authoring transaction, reset first restores the approved original
@@ -123,12 +179,12 @@ and no workflow phase starts. Provider runners are forked lazily for the
 selected execution settings, without constructing the session's previous
 provider configuration.
 
-A successful interactive `/workflow resume [run-id]` also selects the workflow
+A successful interactive base-frame `/workflow resume [run-id]` also selects the workflow
 stored in that validated checkpoint for the rest of the current TUI session.
 The footer shows the same `⬡ workflow-name` selection, and subsequent ordinary
 messages use it instead of a different invocation selection or mode default.
 This selection remains after the resumed run completes, pauses again, or
-fails. Choose another workflow with `/workflow <name>` or clear the override
+fails. Choose another workflow with `/workflow <name>` or clear the selection
 with `/workflow reset`. Merely discovering a checkpoint, an ambiguous lookup,
 or a failed claim/restore does not change the current selection.
 
@@ -291,8 +347,8 @@ plan → execute → review → summarize
 ```
 
 The generic `WorkflowRunner` executes `WorkflowPlugin` phase specifications.
-Workflow selection is influenced by the active mode, registry mappings, and the
-session-local `/workflow` override.
+The active frame selects the workflow. Registry mappings and the active mode
+resolve the base selection when the operator has made no explicit choice.
 
 ### `ui_ux_pro_max`
 
@@ -575,13 +631,12 @@ The built-in `create_workflow` authoring workflow turns a natural-language
 request into a project-local workflow package:
 
 ```text
-/workflow create_workflow
-Create a workflow that uses Cloakbrowser to parse facebook.com.
+/workflow call create_workflow Create a workflow that summarizes release evidence.
 ```
 
-The first line selects the workflow; the next ordinary input supplies its
-intent. `create_workflow` is modelled on `code_plan`, and shares its shape
-exactly:
+The command runs the authoring workflow for one intent and returns to the
+current selection. The agent can also request it with `enter_workflow`.
+`create_workflow` uses the state-machine pattern from `code_plan`.
 
 - an **outer loop** in `CreateWorkflowRunner.run()` that evolves
   `CreateWorkflowState` and nothing else;
@@ -605,8 +660,8 @@ by the generic runner after the turn.
 
 | Phase | Mode | Required handoff | On success | On rejection |
 | --- | --- | --- | --- | --- |
-| `design` | read-only | `request_design_approval(design, workflow_name)` then `finalize_design(design, workflow_name)` | `generate` | retry `design` |
-| `generate` | `Yolo` | write the file, then `mark_generation_complete(summary, path)` | `validate` | — |
+| `design` | read-only | `finalize_design(design, workflow_name)` | `generate` | retry `design` |
+| `generate` | current mode | write the package, then `mark_generation_complete(summary)` | `validate` | — |
 | `validate` | read-only | `approve_workflow(summary)` or `reject_workflow(reason)` | `summarize` | `generate` |
 | `summarize` | read-only | — (single turn) | complete | — |
 
@@ -615,13 +670,12 @@ actually about authoring a workflow; the run then ends in the `EXITED` terminal
 state without writing anything. Terminal states are `COMPLETE`, `EXITED`, and
 `FAILED`.
 
-### Design is human-gated
+### Record the design
 
-`request_design_approval` raises the plan-review overlay with the proposed name
-and phase graph. `finalize_design` refuses with an actionable `ok: false` result
-until that approval returned `approved=True`, and a later denial closes the gate
-again, so a rejected design cannot be handed off. In headless runs with no
-approval service the request auto-approves.
+`finalize_design` records the package name, phase graph, and runner design in
+the run's context. Safe mode brokers model entry before the workflow starts.
+When generation would replace a package outside the authored manifest, the
+runner asks for approval before touching it.
 
 Rejected transitions always return a structured failure containing `ok: false`,
 an `error`, a human-readable `message`, and a concrete `fix` naming the tool to
@@ -726,11 +780,11 @@ requirements and to wait for answers instead of guessing. The
 `describe_prompt_cache_contract`, `show_workflow_template`, and
 `validate_workflow_cache_contract` inspection tools expose these rules during
 authoring; strict validation rejects a generated custom runner that omits them.
-The built-in `make_agenthicc_tool` runner also passes one immutable contract to
+The built-in `create_tools` runner also passes one immutable contract to
 every analyze, generate, validate, and finalize turn, keeping its tool plan,
 generated source path, validation report, and retry state in dynamic context.
 The same boundary is used by every built-in workflow, including `code_plan`,
-`create_workflow`, `site_imitate`, `make_agenthicc_tool`, and `make_book`.
+`create_workflow`, `site_imitate`, `create_tools`, and `make_book`.
 
 The runtime records only redacted contract fingerprints and cache epochs in the
 conversation journal and workflow checkpoint. A phase change does not change
@@ -750,8 +804,9 @@ no prompt text, conversation content, secrets, or tool arguments.
 
 ### Generation writes directly to the canonical package under a pending marker
 
-`generate` runs with `mode_override="Yolo"` so the package-scoped writer tools
-are available, but their root is the runner-derived canonical directory
+`generate` keeps the active session mode. Safe applies its normal write
+approvals. Plan blocks authoring writes. The scoped writers use the
+runner-derived canonical directory
 `.agenthicc/workflows/<name>/`. The agent writes `runner.py` and workflow-local
 helpers there from the first write, then calls
 `mark_generation_complete(summary)`; the runner does not accept an agent-selected
@@ -769,20 +824,19 @@ Validation and the bounded fake-runtime smoke harness receive an explicit path
 to that exact pending package; this does not make it visible to `/workflows
 reload` or weaken normal loader checks.
 
-If a completed workflow already occupies the target, the runner asks for
-explicit replacement approval before changing any files. It preserves the
-original package and trust records in a run-bound backup. After deterministic
-validation, smoke success, and validation-agent approval, the runner rechecks
-the complete package fingerprint, records trust for the exact validated Python
-bytes, and removes the pending marker. Only then can normal discovery load the
-package. A failed or interrupted run leaves the candidate pending and
-undiscoverable; resume the same checkpointed run to continue. If the run cannot
-be resumed, use `/workflow reset <run-id>` instead of deleting the marker or
-backup manually. Reset restores the approved original package and trust records,
-or discards a first-generation candidate, before it records the run as discarded;
-an already committed package is retained. If ownership validation or restoration
-fails, the run remains paused and the pending package stays excluded from normal
-discovery.
+The runner preserves an existing package and its trust records in a
+run-bound backup. Authored updates recheck the installed digest and keep the
+previous version for rollback. Other replacements require explicit approval.
+After validation, smoke, and the validation vote, the runner seals the exact
+package and hands it to the session. The session applies the publication
+policy, records digest-bound trust for the approved Python bytes, and reloads
+before resuming the parent.
+
+A paused run keeps its package pending. Resume the same checkpoint or use
+`/workflow return --abandon` for a called workflow. For a saved run, use
+`/workflow reset <run-id>` to restore the approved original or discard a
+first-generation candidate. Exhausting the repair budget also restores or
+discards the candidate.
 
 A workflow with its own runner is a few hundred lines, which does not fit in one
 tool call under a small completion ceiling — the truncated call is discarded and
@@ -797,9 +851,9 @@ what is already on disk rather than start over. See
 
 ### Validation is deterministic first, agent second
 
-Before the validating agent is asked for anything, the runner imports the
-generated package exactly the way `load_python_workflows` will and checks it against
-the real `WorkflowPlugin` contract. `validate_workflow_file` reports:
+Before asking the agent for a verdict, the runner checks the generated source
+and inspects the package against the `WorkflowPlugin` contract in a subprocess.
+`validate_workflow_file` reports:
 
 - refusal, without importing, for a path outside the workspace root, a missing
   file, a directory without `runner.py`, a non-`.py` legacy file or
@@ -812,14 +866,10 @@ the real `WorkflowPlugin` contract. `validate_workflow_file` reports:
 - phase-graph faults: duplicate or empty phase names, non-`PhaseSpec` entries,
   `max_turns` below 1, and `next` / `on_reject` / `on_error` edges that do not
   resolve.
-- generated workflow imports are not restricted by a static allow-list.
-  Validation imports the candidate package as the workflow loader does, so
-  missing dependencies and runtime import errors are still reported. Imports
-  and import-time code execute in-process with ordinary Python permissions;
-  this is not a sandbox, and direct API, network, process, or filesystem use
-  bypasses session tool capability checks. Only execute generated workflows
-  from sources you trust, or validate them inside a separate OS-level isolation
-  boundary;
+- missing dependencies and runtime import errors from the isolated workflow
+  loader. Bubblewrap gives the subprocess a read-only workspace and private
+  network namespace and bounds its runtime and output. When Bubblewrap is
+  unavailable, validation uses AST checks and reports `static_only`;
 - missing custom-runner checkpoint codecs, unsafe resume/error handling, direct
   instruction-file reads, cache-contract violations, and invalid transition
   decorator order or handoff-helper contracts;
@@ -830,9 +880,7 @@ filename that differs from the workflow name are reported as warnings.
 That report is injected into the validating agent's prompt as evidence. The agent
 still has to call `approve_workflow` or `reject_workflow` — the transition is
 always a tool call — but **an approval is overridden when the report failed**, and
-the run loops back to `generate` with the concrete errors attached. A workflow
-that does not import can therefore never be accepted, however confident the model
-is.
+the run loops back to `generate` with the concrete errors attached.
 
 Runtime startup failures are also surfaced in the TUI. This covers errors that
 occur before `run_phase()` opens an agent turn, such as a lazy phase-tool
@@ -842,27 +890,28 @@ idle with a running workflow indicator.
 
 ### Budgets
 
-Two previously advisory settings drive the loops:
+`[execution].authoring_max_generation_attempts` limits the attempts to
+complete each phase, and `[execution].authoring_max_phase_turns` limits the
+model calls per attempt. Both default to 20 and have a minimum of one.
 
-- `[execution].authoring_max_generation_attempts` (20 by default) bounds the
-  inner-loop attempts of every phase *and* the number of `validate → generate`
-  repair cycles;
-- `[execution].authoring_max_phase_turns` (20 by default) bounds the LLM
-  sub-turns inside one agent turn.
+`[workflows.authoring].max_repair_cycles` separately limits repair after a
+rejected validation or an edit that invalidates an approval. It defaults
+to three. The checkpoint stores the limit and the cycles already spent,
+so resuming preserves the budget. When the next repair would exceed the
+limit, the run ends with the last validation report.
 
-Both are clamped to at least 1. Exhausting either budget ends the run in `FAILED`
-with a reason naming the missing handoff, and the failure is reported in the
-transcript.
+The shared authoring verdict requires a clean deterministic report and
+an approval tied to the validated digest. Editing those bytes clears that
+approval and sends the updated candidate through validation again.
 
 ### Shared context and tools
 
 The session's `ShortTermMemory` is shared by all four phases, so the generating
 agent already has the design in context and can also see prior direct or
-workflow conversation subject to compaction. Every
-phase also receives `memory_write`, `memory_read`, and `semantic_search`, and the
-project tool set filtered by the active mode's blocked capabilities. The built-in
-tool registry supplies the workspace-guarded canonical `write_file` tool even when
-no project tool plugin exports it, so `generate` can always write its file.
+workflow conversation subject to compaction. Each phase has an explicit
+tool set. Generation and repair expose the package-scoped file tools,
+read-only inspection and the generation handoff. Validation reads the
+candidate through a scoped reader and records its decision.
 
 The authoring workflow receives read-only inspection tools whose content is read
 live from the running code, so the guidance cannot drift from the API. Each
@@ -886,30 +935,30 @@ decision.
 | `show_example_workflow(style)` | a complete `runner.py` package entry point to adapt — `"runner"` (default) or `"declarative"` |
 | `describe_prompt_cache_contract()` | stable/dynamic prompt regions, cache policy, and invalidation ownership |
 | `show_workflow_template()` | the cache-stable custom-runner template and required `run_phase()` call |
-| `validate_workflow_cache_contract(path)` | execute-gated strict validation of a trusted generated runner's cache/question/tool contract |
+| `validate_workflow_cache_contract(path)` | execute-gated validation of a generated runner's cache, question, and tool contracts |
 
-The static inspection tools are available in Plan mode. The validator is
-execute-gated and is available to the Yolo generation phase after files are
-written, because validation imports the target package and executes its module
-top level just as the workflow loader does. Every workflow phase gets the
-existing `ask_user` tool for clarifying questions. Optional browser and MCP
-health is reported as unavailable/not-probed data rather than turning a valid
-fallback into a generated-code error.
-The phase agent is explicitly reminded that it can ask multiple focused questions
-in one call, or across several rounds, whenever requirements are unclear. Every
-phase can additionally read the installed agenthicc source and documentation with the session-wide
+The static inspection tools are available in Plan mode. The validator tool uses
+the same sandbox as the runner's validation phase. Generated workflows that
+need a human gate declare `interactive=True` in their invocation metadata.
+Optional browser and MCP health is reported as unavailable or unprobed when a
+declared fallback applies. Every phase can additionally read the installed
+agenthicc source and documentation with the session-wide
 `inspect_agenthicc_source`, `search_agenthicc_source`, `read_agenthicc_doc`, and
 `search_agenthicc_docs` tools — see the [tools guide](tools.md).
 
 ### Activate the generated workflow
 
-Run `/workflows reload` after the run so the normal workflow registry discovers
-the new file, then select it for a later request:
+The default policy loads the workflow before the parent receives the result.
+If the package opts in to model entry, the agent can call it in that same
+session. The operator can also select it for a later request.
 
 ```text
-/workflow cloakbrowser_parse_fb
-Parse the requested Facebook page and summarize the results.
+/workflow release_evidence
+Summarize this release's verification results.
 ```
+
+For `stage_only`, run `/authored approve <run-id>` to trust and load the
+candidate or `/authored reject <run-id>` to discard it.
 
 The active session keeps the conversation ID and provider memory while the
 generated workflow is selected. Built-in and generic workflow contexts can be
@@ -1189,9 +1238,10 @@ run `/workflows reload` after changing the Python workflow. Provider selection
 remains session-wide; a generated workflow must not claim to support per-phase
 provider switching.
 
-Project tools and slash commands are separate plugin surfaces. Use the
-`/create-tools` and `/create-commands` skills when those extensions are needed;
-they are not workflow definitions and are not phases of `create_workflow`.
+Use `/workflow call create_tools <intent>` to author tools and
+`/create-commands <instructions>` to author slash commands. The session
+reloads newly published tools before delivering the workflow return.
+[Tool authoring](tools.md#author-tools-with-create_tools)
 
 ## Inspect tools and workflows
 
@@ -1688,10 +1738,9 @@ All phase turns, retries, page iterations, validation re-entry, and resume use
 the parent session conversation and memory. Stable workflow policy and the
 compiled capability-filtered tool bundle remain unchanged within a cache epoch;
 phase prompts, answers, routes, artifacts, and validation results are dynamic
-context. A genuine tool/backend/configuration change must call
-`runner.invalidate_tool_bundle_cache(reason=...)`, which starts a new
-diagnostic epoch. Cache metadata records eligibility and fingerprints only; it
-does not claim that a provider cache was hit.
+context. The next phase starts a new epoch after a tool reload. A backend or
+configuration change can call `runner.invalidate_phase_tools(reason=...)` to
+start an epoch explicitly. Cache metadata records eligibility and fingerprints.
 
 Visual and interaction rejection tools accept an explicit phase target. An
 unknown or incompatible target returns a structured error and leaves the phase

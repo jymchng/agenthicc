@@ -366,6 +366,9 @@ def test_checkpoint_carries_profile_identity_but_no_secret() -> None:
 
     checkpoint = WorkflowCheckpoint(
         run_id="run",
+        frame_id="run",
+        parent_run_id=None,
+        origin="selection",
         workflow_name="demo",
         conversation_id="session",
         intent="intent",

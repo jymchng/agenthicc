@@ -45,7 +45,7 @@ The canonical registry is `BUILTIN_COMMANDS` in
 | `/compact` | — | Compact the conversation |
 
 !!! note "Commands outside `BUILTIN_COMMANDS`"
-    `/create-tools` and `/create-commands` come from bootstrap skills, not the
+    `/create-commands` comes from bootstrap skills, not the
     registry. `/background` (aliases `/bg` and `/detach`) is a registry entry
     that `TUISession` intercepts to hand the conversation to the background
     service.

@@ -50,6 +50,27 @@ Yolo is the unrestricted mode. These are executor gates, not merely prompt
 instructions, so project, MCP, dynamic, and built-in tools follow the same
 policy.
 
+## Skill discovery tools
+
+`list_skills(query=None)` lists up to 40 skills available to the current agent.
+`use_skill(name, args=None)` returns up to 16 KiB of rendered instructions,
+with the source and the full body’s digest. A skill can narrow the tools for
+the rest of the turn. See the [skills guide](plugins.md#skills) for activation
+options and permissions.
+
+## Workflow tools
+
+| Tool | Purpose |
+| --- | --- |
+| `list_workflows()` | List up to 40 agent-callable workflows available from the current frame. |
+| `enter_workflow(workflow, intent, params=None)` | Request a child workflow using a string intent and optional string-valued parameters. |
+| `workflow_status()` | Inspect the current workflow stack and recent returns. |
+
+`enter_workflow` returns a handoff receipt after admission. The session starts
+the child when the provider turn ends normally. Rejected requests return a
+stable code and a fix hint. Workers receive the inspection tools and see their
+own frame in workflow status. See the [workflow guide](workflows.md#let-the-agent-call-a-workflow).
+
 ## The shortest working path
 
 Create `.agenthicc/tools/project_status.py`:
@@ -85,19 +106,23 @@ loaded project tool. The tool name, description, annotations, and docstring
 are used to build the schema shown to lauren-ai. `@tool()` must include the
 parentheses.
 
-## Author a tool with `/create-tools`
+## Author tools with `create_tools`
 
-For an agent-generated tool, invoke the project-authoring skill with its intent:
+Call the built-in workflow with the behavior and outputs you want.
 
 ```text
-/create-tools Create a tool that checks the configured Cloakbrowser endpoint
-and returns a bounded recoverable status object.
+/workflow call create_tools Create tools that report word and character counts.
 ```
 
-The skill guides the agent to generate a complete raw Python module, including
-the `@tool` decorator and a literal `TOOLS` export. Review the generated code,
-trust it with `agenthicc trust add .agenthicc/tools/<file>.py`, and run
-`/tools reload`.
+The agent can also call it with `enter_workflow`. Submit a plan for the
+whole set, then write the Python modules through the scoped staging tools.
+The runtime checks the exports, signatures, dependencies, and capabilities
+before reviewing the set. A shared repair budget limits retries. If any
+module fails validation, the session publishes none of them.
+
+Under the auto policy, the session publishes the validated bytes and reloads
+the tools before it returns to the parent. Under the stage-only policy,
+`/authored approve <run-id>` publishes the reviewed set.
 
 Use `/tools` in the interactive session to inspect the effective tool catalog,
 or `/tools reload` to rescan project and user-global tool plugins without
@@ -256,10 +281,16 @@ The current journey is:
    as bounded TUI tool output and persisted with the surrounding session
    events.
 
-Project-wide tools are discovered during session construction and cached in
-the session context. Restart the session after adding or editing one. The
-agent-specific scan happens when an agent turn builds its registry, but a
-restart is still the least surprising way to verify the complete catalog.
+Project-wide tools are discovered during session construction. Run
+`/tools reload` after adding or editing a trusted plugin. The session then
+publishes an updated tool generation and reports any refused sources.
+Authored plugins must declare valid capabilities and use distinct names.
+
+The direct agent can call `reload_tools()` to refresh the same catalog.
+The next provider request in that turn picks up the change. Workflow phases
+read the current generation at their start, and a worker keeps the generation
+it received when spawned. Each call is still subject to the active capability
+and approval rules.
 
 ## Dependencies and import-time behavior
 
@@ -394,17 +425,6 @@ Useful repository contracts are covered by
 `tests/unit/test_plugin_security.py`,
 `tests/unit/test_tool_executor_contract.py`, and
 `tests/unit/test_sandbox.py`.
-
-For the prompt-driven authoring skill, submit its instructions directly:
-
-```text
-/create-tools Create a tool that reports the current project status.
-```
-
-The `/create-tools` skill is independent of `create_workflow`; it gives the
-agent project-specific guidance for producing a Lauren `@tool`-decorated
-`TOOLS` export. Review the generated code, trust it with `agenthicc trust add`,
-and reload the tool registry.
 
 ## Try it
 

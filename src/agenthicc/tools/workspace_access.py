@@ -54,6 +54,10 @@ class WorkspacePathStatus(str, Enum):
     NOT_FOUND = "not_found"
     INVALID = "invalid_path"
     TARGET_CHANGED = "target_changed"
+    PROTECTED_CODE = "protected_code"
+
+
+_CODE_DIRECTORIES = ("tools", "workflows", "commands")
 
 
 @dataclass(frozen=True, slots=True)
@@ -417,12 +421,14 @@ class WorkspaceAccessPolicy:
 
     @property
     def mode_name(self) -> str:
+        from agenthicc.runners.workflow_execution_context import effective_workflow_mode_name
+
         value = self._mode_provider() if self._mode_provider is not None else "Safe"
         try:
             name = object.__getattribute__(value, "name")
         except AttributeError:
             name = value
-        return name if isinstance(name, str) else "Safe"
+        return effective_workflow_mode_name(name if isinstance(name, str) else "Safe")
 
     @property
     def mode(self) -> WorkspaceAccessMode:
@@ -430,6 +436,15 @@ class WorkspaceAccessPolicy:
             WorkspaceAccessMode.UNRESTRICTED
             if self.mode_name.casefold() == "yolo"
             else WorkspaceAccessMode.SCOPED
+        )
+
+    def _runs_as_code(self, item: ResolvedWorkspacePath) -> bool:
+        if item.operation not in {"write", "delete"}:
+            return False
+        return any(
+            item.absolute.is_relative_to(root / ".agenthicc" / directory)
+            for root in self.scope.allowed_roots
+            for directory in _CODE_DIRECTORIES
         )
 
     def requests_for_tool(
@@ -500,6 +515,7 @@ class WorkspaceAccessPolicy:
         capabilities: frozenset[str] = frozenset(),
         *,
         bind_current: bool = True,
+        protect_extensions: bool = True,
     ) -> WorkspaceAccessResult:
         """Preflight all declared paths for one tool call.
 
@@ -536,17 +552,29 @@ class WorkspaceAccessPolicy:
                 )
             resolved.append(item)
         outside = [item for item in resolved if not item.in_scope]
-        if not outside:
+        protected = [item for item in resolved if protect_extensions and self._runs_as_code(item)]
+        if not outside and not protected:
             return WorkspaceAccessResult(allowed=True, decisions=tuple(resolved))
         if self.mode_name.casefold() == "plan":
+            if outside:
+                return self._denied(
+                    resolved, "outside_workspace", "Plan mode cannot access outside the workspace"
+                )
             return self._denied(
-                resolved, "outside_workspace", "Plan mode cannot access outside the workspace"
+                resolved,
+                WorkspacePathStatus.PROTECTED_CODE.value,
+                "Plan mode cannot edit executable extensions",
             )
-        if self.mode is WorkspaceAccessMode.UNRESTRICTED:
+        if self.mode is WorkspaceAccessMode.UNRESTRICTED and not protected:
             return WorkspaceAccessResult(
                 allowed=True, decisions=tuple(resolved), code="yolo_bypass"
             )
 
+        targets = (
+            protected
+            if self.mode is WorkspaceAccessMode.UNRESTRICTED
+            else [item for item in resolved if item in protected or item in outside]
+        )
         access_requests = tuple(
             WorkspaceAccessRequest(
                 requested=item.requested,
@@ -554,12 +582,15 @@ class WorkspaceAccessPolicy:
                 display=item.display,
                 operation=item.operation,
                 tool_name=tool_name,
+                status=WorkspacePathStatus.PROTECTED_CODE.value
+                if item in protected
+                else WorkspacePathStatus.OUTSIDE_SCOPE.value,
                 exists=item.exists,
                 workspace_root=self.scope.primary_root,
                 mode=self.mode_name,
                 capabilities=capabilities,
             )
-            for item in outside
+            for item in targets
         )
         keys = {request.grant_key for request in access_requests}
         current = _CURRENT_GRANT.get()
@@ -593,7 +624,9 @@ class WorkspaceAccessPolicy:
             return self._denied(
                 resolved,
                 "approval_unavailable",
-                "outside_workspace access requires an interactive approval service",
+                "This path runs as code and requires approval"
+                if protected
+                else "outside_workspace access requires an interactive approval service",
             )
 
         import asyncio
@@ -608,11 +641,21 @@ class WorkspaceAccessPolicy:
             event=asyncio.Event(),
             workspace_access=access_requests,
             reason=(
-                f"{'The target is' if len(access_requests) == 1 else 'These targets are'} "
-                f"outside the workspace; {self.mode_name} mode asks before leaving it."
+                "This path runs as code. Approve the extension edit to continue."
+                if protected
+                else (
+                    f"{'The target is' if len(access_requests) == 1 else 'These targets are'} "
+                    f"outside the workspace; {self.mode_name} mode asks before leaving it."
+                )
             ),
         )
         response = await self._await_scope_approval(req)
+        if protected and self.mode_name.casefold() == "plan":
+            return self._denied(
+                resolved,
+                WorkspacePathStatus.PROTECTED_CODE.value,
+                "Plan mode cannot edit executable extensions",
+            )
         if not response.allowed:
             if self.mode_name.casefold() == "plan":
                 return self._denied(
@@ -624,11 +667,15 @@ class WorkspaceAccessPolicy:
             return self._denied(
                 resolved,
                 "approval_denied",
-                "outside_workspace approval was denied"
+                (
+                    "Extension edit approval was denied"
+                    if protected
+                    else "outside_workspace approval was denied"
+                )
                 + (f"; the user said what to do instead: {instructions}" if instructions else ""),
             )
 
-        if self.mode is WorkspaceAccessMode.UNRESTRICTED:
+        if self.mode is WorkspaceAccessMode.UNRESTRICTED and not protected:
             return WorkspaceAccessResult(
                 allowed=True,
                 decisions=tuple(resolved),
@@ -687,13 +734,19 @@ class WorkspaceAccessPolicy:
             done, _ = await asyncio.wait(
                 {approval_task, mode_task}, return_when=asyncio.FIRST_COMPLETED
             )
-            if mode_task in done and self.mode_name.casefold() in {"plan", "yolo"}:
+            mode = self.mode_name.casefold()
+            protected = any(
+                item.status == WorkspacePathStatus.PROTECTED_CODE.value
+                for item in request.workspace_access
+            )
+            reassess = mode == "plan" or (mode == "yolo" and not protected)
+            if mode_task in done and reassess:
                 approval_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await approval_task
                 from agenthicc.tools.approval import ApprovalResponse
 
-                is_yolo = self.mode_name.casefold() == "yolo"
+                is_yolo = mode == "yolo"
                 return ApprovalResponse(
                     allowed=is_yolo,
                     message="workspace approval re-evaluated after mode change",
@@ -721,6 +774,7 @@ class WorkspaceAccessPolicy:
         capabilities: frozenset[str] = frozenset(),
         pattern: bool = False,
         tool_input: Mapping[str, object] | None = None,
+        protect_extensions: bool = True,
     ) -> Path:
         """Authorize one concrete adapter access and return its canonical path."""
 
@@ -743,6 +797,13 @@ class WorkspaceAccessPolicy:
             if revalidated.status is WorkspacePathStatus.TARGET_CHANGED:
                 self.clear_current_grant(tool_name)
                 raise PermissionError("target_changed: canonical target changed after approval")
+            if (
+                protect_extensions
+                and self.mode_name.casefold() == "plan"
+                and self._runs_as_code(revalidated)
+            ):
+                self.clear_current_grant(tool_name)
+                raise PermissionError("protected_code: Plan mode cannot edit executable extensions")
             if not revalidated.in_scope and self.mode_name.casefold() == "plan":
                 self.clear_current_grant(tool_name)
                 raise PermissionError(
@@ -770,6 +831,7 @@ class WorkspaceAccessPolicy:
             tool_name,
             tool_input or {"path": os.fspath(requested)},
             capabilities,
+            protect_extensions=protect_extensions,
         )
         if not result.allowed:
             raise PermissionError(f"{result.code}: {result.error}")
@@ -797,6 +859,7 @@ class WorkspaceAccessPolicy:
                 tool_name,
                 tool_input or {"path": os.fspath(requested)},
                 capabilities,
+                protect_extensions=protect_extensions,
             )
             if not result.allowed:
                 raise PermissionError(f"{result.code}: {result.error}")
@@ -814,6 +877,13 @@ class WorkspaceAccessPolicy:
         post_grant = self._consume_current(tool_name, requested, operation, pattern=pattern)
         if post_grant is False:
             raise PermissionError("target_changed: canonical target changed after approval")
+        if (
+            protect_extensions
+            and self.mode_name.casefold() == "plan"
+            and self._runs_as_code(revalidated)
+        ):
+            self.clear_current_grant(tool_name)
+            raise PermissionError("protected_code: Plan mode cannot edit executable extensions")
         if not revalidated.in_scope and self.mode_name.casefold() == "plan":
             self.clear_current_grant(tool_name)
             raise PermissionError(

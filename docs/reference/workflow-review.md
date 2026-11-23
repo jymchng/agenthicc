@@ -17,6 +17,14 @@
 **Scope:** Original audit of 17 source files; current package contains 21 Python files
 **Findings:** 9 architectural issues · 10 code quality issues · 9 bugs · 5 integration gaps
 
+## WFC-14 authoring contract
+
+`create_workflow` uses the shared scoped file tools, digest-bound verdict
+and persisted repair budget. Generation preserves the session mode and
+offers only its scoped writers, read-only discovery and handoff. The
+typed context stores the repair allowance and usage, and loading an
+authoring checkpoint requires both values.
+
 ## PRD-179 generated-runner lifecycle audit — 2026-08-28
 
 The generated-workflow contract now has one shared lifecycle surface in
@@ -147,7 +155,7 @@ The `phases` list looks authoritative — it appears in IDE completions, in `Wor
 
 ### A2 ★ Two parallel tool-filtering implementations (High)
 
-`src/agenthicc/workflows/default/runner.py:645 _filter_tools()` and `src/agenthicc/workflows/code_plan/runner.py:648 _base_tools()` implement nearly identical logic: iterate `plugin_tools`, union with MCP tools, filter by `mode_blocked`. Differences:
+`src/agenthicc/workflows/default/runner.py:645 _filter_tools()` and `src/agenthicc/workflows/code_plan/runner.py:648 _base_tools()` implement nearly identical logic: read the current extension tools, union with MCP tools, filter by `mode_blocked`. Differences:
 - `_filter_tools` additionally applies `phase_allowed` capability intersection
 - `_base_tools` appends memory tools unconditionally
 

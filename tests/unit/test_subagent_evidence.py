@@ -9,6 +9,8 @@ from lauren_ai._agents._runner import AgentRunnerBase
 from lauren_ai._transport import Completion, TokenUsage
 from lauren_ai._transport._mock import MockTransport
 
+from agenthicc.subagents.tool import SubagentToolSelection
+from agenthicc.tools.surface import ToolSurface
 from agenthicc.agent_tools import AGENT_TOOLS
 from agenthicc.memory.journal import ConversationJournal
 from agenthicc.subagents.pool import SubagentResult, _aggregate, evidence_footer
@@ -191,7 +193,7 @@ async def _run(
     spawn = make_spawn_subagents_tool(
         AgentRunnerBase(transport=transport),
         "mock-model",
-        list(AGENT_TOOLS),
+        SubagentToolSelection(ToolSurface(0, tuple(list(AGENT_TOOLS)))),
         app_state=state,
         workspace_access=policy,
         approval_svc=_Broker(allow),

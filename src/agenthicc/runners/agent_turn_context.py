@@ -7,7 +7,7 @@ reads from this context; call sites construct it and pass it to the runner.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -114,10 +114,12 @@ if TYPE_CHECKING:
     from agenthicc.mentions.cache import MentionCache
     from agenthicc.tools.approval import ApprovalBroker
     from agenthicc.tools.base import ToolLike
+    from agenthicc.tools.surface import ToolSurfaceHolder
     from agenthicc.tools.mcp import McpToolRegistry
     from agenthicc.tools.mcp_manager import McpSessionManager
     from agenthicc.tui.conversation_store import AppState, ConversationStore
     from agenthicc.skills.loader import SkillPermissionSet, SkillDef
+    from agenthicc.runners.reload import SurfaceHolder
     from agenthicc.runners.usage_ledger import UsageLedger
     from agenthicc.runners.prompt_contract import PromptContract
     from agenthicc.tools.workspace_access import WorkspaceAccessPolicy
@@ -144,10 +146,12 @@ class AgentTurnOptions(TypedDict):
     conv_store: "ConversationStore | None"
     app_state: "AppState | None"
     exec_cfg: "ExecutionSettings | None"
-    skills: "dict[str, SkillDef] | None"
+    skills: "SurfaceHolder[Mapping[str, SkillDef]] | None"
     skill_permissions: "SkillPermissionSet | None"
     mention_cache: "MentionCache | None"
-    project_plugin_tools: "list[ToolLike] | None"
+    extra_tools: "list[ToolLike] | None"
+    tool_surface: NotRequired["ToolSurfaceHolder | None"]
+    tool_surface_generation: NotRequired[int | None]
     mcp_registry: "McpToolRegistry | McpSessionManager | None"
     active_agent: str
     completed_turns: int
@@ -192,10 +196,13 @@ class AgentTurnContext:
     exec_cfg: "ExecutionSettings | None" = None
 
     # ── content injection ─────────────────────────────────────────────────────
-    skills: "dict[str, SkillDef] | None" = None
+    skills: "SurfaceHolder[Mapping[str, SkillDef]] | None" = None
     skill_permissions: "SkillPermissionSet | None" = None
     mention_cache: "MentionCache | None" = None
-    project_plugin_tools: "list[ToolLike] | None" = None
+    extra_tools: "list[ToolLike] | None" = None
+    tool_surface: "ToolSurfaceHolder | None" = None
+    tool_surface_generation: int | None = None
+    """Generation of the phase's already selected tools, when using extra_tools."""
     mcp_registry: "McpToolRegistry | McpSessionManager | None" = None
 
     # ── agent identity ────────────────────────────────────────────────────────

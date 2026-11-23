@@ -47,10 +47,18 @@ class LoadResult:
     commands: list[object] = field(default_factory=list)  # Command objects from COMMANDS export
     untrusted: bool = False  # skipped without import: not trusted (agenthicc trust)
     subagent_types: list["SubagentTypeSpec"] = field(default_factory=list)
+    denied_capabilities: tuple[str, ...] = ()
+    reserved_tool_names: tuple[str, ...] = ()
 
     @property
     def ok(self) -> bool:
-        return self.error is None and not self.missing_deps and not self.untrusted
+        return not (
+            self.error is not None
+            or self.missing_deps
+            or self.untrusted
+            or self.denied_capabilities
+            or self.reserved_tool_names
+        )
 
 
 @dataclass
@@ -63,6 +71,16 @@ class PluginToolSet:
     def all_tools(self) -> list[PluginTool]:
         """Flat list of every successfully loaded tool callable."""
         return [t for r in self.results for t in r.tools]
+
+    def tool_sources(self, project_dir: Path) -> dict[str, str]:
+        project_tools = (project_dir / "tools").resolve()
+        return {
+            tool_name(tool): "project"
+            if result.path.resolve().is_relative_to(project_tools)
+            else "user"
+            for result in self.results
+            for tool in result.tools
+        }
 
     @property
     def all_commands(self) -> list[object]:
@@ -118,7 +136,8 @@ def _load_plugin_file(
     subagent_registry: "SubagentTypeRegistry | None" = None,
 ) -> LoadResult:
     """Check trust and declared dependencies, then import the plugin exactly once."""
-    if not current_extension_trust().permits(path, kind="tool"):
+    trust = current_extension_trust()
+    if not trust.permits(path, kind="tool"):
         return LoadResult(path=path, untrusted=True)
     try:
         missing = missing_requirements(declared_dependencies(path))
@@ -126,6 +145,8 @@ def _load_plugin_file(
         return LoadResult(path=path, error=str(exc))
     if missing:
         return LoadResult(path=path, missing_deps=missing)
+
+    from agenthicc.plugins.source import execute_extension_source
 
     plugin_subagent_registry = subagent_registry.copy() if subagent_registry is not None else None
     # Import the plugin, once.
@@ -137,12 +158,12 @@ def _load_plugin_file(
         module = importlib.util.module_from_spec(spec)
         sys.modules[module_name] = module
         if plugin_subagent_registry is None:
-            spec.loader.exec_module(module)
+            execute_extension_source(path, module)
         else:
             from agenthicc.subagents.types import _bind_registration_target
 
             with _bind_registration_target(plugin_subagent_registry):
-                spec.loader.exec_module(module)
+                execute_extension_source(path, module)
     except ImportError as exc:
         inferred = _infer_missing_from_ast(path)
         if inferred:
@@ -163,6 +184,27 @@ def _load_plugin_file(
                 valid.append(t)
             else:
                 log.warning("Plugin %s: non-callable item in TOOLS skipped: %r", path, t)
+
+    record = trust.record_for(path) if valid else None
+    if record is not None and record.artifact_digest is not None:
+        from agenthicc.plugins.authored import _reserved_names
+        from agenthicc.tools.capabilities import ToolCapability, get_tool_capabilities
+
+        conflicts = tuple(sorted({tool_name(tool) for tool in valid} & _reserved_names("tool")))
+        denied = []
+        for tool in valid:
+            capabilities = get_tool_capabilities(tool)
+            if not capabilities or capabilities & {
+                ToolCapability.UNDECLARED,
+                ToolCapability.CONTROL,
+            }:
+                denied.append(tool_name(tool))
+        if conflicts or denied:
+            return LoadResult(
+                path=path,
+                denied_capabilities=tuple(sorted(denied)),
+                reserved_tool_names=conflicts,
+            )
 
     # Also extract optional COMMANDS list (PRD-45)
     raw_commands = getattr(module, "COMMANDS", None)

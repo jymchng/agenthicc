@@ -8,6 +8,9 @@ workflow-related interruption/recovery tests.
 **Related PRDs:** PRD-98, PRD-129, PRD-148, PRD-154, PRD-156, PRD-158,
 PRD-163, PRD-169
 
+Workflow stacks extend this recovery contract with parent links and keyed
+returns. [WFC-03](workflow-composition/WFC-03-durable-stack-events-and-resume.md)
+
 ## Summary
 
 Make `/workflow resume` a reliable continuation command for a workflow that was

@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from agenthicc.tools.surface import ToolSurface, ToolSurfaceHolder
 from agenthicc.tools.sandbox import WorkspaceScope
 from agenthicc.workflows.reconstruct_site import (
     CoverageMatrix,
@@ -48,7 +49,7 @@ def _config(
         workspace_scope=WorkspaceScope.create(tmp_path),
         browser_manager=browser,
         browser_tools=(),
-        plugin_tools=[],
+        tool_surface=ToolSurfaceHolder(ToolSurface(0, ())),
         mcp_registry=None,
         memory_router=None,
         semantic_index=None,

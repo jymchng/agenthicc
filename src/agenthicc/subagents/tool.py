@@ -26,24 +26,34 @@ import hashlib
 import json
 import re
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, TypedDict, cast
 
 from agenthicc.config import SubagentSettings
 from agenthicc.result_contracts import project_result_value, validate_result_value
+from agenthicc.skills.tools import current_skill_use
 from agenthicc.subagents.communication import (
     PoolHandle,
     make_parent_communication_tools,
     registry_for_session,
 )
 from agenthicc.subagents.policy import SubagentExecutionPolicy
+from agenthicc.tools.surface import ToolSurface
 from agenthicc.subagents.pool import (
     SubagentTask,
+    _is_mutating_tool,
     _redact_result_value,
     tool_tags,
     type_surface,
     unusable_reason,
 )
 from agenthicc.subagents.types import SubagentTypeRegistry, SubagentTypeSpec
+from agenthicc.subagents.workflow_task import (
+    WorkflowTaskAdmission,
+    WorkflowTaskRefusal,
+    WorkflowTaskSelection,
+    workflow_task_admission,
+)
 from agenthicc.tools.base import tool_name
 
 if TYPE_CHECKING:
@@ -97,19 +107,29 @@ class _SpawnTaskInput(TypedDict):
     # while its current TypedDict walker does not yet understand PEP 655's
     # ``NotRequired`` marker.
     context: str | None
+    workflow: str | None
+    params: dict[str, str] | None
+
+
+@dataclass(frozen=True, slots=True)
+class SubagentToolSelection:
+    """Tools and their effective parent policy at worker admission."""
+
+    surface: ToolSurface
+    registry: "ToolRegistry | None" = None
+    policy: SubagentExecutionPolicy | None = None
 
 
 def make_spawn_subagents_tool(
     parent_runner: "AgentRunnerBase",
     parent_model: str,
-    all_tools: list[object],
+    tool_source: SubagentToolSelection | Callable[[], SubagentToolSelection],
     max_concurrent: int | None = None,
     subagent_settings: SubagentSettings | None = None,
     app_state: "AppState | None" = None,
     processor: "EventProcessor | None" = None,
     conv_store: "ConversationStore | None" = None,
     registry: SubagentTypeRegistry | None = None,
-    tool_registry: "ToolRegistry | None" = None,
     retry_config: "RetryConfig | None" = None,
     usage_ledger: "UsageLedger | None" = None,
     conversation_id: str = "",
@@ -118,7 +138,6 @@ def make_spawn_subagents_tool(
     approval_svc: "ApprovalBroker | None" = None,
     workspace_access: "WorkspaceAccessPolicy | None" = None,
     conversation_journal: "ConversationJournal | None" = None,
-    policy: SubagentExecutionPolicy | None = None,
     provider: str = "unknown",
     execution_settings: "ExecutionSettings | None" = None,
     default_model: str = "",
@@ -148,9 +167,9 @@ def make_spawn_subagents_tool(
         The parent turn's ``AgentRunnerBase`` — provides the transport.
     parent_model:
         The effective model ID string (e.g. ``"anthropic/deepseek-v4-flash"``).
-    all_tools:
-        Full list of agent tools available in this session.  The pool filters
-        this list to each subagent type's ``allowed_tools`` set.
+    tool_source:
+        The current visible tool surface and policy. A fixed selection pins
+        nested workers to the generation already held by their parent.
     max_concurrent:
         Default semaphore bound.  May be overridden per call via the
         ``max_concurrent`` tool parameter.
@@ -226,25 +245,32 @@ def make_spawn_subagents_tool(
     ):
         raise ValueError("max_concurrent must be a positive integer")
     default_max_concurrent = min(requested_default_concurrency, _settings.max_concurrent)
-    effective_policy = policy or SubagentExecutionPolicy.from_app_state(
-        app_state,
-        visible_tool_names=frozenset(tool_name(item) for item in all_tools),
-    )
+
+    def select_tools() -> SubagentToolSelection:
+        selection = tool_source() if callable(tool_source) else tool_source
+        policy = selection.policy or SubagentExecutionPolicy.from_app_state(
+            app_state, visible_tool_names=frozenset(map(tool_name, selection.surface.tools))
+        )
+        return SubagentToolSelection(selection.surface, selection.registry, policy)
+
+    initial = select_tools()
     continuation_registry = registry_for_session(conversation_id, conv_store)
 
-    def _surface(agent_type: str) -> tuple[list[object], frozenset[str], str] | None:
+    def _surface(
+        agent_type: str, selection: SubagentToolSelection
+    ) -> tuple[list[object], frozenset[str], str] | None:
         spec = _registry.get(agent_type)
         if spec is None:
             return None
         tools, blocked = type_surface(
-            spec, all_tools, tool_registry, (effective_policy, spec.policy)
+            spec, selection.surface.tools, selection.registry, (selection.policy, spec.policy)
         )
-        mode = spec.policy if spec.policy is not None else effective_policy
+        mode = spec.policy if spec.policy is not None else selection.policy
         return tools, blocked, mode.mode_name if mode is not None else ""
 
-    def _type_unavailable(agent_type: str) -> str:
+    def _type_unavailable(agent_type: str, selection: SubagentToolSelection) -> str:
         """Why *agent_type* cannot do its job in this session, or ``""``."""
-        surface = _surface(agent_type)
+        surface = _surface(agent_type, selection)
         spec = _registry.get(agent_type)
         if surface is None or spec is None:
             return ""
@@ -253,7 +279,7 @@ def make_spawn_subagents_tool(
 
     type_tags: dict[str, str] = {}
     for _type_name in _registry.names():
-        _surface_info = _surface(_type_name)
+        _surface_info = _surface(_type_name, initial)
         _spec = _registry.get(_type_name)
         if _surface_info is None or _spec is None:
             continue
@@ -285,6 +311,8 @@ def make_spawn_subagents_tool(
                    - type (str): Agent type name.
                    - task (str): Description of what this subagent should do.
                    - context (str, optional): Additional background context.
+                   - workflow (str, optional): Run an eligible named workflow.
+                   - params (mapping, optional): String parameters for that workflow.
             max_concurrent: Maximum number of subagents running at once; it must not exceed the configured pool limit.
             timeout_s: Maximum wall-clock seconds for each worker in this call
                        (default 3600, or one hour).
@@ -417,6 +445,7 @@ def make_spawn_subagents_tool(
 
         # Validate and convert task dicts into SubagentTask dataclasses.
         subagent_tasks: list[SubagentTask] = []
+        requested_workflows: dict[str, tuple[str, object]] = {}
         for i, raw in enumerate(tasks):
             if not isinstance(raw, dict):
                 return {
@@ -445,15 +474,74 @@ def make_spawn_subagents_tool(
                     context=context,
                 )
             )
+            workflow_name = raw_mapping.get("workflow")
+            if workflow_name is not None:
+                if not isinstance(workflow_name, str) or not workflow_name.strip():
+                    return {"ok": False, "error": f"tasks[{i}].workflow must be a name"}
+                requested_workflows[f"task-{i}"] = (
+                    workflow_name.strip(),
+                    raw_mapping.get("params"),
+                )
+            elif raw_mapping.get("params") is not None:
+                return {"ok": False, "error": f"tasks[{i}].params requires a workflow"}
 
         if not subagent_tasks:
             return {"ok": False, "error": "tasks list is empty", **pool_metadata}
 
         # SUBAGENT-13: refuse a type that cannot do its job in this session
         # before any worker, panel row, ledger entry or provider call exists.
+        selection = select_tools()
+        spawn_surface = selection.surface
+        spawn_policy = selection.policy
+        skill_use = current_skill_use()
+        if skill_use is not None:
+            spawn_surface = ToolSurface(
+                spawn_surface.generation,
+                tuple(item for item in spawn_surface.tools if skill_use.permitted(tool_name(item))),
+                spawn_surface.sources,
+            )
+            if spawn_policy is not None:
+                spawn_policy = spawn_policy.restrict_by(None, allowed_tools=skill_use.visible_names)
+        spawn_selection = SubagentToolSelection(spawn_surface, selection.registry, spawn_policy)
+        if requested_workflows:
+            from agenthicc.workflows.stack_tools import current_workflow_tools
+
+            scope = current_workflow_tools()
+            for index, task in enumerate(subagent_tasks):
+                request = requested_workflows.get(task.task_id)
+                if request is None:
+                    continue
+                workflow_name, arguments = request
+                spec = _registry.get(task.agent_type)
+                assert spec is not None
+                tools, blocked = type_surface(
+                    spec, spawn_surface.tools, selection.registry, (spawn_policy, spec.policy)
+                )
+                picked: WorkflowTaskAdmission
+                if scope is None or scope.worker_runtime is None:
+                    picked = WorkflowTaskRefusal(
+                        workflow_name,
+                        "workflow_runtime_unavailable",
+                        "This agent has no active workflow runtime.",
+                    )
+                else:
+                    picked = workflow_task_admission(
+                        workflow_name,
+                        arguments,
+                        scope.registry,
+                        scope.worker_runtime.config.cfg,
+                        blocked,
+                        can_write=any(_is_mutating_tool(tool) for tool in tools),
+                    )
+                if isinstance(picked, WorkflowTaskSelection):
+                    subagent_tasks[index] = replace(task, workflow=picked)
+                else:
+                    subagent_tasks[index] = replace(task, workflow_refusal=picked)
         unavailable: dict[str, str] = {}
-        for requested_type in dict.fromkeys(task.agent_type for task in subagent_tasks):
-            reason = _type_unavailable(requested_type)
+        for requested_type in dict.fromkeys(
+            task.agent_type for task in subagent_tasks if task.task_id not in requested_workflows
+        ):
+            reason = _type_unavailable(requested_type, spawn_selection)
             if reason:
                 unavailable[requested_type] = reason
         if unavailable:
@@ -564,9 +652,13 @@ def make_spawn_subagents_tool(
             "ancestry": ancestry,
             "types": effective_routing,
         }
+        if spawn_surface is not selection.surface:
+            routing_policy["visible_tools"] = list(map(tool_name, spawn_surface.tools))
+        if spawn_surface.generation:
+            routing_policy["tool_surface_generation"] = spawn_surface.generation
         fp = _tasks_fingerprint(
             subagent_tasks,
-            policy_revision=(effective_policy.policy_revision if effective_policy else ""),
+            policy_revision=(spawn_policy.policy_revision if spawn_policy else ""),
             routing_policy=routing_policy,
             type_policy_revisions=type_policy_revisions,
         )
@@ -615,7 +707,11 @@ def make_spawn_subagents_tool(
                     "results": "This logical turn already started this subagent pool.",
                 }
 
-        cached = _find_cached_result(conv_store, fp, journal=conversation_journal)
+        cached = (
+            _find_cached_result(conv_store, fp, journal=conversation_journal)
+            if not requested_workflows
+            else None
+        )
         if cached is not None:
             cached_values = _find_cached_values(
                 conv_store,
@@ -649,13 +745,13 @@ def make_spawn_subagents_tool(
             tasks=subagent_tasks,
             parent_runner=parent_runner,
             parent_model=parent_model,
-            all_tools=all_tools,
+            tool_surface=spawn_surface,
             max_concurrent=effective_max_concurrent,
             app_state=app_state,
             processor=processor,
             conv_store=conv_store,
             registry=_registry,
-            tool_registry=tool_registry,
+            tool_registry=selection.registry,
             retry_config=retry_config,
             usage_ledger=usage_ledger,
             conversation_id=conversation_id,
@@ -666,7 +762,7 @@ def make_spawn_subagents_tool(
             workspace_access=workspace_access,
             conversation_journal=conversation_journal,
             task_fingerprint=fp,
-            policy=effective_policy,
+            policy=spawn_policy,
             provider=provider,
             default_model=default_model,
             default_effort=_settings.default_effort,
@@ -895,6 +991,11 @@ def make_spawn_subagents_tool(
             "results": result.text,
             "values": structured_values,
             "usage": result.usage.to_dict(),
+            **(
+                {"workflow_returns": list(result.workflow_returns)}
+                if result.workflow_returns
+                else {}
+            ),
             **pool_metadata,
         }
 
@@ -1209,7 +1310,9 @@ def _augment_type_schema(
     # than forcing providers to send an empty context string.
     required = item_schema.get("required")
     if isinstance(required, list):
-        item_schema["required"] = [name for name in required if name != "context"]
+        item_schema["required"] = [
+            name for name in required if name not in {"context", "workflow", "params"}
+        ]
     type_schema = item_properties.get("type")
     if isinstance(type_schema, dict):
         type_schema["enum"] = _known_type_names(registry)

@@ -17,6 +17,16 @@ UnifiedCommandRegistry
         └── TUISession → CommandDispatcher → handler or menu
 ```
 
+## Inspect workflows and extensions
+
+Use `/workflow` to see active frames and `/workflow stack` for their origins
+and run IDs. `/workflow return --abandon` returns a paused child to its caller.
+`/catalog` prints the model's current capability catalog.
+
+`/reload` accepts optional surface names. Open `/reload report` to see the
+last report, including source paths, diagnostic codes, and available digests.
+`/authored list` shows installed and staged extensions.
+
 ## Create a working command
 
 Create `.agenthicc/commands/greet.py`:
@@ -67,6 +77,15 @@ module contains multiple commands. A singular `COMMAND` export is also
 supported by the same command-specific loader. Both forms are discovered at
 startup and by `/commands reload`; do not add a second command registry in a
 plugin.
+
+## Inspect and undo authored extensions
+
+`/authored list` displays published and staged sets. Use
+`/authored diff <name>` to inspect the change and `/authored rollback <name> [digest]`
+to activate an earlier version. `/authored remove <name>` removes the extension
+and reloads its surface. `/authored approve <run-id>` and
+`/authored reject <run-id>` resolve a set staged by the operator's publication
+policy. [Authored extensions](plugins.md#authored-extensions)
 
 ## Writing a trigger
 
@@ -127,7 +146,7 @@ TUI route may then report the command as having no usable handler.
 - the complete submitted `text` and the parsed `args` string;
 - the Rich `console`, live config, session id, and active-agent label;
 - the current command registry and mode manager;
-- callbacks for pending skills, menus, replay, overlay close, and skill reload;
+- callbacks for pending skills, menus, replay and overlay close, plus the session reload service;
 - session-provided workflow recovery callbacks used by `/workflows runs`.
 
 Handlers should use these fields rather than reaching into renderer or
@@ -165,16 +184,21 @@ replace a global command or a built-in with the same name. Use `/commands` to
 inspect the effective registry. Choose unique canonical names and aliases:
 alias conflicts are not diagnosed, and aliases can affect name resolution.
 
-Project-wide commands are loaded when the session is constructed.
-`/commands reload` rescans both command directories and updates the existing
-registry in place. Added, updated, and removed command names are reported.
-`/skills reload` refreshes skill-owned dollar triggers only, not Python command
-plugins. `/tools reload` rescans project and user-global tool plugins and
-publishes the successfully loaded subset even when another plugin fails; the
-failure details are reported. If no tool plugin loads successfully, the
-previous live tool registry is kept. `/workflows reload` rebuilds the workflow
-registry in place. Explicit skills use `$skill-name`; slash-prefixed skill
-names are not accepted.
+### Live extension reload
+
+Run `/reload` for all four extension surfaces or pass specific names, such
+as `/reload tools skills`. `/commands reload`, `/skills reload`, `/tools reload`,
+and `/workflow reload` (also `/workflows reload`) each request one surface
+through the same service. Skill reload also refreshes its dollar triggers.
+
+Discovery runs in a worker thread. The session publishes complete surfaces
+as they become available and reports the changed item counts and source
+diagnostics. Tool reload can publish healthy plugins alongside import
+failures. If failures leave zero tools, the previous tool surface stays
+active. A failed command scan preserves the previous command registry.
+
+In a headless workflow session, submit `/reload` on stdin to receive one
+JSON object with `"event": "reload"` and the typed report fields.
 
 ## Picker and submission journey
 
@@ -237,10 +261,11 @@ streaming. `/cancel` and `/interrupt` use the same control owner as `Ctrl+C`;
 `/bg` and `/background` use the existing background-session handoff when that
 integration is enabled.
 
-Mutating or agent-starting operations remain deferred. This includes normal
-text, `$skill` invocations, workflow/model changes, reload forms such as
-`/skills reload`, `/tools reload`, `/workflows reload`, and `/commands reload`,
-`/compact`, `/replay`, and MCP actions.
+`/reload` and `/workflow reload` also run immediately while an agent is active.
+The `reload` action on the other registry commands follows the normal queue.
+The service builds the new surface off the loop and publishes it for
+subsequent consumers. Normal text, `$skill` invocations, workflow selection,
+model changes, `/compact`, `/replay` and MCP actions remain deferred.
 The `/config` overlay is a local UI action; edits are applied by the overlay's
 save action and do not become an agent message. User and project commands
 default to `queue`; an immediate-control policy is reserved for built-in
@@ -321,6 +346,11 @@ agent project-specific guidance for producing a `Command` export. Review the
 generated code, trust it with `agenthicc trust add`, and reload the command
 registry.
 
+Use `/workflow call create_skills <intent>` to author skill triggers.
+Published skills appear in the `$` picker as soon as the session reloads them.
+Each skill may declare an `argumentHint` for the command row.
+[Authoring skills](plugins.md#skills)
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
@@ -328,7 +358,7 @@ registry.
 | A command in `.agenthicc/commands/` is not available | Project extension discovery is deferred until after the first TUI frame | Wait for the shell phase to be `ready`, then `/commands reload` |
 | A slash command you wrote is never suggested | It was not discovered or its name collides | Check for a name collision with a builtin, and inspect the discovery result rather than the log tail |
 | `/workflow` or `/compact` errors when invoked | Both carry `handler=None` deliberately | They are intercepted in `TUISession.route()`; their registry entries exist so the picker can display and complete them |
-| A documented command is missing from autocomplete | It is not in `BUILTIN_COMMANDS` | The registry holds 23 entries; `/background` (alias `/bg`) is injected separately and `/create-tools` and `/create-commands` come from bootstrap skills |
+| A documented command is missing from autocomplete | It is not in `BUILTIN_COMMANDS` | The registry holds 23 entries; `/background` (alias `/bg`) is injected separately and `/create-commands` comes from a bootstrap skill |
 | A project command is skipped as untrusted | It has no trust record, or it changed since it was trusted | Review it, run `agenthicc trust add .agenthicc/commands/<file>.py`, then `/commands reload` |
 | Arguments are not parsed as expected | There is no shared argument grammar | Use the command's own `argument_hint` and handler; do not assume shell-style quoting |
 | A command's output interleaves badly during a turn | Commands that print while a turn renders | Prefer structured state updates over direct printing in a long-running turn |

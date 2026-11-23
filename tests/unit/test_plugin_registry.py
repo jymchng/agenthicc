@@ -47,7 +47,7 @@ def test_describe_empty_registry():
 
 
 def test_build_registry_includes_builtins():
-    reg = build_registry(project_plugin_tools=[], agent_name=None)
+    reg = build_registry(extra_tools=[], agent_name=None)
     # Built-in tools must always be present
     assert "read_file" in reg.names
     assert "git_status" in reg.names
@@ -55,14 +55,14 @@ def test_build_registry_includes_builtins():
 
 def test_build_registry_plugin_shadows_builtin():
     shadow = _make_tool("read_file")  # same name as built-in
-    reg = build_registry(project_plugin_tools=[shadow], agent_name=None)
+    reg = build_registry(extra_tools=[shadow], agent_name=None)
     # Plugin wins
     assert reg._by_name["read_file"] is shadow
     assert reg.sources["read_file"] == "project-plugin"
 
 
 def test_build_registry_tracks_builtin_source():
-    reg = build_registry(project_plugin_tools=[], agent_name=None)
+    reg = build_registry(extra_tools=[], agent_name=None)
     assert reg.sources["read_file"] == "builtin"
     assert reg.sources["git_status"] == "builtin"
 

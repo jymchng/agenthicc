@@ -254,6 +254,9 @@ def build_commented_config_template() -> str:
     _comment(lines, "default = 200000  # fallback for unknown model IDs")
     _comment(lines, '"model-id" = 200000')
 
+    _section(lines, "workflows")
+    _field(lines, "max_stack_depth", cfg.workflow_stack_max_depth, "foreground call frames")
+
     _section(lines, "subagents")
     _field(lines, "default_model", "", "empty inherits the parent model")
     _field(lines, "default_effort", "", "empty inherits provider effort")

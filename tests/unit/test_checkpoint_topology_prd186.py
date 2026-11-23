@@ -262,6 +262,9 @@ def test_recovery_reports_active_index_mismatch_separately(tmp_path: Path) -> No
 def test_checkpoint_topology_fields_round_trip() -> None:
     checkpoint = WorkflowCheckpoint(
         run_id="run",
+        frame_id="run",
+        parent_run_id=None,
+        origin="selection",
         workflow_name="demo",
         conversation_id="session",
         intent="intent",
@@ -285,6 +288,9 @@ def test_checkpoint_topology_fields_round_trip() -> None:
 def test_checkpoint_rejects_partial_topology_metadata() -> None:
     checkpoint = WorkflowCheckpoint(
         run_id="run",
+        frame_id="run",
+        parent_run_id=None,
+        origin="selection",
         workflow_name="demo",
         conversation_id="session",
         intent="intent",

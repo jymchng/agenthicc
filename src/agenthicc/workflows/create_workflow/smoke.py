@@ -1,10 +1,4 @@
-"""Bounded fake-provider smoke checks for generated workflow packages.
-
-The smoke harness does not call a real provider or deliberately exercise
-integrations. It parses source, then imports the candidate and exercises its
-custom runner in-process under a fake harness. This is not a sandbox: candidate
-imports can execute arbitrary code with the current process's permissions.
-"""
+"""Bounded fake-provider smoke checks in the authored-code sandbox."""
 
 from __future__ import annotations
 
@@ -13,16 +7,9 @@ import asyncio
 import inspect
 import json
 import dataclasses
-from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, TYPE_CHECKING, Callable, Coroutine, Protocol, TypeVar, cast
-
-if TYPE_CHECKING:
-    from agenthicc.workflows.create_workflow.validation import ValidationReport
-
-
-_SmokeResult = TypeVar("_SmokeResult")
+from typing import Any, Callable, Coroutine, Literal, Protocol, cast
 
 
 class _SmokeRunner(Protocol):
@@ -68,6 +55,7 @@ class SmokeReport:
     ok: bool
     checks: tuple[SmokeCheck, ...] = ()
     errors: tuple[str, ...] = ()
+    validation: Literal["passed", "static_only"] = "passed"
 
     @property
     def skipped(self) -> tuple[SmokeCheck, ...]:
@@ -79,6 +67,7 @@ class SmokeReport:
             "ok": self.ok,
             "checks": [check.to_dict() for check in self.checks],
             "errors": list(self.errors),
+            "validation": self.validation,
             "skipped": [check.to_dict() for check in self.skipped],
         }
 
@@ -124,17 +113,6 @@ def _has_name(source: str, name: str) -> bool:
     except SyntaxError:
         return False
     return any(isinstance(node, ast.Name) and node.id == name for node in ast.walk(tree))
-
-
-def _run_async(factory: Callable[[], Coroutine[Any, Any, _SmokeResult]]) -> _SmokeResult:
-    """Run a smoke coroutine even when validation already owns an event loop."""
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(factory())
-    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="agenthicc-smoke") as pool:
-        future: Future[_SmokeResult] = pool.submit(lambda: asyncio.run(factory()))
-        return future.result()
 
 
 def _fake_config() -> SimpleNamespace:
@@ -351,7 +329,7 @@ async def _exercise_error_propagation(plugin: _SmokePlugin) -> bool:
     return getattr(getattr(result, "state", None), "name", "") == "FAILED"
 
 
-def run_generated_workflow_smoke(
+def _run_generated_workflow_smoke(
     path: str | Path,
     *,
     expected_name: str = "",
@@ -360,7 +338,7 @@ def run_generated_workflow_smoke(
     """Run a bounded executable-shape smoke check with a fake-provider harness."""
     from agenthicc.workflows.create_workflow.validation import (
         _import_plugins,
-        validate_workflow_file,
+        _run_workflow_validation,
     )
 
     candidate = Path(path).expanduser()
@@ -404,10 +382,10 @@ def run_generated_workflow_smoke(
         sources.append(source)
 
     combined = "\n".join(sources)
-    validation: ValidationReport = validate_workflow_file(
+    validation = _run_workflow_validation(
         str(resolved),
         expected_name=expected_name,
-        root=root,
+        base=workspace,
         strict_cache_contract=True,
     )
     checks.append(
@@ -496,82 +474,83 @@ def run_generated_workflow_smoke(
                     "normal workflow discovery excluded the run-owned pending package",
                 )
             )
-            plugins, _namespace, import_error = _import_plugins(resolved)
-            if import_error:
-                raise ValueError(f"pending package import failed: {import_error}")
-            plugin = next(
-                (item for item in plugins if not expected_name or item.name == expected_name),
-                plugins[0] if plugins else None,
-            )
-            if plugin is None:
-                raise ValueError("package import returned no plugin for smoke execution")
-            custom = getattr(plugin.build_runner, "__func__", None) is not getattr(
-                WorkflowPlugin.build_runner, "__func__", None
-            )
-            if custom:
-                context, restored, transitions, detail = _run_async(
-                    lambda: _exercise_custom_runner(cast(_SmokePlugin, plugin))
+            with _import_plugins(resolved) as (plugins, _namespace, import_error):
+                if import_error:
+                    raise ValueError(f"pending package import failed: {import_error}")
+                plugin = next(
+                    (item for item in plugins if not expected_name or item.name == expected_name),
+                    plugins[0] if plugins else None,
                 )
-                if not transitions:
-                    raise ValueError("fake phase driver observed no transition-tool call")
-                if (
-                    getattr(context, "state", None) is None
-                    or getattr(getattr(context, "state", None), "is_terminal", False) is not True
-                ):
-                    raise ValueError("fake phase driver did not reach a terminal state")
-                if getattr(restored, "run_id", None) != getattr(context, "run_id", None):
-                    raise ValueError("restored smoke context changed the run identity")
-                checks.append(
-                    SmokeCheck(
-                        "fake_runtime",
-                        "pass",
-                        f"{detail}; prose-only first turns remained in phase loops",
+                if plugin is None:
+                    raise ValueError("package import returned no plugin for smoke execution")
+                custom = getattr(plugin.build_runner, "__func__", None) is not getattr(
+                    WorkflowPlugin.build_runner, "__func__", None
+                )
+                if custom:
+                    context, restored, transitions, detail = asyncio.run(
+                        _exercise_custom_runner(cast(_SmokePlugin, plugin))
                     )
-                )
-                checks.append(
-                    SmokeCheck(
-                        "phase_boundary_checkpoint",
-                        "pass",
-                        "fake handle observed at least one post-transition boundary checkpoint",
+                    if not transitions:
+                        raise ValueError("fake phase driver observed no transition-tool call")
+                    if (
+                        getattr(context, "state", None) is None
+                        or getattr(getattr(context, "state", None), "is_terminal", False)
+                        is not True
+                    ):
+                        raise ValueError("fake phase driver did not reach a terminal state")
+                    if getattr(restored, "run_id", None) != getattr(context, "run_id", None):
+                        raise ValueError("restored smoke context changed the run identity")
+                    checks.append(
+                        SmokeCheck(
+                            "fake_runtime",
+                            "pass",
+                            f"{detail}; prose-only first turns remained in phase loops",
+                        )
                     )
-                )
-                checks.append(
-                    SmokeCheck(
-                        "record_only_transition",
-                        "pass",
-                        "summary-only transition returned a fixed outcome and bounded summary "
-                        "acknowledgment before the next-phase checkpoint",
+                    checks.append(
+                        SmokeCheck(
+                            "phase_boundary_checkpoint",
+                            "pass",
+                            "fake handle observed at least one post-transition boundary checkpoint",
+                        )
                     )
-                )
-                propagated = bool(
-                    _run_async(lambda: _exercise_error_propagation(cast(_SmokePlugin, plugin)))
-                )
-                checks.append(
-                    SmokeCheck(
-                        "failure_finalization",
-                        "pass" if propagated else "fail",
-                        "injected provider failure was propagated to the framework boundary"
-                        if propagated
-                        else "injected provider failure was swallowed or treated as success",
+                    checks.append(
+                        SmokeCheck(
+                            "record_only_transition",
+                            "pass",
+                            "summary-only transition returned a fixed outcome and bounded summary "
+                            "acknowledgment before the next-phase checkpoint",
+                        )
                     )
-                )
-                if not propagated:
-                    runtime_errors.append("generated runner swallowed an injected phase error")
-            else:
-                checks.append(
-                    SmokeCheck(
-                        "fake_runtime",
-                        "pass",
-                        "generic declarative runner owns phase execution and checkpointing",
+                    propagated = bool(
+                        asyncio.run(_exercise_error_propagation(cast(_SmokePlugin, plugin)))
                     )
-                )
-                checks.append(
-                    SmokeCheck(
-                        "failure_finalization",
-                        "pass",
-                        "generic runner failure handling remains framework-owned",
+                    checks.append(
+                        SmokeCheck(
+                            "failure_finalization",
+                            "pass" if propagated else "fail",
+                            "injected provider failure was propagated to the framework boundary"
+                            if propagated
+                            else "injected provider failure was swallowed or treated as success",
+                        )
                     )
-                )
+                    if not propagated:
+                        runtime_errors.append("generated runner swallowed an injected phase error")
+                else:
+                    checks.append(
+                        SmokeCheck(
+                            "fake_runtime",
+                            "pass",
+                            "generic declarative runner owns phase execution and checkpointing",
+                        )
+                    )
+                    checks.append(
+                        SmokeCheck(
+                            "failure_finalization",
+                            "pass",
+                            "generic runner failure handling remains framework-owned",
+                        )
+                    )
         except Exception as exc:  # noqa: BLE001 — generated code is the smoke subject
             runtime_errors.append(f"fake runtime failed: {type(exc).__name__}: {exc}")
             checks.append(SmokeCheck("fake_runtime", "fail", runtime_errors[-1]))
@@ -585,3 +564,62 @@ def run_generated_workflow_smoke(
         tuple(checks),
         all_errors,
     )
+
+
+def _inspect_smoke(arguments: dict[str, object]) -> dict[str, object]:
+    return _run_generated_workflow_smoke(
+        str(arguments["path"]),
+        expected_name=str(arguments["expected_name"]),
+        root=Path("/workspace"),
+    ).to_dict()
+
+
+def run_generated_workflow_smoke(
+    path: str | Path,
+    *,
+    expected_name: str = "",
+    root: Path | None = None,
+) -> SmokeReport:
+    """Exercise a generated runner using the isolated fake-provider session."""
+    from agenthicc.workflows.authoring.import_sandbox import inspect_generated_python
+    from agenthicc.workflows.create_workflow.validation import (
+        ValidationReport,
+        _read_workflow_sources,
+        _restore_workspace_paths,
+        _static_workflow_report,
+    )
+    from agenthicc.workflows.payload import payload_mapping, payload_mappings, payload_strings
+
+    base = (root or Path.cwd()).resolve()
+    loaded = _read_workflow_sources(str(path), base=base)
+    if isinstance(loaded, ValidationReport):
+        return SmokeReport(loaded.path, False, errors=loaded.errors)
+    resolved, sources = loaded
+    check = inspect_generated_python(
+        base,
+        _inspect_smoke,
+        {
+            "path": str(Path("/workspace") / resolved.relative_to(base)),
+            "expected_name": expected_name,
+        },
+    )
+    if check.status == "static_only":
+        report = _static_workflow_report(
+            resolved, sources, expected_name=expected_name, reason=check.reason
+        )
+        return SmokeReport(
+            str(resolved),
+            report.ok,
+            checks=(SmokeCheck("fake_runtime", "skipped", check.reason),),
+            errors=report.errors,
+            validation="static_only",
+        )
+    if check.result is None:
+        return SmokeReport(str(resolved), False, errors=(check.reason,))
+    payload = payload_mapping(_restore_workspace_paths(check.result, base))
+    checks = tuple(
+        SmokeCheck(str(item["category"]), str(item["status"]), str(item["detail"]))
+        for item in payload_mappings(payload.get("checks"))
+    )
+    errors = tuple(payload_strings(payload.get("errors")))
+    return SmokeReport(str(resolved), payload.get("ok") is True and not errors, checks, errors)

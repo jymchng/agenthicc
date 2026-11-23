@@ -81,7 +81,7 @@ def _make_session(
     mode_manager = ModeManager(modes, app)
     bus = CommandBus()
     config = AgenthiccConfig()
-    state = SimpleNamespace(workflows={})
+    state = SimpleNamespace(workflows={}, workflow_frames=())
 
     async def processor_run() -> None:
         await asyncio.Event().wait()
@@ -101,7 +101,6 @@ def _make_session(
         approval_svc=approval,
         cfg=config,
         skills={},
-        project_plugins=SimpleNamespace(all_tools=[]),
         mcp_registry=None,
         mention_cache=SimpleNamespace(),
         memory_router=None,
@@ -120,7 +119,6 @@ def _make_session(
         workspace_scope=None,
         pending_resume=None,
         resumed=False,
-        command_plugin_names=set(),
         initial_workflow=initial_workflow,
     )
     workspace = _Workspace(app)
@@ -198,8 +196,8 @@ def test_completed_background_subagent_is_delivered_once(tmp_path: Path) -> None
 def test_tui_initial_workflow_selection_is_visible_and_active() -> None:
     session, ctx, _workspace, _input = _make_session(initial_workflow="demo")
 
-    assert session._workflow_override == "demo"
-    assert ctx.app_state.conversation.workflow_override() == "demo"
+    assert ctx.workflow_stack.base_dispatch_name == "demo"
+    assert ctx.app_state.conversation.workflow_stack()[-1].workflow_name == "demo"
 
 
 def test_workflow_run_listing_is_newest_first_and_resume_delegates() -> None:
@@ -527,6 +525,9 @@ def test_reset_of_nonrecoverable_create_workflow_restores_package(tmp_path: Path
     )
     checkpoint = WorkflowCheckpoint(
         run_id=run_id,
+        frame_id=run_id,
+        parent_run_id=None,
+        origin="selection",
         workflow_name="create_workflow",
         conversation_id="coverage-session",
         intent=context.intent,
@@ -558,10 +559,9 @@ def test_reset_of_nonrecoverable_create_workflow_restores_package(tmp_path: Path
     assert run_id not in session._workflow_recovery_records
 
 
-def test_tui_routing_workflow_commands_and_skill_reload(
+async def test_tui_routing_workflow_commands_and_skill_refresh(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from agenthicc.runners import tui_session
     from agenthicc.skills.loader import SkillDef, SkillDiscoveryResult
 
     session, ctx, _workspace, _input = _make_session()
@@ -578,37 +578,33 @@ def test_tui_routing_workflow_commands_and_skill_reload(
     assert session.route("/unknown") is True
 
     assert session._handle_workflow_command("") is True
-    assert session._workflow_override is None
+    assert ctx.workflow_stack.base_dispatch_name is None
     assert session._handle_workflow_command("missing") is True
     from agenthicc.workflows.create_workflow.definition import CreateWorkflow
 
     ctx.workflow_registry.register(CreateWorkflow)
     assert session.route("/workflow create_workflow") is True
-    assert session._workflow_override == "create_workflow"
+    assert ctx.workflow_stack.base_dispatch_name == "create_workflow"
     ctx.workflow_registry.register(type("Demo", (), {"name": "demo", "mode_bindings": ()}))  # type: ignore[arg-type]
     assert session._handle_workflow_command("demo") is True
-    assert session._workflow_override == "demo"
+    assert ctx.workflow_stack.base_dispatch_name == "demo"
     from agenthicc.runners.workflow_recovery import WorkflowRecoveryRecord
 
     session._workflow_recovery_records["paused-run"] = WorkflowRecoveryRecord(run_id="paused-run")
     assert session._handle_workflow_command("reset") is True
-    assert session._workflow_override is None
-    assert ctx.app_state.conversation.workflow_override() is None
+    assert ctx.workflow_stack.base_dispatch_name is None
+    assert ctx.app_state.conversation.workflow_stack()[-1].workflow_name == "default"
 
     skill = SkillDef("Coverage", "coverage", Path("."), description="test", aliases=("cov",))
-    ctx.skills["old"] = skill
     ctx.cmd_registry.register(Command("$old", "old", source_id="skill:old", group="Skills"))
     discovery = SkillDiscoveryResult({"coverage": skill})
     monkeypatch.setattr(
-        tui_session, "discover_skills_with_diagnostics", lambda **_: discovery, raising=False
-    )
-    # The import is local in the method, so patch its defining module instead.
-    monkeypatch.setattr(
         "agenthicc.skills.loader.discover_skills_with_diagnostics", lambda **_: discovery
     )
-    result = session._reload_skills()
-    assert "coverage" in result.skills
-    assert ctx.cmd_registry.get("/old") is None
+    report = await session._request_extension_reload(frozenset({"skills"}))
+    assert report.ok
+    assert "coverage" in ctx.reload.skills.current().value
+    assert ctx.cmd_registry.get("$old") is None
     assert ctx.cmd_registry.get("$coverage") is not None
     assert ctx.cmd_registry.get("/coverage") is None
 
@@ -631,13 +627,13 @@ def test_ordinary_messages_are_claimed_at_a_tool_boundary_and_commands_wait() ->
     assert session._msg_queue.texts() == ["$skill"]
 
 
-def test_tui_reload_tools_replaces_session_tools_and_workflow_config(
+async def test_tui_tool_refresh_updates_the_shared_workflow_config_surface(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from agenthicc.plugins.discovery import LoadResult, PluginToolSet
 
     session, ctx, _workspace, _input = _make_session()
-    old_plugins = ctx.project_plugins
+    old_plugins = ctx.reload.tools.current()
 
     async def old_tool() -> dict[str, object]:
         return {"name": "old"}
@@ -651,16 +647,15 @@ def test_tui_reload_tools_replaces_session_tools_and_workflow_config(
         lambda **_: discovered,
     )
 
-    ok, message = session._reload_tools()
+    report = await session._request_extension_reload(frozenset({"tools"}))
 
-    assert ok is True
-    assert "1 tool(s) available" in message
-    assert ctx.project_plugins is discovered
-    assert ctx.project_plugins is not old_plugins
-    assert session._wf_config_base.plugin_tools is discovered
+    assert report.ok
+    assert ctx.reload.tools.current() is not old_plugins
+    assert ctx.reload.tools.current().tools == (new_tool,)
+    assert session._wf_config_base.tool_surface is ctx.reload.tools
 
 
-def test_tui_reload_tools_publishes_successes_and_reports_failed_plugins(
+async def test_tui_tool_refresh_publishes_successes_and_reports_failed_plugins(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from agenthicc.plugins.discovery import LoadResult, PluginToolSet
@@ -681,24 +676,22 @@ def test_tui_reload_tools_publishes_successes_and_reports_failed_plugins(
         lambda **_: discovered,
     )
 
-    ok, message = session._reload_tools()
+    report = await session._request_extension_reload(frozenset({"tools"}))
 
-    assert ok is True
-    assert ctx.project_plugins is discovered
-    assert session._wf_config_base.plugin_tools is discovered
-    assert ctx.project_plugins.all_tools == [usable_tool]
-    assert "1 tool(s) available" in message
-    assert "Skipped 1 plugin(s)" in message
-    assert "broken.py" in message
+    assert report.ok
+    assert session._wf_config_base.tool_surface is ctx.reload.tools
+    assert ctx.reload.tools.current().tools == (usable_tool,)
+    assert len(report.diagnostics) == 1
+    assert Path(report.diagnostics[0].path).name == "broken.py"
 
 
-def test_tui_reload_tools_keeps_existing_tools_when_every_plugin_fails(
+async def test_tui_tool_refresh_keeps_existing_tools_when_every_plugin_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from agenthicc.plugins.discovery import LoadResult, PluginToolSet
 
     session, ctx, _workspace, _input = _make_session()
-    old_plugins = ctx.project_plugins
+    old_plugins = ctx.reload.tools.current()
     discovered = PluginToolSet(
         [LoadResult(path=Path(".agenthicc/tools/broken.py"), error="syntax error")]
     )
@@ -707,46 +700,50 @@ def test_tui_reload_tools_keeps_existing_tools_when_every_plugin_fails(
         lambda **_: discovered,
     )
 
-    ok, message = session._reload_tools()
+    report = await session._request_extension_reload(frozenset({"tools"}))
 
-    assert ok is False
-    assert ctx.project_plugins is old_plugins
-    assert session._wf_config_base.plugin_tools is old_plugins
-    assert "existing tools kept" in message
+    assert not report.ok
+    assert ctx.reload.tools.current() is old_plugins
+    assert session._wf_config_base.tool_surface.current() is old_plugins
+    assert report.diagnostics[0].code == "import_error"
 
 
-def test_tui_reload_workflows_preserves_registry_identity_and_resets_removed_override(
+async def test_tui_workflow_refresh_preserves_registry_identity_and_resets_removed_selection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     session, ctx, _workspace, _input = _make_session()
 
-    class OldWorkflow:
+    from agenthicc.workflows.plugin import WorkflowPlugin
+
+    class OldWorkflow(WorkflowPlugin):
         name = "old_workflow"
 
-    class NewWorkflow:
+    class NewWorkflow(WorkflowPlugin):
         name = "new_workflow"
 
-    ctx.workflow_registry.register(OldWorkflow)  # type: ignore[arg-type]
-    session._workflow_override = "old_workflow"
-    ctx.app_state.conversation.workflow_override.set("old_workflow")
+    ctx.workflow_registry.register(OldWorkflow)
+    session._select_base_workflow("old_workflow")
     replacement = WorkflowRegistry()
-    replacement.register(NewWorkflow)  # type: ignore[arg-type]
+    replacement.register(NewWorkflow)
     original_registry = ctx.workflow_registry
     monkeypatch.setattr(
         "agenthicc.workflows.registry.build_workflow_registry",
         lambda **_: replacement,
     )
 
-    ok, message = session._reload_workflows()
+    report = await session._request_extension_reload(frozenset({"workflows"}))
 
-    assert ok is True
-    assert "added: new_workflow" in message
-    assert "removed: old_workflow" in message
+    from agenthicc.runners.reload import ReloadChange
+
+    assert report.ok
+    assert ctx.reload.generation == report.generation == 1
+    assert ReloadChange("workflows", "new_workflow", "added") in report.changes
+    assert ReloadChange("workflows", "old_workflow", "removed") in report.changes
     assert ctx.workflow_registry is original_registry
     assert ctx.workflow_registry.get("old_workflow") is None
     assert ctx.workflow_registry.get("new_workflow") is NewWorkflow
-    assert session._workflow_override is None
-    assert ctx.app_state.conversation.workflow_override() is None
+    assert ctx.workflow_stack.base_dispatch_name is None
+    assert ctx.app_state.conversation.workflow_stack()[-1].workflow_name == "default"
 
 
 def test_tui_routes_dollar_skills_and_rejects_legacy_slash() -> None:
@@ -1321,7 +1318,7 @@ async def test_build_session_context_fresh_and_resume_paths(
     assert fresh.session_id and fresh.agent_runner is None
     assert fresh.mode_manager.active_name == "Plan"
     assert fresh.app_state.active_mode().name == "Plan"
-    assert fresh.initial_workflow == "startup_workflow"
+    assert fresh.workflow_stack.base_dispatch_name == "startup_workflow"
     assert "playwright_open" in {tool.__name__ for tool in fresh.browser_tools}
     assert fresh.mode_manager.set_by_name("Yolo") is not None
     session_id = fresh.session_id
@@ -1373,3 +1370,20 @@ async def test_build_session_context_fresh_and_resume_paths(
     assert default_mode.app_state.active_mode().name == "Safe"
     default_mode.session_log.close()
     default_mode.session_memory.close()
+
+
+async def test_workflow_reload_submission_uses_the_session_service(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agenthicc.commands import build_builtin_registry
+
+    session, ctx, _workspace, _input = _make_session()
+    ctx.cmd_registry.register_many(build_builtin_registry().all_commands())
+    candidate = WorkflowRegistry()
+    monkeypatch.setattr(
+        "agenthicc.workflows.registry.build_workflow_registry", lambda **_kwargs: candidate
+    )
+
+    assert session.route("/workflow reload")
+    assert await session._tasks.wait(timeout=5)
+    assert ctx.reload.generation == 1

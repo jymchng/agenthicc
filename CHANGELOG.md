@@ -9,6 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — workflow composition
+
+- Agents can call an eligible workflow and receive its result in the calling
+  frame. Workers can run eligible workflows in isolated worktrees.
+- `/workflow stack`, `/catalog`, and `/reload report` expose the current frame,
+  model capabilities, and extension diagnostics.
+- **Breaking.** Use `/workflow reset` to clear a workflow selection.
+  `/workflow` now shows the stack. Checkpoints that predate workflow stacks
+  require a new run.
+
+### Changed — workflow authoring
+
+- Use `/workflow call create_workflow <intent>` or the agent's
+  `enter_workflow` tool for workflow authoring. The session publishes and
+  reloads the validated package before returning, or keeps it pending under
+  the stage-only policy.
+- **Breaking.** The bundled `$create-workflow` skill has been retired.
+  Startup removes unchanged seeded copies and reports edited copies it
+  leaves in place.
+
+### Changed — tool authoring
+
+- **Breaking.** `create_tools` replaces `make_agenthicc_tool` and the seeded
+  `$create-tools` skill. Start a new run with
+  `/workflow call create_tools <intent>`. It validates and publishes the set
+  together, then reloads it before the parent resumes.
+
 ### Added — long subagent output goes to a file
 
 - **A cut-off reply is saved.** When a worker's reply stops at the output-token

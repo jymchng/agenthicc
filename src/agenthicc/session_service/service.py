@@ -864,6 +864,15 @@ class SessionService:
             runtime = await self._ensure_runtime_locked(session_id)
             if runtime.deleted:
                 raise SessionError("not_found", f"session not found: {session_id}", status=404)
+            if (
+                kind == "turn_queued"
+                and turn_id
+                and payload is not None
+                and payload.get("idempotency_key") == turn_id
+            ):
+                for queued in reversed(runtime.events):
+                    if queued.kind == kind and queued.turn_id == turn_id:
+                        return queued
             return await self._append_locked(
                 runtime,
                 source=source,

@@ -19,6 +19,8 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Final
 
+from agenthicc.workflows.authoring.scoped_tools import _NOFOLLOW
+
 __all__ = [
     "PENDING_MARKER_NAME",
     "AuthoringError",
@@ -49,12 +51,6 @@ _MAX_FILES = 128
 _MAX_FILE_BYTES = 1_000_000
 _MAX_TOTAL_BYTES = 4_000_000
 _MAX_METADATA_BYTES = 16_384
-
-
-def _optional_os_flag(name: str) -> int:
-    """Return an available integer open flag or zero on unsupported platforms."""
-    value = getattr(os, name, 0)
-    return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
 class AuthoringError(ValueError):
@@ -192,14 +188,18 @@ class _TrustRecordSnapshot:
     sha256: str
     kind: str
     trusted_at: str
+    artifact_digest: str | None = None
 
     def to_dict(self) -> dict[str, str]:
-        return {
+        result = {
             "path": self.path,
             "sha256": self.sha256,
             "kind": self.kind,
             "trusted_at": self.trusted_at,
         }
+        if self.artifact_digest is not None:
+            result["artifact_digest"] = self.artifact_digest
+        return result
 
     @classmethod
     def from_payload(cls, value: object) -> _TrustRecordSnapshot:
@@ -212,6 +212,7 @@ class _TrustRecordSnapshot:
         digest = str(value["sha256"])
         kind = str(value["kind"])
         trusted_at = str(value["trusted_at"])
+        artifact_digest = value.get("artifact_digest")
         if (
             not Path(path).is_absolute()
             or str(Path(path).resolve()) != path
@@ -220,9 +221,22 @@ class _TrustRecordSnapshot:
             or len(kind) > 64
             or not trusted_at
             or len(trusted_at) > 128
+            or (
+                artifact_digest is not None
+                and (
+                    not isinstance(artifact_digest, str)
+                    or not re.fullmatch(r"[a-f0-9]{64}", artifact_digest)
+                )
+            )
         ):
             raise AuthoringError("checkpoint original trust record has invalid fields")
-        return cls(path=path, sha256=digest, kind=kind, trusted_at=trusted_at)
+        return cls(
+            path=path,
+            sha256=digest,
+            kind=kind,
+            trusted_at=trusted_at,
+            artifact_digest=artifact_digest,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -324,6 +338,7 @@ class ExistingWorkflowTarget:
     target_exists: bool
     legacy_exists: bool
     fingerprint: str
+    files: tuple[PackageFile, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -406,6 +421,9 @@ def canonical_workflow_path(root: Path, workflow_name: str) -> Path:
     if not target.is_relative_to(workspace):
         raise AuthoringError("canonical workflow target escapes the authorized workspace")
     _reject_symlink_components(target, workspace)
+    user_root = Path.home().resolve() / ".agenthicc"
+    if target.is_relative_to(user_root) or target.is_relative_to(user_root.resolve()):
+        raise AuthoringError("workflow authoring cannot target the user-global directory")
     return target
 
 
@@ -419,7 +437,7 @@ def _read_json(path: Path, *, label: str) -> dict[str, object]:
         before = os.stat(path, follow_symlinks=False)
         if not stat.S_ISREG(before.st_mode) or before.st_size > _MAX_METADATA_BYTES:
             raise AuthoringError(f"{label} is not a bounded regular file")
-        fd = os.open(path, os.O_RDONLY | _optional_os_flag("O_NOFOLLOW"))
+        fd = os.open(path, os.O_RDONLY | _NOFOLLOW)
     except FileNotFoundError:
         raise
     except OSError as exc:
@@ -480,7 +498,7 @@ def _write_json_atomic(path: Path, value: dict[str, object], *, create: bool = F
         raise
 
 
-def _file_entry(path: Path, relative: str) -> PackageFile:
+def _read_package_file(path: Path, relative: str) -> bytes:
     try:
         before = os.stat(path, follow_symlinks=False)
     except OSError as exc:
@@ -490,7 +508,7 @@ def _file_entry(path: Path, relative: str) -> PackageFile:
     if before.st_size > _MAX_FILE_BYTES:
         raise AuthoringError(f"workflow file {relative} exceeds {_MAX_FILE_BYTES} bytes")
     try:
-        fd = os.open(path, os.O_RDONLY | _optional_os_flag("O_NOFOLLOW"))
+        fd = os.open(path, os.O_RDONLY | _NOFOLLOW)
     except OSError as exc:
         raise AuthoringError(f"workflow file {relative} could not be read: {exc}") from exc
     chunks: list[bytes] = []
@@ -522,7 +540,11 @@ def _file_entry(path: Path, relative: str) -> PackageFile:
         raise AuthoringError(f"workflow file {relative} could not be read: {exc}") from exc
     finally:
         os.close(fd)
-    data = b"".join(chunks)
+    return b"".join(chunks)
+
+
+def _file_entry(path: Path, relative: str) -> PackageFile:
+    data = _read_package_file(path, relative)
     try:
         text = data.decode("utf-8")
     except UnicodeDecodeError as exc:
@@ -618,6 +640,7 @@ def inspect_existing_target(
         target_exists=target_exists,
         legacy_exists=legacy_exists,
         fingerprint=fingerprint,
+        files=ordered,
     )
 
 
@@ -644,6 +667,7 @@ def _snapshot_original_trust_records(
             sha256=record.sha256,
             kind=record.kind,
             trusted_at=record.trusted_at,
+            artifact_digest=record.artifact_digest,
         )
         for record in records
         if record.path in existing_paths
@@ -912,6 +936,26 @@ def scan_package(lease: AuthoringLease) -> PackageManifest:
     )
 
 
+def validated_package_digest(lease: AuthoringLease, expected: PackageManifest) -> str:
+    """Hash the logical destination paths and the exact validated bytes."""
+    from agenthicc.plugins.authored_types import content_digest
+
+    root = Path(lease.workspace_root)
+    target = Path(lease.target_path)
+    prefix = target.relative_to(root).as_posix()
+    if scan_package(lease) != expected:
+        raise AuthoringError("workflow package differs from the approved inventory")
+    sources: dict[str, bytes] = {}
+    for item in expected.files:
+        path = target / item.path
+        _reject_symlink_components(path, root)
+        data = _read_package_file(path, item.path)
+        if len(data) != item.byte_length or hashlib.sha256(data).hexdigest() != item.sha256:
+            raise AuthoringError(f"validated workflow file changed: {item.path}")
+        sources[f"{prefix}/{item.path}"] = data
+    return content_digest(sources)
+
+
 def scan_committed_package(
     lease: AuthoringLease,
     *,
@@ -1072,6 +1116,7 @@ def _restore_trust(lease: AuthoringLease) -> None:
             sha256=record.sha256,
             kind=record.kind,
             trusted_at=record.trusted_at,
+            artifact_digest=record.artifact_digest,
         )
         for record in lease.original_trust_records
     )
@@ -1184,7 +1229,12 @@ def _sync_directory(path: Path) -> None:
         return
 
 
-def finalize_authoring(lease: AuthoringLease, *, expected_fingerprint: str) -> PackageManifest:
+def finalize_authoring(
+    lease: AuthoringLease,
+    *,
+    expected_fingerprint: str,
+    artifact_digest: str | None = None,
+) -> PackageManifest:
     """Trust validated bytes, recheck the manifest, then atomically expose them."""
     if not re.fullmatch(r"[a-f0-9]{64}", expected_fingerprint):
         raise AuthoringError("validation evidence has no valid package fingerprint")
@@ -1200,7 +1250,12 @@ def finalize_authoring(lease: AuthoringLease, *, expected_fingerprint: str) -> P
     package_root = Path(lease.target_path)
     for item in manifest.files:
         if item.path.endswith(".py"):
-            trust.trust(package_root / item.path, kind="workflow")
+            trust.trust(
+                package_root / item.path,
+                kind="workflow",
+                expected_sha256=item.sha256,
+                artifact_digest=artifact_digest,
+            )
 
     current = scan_package(lease)
     if current.fingerprint != expected_fingerprint:

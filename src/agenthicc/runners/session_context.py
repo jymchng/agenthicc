@@ -7,10 +7,14 @@ No logic lives here.  ``TUISession`` reads from this context;
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass, field
+from dataclasses import InitVar, dataclass, field
+from functools import cached_property
+from pathlib import Path
+from time import time
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from agenthicc.agents.catalog import CapabilityCatalog
     from rich.console import Console
     from lauren_ai._agents._runner import AgentRunnerBase
     from agenthicc.memory.journaled import JournaledShortTermMemory
@@ -42,6 +46,10 @@ if TYPE_CHECKING:
     from agenthicc.runners.session_lease import SessionOwnerLease
     from agenthicc.runners.startup import StartupCoordinator
     from agenthicc.runners.run_coordinator import ResumePlan
+    from agenthicc.runners.reload import ReloadService
+    from agenthicc.runners.authored import AuthoredPublisher
+    from agenthicc.runners.workflow_stack import WorkflowStack
+    from agenthicc.runners.tui_session import WorkflowStackBridge
     from asyncio import Task
 
 
@@ -73,8 +81,8 @@ class SessionContext:
     agent_runner: "AgentRunnerBase"
     session_conversation: "SessionConversation"
     mention_cache: "MentionCache"
-    skills: "dict[str, SkillDef]"
-    project_plugins: "PluginToolSet"
+    skills: InitVar[dict[str, SkillDef]]
+    project_plugins: InitVar[PluginToolSet]
     mcp_registry: "McpToolRegistry | McpSessionManager | None"
     terminal_manager: "TerminalManager"
 
@@ -104,7 +112,9 @@ class SessionContext:
     # ── extension lifecycle ──────────────────────────────────────────────────
     #: Canonical names loaded from normal slash-command plugin files.  Kept
     #: separately so a reload can restore built-ins after a plugin is removed.
-    command_plugin_names: set[str] = field(default_factory=set)
+    command_plugin_names: InitVar[tuple[str, ...]] = ()
+    reload: ReloadService = field(init=False)
+    _workspace_root: Path = field(init=False, repr=False)
 
     # ── client-neutral session boundary (PRD-150) ───────────────────────────
     session_service: "SessionService | None" = None
@@ -122,9 +132,11 @@ class SessionContext:
     cfg_secret_overrides: tuple[str, ...] = ()
 
     # ── invocation selection ────────────────────────────────────────────────
-    #: Explicit ``--workflow`` selection for the initial TUI turn.  Headless
-    #: callers use CLIContext.workflow_name directly when dispatching lines.
-    initial_workflow: str | None = None
+    #: Explicit ``--workflow`` selection for the base frame.
+    initial_workflow: InitVar[str | None] = None
+    workflow_stack: WorkflowStack = field(init=False)
+    workflow_bridge: WorkflowStackBridge = field(init=False, repr=False)
+    opened_at: float = field(init=False, default_factory=time, repr=False)
 
     # ── workspace access (PRD-168) ──────────────────────────────────────────
     #: Canonical roots shared by filesystem tools, commands, mentions, and
@@ -149,6 +161,68 @@ class SessionContext:
     # deferred optional integrations.  It is observational only; runtime
     # resources retain their existing ownership boundaries.
     startup: "StartupCoordinator | None" = None
+
+    def __post_init__(
+        self,
+        skills: dict[str, SkillDef],
+        project_plugins: PluginToolSet,
+        command_plugin_names: tuple[str, ...],
+        initial_workflow: str | None,
+    ) -> None:
+        from agenthicc.runners.reload import ReloadService
+        from agenthicc.runners.tui_session import WorkflowStackBridge
+        from agenthicc.runners.workflow_stack import WorkflowStack
+        from agenthicc.subagents.policy import SubagentExecutionPolicy
+
+        root = self.workspace_scope.primary_root if self.workspace_scope is not None else Path.cwd()
+        self._workspace_root = root
+        default_skill_directory = self.cfg.skills.default_skill_directory
+        self.reload = ReloadService(
+            processor=self.processor,
+            project_dir=root / ".agenthicc",
+            user_dir=Path.home() / ".agenthicc",
+            workflow_registry=self.workflow_registry,
+            command_registry=self.cmd_registry,
+            subagent_registry=self.subagent_registry,
+            skill_user_dir=Path(default_skill_directory).expanduser()
+            if default_skill_directory
+            else None,
+            skills=skills,
+            tools=project_plugins.all_tools,
+            tool_sources=project_plugins.tool_sources(root / ".agenthicc"),
+            command_plugin_names=command_plugin_names,
+        )
+        policy = SubagentExecutionPolicy.from_app_state(
+            self.app_state, workspace_scope_identity=str(root)
+        )
+        assert policy is not None
+        self.workflow_stack = WorkflowStack(
+            policy,
+            mode_default=self.app_state.active_mode().default_workflow,
+            selection=initial_workflow,
+            max_depth=self.cfg.workflow_stack_max_depth,
+        )
+        self.workflow_bridge = WorkflowStackBridge(self)
+        if not self.resumed:
+            self.workflow_bridge.sync()
+
+    @cached_property
+    def authored(self) -> AuthoredPublisher:
+        """Load the publisher on the first publication or operator action."""
+        from agenthicc.runners.authored import AuthoredPublisher
+
+        return AuthoredPublisher(
+            self._workspace_root,
+            self.reload,
+            self.processor,
+            policy=self.cfg.security.authored_extension_policy,
+        )
+
+    @cached_property
+    def capability_catalog(self) -> CapabilityCatalog:
+        from agenthicc.agents.catalog import CapabilityCatalog
+
+        return CapabilityCatalog(self._workspace_root, self.session_id, self.reload, self.opened_at)
 
     @property
     def session_memory(self) -> "JournaledShortTermMemory":

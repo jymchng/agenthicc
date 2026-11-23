@@ -46,7 +46,8 @@ All ten registered workflows, including the parallel_code_plan coordinator:
 | `code_plan` | Plan-and-execute code changes with approval gates |
 | `create_workflow` | Author new workflows interactively |
 | `goal_flow` | Clarify an intent into an ordered goal list, then implement and verify each goal before summarizing |
-| `make_agenthicc_tool` | Scaffold an agenthicc-compatible tool plugin under `.agenthicc/tools/` |
+| `create_tools` | Author and publish one or more project-local tools |
+| `create_skills` | Author and publish reusable project skills |
 | `make_book` | Write a technical book chapter by chapter, one phase per chapter |
 | `copy_website` | Study a website with Playwright and rebuild it as a mobile-friendly Next.js application |
 | `reconstruct_site` | Reconstruct a reference website through evidence-first responsive research, implementation, and validation phases |
@@ -234,6 +235,7 @@ Transient provider failures are rendered as compact retry notices showing the at
 | Command | Purpose |
 |---|---|
 | `/help`, `/commands` | Inspect available commands in an overlay |
+| `/reload [skills tools workflows commands]` | Rescan all extension surfaces or select the ones to refresh |
 | `/tools [reload]`, `/workflows [runs\|reload]` | Inspect tools/workflows, or open the paginated paused-run selector; `/tools` labels each tool `builtin` or `plugin` |
 | `/status`, `/history` | Inspect runtime status and session events |
 | `/loop [interval] <prompt-or-command>` | Schedule a local recurring prompt; use `status`, `pause`, `resume`, or `stop` to control it |
@@ -241,7 +243,8 @@ Transient provider failures are rendered as compact retry notices showing the at
 | `/inbox [filters]` | Review and answer exact background approvals, questions, and input requests |
 | `/ps [terminal-id]`, `/stop [terminal-id\|all]` | Inspect or stop owned background terminals; `/ps` is paginated and `/ps --json` returns all records; `/stop` stops all |
 | `/mode [name]` | Choose or change the operating mode (a picker without a name) |
-| `/workflow <name> \| resume [run-id] \| reset [run-id]` | Select a workflow, resume the latest eligible run when `run-id` is omitted, or reset a workflow; use `/workflow create_workflow` to author one directly in `.agenthicc/workflows/` |
+| `/workflow [stack]`, `/workflow <name>` | Inspect the workflow stack or select a base workflow. `/workflow resume` continues a saved run and `/workflow reset` clears the selection. |
+| `/catalog`, `/reload report` | See the agent's capability catalog or inspect the last reload's diagnostics |
 | `/model [provider] [model]` | Choose the provider and model from a picker (or directly); applies from the next turn, no restart |
 | `/config` | Open the configuration overlay |
 | `/init` | Preview or explicitly write managed project `AGENTS.md` guidance |
@@ -250,12 +253,13 @@ Transient provider failures are rendered as compact retry notices showing the at
 | `/cancel`, `/clear`, `/expand` | Control the current session or output |
 | `/mcp`, `/skills [reload]` | Inspect MCP and skills; reload or open their overlay |
 | `/usage` | Show durable session usage, cost quality, run state, and queued input |
-| `/create-tools <instructions>` | Ask the agent to create lauren-ai tools |
+| `/workflow call create_tools <intent>` | Author and validate a set of tools in the current session |
 | `/create-commands <instructions>` | Ask the agent to create slash commands |
 
-`/tools reload` loads every tool plugin that can be loaded and reports any
-broken or dependency-missing plugins. If none can be loaded, the existing
-tool registry is kept active.
+`/tools reload` refreshes trusted tool plugins and reports discovery errors.
+The direct agent can call `reload_tools()` and use the updated catalog on its
+next model request. New workflow phases and newly spawned workers read the
+updated catalog. Running workers keep the tools they started with.
 
 `/config` opens its local configuration overlay immediately, including while a response is streaming.
 
@@ -296,14 +300,20 @@ Workflows are typed state machines with explicit transitions. The built-in `code
 
 ### Authoring workflows
 
-Create a specialized workflow with `/workflow create_workflow`. It runs `design → generate → validate → summarize` on the same state-machine pattern as `code_plan`:
+Create a specialized workflow with `/workflow call create_workflow <intent>`.
+The workflow records its design and writes the package under
+`.agenthicc/workflows/<name>/` with scoped tools. A pending marker keeps the
+candidate out of discovery while the runner validates its exact bytes and runs
+a bounded fake-provider smoke check. Replacing an existing package outside the
+authored manifest requires approval before its files change.
 
-1. The design is presented for your approval.
-2. The generate phase writes the package directly to `.agenthicc/workflows/<name>/`, using package-scoped tools, and records a manifest. A runner-owned pending marker keeps the in-progress package out of normal workflow discovery. If that name already exists, replacement requires a separate explicit approval before any original files change; the original package and trust records are backed up for recovery.
-3. The validate phase checks that exact pending package, runs a bounded fake-provider smoke check, and loops back to generate until it passes — an approval of a file that does not import or smoke-test is overridden. The package remains undiscoverable during validation and repair.
-4. Only after deterministic validation and approval does the framework recheck the package fingerprint, record trust for the exact validated Python files, and remove the pending marker so normal discovery can load it. An interrupted run keeps its checkpoint and pending package for resume; `/workflow reset <run-id>` restores an approved replacement and its trust records, or discards an uncommitted first-generation candidate, before recording the run as discarded.
-
-For non-trivial behavior the agent is guided to create a `code_plan`-style custom runner with typed states, context, per-state functions, explicit `match` transitions, and resumable execution; simple workflows can use declarative `PhaseSpec` values. Run `/workflows reload` and then `/workflow <name>` after authoring.
+After validation and summary, the session records trust for the exact Python
+bytes, removes the marker, and reloads the registry before handing the result
+back to the parent. Set `security.authored_extension_policy = "stage_only"` to
+keep the candidate pending until `/authored approve <run-id>` or
+`/authored reject <run-id>`. Use `/workflow resume` to continue an interrupted
+run or `/workflow return --abandon` to discard its candidate and restore any
+approved original.
 
 The built-in `goal_flow` workflow can record necessary work discovered after
 planning. During implementation or verification, the agent may call
@@ -314,7 +324,11 @@ goals. See the [workflow guide](./docs/guides/workflows.md#goal_flow-adding-work
 
 ### Workflow inspection tools
 
-Each authoring phase has its own prompt and bounded multi-turn budget; tune the caps with `[execution].authoring_max_phase_turns` and `[execution].authoring_max_generation_attempts`. The agent inspects the real authoring API with built-in tools:
+Use `/authored list` to inspect authored extensions. Set
+`[security].authored_extension_policy = "stage_only"` to review staged sets
+before publication. [Authored extensions](./docs/guides/plugins.md#authored-extensions)
+
+Each authoring phase has its own prompt and bounded multi-turn budget. Set the phase caps with `[execution].authoring_max_phase_turns` and `[execution].authoring_max_generation_attempts`. For `create_workflow`, `[workflows.authoring].max_repair_cycles` sets the persisted repair budget, with a default of three. Generation uses package-scoped writers under the session’s active mode. The agent inspects the authoring API with built-in tools:
 
 - `describe_phasespec`
 - `list_tool_capabilities`
@@ -356,13 +370,13 @@ checkpoint codecs, resume the saved state, and re-raise ordinary errors to the
 framework failure finalizer. Simple unconditional graphs may use the generic
 runner.
 
-The built-in `make_agenthicc_tool` workflow follows the same boundary across
-its analyze, generate, validate, and finalize phases; tool plans, generated
-paths, validation reports, and retry state remain dynamic rather than changing
-the reusable system prefix.
+The built-in `create_tools` workflow follows the same boundary across
+its analyze, generate, and validate phases. Tool plans, generated paths,
+validation reports, and retry state remain dynamic. Finalize stages the
+validated set for publication.
 
 All built-in workflow runners use this boundary: `code_plan`, `create_workflow`,
-`site_imitate`, `make_agenthicc_tool`, and `make_book`.
+`site_imitate`, `create_tools`, and `make_book`.
 
 `make_book` phase handoffs use one required argument: a concise `summary`.
 The agent writes the TOC manifest, research, many visual assets, chapters, and
@@ -478,7 +492,13 @@ The kernel `AppState` and the reactive TUI `AppState` are different types with d
 
 Explicit skills use the `$skill-name` or `$alias` trigger; `/` remains reserved for commands. `/commands` lists slash commands only; use `/skills` to inspect discovered skills. The former `/skill-name` spelling is not executed.
 
+Use `/workflow call create_skills <intent>` to author reusable project skills. The session validates the full set and reloads published skills before the parent resumes. Agents can discover and read skills during a turn with `list_skills` and `use_skill`. The skill’s frontmatter controls whether the agent can load it. See [skills and plugins](./docs/guides/plugins.md#skills).
+
 In a registry overlay, press Enter on an entry to open its details. Press Enter again on the details page to place the invocation in the input panel: `/workflow <name>` for workflows, the command's canonical `/name` for commands, and `$<skill-name>` for skills. The text is prepared but not submitted.
+
+Use `/workflow call <name> <intent>` to run a workflow for one task and return its result to the current agent. See the [workflow guide](./docs/guides/workflows.md#call-a-workflow-and-return).
+
+Agents can discover and request workflows that opt in to model entry. Safe mode asks for approval before starting the child. See [agent workflow calls](./docs/guides/workflows.md#let-the-agent-call-a-workflow).
 
 ### Installing skills
 
@@ -758,6 +778,9 @@ by resume. Each call accepts `timeout_s` in seconds (default `3600`). See the
 [subagents guide](./docs/guides/subagents.md) for the exact schema, lifecycle,
 communication protocol, security boundaries, cache semantics, and
 troubleshooting steps.
+
+An eligible workflow can also run as a subagent task. The parent session
+handles publication of the worker's staged artifacts.
 
 ---
 

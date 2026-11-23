@@ -35,7 +35,7 @@ async def plugin_plain_read(path: str) -> dict[str, object]:
 
 
 def test_registry_preserves_presentation_metadata_without_changing_capabilities() -> None:
-    registry = build_registry(project_plugin_tools=[plugin_inspect, plugin_plain_read])
+    registry = build_registry(extra_tools=[plugin_inspect, plugin_plain_read])
     inspect_tool = next(tool for tool in registry.tools if tool.__name__ == "plugin_inspect")
     plain_tool = next(tool for tool in registry.tools if tool.__name__ == "plugin_plain_read")
 
@@ -46,7 +46,7 @@ def test_registry_preserves_presentation_metadata_without_changing_capabilities(
 
 
 def test_builtin_classification_keeps_side_effecting_families_unmarked() -> None:
-    registry = build_registry(project_plugin_tools=[])
+    registry = build_registry(extra_tools=[])
     tools_by_name = {tool.__name__: tool for tool in registry.tools}
 
     for name in {

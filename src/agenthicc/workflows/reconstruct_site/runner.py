@@ -280,9 +280,9 @@ class ReconstructSiteRunner(PhaseRunner):
                 return value
         return str(getattr(self, f"{phase_name}_model", "") or "")
 
-    def invalidate_tool_bundle_cache(self, *, reason: str = "configuration_changed") -> None:
+    def invalidate_phase_tools(self, *, reason: str = "configuration_changed") -> None:
         """Invalidate both the inherited stable bundle and reconstruct tools."""
-        super().invalidate_tool_bundle_cache(reason=reason)
+        super().invalidate_phase_tools(reason=reason)
         self._screenshot_tool = None
 
     def _select_profile(self, context: ReconstructContext) -> ActiveReconstructPlan:

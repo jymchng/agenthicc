@@ -14,82 +14,19 @@ import importlib.util
 import inspect
 import logging
 import sys
-from dataclasses import dataclass
+from contextlib import contextmanager
 from pathlib import Path
 from types import ModuleType
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
+
+from agenthicc.plugins.source import execute_extension_source
+from agenthicc.workflows.registry import BuiltinWorkflowDescriptor, builtin_workflow_descriptors
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Iterator
     from agenthicc.workflows.plugin import WorkflowPlugin
 
 log = logging.getLogger(__name__)
-
-
-@dataclass(frozen=True)
-class BuiltinWorkflowDescriptor:
-    """Import-free metadata for a built-in workflow.
-
-    Registry construction is on the interactive startup path.  Keeping the
-    module and attribute name here lets the registry expose workflow names and
-    mode bindings without importing every workflow implementation.  The
-    implementation is imported only when the workflow is selected (or when a
-    caller explicitly asks for all plugin classes).
-    """
-
-    name: str
-    module: str
-    attribute: str
-    mode_bindings: tuple[str, ...] = ()
-
-
-_BUILTIN_WORKFLOW_DESCRIPTORS = (
-    BuiltinWorkflowDescriptor(
-        "code_plan", "agenthicc.workflows.code_plan.definition", "CodePlan", ("Plan",)
-    ),
-    BuiltinWorkflowDescriptor(
-        "parallel_code_plan",
-        "agenthicc.workflows.parallel_code_plan.definition",
-        "ParallelCodePlan",
-        ("Plan",),
-    ),
-    BuiltinWorkflowDescriptor(
-        "copy_website", "agenthicc.workflows.copy_website", "CopyWebsiteWorkflow"
-    ),
-    BuiltinWorkflowDescriptor(
-        "create_workflow",
-        "agenthicc.workflows.create_workflow.definition",
-        "CreateWorkflow",
-    ),
-    BuiltinWorkflowDescriptor(
-        "goal_flow", "agenthicc.workflows.goal_flow.runner", "GoalFlowWorkflow"
-    ),
-    BuiltinWorkflowDescriptor(
-        "make_agenthicc_tool",
-        "agenthicc.workflows.make_agenthicc_tool.runner",
-        "MakeAgenthiccToolWorkflow",
-    ),
-    BuiltinWorkflowDescriptor(
-        "make_book",
-        "agenthicc.workflows.make_book.runner",
-        "MakeBookWorkflow",
-    ),
-    BuiltinWorkflowDescriptor(
-        "reconstruct_site", "agenthicc.workflows.reconstruct_site", "ReconstructSiteWorkflow"
-    ),
-    BuiltinWorkflowDescriptor(
-        "site_imitate", "agenthicc.workflows.site_imitate.runner", "SiteImitateWorkflow"
-    ),
-    BuiltinWorkflowDescriptor(
-        "ui_ux_pro_max",
-        "agenthicc.workflows.ui_ux_pro_max.definition",
-        "UiUxProMax",
-    ),
-)
-
-
-def builtin_workflow_descriptors() -> tuple[BuiltinWorkflowDescriptor, ...]:
-    """Return built-in metadata without importing workflow implementations."""
-    return _BUILTIN_WORKFLOW_DESCRIPTORS
 
 
 def load_builtin_workflow(descriptor: BuiltinWorkflowDescriptor) -> type[WorkflowPlugin]:
@@ -105,12 +42,24 @@ def load_builtin_workflow(descriptor: BuiltinWorkflowDescriptor) -> type[Workflo
 
 def load_builtin_workflows() -> list[type[WorkflowPlugin]]:
     """Return every built-in :class:`WorkflowPlugin` definition."""
-    return [load_builtin_workflow(item) for item in _BUILTIN_WORKFLOW_DESCRIPTORS]
+    return [load_builtin_workflow(item) for item in builtin_workflow_descriptors()]
+
+
+WorkflowLoadCode = Literal[
+    "pending_marker",
+    "untrusted",
+    "untrusted_modified",
+    "import_error",
+    "invalid_manifest",
+    "name_conflict",
+]
 
 
 def load_python_workflows(
     path: Path,
     source: str = "user",
+    *,
+    on_skip: Callable[[Path, WorkflowLoadCode], None] | None = None,
 ) -> list[type[WorkflowPlugin]]:
     """Import a trusted workflow file or package and return its plugin classes.
 
@@ -127,43 +76,54 @@ def load_python_workflows(
 
         marker = path / PENDING_MARKER_NAME
         if marker.exists() or marker.is_symlink():
+            if on_skip is not None:
+                on_skip(path, "pending_marker")
             return []
     sources = sorted(path.rglob("*.py")) if path.is_dir() else [path]
     untrusted = [
         source_file for source_file in sources if not trust.permits(source_file, kind="workflow")
     ]
     if untrusted:
+        if on_skip is not None:
+            for source_file in untrusted:
+                refusal = trust.check(source_file, kind="workflow")
+                code: WorkflowLoadCode = "untrusted"
+                if refusal is not None:
+                    if refusal.reason == "changed since it was trusted":
+                        code = "untrusted_modified"
+                    elif refusal.reason == "authored publication pending":
+                        code = "pending_marker"
+                on_skip(source_file, code)
         return []
     try:
         from agenthicc.workflows.plugin import WorkflowPlugin
 
-        modules = load_python_workflow_modules(path)
-        results: list[type[WorkflowPlugin]] = []
-        seen: set[type[WorkflowPlugin]] = set()
-        for module in modules:
-            for _attr_name, obj in inspect.getmembers(module, inspect.isclass):
-                if (
-                    obj is not WorkflowPlugin
-                    and issubclass(obj, WorkflowPlugin)
-                    and getattr(obj, "name", "") != ""
-                    and obj not in seen
-                ):
-                    seen.add(obj)
-                    results.append(obj)
+        with open_python_workflow_modules(path) as modules:
+            results: list[type[WorkflowPlugin]] = []
+            seen: set[type[WorkflowPlugin]] = set()
+            for module in modules:
+                for _attr_name, obj in inspect.getmembers(module, inspect.isclass):
+                    if (
+                        obj is not WorkflowPlugin
+                        and issubclass(obj, WorkflowPlugin)
+                        and getattr(obj, "name", "") != ""
+                        and obj not in seen
+                    ):
+                        seen.add(obj)
+                        results.append(obj)
+        if not results and on_skip is not None:
+            on_skip(path, "invalid_manifest")
         return results
     except Exception as exc:  # noqa: BLE001
         log.warning("Failed to load Python workflows from %s: %s", path, exc)
+        if on_skip is not None:
+            on_skip(path, "import_error")
         return []
 
 
-def load_python_workflow_modules(path: Path) -> list[ModuleType]:
-    """Execute *path* and return its primary module namespace(s).
-
-    Unlike :func:`load_python_workflows`, import errors are propagated.  The
-    deterministic create-workflow validator uses this to show the actual
-    failure to the authoring agent.  Temporary module names are removed before
-    returning, while returned module objects remain available for inspection.
-    """
+@contextmanager
+def open_python_workflow_modules(path: Path) -> Iterator[list[ModuleType]]:
+    """Execute a workflow and keep relative imports available during inspection."""
     resolved = path.expanduser()
     module_name = _temporary_module_name(resolved)
     temporary_names: set[str] = set()
@@ -177,7 +137,7 @@ def load_python_workflow_modules(path: Path) -> list[ModuleType]:
             if not resolved.is_file():
                 raise FileNotFoundError(f"workflow path does not exist: {resolved}")
             modules = [_execute_module(resolved, module_name, temporary_names)]
-        return modules
+        yield modules
     finally:
         # A workflow package may import tools.py, state.py, or other local
         # helpers. Remove the entire temporary package namespace so reloads
@@ -208,7 +168,7 @@ def _execute_module(
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
     temporary_names.add(module_name)
-    spec.loader.exec_module(module)
+    execute_extension_source(path, module)
     return module
 
 
@@ -230,7 +190,7 @@ def _execute_workflow_package(
         package = importlib.util.module_from_spec(package_spec)
         sys.modules[package_name] = package
         temporary_names.add(package_name)
-        package_spec.loader.exec_module(package)
+        execute_extension_source(init_path, package)
     else:
         # A directory workflow does not need an __init__.py. This lightweight
         # namespace package is enough for ``from .tools import ...``.

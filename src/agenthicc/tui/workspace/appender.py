@@ -1254,6 +1254,26 @@ def _render_compaction_status(self: ScrollBufferAppender, ev: ConversationEvent)
     self._gap_pending = True
 
 
+@register_renderer("authored_published")
+def _render_authored_publication(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
+    self._flush_group_summary()
+    self._open_block("authored_published")
+    _print_notice(self, "success", "Extensions published", _text(ev.payload, "summary"))
+    self._gap_pending = True
+
+
+@register_renderer("workflow_frame")
+def _render_workflow_frame(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
+    self._flush_group_summary()
+    self._open_block("workflow_frame")
+    name = _text(ev.payload, "name")
+    action = _text(ev.payload, "action")
+    origin = _text(ev.payload, "origin")
+    title = f"{name} {action}" + (f" by {origin}" if origin else "")
+    _print_notice(self, "info", title, _text(ev.payload, "text"))
+    self._gap_pending = True
+
+
 @register_renderer("background_handoff")
 def _render_background_handoff(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
     """``● Successfully backgrounded · 6b9f7614-8ca (running)``.

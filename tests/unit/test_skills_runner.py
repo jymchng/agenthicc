@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import pytest
 from pathlib import Path
+from types import MappingProxyType
 from unittest.mock import MagicMock
 
+from agenthicc.runners.reload import SurfaceHolder
 from agenthicc.skills.runner import (
     render_context_commands,
     substitute_args,
@@ -135,7 +137,7 @@ def test_agent_turn_injects_only_skills_allowed_for_active_agent(tmp_path):
         text="review deploy",
         runner=None,
         processor=MagicMock(),
-        skills=skills,
+        skills=SurfaceHolder(MappingProxyType(skills)),
         active_agent="planner",
         skill_permissions=SkillPermissionSet(allowed_skills=frozenset({"review"})),
     )

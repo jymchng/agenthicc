@@ -15,7 +15,7 @@ if TYPE_CHECKING:
     from agenthicc.workflows.config import WorkflowConfig
     from agenthicc.tui.runtime.mode_manager import ModeManager
 
-from agenthicc.workflows.plugin import PhaseSpec, WorkflowParams, WorkflowPlugin
+from agenthicc.workflows.plugin import PhaseSpec, WorkflowInvocation, WorkflowParams, WorkflowPlugin
 
 
 @dataclasses.dataclass
@@ -54,6 +54,12 @@ class CodePlan(WorkflowPlugin):
     """
 
     name = "code_plan"
+    invocation = WorkflowInvocation(
+        when_to_use="Plan, implement, and review a code change.",
+        returns="The implementation and verification summary.",
+        agent_callable=True,
+        interactive=True,
+    )
     description = "Plan → Execute → Review → Summary  (single agent, shared memory)"
     mode_bindings = ["Plan"]
     phases = [

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import pytest
 
+from agenthicc.subagents.tool import SubagentToolSelection
+from agenthicc.tools.surface import ToolSurface
 from agenthicc.subagents.types import SubagentTypeRegistry, SubagentTypeSpec
 from agenthicc.subagents.pool import AggregatedResult, SubagentTask
 from agenthicc.subagents.tool import _find_cached_result, _find_cached_values, _tasks_fingerprint
@@ -211,7 +213,12 @@ class TestResumeCacheRoundTrip:
         class FakeRunner:
             _transport = None
 
-        tool_fn = make_spawn_subagents_tool(FakeRunner(), "test-model", [], conv_store=conv)
+        tool_fn = make_spawn_subagents_tool(
+            FakeRunner(),
+            "test-model",
+            SubagentToolSelection(ToolSurface(0, tuple([]))),
+            conv_store=conv,
+        )
 
         tasks = [{"type": "explorer", "task": "Find auth module"}]
 
@@ -256,7 +263,12 @@ class TestResumeCacheRoundTrip:
         class FakeRunner:
             _transport = None
 
-        tool_fn = make_spawn_subagents_tool(FakeRunner(), "test-model", [], conv_store=conv)
+        tool_fn = make_spawn_subagents_tool(
+            FakeRunner(),
+            "test-model",
+            SubagentToolSelection(ToolSurface(0, tuple([]))),
+            conv_store=conv,
+        )
         first = AggregatedResult(
             pool_id="pool-1",
             total=1,
@@ -329,7 +341,7 @@ class TestResumeCacheRoundTrip:
         fn = make_spawn_subagents_tool(
             FakeRunner(),
             "test-model",
-            [],
+            SubagentToolSelection(ToolSurface(0, tuple([]))),
             registry=registry,
             conversation_journal=journal,
         )
@@ -347,7 +359,7 @@ class TestResumeCacheRoundTrip:
         fn_resumed = make_spawn_subagents_tool(
             FakeRunner(),
             "test-model",
-            [],
+            SubagentToolSelection(ToolSurface(0, tuple([]))),
             registry=registry,
             conversation_journal=reopened,
         )

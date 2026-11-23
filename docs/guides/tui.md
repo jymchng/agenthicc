@@ -133,7 +133,7 @@ of the top rule, and one status line follows.
   | 3 | `ctx 42% ▰▰▱▱▱`, green below 60 %, amber below 85 %, red above | after the first response that reported usage |
   | 4 | the model, short (`opus-4.8`; the provider when it is not the default) | always |
   | 2 | the running workflow and its phase, from the workflow's own run handle for every runner (built-in or plugin): `◆ goal_flow → Decide goals 2/5` (shortened to the phase, then the workflow, never dropped first; `paused` when paused) | a workflow is running |
-  | 5 | subagent workers `1/3 workers`, a `/workflow` selection, running background sessions, startup work still loading | when active |
+  | 5 | subagent workers `1/3 workers`, workflow breadcrumb, pending authored sets, running background sessions, startup work still loading | when active |
   | 6 | tokens `↑12k ↓3k` (`≈` when partial) and cost `$0.42` (`~` when estimated) | only when the provider reported them |
   | 7 | the git branch, `*` when the tree has changes | in a repository |
   | right | the shortcuts hint (`/help`) | 60 columns and more |
@@ -143,6 +143,15 @@ of the top rule, and one status line follows.
   context window (`ExecutionSettings.effective_context_window()`). Below 60
   columns the frame becomes two rules and the status line keeps only the
   state, attention and context segments; below 40 columns only the state.
+
+  The workflow breadcrumb follows the current frame and phase. Use
+  `/workflow stack` for run IDs and origins. Entered, returned, and abandoned
+  frames appear in the transcript. A publication notice lists the loaded
+  artifacts, short digests, declared capabilities, and undo commands.
+
+  With the `stage_only` policy, the footer counts sets awaiting approval.
+  Use `/authored list` to review those sets and `/catalog` to see the agent's
+  current catalog.
 - **The hint row** appears only for contextual keys: while a turn runs
   (`Esc pause · Ctrl+C cancel`, plus the subagent keys while a pool is shown),
   with a condensed paste, or during a background-terminal wait. Idle, there is
@@ -1414,8 +1423,7 @@ BUILTIN_COMMANDS entries: 23
 ```
 
 That count is *not* the whole command surface: `/background` (alias `/bg`) is
-injected separately by the background integration, and `/create-tools` and
-`/create-commands` come from bootstrap skills.
+injected separately by the background integration, and `/create-commands` comes from a bootstrap skill.
 
 ## Troubleshooting
 

@@ -91,6 +91,8 @@ def _load_command_file(path: Path) -> CommandLoadResult:
     if missing:
         return CommandLoadResult(path=path, missing_deps=missing)
 
+    from agenthicc.plugins.source import execute_extension_source
+
     # ── Step 3: import, once ──────────────────────────────────────────────────
     # Imports from agenthicc.commands.command are done lazily below to avoid
     # circular imports: a loaded plugin imports Command from agenthicc.commands,
@@ -102,7 +104,7 @@ def _load_command_file(path: Path) -> CommandLoadResult:
             return CommandLoadResult(path=path, error="could not create module spec")
         module = importlib.util.module_from_spec(spec)
         sys.modules[module_name] = module
-        spec.loader.exec_module(module)
+        execute_extension_source(path, module)
     except Exception as exc:
         return CommandLoadResult(path=path, error=f"{type(exc).__name__}: {exc}")
 

@@ -10,6 +10,9 @@ NOTE: no ``from __future__ import annotations`` — the ``@tool()`` decorator
 inspects annotations at decoration time.
 """
 
+from types import MappingProxyType
+from agenthicc.tools.surface import ToolSurface, ToolSurfaceHolder
+from agenthicc.runners.reload import SurfaceHolder
 import asyncio
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -23,6 +26,7 @@ from lauren_ai._transport._mock import MockTransport
 from agenthicc.agents.registry import build_agents_registry
 from agenthicc.config import AgenthiccConfig
 from agenthicc.kernel import AppState, EventProcessor, SecurityPolicy, SystemSettings
+from agenthicc.plugins.authored import AuthoredArtifactStore
 from agenthicc.tui.conversation_store import AppState as TUIAppState
 from agenthicc.workflows.config import WorkflowConfig
 from agenthicc.workflows.create_workflow import CreateWorkflow, CreateWorkflowRunner
@@ -38,12 +42,15 @@ _GOOD_SOURCE = '''\
 
 from __future__ import annotations
 
-from agenthicc.workflows.plugin import PhaseSpec, WorkflowPlugin
+from collections.abc import Mapping
+
+from agenthicc.workflows.plugin import PhaseSpec, WorkflowInvocation, WorkflowParams, WorkflowPlugin
 
 
 class DocReview(WorkflowPlugin):
     name = "doc_review"
     description = "Draft a document, then review it."
+    invocation = WorkflowInvocation(when_to_use="Review a document.", returns="The draft and review.")
     mode_bindings = []
     phases = [
         PhaseSpec(
@@ -61,6 +68,12 @@ class DocReview(WorkflowPlugin):
             system_prompt_override="You are in the REVIEW phase. Check the document.",
         ),
     ]
+
+    @classmethod
+    def build_params(cls, source: Mapping[str, object]) -> WorkflowParams:
+        if source:
+            raise ValueError("This workflow takes no parameters.")
+        return WorkflowParams()
 '''
 
 _BROKEN_SOURCE = '''\
@@ -124,7 +137,6 @@ def _script(*steps: tuple[str, dict] | str) -> MockTransport:
 
 
 _DESIGN_STEPS: tuple[tuple[str, dict] | str, ...] = (
-    ("request_design_approval", {"design": "draft → review", "workflow_name": "doc_review"}),
     ("finalize_design", {"design": "draft → review", "workflow_name": "doc_review"}),
     "The design is finalized.",
 )
@@ -189,8 +201,8 @@ def _runner(app_state, processor, mock: MockTransport) -> CreateWorkflowRunner:
         agent_runner=AgentRunnerBase(transport=mock, signals=SignalBus()),
         approval_svc=None,  # headless: design approval auto-grants
         cfg=cfg,
-        skills={},
-        plugin_tools=[],
+        skills=SurfaceHolder(MappingProxyType({})),
+        tool_surface=ToolSurfaceHolder(ToolSurface(0, ())),
         mcp_registry=None,
         mention_cache=MagicMock(),
         agents_registry=build_agents_registry(),
@@ -233,13 +245,13 @@ async def test_e2e_authors_a_workflow_end_to_end(app_state, processor, tmp_path,
     assert ctx.artifacts["validate"].metadata["ok"] is True
     assert ctx.artifacts["validate"].metadata["phase_names"] == ["draft", "review"]
     assert ctx.validation_summary == "it imports and matches the design"
-    assert ctx.repair_cycles == 0
+    assert ctx.repair_budget.used == 0
 
 
 async def test_e2e_generated_workflow_is_immediately_loadable(
-    app_state, processor, tmp_path, monkeypatch
+    app_state, processor, untrusted_project, monkeypatch
 ):
-    monkeypatch.chdir(tmp_path)
+    monkeypatch.chdir(untrusted_project)
     mock = _script(
         *_DESIGN_STEPS,
         *_generate_steps(_GOOD_SOURCE),
@@ -247,12 +259,15 @@ async def test_e2e_generated_workflow_is_immediately_loadable(
         *_SUMMARY_STEPS,
     )
     runner = _runner(app_state, processor, mock)
-    await runner.run("create a doc_review workflow")
+    ctx = await runner.run("create a doc_review workflow")
     await processor.drain()
 
+    assert ctx.authored_run is not None
+    with AuthoredArtifactStore(untrusted_project).commit(ctx.authored_run):
+        pass
     registry = build_workflow_registry(
-        project_dir=tmp_path / ".agenthicc",
-        user_dir=tmp_path / "absent",
+        project_dir=untrusted_project / ".agenthicc",
+        user_dir=untrusted_project / "absent",
     )
     plugin_cls = registry.get("doc_review")
     assert plugin_cls is not None
@@ -265,7 +280,7 @@ async def test_e2e_generated_workflow_is_immediately_loadable(
 
 
 async def test_e2e_authored_workflow_ships_and_runs_its_own_state_machine(
-    app_state, processor, tmp_path, monkeypatch
+    app_state, processor, untrusted_project, monkeypatch
 ):
     """The shape create_workflow now demands is authored, loaded, and executed.
 
@@ -274,15 +289,11 @@ async def test_e2e_authored_workflow_ships_and_runs_its_own_state_machine(
     discovers it, `build_runner()` returns its own runner, and that runner's
     typed state machine drives its phases to a terminal state.
     """
-    monkeypatch.chdir(tmp_path)
+    monkeypatch.chdir(untrusted_project)
     from agenthicc.workflows.create_workflow.inspection_tools import _RUNNER_EXAMPLE
 
     target = "runner.py"
     mock = _script(
-        (
-            "request_design_approval",
-            {"design": "plan → verify → report, with a runner", "workflow_name": "release_check"},
-        ),
         (
             "finalize_design",
             {"design": "plan → verify → report, with a runner", "workflow_name": "release_check"},
@@ -304,17 +315,20 @@ async def test_e2e_authored_workflow_ships_and_runs_its_own_state_machine(
     assert ctx.artifacts["validate"].metadata["ok"] is True
     assert ctx.artifacts["validate"].metadata["warnings"] == []
 
-    source = (tmp_path / ".agenthicc" / "workflows" / "release_check" / "runner.py").read_text(
-        encoding="utf-8"
-    )
+    source = (
+        untrusted_project / ".agenthicc" / "workflows" / "release_check" / "runner.py"
+    ).read_text(encoding="utf-8")
     assert "class ReleaseState(Enum)" in source
     assert "while not state.is_terminal" in source
     assert "match state:" in source
 
     # The registry discovers it and build_runner() returns the file's own runner.
+    assert ctx.authored_run is not None
+    with AuthoredArtifactStore(untrusted_project).commit(ctx.authored_run):
+        pass
     registry = build_workflow_registry(
-        project_dir=tmp_path / ".agenthicc",
-        user_dir=tmp_path / "absent",
+        project_dir=untrusted_project / ".agenthicc",
+        user_dir=untrusted_project / "absent",
     )
     plugin_cls = registry.get("release_check")
     assert plugin_cls is not None
@@ -395,7 +409,7 @@ async def test_e2e_broken_file_is_rejected_regenerated_and_accepted(
     ctx = await runner.run("create a doc_review workflow")
     await processor.drain()
 
-    assert ctx.repair_cycles == 1
+    assert ctx.repair_budget.used == 1
     assert app_state.workflow_run().status == "complete"
     assert ctx.artifacts["validate"].metadata["ok"] is True
     written = (tmp_path / ".agenthicc" / "workflows" / "doc_review" / "runner.py").read_text(
@@ -422,7 +436,7 @@ async def test_e2e_a_wrong_approval_cannot_finish_the_run(
     ctx = await runner.run("create a doc_review workflow")
     await processor.drain()
 
-    assert ctx.repair_cycles == 1
+    assert ctx.repair_budget.used == 1
     assert ctx.artifacts["generate"].metadata["repair_cycle"] == 1
     assert app_state.workflow_run().status == "complete"
     assert ctx.artifacts["validate"].metadata["ok"] is True
@@ -433,20 +447,21 @@ async def test_e2e_run_fails_when_the_repair_budget_is_exhausted(
 ):
     monkeypatch.chdir(tmp_path)
     steps: list[tuple[str, dict] | str] = list(_DESIGN_STEPS)
-    # attempts = 1 → one generate, one reject, and the second rejection fails.
+    # The default budget admits three repairs. The fourth rejection ends the run.
     for _ in range(4):
         steps.extend(_generate_steps(_BROKEN_SOURCE))
         steps.extend(_REJECT_STEPS)
     mock = _script(*steps)
     runner = _runner(app_state, processor, mock)
-    runner._max_repair_cycles = 1
 
     ctx = await runner.run("create a doc_review workflow")
     await processor.drain()
 
     assert app_state.workflow_run().status == "failed"
-    assert "limit 1" in ctx.fail_reason
-    assert ctx.repair_cycles == 2
+    assert "limit 3" in ctx.fail_reason
+    assert ctx.validation_report in ctx.fail_reason
+    assert ctx.repair_budget.used == 3
+    assert len(mock.calls) == len(steps)
 
 
 # ── exit path ─────────────────────────────────────────────────────────────────
@@ -591,4 +606,4 @@ async def test_e2e_artifacts_record_what_each_phase_produced(
         tmp_path / ".agenthicc" / "workflows" / "doc_review"
     )
     assert ctx.artifacts["validate"].metadata["errors"] == []
-    assert ctx.artifacts["summarize"].metadata["repair_cycles"] == 0
+    assert ctx.artifacts["summarize"].metadata["repair_count"] == 0

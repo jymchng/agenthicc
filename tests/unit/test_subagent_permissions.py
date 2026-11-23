@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, cast
 import pytest
 from lauren_ai import ToolCallContext
 
+from agenthicc.tools.surface import ToolSurface
 from agenthicc.agents.definitions import (
     AgentSpec,
     DefinitionError,
@@ -112,7 +113,7 @@ def test_worker_excludes_later_tools_matching_type_deny(tmp_path: Path) -> None:
         index=1,
         parent_runner=cast("AgentRunnerBase", object()),
         parent_model="test-model",
-        all_tools=[late_registered_tool, read_tool],
+        tool_surface=ToolSurface(0, tuple([late_registered_tool, read_tool])),
     )
 
     assert worker._filtered_tools() == [read_tool]
@@ -192,7 +193,7 @@ def test_worker_fails_closed_when_type_approval_has_no_service() -> None:
             index=1,
             parent_runner=cast("AgentRunnerBase", object()),
             parent_model="test-model",
-            all_tools=[],
+            tool_surface=ToolSurface(0, tuple([])),
             app_state=app_state,
         )
 
@@ -230,7 +231,7 @@ def _worker(tmp_path: Path, workspace_paths: tuple[str, ...]) -> SubagentWorker:
         index=1,
         parent_runner=cast("AgentRunnerBase", object()),
         parent_model="test-model",
-        all_tools=[],
+        tool_surface=ToolSurface(0, tuple([])),
         workspace_access=workspace_access,
     )
 

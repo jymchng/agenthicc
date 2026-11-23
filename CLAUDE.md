@@ -2,7 +2,9 @@
 
 This file is a concise maintainer guide. The user-facing project description is
 in [README.md](README.md); the prioritized improvement backlog is
-[`PRD-138`](prds/prd-138-repository-improvement-roadmap.md).
+[`PRD-138`](prds/prd-138-repository-improvement-roadmap.md). How an AI agent
+should work here (subagents, scope of authority, reporting) is in
+[AGENTS.md](AGENTS.md).
 
 ## Project model
 
@@ -70,6 +72,22 @@ package for worktree-environment command execution and its isolation tests.
 These commands fail closed when Bubblewrap is unavailable rather than falling
 back to an unrestricted shell.
 
+The developer virtualenv normally also carries the optional `book`,
+`playwright` and `cloakbrowser` extras (the `dev` extra already pulls `book`).
+`uv sync --extra dev` is an *exact* sync: it silently uninstalls any extra it
+does not name, which breaks the book, screenshot and browser tests. Sync with
+`uv sync --extra dev --extra book --extra playwright --extra cloakbrowser --inexact`
+(or `uv pip install` the one package you need). `uv run` syncs inexactly and
+is safe, and nox sessions build their own virtualenvs, so neither is affected.
+
+The host can be heavily loaded. Timing-sensitive tests (subprocess timeouts,
+`tests/performance`, cassette replays, worker status waits) can fail only
+under load or under branch-and-subprocess coverage: check `uptime` and re-run
+the failure in isolation before treating it as a regression, and say that you
+did. A full `nox -s coverage` takes about an hour; run it in the background,
+leave the tree alone while it runs, and re-run it in full after the last fix
+before claiming green.
+
 `noxfile.py` defines the CI sessions and embeds the `llms-full.txt` symbol
 check. Every session runs on nox's uv backend and installs the project and its
 one declared `dev` extra into the session's own virtualenv: TUI and API modules
@@ -81,12 +99,51 @@ of `dev`. Enumerate them with `uv run nox --list`: `tests`, `tests_unit` and
 `typecheck_contracts`, `type_audit`, `docs`, `build`, `build_check`,
 `llms_check`, and `clean`.
 
+The integration matrix exercises workflow scenarios S2, S4, and S9 across
+the three supported Python versions.
+
 `.github/workflows/ci.yml` runs every gate and ends in one aggregate
-**Required checks** job, the only status check branch protection needs
-(`scripts/apply_branch_protection.sh`). The release workflow re-runs that CI
-for the tagged commit. Quality baselines (the type-safety baseline, the
+**Required checks** job, the single status to wait on before merging. CI runs
+on pull requests to `main`/`dev` and on pushes to those two branches only, not
+on feature-branch pushes, so the local hooks are your gate on a feature branch.
+The owner has decided `main` stays unprotected (PRD-250 WS-1.3 was dropped): CI
+plus the local hooks are the gates, so do not run
+`scripts/apply_branch_protection.sh` or change repository settings unless
+asked. The release workflow re-runs that CI for the tagged commit. Quality baselines (the type-safety baseline, the
 coverage floor, the gate definitions) are owned in `.github/CODEOWNERS`, and
 the type ratchet fails when a pull request raises a baseline value.
+
+## Commits, hooks and pushing
+
+- `uvx pre-commit install` wires two stages. **Commit** runs file hygiene,
+  `ruff check` and `ruff format --check`. **Push** runs `mypy src/agenthicc`,
+  the type-audit ratchet and the whole `tests/unit -q -x` suite on the working
+  tree — about ten minutes, longer than a typical foreground tool timeout. Run
+  `git push` in the background and wait for it to finish.
+- Leave the working tree alone while a push runs. The hooks stash unstaged
+  files and restore them afterwards; an edit during the run fails it with
+  "files were modified by this hook". Move unfinished files that would fail
+  mypy or the tests out of the tree first, or push from a clean checkout or
+  linked worktree (`tests/conftest.py` strips `GIT_DIR`, `GIT_INDEX_FILE` and
+  related variables so a hook-driven push cannot point git tests at the real
+  repository). If `git status` ever says "must be run in a work tree", run
+  `git config --local core.bare false` and look for a stray test
+  `user.name`/`user.email`.
+- Never `--no-verify`, and never weaken a hook or a gate to get a commit
+  through.
+- Keep other people's uncommitted work out of your commits: read
+  `git status --short` first and stage explicit paths. When a shared file such
+  as `prds/README.md` carries someone else's hunk, build the staged blob from
+  `git show HEAD:<file>` plus your own change (`git hash-object -w`, then
+  `git update-index --cacheinfo`).
+- If `git config user.name`/`user.email` are empty, set `GIT_AUTHOR_NAME`,
+  `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME` and `GIT_COMMITTER_EMAIL` in the
+  environment of the commit command; do not edit git config.
+- Commit in the repository's conventional style (`feat(scope): …`, with `!`
+  for a breaking change): one commit per completed PRD, or per coherent slice.
+  Pull requests are merged with merge commits.
+- Do not push, open a pull request or change GitHub settings unless the task
+  asks for it.
 
 ## Surfaces and gates
 
@@ -178,6 +235,27 @@ registered workflow, saved provider profile, and Safe/Plan/Yolo ceiling. See
    adapters over that canonical registry.
 4. Test both picker visibility and execution.
 
+### Changing subagents
+
+Subagents exist to hasten work by parallelising it, and they must behave like
+the main agent. See SUBAGENT-12 to SUBAGENT-15.
+
+1. Working roles (implementer, executor, tester, documenter) inherit every
+   parent tool (`allowed_tools=None`) and the session's `max_agent_turns`, not
+   a hand-kept list or a small per-role turn cap. Investigative roles keep
+   explicit read-only lists. No worker inherits the parent's
+   `control`-capability tools (phase transitions, `ask_user`,
+   `spawn_worker_agents`) or its own `spawn_subagents`.
+2. No hidden corrective "nudge" turn and no retry that papers over a weak
+   worker. A worker that only narrates fails at once with `missing_mutation`
+   or `missing_action`.
+3. Success is runtime-observed evidence (`completion_evidence`), never the
+   model's prose; report what the runtime saw.
+4. Parallel file-changing workers each get their own git worktree, started
+   from a snapshot of the parent's uncommitted state and applied back with
+   `git apply`. Two writers in one directory silently lose a change.
+5. Test the failure path with a named reason, not only the happy path.
+
 ### Extending the TUI or terminal
 
 - Presentation state belongs in `tui/conversation_store.py`.
@@ -203,9 +281,25 @@ registered workflow, saved provider profile, and Safe/Plan/Yolo ceiling. See
 - Tool results and conversation transitions must remain serializable and
   replay-safe.
 - New or modified Python signatures use concrete parameterized types; do not
-  introduce `Any` when a real type is knowable.
+  introduce `Any` when a real type is knowable. In a new file `Any` appears
+  zero times: import real types under `TYPE_CHECKING`, write `X | None`,
+  `list[T]` and `dict[str, T]`, use frozen dataclasses or `TypedDict` for
+  payloads, name structural types with aliases, and fall back to `object` only
+  as a last resort. When a type truly cannot be expressed (for example private
+  lauren-ai internals reached through `getattr`), say why in a comment instead
+  of silently falling back to `Any`.
 - Public symbols exported by `__all__` need a `### Symbol` entry in
   `llms-full.txt` until the checker is replaced by a generated reference.
+- Replace, don't layer. The project is not in production. When a change
+  supersedes a symbol, delete it and fix every caller and test in the same
+  change: no compatibility shims, aliases, dual paths, `Optional` escape
+  hatches, fakes of the old object, or `isinstance` branches and
+  `# type: ignore` comments that only supported the old path. Prove it with
+  `grep -rn "<OldSymbol>" src/ tests/ docs/` returning nothing.
+- Study before fixing. Read every file in the call chain, from the failing
+  site back to the entry point, and the contract between the components
+  involved, before writing the change. A fix written from an error message and
+  one crashing line produces the next bug.
 
 ## Test placement
 

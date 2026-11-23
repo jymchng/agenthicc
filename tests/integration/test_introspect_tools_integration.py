@@ -56,12 +56,12 @@ def _clear_cache() -> None:
 
 
 def test_registry_exposes_every_inspection_tool() -> None:
-    registry = build_registry(agent_name="auto", project_plugin_tools=[])
+    registry = build_registry(agent_name="auto", extra_tools=[])
     assert _TOOL_NAMES <= set(registry.names)
 
 
 def test_system_prompt_section_advertises_the_group() -> None:
-    registry = build_registry(agent_name="auto", project_plugin_tools=[])
+    registry = build_registry(agent_name="auto", extra_tools=[])
     described = registry.describe()
     assert "### agenthicc Docs & Source (5 tools)" in described
     for name in _TOOL_NAMES:
@@ -69,13 +69,13 @@ def test_system_prompt_section_advertises_the_group() -> None:
 
 
 def test_group_is_rendered_after_the_primary_domains() -> None:
-    registry = build_registry(agent_name="auto", project_plugin_tools=[])
+    registry = build_registry(agent_name="auto", extra_tools=[])
     described = registry.describe()
     assert described.index("### File System") < described.index("### agenthicc Docs & Source")
 
 
 def test_glob_expansion_resolves_the_group_namespace() -> None:
-    registry = build_registry(agent_name="auto", project_plugin_tools=[])
+    registry = build_registry(agent_name="auto", extra_tools=[])
     assert registry.glob_expand("introspect.*") == _TOOL_NAMES
 
 

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from types import MappingProxyType
+from agenthicc.tools.surface import ToolSurface, ToolSurfaceHolder
+from agenthicc.runners.reload import SurfaceHolder
 import asyncio
 from pathlib import Path
 
@@ -48,15 +51,15 @@ def test_selected_playwright_backend_exposes_one_session_tool_set(tmp_path: Path
         agent_runner=object(),
         approval_svc=None,
         cfg=AgenthiccConfig(),
-        skills={},
-        plugin_tools=[],
+        skills=SurfaceHolder(MappingProxyType({})),
+        tool_surface=ToolSurfaceHolder(ToolSurface(0, ())),
         mcp_registry=None,
         mention_cache=object(),
         agents_registry=object(),
         browser_tools=browser_tools,
     )
 
-    names = [tool.__name__ for tool in config.all_plugin_tools()]
+    names = [tool.__name__ for tool in config.extension_tools()]
 
     assert names == [
         "playwright_status",

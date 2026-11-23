@@ -71,7 +71,9 @@ class SubagentExecutionPolicy:
         """Capture the current effective mode without sharing its signal."""
         if app_state is None:
             return None
-        mode = app_state.active_mode()
+        from agenthicc.runners.workflow_execution_context import effective_workflow_mode
+
+        mode = effective_workflow_mode(app_state.active_mode())
         mode_suffix = str(mode.system_prompt_suffix or "")
         combined_suffix = mode_suffix
         if system_prompt_suffix and system_prompt_suffix != mode_suffix:
@@ -162,14 +164,16 @@ class SubagentExecutionPolicy:
         permissions: "SubagentPermissionConstraints | None" = None,
         type_name: str = "",
         workspace_scope_identity: str | None = None,
+        allowed_tools: frozenset[str] | None = None,
+        blocked_capabilities: frozenset[str] = frozenset(),
     ) -> "SubagentExecutionPolicy":
         """Apply a definition policy and optional permissions as a narrowing delta."""
         declared_blocked = declared.blocked_capabilities if declared is not None else frozenset()
         declared_approval = declared.approval_required if declared is not None else frozenset()
-        blocked = self.blocked_capabilities | declared_blocked
+        blocked = self.blocked_capabilities | declared_blocked | blocked_capabilities
         approval = (self.approval_required | declared_approval) - blocked
 
-        scope = self.capability_scope
+        scope = self.capability_scope.restrict(AgentCapabilityScope(allowed_tools=allowed_tools))
         if declared is not None:
             scope = scope.restrict(declared.capability_scope)
         if permissions is not None:

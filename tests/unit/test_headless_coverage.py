@@ -135,7 +135,9 @@ def test_headless_session_and_workflow_resume_selection(monkeypatch: pytest.Monk
         ),
         workspace_scope=SimpleNamespace(primary_root="/repo"),
         workflow_registry=object(),
-        cfg=SimpleNamespace(execution=SimpleNamespace(profile="profile")),
+        cfg=SimpleNamespace(
+            execution=SimpleNamespace(profile="profile"), workflow_stack_max_depth=4
+        ),
     )
     assert headless._select_headless_workflow_resume(session, "goal_flow") == "workflow-run"
     from agenthicc.memory.tool_history import (

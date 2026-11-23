@@ -39,9 +39,13 @@ class attributes and override factory classmethods to return specialised
 objects.
 
 ```python
-from agenthicc.workflows.plugin import PhaseSpec, WorkflowParams, WorkflowPlugin
+from collections.abc import Mapping
+from dataclasses import dataclass
+
+from agenthicc.workflows.plugin import PhaseSpec, WorkflowInvocation, WorkflowParams, WorkflowPlugin
 
 
+@dataclass
 class ReleaseNotesParams(WorkflowParams):
     """Tunable parameters; each field maps to a [workflows.release_notes] key."""
 
@@ -51,6 +55,10 @@ class ReleaseNotesParams(WorkflowParams):
 class ReleaseNotes(WorkflowPlugin):
     name = "release_notes"
     description = "Draft -> Review (summarise changelog entries)"
+    invocation = WorkflowInvocation(
+        when_to_use="Draft release notes from the project changelog.",
+        returns="The draft and review findings.",
+    )
     mode_bindings = ["Plan"]
     phases = [
         PhaseSpec(
@@ -70,7 +78,10 @@ class ReleaseNotes(WorkflowPlugin):
     ]
 
     @classmethod
-    def build_params(cls, source):
+    def build_params(cls, source: Mapping[str, object]) -> ReleaseNotesParams:
+        unknown = source.keys() - {"draft_model"}
+        if unknown:
+            raise ValueError(f"Unknown parameters: {sorted(unknown)}")
         return ReleaseNotesParams(draft_model=str(source.get("draft_model", "")))
 ```
 
@@ -80,6 +91,7 @@ class ReleaseNotes(WorkflowPlugin):
 |---|---|
 | `name` | Registry key. Lower snake case by convention (`code_plan`, `make_book`) |
 | `description` | One-line summary shown by `/workflows` and `workflows list` |
+| `invocation` | Discovery description, result shape, entry permission, and required human gates |
 | `mode_bindings` | Modes that offer this workflow. Empty means manual-only |
 | `phases` | Ordered `PhaseSpec` list defining the graph |
 | `max_total_phase_runs` | Hard ceiling on total phase runs; `0` means no cap |
@@ -211,6 +223,13 @@ In the TUI, `/workflows` lists runs and phases, `/workflows reload` re-scans, an
 `/workflow <name>` switches (`src/agenthicc/commands/builtins.py:932`, `:1048`).
 A workflow with empty `mode_bindings` is manual-only: it appears in `/workflow`
 but is not offered by a mode.
+
+Use `/workflow call create_workflow <intent>` to author a package in the current
+workspace. The default publication policy loads a verified workflow before
+returning the result. The stage-only policy leaves a candidate for
+`/authored approve <run-id>` or `/authored reject <run-id>`. For agent entry,
+set `agent_callable=True` and supply `when_to_use` and `returns`. Declare
+`interactive=True` when a phase requires a human gate.
 
 ---
 

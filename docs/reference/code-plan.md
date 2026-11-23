@@ -102,12 +102,10 @@ the memory tools, `{"found": false, "value": None, "error":
 "memory_not_available"}` for `memory_read`, and `{"results": [], "error":
 "semantic_index_not_available"}` for `semantic_search`.
 
-!!! note "The memory bundle is cached, then copied"
-    `_base_tools()` builds the plugin/MCP/memory tool list once into
-    `self._tool_bundle_cache` and returns a copy, because the memory tool
-    schemas are stable and the cache must not be mutated by a caller
-    (`src/agenthicc/workflows/code_plan/runner.py:1007-1017`). Adding a project tool after the first phase turn
-    will not be visible to later phases of the same run.
+!!! note "The phase tool list follows the session generation"
+    `_base_tools()` compiles the plugin, MCP, and memory tools for the current
+    generation, filters them for the phase mode, and returns a copy. The next
+    phase picks up a reload within the same run.
 
 Short-term memory is the live context passed to the model. `memory_write` and
 `memory_read` use the routed session/project/global tiers when those services

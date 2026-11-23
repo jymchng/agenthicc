@@ -178,6 +178,12 @@ class PoolIsolation:
         """Keep *task_id*'s worktree and branch through :meth:`cleanup`."""
         self._preserved.add(task_id)
 
+    async def release_if_clean(self, task_id: str) -> None:
+        """Release a consumed authoring worktree after its remaining edits are checked."""
+        record = self._records[task_id]
+        if await asyncio.to_thread(self._manager.is_clean, cwd=Path(record.path)):
+            self._preserved.discard(task_id)
+
     async def integrate_one(self, task_id: str, succeeded: bool) -> WorkerIntegration:
         """Apply one finished worker's changes to the parent's workspace.
 

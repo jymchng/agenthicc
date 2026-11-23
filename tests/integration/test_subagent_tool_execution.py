@@ -12,6 +12,8 @@ from lauren_ai._tools import tool
 from lauren_ai._transport import Completion, TokenUsage
 from lauren_ai._transport._mock import MockTransport
 
+from agenthicc.subagents.tool import SubagentToolSelection
+from agenthicc.tools.surface import ToolSurface
 from agenthicc.kernel import AppState as KernelAppState
 from agenthicc.kernel import EventProcessor
 from agenthicc.memory.journal import ConversationJournal
@@ -128,7 +130,7 @@ async def test_structured_result_submission_uses_contract_schema_and_returns_val
     spawn = make_spawn_subagents_tool(
         runner,
         "mock-model",
-        [],
+        SubagentToolSelection(ToolSurface(0, tuple([]))),
         registry=registry,
         conversation_journal=journal,
     )
@@ -174,7 +176,7 @@ async def test_structured_result_is_redacted_before_delivery_and_persistence(
     spawn = make_spawn_subagents_tool(
         AgentRunnerBase(transport=transport),
         "mock-model",
-        [],
+        SubagentToolSelection(ToolSurface(0, tuple([]))),
         registry=_contract_registry(),
         conversation_journal=journal,
     )
@@ -209,7 +211,7 @@ async def test_structured_result_lifecycle_resume_preserves_validated_values(
     spawn = make_spawn_subagents_tool(
         AgentRunnerBase(transport=transport),
         "mock-model",
-        [],
+        SubagentToolSelection(ToolSurface(0, tuple([]))),
         registry=_contract_registry(),
         parent_run_id="parent-run-structured",
         conversation_journal=journal,
@@ -242,7 +244,7 @@ async def test_structured_result_validation_failure_is_typed_and_counts_as_failu
     spawn = make_spawn_subagents_tool(
         runner,
         "mock-model",
-        [],
+        SubagentToolSelection(ToolSurface(0, tuple([]))),
         registry=_contract_registry(),
         conversation_journal=journal,
     )
@@ -268,7 +270,7 @@ async def test_contract_worker_without_submission_fails(tmp_path: Path) -> None:
     spawn = make_spawn_subagents_tool(
         runner,
         "mock-model",
-        [],
+        SubagentToolSelection(ToolSurface(0, tuple([]))),
         registry=_contract_registry(),
         conversation_journal=journal,
     )
@@ -307,7 +309,7 @@ async def test_structured_result_projector_failure_is_typed_and_counts_as_failur
     spawn = make_spawn_subagents_tool(
         runner,
         "mock-model",
-        [],
+        SubagentToolSelection(ToolSurface(0, tuple([]))),
         registry=_contract_registry(),
         conversation_journal=journal,
     )
@@ -346,7 +348,7 @@ async def test_renderer_failure_is_contained_as_a_failed_worker(
     spawn = make_spawn_subagents_tool(
         runner,
         "mock-model",
-        [],
+        SubagentToolSelection(ToolSurface(0, tuple([]))),
         registry=_contract_registry(),
         conversation_journal=journal,
     )
@@ -380,7 +382,7 @@ async def test_real_subagent_executes_mock_requested_tool_and_continues() -> Non
     spawn = make_spawn_subagents_tool(
         runner,
         "mock-model",
-        [lookup_fact],
+        SubagentToolSelection(ToolSurface(0, tuple([lookup_fact]))),
         registry=_registry("lookup_fact"),
     )
 
@@ -413,7 +415,7 @@ async def test_kernel_events_are_durable_before_spawn_returns(
     spawn = make_spawn_subagents_tool(
         runner,
         "mock-model",
-        [],
+        SubagentToolSelection(ToolSurface(0, tuple([]))),
         registry=_registry("read_file"),
         processor=processor,
     )
@@ -462,7 +464,7 @@ async def test_ctrl_b_backgrounds_a_pool_and_keeps_it_session_owned(
     spawn = make_spawn_subagents_tool(
         runner,
         "mock-model",
-        [wait_for_release],
+        SubagentToolSelection(ToolSurface(0, tuple([wait_for_release]))),
         registry=_registry("wait_for_release"),
         conversation_id="conversation-1",
         parent_run_id="turn-1",
@@ -535,7 +537,7 @@ async def test_session_shutdown_cancels_a_backgrounded_pool(tmp_path) -> None:
     spawn = make_spawn_subagents_tool(
         runner,
         "mock-model",
-        [wait_for_release],
+        SubagentToolSelection(ToolSurface(0, tuple([wait_for_release]))),
         registry=_registry("wait_for_release"),
         conversation_id="conversation-1",
         parent_run_id="turn-2",
@@ -599,7 +601,7 @@ async def test_real_pool_runs_two_tool_workers_and_filters_unallowed_tools() -> 
     spawn = make_spawn_subagents_tool(
         runner,
         "mock-model",
-        [lookup_fact, write_forbidden],
+        SubagentToolSelection(ToolSurface(0, tuple([lookup_fact, write_forbidden]))),
         registry=_registry("lookup_fact"),
     )
 
@@ -631,7 +633,7 @@ async def test_real_implementer_exposes_the_filesystem_write_tool() -> None:
     spawn = make_spawn_subagents_tool(
         runner,
         "mock-model",
-        [write_file],
+        SubagentToolSelection(ToolSurface(0, tuple([write_file]))),
         registry=_implementer_registry("write_file"),
     )
 
@@ -654,7 +656,7 @@ async def test_implementer_prose_without_a_tool_is_reported_as_failure() -> None
     spawn = make_spawn_subagents_tool(
         runner,
         "mock-model",
-        [write_file],
+        SubagentToolSelection(ToolSurface(0, tuple([write_file]))),
         registry=_implementer_registry("write_file"),
     )
 
@@ -687,7 +689,7 @@ async def test_empty_final_response_is_a_failure_that_keeps_the_tool_inventory()
     spawn = make_spawn_subagents_tool(
         runner,
         "mock-model",
-        [lookup_fact],
+        SubagentToolSelection(ToolSurface(0, tuple([lookup_fact]))),
         registry=_registry("lookup_fact"),
     )
 
@@ -725,7 +727,7 @@ async def test_empty_final_response_gets_one_finalization_turn() -> None:
     spawn = make_spawn_subagents_tool(
         runner,
         "mock-model",
-        [lookup_fact],
+        SubagentToolSelection(ToolSurface(0, tuple([lookup_fact]))),
         registry=_registry("lookup_fact"),
     )
     result = await spawn(
@@ -761,7 +763,7 @@ async def test_implementer_success_requires_a_successful_mutating_tool_call() ->
     spawn = make_spawn_subagents_tool(
         runner,
         "mock-model",
-        [record_change],
+        SubagentToolSelection(ToolSurface(0, tuple([record_change]))),
         registry=registry,
     )
 
@@ -806,7 +808,7 @@ async def test_subagent_inherits_parent_policy(parent_mode: str) -> None:
     spawn = make_spawn_subagents_tool(
         runner,
         "mock-model",
-        [approved_change],
+        SubagentToolSelection(ToolSurface(0, tuple([approved_change]))),
         registry=_implementer_registry("approved_change"),
         app_state=parent_state,
         approval_svc=Approval(),
@@ -847,7 +849,7 @@ async def test_subagent_can_pause_for_parent_clarification_and_resume() -> None:
     spawn = make_spawn_subagents_tool(
         runner,
         "mock-model",
-        [],
+        SubagentToolSelection(ToolSurface(0, tuple([]))),
         registry=_registry("not-a-parent-tool"),
         conversation_id="conversation-clarification",
         parent_run_id="run-clarification",
@@ -901,7 +903,7 @@ async def test_implementer_rejects_a_mutating_tool_error_result() -> None:
     spawn = make_spawn_subagents_tool(
         runner,
         "mock-model",
-        [rejected_change],
+        SubagentToolSelection(ToolSurface(0, tuple([rejected_change]))),
         registry=_implementer_registry("rejected_change"),
     )
 
@@ -922,12 +924,10 @@ async def test_nested_depth_tier_refuses_concurrency_above_inherited_limit() -> 
     spawn = make_spawn_subagents_tool(
         AgentRunnerBase(transport=transport),
         "mock-model",
-        [],
+        SubagentToolSelection(ToolSurface(0, tuple([]))),
         registry=_registry("not-a-parent-tool"),
         subagent_settings=SubagentSettings(
-            max_depth=3,
-            max_concurrent=16,
-            depth_limits={2: SubagentDepthLimit(max_concurrent=2)},
+            max_depth=3, max_concurrent=16, depth_limits={2: SubagentDepthLimit(max_concurrent=2)}
         ),
         parent_depth=2,
         parent_pool_id="parent-pool",
@@ -958,7 +958,7 @@ async def test_concurrency_below_one_is_refused_without_reporting_a_used_value()
     spawn = make_spawn_subagents_tool(
         AgentRunnerBase(transport=transport),
         "mock-model",
-        [],
+        SubagentToolSelection(ToolSurface(0, tuple([]))),
         registry=_registry("not-a-parent-tool"),
     )
 
@@ -980,7 +980,7 @@ async def test_accepted_concurrency_is_reported_as_used() -> None:
     spawn = make_spawn_subagents_tool(
         AgentRunnerBase(transport=transport),
         "mock-model",
-        [],
+        SubagentToolSelection(ToolSurface(0, tuple([]))),
         registry=_registry("not-a-parent-tool"),
     )
 
@@ -1009,7 +1009,7 @@ async def test_synthetic_delegating_type_cannot_spawn_past_max_depth() -> None:
     spawn = make_spawn_subagents_tool(
         AgentRunnerBase(transport=MockTransport()),
         "mock-model",
-        [],
+        SubagentToolSelection(ToolSurface(0, tuple([]))),
         registry=registry,
         subagent_settings=SubagentSettings(max_depth=1),
         parent_depth=1,
@@ -1037,7 +1037,7 @@ async def test_redriven_turn_replays_a_finished_pool_with_its_results(
     spawn = make_spawn_subagents_tool(
         AgentRunnerBase(transport=transport),
         "mock-model",
-        [],
+        SubagentToolSelection(ToolSurface(0, tuple([]))),
         registry=_registry("not-a-parent-tool"),
         parent_run_id="parent-run-replay",
         conversation_journal=journal,
@@ -1064,9 +1064,9 @@ def _usage_spawn(transport: MockTransport, *, ledger: object | None = None) -> o
     return make_spawn_subagents_tool(
         AgentRunnerBase(transport=transport),
         "mock-model",
-        [],
+        SubagentToolSelection(ToolSurface(0, tuple([]))),
         registry=_registry("not-a-parent-tool"),
-        usage_ledger=ledger,  # type: ignore[arg-type]
+        usage_ledger=ledger,
         parent_run_id="turn-usage",
     )
 
@@ -1117,11 +1117,11 @@ async def test_pool_completed_event_carries_usage() -> None:
     spawn = make_spawn_subagents_tool(
         AgentRunnerBase(transport=transport),
         "mock-model",
-        [],
+        SubagentToolSelection(ToolSurface(0, tuple([]))),
         registry=_registry("not-a-parent-tool"),
         usage_ledger=UsageLedger("session"),
         parent_run_id="turn-usage",
-        processor=_Processor(),  # type: ignore[arg-type]
+        processor=_Processor(),
     )
 
     await spawn(tasks=_TASKS, timeout_s=30)  # type: ignore[operator]
@@ -1158,7 +1158,7 @@ async def test_backgrounding_without_a_supervisor_is_refused_and_stops_the_pool(
     spawn = make_spawn_subagents_tool(
         AgentRunnerBase(transport=transport),
         "mock-model",
-        [wait_for_release],
+        SubagentToolSelection(ToolSurface(0, tuple([wait_for_release]))),
         registry=_registry("wait_for_release"),
         conversation_id="conversation-1",
         parent_run_id="turn-1",
@@ -1216,7 +1216,7 @@ async def test_a_model_requested_background_pool_returns_running_at_once(tmp_pat
     spawn = make_spawn_subagents_tool(
         AgentRunnerBase(transport=transport),
         "mock-model",
-        [wait_for_release],
+        SubagentToolSelection(ToolSurface(0, tuple([wait_for_release]))),
         registry=_registry("wait_for_release"),
         conversation_id="conversation-1",
         parent_run_id="turn-1",
@@ -1263,7 +1263,7 @@ async def test_a_model_requested_background_is_refused_when_it_cannot_be_owned(t
     spawn = make_spawn_subagents_tool(
         AgentRunnerBase(transport=transport),
         "mock-model",
-        [],
+        SubagentToolSelection(ToolSurface(0, tuple([]))),
         registry=_registry("not-a-parent-tool"),
         conversation_id="conversation-1",
         conversation_journal=journal,
@@ -1276,7 +1276,7 @@ async def test_a_model_requested_background_is_refused_when_it_cannot_be_owned(t
     disabled = make_spawn_subagents_tool(
         AgentRunnerBase(transport=transport),
         "mock-model",
-        [],
+        SubagentToolSelection(ToolSurface(0, tuple([]))),
         registry=_registry("not-a-parent-tool"),
         conversation_id="conversation-1",
         conversation_journal=journal,
@@ -1312,13 +1312,13 @@ async def test_on_clarification_fail_ends_a_backgrounded_workers_wait_at_once(
     spawn = make_spawn_subagents_tool(
         AgentRunnerBase(transport=transport),
         "mock-model",
-        [],
+        SubagentToolSelection(ToolSurface(0, tuple([]))),
         registry=_registry("not-a-parent-tool"),
         conversation_id="conversation-1",
         parent_run_id="turn-1",
         conversation_journal=journal,
         conv_store=ConversationStore(),
-        subagent_settings=SubagentSettings(on_clarification=setting),  # type: ignore[arg-type]
+        subagent_settings=SubagentSettings(on_clarification=setting),
     )
     try:
         with bind_background_task_owner(supervisor, interactive=interactive):
@@ -1385,7 +1385,7 @@ async def _spawn_documenter(
     spawn = make_spawn_subagents_tool(
         AgentRunnerBase(transport=transport),
         "mock-model",
-        [write_file],
+        SubagentToolSelection(ToolSurface(0, tuple([write_file]))),
         app_state=parent_state,
         workspace_access=policy,
     )
@@ -1560,7 +1560,7 @@ async def test_a_nested_worker_retries_its_own_pool_and_is_refused_elsewhere(
     spawn = make_spawn_subagents_tool(
         AgentRunnerBase(transport=_Transport()),
         "mock-model",
-        [],
+        SubagentToolSelection(ToolSurface(0, tuple([]))),
         registry=registry,
         subagent_settings=SubagentSettings(max_depth=2),
         conversation_id="conv",
@@ -1609,7 +1609,7 @@ async def test_two_background_pools_collect_independently_and_stay_on_the_panel(
     spawn = make_spawn_subagents_tool(
         AgentRunnerBase(transport=_Transport()),
         "mock-model",
-        [],
+        SubagentToolSelection(ToolSurface(0, tuple([]))),
         registry=_registry("unused"),
         conversation_id="conv",
         parent_run_id="turn-1",

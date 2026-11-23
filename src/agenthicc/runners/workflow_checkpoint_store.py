@@ -18,6 +18,7 @@ from agenthicc.runners.process_lease import (
     process_identity,
     read_json_object,
 )
+from agenthicc.runners.workflow_stack import WorkflowDelivery
 from agenthicc.workflows.checkpoint import (
     CheckpointValidationError,
     WorkflowCheckpoint,
@@ -81,6 +82,32 @@ class WorkflowCheckpointStore:
         """Return the exact checkpoint path for a run ID."""
         self._validate_identifier(run_id, "run_id")
         return self.root / run_id / "checkpoint.json"
+
+    def save_return(self, delivery: WorkflowDelivery) -> None:
+        """Persist the full packet before its digest is appended to the kernel."""
+        self._validate_identifier(delivery.child_run_id, "child_run_id")
+        path = self.root / delivery.child_run_id / "return.json"
+        encoded = json.dumps(delivery.to_dict(), sort_keys=True).encode("utf-8")
+        try:
+            atomic_publish(path, encoded, prefix=".workflow-return-")
+        except FileExistsError as exc:
+            if path.read_bytes() != encoded:
+                raise CheckpointValidationError(
+                    "The workflow return already owns this run ID."
+                ) from exc
+        directory_fsync(path.parent)
+
+    def load_return(self, run_id: str) -> WorkflowDelivery | None:
+        """Read one exact persisted return packet when it exists."""
+        self._validate_identifier(run_id, "run_id")
+        path = self.root / run_id / "return.json"
+        try:
+            delivery = WorkflowDelivery.from_dict(json.loads(path.read_bytes()))
+        except FileNotFoundError:
+            return None
+        if delivery.child_run_id != run_id:
+            raise CheckpointValidationError("The workflow return has the wrong child run ID.")
+        return delivery
 
     def claim_path_for(self, run_id: str) -> Path:
         """Return the crash-recoverable claim path for *run_id*."""

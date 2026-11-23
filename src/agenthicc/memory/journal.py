@@ -506,8 +506,15 @@ class ConversationJournal:
 
     def has_message_id(self, message_id: str) -> bool:
         """Whether an idempotent message append with *message_id* is durable."""
+        return self._has_record("append", "message_id", message_id)
+
+    def has_started_turn(self, turn_id: str) -> bool:
+        """Whether the journal has accepted a turn with this identity."""
+        return self._has_record("turn_started", "turn_id", turn_id)
+
+    def _has_record(self, kind: str, key: str, value: str) -> bool:
         self._drain()
-        if not message_id or not self._path.exists():
+        if not value or not self._path.exists():
             return False
         with self._path.open("r", encoding="utf-8") as fh:
             for raw in fh:
@@ -520,8 +527,8 @@ class ConversationJournal:
                     break
                 if (
                     isinstance(entry, dict)
-                    and entry.get("kind") == "append"
-                    and entry.get("message_id") == message_id
+                    and entry.get("kind") == kind
+                    and entry.get(key) == value
                 ):
                     return True
         return False
@@ -1067,6 +1074,7 @@ class ConversationJournal:
         not_started: bool = False,
         blocked_calls: list[str] | None = None,
         turns: int = 0,
+        workflow: Mapping[str, object] | None = None,
     ) -> None:
         """Persist one worker result, including its complete final text.
 
@@ -1121,6 +1129,8 @@ class ConversationJournal:
             entry["cleanup_error"] = str(cleanup_error)[:240]
         if not_started:
             entry["not_started"] = True
+        if workflow is not None:
+            entry["workflow"] = dict(workflow)
         self._write(entry)
 
     def subagent_pool_result(
@@ -1205,6 +1215,7 @@ class ConversationJournal:
         failed: int,
         text: str,
         values: list[Mapping[str, object]] | None = None,
+        workflow_returns: tuple[dict[str, object], ...] = (),
     ) -> None:
         """Persist a terminal pool aggregate, including partial failures."""
         entry: dict[str, object] = {
@@ -1220,6 +1231,8 @@ class ConversationJournal:
         }
         if values is not None:
             entry["values"] = [dict(value) for value in values]
+        if workflow_returns:
+            entry["workflow_returns"] = list(workflow_returns)
         self._write(entry)
 
     def subagent_pool_cancelled(self, *, pool_id: str, reason: str = "session closed") -> None:

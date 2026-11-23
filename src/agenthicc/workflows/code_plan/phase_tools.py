@@ -9,7 +9,7 @@ Usage (inside WorkflowRunner._run_phase for planner phases)::
     plan_data  = {}
     extra = make_planner_tools(approval_svc, plan_event, plan_data)
     filtered   = filtered + extra          # inject into this phase only
-    await _run_agent_turn(..., project_plugin_tools=filtered, ...)
+    await _run_agent_turn(..., extra_tools=filtered, ...)
     if plan_event.is_set():
         final_plan = plan_data["plan"]     # written by finalize_plan()
 """

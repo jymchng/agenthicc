@@ -66,6 +66,41 @@ def test_approval_overlay_render_and_shortcuts() -> None:
     assert responses[-1]["allowed"] is False
 
 
+def test_workflow_entry_overlay_shows_the_request_and_allows_it_once() -> None:
+    from rich.console import Console
+
+    responses: list[dict[str, object]] = []
+    service = SimpleNamespace(respond=lambda **kwargs: responses.append(kwargs))
+    request = ApprovalRequest(
+        tool_name="enter_workflow",
+        tool_use_id="child-frame",
+        tool_input={
+            "workflow": "research",
+            "intent": "Inspect the fixture.",
+            "params": {"format": "summary"},
+            "interactive": False,
+            "capability_ceiling": {"blocked": ["write"], "requires_approval": []},
+        },
+        capabilities=frozenset({"control"}),
+        event=asyncio.Event(),
+        kind="workflow_enter",
+    )
+    overlay = ApprovalOverlay(request, service, lambda: None)
+    output = Console(file=StringIO(), record=True, force_terminal=False)
+    output.print(overlay.render())
+    text = output.export_text()
+    assert "Start a workflow" in text
+    assert "research" in text
+    assert "Inspect the fixture." in text
+    assert "summary" in text
+    assert "interactive" in text
+    assert "capability_ceiling" in text
+    assert "write" in text
+    assert len(overlay.dialog.options) == 2
+    overlay.handle_key(Key.ENTER, "")
+    assert responses[-1]["allowed"] is True
+
+
 def test_questions_overlay_select_type_cancel_and_render() -> None:
     responses: list[dict[str, object]] = []
     closed: list[bool] = []

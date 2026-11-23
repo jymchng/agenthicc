@@ -497,6 +497,8 @@ def _generic(tool: str, args: Mapping[str, object]) -> ApprovalContent:
 
 
 def _scope(req: ApprovalRequest) -> ApprovalContent:
+    from agenthicc.tools.workspace_access import WorkspacePathStatus
+
     p = palette()
     items = req.workspace_access
     body: list[RenderableType] = []
@@ -513,7 +515,11 @@ def _scope(req: ApprovalRequest) -> ApprovalContent:
     mode.append(items[0].mode)
     body.append(mode)
     count = len(items)
-    title = "Access outside the workspace"
+    title = (
+        "Edit executable extensions"
+        if any(access.status == WorkspacePathStatus.PROTECTED_CODE.value for access in items)
+        else "Access outside the workspace"
+    )
     summary = items[0].display if count == 1 else f"{count} targets"
     return ApprovalContent(title, summary, tuple(body))
 
@@ -525,6 +531,11 @@ def approval_content(req: ApprovalRequest, scope: WorkspaceScope | None) -> Appr
         return _scope(req)
     tool = req.tool_name
     args = req.tool_input or {}
+    if req.kind == "workflow_enter":
+        data = _generic(tool, args)
+        return ApprovalContent(
+            "Start a workflow", _text_arg(args, "workflow"), data.body, data.details
+        )
     if tool in _EXECUTE_TOOLS:
         return _execute(tool, args)
     if tool in _WRITE_TOOLS:

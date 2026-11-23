@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from types import MappingProxyType
+from agenthicc.tools.surface import ToolSurface, ToolSurfaceHolder
+from agenthicc.runners.reload import SurfaceHolder
 import dataclasses
 from unittest.mock import MagicMock
 
@@ -220,8 +223,8 @@ def test_workflow_config_carries_params() -> None:
         agent_runner=mock,
         approval_svc=None,
         cfg=mock,
-        skills={},
-        plugin_tools=mock,
+        skills=SurfaceHolder(MappingProxyType({})),
+        tool_surface=ToolSurfaceHolder(ToolSurface(0, ())),
         mcp_registry=None,
         mention_cache=mock,
         agents_registry=mock,
@@ -244,8 +247,8 @@ def test_workflow_config_replace_updates_params() -> None:
         agent_runner=mock,
         approval_svc=None,
         cfg=mock,
-        skills={},
-        plugin_tools=mock,
+        skills=SurfaceHolder(MappingProxyType({})),
+        tool_surface=ToolSurfaceHolder(ToolSurface(0, ())),
         mcp_registry=None,
         mention_cache=mock,
         agents_registry=mock,

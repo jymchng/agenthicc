@@ -15,6 +15,8 @@ from lauren_ai._tools._schema import generate_tool_schema
 from lauren_ai._transport import Completion, Message, RequestOptions, TokenUsage
 from lauren_ai._transport._mock import MockTransport
 
+from agenthicc.subagents.tool import SubagentToolSelection
+from agenthicc.tools.surface import ToolSurface
 from agenthicc.testing.recording_transport import RecordingTransport
 from agenthicc.runners.tool_populator import populate_agent_tools
 from agenthicc.tools.fs.agent_tools import batch_copy, batch_move, batch_write, read_file
@@ -50,8 +52,12 @@ def test_dynamic_session_tools_generate_warning_free_schemas(caplog, monkeypatch
                 approval_svc=None, memory_router=None, semantic_index=None, browser_tools=()
             )
         )
-        session_tools.append(make_spawn_subagents_tool(None, "mock", []))
-        registry = build_registry(project_plugin_tools=session_tools)
+        session_tools.append(
+            make_spawn_subagents_tool(
+                None, "mock", SubagentToolSelection(ToolSurface(0, tuple([])))
+            )
+        )
+        registry = build_registry(extra_tools=session_tools)
         schemas = {
             tool["name"]: tool for tool in (generate_tool_schema(t)[2] for t in registry.tools)
         }
@@ -59,7 +65,8 @@ def test_dynamic_session_tools_generate_warning_free_schemas(caplog, monkeypatch
     assert not [
         record for record in caplog.records if "unrecognised type annotation" in record.message
     ]
-    assert len(schemas) == 62
+    assert len(schemas) == 63
+    assert schemas["reload_tools"]["input_schema"]["properties"] == {}
     assert (
         schemas["ask_user"]["input_schema"]["properties"]["questions"]["items"]["type"] == "object"
     )
@@ -206,7 +213,7 @@ async def test_mcp_execute_object_becomes_callable_agent_tool(tmp_path: Path):
             },
         ),
     )
-    registry = build_registry(project_plugin_tools=[mcp_tool])
+    registry = build_registry(extra_tools=[mcp_tool])
     exposed = next(
         tool for tool in registry.tools if getattr(tool, "__name__", "") == mcp_tool.provider_name
     )

@@ -1,5 +1,9 @@
 # PRD-114 — Composite Workflows via Runner Inheritance
 
+WFC-01 supersedes the session selection internals. The runner inheritance
+contract and `/workflow <name>` selection remain in use. See
+[WFC-01](workflow-composition/WFC-01-workflow-call-stack.md).
+
 ## Summary
 
 End users can extend any existing workflow (e.g. `code_plan`) by subclassing

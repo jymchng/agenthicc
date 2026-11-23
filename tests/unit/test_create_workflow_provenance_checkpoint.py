@@ -52,7 +52,6 @@ def test_authoring_provenance_round_trips_without_session_memory(tmp_path: Path)
         package_manifest=manifest,
         validation_evidence={"categories": {"cache_contract": "pass"}},
         publication={"status": "pending", "published_path": lease.target_path},
-        question_metadata={"asked_count": 1, "status": "answered"},
     )
     payload = context_to_payload(context)
     assert "shared_memory" not in payload
@@ -70,7 +69,6 @@ def test_authoring_provenance_round_trips_without_session_memory(tmp_path: Path)
     assert restored.package_manifest is not None
     assert restored.package_manifest.fingerprint == manifest.fingerprint
     assert restored.publication["status"] == "pending"
-    assert restored.question_metadata["status"] == "answered"
 
 
 def test_legacy_payload_without_canonical_authoring_state_is_rejected() -> None:

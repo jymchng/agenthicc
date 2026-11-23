@@ -313,11 +313,9 @@ under the session store; Enter requests an immediate run of the selected job,
 and `d` then Enter permanently deletes it after confirmation. Ownership rules
 prevent a live foreign session from being raced.
 
-Default project-authoring skills also provide `/create-tools <instructions>`
-and `/create-commands <instructions>`. They send the supplied instructions to
-the lauren-ai agent with repository-specific implementation, testing, and
-security guidance; generated Python remains executable project code and must be
-reviewed. See the [user-defined commands guide](../guides/commands.md) and the
+Use `/workflow call create_tools <intent>` to author a set of tools and
+`/create-commands <instructions>` to send command authoring instructions to
+the agent. See the [user-defined commands guide](../guides/commands.md) and the
 [user-defined tools guide](../guides/tools.md).
 
 `/workflow` and `/compact` are intercepted by `TUISession` because they need
@@ -336,10 +334,6 @@ the same durable checkpoint contract as every other workflow:
 `/workflow resume [run-id]` continues its typed state after a pause or process
 restart. `/workflow reset` returns to the active mode's default workflow, and
 `/workflow reset [run-id]` explicitly discards a saved run.
-
-Project tools and commands remain available through the `/create-tools` and
-`/create-commands` skills and their respective reload commands; they are not
-workflow selectors.
 
 `/tools` and `/workflows` are registry overlays. `/workflows runs` opens the
 paginated newest-first paused-run selector, and Enter resumes the selected run

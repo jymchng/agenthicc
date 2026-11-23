@@ -300,6 +300,19 @@ every `Event.create` literal in the source tree and asserts it is declared.
 
 ---
 
+### SessionReloaded
+
+A kernel event containing the session reload generation, reason, requested
+and published surfaces, changed names, and bounded diagnostics. The pure
+reducer advances `AppState.reload_generation` monotonically.
+
+### TurnToolSurfaceSelected
+
+A kernel event containing `intent_id`, `tool_surface_generation`, and the
+ordered `tool_names` sent to the provider. The reducer stores the latest
+selection on the intent. Replaying the events preserves changes made by
+reloads or skill restrictions during a turn.
+
 ### UnknownEventError
 
 ```python
@@ -3246,6 +3259,55 @@ dangerous-permissions flag.
 
 ## Workflow execution — `agenthicc.workflows`
 
+### WorkflowStack
+
+`agenthicc.runners.workflow_stack.WorkflowStack` owns the session's base and
+called workflow frames. Resolve a `WorkflowCall` before calling `push`, use
+`pause` and `resume` for the current child, and use `complete` or `abandon` to
+return to its parent. `summaries()` supplies the reactive UI projection.
+`workflows.max_stack_depth` defaults to four child frames.
+
+### WorkflowFrame and WorkflowReturn
+
+`WorkflowFrame` records the frame and run IDs, parent, workflow, origin,
+status, depth, intent and effective policy. A child retains its resolved plugin.
+`WorkflowReturn.as_system_block()` formats the bounded summary, phase outputs
+and publication receipts for the synthetic parent turn. Delivery uses the
+stable key `return:<parent_frame_id>:<child_run_id>`.
+
+### WorkflowInvocation
+
+`agenthicc.workflows.plugin.WorkflowInvocation` is a frozen declaration on
+`WorkflowPlugin.invocation`. It describes discovery copy, model callability,
+subagent eligibility, interaction requirements, reentrancy, child-call
+permission and published artifact kinds. The default opts out of model entry.
+Changes to the declaration affect checkpoint compatibility.
+
+### list_workflows
+
+`agenthicc.workflows.stack_tools.list_workflows()` lists eligible workflows by
+name with bounded discovery text, parameter names, interactivity and source.
+Eligibility depends on the current frame, capability ceiling and headless mode.
+
+### enter_workflow
+
+`agenthicc.workflows.stack_tools.enter_workflow(workflow, intent, params=None)`
+validates a request and brokers entry approval in Safe mode. The optional map
+contains string values. A refusal supplies a stable error code and fix hint.
+An accepted request starts after the current agent turn closes successfully.
+
+### EntryReceipt
+
+`agenthicc.workflows.stack_tools.EntryReceipt` has the status
+`handoff_accepted`, the reserved child frame ID and a handoff note. Repeated
+requests for the accepted workflow and intent return the same receipt in the
+current turn.
+
+### workflow_status
+
+`agenthicc.workflows.stack_tools.workflow_status()` lists stack frames with
+their current phases and recent returns. A worker sees only its own frame.
+
 ### PhaseSpec
 
 Declarative phase metadata for generic `WorkflowRunner` execution. It carries
@@ -3721,9 +3783,118 @@ The executable phase graph used by one workflow run.
 class WorkflowCheckpoint
 ```
 
-Fields: `run_id`, `workflow_name`, `conversation_id`, `intent`, `status`, `current_phase`, `phase_index`, `phase_iteration`, … (36 fields total).
+Workflow checkpoints carry `run_id`, `frame_id`, a nullable `parent_run_id`,
+and `origin`, plus workflow context, topology, lifecycle, and journal cursor.
+Schema version 2 requires the stack fields.
 
 Versioned workflow metadata pointing into session history.
+
+### WorkflowFrameRecord
+
+Frozen kernel projection of a foreground workflow frame. It stores the
+frame and caller IDs, run, origin, depth, phase, status, intent digest, return
+summary digest, artifact names, and delivery state.
+
+### WorkflowStackBridge
+
+Duplex adapter in `runners/tui_session.py`. It records stack transitions in
+the kernel, updates the reactive conversation stack, and reconciles pending
+returns with the conversation journal.
+
+### WorkflowReturn
+
+A bounded status, summary, outputs, and authored artifact receipts from a
+completed, failed, or abandoned child.
+
+### WorkflowDelivery
+
+A return packet paired with its caller frame ID and child run ID. Its
+`key` identifies the synthetic conversation turn across restart.
+
+### WorkflowStack.restore_frames
+
+Adopts a validated frame chain in base-to-child order.
+
+### WorkflowCheckpointStore.save_return
+
+Writes the immutable return packet beside the child checkpoint.
+
+### WorkflowCheckpointStore.load_return
+
+Validates and reads the packet for the given child run ID.
+
+### workflow_child_policy
+
+Intersects a workflow's phase capabilities with its caller's policy.
+
+### workflow_digest
+
+`agenthicc.runners.workflow_stack.workflow_digest` returns the first 16
+hexadecimal characters of the SHA-256 digest of text.
+
+### bind_workflow_return
+
+Binds the return key to the next parent agent turn.
+
+### consume_workflow_return_key
+
+Reads and clears the return key at the agent turn boundary.
+
+### CapabilityCatalog
+
+The session-owned catalog built from callable workflows, permitted skills,
+the provider-visible tools, and installed provenance.
+
+### CatalogEntry
+
+One workflow, skill, or new tool in the bounded catalog.
+
+### render_capability_catalog
+
+Renders entries in a fixed 1,500-character budget. The final line reports
+the number of omitted entries and the inventory tools.
+
+### WorkflowToolScope.callable_workflows
+
+Iterates workflows admitted by the current frame's invocation and policy.
+
+### SkillUseState.callable_skills
+
+Returns loaded skills whose frontmatter and agent permissions allow model use.
+
+### WorkflowRecoveryChain
+
+An ordered tuple of recoverable checkpoints and an optional missing parent
+run ID.
+
+### WorkflowRecoveryLinkError
+
+A checkpoint validation error with the diagnostic code and affected run IDs.
+
+### linked_workflow_recovery
+
+Validates parent links, rejects cycles and excessive depth, and returns the
+chain from its base to the selected workflow.
+
+### recovered_workflow_frames
+
+Converts a validated recovery chain into paused and suspended runtime frames.
+
+### workflow_recovery_leaves
+
+Returns the recoverable workflow records that have no recoverable children.
+
+### EventProcessor.flush_events
+
+Waits for pending events to fold and syncs their log lines to disk.
+
+### ConversationJournal.has_started_turn
+
+Checks the journal for a durable start marker matching an exact turn ID.
+
+### AuthoredArtifactStore.recover_workspace
+
+Reconciles a pending publication before session startup discovers extensions.
 
 ### context_from_payload
 
@@ -3820,11 +3991,10 @@ and `Reject, with feedback`; Tab adds a note to any choice.
 
 ### CreateWorkflow
 
-Built-in `WorkflowPlugin` selected by `/workflow create_workflow`; the next
-ordinary input is the authoring intent. Its four phases are
-`design → generate → validate → summarize`, modelled on `code_plan`: one agent
-runs all four sharing a single `ShortTermMemory`, and every transition happens
-only because a phase tool was called.
+Built-in `WorkflowPlugin` called with `/workflow call create_workflow <intent>`
+or the `enter_workflow` tool. Its four phases are
+`design → generate → validate → summarize`. They share session memory and
+advance through the runner's phase-transition contract.
 
 Before each workflow agent turn, the runner appends a `[PHASE TRANSITION TOOLS]`
 instruction to the phase system prompt. It lists the transition callables
@@ -3843,36 +4013,29 @@ in ordinary phase work or explicit runner-owned gates. Declarative phases
 without a control tool are told that the generic runner applies their declared
 graph after the turn.
 
-Design is read-only and human-gated: `request_design_approval(design,
-workflow_name)` raises the plan-review overlay and `finalize_design(design,
-workflow_name)` refuses until it returned `approved=True`. Generate runs with
-`mode_override="Yolo"` and writes directly to the runner-derived canonical
+Design is read-only and records a structured handoff through
+`finalize_design(design, workflow_name)`. Generate keeps the
+current session mode and writes to the runner-derived canonical
 package `.agenthicc/workflows/<name>/` with optional workflow-local tools and
 helpers beside `runner.py`. The runner creates a run-owned pending marker before
 exposing package-scoped writers; `mark_generation_complete(summary)` has no path
 argument. Validate checks the exact pending package through an explicit
-candidate boundary, then runs a bounded fake-provider contract smoke. Neither
-validation nor smoke restricts Python imports: the candidate package is imported
-in-process, and import-time code executes with ordinary process permissions.
-This is not a sandbox, and direct API, network, process, or filesystem access
-bypasses the parent session's tool capability checks. Missing dependencies can
-still cause ordinary import failures. Only execute generated code from trusted
-sources, or use a separate OS-level isolation boundary. Rejection routes back to
-`generate`. Only after all checks and `approve_workflow(summary)` does the runner
-recheck the whole-package fingerprint, record trust for the exact Python bytes,
-and remove the marker.
-`mode_bindings` is empty, so the workflow is manual-only.
+candidate boundary, then runs a bounded fake-provider contract smoke. The
+executable checks run inside Bubblewrap with a read-only workspace, private
+network namespace, wall-clock bound, and bounded output. When Bubblewrap is
+unavailable, the runner records `static_only` and uses AST validation.
+Rejection routes back to `generate` within the durable repair budget. The
+runner seals the validated package after `approve_workflow(summary)`. After
+summary, the session commits and trusts the exact bytes, reloads the registry,
+and returns the publication receipt. Under `stage_only`, the operator can
+approve or reject the pending run with `/authored`.
 
-Run `/workflows reload` (or restart the session) for the registry to discover the
-committed plugin. A pending marker excludes the package before normal trust
-checks or imports, including during replacement of an existing trusted plugin.
-Existing names require separate replacement approval; the run-bound backup
-preserves the prior package and trust records for exact restoration. The typed
-context retains the canonical package manifest, authoring lease, catalog
-snapshot, validation evidence, and publication record. Its checkpoint codec
-omits runtime-only memory and reattaches the supplied session memory on resume;
-resume the same run with `/workflow resume <run-id>`. Never manually delete a
-pending marker or backup to recover a failed run.
+Updates recheck the current authored digest. Replacements outside the
+authored manifest require operator approval. The run-bound backup preserves
+the previous package and trust records. The typed context retains the lease,
+manifest, catalog, validation evidence, and staged receipt. Resume the original
+checkpoint with `/workflow resume <run-id>` or discard its candidate using
+`/workflow return --abandon` or `/workflow reset <run-id>`.
 
 ### CreateWorkflowParams
 
@@ -3906,12 +4069,11 @@ inner retry loop that runs agent turns until its transition tool sets an
 `asyncio.Event`. Assistant prose is never parsed for a transition, so a phase
 that ends without a tool call is retried and then reported as a failure.
 
-Retry budgets come from `execution.authoring_max_generation_attempts` (inner-loop
-attempts per phase, and the ceiling on `validate → generate` repair cycles) and
-`execution.authoring_max_phase_turns` (sub-turns per agent turn); both are
-clamped to at least 1. `resume()` accepts a typed `CreateWorkflowContext`
-checkpoint for in-place continuation; a legacy generic `WorkflowContext`
-retains its restart contract, and unrelated objects raise `TypeError`.
+The phase uses separate attempt and turn bounds from
+`execution.authoring_max_generation_attempts` and
+`execution.authoring_max_phase_turns`. The run’s repair budget comes from
+`workflows.authoring.max_repair_cycles` and defaults to three. `resume()`
+takes a typed `CreateWorkflowContext` with its persisted repair budget.
 
 `_validate` calls `validate_workflow_file` before the agent votes and **overrides
 an `approve_workflow` call when the report failed**, routing back to generate, so
@@ -3933,9 +4095,40 @@ One artefact produced by a phase, recorded in `CreateWorkflowContext.artifacts`
 keyed by `phase`. Kinds are `design` (or `exit`), `workflow_file`,
 `validation_report`, and `summary`.
 
-Project tools and commands are separate plugin surfaces. The
-`/create-tools` and `/create-commands` skills are not workflow definitions and
-are not registered as `create_*` workflow phases.
+### CreateTools
+
+The `create_tools` workflow stages a set of tool modules, validates the whole
+set, and returns staged artifacts for the session to publish and reload.
+It can be invoked by the agent through `enter_workflow`.
+
+### CreateToolsContext
+
+Carries the typed plans, module validation reports, and shared repair budget
+across all phases. The checkpoint codec restores this state with the
+already-open conversation memory.
+
+### CreateToolsParams
+
+Provides per-phase model overrides for analyze, generate, and validate.
+
+### CreateToolsRunner
+
+Owns the analyze, generate, validate, and finalize loop. Finalize stages
+artifacts for publication. The session exposes successfully loaded tools on
+the parent's next request.
+
+### CreateToolsState
+
+The authoring phase or terminal outcome.
+
+### ToolParam
+
+A tool parameter with an annotation, default expression, and description.
+
+### ToolPlan
+
+A validated plan for one member of a tool set, including its module,
+parameters, capabilities, dependencies, and publication metadata.
 
 ### CreateWorkflowState
 
@@ -3972,7 +4165,8 @@ class CreateWorkflowContext:
     rejection_reason: str = ""
     suggestion: str = ""
     fail_reason: str = ""
-    repair_cycles: int = 0
+    repair_budget: RepairBudget = field(default_factory=RepairBudget)
+    repair_exhausted: bool = False
     artifacts: dict[str, PhaseArtifact] = field(default_factory=dict)
     command_outcomes: list[dict[str, object]] = field(default_factory=list)
     shared_memory: ShortTermMemory | None = None
@@ -3993,20 +4187,15 @@ unset so the phase retries.
 
 ```python
 def make_design_tools(
-    approval_svc: ApprovalService | None,
     design_event: asyncio.Event,
     design_data: dict[str, object],
     exit_event: asyncio.Event | None = None,
 ) -> list[ToolLike]
 ```
 
-Returns `request_design_approval(design, workflow_name)`,
-`finalize_design(design, workflow_name)`, and — when `exit_event` is given —
-`exit_create_workflow(suggestion)`. A shared gate makes `finalize_design` refuse
-until approval returned `approved=True`, and a later denial closes the gate
-again. `request_design_approval` raises a `kind="plan_review"` request and
-reports approval-service errors as a failure result instead of raising.
-`approval_svc=None` auto-approves (headless/tests).
+Returns `finalize_design(design, workflow_name)` and, when supplied an
+`exit_event`, `exit_create_workflow(suggestion)`. The transition validates a
+nonempty design and the workflow identifier before recording the handoff.
 
 ### make_generation_tools
 
@@ -4051,6 +4240,8 @@ def validate_workflow_file(
     *,
     expected_name: str = "",
     root: Path | None = None,
+    strict_cache_contract: bool = False,
+    available_integrations: Mapping[str, object] | None = None,
 ) -> ValidationReport
 ```
 
@@ -4064,8 +4255,8 @@ list `mode_bindings`, a working `build_params({})`, and a consistent phase graph
 (unique names, positive `max_turns`, `next`/`on_reject`/`on_error` edges that
 resolve). Unreachable phases, unknown `agent_type` or `output_schema` values, and
 Optional phases may be imported lazily; module import failures are reported.
-Import statements are unrestricted by the static validator. Candidate imports
-execute in-process with ordinary process permissions, not in a sandbox.
+The candidate imports run in a bounded Bubblewrap subprocess. A platform
+without Bubblewrap returns an AST report with `validation="static_only"`.
 
 ### ValidationReport
 
@@ -4082,6 +4273,7 @@ class ValidationReport:
     categories: dict[str, str] = field(default_factory=dict)
     evidence: dict[str, object] = field(default_factory=dict)
     skipped_checks: tuple[str, ...] = ()
+    validation: Literal["passed", "static_only"] = "passed"
 
     def render(self) -> str
     def to_dict(self) -> dict[str, object]
@@ -4089,6 +4281,19 @@ class ValidationReport:
 
 `ok` is True only when `errors` is empty. `render()` returns the numbered report
 block injected into the validating agent's system prompt.
+
+### run_generated_workflow_smoke
+
+Runs the candidate with a fake provider inside the validation sandbox and
+returns a `SmokeReport`. Relative imports remain available throughout the
+checks, including imports first used by a runner method. Static-only reports
+mark the runtime check as skipped.
+
+### inspect_generated_python
+
+Runs a runtime-owned callback in Bubblewrap with the workspace mounted
+read-only. The callback receives JSON inputs and returns a bounded JSON object.
+The `ImportCheck` status is `passed`, `failed`, or `static_only`.
 
 ### make_inspection_tools
 
@@ -4124,8 +4329,9 @@ change and limits retained entries.
 Canonical package authoring uses one runner-derived package path, a durable
 `AuthoringLease`, and a runner-owned pending marker. The exact bounded
 `PackageManifest` binds the validation report and finalization to every package
-file. `finalize_authoring()` rechecks the approved fingerprint, records trust for
-exact Python-file bytes, and removes the marker only after the package is
+file. The session's artifact store calls `finalize_authoring()` to recheck the
+approved fingerprint, record trust for the exact Python bytes, and remove the
+marker only after the package is
 committed. `restore_authoring()` verifies the run-bound backup before restoring
 an approved original and its trust records; when there was no original, it
 removes the candidate without publishing it. Paused runs use `/workflow reset
@@ -4211,6 +4417,18 @@ inventory/size-limit violations.
 Verifies that a committed package has no pending marker and still matches the
 fingerprint approved by the validation phase.
 
+### validated_package_digest
+
+`validated_package_digest(lease, expected)` rechecks the run-owned package
+against its validated manifest and hashes its destination paths and exact
+bytes for the session publication receipt.
+
+### workflow_update_digest
+
+`AuthoredArtifactStore.workflow_update_digest(snapshot)` verifies the inventory
+and bytes of a recorded workflow version before replacement. The returned
+digest identifies the version to keep for rollback.
+
 ### finalize_authoring
 
 Rechecks the exact validated fingerprint, records digest-bound trust for the
@@ -4223,17 +4441,46 @@ Restores an approved original package and exact prior trust records, or discards
 a first-generation pending candidate. It refuses mismatched leases, markers, or
 backups.
 
-### make_generation_writer_tools
+### make_scoped_writer_tools
 
-Builds the package-scoped `make_directory`, `read_file`, `write_file`, and
-`append_file` tools for one lease. Paths are package-relative; traversal,
-absolute paths, symlinks, marker edits, and writes outside the leased package
-are rejected at the tool boundary.
+`agenthicc.workflows.authoring.scoped_tools` builds `make_directory`,
+`read_file`, `write_file`, and `append_file` bound to a runner-selected
+root, approved suffixes, and per-file and file-count bounds. An optional
+ownership check verifies the run still owns the root.
 
-### make_package_read_tools
+### make_scoped_reader_tools
 
-Builds read-only package tools whose only addressable root is one leased
-canonical package.
+Builds the read-only variant with the same root, suffix and size checks.
+
+### RepairBudget
+
+A frozen record of `max_cycles` and `used` in
+`agenthicc.workflows.authoring.budget`. `charge()` returns an updated
+record and `from_payload()` requires both values in a checkpoint.
+
+### RepairBudgetExhausted
+
+Raised when `RepairBudget.charge()` would exceed the run’s allowance.
+
+### FindingSeverity
+
+Authoring evidence severity, either `"error"` or `"warning"`.
+
+### Finding
+
+An authoring diagnostic with a stable code, severity, candidate-relative
+path, optional line and bounded description.
+
+### authoring.verdict.ValidationReport
+
+A frozen record of the validated digest and runner findings in
+`agenthicc.workflows.authoring.verdict`. Its `errors` property counts
+blocking findings.
+
+### decide
+
+The shared authoring verdict accepts only an approval paired with a
+deterministic report that has no errors.
 
 ### build_authoring_snapshot
 
@@ -5960,7 +6207,7 @@ Correlated continuation handle containing the pool broker and live task.
 ### run_pool
 
 ```python
-def run_pool(tasks: 'list[SubagentTask]', parent_runner: 'AgentRunnerBase', parent_model: 'str', all_tools: 'list[object]', max_concurrent: 'int' = 4, app_state: 'AppState | None' = None, processor: 'EventProcessor | None' = None, conv_store: 'ConversationStore | None' = None, registry: 'SubagentTypeRegistry' = <agenthicc.subagents.types.SubagentTypeRegistry object at 0x7df3d2626120>, tool_registry: 'ToolRegistry | None' = None, usage_ledger: "'UsageLedger | None'" = None, conversation_id: 'str' = '', parent_run_id: 'str' = '', provider_options: 'Mapping[str, object] | None' = None, timeout_s: 'float | None' = None, approval_svc: "'ApprovalService | None'" = None, workspace_access: "'WorkspaceAccessPolicy | None'" = None, conversation_journal: "'ConversationJournal | None'" = None, task_fingerprint: 'str' = '', policy: 'SubagentExecutionPolicy | None' = None, communication: 'AgentMessageBroker | None' = None, provider: 'str' = 'unknown', default_model: 'str' = '', default_effort: 'str' = '', default_context: 'int | None' = None, call_model: 'str | None' = None, call_effort: 'str | None' = None, execution_settings: 'ExecutionSettings | None' = None, allowed_models: 'frozenset[str] | None' = None) -> 'AggregatedResult'
+def run_pool(tasks: 'list[SubagentTask]', parent_runner: 'AgentRunnerBase', parent_model: 'str', tool_surface: 'ToolSurface', max_concurrent: 'int' = 4, app_state: 'AppState | None' = None, processor: 'EventProcessor | None' = None, conv_store: 'ConversationStore | None' = None, registry: 'SubagentTypeRegistry' = <agenthicc.subagents.types.SubagentTypeRegistry object at 0x7df3d2626120>, tool_registry: 'ToolRegistry | None' = None, usage_ledger: "'UsageLedger | None'" = None, conversation_id: 'str' = '', parent_run_id: 'str' = '', provider_options: 'Mapping[str, object] | None' = None, timeout_s: 'float | None' = None, approval_svc: "'ApprovalService | None'" = None, workspace_access: "'WorkspaceAccessPolicy | None'" = None, conversation_journal: "'ConversationJournal | None'" = None, task_fingerprint: 'str' = '', policy: 'SubagentExecutionPolicy | None' = None, communication: 'AgentMessageBroker | None' = None, provider: 'str' = 'unknown', default_model: 'str' = '', default_effort: 'str' = '', default_context: 'int | None' = None, call_model: 'str | None' = None, call_effort: 'str | None' = None, execution_settings: 'ExecutionSettings | None' = None, allowed_models: 'frozenset[str] | None' = None) -> 'AggregatedResult'
 ```
 
 Create a SubagentPool and run it. Convenience wrapper; it forwards provider,
@@ -5970,7 +6217,7 @@ allowlist to workers.
 ### make_spawn_subagents_tool
 
 ```python
-def make_spawn_subagents_tool(parent_runner: 'AgentRunnerBase', parent_model: str, all_tools: list[object], max_concurrent: int = 4, app_state: 'AppState | None' = None, processor: 'EventProcessor | None' = None, conv_store: 'ConversationStore | None' = None, registry: agenthicc.subagents.types.SubagentTypeRegistry | None = None, tool_registry: 'ToolRegistry | None' = None, retry_config: 'RetryConfig | None' = None, usage_ledger: 'UsageLedger | None' = None, conversation_id: str = '', parent_run_id: str = '', provider_options: collections.abc.Mapping[str, object] | None = None, approval_svc: 'ApprovalService | None' = None, workspace_access: 'WorkspaceAccessPolicy | None' = None, conversation_journal: 'ConversationJournal | None' = None, policy: 'SubagentExecutionPolicy | None' = None, provider: str = 'unknown', execution_settings: 'ExecutionSettings | None' = None, subagent_settings: 'SubagentSettings | None' = None, default_model: str = '', allowed_models: frozenset[str] | None = None, parent_depth: int = 0, parent_pool_id: str = '', ancestry: tuple[tuple[str, str], ...] = ()) -> collections.abc.Callable[..., object]
+def make_spawn_subagents_tool(parent_runner: 'AgentRunnerBase', parent_model: str, tool_source: SubagentToolSelection | Callable[[], SubagentToolSelection], max_concurrent: int | None = None, app_state: 'AppState | None' = None, processor: 'EventProcessor | None' = None, conv_store: 'ConversationStore | None' = None, registry: agenthicc.subagents.types.SubagentTypeRegistry | None = None, retry_config: 'RetryConfig | None' = None, usage_ledger: 'UsageLedger | None' = None, conversation_id: str = '', parent_run_id: str = '', provider_options: collections.abc.Mapping[str, object] | None = None, approval_svc: 'ApprovalService | None' = None, workspace_access: 'WorkspaceAccessPolicy | None' = None, conversation_journal: 'ConversationJournal | None' = None, provider: str = 'unknown', execution_settings: 'ExecutionSettings | None' = None, subagent_settings: 'SubagentSettings | None' = None, default_model: str = '', allowed_models: frozenset[str] | None = None, parent_depth: int = 0, parent_pool_id: str = '', ancestry: tuple[tuple[str, str], ...] = (), owner_lineage: tuple[str, ...] = ()) -> collections.abc.Callable[..., object]
 ```
 
 Return a ``spawn_subagents`` @tool()-decorated function. It receives the active
@@ -6012,7 +6259,8 @@ class ExtensionTrust:
     trusted_roots: tuple[Path, ...]   # property; default (~/.agenthicc,)
     def check(self, path: Path, *, kind: str) -> UntrustedExtension | None: ...
     def permits(self, path: Path, *, kind: str) -> bool: ...
-    def trust(self, path: Path, *, kind: str) -> TrustRecord: ...
+    def trust(self, path: Path, *, kind: str, expected_sha256: str | None = None,
+              artifact_digest: str | None = None) -> TrustRecord: ...
     def revoke(self, path: Path) -> bool: ...
     def records(self) -> tuple[TrustRecord, ...]: ...
     def workspace_decision(self, directory: Path) -> WorkspaceDecision | None: ...   # TUX-03
@@ -6023,7 +6271,9 @@ Decides whether an extension file may be imported and records trust. `check`
 returns why a file may not be imported (`"not trusted"`, `"changed since it was
 trusted"` or `"unreadable: ..."`); `permits` logs that reason and returns
 `False`. The store is written atomically with mode `0600`; an unreadable store
-trusts nothing.
+trusts nothing. Runtime callers supply `expected_sha256` to bind an authored
+trust record to the approved file bytes. `artifact_digest` binds the file to
+its complete artifact. Trust mutations take the same cross-process lock.
 
 ### WorkspaceDecision
 
@@ -6050,9 +6300,52 @@ class TrustRecord:
     sha256: str
     kind: str
     trusted_at: str
+    artifact_digest: str | None = None
 ```
 
 One trusted extension file, bound to the content that was reviewed.
+
+### PublishedArtifact
+
+The immutable identity, inventory, validation status, and publication state of
+an authored tool, skill, workflow, or command. `files` contains canonical
+workspace-relative paths in sorted order. `content_digest()` hashes those names
+and their exact bytes with length prefixes. The same digest identifies the
+artifact in provenance and authored trust records.
+
+### StagedArtifact
+
+A `PublishedArtifact` paired with the runner's `ValidationReport`.
+
+### StagedWorkflow
+
+A staged artifact with its canonical `AuthoringLease`. The lease keeps the
+workflow package pending through stage-only approval and lets the publish
+store restore the pending marker when loading fails.
+
+### AuthoredRun
+
+The distinct staged artifacts produced by one run, with its session and model
+identifiers.
+
+### AuthoredArtifactStore
+
+Installs a validated set inside its project and binds authored Python trust to
+the checked bytes. The installation context rolls back files and trust if the
+caller reports a loader failure. The store keeps approval tickets and version
+identities under the operator's trust directory. The project manifest is a
+provenance view and archived files are checked against the operator's digest
+before a rollback.
+
+### AuthoredPublisher
+
+The session-owned publisher stages a set under `stage_only` policy or installs
+and reloads it under `auto`. It returns an `AuthoredPublication` with a state
+for every artifact. Loader verification runs before any requested live surface
+is replaced.
+
+`AuthoredArtifactStateChanged` journals the run ID and one receipt.
+`AuthoredPublished` carries the complete successful set and its reload report.
 
 ### UntrustedExtension
 
@@ -7593,6 +7886,7 @@ class SkillDef:
     slug: str
     path: Path
     description: str = ""
+    disable_model_invocation: bool = False
     aliases: tuple[str, ...] = ()
     allowed_agents: tuple[str, ...] | None = None
     denied_agents: tuple[str, ...] = ()
@@ -7676,6 +7970,21 @@ def filter_skills_for_agent(
 
 Return only skills allowed by both their frontmatter and the active agent's
 configured policy.
+
+### list_skills and use_skill
+
+The `agenthicc.skills.tools` module provides two read-capability tools for
+active session turns. `list_skills(query=None)` returns at most 40 entries and
+6,000 characters. `use_skill(name, args=None)` returns source-labelled skill
+guidance, with the full digest and a 16 KiB body limit. Both read the current
+skills surface and enforce the calling agent’s skill permissions.
+
+The `disable_model_invocation` frontmatter field hides a skill from these tools.
+Skills with `model` set need `$skill-name` activation. `maxTurnDepth` applies to
+`$skill-name` only. Skill allowlists and disabled tools narrow the next provider
+request and tool dispatch until the turn ends. The `SkillUsed` kernel event
+records the skill slug, source, digest, narrowing and truncation status with the
+calling turn ID. Worker events also include the pool ID.
 
 ### render_context_commands — `agenthicc.skills.runner`
 
@@ -8025,3 +8334,164 @@ Rich presentation state.
 
 Named HTTP adapter contract for future IDE/ACP clients with the same
 client-neutral snapshot and event semantics.
+
+## Session extension reload
+
+### ReloadSurface
+
+An extension surface, one of `"skills"`, `"tools"`, `"workflows"` and
+`"commands"`.
+
+### RELOAD_SURFACES
+
+The four surfaces in publication order. Skills precede tools and workflows.
+Commands publish last so they can refer to the refreshed skills.
+
+### ReloadReason
+
+The reason a caller requested a reload. Values are `"command"`,
+`"workflow_return"`, `"startup"` and `"api"`.
+
+### SurfaceSnapshot
+
+A frozen generation and value pair. Tools use a tuple and skills use a
+read-only mapping.
+
+### SurfaceHolder
+
+A lock-free reader of the currently published `SurfaceSnapshot`.
+`current()` returns the entire snapshot in one read.
+
+### ReloadChange
+
+One item's surface, canonical name and operation. The operation is
+`added`, `updated`, `removed` or `unchanged`.
+
+### ReloadDiagnostic
+
+A bounded source diagnostic with a stable code and an optional digest for
+untrusted or changed source files.
+
+### ReloadReport
+
+The generation, reason, requested and published surfaces, changes, and
+diagnostics. `ok` is true when every requested surface published.
+`to_dict()` produces the event payload.
+
+### ReloadService
+
+`agenthicc.runners.reload.ReloadService` serializes extension discovery and
+publication. `reload(surfaces, reason=...)` coalesces concurrent requests that
+the active reload covers. `preview(surfaces)` discovers and reports the
+candidate without publishing it. `close()` waits for active discovery.
+
+### WorkflowLoadCode
+
+Stable source diagnostic codes supplied to the `on_skip` callback for Python
+workflow discovery. This includes pending packages, trust, import, manifest,
+and name conflicts.
+
+### WorkflowRegistry.source_paths
+
+Returns a mapping of workflow names to source paths without importing
+lazy built-in workflows.
+
+### parse_reload_surfaces
+
+Parse case-insensitive surface tokens for `/reload`. Empty input selects
+all surfaces. Unknown tokens raise `ValueError`.
+
+### execute_extension_source
+
+Execute the current source bytes in a prepared Python module. Reload uses
+this entry to bypass timestamp-based bytecode caches.
+
+`SessionContext.reload` owns the service in TUI and headless workflow
+sessions. `WorkflowConfig.skills` and `WorkflowConfig.tool_surface` hold
+references to the session's live snapshot holders. The command context
+exposes one asynchronous `reload` callback and schedules command
+continuations through its session owner.
+
+### ToolSurface
+
+`agenthicc.tools.surface.ToolSurface` is an immutable extension catalog with
+a generation number, a sorted tool tuple, and a read-only mapping from tool
+names to source labels.
+
+### ToolSurfaceHolder
+
+`agenthicc.tools.surface.ToolSurfaceHolder.current()` returns the catalog
+without a lock. `ReloadService` publishes replacement catalogs. Direct turns
+observe new generations between requests, phases observe them at entry, and
+workers pin the generation selected at spawn.
+
+### SubagentToolSelection
+
+`agenthicc.subagents.tool.SubagentToolSelection` carries a tool surface, the
+effective tool registry, and execution policy at spawn. The spawn tool can
+resolve this selection from a live session or use its parent worker's pinned
+selection.
+
+
+### SkillValidation
+
+A record containing the parsed `SkillDef`, when available, and the canonical
+loader diagnostics. `ok` is true when a skill was parsed without errors.
+
+### validate_skill_dir
+
+`agenthicc.skills.loader.validate_skill_dir(path, *, source)` parses one skill
+directory through the same implementation used by discovery.
+
+### CreateSkills
+
+The built-in `create_skills` workflow stages a complete project skill set.
+The session publishes validated skills and refreshes commands and skill
+inventory before returning to its parent.
+
+### CreateSkillsContext
+
+The typed run cursor, planned skills, exact file inventory, validation
+reports, and per-run repair budget.
+
+### CreateSkillsParams
+
+Per-phase model overrides for design, write, and validate.
+
+### CreateSkillsRunner
+
+The driver for the four skill authoring phases. It uses the session's command
+and skill preview against staged sources and delegates publication to the
+session.
+
+### CreateSkillsState
+
+The phase or terminal outcome of a skill authoring run.
+
+### SkillPlan
+
+The agreed slug, metadata, tool restrictions, and Markdown support files for
+one skill in the set.
+
+
+### WorkflowWorker
+
+A subagent that runs a pinned workflow and typed parameters. It inherits the
+worker policy, uses a separate conversation and checkpoint root, and reports
+a bounded return with phases and staged artifacts. The parent session handles
+publication.
+
+### WorkflowTaskSelection
+
+The eligible definition and parameters pinned when a workflow worker is
+admitted. Mutating and authoring workflows require an isolated worktree.
+
+### WorkflowTaskRefusal
+
+The workflow name, typed refusal code, and reason for one rejected worker task.
+
+### run_workflow_core
+
+`agenthicc.runners.workflow_execution.run_workflow_core` builds and invokes a
+workflow runner under its execution binding. Headless session owners and
+workflow workers both use it with their own handles and workspace policies.

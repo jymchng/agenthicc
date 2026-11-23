@@ -88,12 +88,15 @@ async def test_commands_and_skills_open_list_overlays_during_active_run(tmp_path
         command = commands.get(name)
         assert command is not None
         ctx.cmd_registry.register(command)
-    ctx.skills["review"] = SkillDef(
+    review = SkillDef(
         "Review",
         "review",
         tmp_path,
         description="Review project changes",
         _body="body",
+    )
+    ctx.reload.install_initial(
+        skills={"review": review}, tools=(), commands=(), workflows=ctx.workflow_registry
     )
     active = asyncio.create_task(_live_task())
     session._agent_task = active
@@ -274,3 +277,24 @@ async def test_a_message_typed_during_a_turn_joins_it_at_the_next_tool(
     assert session._next_queued_message() is None
     assert session._msg_queue.texts() == ["/defer", "$skill"]
     await _stop(active)
+
+
+async def test_reload_runs_during_an_active_turn_without_queuing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agenthicc.plugins.discovery import PluginToolSet
+
+    session, ctx, _workspace, _input = _make_session()
+    ctx.cmd_registry.register_many(build_builtin_registry().all_commands())
+    monkeypatch.setattr(
+        "agenthicc.plugins.discovery.discover_project_tools", lambda **_kwargs: PluginToolSet()
+    )
+    active = asyncio.create_task(_live_task())
+    session._agent_task = active
+    try:
+        await session.handle_send(SendMessageCommand(text="/reload tools"))
+        assert await session._tasks.wait(timeout=5)
+        assert ctx.reload.generation == 1
+        assert session._msg_queue.texts() == []
+    finally:
+        await _stop(active)

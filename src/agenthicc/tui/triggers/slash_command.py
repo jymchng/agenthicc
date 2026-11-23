@@ -157,35 +157,23 @@ class SlashCommandTrigger(TriggerHandlerBase):
         if command is None or _is_skill_command(command) is not self.skill_only:
             return []
 
-        completions: list[str]
-        if command.name == "/workflow":
-            if self._workflow_registry is None:
-                return []
-            # Workflow names are identifiers, not free-form text.  Do not
-            # return a partially matched name: the selected value must be a
-            # complete command that TUISession.route() can execute.
-            prefix = argument_part.strip()
-            if " " in prefix:
-                # Run IDs are intentionally not inferred from arbitrary
-                # text.  The recovery coordinator presents an explicit list
-                # when more than one run exists; users can paste the selected
-                # ID after the discoverable ``resume``/``reset`` command.
-                command_name = prefix.split(None, 1)[0]
-                if command_name in {"resume", "reset"}:
-                    return []
-                return []
-            completions = [name for name in ("resume", "reset") if name.startswith(prefix)] + [
-                name for name in self._workflow_registry.names() if name.startswith(prefix)
-            ]
-        elif command.completions_factory is not None:
+        prefix = argument_part.strip()
+        completions: list[str] = []
+        if command.completions_factory is not None:
             try:
-                completions = command.completions_factory(argument_part.strip())
+                completions = command.completions_factory(prefix)
             except Exception:  # noqa: BLE001
                 # A plugin completion provider must never break the input
                 # loop.  It simply contributes no suggestions for this turn.
                 return []
-        else:
-            return []
+        if (
+            command.name == "/workflow"
+            and self._workflow_registry is not None
+            and " " not in prefix
+        ):
+            completions.extend(
+                name for name in self._workflow_registry.names() if name.startswith(prefix)
+            )
 
         try:
             unique_completions = sorted(set(completions))
@@ -202,13 +190,15 @@ class SlashCommandTrigger(TriggerHandlerBase):
             workflow = (
                 self._workflow_registry.get(completion)
                 if command.name == "/workflow"
-                and completion not in {"resume", "reset"}
+                and completion not in {"reload", "resume", "reset"}
                 and self._workflow_registry is not None
                 else None
             )
             detail = (
                 "Continue a paused or interrupted workflow"
                 if completion == "resume"
+                else "Reload workflows from disk"
+                if completion == "reload"
                 else "Discard a recoverable workflow"
                 if completion == "reset"
                 else workflow.description

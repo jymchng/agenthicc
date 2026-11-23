@@ -7,6 +7,7 @@ lag. Before TUIR-01/02 the worst stall was 93.7 s.
 """
 
 from __future__ import annotations
+from agenthicc.tools.surface import ToolSurface
 
 import asyncio
 import gc
@@ -165,12 +166,12 @@ async def test_six_subagents_searching_keep_the_loop_responsive(
         [SubagentTask(f"task-{i}", "explorer", f"area {i}") for i in range(6)],
         parent_runner=AgentRunnerBase(transport=_Transport()),
         parent_model="mock-model",
-        all_tools=list(FS_AGENT_TOOLS),
+        tool_surface=ToolSurface(0, tuple(list(FS_AGENT_TOOLS))),
         max_concurrent=6,
-        conv_store=app.conversation,  # type: ignore[attr-defined]
+        conv_store=app.conversation,
         registry=DEFAULT_REGISTRY,
-        app_state=app,  # type: ignore[arg-type]
-        workspace_access=policy,  # type: ignore[arg-type]
+        app_state=app,
+        workspace_access=policy,
         conversation_journal=journal,
         conversation_id="conv",
         parent_run_id="turn-1",

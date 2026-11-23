@@ -12,6 +12,9 @@ Covers, in order:
 
 from __future__ import annotations
 
+from types import MappingProxyType
+from agenthicc.tools.surface import ToolSurface, ToolSurfaceHolder
+from agenthicc.runners.reload import SurfaceHolder
 import asyncio
 import importlib.util
 import sys
@@ -26,6 +29,7 @@ from agenthicc.tools.capabilities import ToolCapability, get_tool_capabilities
 from agenthicc.tui.conversation_store import AppState
 from agenthicc.tui.runtime.mode_manager import ModeManager
 from agenthicc.workflows.config import WorkflowConfig
+from agenthicc.workflows.authoring.budget import RepairBudget
 from agenthicc.workflows.create_workflow.authoring import AuthoringLease, PackageManifest
 from agenthicc.workflows.create_workflow.definition import CreateWorkflow, CreateWorkflowParams
 from agenthicc.workflows.create_workflow.inspection_tools import make_inspection_tools
@@ -86,9 +90,10 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from collections.abc import Mapping
 
 from agenthicc.workflows.base_runner import BaseWorkflowRunner
-from agenthicc.workflows.plugin import PhaseSpec, WorkflowPlugin
+from agenthicc.workflows.plugin import PhaseSpec, WorkflowInvocation, WorkflowParams, WorkflowPlugin
 
 
 @dataclass
@@ -139,11 +144,18 @@ class DemoRunner(BaseWorkflowRunner):
 class Demo(WorkflowPlugin):
     name = "demo"
     description = "A demo workflow."
+    invocation = WorkflowInvocation(when_to_use="Run the demo.", returns="A demo result.")
     mode_bindings = []
     phases = [
         PhaseSpec(name="one", next="two"),
         PhaseSpec(name="two", on_reject="one"),
     ]
+
+    @classmethod
+    def build_params(cls, source: Mapping[str, object]) -> WorkflowParams:
+        if source:
+            raise ValueError("This workflow takes no parameters.")
+        return WorkflowParams()
 
     @classmethod
     def build_runner(cls, config, mode_manager):
@@ -232,8 +244,8 @@ def _runner(*, max_attempts: int = 3, max_turns: int = 5) -> CreateWorkflowRunne
         ),  # type: ignore[arg-type]
         approval_svc=None,
         cfg=cfg,
-        skills={},
-        plugin_tools=[],
+        skills=SurfaceHolder(MappingProxyType({})),
+        tool_surface=ToolSurfaceHolder(ToolSurface(0, ())),
         mcp_registry=None,
         mention_cache=SimpleNamespace(),  # type: ignore[arg-type]
         agents_registry=SimpleNamespace(),  # type: ignore[arg-type]
@@ -362,7 +374,7 @@ def test_context_defaults_are_empty() -> None:
     assert ctx.design == ""
     assert ctx.workflow_name == ""
     assert ctx.generated_path == ""
-    assert ctx.repair_cycles == 0
+    assert ctx.repair_budget.used == 0
     assert ctx.artifacts == {}
     assert ctx.command_outcomes == []
     assert ctx.shared_memory is None
@@ -429,36 +441,21 @@ def test_transition_failure_shape() -> None:
 
 async def test_design_tools_expose_exactly_the_transition_surface() -> None:
     event, data = asyncio.Event(), {}
-    tools = make_design_tools(None, event, data, exit_event=asyncio.Event())
+    tools = make_design_tools(event, data, exit_event=asyncio.Event())
     assert set(_by_name(tools)) == {
-        "request_design_approval",
         "finalize_design",
         "exit_create_workflow",
     }
 
 
 async def test_design_tools_omit_exit_when_no_exit_event() -> None:
-    tools = make_design_tools(None, asyncio.Event(), {})
-    assert set(_by_name(tools)) == {"request_design_approval", "finalize_design"}
+    tools = make_design_tools(asyncio.Event(), {})
+    assert set(_by_name(tools)) == {"finalize_design"}
 
 
-async def test_finalize_design_refused_before_approval() -> None:
+async def test_finalize_design_sets_event_and_data() -> None:
     event, data = asyncio.Event(), {}
-    tools = make_design_tools(None, event, data)
-    result = await _call(tools, "finalize_design", "the design", "demo")
-    assert isinstance(result, dict)
-    assert result["ok"] is False
-    assert "not been approved" in str(result["error"])
-    assert not event.is_set()
-    assert data == {}
-
-
-async def test_approval_then_finalize_sets_event_and_data() -> None:
-    event, data = asyncio.Event(), {}
-    tools = make_design_tools(None, event, data)
-    approved = await _call(tools, "request_design_approval", " the design ", "demo")
-    assert isinstance(approved, dict)
-    assert approved["approved"] is True
+    tools = make_design_tools(event, data)
     result = await _call(tools, "finalize_design", " the design ", " demo ")
     assert isinstance(result, dict)
     assert result["ok"] is True
@@ -470,95 +467,24 @@ async def test_approval_then_finalize_sets_event_and_data() -> None:
     ("design", "name"),
     [("", "demo"), ("   ", "demo"), ("the design", ""), ("the design", "Bad-Name")],
 )
-async def test_request_design_approval_validates_payload(design: str, name: str) -> None:
-    event, data = asyncio.Event(), {}
-    tools = make_design_tools(None, event, data)
-    result = await _call(tools, "request_design_approval", design, name)
-    assert isinstance(result, dict)
-    assert result["ok"] is False
-    assert result["approved"] is False
-    assert not event.is_set()
-
-
-@pytest.mark.parametrize(
-    ("design", "name"),
-    [("", "demo"), ("the design", "Bad-Name")],
-)
 async def test_finalize_design_validates_payload(design: str, name: str) -> None:
     event, data = asyncio.Event(), {}
-    tools = make_design_tools(None, event, data)
-    await _call(tools, "request_design_approval", "the design", "demo")
+    tools = make_design_tools(event, data)
     result = await _call(tools, "finalize_design", design, name)
     assert isinstance(result, dict)
     assert result["ok"] is False
     assert not event.is_set()
 
 
-async def test_denied_approval_keeps_the_gate_closed() -> None:
-    event, data = asyncio.Event(), {}
-    approval = SimpleNamespace(
-        request_approval=_denying_approval(allowed=False, message="too vague")
-    )
-    tools = make_design_tools(approval, event, data)  # type: ignore[arg-type]
-    denied = await _call(tools, "request_design_approval", "the design", "demo")
-    assert isinstance(denied, dict)
-    assert denied["approved"] is False
-    assert denied["feedback"] == "too vague"
-    blocked = await _call(tools, "finalize_design", "the design", "demo")
-    assert isinstance(blocked, dict)
-    assert blocked["ok"] is False
-    assert not event.is_set()
-
-
-async def test_approval_granted_then_revoked_closes_the_gate_again() -> None:
-    event, data = asyncio.Event(), {}
-    responses = [
-        SimpleNamespace(allowed=True, message=""),
-        SimpleNamespace(allowed=False, message="changed my mind"),
-    ]
-
-    async def request_approval(_req: object) -> object:
-        return responses.pop(0)
-
-    tools = make_design_tools(SimpleNamespace(request_approval=request_approval), event, data)  # type: ignore[arg-type]
-    await _call(tools, "request_design_approval", "the design", "demo")
-    await _call(tools, "request_design_approval", "the design", "demo")
-    blocked = await _call(tools, "finalize_design", "the design", "demo")
-    assert isinstance(blocked, dict)
-    assert blocked["ok"] is False
-    assert not event.is_set()
-
-
-async def test_approval_service_error_is_reported_not_raised() -> None:
-    event, data = asyncio.Event(), {}
-
-    async def boom(_req: object) -> object:
-        raise RuntimeError("overlay died")
-
-    tools = make_design_tools(SimpleNamespace(request_approval=boom), event, data)  # type: ignore[arg-type]
-    result = await _call(tools, "request_design_approval", "the design", "demo")
-    assert isinstance(result, dict)
-    assert result["ok"] is False
-    assert "RuntimeError" in str(result["error"])
-    assert not event.is_set()
-
-
 async def test_exit_create_workflow_sets_exit_event_and_suggestion() -> None:
     event, data = asyncio.Event(), {}
     exit_event = asyncio.Event()
-    tools = make_design_tools(None, event, data, exit_event=exit_event)
+    tools = make_design_tools(event, data, exit_event=exit_event)
     result = await _call(tools, "exit_create_workflow", "  use /workflow code_plan  ")
     assert result == {"accepted": True}
     assert exit_event.is_set()
     assert data["suggestion"] == "use /workflow code_plan"
     assert not event.is_set()
-
-
-def _denying_approval(*, allowed: bool, message: str) -> object:
-    async def request_approval(_req: object) -> object:
-        return SimpleNamespace(allowed=allowed, message=message)
-
-    return request_approval
 
 
 # ── phase_tools: generation ───────────────────────────────────────────────────
@@ -1576,7 +1502,7 @@ def test_plugin_phase_graph_matches_the_runner_state_machine() -> None:
     assert phases["design"].next == "generate"
     assert phases["design"].require_plan_finalization is True
     assert phases["generate"].next == "validate"
-    assert phases["generate"].mode_override == "Yolo"
+    assert phases["generate"].mode_override is None
     assert phases["generate"].require_explicit_completion is True
     assert phases["validate"].next == "summarize"
     assert phases["validate"].on_reject == "generate"
@@ -1637,7 +1563,7 @@ def test_runner_reads_authoring_budgets_from_config() -> None:
     runner = _runner(max_attempts=7, max_turns=11)
     assert runner._max_attempts == 7
     assert runner._max_phase_turns == 11
-    assert runner._max_repair_cycles == 7
+    assert runner._initial_repair_budget.max_cycles == 3
 
 
 def test_runner_clamps_non_positive_budgets() -> None:
@@ -1689,10 +1615,11 @@ def test_final_status_mapping(state: CreateWorkflowState, status: str) -> None:
 
 
 def test_route_repair_counts_cycles_then_fails() -> None:
-    runner = _runner(max_attempts=2)
+    runner = _runner()
     ctx = _ctx()
+    ctx.repair_budget = RepairBudget(max_cycles=2)
     assert runner._route_repair(ctx, " fix the edge ") is CreateWorkflowState.GENERATE
-    assert ctx.repair_cycles == 1
+    assert ctx.repair_budget.used == 1
     assert ctx.rejection_reason == "fix the edge"
     assert runner._route_repair(ctx, "again") is CreateWorkflowState.GENERATE
     assert runner._route_repair(ctx, "and again") is CreateWorkflowState.FAILED
@@ -1748,7 +1675,9 @@ def test_base_tools_drops_blocked_capabilities_and_adds_memory_tools() -> None:
         return path
 
     runner = _runner()
-    runner._cfg = dataclasses.replace(runner._cfg, plugin_tools=[writer, reader])
+    runner._cfg = dataclasses.replace(
+        runner._cfg, tool_surface=ToolSurfaceHolder(ToolSurface(0, tuple([writer, reader])))
+    )
     runner._cfg.app_state.active_mode.set(
         RuntimeMode(name="Locked", blocked_capabilities=frozenset({ToolCapability.WRITE}))
     )
@@ -1773,7 +1702,9 @@ def test_base_tools_keeps_everything_when_nothing_is_blocked() -> None:
         return path
 
     runner = _runner()
-    runner._cfg = dataclasses.replace(runner._cfg, plugin_tools=[writer])
+    runner._cfg = dataclasses.replace(
+        runner._cfg, tool_surface=ToolSurfaceHolder(ToolSurface(0, tuple([writer])))
+    )
     names = {getattr(tool, "__name__", "") for tool in runner._base_tools()}
     assert "writer" in names
 
@@ -1795,7 +1726,6 @@ def test_base_tools_survives_a_broken_mcp_registry() -> None:
 
 async def _design_turn(_text: str, **kwargs: object) -> None:
     tools = kwargs["tools"]
-    await _call(tools, "request_design_approval", "the design", "demo")
     await _call(tools, "finalize_design", "the design", "demo")
 
 
@@ -1907,10 +1837,8 @@ async def test_design_injects_inspection_and_question_tools() -> None:
         "describe_prompt_cache_contract",
         "show_workflow_template",
         "validate_workflow_cache_contract",
-        "request_design_approval",
         "finalize_design",
         "exit_create_workflow",
-        "ask_user",
     } <= set(captured)
 
 
@@ -1921,7 +1849,7 @@ async def test_run_turn_appends_the_design_transition_instruction(
     runner = _runner()
     event = asyncio.Event()
     data: dict[str, object] = {}
-    tools = make_design_tools(None, event, data, asyncio.Event())
+    tools = make_design_tools(event, data, asyncio.Event())
     captured: dict[str, object] = {}
 
     async def fake_turn(_text: str, **kwargs: object) -> None:
@@ -1942,12 +1870,9 @@ async def test_run_turn_appends_the_design_transition_instruction(
     suffix = captured["system_prompt_suffix"]
     assert isinstance(suffix, str)
     assert "[PHASE TRANSITION TOOLS]" in suffix
-    assert "`request_design_approval`" in suffix
     assert "`finalize_design`" in suffix
     assert "`exit_create_workflow`" in suffix
     assert "only after a transition tool call succeeds" in suffix
-    assert "[REQUIREMENTS CLARIFICATION]" in suffix
-    assert "multiple focused questions" in suffix
 
     prompt_contract = captured["prompt_contract"]
     assert CACHE_CONTRACT in prompt_contract.stable_system_prefix
@@ -2139,8 +2064,9 @@ async def test_generate_injects_the_current_inspection_surface(tmp_path: Path) -
         "describe_prompt_cache_contract",
         "show_example_workflow",
         "show_workflow_template",
-        "validate_workflow_cache_contract",
     } <= captured
+
+    assert "validate_workflow_cache_contract" not in captured
 
 
 async def test_generate_runs_in_yolo_mode_with_the_design_in_the_prompt(tmp_path: Path) -> None:
@@ -2157,7 +2083,7 @@ async def test_generate_runs_in_yolo_mode_with_the_design_in_the_prompt(tmp_path
 
     runner._run_turn = turn  # type: ignore[method-assign]
     await runner._generate(ctx)
-    assert seen["mode"] == "Yolo"
+    assert seen["mode"] is None
     prompt = seen["system_prompt"]
     assert isinstance(prompt, str)
     assert "phases: draft then review" in prompt
@@ -2168,11 +2094,7 @@ async def test_generate_runs_in_yolo_mode_with_the_design_in_the_prompt(tmp_path
 async def test_generate_keeps_package_writes_scoped_under_its_declared_mode(
     tmp_path: Path,
 ) -> None:
-    """Generate uses its declared Yolo mode but only package-scoped write tools.
-
-    The authoring snapshot reports Yolo without activating it. Generic project
-    writers are withheld so generation cannot escape the leased package.
-    """
+    """Generation only exposes scoped writers and preserves the active mode."""
     import dataclasses
 
     from lauren_ai._tools import tool as _tool
@@ -2186,8 +2108,10 @@ async def test_generate_keeps_package_writes_scoped_under_its_declared_mode(
         return path
 
     runner = _validating_runner(tmp_path)
-    runner._cfg = dataclasses.replace(runner._cfg, plugin_tools=[writer])
-    manager = ModeManager(app_state=runner._cfg.app_state, default_name="Plan")
+    runner._cfg = dataclasses.replace(
+        runner._cfg, tool_surface=ToolSurfaceHolder(ToolSurface(0, tuple([writer])))
+    )
+    manager = ModeManager(app_state=runner._cfg.app_state, default_name="Safe")
     runner._mode_manager = manager
     published: list[str] = []
     manager.set_change_callback(lambda mode: published.append(mode.name))
@@ -2208,15 +2132,15 @@ async def test_generate_keeps_package_writes_scoped_under_its_declared_mode(
     assert await runner._generate(ctx) is CreateWorkflowState.VALIDATE
 
     generate_spec = next(spec for spec in CreateWorkflow.phases if spec.name == "generate")
-    assert seen["mode"] == generate_spec.mode_override == "Yolo"
+    assert seen["mode"] is generate_spec.mode_override is None
     names = seen["names"]
     assert isinstance(names, set)
-    assert "writer" not in names
+    assert {"writer", "validate_workflow_cache_contract", "ask_user"}.isdisjoint(names)
     assert {"make_directory", "read_file", "write_file", "append_file"} <= names
     session = seen["session"]
-    assert isinstance(session, dict) and session["active_mode"] == "Yolo"
+    assert isinstance(session, dict) and session["active_mode"] == "Safe"
     assert published == []
-    assert manager.active_name == "Plan"
+    assert manager.active_name == "Safe"
 
 
 def test_every_phase_runs_under_the_mode_its_phasespec_declares() -> None:
@@ -2323,7 +2247,7 @@ async def test_validate_rejection_routes_back_to_generate(tmp_path: Path) -> Non
     runner._run_turn = turn  # type: ignore[method-assign]
     assert await runner._validate(ctx) is CreateWorkflowState.GENERATE
     assert ctx.rejection_reason == "the review phase prompt is wrong"
-    assert ctx.repair_cycles == 1
+    assert ctx.repair_budget.used == 1
 
 
 async def test_validate_overrides_an_approval_that_contradicts_the_report(tmp_path: Path) -> None:
@@ -2357,7 +2281,7 @@ async def test_validate_rejection_appends_deterministic_errors(tmp_path: Path) -
 async def test_validate_fails_when_the_repair_budget_is_exhausted(tmp_path: Path) -> None:
     runner = _validating_runner(tmp_path, max_attempts=1)
     ctx = _authoring_context(tmp_path)
-    ctx.repair_cycles = 1
+    ctx.repair_budget = RepairBudget(max_cycles=1, used=1)
 
     async def turn(_text: str, **kwargs: object) -> None:
         await _call(kwargs["tools"], "reject_workflow", "still wrong")
@@ -2461,7 +2385,6 @@ async def _happy_turn(_text: str, **kwargs: object) -> None:
     """Drive whichever phase's transition tool is present in *tools*."""
     tools = _by_name(kwargs["tools"])
     if "finalize_design" in tools:
-        await _call(kwargs["tools"], "request_design_approval", "the design", "demo")
         await _call(kwargs["tools"], "finalize_design", "the design", "demo")
     elif "mark_generation_complete" in tools:
         await _complete_generation(kwargs["tools"])
@@ -2587,7 +2510,6 @@ async def test_run_loops_generate_after_a_rejection_then_completes(tmp_path: Pat
     async def turn(_text: str, **kwargs: object) -> None:
         tools = _by_name(kwargs["tools"])
         if "finalize_design" in tools:
-            await _call(kwargs["tools"], "request_design_approval", "the design", "demo")
             await _call(kwargs["tools"], "finalize_design", "the design", "demo")
         elif "mark_generation_complete" in tools:
             source = _STRICT_RUNNER_SOURCE if rejected["done"] else "class Nope:\n    pass\n"
@@ -2602,7 +2524,7 @@ async def test_run_loops_generate_after_a_rejection_then_completes(tmp_path: Pat
     runner._run_turn = turn  # type: ignore[method-assign]
     ctx = await runner.run("author a demo workflow")
 
-    assert ctx.repair_cycles == 1
+    assert ctx.repair_budget.used == 1
     assert ctx.validation_summary == "now it loads"
     assert runner._cfg.app_state.workflow_run().status == "complete"
 
@@ -2622,3 +2544,31 @@ async def test_resume_rejects_a_legacy_generic_context_instead_of_restarting() -
         await runner.resume(
             WorkflowContext(intent="author a workflow", run_id="r", workflow_name="create_workflow")
         )
+
+
+async def test_edits_after_approval_require_a_fresh_workflow_verdict(tmp_path: Path) -> None:
+    runner = _validating_runner(tmp_path)
+    ctx = _authoring_context(tmp_path)
+    assert ctx.authoring_lease is not None
+    candidate = Path(ctx.authoring_lease.target_path) / "runner.py"
+    first_digest = ctx.package_manifest
+    reports: list[str] = []
+
+    async def turn(_text: str, **kwargs: object) -> None:
+        reports.append(ctx.validation_report)
+        await _call(kwargs["tools"], "approve_workflow", "Reviewed the exact package")
+        if len(reports) == 1:
+            candidate.write_text(
+                _STRICT_RUNNER_SOURCE + "\n# revised after review\n", encoding="utf-8"
+            )
+
+    runner._run_turn = turn  # type: ignore[method-assign]
+    assert await runner._validate(ctx) is CreateWorkflowState.VALIDATE
+    assert ctx.validation_summary == ""
+    assert not ctx.validation_evidence
+    assert ctx.package_manifest != first_digest
+    assert (candidate.parent / ".agenthicc-pending.json").exists()
+
+    assert await runner._validate(ctx) is CreateWorkflowState.SUMMARIZE
+    assert len(reports) == 2
+    assert ctx.validation_summary == "Reviewed the exact package"

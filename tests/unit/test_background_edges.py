@@ -59,7 +59,6 @@ def _tui_session(**fields: object) -> SimpleNamespace:
         "_background_prepared_supervisor": None,
         "_background_prepared_session_id": None,
         "_last_submitted_text": "",
-        "_workflow_override": "",
         "_agent_task": None,
     }
     state.update(fields)
@@ -728,7 +727,6 @@ async def test_direct_turn_requires_runner_and_delegates_to_canonical_runner(
         session_memory=object(),
         skills={},
         mention_cache=object(),
-        project_plugins=SimpleNamespace(all_tools=[]),
         mcp_registry=None,
         approval_svc=object(),
         memory_router=None,
@@ -957,6 +955,7 @@ def test_foreground_handoff_extracts_latest_user_request_and_handles_missing_req
 ) -> None:
     user_event = SimpleNamespace(kind="user_message", payload={"text": "latest request"})
     ctx = session_context(
+        initial_workflow="demo",
         session_id="foreground",
         app_state=SimpleNamespace(
             conversation=SimpleNamespace(
@@ -971,7 +970,6 @@ def test_foreground_handoff_extracts_latest_user_request_and_handles_missing_req
     )
     session = _tui_session(
         _ctx=ctx,
-        _workflow_override="",
         _input_session=SimpleNamespace(),
         _agent_task=None,
     )
@@ -1026,7 +1024,8 @@ async def test_foreground_detach_reactivates_completed_goal_session(
 
     user_event = SimpleNamespace(kind="user_message", payload={"text": "historical goal"})
     released: list[bool] = []
-    ctx = SimpleNamespace(
+    ctx = session_context(
+        initial_workflow="goal_flow",
         session_id=completed.session_id,
         app_state=SimpleNamespace(
             conversation=SimpleNamespace(
@@ -1044,7 +1043,6 @@ async def test_foreground_detach_reactivates_completed_goal_session(
     task = asyncio.create_task(asyncio.Event().wait()) if active_task else None
     foreground = _tui_session(
         _ctx=ctx,
-        _workflow_override="",
         _input_session=input_session,
         _agent_task=task,
     )
@@ -1078,7 +1076,7 @@ async def test_foreground_handoff_reports_disabled_and_launch_failure(
 
     event = SimpleNamespace(kind="user_message", payload={"text": "background me"})
     console = Console(record=True)
-    ctx = SimpleNamespace(
+    ctx = session_context(
         session_id="foreground-edge",
         app_state=SimpleNamespace(
             conversation=SimpleNamespace(
@@ -1091,7 +1089,7 @@ async def test_foreground_handoff_reports_disabled_and_launch_failure(
         cfg=SimpleNamespace(background=BackgroundSettings(enabled=False)),
         console=console,
     )
-    session = _tui_session(_ctx=ctx, _workflow_override="", _input_session=SimpleNamespace())
+    session = _tui_session(_ctx=ctx, _input_session=SimpleNamespace())
     assert _handoff(session) is True
     assert "disabled" in console.export_text()
 
@@ -1143,7 +1141,8 @@ def test_detach_after_continue_preserves_owner_and_selected_configuration(
     owner = SessionOpenCoordinator(tmp_path / "session-owners").acquire_new(stale.session_id)
     event = SimpleNamespace(kind="user_message", payload={"text": "continue the same task"})
     mode = SimpleNamespace(name="Yolo", default_workflow="goal_flow")
-    ctx = SimpleNamespace(
+    ctx = session_context(
+        initial_workflow=mode.default_workflow,
         session_id=stale.session_id,
         config_path=str(config_path),
         cfg=SimpleNamespace(
@@ -1166,7 +1165,6 @@ def test_detach_after_continue_preserves_owner_and_selected_configuration(
     input_session = SimpleNamespace()
     foreground = _tui_session(
         _ctx=ctx,
-        _workflow_override="",
         _input_session=input_session,
         _agent_task=None,
     )
@@ -1224,7 +1222,8 @@ def test_detach_reclaims_released_foreground_lease_for_proven_dead_worker(
     stale_owner = SessionOpenCoordinator(tmp_path / "session-owners").acquire_new(stale.session_id)
     stale_owner.release()
     user_event = SimpleNamespace(kind="user_message", payload={"text": "continue this work"})
-    ctx = SimpleNamespace(
+    ctx = session_context(
+        initial_workflow="goal_flow",
         session_id=stale.session_id,
         cfg=SimpleNamespace(background=None, execution=SimpleNamespace(profile="")),
         owner_lease=stale_owner,
@@ -1241,7 +1240,6 @@ def test_detach_reclaims_released_foreground_lease_for_proven_dead_worker(
     input_session = SimpleNamespace()
     foreground = _tui_session(
         _ctx=ctx,
-        _workflow_override="",
         _input_session=input_session,
         _agent_task=None,
     )
@@ -1287,7 +1285,7 @@ def test_failed_worker_launch_restores_foreground_owner_for_safe_retry(
         completed.session_id
     )
     event = SimpleNamespace(kind="user_message", payload={"text": "resume after failure"})
-    ctx = SimpleNamespace(
+    ctx = session_context(
         session_id=completed.session_id,
         cfg=SimpleNamespace(background=None, execution=SimpleNamespace(profile="")),
         owner_lease=original_lease,
@@ -1303,7 +1301,6 @@ def test_failed_worker_launch_restores_foreground_owner_for_safe_retry(
     )
     session = _tui_session(
         _ctx=ctx,
-        _workflow_override="",
         _input_session=SimpleNamespace(),
         _agent_task=None,
     )
@@ -1340,7 +1337,7 @@ def test_repeated_detach_in_one_tui_does_not_prepare_twice(
         return record
 
     monkeypatch.setattr("agenthicc.background.integration.BackgroundSupervisor.handoff", prepare)
-    ctx = SimpleNamespace(
+    ctx = session_context(
         session_id=record.session_id,
         cfg=SimpleNamespace(background=None, execution=SimpleNamespace(profile="")),
         app_state=SimpleNamespace(
@@ -1355,7 +1352,6 @@ def test_repeated_detach_in_one_tui_does_not_prepare_twice(
     )
     session = _tui_session(
         _ctx=ctx,
-        _workflow_override="",
         _input_session=SimpleNamespace(),
         _agent_task=None,
     )

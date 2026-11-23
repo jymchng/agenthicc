@@ -32,7 +32,7 @@ def _state() -> MagicMock:
     conv.turn_count.return_value = 0
     conv.cost_usd.return_value = 0.0
     conv.notification.return_value = None
-    conv.workflow_override.return_value = None
+    conv.workflow_stack.return_value = ()
     conv.compaction_active.return_value = False
     conv.handoff_pending.return_value = False  # no /background waiting on a tool call
     conv.subagent_pool_state.return_value = None

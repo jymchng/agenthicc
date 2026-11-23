@@ -101,6 +101,21 @@ asyncio.Queue → root_reducer(state, event)
 `restore_from_log()` replays valid JSONL entries and skips malformed entries
 according to the current recovery policy.
 
+### Extension reload generation
+
+`SessionReloaded` records the published surfaces, changed names, and bounded
+discovery diagnostics. The pure kernel reducer advances
+`AppState.reload_generation`. Replaying the event log recovers the same
+generation sequence. Extension discovery runs off the loop, and the session
+publishes each candidate at a single event-loop boundary.
+
+`ReloadService` publishes each tool generation through the session's
+`ToolSurfaceHolder`. Direct turns read it before the first provider request
+and after a completed tool batch. Phases read it at phase entry, and workers
+pin it at spawn. `TurnToolSurfaceSelected` records the exact provider tool
+names and generation for an intent, including changes between requests, so
+replay can recover the effective list after role and skill filtering.
+
 ## State boundary
 
 The TUI has a second `AppState` in `tui/conversation_store.py`. It is a reactive
@@ -124,7 +139,7 @@ behaves. Consolidating or formalizing this boundary is PRD-138 P0.3.
 ## Workflow and agent path
 
 1. A submitted message is routed through `TUISession`.
-2. The active mode and optional `/workflow` override select a workflow.
+2. The top frame of the session's `WorkflowStack` selects a workflow.
 3. A `WorkflowPlugin` exposes phase specifications and a runner.
 4. A phase selects an agent role, model override, tool capabilities, and
    transition policy.
@@ -133,6 +148,29 @@ behaves. Consolidating or formalizing this boundary is PRD-138 P0.3.
 6. Tool and workflow events update the kernel and reactive presentation.
 7. Completion, rejection, error, or interruption determines the next phase or
    resume plan.
+
+The TUI and headless executor share a session-owned `WorkflowStack`. Its base
+resolves the operator's selection or the active mode's default. Call frames
+retain their resolved plugin and their parent's capability ceiling. The run
+handle owns phase progress and checkpoints, while the stack owns suspension,
+pause and return. A completed child gives its parent a `WorkflowReturn` via a
+synthetic turn keyed by the parent frame and child run IDs.
+
+`WorkflowStackBridge` in `runners/tui_session.py` publishes foreground stack
+transitions to the kernel. It projects the frozen `AppState.workflow_frames`
+into the reactive conversation stack for the TUI and headless sessions.
+
+| Event | Kernel projection |
+| --- | --- |
+| `workflow_frame_pushed` | Records an active frame and suspends its caller. |
+| `workflow_frame_state_changed` | Updates the current phase, lifecycle, run identity, or recovered links. |
+| `workflow_frame_returned` | Records the terminal status, summary digest, and artifact names, then activates the caller. |
+| `workflow_return_delivered` | Acknowledges the return key when the caller's conversation accepts the turn. |
+
+Frame events store the first 16 hexadecimal characters of the SHA-256
+digests of the intent and return summary. The checkpoint and conversation
+journal own the text. The return packet and kernel event are durable before
+the parent is dispatched.
 
 At the provider boundary, `AgentTurnRunner` passes one memory instance through
 the shared `lauren-ai` transaction API. `run()` and `run_stream()` validate

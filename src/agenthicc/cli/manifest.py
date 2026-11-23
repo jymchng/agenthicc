@@ -400,6 +400,9 @@ BUILTIN_COMMANDS: tuple[CommandRef, ...] = (
     ),
     # agenthicc.cli.commands.skills
     _ref("skills", "skills_add", "skills", "add", help="Download and install a skill"),
+    _ref("authored", "authored_list", "authored", "list", help="List authored extensions"),
+    _ref("authored", "authored_approve", "authored", "approve", help="Publish a staged run"),
+    _ref("authored", "authored_reject", "authored", "reject", help="Discard a staged run"),
     # agenthicc.cli.commands.trust
     _ref(
         "trust",
@@ -514,6 +517,7 @@ BUILTIN_GROUPS: Mapping[tuple[str, ...], str] = MappingProxyType(
     {
         ("agents",): "Open the agents hub and manage background agents",
         ("agents", "inbox"): "List and resolve background approvals and questions",
+        ("authored",): "Inspect and approve authored extensions",
         ("config",): "Manage configuration",
         ("mcp",): "Manage configured MCP servers",
         ("perf",): "Show offline performance diagnostics",

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from types import MappingProxyType
+from agenthicc.tools.surface import ToolSurface, ToolSurfaceHolder
+from agenthicc.runners.reload import SurfaceHolder
 from types import SimpleNamespace
 
 import pytest
@@ -77,8 +80,8 @@ async def test_workflow_config_materializes_tools_and_awaits_startup() -> None:
         agent_runner=SimpleNamespace(),
         approval_svc=None,
         cfg=SimpleNamespace(),
-        skills={},
-        plugin_tools=plugin,  # type: ignore[arg-type]
+        skills=SurfaceHolder(MappingProxyType({})),
+        tool_surface=ToolSurfaceHolder(ToolSurface(0, tuple(plugin.all_tools))),  # type: ignore[arg-type]
         mcp_registry=None,
         mention_cache=SimpleNamespace(),
         agents_registry=SimpleNamespace(),
@@ -86,7 +89,7 @@ async def test_workflow_config_materializes_tools_and_awaits_startup() -> None:
         startup=Startup(),  # type: ignore[arg-type]
         required_startup_phases=("mcp",),
     )
-    assert config.all_plugin_tools() == ["plugin", "browser"]
+    assert config.extension_tools() == ["plugin", "browser"]
     await config.wait_for_startup()
     await config.wait_for_startup("extensions")
     assert startup_calls == [("mcp",), ("extensions",)]
@@ -98,8 +101,8 @@ async def test_workflow_config_materializes_tools_and_awaits_startup() -> None:
         agent_runner=SimpleNamespace(),
         approval_svc=None,
         cfg=SimpleNamespace(),
-        skills={},
-        plugin_tools=[],
+        skills=SurfaceHolder(MappingProxyType({})),
+        tool_surface=ToolSurfaceHolder(ToolSurface(0, ())),
         mcp_registry=None,
         mention_cache=SimpleNamespace(),
         agents_registry=SimpleNamespace(),

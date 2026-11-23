@@ -97,6 +97,11 @@ requests unless a caller supplies an explicit scope-aware approval adapter.
 Recorded approvals include the canonical target and operation; cassette replay
 matches those fields exactly and rejects a different outside target.
 
+In Safe mode, the `workflow_enter` approval shows the workflow name, intent,
+parameters, whether it is interactive, and the capability ceiling inherited
+by the child. An approval applies to the requested handoff. The child runs
+under the inherited restrictions and follows its own phase approval rules.
+
 ## Plugin trust
 
 Project-local tools, agents, modes, workflows, commands and CLI plugins are
@@ -118,6 +123,25 @@ Skills are prompt content, but a skill body can contain `` !`command` ``
 context placeholders. The loader never executes them: each becomes an
 instruction for the agent to run the command through its command tool, so the
 approval policy, the active mode's ceiling and the workspace sandbox all apply.
+
+### Authored publication
+
+The default `auto` policy trusts runner-validated authored Python automatically.
+The validation harness checks generated imports in a bounded read-only
+subprocess and reports `static_only` when the OS sandbox is unavailable.
+The publish step checks the approved bytes again at commit and records their
+digest. A later file edit invalidates trust and discovery skips the edited code.
+Skills pass through the same publication step and are loaded as text.
+Direct changes through file tools ask for approval on executable extension
+paths and explain that the path runs as code.
+Workflow authoring uses a separate scoped writer that checks the pending
+package's ownership and workspace path.
+
+Loaded Python executes with your privileges. Content the agent reads can
+influence what it authors. Set `security.authored_extension_policy = "stage_only"`
+to review a staged set before it loads. The session shows provenance, declared
+capabilities, and an undo command after publication. Call-time capability
+checks and approvals still apply. [Authored extensions](plugins.md#authored-extensions)
 
 ## Security checklist for a new integration
 

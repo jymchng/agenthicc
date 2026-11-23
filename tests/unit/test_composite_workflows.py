@@ -62,7 +62,6 @@ async def test_code_plan_runner_run_result_accessible_via_super() -> None:
     mock_cfg.conv_store.append_event = MagicMock()
     mock_cfg.conv_store.close_turn = MagicMock()
     mock_cfg.approval_svc = None
-    mock_cfg.plugin_tools = []
     mock_cfg.mcp_registry = None
     mock_cfg.memory_router = None
     mock_cfg.semantic_index = None
@@ -107,7 +106,6 @@ async def test_run_phase_calls_run_turn() -> None:
     mock_cfg = MagicMock()
     mock_cfg.app_state.active_mode.return_value = MagicMock(blocked_capabilities=frozenset())
     mock_cfg.approval_svc = None
-    mock_cfg.plugin_tools = []
     mock_cfg.mcp_registry = None
     mock_cfg.memory_router = None
     mock_cfg.semantic_index = None
@@ -154,7 +152,6 @@ async def test_run_phase_passes_shared_memory() -> None:
     mock_cfg = MagicMock()
     mock_cfg.app_state.active_mode.return_value = MagicMock(blocked_capabilities=frozenset())
     mock_cfg.approval_svc = None
-    mock_cfg.plugin_tools = []
     mock_cfg.mcp_registry = None
     mock_cfg.memory_router = None
     mock_cfg.semantic_index = None
@@ -243,82 +240,39 @@ def test_composite_plugin_registered_in_registry() -> None:
 
 
 @pytest.mark.unit
-def test_workflow_override_signal_on_conversation_store() -> None:
-    """ConversationStore.workflow_override signal exists and defaults to None."""
+def test_workflow_stack_signal_on_conversation_store() -> None:
     from agenthicc.tui.conversation_store import ConversationStore
 
     store = ConversationStore()
-    assert hasattr(store, "workflow_override")
-    assert store.workflow_override() is None
+    assert store.workflow_stack() == ()
 
 
 @pytest.mark.unit
-def test_workflow_override_signal_settable() -> None:
+def test_workflow_stack_signal_projects_frame_summaries() -> None:
+    from agenthicc.runners.workflow_stack import WorkflowFrameSummary
     from agenthicc.tui.conversation_store import ConversationStore
 
     store = ConversationStore()
-    store.workflow_override.set("code_plan_docs")
-    assert store.workflow_override() == "code_plan_docs"
-    store.workflow_override.set(None)
-    assert store.workflow_override() is None
+    summary = WorkflowFrameSummary(
+        "root", "code_plan_docs", "run", 0, "running", "review", "selection"
+    )
+    store.workflow_stack.set((summary,))
+    assert store.workflow_stack() == (summary,)
 
 
-# ── create-workflow skill in bootstrap ────────────────────────────────────────
-
-
-@pytest.mark.unit
-def test_create_workflow_skill_in_defaults() -> None:
-    from agenthicc.skills.bootstrap import _DEFAULTS
-
-    assert "create-workflow" in _DEFAULTS
+# ── authoring skills in bootstrap ──────────────────────────────────────────────
 
 
 @pytest.mark.unit
-def test_create_tools_and_commands_skills_in_defaults() -> None:
-    from agenthicc.skills.bootstrap import _DEFAULTS
+def test_bootstrap_reserves_only_the_current_command_authoring_skill(tmp_path) -> None:
+    from agenthicc.skills.bootstrap import _DEFAULTS, _RETIRED, bootstrap_default_skills
 
-    assert "create-tools" in _DEFAULTS
-    assert "create-commands" in _DEFAULTS
-    assert "{args}" in _DEFAULTS["create-tools"]
-    assert "{args}" in _DEFAULTS["create-commands"]
-
-
-@pytest.mark.unit
-def test_create_workflow_skill_has_required_frontmatter() -> None:
-    from agenthicc.skills.bootstrap import _DEFAULTS
-
-    content = _DEFAULTS["create-workflow"]
-    assert "name:" in content
-    assert "source: default" in content
-    assert "WorkflowPlugin" in content
-    assert "run_phase" in content
-    assert "Custom runners and typed TOML configuration" in content
-    assert "WorkflowParams" in content
-    assert "build_params()" in content
-    assert "agenthicc/agenthicc.toml" in content
-
-
-@pytest.mark.unit
-def test_create_extension_skills_preserve_security_and_registry_guidance() -> None:
-    from agenthicc.skills.bootstrap import _DEFAULTS
-
-    tools = _DEFAULTS["create-tools"]
     commands = _DEFAULTS["create-commands"]
-    assert "WorkspaceView" in tools
-    assert "NetworkGuard" in tools
-    assert "TOOLS" in tools
+    assert "{args}" in commands
     assert "CommandContext" in commands
     assert "COMMANDS" in commands
     assert "trust" in commands.lower()
 
-
-@pytest.mark.unit
-def test_create_workflow_skill_bootstrap_includes_it(tmp_path) -> None:
-    from agenthicc.skills.bootstrap import bootstrap_default_skills
-
-    n = bootstrap_default_skills(global_dir=tmp_path)
-    assert n >= 9  # original 6 + three creation skills
-    assert (tmp_path / "skills" / "create-workflow").is_dir()
-    assert (tmp_path / "skills" / "create-workflow" / "SKILL.md").exists()
-    assert (tmp_path / "skills" / "create-tools" / "SKILL.md").exists()
+    assert bootstrap_default_skills(global_dir=tmp_path) == len(_DEFAULTS)
+    assert all(not (tmp_path / "skills" / slug).exists() for slug in _RETIRED)
     assert (tmp_path / "skills" / "create-commands" / "SKILL.md").exists()

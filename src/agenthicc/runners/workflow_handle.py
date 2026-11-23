@@ -27,6 +27,7 @@ from agenthicc.workflows.checkpoint import (
 log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
+    from agenthicc.runners.workflow_stack import FrameOrigin
     from agenthicc.workflows.plugin import WorkflowPlugin
 
 __all__ = ["WorkflowFailureKind", "WorkflowRunHandle", "WorkflowLifecycle"]
@@ -290,6 +291,9 @@ class WorkflowRunHandle:
     original_intent: str
     plugin_fingerprint: str
     checkpoint_store: WorkflowCheckpointStore
+    frame_id: str = ""
+    parent_run_id: str | None = None
+    origin: FrameOrigin = "selection"
     workflow: type[WorkflowPlugin] | None = None
     context: object | None = None
     lifecycle: WorkflowLifecycle = "running"
@@ -353,10 +357,16 @@ class WorkflowRunHandle:
         provider_profile: str = "",
         provider_profile_fingerprint: str = "",
         workspace_root: str = "",
+        frame_id: str | None = None,
+        parent_run_id: str | None = None,
+        origin: FrameOrigin = "selection",
     ) -> "WorkflowRunHandle":
         """Create a handle for a new workflow run."""
         return cls(
             run_id=run_id,
+            frame_id=frame_id or run_id,
+            parent_run_id=parent_run_id,
+            origin=origin,
             workflow_name=str(getattr(workflow, "name", workflow.__name__)),
             conversation=conversation,
             original_intent=intent,
@@ -601,6 +611,14 @@ class WorkflowRunHandle:
         self.lifecycle = "resuming"
         self.pause_requested = False
         self._announce()
+
+    def suspend_for_child(self) -> None:
+        """Persist a completed agent turn boundary before a child starts."""
+        if not self.checkpoint_supported:
+            raise ValueError("This workflow has no resumable checkpoint context.")
+        self.mark_paused(reason="workflow_call")
+        self.save_checkpoint(reason="workflow_call")
+        self.release_claim()
 
     def mark_terminal(self, status: WorkflowLifecycle, *, error: str = "") -> None:
         """Set a terminal workflow lifecycle."""
@@ -851,6 +869,9 @@ class WorkflowRunHandle:
                     browser_payload = candidate
         return WorkflowCheckpoint(
             run_id=self.run_id,
+            frame_id=self.frame_id or self.run_id,
+            parent_run_id=self.parent_run_id,
+            origin=self.origin,
             workflow_name=self.workflow_name,
             conversation_id=self.conversation.conversation_id,
             intent=self.original_intent,
@@ -990,6 +1011,9 @@ class WorkflowRunHandle:
             restored_lifecycle = "paused"
         handle = cls(
             run_id=checkpoint.run_id,
+            frame_id=checkpoint.frame_id,
+            parent_run_id=checkpoint.parent_run_id,
+            origin=checkpoint.origin,
             workflow_name=checkpoint.workflow_name,
             conversation=conversation,
             original_intent=checkpoint.intent,
@@ -1046,11 +1070,8 @@ class WorkflowRunHandle:
             memory=conversation.memory,
             workflow=workflow,
         )
-        # New checkpoints already carry this metadata. For schema-v1 records
-        # written before topology persistence, resolve it from the restored
-        # context so the first successful save migrates the record safely.
-        # Direct callers of from_checkpoint receive the same fail-closed
-        # topology validation as the recovery coordinator.
+        # Direct callers of from_checkpoint receive the same topology
+        # validation as the recovery coordinator.
         saved_topology = (
             handle.topology_version,
             handle.topology_fingerprint,

@@ -3,14 +3,40 @@
 from __future__ import annotations
 
 import os
+import shutil
 from pathlib import Path
 
 import pytest
 
-from agenthicc.workflows.create_workflow.inspection_tools import _RUNNER_EXAMPLE
+from agenthicc.workflows.create_workflow.inspection_tools import (
+    _DECLARATIVE_EXAMPLE,
+    _RUNNER_EXAMPLE,
+)
 from agenthicc.workflows.create_workflow.validation import validate_workflow_file
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.mark.parametrize("static_only", [False, True])
+def test_authored_workflow_needs_an_invocation_description(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, static_only: bool
+) -> None:
+    if static_only:
+        monkeypatch.setattr(shutil, "which", lambda _name: None)
+    source = _DECLARATIVE_EXAMPLE.replace(
+        'when_to_use="Draft and review a document in two phases."', 'when_to_use=""'
+    )
+    path = tmp_path / "doc_review.py"
+    path.write_text(source, encoding="utf-8")
+
+    report = validate_workflow_file(
+        str(path), expected_name="doc_review", root=tmp_path, authored=True
+    )
+
+    assert not report.ok
+    assert any("invocation.when_to_use" in error for error in report.errors)
+    if static_only:
+        assert report.validation == "static_only"
 
 
 def test_strict_validation_rejects_a_second_agents_reader(tmp_path: Path) -> None:

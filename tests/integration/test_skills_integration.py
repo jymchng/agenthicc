@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
+from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
 import pytest
@@ -10,8 +11,13 @@ import pytest
 from agenthicc.commands import Command, CommandContext, CommandDispatcher, UnifiedCommandRegistry
 from agenthicc.commands.builtins import _make_skill_handler
 from agenthicc.config import load_config
-from agenthicc.runners.tui_session import TUISession
+from agenthicc.runners.reload import ReloadService
+from agenthicc.subagents.types import DEFAULT_REGISTRY
+from agenthicc.workflows.registry import WorkflowRegistry
 from agenthicc.skills.loader import discover_skills_with_diagnostics
+
+if TYPE_CHECKING:
+    from agenthicc.kernel.processor import EventProcessor
 
 pytestmark = pytest.mark.integration
 
@@ -69,7 +75,11 @@ def test_discovered_skill_alias_and_agent_policy_reach_command_dispatch(tmp_path
     assert not any(diagnostic.severity == "error" for diagnostic in discovery.diagnostics)
 
 
-def test_live_reload_discovers_new_skill_and_alias(tmp_path, monkeypatch):
+async def test_live_reload_discovers_new_skill_and_alias(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    running_processor: EventProcessor,
+) -> None:
     monkeypatch.chdir(tmp_path)
     project_root = tmp_path / ".agenthicc"
     initial_dir = project_root / "skills" / "initial"
@@ -90,16 +100,24 @@ def test_live_reload_discovers_new_skill_and_alias(tmp_path, monkeypatch):
             source_id="skill:initial",
         )
     )
-    context = SimpleNamespace(cfg=config, skills=initial.skills, cmd_registry=registry)
-    session = object.__new__(TUISession)
-    session._ctx = context
+    service = ReloadService(
+        processor=running_processor,
+        project_dir=project_root,
+        user_dir=tmp_path / "user",
+        skill_user_dir=Path(config.skills.default_skill_directory),
+        workflow_registry=WorkflowRegistry(),
+        command_registry=registry,
+        subagent_registry=DEFAULT_REGISTRY.copy(),
+        skills=initial.skills,
+    )
 
     added_dir = project_root / "skills" / "new_skill"
     added_dir.mkdir()
     (added_dir / "SKILL.md").write_text("---\nname: New Skill\naliases: [fresh]\n---\nNew\n")
 
-    session._reload_skills()
+    report = await service.reload(frozenset({"skills"}), reason="command")
 
-    assert "new-skill" in context.skills
+    assert report.ok
+    assert "new-skill" in service.skills.current().value
     assert registry.get("$new-skill") is not None
     assert registry.get("$fresh") is registry.get("$new-skill")

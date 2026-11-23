@@ -392,7 +392,25 @@ error code. Projector and renderer failures are also contained as failed worker
 results. The effective schema is part of the pool fingerprint, and cached values
 are revalidated against the active registered schema before reuse.
 
+## Delegate a workflow
+
+A `spawn_subagents` task can include `workflow` and a string-valued
+`params` mapping. Its `type` still supplies the worker's tool policy and
+completion evidence. The named workflow must permit worker execution.
+An interactive workflow is refused for its own task, and eligible siblings
+can run.
+
+Each worker runs with a separate conversation and checkpoint namespace.
+Mutating workflows and authoring workflows use their own Git worktree,
+including a pool with one such task. The worker returns staged artifacts and
+recorded phases. The parent session handles publication under its configured
+policy.
+
 ## Capability, approval, and workspace boundaries
+
+The pool pins the session's tool generation when it spawns a worker. Workers
+spawned after a reload can use the new tools within their role and permission
+filters. Each worker's transcript records `tool_surface_generation`.
 
 There are independent tool, capability, and workspace filters:
 

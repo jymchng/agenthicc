@@ -161,6 +161,40 @@ deterministic.
 
 ## Workflows
 
+### Frame
+
+An active or suspended position in a session's workflow stack. A frame carries
+the workflow name, phase, parent link, run identity, origin, and policy.
+
+**Provenance:** `WorkflowFrame` · `src/agenthicc/runners/workflow_stack.py:196`
+
+### Return packet
+
+The bounded summary, outputs, and artifact receipts a child gives its caller.
+Its parent-frame and child-run IDs identify the resumed conversation turn.
+
+**Provenance:** `WorkflowReturn` and `WorkflowDelivery` · `src/agenthicc/runners/workflow_stack.py:94`
+
+### Generation
+
+The publication revision of an extension surface. A session uses it to read
+tools and skills from complete reload results.
+
+**Provenance:** `ReloadReport.generation` · `src/agenthicc/runners/reload.py:112`
+
+### Catalog
+
+A bounded list of workflows and skills the agent can use and tools published
+during the session. `/catalog` shows the current frame's list.
+
+**Provenance:** `CapabilityCatalog` · `src/agenthicc/agents/catalog.py:97`
+
+### Workflow stack
+
+The session's base workflow and any called workflows. The top frame runs
+while its ancestors are suspended. A completed child passes a bounded
+`WorkflowReturn` with its summary, phase outputs and publication receipts.
+
 ### Workflow plugin
 
 A runnable, multi-phase process — `goal_flow`, `code_plan`, and so on —
@@ -419,9 +453,9 @@ An external tool provider reached over the Model Context Protocol.
 ### Project tool
 
 A tool defined inside the user's project rather than shipped with agenthicc.
-`make_agenthicc_tool` is the workflow that scaffolds one.
+`create_tools` is the workflow that scaffolds one.
 
-**Provenance:** `agenthicc.workflows.MakeToolRunner` · `src/agenthicc/workflows/make_agenthicc_tool/runner.py:342`
+**Provenance:** `agenthicc.workflows.CreateToolsRunner` · `src/agenthicc/workflows/create_tools/runner.py`
 
 ## Memory
 
@@ -538,7 +572,7 @@ is visible at load time.
 ### Bootstrap skill
 
 A skill shipped with agenthicc that provides slash commands — including
-`/create-tools` and `/create-commands`, which exist as bootstrap skills rather
+`/create-commands`, which exists as a bootstrap skill rather
 than as `BUILTIN_COMMANDS` entries.
 
 **Provenance:** `agenthicc.skills.bootstrap` · `src/agenthicc/skills/bootstrap.py`

@@ -6,14 +6,14 @@ and role lists are read live from their enums, so the guidance can never drift
 from the real contract.  A canonical, known-valid example workflow is included
 so the agent has a correct template to adapt rather than one it hallucinates.
 
-Most tools here are read-only and take no session state.  The cache-contract
-validator is intentionally different: it imports the target workflow through
-the same loader used at runtime, so its target must be a trusted generated path
-and its execution capability is gated separately.
+Most tools here are read-only and take no session state. The cache-contract
+validator has an execute capability and inspects generated workflow code in
+the authoring sandbox.
 """
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING, cast
 
@@ -89,7 +89,7 @@ from agenthicc.workflows.phase_lifecycle import (
 )
 from agenthicc.workflows.checkpoint import topology_from_phase_specs
 from agenthicc.workflows.phase_transition import record_phase_transition
-from agenthicc.workflows.plugin import PhaseSpec, WorkflowParams, WorkflowPlugin
+from agenthicc.workflows.plugin import PhaseSpec, WorkflowInvocation, WorkflowParams, WorkflowPlugin
 
 if TYPE_CHECKING:
     from lauren_ai._memory import ShortTermMemory
@@ -535,6 +535,11 @@ class ReleaseCheckWorkflow(WorkflowPlugin):
 
     name = "release_check"
     description = "Plan release checks, run them, then report."
+    invocation = WorkflowInvocation(
+        when_to_use="Plan and run release checks for a project.",
+        returns="The verification results and release report.",
+        interactive=True,
+    )
     mode_bindings = []  # manual only — invoke with /workflow release_check
     # Optional integrations are explicit metadata.  This example needs none;
     # generated workflows must declare browser/MCP requirements here.
@@ -668,6 +673,9 @@ class ReleaseCheckWorkflow(WorkflowPlugin):
     @classmethod
     def build_params(cls, source: Mapping[str, object]) -> WorkflowParams:
         """Build typed params from [workflows.release_check]."""
+        unknown = source.keys() - {"plan_model", "verify_model", "report_model"}
+        if unknown:
+            raise ValueError(f"Unknown release_check parameters: {sorted(unknown)}")
         return ReleaseCheckParams(
             plan_model=str(source.get("plan_model", "") or ""),
             verify_model=str(source.get("verify_model", "") or ""),
@@ -682,12 +690,18 @@ _DECLARATIVE_EXAMPLE = '''\
 
 from __future__ import annotations
 
-from agenthicc.workflows.plugin import PhaseSpec, WorkflowPlugin
+from collections.abc import Mapping
+
+from agenthicc.workflows.plugin import PhaseSpec, WorkflowInvocation, WorkflowParams, WorkflowPlugin
 
 
 class DocReviewWorkflow(WorkflowPlugin):
     name = "doc_review"
     description = "Draft a document, then review it."
+    invocation = WorkflowInvocation(
+        when_to_use="Draft and review a document in two phases.",
+        returns="The completed draft and a review summary.",
+    )
     mode_bindings = []  # manual only — invoke with /workflow doc_review
     phases = [
         PhaseSpec(
@@ -716,6 +730,12 @@ class DocReviewWorkflow(WorkflowPlugin):
             ),
         ),
     ]
+
+    @classmethod
+    def build_params(cls, source: Mapping[str, object]) -> WorkflowParams:
+        if source:
+            raise ValueError(f"Unknown doc_review parameters: {sorted(source)}")
+        return WorkflowParams()
 '''
 
 
@@ -1424,17 +1444,13 @@ def make_inspection_tools(
     @tool_read_execute
     @_tool()
     async def validate_workflow_cache_contract(path: str) -> dict[str, object]:
-        """Validate a trusted generated workflow's cache/question contract.
-
-        Validation imports the target package exactly as the workflow loader
-        does.  Top-level code in that package therefore executes; the tool is
-        execute-gated even though its intended result is a read-only report.
-        """
+        """Validate a generated workflow's cache contract in the sandbox."""
 
         from pathlib import Path
         from agenthicc.workflows.create_workflow.validation import validate_workflow_file
 
-        report = validate_workflow_file(
+        report = await asyncio.to_thread(
+            validate_workflow_file,
             path,
             root=Path.cwd(),
             strict_cache_contract=True,
@@ -1449,10 +1465,7 @@ def make_inspection_tools(
             "categories": dict(report.categories),
             "evidence": dict(report.evidence),
             "skipped_checks": list(report.skipped_checks),
-            "execution_note": (
-                "The target was imported through the workflow loader; call this only for a "
-                "trusted generated path because module-level code executes during validation."
-            ),
+            "validation": report.validation,
         }
 
     tools: list[Callable[..., object]] = [

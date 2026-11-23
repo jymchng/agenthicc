@@ -1,4 +1,36 @@
-"""Event and Effect types for the event-sourced kernel (PRD-01)."""
+"""Event and Effect types for the event-sourced kernel (PRD-01).
+
+SessionReloaded payload:
+    generation: Positive integer assigned to this publication.
+    reason: One of command, workflow_return, startup or api.
+    requested, published: Sorted lists of surface names.
+    changes_summary: Changed item names, surfaces and change kinds.
+    diagnostics: Bounded source paths, codes, messages and optional digests.
+
+SkillUsed payload:
+    turn_id: Agent turn identifier or worker task identifier.
+    ok, slug, source, digest, narrowed_tools, truncated: Skill load receipt.
+    pool_id: Set for worker tasks so their turn identifiers are unambiguous.
+
+TurnToolSurfaceSelected payload:
+    intent_id: Agent turn's kernel intent.
+    tool_surface_generation: Generation used for the selected schemas.
+    tool_names: Provider-visible tool names in schema order.
+
+workflow_frame_pushed payload:
+    frame_id, parent_frame_id, workflow_name, run_id, origin, depth: Frame identity.
+    phase, status: Initial phase and lifecycle.
+    intent_digest: First 16 hex characters of the intent's SHA-256.
+
+workflow_frame_state_changed payload:
+    frame_id, parent_frame_id, workflow_name, run_id, depth, phase, status.
+
+workflow_frame_returned payload:
+    frame_id, status, summary_digest, artifact_names.
+
+workflow_return_delivered payload:
+    return_key: Stable identity of the parent conversation turn.
+"""
 
 from __future__ import annotations
 
@@ -23,12 +55,18 @@ __all__ = [
 #: type must have a reducer handler, or the processor rejects it.
 PROJECTION_EVENT_TYPES: frozenset[str] = frozenset(
     {
+        # AuthoredArtifactStateChanged carries run_id and one artifact receipt.
+        # AuthoredPublished carries that run_id, every loaded receipt, and the reload report.
+        "AuthoredArtifactStateChanged",
+        "AuthoredPublished",
+        "AuthoredStagingChanged",
         # The processor's own report of an event the reducer refused.
         "KernelEventRejected",
         "McpCatalogPublished",
         "McpServerFailed",
         "McpServerReady",
         "ProviderRecoveryRetryScheduled",
+        "SkillUsed",
         "SubagentCompleted",
         "SubagentFailed",
         "SubagentPoolCompleted",

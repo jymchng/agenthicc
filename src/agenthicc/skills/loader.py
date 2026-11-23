@@ -16,11 +16,13 @@ __all__ = [
     "SkillDiagnostic",
     "SkillDiscoveryResult",
     "SkillPermissionSet",
+    "SkillValidation",
     "_parse_skill",
     "canonical_skill_name",
     "discover_skills",
     "discover_skills_with_diagnostics",
     "filter_skills_for_agent",
+    "validate_skill_dir",
 ]
 
 DiagnosticSeverity = Literal["info", "warning", "error"]
@@ -36,6 +38,7 @@ _KNOWN_FIELDS: Final[frozenset[str]] = frozenset(
         "tags",
         "suggestedTopics",
         "disallowAutoTriggering",
+        "disable_model_invocation",
         "tools",
         "disabledTools",
         "maxTurnDepth",
@@ -44,6 +47,7 @@ _KNOWN_FIELDS: Final[frozenset[str]] = frozenset(
         "allowedAgents",
         "deniedAgents",
         "permissions",
+        "argumentHint",
         "source",
         "version",
     }
@@ -56,6 +60,7 @@ _FIELD_ALIASES: Final[dict[str, tuple[str, ...]]] = {
     "allowedAgents": ("allowed_agents", "allowAgents", "allow_agents"),
     "deniedAgents": ("denied_agents", "denyAgents", "deny_agents"),
     "aliases": ("alias",),
+    "argumentHint": ("argument_hint",),
 }
 
 
@@ -105,6 +110,9 @@ class SkillDef:
     denied_agents: tuple[str, ...] = ()
     source: str = "unknown"
     _body: str | None = field(default=None, repr=False)
+    disable_model_invocation: bool = False
+    _model_content: SkillModelContent | None = field(default=None, repr=False)
+    argument_hint: str = ""
 
     @property
     def canonical_name(self) -> str:
@@ -141,12 +149,36 @@ class SkillDef:
 
     @property
     def body(self) -> str:
-        """Lazy-load the instruction body on first access."""
+        """Lazy-load the instruction body on first user activation."""
 
         if self._body is None:
             raw = (self.path / "SKILL.md").read_text(encoding="utf-8")
             self._body = _extract_body(raw)
         return self._body
+
+
+@dataclass(frozen=True, slots=True)
+class SkillModelContent:
+    """Text from the skill generation admitted to the model's inventory."""
+
+    body: str
+    reference: str | None
+    template: str | None
+
+
+def _read_model_content(skill_md: Path, body: str) -> SkillModelContent | None:
+    def companion(name: str) -> str | None:
+        path = skill_md.with_name(name)
+        if path.is_symlink() or (path.exists() and not path.is_file()):
+            raise OSError(f"Skill companion {name} must be a regular file.")
+        return path.read_text(encoding="utf-8") if path.is_file() else None
+
+    if skill_md.parent.is_symlink() or skill_md.is_symlink():
+        return None
+    try:
+        return SkillModelContent(body.strip(), companion("reference.md"), companion("template.md"))
+    except (OSError, UnicodeError):
+        return None
 
 
 @dataclass(frozen=True)
@@ -155,6 +187,24 @@ class SkillDiscoveryResult:
 
     skills: dict[str, SkillDef]
     diagnostics: tuple[SkillDiagnostic, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class SkillValidation:
+    """The loader's parsed skill and its diagnostics."""
+
+    skill: SkillDef | None
+    diagnostics: tuple[SkillDiagnostic, ...]
+
+    @property
+    def ok(self) -> bool:
+        return self.skill is not None and all(item.severity != "error" for item in self.diagnostics)
+
+
+def validate_skill_dir(path: Path, *, source: str) -> SkillValidation:
+    """Parse one skill using the discovery loader's rules."""
+    skill, diagnostics = _parse_skill_detailed(path, source)
+    return SkillValidation(skill, tuple(diagnostics))
 
 
 def canonical_skill_name(value: str) -> str:
@@ -316,7 +366,7 @@ def _parse_skill_detailed(
 
     try:
         raw = skill_md.read_text(encoding="utf-8")
-        frontmatter, _ = _split_frontmatter(raw)
+        frontmatter, body = _split_frontmatter(raw)
     except (OSError, UnicodeError) as exc:
         diagnostics.append(SkillDiagnostic(skill_md, "read-error", str(exc), "error"))
         return None, diagnostics
@@ -359,6 +409,14 @@ def _parse_skill_detailed(
                 )
             )
             return None, diagnostics
+
+    if any(not isinstance(key, str) for key in metadata):
+        diagnostics.append(
+            SkillDiagnostic(
+                skill_md, "invalid-frontmatter", "frontmatter keys must be strings", "error"
+            )
+        )
+        return None, diagnostics
 
     unknown = sorted(
         set(metadata)
@@ -521,6 +579,21 @@ def _parse_skill_detailed(
         diagnostics.append(
             SkillDiagnostic(skill_md, "invalid-model", "model must be a string", "error")
         )
+    argument_hint = _metadata_value(metadata, "argumentHint", diagnostics, skill_md)
+    if argument_hint is not None and not isinstance(argument_hint, str):
+        diagnostics.append(
+            SkillDiagnostic(
+                skill_md, "invalid-argument-hint", "argumentHint must be a string", "error"
+            )
+        )
+    disable_model = metadata.get("disable_model_invocation", False)
+    if not isinstance(disable_model, bool):
+        diagnostics.append(
+            SkillDiagnostic(
+                skill_md, "invalid-boolean", "disable_model_invocation must be a boolean", "error"
+            )
+        )
+        return None, diagnostics
 
     skill = SkillDef(
         name=name,
@@ -536,6 +609,7 @@ def _parse_skill_detailed(
             skill_md,
         ),
         disallow_auto_triggering=disallow_auto,
+        disable_model_invocation=disable_model,
         tools=_string_list(metadata.get("tools"), "tools", diagnostics, skill_md),
         disabled_tools=_string_list(
             _metadata_value(metadata, "disabledTools", diagnostics, skill_md),
@@ -560,22 +634,25 @@ def _parse_skill_detailed(
         )
         or (),
         source=source,
+        argument_hint=argument_hint.strip() if isinstance(argument_hint, str) else "",
     )
     if any(diagnostic.severity == "error" for diagnostic in diagnostics):
         return None, diagnostics
+    if not disable_model and not skill.model:
+        skill._model_content = _read_model_content(skill_md, body)
     return skill, diagnostics
 
 
 def _parse_skill(skill_dir: Path) -> SkillDef | None:
     """Parse a skill directory, retaining the legacy ``None`` failure API."""
 
-    skill, diagnostics = _parse_skill_detailed(skill_dir, "unknown")
-    for diagnostic in diagnostics:
+    validation = validate_skill_dir(skill_dir, source="unknown")
+    for diagnostic in validation.diagnostics:
         if diagnostic.severity == "error":
             log.warning("Skill rejected: %s", diagnostic)
         else:
             log.info("Skill diagnostic: %s", diagnostic)
-    return skill
+    return validation.skill
 
 
 def discover_skills_with_diagnostics(
@@ -583,11 +660,13 @@ def discover_skills_with_diagnostics(
     user_dir: Path | None = None,
 ) -> SkillDiscoveryResult:
     """Discover skills and return diagnostics instead of silently dropping them."""
+    from agenthicc.plugins.trust import current_extension_trust
 
     personal_root = (user_dir or Path.home() / ".agenthicc") / "skills"
     project_root = (project_dir or Path(".agenthicc")) / "skills"
     skills: dict[str, SkillDef] = {}
     diagnostics: list[SkillDiagnostic] = []
+    trust = current_extension_trust()
 
     for root, source in ((personal_root, "user"), (project_root, "project")):
         if not root.exists():
@@ -614,8 +693,11 @@ def discover_skills_with_diagnostics(
                     )
                 )
                 continue
-            skill, entry_diagnostics = _parse_skill_detailed(entry, source)
-            diagnostics.extend(entry_diagnostics)
+            if source == "project" and trust.publication_pending(entry / "SKILL.md"):
+                continue
+            validation = validate_skill_dir(entry, source=source)
+            skill = validation.skill
+            diagnostics.extend(validation.diagnostics)
             if skill is None:
                 continue
             if skill.slug in skills:
@@ -629,6 +711,13 @@ def discover_skills_with_diagnostics(
                 )
             skills[skill.slug] = skill
 
+    diagnostics.extend(_resolve_skill_aliases(skills))
+    return SkillDiscoveryResult(skills=skills, diagnostics=tuple(diagnostics))
+
+
+def _resolve_skill_aliases(skills: dict[str, SkillDef]) -> list[SkillDiagnostic]:
+    """Project one canonical alias namespace into the discovered skill set."""
+    diagnostics: list[SkillDiagnostic] = []
     canonical_names = set(skills)
     claimed_aliases: dict[str, str] = {}
     for slug, skill in list(skills.items()):
@@ -660,7 +749,7 @@ def discover_skills_with_diagnostics(
             aliases.append(alias)
         skills[slug] = replace(skill, aliases=tuple(aliases))
 
-    return SkillDiscoveryResult(skills=skills, diagnostics=tuple(diagnostics))
+    return diagnostics
 
 
 def discover_skills(

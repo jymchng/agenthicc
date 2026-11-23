@@ -1,5 +1,8 @@
 """End-to-end goal_flow coverage with real agent turns and durable checkpoints."""
 
+from types import MappingProxyType
+from agenthicc.tools.surface import ToolSurface, ToolSurfaceHolder
+from agenthicc.runners.reload import SurfaceHolder
 import asyncio
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -150,8 +153,8 @@ async def test_goal_flow_real_turns_checkpoint_each_verified_goal(tmp_path, proc
             agent_runner=AgentRunnerBase(transport=transport, signals=SignalBus()),
             approval_svc=None,
             cfg=AgenthiccConfig(),
-            skills={},
-            plugin_tools=[],
+            skills=SurfaceHolder(MappingProxyType({})),
+            tool_surface=ToolSurfaceHolder(ToolSurface(0, ())),
             mcp_registry=None,
             mention_cache=MagicMock(),
             agents_registry=MagicMock(),
@@ -236,8 +239,8 @@ async def test_goal_flow_dynamic_mutations_resume_with_stable_goal_identity(
             agent_runner=AgentRunnerBase(transport=transport, signals=SignalBus()),
             approval_svc=None,
             cfg=AgenthiccConfig(),
-            skills={},
-            plugin_tools=[],
+            skills=SurfaceHolder(MappingProxyType({})),
+            tool_surface=ToolSurfaceHolder(ToolSurface(0, ())),
             mcp_registry=None,
             mention_cache=MagicMock(),
             agents_registry=MagicMock(),
@@ -347,8 +350,8 @@ async def test_goal_flow_phase_control_tool_skips_active_goal_and_resumes_next(
             agent_runner=AgentRunnerBase(transport=transport, signals=SignalBus()),
             approval_svc=None,
             cfg=AgenthiccConfig(),
-            skills={},
-            plugin_tools=[],
+            skills=SurfaceHolder(MappingProxyType({})),
+            tool_surface=ToolSurfaceHolder(ToolSurface(0, ())),
             mcp_registry=None,
             mention_cache=MagicMock(),
             agents_registry=MagicMock(),

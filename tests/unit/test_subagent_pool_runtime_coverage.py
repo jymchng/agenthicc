@@ -8,6 +8,8 @@ from types import SimpleNamespace
 import pytest
 from lauren_ai._transport import Completion, TokenUsage
 
+from agenthicc.subagents.tool import SubagentToolSelection
+from agenthicc.tools.surface import ToolSurface
 from agenthicc.kernel import Event
 from agenthicc.subagents.pool import AggregatedResult, SubagentPool, SubagentResult, SubagentTask
 from agenthicc.subagents.types import DEFAULT_REGISTRY
@@ -39,7 +41,7 @@ async def test_pool_normalizes_nullable_provider_usage_for_large_batch() -> None
         [SubagentTask(f"task-{i}", "researcher", "research") for i in range(10)],
         parent_runner=SimpleNamespace(_transport=_NullUsageTransport()),
         parent_model="model",
-        all_tools=[],
+        tool_surface=ToolSurface(0, tuple([])),
         max_concurrent=4,
         registry=DEFAULT_REGISTRY,
     )
@@ -93,7 +95,7 @@ async def test_real_pool_run_emits_state_and_normalizes_results(
         tasks,
         parent_runner=SimpleNamespace(_transport=None),
         parent_model="model",
-        all_tools=[],
+        tool_surface=ToolSurface(0, tuple([])),
         max_concurrent=2,
         processor=SimpleNamespace(emit=emit, drain=drain),
         conv_store=app.conversation,
@@ -175,12 +177,12 @@ async def test_run_pool_convenience_delegates(monkeypatch: pytest.MonkeyPatch) -
         [],
         SimpleNamespace(_transport=None),
         "model",
-        [],
+        ToolSurface(0, tuple([])),
         registry=DEFAULT_REGISTRY,
         provider="anthropic",
         default_model="worker-model",
         default_effort="high",
-        default_context=12_000,
+        default_context=12000,
         call_model="call-model",
         call_effort="low",
         execution_settings=settings,
@@ -260,7 +262,7 @@ async def test_every_kind_a_real_pool_emits_is_in_the_lifecycle_table(tmp_path) 
         [SubagentTask("w", "researcher", "find a"), SubagentTask("x", "missing-type", "b")],
         parent_runner=AgentRunnerBase(transport=transport),
         parent_model="mock-model",
-        all_tools=[lookup],
+        tool_surface=ToolSurface(0, tuple([lookup])),
         max_concurrent=1,
         processor=SimpleNamespace(emit=emit, drain=drain),
         conv_store=app.conversation,
@@ -339,7 +341,7 @@ async def _run_pool_both_ways(tmp_path, *, background: bool) -> tuple[str, list[
     spawn = make_spawn_subagents_tool(
         AgentRunnerBase(transport=_Transport()),
         "mock-model",
-        [],
+        SubagentToolSelection(ToolSurface(0, tuple([]))),
         registry=DEFAULT_REGISTRY,
         conversation_id="conv",
         parent_run_id="turn-1",

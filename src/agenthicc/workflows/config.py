@@ -11,8 +11,10 @@ if TYPE_CHECKING:
     from agenthicc.kernel.processor import EventProcessor
     from agenthicc.memory.router import MemoryRouter
     from agenthicc.memory.vector import SemanticIndex
-    from agenthicc.plugins.discovery import PluginToolSet
+    from collections.abc import Mapping
+    from agenthicc.runners.reload import ReloadService, SurfaceHolder
     from agenthicc.tools.base import ToolLike
+    from agenthicc.tools.surface import ToolSurfaceHolder
     from agenthicc.skills.loader import SkillDef
     from agenthicc.tui.conversation_store import ConversationStore, AppState
     from agenthicc.tools.approval import ApprovalBroker
@@ -52,8 +54,8 @@ class WorkflowConfig:
     agent_runner: "AgentRunnerBase"
     approval_svc: "ApprovalBroker | None"
     cfg: "AgenthiccConfig"
-    skills: "dict[str, SkillDef]"
-    plugin_tools: "PluginToolSet | list[ToolLike]"
+    skills: "SurfaceHolder[Mapping[str, SkillDef]]"
+    tool_surface: "ToolSurfaceHolder"
     mcp_registry: "McpToolRegistry | McpSessionManager | None"
     mention_cache: "MentionCache"
     agents_registry: "AgentsRegistry"
@@ -84,17 +86,15 @@ class WorkflowConfig:
     workspace_access: "WorkspaceAccessPolicy | None" = None
     """Mode-aware path policy shared with all phase turns and tools."""
     startup: "StartupCoordinator | None" = None
+    reload_service: "ReloadService | None" = None
+    """The session owner used to preview discovery of staged extensions."""
     """Session-owned readiness coordinator for deferred dependencies."""
     required_startup_phases: tuple[str, ...] = ()
     """Readiness phases a custom workflow must await before its first turn."""
 
-    def all_plugin_tools(self) -> list["ToolLike"]:
-        """Return project tools while accepting legacy list-based configs."""
-        if isinstance(self.plugin_tools, list):
-            tools = list(self.plugin_tools)
-        else:
-            tools = list(self.plugin_tools.all_tools)
-        return [*tools, *self.browser_tools]
+    def extension_tools(self) -> list["ToolLike"]:
+        """Read the current project and session browser tools for a phase."""
+        return [*self.tool_surface.current().tools, *self.browser_tools]
 
     async def wait_for_startup(self, *phases: str) -> None:
         """Await session-owned readiness phases without creating new resources.

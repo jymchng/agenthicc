@@ -41,7 +41,7 @@ def test_phase_allowlist_builds_agent_with_write_file_but_not_shell() -> None:
         processor=MagicMock(),
         exec_cfg=ExecutionSettings(),
         active_agent="executor",
-        project_plugin_tools=[],
+        extra_tools=[],
         mcp_registry=None,
         allowed_tool_names=frozenset({"write_file"}),
     )
@@ -70,7 +70,7 @@ def test_default_turn_prompt_mentions_injected_spawn_subagents(tmp_path: Path) -
         processor=MagicMock(),
         exec_cfg=ExecutionSettings(),
         active_agent="default",
-        project_plugin_tools=[],
+        extra_tools=[],
         mcp_registry=None,
         conversation_id="parent-session",
         workspace_access=SimpleNamespace(
