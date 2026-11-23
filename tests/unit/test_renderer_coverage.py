@@ -102,12 +102,15 @@ CASES: dict[str, list[dict[str, object]]] = {
     ],
     "workflow_frame": [
         {
-            "name": "review",
+            "name": "create_tools",
             "action": "entered",
             "origin": "agent",
-            "text": "Review the [draft] release notes",
+            "text": (
+                "Activate the create_tools workflow so the user can author one "
+                "or more new agenthicc tools for this project."
+            ),
         },
-        {"name": "review", "action": "returned", "text": "Found two missing entries"},
+        {"name": "create_tools", "action": "returned", "text": "Prepared two [draft] tools"},
         {"name": "release", "action": "abandoned"},
     ],
     "background_handoff": [{"session_id": "6b9f7614-8ca1-4d2e", "status": "running"}],

@@ -1,14 +1,11 @@
 ── compact ──
- ✓ Extensions published
-   skill release-notes · 7c1fb2d6d919 · loaded · /authored rollback
-   release-notes
+● Extensions published
+skill release-notes · 7c1fb2d6d919 · loaded · /authored rollback release-notes
 
 ── normal ──
- ✓ Extensions published
-   skill release-notes · 7c1fb2d6d919 · loaded · /authored rollback
-   release-notes
+● Extensions published
+skill release-notes · 7c1fb2d6d919 · loaded · /authored rollback release-notes
 
 ── verbose ──
- ✓ Extensions published
-   skill release-notes · 7c1fb2d6d919 · loaded · /authored rollback
-   release-notes
+● Extensions published
+skill release-notes · 7c1fb2d6d919 · loaded · /authored rollback release-notes

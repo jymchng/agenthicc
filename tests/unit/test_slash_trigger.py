@@ -171,7 +171,13 @@ def _enter_registry():
     registry.register(Command("/help", "Help", argument_hint="[/command]"))
     registry.register(Command("/open", "Open a thing", argument_hint="<name> | list"))
     registry.register(
-        Command("/env", "Pick an environment", completions_factory=lambda _p: ["dev", "prod"])
+        Command(
+            "/env",
+            "Pick an environment",
+            aliases=("/environment",),
+            argument_hint="[name]",
+            completions_factory=lambda _p: ["dev", "prod"],
+        )
     )
     return registry
 
@@ -192,8 +198,23 @@ def test_on_enter_sends_a_command_that_was_typed_in_full(name: str):
     assert result.submit is True
 
 
+@pytest.mark.parametrize("typed", ["/env", "/environment"])
+def test_on_enter_sends_an_exact_command_with_optional_completions(typed: str) -> None:
+    t = SlashCommandTrigger(_enter_registry())
+    result = t.on_enter(t.get_matches(typed[1:], CTX)[0], typed[1:], [])
+    assert "".join(result.buffer) == typed
+    assert result.submit and not result.keep_open
+
+
+def test_on_enter_leaves_an_exact_command_open_for_a_required_argument() -> None:
+    t = SlashCommandTrigger(_enter_registry())
+    result = t.on_enter(t.get_matches("open", CTX)[0], "open", [])
+    assert "".join(result.buffer) == "/open "
+    assert result.keep_open and not result.submit
+
+
 @pytest.mark.parametrize("name", ["/open", "/env"])
-def test_on_enter_completes_a_command_that_needs_an_argument(name: str):
+def test_on_enter_completes_a_picked_command_with_arguments(name: str):
     t = SlashCommandTrigger(_enter_registry())
     result = t.on_enter(MatchItem(value=name, label=name), "", [])
     assert "".join(result.buffer) == f"{name} "

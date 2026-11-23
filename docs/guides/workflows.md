@@ -22,6 +22,8 @@ Use `/workflow call <name> <intent>` to run a child for a specific task.
 The session suspends the parent, runs the child, then gives the parent one
 turn containing the child’s summary, phase outputs and publication receipts.
 The session publishes and reloads approved artifacts before that turn.
+The transcript marks workflow entries, returns, abandonments, and publication
+with `●` headings. Event details start at the left edge of the transcript.
 
 The child inherits the parent’s capability ceiling and approvals. While a
 child is active, the base selection is locked. If the child pauses, use

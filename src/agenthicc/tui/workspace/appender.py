@@ -1192,6 +1192,7 @@ def _print_notice(
     *,
     actions: tuple[str, ...] = (),
     literal: bool = False,
+    flush_left: bool = False,
 ) -> None:
     """Print one persistent :class:`Notice`; screen readers get the severity as a word.
 
@@ -1203,7 +1204,16 @@ def _print_notice(
     ui = ui_settings(self._state)
     words = ui is not None and ui.screen_reader and not literal
     links = None if literal else self.links
-    notice = Notice(severity, title, body, actions, literal=literal, words=words, links=links)
+    notice = Notice(
+        severity,
+        title,
+        body,
+        actions,
+        literal=literal,
+        words=words,
+        links=links,
+        flush_left=flush_left,
+    )
     self._print(notice, highlight=False)
 
 
@@ -1258,7 +1268,9 @@ def _render_compaction_status(self: ScrollBufferAppender, ev: ConversationEvent)
 def _render_authored_publication(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
     self._flush_group_summary()
     self._open_block("authored_published")
-    _print_notice(self, "success", "Extensions published", _text(ev.payload, "summary"))
+    _print_notice(
+        self, "success", "Extensions published", _text(ev.payload, "summary"), flush_left=True
+    )
     self._gap_pending = True
 
 
@@ -1270,7 +1282,7 @@ def _render_workflow_frame(self: ScrollBufferAppender, ev: ConversationEvent) ->
     action = _text(ev.payload, "action")
     origin = _text(ev.payload, "origin")
     title = f"{name} {action}" + (f" by {origin}" if origin else "")
-    _print_notice(self, "info", title, _text(ev.payload, "text"))
+    _print_notice(self, "info", title, _text(ev.payload, "text"), flush_left=True)
     self._gap_pending = True
 
 

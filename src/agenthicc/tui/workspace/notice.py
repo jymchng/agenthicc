@@ -15,6 +15,7 @@ the severity's theme token (TUX-01): ``error`` → ``danger`` ✗, ``warning`` �
 wraps under itself, never under the marker, and the body sits below it in the
 ``muted`` token. With ``words=True`` (screen-reader mode) the marker is a word
 ("Error:"), so the severity never depends on a glyph or a colour (BEAU-4 §5).
+Workflow transcript notices can use a bullet heading and flush-left text.
 
 A ``literal`` notice is an accessibility announcement: its text is printed
 exactly, with no marker, style or markup (BEAU-4 §4.3).
@@ -84,12 +85,16 @@ class Notice:
     words: bool = False
     #: Link the files and URLs the text names (OSC 8, TUX-10).
     links: Hyperlinks | None = None
+    #: Use a bullet heading and align all lines to the left edge.
+    flush_left: bool = False
 
     def marker(self) -> str:
         """The severity's glyph, or its word with ``words=True``."""
         if self.words:
             return _WORD[self.severity]
         g = glyphs()
+        if self.flush_left:
+            return g.bullet
         return {"error": g.fail, "warning": g.warn, "info": g.info, "success": g.ok}[self.severity]
 
     def plain(self) -> str:
@@ -120,6 +125,13 @@ class Notice:
             yield Text(self.title)
             return
         marker = self.marker()
+        marker_style = style(_TOKEN[self.severity], bold=True)
+        if self.flush_left:
+            content = Text.assemble((f"{marker} ", marker_style), self.content())
+            for line in console.render_lines(content, options.update(height=None), pad=False):
+                yield from _rstrip(line)
+                yield Segment.line()
+            return
         lead = Segment(" ")
         indent = 1 + len(marker) + 1
         width = max(1, options.max_width - indent)
@@ -130,7 +142,7 @@ class Notice:
         for index, line in enumerate(lines):
             if index == 0:
                 yield lead
-                yield Segment(marker, style(_TOKEN[self.severity], bold=True))
+                yield Segment(marker, marker_style)
                 yield Segment(" ")
             else:
                 yield gap

@@ -2449,7 +2449,7 @@ SEVERITIES: tuple[Severity, ...]
 @dataclass(frozen=True)
 class Notice:
     severity: Severity; title: str; body: str = ""; actions: tuple[str, ...] = ()
-    literal: bool = False; words: bool = False
+    literal: bool = False; words: bool = False; flush_left: bool = False
     def marker(self) -> str: ...   # glyphs().fail/warn/info/ok, or "Error:"… with words=True
     def plain(self) -> str: ...
     def content(self) -> Text: ...
@@ -2459,7 +2459,8 @@ def severity_of(value: object, default: Severity = "info") -> Severity: ...
 
 A Rich renderable: the marker in the severity's token (`danger`, `warning`,
 `muted`, `success`), the title wrapped under itself, the body in `muted`, the
-actions in `accent`. `literal=True` prints the title exactly (screen-reader
+actions in `accent`. `flush_left=True` uses the theme bullet and aligns all
+lines to the left edge. `literal=True` prints the title exactly (screen-reader
 announcements, BEAU-4). The scroll buffer's `error`, `system` (its optional
 `severity` payload field, default `info`), `announcement`, `tool_recovery`,
 `mcp_server_failure`, `network_retry` and `provider_recovery_retry` rows are

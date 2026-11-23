@@ -1,26 +1,29 @@
 ── compact ──
- · review entered by agent
-   Review the [draft] release notes
+● create_tools entered by agent
+Activate the create_tools workflow so the user can author one or more new
+agenthicc tools for this project.
 
- · review returned
-   Found two missing entries
+● create_tools returned
+Prepared two [draft] tools
 
- · release abandoned
+● release abandoned
 
 ── normal ──
- · review entered by agent
-   Review the [draft] release notes
+● create_tools entered by agent
+Activate the create_tools workflow so the user can author one or more new
+agenthicc tools for this project.
 
- · review returned
-   Found two missing entries
+● create_tools returned
+Prepared two [draft] tools
 
- · release abandoned
+● release abandoned
 
 ── verbose ──
- · review entered by agent
-   Review the [draft] release notes
+● create_tools entered by agent
+Activate the create_tools workflow so the user can author one or more new
+agenthicc tools for this project.
 
- · review returned
-   Found two missing entries
+● create_tools returned
+Prepared two [draft] tools
 
- · release abandoned
+● release abandoned

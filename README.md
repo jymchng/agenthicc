@@ -232,6 +232,9 @@ Transient provider failures are rendered as compact retry notices showing the at
 
 ### Built-in slash commands
 
+Type a full command such as `/tools` and press Enter to run it. Type a space
+after the command name to browse available argument completions.
+
 | Command | Purpose |
 |---|---|
 | `/help`, `/commands` | Inspect available commands in an overlay |
@@ -260,6 +263,9 @@ Transient provider failures are rendered as compact retry notices showing the at
 The direct agent can call `reload_tools()` and use the updated catalog on its
 next model request. New workflow phases and newly spawned workers read the
 updated catalog. Running workers keep the tools they started with.
+
+Workflow calls, returns, abandonments, and publication notices use `●` headings
+with left-aligned details in the transcript.
 
 `/config` opens its local configuration overlay immediately, including while a response is streaming.
 
