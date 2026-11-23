@@ -2,8 +2,9 @@
 
 The PRDs that let an agent **enter a workflow and return from it**, **spawn
 subagents that run a workflow**, and **extend itself** — create workflows,
-tools and skills, have them reloaded, and use them in the same session — under
-a trust model where a human decides what code runs. Start with
+tools and skills, have them reloaded, and use them in the same session. The
+session validates authored extensions before trusting them, with `stage_only`
+available for operator review. Start with
 [WFC-00](WFC-00-programme-and-study.md): it holds the current-source findings,
 the architecture, the dependency table and the delivery order.
 
@@ -16,14 +17,14 @@ the architecture, the dependency table and the delivery order.
 | [WFC-04](WFC-04-workflow-running-subagents.md) | Subagents that run a workflow (implemented) | 2 | P1 |
 | [WFC-05](WFC-05-session-reload-service.md) | One session reload service for tools, skills, workflows and commands (implemented) | 3, 4, 5 | P0 |
 | [WFC-06](WFC-06-create-workflow-activate-complete-reload.md) | `create_workflow`: activate, complete, trust, reload, use (implemented) | 3 | P1 |
-| [WFC-07](WFC-07-create-tools-workflow.md) | `create_tools` — rename `make_agenthicc_tool`; one or several tools per run | 4 | P0 |
-| [WFC-08](WFC-08-live-tool-surface.md) | A live tool surface — new tools callable on the next request | 4 | P0 |
-| [WFC-09](WFC-09-create-skills-workflow.md) | `create_skills` — author one or several skills | 5 | P1 |
-| [WFC-10](WFC-10-model-invocable-skills.md) | Model-invocable skills — `list_skills` / `use_skill` on a live surface | 5 | P1 |
-| [WFC-11](WFC-11-authored-extension-trust-and-provenance.md) | Automatic trust, provenance and rollback for agent-authored extensions | 3, 4, 5, 6 | P0 |
-| [WFC-12](WFC-12-capability-catalog-and-operator-visibility.md) | A capability catalog for the agent; operator visibility | 6 | P1 |
-| [WFC-13](WFC-13-end-to-end-acceptance-suite.md) | End-to-end acceptance suite | all | P0 |
-| [WFC-14](WFC-14-shared-authoring-contract.md) | A shared authoring contract — runner-owned validation, scoped generation, bounded repair | 3, 4, 5 | P0 |
+| [WFC-07](WFC-07-create-tools-workflow.md) | `create_tools` — rename `make_agenthicc_tool`; one or several tools per run (implemented) | 4 | P0 |
+| [WFC-08](WFC-08-live-tool-surface.md) | A live tool surface — new tools callable on the next request (implemented) | 4 | P0 |
+| [WFC-09](WFC-09-create-skills-workflow.md) | `create_skills` — author one or several skills (implemented) | 5 | P1 |
+| [WFC-10](WFC-10-model-invocable-skills.md) | Model-invocable skills — `list_skills` / `use_skill` on a live surface (implemented) | 5 | P1 |
+| [WFC-11](WFC-11-authored-extension-trust-and-provenance.md) | Automatic trust, provenance and rollback for agent-authored extensions (implemented) | 3, 4, 5, 6 | P0 |
+| [WFC-12](WFC-12-capability-catalog-and-operator-visibility.md) | A capability catalog for the agent; operator visibility (implemented) | 6 | P1 |
+| [WFC-13](WFC-13-end-to-end-acceptance-suite.md) | End-to-end acceptance suite (implemented) | all | P0 |
+| [WFC-14](WFC-14-shared-authoring-contract.md) | A shared authoring contract — runner-owned validation, scoped generation, bounded repair (implemented) | 3, 4, 5 | P0 |
 
 The six outcomes (from WFC-00 §1): **1** enter-and-return; **2** subagents run a
 workflow; **3** `create_workflow` then reload; **4** `create_tools` then reload
@@ -70,6 +71,7 @@ at each milestone, then open one pull request to `main`, watch CI and merge.
 
 ## Status
 
-WFC-05 is implemented. The remaining PRDs keep their proposed status until their acceptance criteria pass. When a PRD ships, add an
-"Implementation status" section with per-criterion evidence, as the SUBAGENT
-and TUIR series do, and update the table above.
+WFC-01 through WFC-14 are implemented. Each PRD records its criterion-level
+evidence. The [acceptance suite](WFC-13-end-to-end-acceptance-suite.md#7-traceability)
+links the PRDs to the end-to-end scenarios, and the
+[implementation log](IMPLEMENTATION-LOG.md) records the gates and milestones.

@@ -1,6 +1,6 @@
 ---
 title: "WFC-14: A shared authoring contract — runner-owned validation, scoped generation, bounded repair"
-status: Proposed
+status: Implemented
 version: 1.0.0
 date: 2026-11-22
 repository: jymchng/agenthicc
@@ -223,3 +223,14 @@ writes a terminal checkpoint.
 
 A6 will be verified when WFC-11 wires the sandboxed importer. The adoption and
 conformance checks across all three authoring workflows follow WFC-07 and WFC-09.
+
+## Implementation status
+
+| Criterion | Evidence |
+| --- | --- |
+| A1, A8 | `test_runner_verdict_requires_a_clean_report_and_agent_approval` exercises the agent decision against the deterministic report. |
+| A2 | `test_scoped_writer_reports_each_rejection`, `test_scoped_writer_rejects_symlink`, and `test_pending_workflow_writer_uses_its_runner_owned_scope`. |
+| A3, A4 | `test_checkpoint_restart_preserves_repairs_and_exhausts_the_original_budget` closes after two repair cycles and resumes through the remaining budget. |
+| A5 | `test_changed_staged_bytes_fail_closed` rejects evidence for different bytes and `test_one_broken_module_consumes_the_shared_budget_and_publishes_nothing` exercises validation on repair. |
+| A6 | `test_validation_executes_only_inside_the_read_only_network_namespace` exercises a function-local relative import. `test_without_bubblewrap_validation_is_static_and_does_not_import` checks the static fallback. |
+| A7 | All three authoring runners call the shared modules. S3, S4 and S5 exercise those paths. |

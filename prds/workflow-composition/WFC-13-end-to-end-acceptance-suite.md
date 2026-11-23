@@ -1,6 +1,6 @@
 ---
 title: "WFC-13: End-to-end acceptance suite for workflow composition and self-extension"
-status: Proposed
+status: Implemented
 version: 1.0.0
 date: 2026-11-22
 repository: jymchng/agenthicc
@@ -81,21 +81,23 @@ instead.
 Every row below gets a test id in the implementing change; the series is not
 complete while any cell is empty.
 
-| PRD | Criteria | Primary scenario | Test module |
-|---|---|---|---|
-| WFC-01 | A1–A8 | S1, S9 | `tests/integration/test_workflow_stack_session.py`, `tests/e2e/…/test_s01_*.py` |
-| WFC-02 | A1–A6 | S1, S9 | `tests/integration/test_enter_workflow_handoff.py` |
-| WFC-03 | A1–A6 | S7 | `tests/integration/test_workflow_return_exactly_once.py` |
-| WFC-04 | A1–A7 | S2 | `tests/integration/test_subagent_workflow_worker.py` |
-| WFC-05 | A1–A7 | S4, S9 | `tests/integration/test_reload_service_surfaces.py`, `tests/performance/test_reload_lag.py` |
-| WFC-06 | A1–A11 | S3 | `tests/integration/test_create_workflow_return.py` |
-| WFC-07 | A1–A8 | S4 | `tests/integration/test_create_tools_set.py` |
-| WFC-08 | A1–A7 | S4 | `tests/integration/test_live_tool_surface.py` |
-| WFC-09 | A1–A7 | S5 | `tests/integration/test_create_skills.py` |
-| WFC-10 | A1–A8 | S5 | `tests/integration/test_use_skill.py` |
-| WFC-11 | A1–A14 | S4, S6, S7, S8 | `tests/integration/test_authored_publish.py` |
-| WFC-12 | A1–A7 | S1, S3–S5 | `tests/unit/test_catalog.py` |
-| WFC-14 | A1–A8 | S4, S5, S6 | `tests/integration/test_authoring_contract.py` |
+| PRD | Criteria | Primary scenario | Primary test |
+| --- | --- | --- | --- |
+| WFC-01 | A1–A8 | S1, S9 | `tests/e2e/self_extension/test_s01_workflow_call_return.py::test_two_child_phases_return_once_to_the_parent` |
+| WFC-02 | A1–A6 | S1, S9 | `tests/integration/test_enter_workflow_handoff.py::test_opted_in_parent_resumes_the_same_checkpoint_after_child` |
+| WFC-03 | A1–A6 | S7 | `tests/e2e/self_extension/test_s07_durable_return.py::test_restart_delivers_one_parent_turn_after_durable_return` |
+| WFC-04 | A1–A7 | S2 | `tests/e2e/self_extension/test_s02_workflow_workers.py::test_parallel_tool_authors_keep_their_staging_separate` |
+| WFC-05 | A1–A7 | S4, S9 | `tests/integration/test_reload_service_surfaces.py::test_tools_publish_healthy_files_and_preserve_failed_surfaces` |
+| WFC-06 | A1–A11 | S3 | `tests/e2e/self_extension/test_s03_create_workflow.py::test_new_workflow_is_published_and_called_in_the_same_session` |
+| WFC-07 | A1–A8 | S4 | `tests/e2e/self_extension/test_s04_create_tools.py::test_create_tools_publishes_and_dispatches_on_the_first_parent_request` |
+| WFC-08 | A1–A7 | S4 | `tests/integration/test_live_tool_surface.py::test_direct_turn_uses_new_schema_and_dispatch_after_reload` |
+| WFC-09 | A1–A7 | S5 | `tests/e2e/self_extension/test_s05_create_skills.py::test_new_skills_are_discovered_and_used_on_the_first_parent_turn` |
+| WFC-10 | A1–A8 | S5 | `tests/integration/test_use_skill.py::test_model_uses_authored_skill_and_worker_inherits_remaining_tools` |
+| WFC-11 | A1–A14 | S4, S6, S7, S8 | `tests/e2e/self_extension/test_s08_headless_publish.py::test_headless_publication_and_cli_approval` |
+| WFC-12 | A1–A8 | S1, S3–S5 | `tests/integration/test_workflow_stack_session.py::test_catalog_command_matches_the_model_and_survives_an_unchanged_reload` |
+| WFC-14 | A1–A8 | S4, S5, S6 | `tests/integration/test_authoring_contract.py::test_checkpoint_restart_preserves_repairs_and_exhausts_the_original_budget` |
+
+Each linked PRD records the rest of its criterion-level evidence.
 
 ## 8. Gates
 
@@ -129,3 +131,21 @@ complete while any cell is empty.
 | Scripted transports hide a real-provider behaviour (tool-list swap). | The WFC-08 spike test and an optional maintainer `--live` marker; the guarantee in WFC-08 §5.3 does not depend on the spike. |
 | Platform differences (sandbox, worktrees). | Explicit skips with reasons and the `static_only` path asserted on the skipped platforms. |
 | Scenario drift from the PRDs. | The traceability table is the review checklist for every WFC PR. |
+
+## Amendment — 2026-11-22
+
+The legacy scan holds recorded cassette history and the schema-1 rename
+diagnostic outside the runtime-symbol check. S7 runs its abrupt termination
+cases with real subprocesses. The publisher crash case interrupts a file move
+inside a three-artifact transaction. The S4 same-turn check uses the integration
+fixture for a reload arriving between two provider requests.
+
+## Implementation status
+
+| Criterion | Evidence |
+| --- | --- |
+| A1 | The E2E session runs S1–S9. The integration matrix runs S2, S4, and S9 on Python 3.11, 3.12, and 3.13. |
+| A2 | The same-turn generation test, S7 subprocess test, and trust-boundary AST test are the mutation checks. |
+| A3 | The traceability table uses collected test names and the PRDs carry the criterion-level evidence. |
+| A4 | The scripted S1–S9 fixtures check the provider request or resume request. The static, subprocess, and performance cases supplement those requests. |
+| A5 | The offline scenarios use task barriers and durable receipts. The final E2E duration is recorded in the implementation log. |

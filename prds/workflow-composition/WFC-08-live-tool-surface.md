@@ -1,6 +1,6 @@
 ---
 title: "WFC-08: A live tool surface — newly created tools are callable on the next request"
-status: Proposed
+status: Implemented
 version: 1.0.0
 date: 2026-11-22
 repository: jymchng/agenthicc
@@ -164,3 +164,14 @@ the next request. Both loops then advertised and successfully dispatched the
 new tool in the same run. Use the existing tool-boundary runner hook to refresh
 that list for WFC-08 A7 and to narrow it for WFC-10. Keep the new-turn guarantee
 in §5.3. Evidence is `test_lauren_tool_schema_refresh_between_requests`.
+
+## Implementation status
+
+| Criterion | Evidence |
+| --- | --- |
+| A1 | `test_create_tools_publishes_and_dispatches_on_the_first_parent_request`. |
+| A2 | `test_workers_hold_the_tool_generation_selected_at_spawn`. |
+| A3 | `test_code_plan_reads_the_reloaded_catalog_at_the_next_phase`. |
+| A4, A7 | `test_direct_turn_uses_new_schema_and_dispatch_after_reload` observes both model requests and the reconstructed turn metadata. |
+| A5 | `test_reload_reports_authored_tools_with_no_capability_declaration` and `test_edited_published_bytes_leave_the_provider_surface`. |
+| A6 | `test_tool_surface_publication_belongs_to_reload_service` and the legacy-symbol scan. |

@@ -99,6 +99,9 @@ of `dev`. Enumerate them with `uv run nox --list`: `tests`, `tests_unit` and
 `typecheck_contracts`, `type_audit`, `docs`, `build`, `build_check`,
 `llms_check`, and `clean`.
 
+The integration matrix exercises workflow scenarios S2, S4, and S9 across
+the three supported Python versions.
+
 `.github/workflows/ci.yml` runs every gate and ends in one aggregate
 **Required checks** job, the single status to wait on before merging. CI runs
 on pull requests to `main`/`dev` and on pushes to those two branches only, not

@@ -1,6 +1,6 @@
 ---
 title: "WFC-07: create_tools — rename make_agenthicc_tool and create one or several tools per run"
-status: Proposed
+status: Implemented
 version: 1.0.0
 date: 2026-11-22
 repository: jymchng/agenthicc
@@ -241,3 +241,21 @@ deleted in favour of WFC-14's runner scan and verdict.
 | Atomic sets make one bad tool block good ones. | Intentional: the model plans a coherent set; re-run for the failing subset. |
 | Larger generation scope raises cost. | Per-run repair budget (WFC-14 §5.4) and per-module scoped generation. |
 | Static checks both over- and under-reject. | Stable finding codes, `warning` severity for advisory rules, the sandboxed would-load preview, and call-time capability gating, which is independent of the validator (WFC-11 §5.4). |
+
+## Amendment — 2026-11-22
+
+Schema-1 checkpoints with the retired name now fail during checkpoint
+decoding with the rename diagnostic. The tool author signals that staged
+files are ready through `confirm_tools_generated`.
+
+
+## Implementation status
+
+| Criterion | Evidence |
+| --- | --- |
+| A1 | Built-in registry and invocation cases in `test_registration_and_models` and `test_tui_routing_workflow_commands_and_skill_refresh`. |
+| A2, A5 | `test_create_tools_publishes_and_dispatches_on_the_first_parent_request` verifies the three named artifacts and their first provider request. |
+| A3 | `test_invalid_plan_refuses_the_entire_set` covers duplicate and occupied names. |
+| A4, A6 | `test_one_broken_module_consumes_the_shared_budget_and_publishes_nothing` verifies the whole set and shared repair limit. |
+| A7 | `test_retired_tool_workflow_checkpoint_explains_how_to_start_again` loads a schema-1 record and checks the migration message. |
+| A8 | The legacy scan retains the checkpoint diagnostic and its test, along with immutable cassette history. |

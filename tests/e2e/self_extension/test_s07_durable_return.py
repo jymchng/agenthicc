@@ -86,6 +86,15 @@ class _WaitingParent(WorkflowPlugin):
     phases = [PhaseSpec("review", agent_type="planner")]
 
 
+def _child_environment(home: Path) -> dict[str, str]:
+    root = Path(__file__).resolve().parents[3]
+    return {
+        **os.environ,
+        "HOME": str(home),
+        "PYTHONPATH": os.pathsep.join((str(root / "src"), str(root))),
+    }
+
+
 async def _session(action: str, resume_id: str | None) -> None:
     context = await _build_session_context(resume_id, [], headless=True, mode_name="Yolo")
     script = ScriptedTransport()
@@ -259,8 +268,7 @@ async def test_restart_delivers_one_parent_turn_after_durable_return(
     (project / "agenthicc.toml").write_text(
         "[skills]\ninstall_default_skills = false\n", encoding="utf-8"
     )
-    root = Path(__file__).resolve().parents[3]
-    environment = {**os.environ, "HOME": str(home), "PYTHONPATH": str(root)}
+    environment = _child_environment(home)
 
     async def launch(action: str, session_id: str = "") -> Process:
         return await asyncio.create_subprocess_exec(
@@ -332,11 +340,7 @@ async def test_restart_restores_a_paused_child_and_resumes_its_suspended_caller(
             action,
             packet.get("session", ""),
             cwd=project,
-            env={
-                **os.environ,
-                "HOME": str(home),
-                "PYTHONPATH": str(Path(__file__).resolve().parents[3]),
-            },
+            env=_child_environment(home),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )

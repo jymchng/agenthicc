@@ -80,3 +80,12 @@ async def test_two_child_phases_return_once_to_the_parent(
     assert len(request_log) == 6
     assert request_log[-1].contains("Final report.")
     assert repr(request_log[-1].messages).count("[WORKFLOW RETURN]") == 1
+
+    script.expect(
+        "next ordinary message uses the same default frame",
+        lambda request: (
+            request.contains("Continue normally.") and stack.top.frame_id == parent.frame_id
+        ),
+        reply("Continuing normally."),
+    )
+    assert (await authored_session.run("default", "Continue normally.")).status == "complete"

@@ -1,6 +1,6 @@
 ---
 title: "WFC-09: create_skills — a workflow that authors one or several skills"
-status: Proposed
+status: Implemented
 version: 1.0.0
 date: 2026-11-22
 repository: jymchng/agenthicc
@@ -192,3 +192,14 @@ Registry: add `create_skills` to `_BUILTIN_WORKFLOW_DESCRIPTORS`.
 | Persistent prompt injection through an authored skill. | Provenance, `/authored remove` and `rollback`, source-labelled bodies (WFC-10), advisory lint in the notice, and the opt-in `stage_only` policy. |
 | Over-broad `suggested_topics` makes a skill fire on everything. | Word and count limits in §5.3. |
 | Parser divergence between validate and load. | One parser; FR-1 property test. |
+
+## Implementation status
+
+| Criterion | Evidence |
+| --- | --- |
+| A1, A5 | `test_new_skills_are_discovered_and_used_on_the_first_parent_turn` finds both skills and checks the recorded advisory. |
+| A2 | `test_skill_alias_collision_is_detected_before_a_publish`. |
+| A3 | `test_plan_refuses_invalid_or_widening_fields`. |
+| A4 | `test_report_records_loader_error_and_rejects_the_set`. |
+| A6 | `test_rejecting_a_staged_skill_discards_its_bytes_and_provenance`. |
+| A7 | `test_validate_and_discover_agree_on_each_generated_skill` runs 200 generated cases. |

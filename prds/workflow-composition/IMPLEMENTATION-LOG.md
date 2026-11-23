@@ -14,25 +14,25 @@ Branch `feat/workflow-composition` starts at `5100c8c` from fetched
 | 5 | M5 pushed | WFC-06 authoring, publication, and immediate use. Pre-push checks passed and the remote tip matched `35165f3`. |
 | 6 | M6 pushed | WFC-08 and WFC-07 passed the complete local gate and pre-push hooks. The remote tip matched `b24f9dc`. |
 | 7 | M7 pushed | WFC-09 and S5 passed the full local gate and push hooks. The remote tip matched `d983ae5`. |
-| 8 | Pending | WFC-04 and WFC-03. |
-| 9 | Pending | WFC-12 and WFC-13 close-out. |
+| 8 | M8 pushed | Worker workflows and durable stack recovery. The remote tip matched `5fadb96` after the pre-push checks. |
+| 9 | Local gate passed | `2612298` adds catalog and operator controls. The WFC-13 close-out includes S1–S9 and the cross-version matrix. See the final verification below. |
 
 | PRD | Status | Commit and evidence |
 |---|---|---|
 | WFC-01 | Implemented | `f0eb339`. See the PRD for stack, child resume and return-delivery evidence. |
-| WFC-02 | Implemented | Model entry, pending handoff, and status in the TUI and headless workflow owner. See the PRD for A1–A6 evidence. |
-| WFC-03 | Implemented | Stack reducer, checkpoint schema 2, linked resume, and S7 subprocess recovery at three delivery boundaries. |
-| WFC-04 | Implemented | The S2 worker tests passed for disjoint parallel staging, cancellation, mixed tasks, typed failure, and parent-owned publication. |
+| WFC-02 | Implemented | `4c5e0cc` adds model entry, pending handoff, and status in the TUI and headless workflow owner. See the PRD for A1–A6 evidence. |
+| WFC-03 | Implemented | `5fadb96` adds the stack reducer, checkpoint schema 2, linked resume, and S7 subprocess recovery at three delivery boundaries. |
+| WFC-04 | Implemented | `e90a25c` runs workflow workers in isolated worktrees. S2 covers disjoint parallel staging, cancellation, mixed tasks, typed failure, and parent-owned publication. |
 | WFC-05 | Implemented | `c757516`, `7bd642c`. Both runners use the service. See the PRD for A1–A7 evidence. |
-| WFC-06 | Implemented | Session-owned publication, exact predecessor checks, and the S3 acceptance scenario. WFC-04 exercises the workflow-worker integration. |
-| WFC-07 | Implemented | Plans and validates the complete tool set, then publishes it before the parent resumes. S4 observes immediate dispatch and atomic failure. |
-| WFC-08 | Implemented | Direct requests, phase entry, and worker spawn read the shared tool generation. WFC-07 exercises the author-and-call scenario. |
-| WFC-09 | Implemented | The real loader checks the staged skill set before publication. S5 covers live model use, the skill picker, alias collision, advisories, and operator rejection. |
+| WFC-06 | Implemented | `35165f3` adds session-owned publication, exact predecessor checks, and S3. WFC-04 exercises the workflow-worker integration. |
+| WFC-07 | Implemented | `b24f9dc` plans and validates the complete tool set, then publishes it before the parent resumes. S4 observes immediate dispatch and atomic failure. |
+| WFC-08 | Implemented | `ab27d2d` switches direct requests, phase entry, and worker spawn to the shared tool generation. WFC-07 exercises the author-and-call scenario. |
+| WFC-09 | Implemented | `d983ae5` validates the staged skill set with the real loader. S5 covers live model use, the skill picker, alias collision, advisories, and operator rejection. |
 | WFC-10 | Implemented | `ed01cf0`. Provider discovery and use share the live skill registry. |
-| WFC-11 | Runtime ready | `6958a4b` isolates validation and smoke. `59e893a` adds publication, operator controls and recovery. The canonical lease uses the same store. The workflow return connection and downstream authoring scenarios remain in their scheduled steps. |
-| WFC-12 | Pending | — |
-| WFC-13 | Harness ready | `7536d33` adds a scripted provider, request snapshots, isolated real sessions, and a test-only failure trigger. S1–S9 remain to be integrated. |
-| WFC-14 | Implemented | Workflow, tool, and skill authors share scoped staging writers, deterministic verdicts, and persisted repair budgets. Executable candidates go through the isolated loader check. |
+| WFC-11 | Implemented | `6958a4b` isolates validation and smoke. `59e893a` adds publication, operator controls and recovery. `545ea1d` uses the same store for canonical leases. S6–S8 verify trust integrity, interrupted publication, and stage-only approval. |
+| WFC-12 | Implemented | `2612298` adds the model and operator catalog, stack, frame notices and reload and authored summaries. See the PRD for A1–A8 evidence. |
+| WFC-13 | Implemented | `7536d33` adds the offline harness. The M9 acceptance close-out finishes S1–S9 and adds cross-version integration. See the criterion and mutation evidence below. |
+| WFC-14 | Implemented | `4ce58eb` extracts the scoped staging writers, deterministic verdicts, and persisted repair budgets. All three authoring workflows use the contract. Executable candidates go through the isolated loader check. |
 
 ## M0 verification
 
@@ -375,3 +375,52 @@ the 386-module limit. A fresh TUI now reconciles publication before deferred
 extension discovery. Headless and resumed sessions reconcile before eager
 discovery. The unchanged first-frame budget and five recovery checks
 passed in `/var/tmp/agenthicc-wfc-m8-startup-rerun.log`.
+
+The full final milestone passed 6,325 unit tests with 15 skips, 431 integration
+tests, 259 E2E tests with two skips, and all nine performance tests. Ruff, mypy,
+type audit, strict MkDocs, and the public-symbol check passed. The pre-push
+hook passed and the branch reached `5fadb96`.
+
+## M9 verification
+
+The first catalog prototype left out `release-notes` when the workflow list
+used the prompt budget. The catalog now reserves space for matching skills
+and new tools. The first integration capture reported `No active workflow`
+before the event processor had projected the frame. The test drains the
+processor before reading the catalog. The busy-command fixture now uses
+`/workflow reset` for mutation and covers bare `/workflow` as inspection.
+
+The first full unit run passed 6,334 tests with 15 skips and five failures.
+Four picker tests expected the old results for `/workflow ` and one reported
+the extra registered kind `workflow_frame`. The updated picker tests cover
+prefix collisions and static actions without a workflow registry. The new
+renderer snapshot exposed an omitted notice body. Workflow frame notices now
+show the entry intent and return summary at all detail levels.
+
+All 28 S1–S9 tests passed in 67.76 seconds on Python 3.12. S2, S4, S9,
+and the first-frame budget passed together in 20.65 seconds. The source
+check found zero references to `Any` in added Python modules. The legacy
+scan retained the schema-1 rename diagnostic and its test, recorded cassette
+history, and the bootstrap retirement identities. Every traceability node
+exists, as do all 121 named test references in the PRD status sections.
+
+Three temporary mutations failed their tests as expected:
+
+- Skipping the live generation refresh hid `live_probe` from the next model
+  request in `test_direct_turn_uses_new_schema_and_dispatch_after_reload`.
+- Dropping the workflow return key caused `Unexpected model request 1` in
+  `test_restart_delivers_one_parent_turn_after_durable_return[returned]`.
+  The child explicitly imports from the checkout under test.
+- Giving a model tool module an `ExtensionTrust` import failed
+  `test_model_tool_modules_do_not_reference_extension_trust_mutators`.
+
+The implementation passed Ruff check and format, mypy over 440 source files,
+all ten type-audit metrics, strict MkDocs, `llms_check`, and
+`typecheck_contracts`. Whole-repository statement and branch coverage will be
+measured by the PR CI run with the existing 81.5% floor.
+
+After the renderer fix, the full Python 3.13 rerun passed 6,340 unit tests
+with 15 skips, 434 integration tests, 263 E2E tests with two skips, and all
+nine performance tests. Logs are in `/var/tmp/agenthicc-wfc-m9-final-*.log`.
+Strict MkDocs still reports the existing unlisted question-timeouts guide
+and a missing troubleshooting anchor as informational diagnostics.

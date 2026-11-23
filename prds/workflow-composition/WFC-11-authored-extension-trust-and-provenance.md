@@ -1,6 +1,6 @@
 ---
 title: "WFC-11: Automatic trust, provenance and rollback for agent-authored extensions"
-status: Proposed
+status: Implemented
 version: 2.0.0
 date: 2026-11-22
 repository: jymchng/agenthicc
@@ -342,23 +342,22 @@ The live tree also has operator-initiated trust actions in the Agents Hub and
 the Markdown agent library. The hub requires explicit confirmation and the
 library creates the definition submitted by the operator. The static scan
 accounts for these existing operator actions. Authored publication uses the
-store and canonical finalizer. The last runner-side finalizer call moves in
-WFC-06.
+store and canonical finalizer. WFC-06 moved the finalizer into the store.
 
-## Implementation evidence
+## Implementation status
 
 | Criterion | Test or delivery dependency |
 |---|---|
-| A1 | `test_session_publisher_loads_validated_tools_and_emits_one_notice` exercises the real loaders. The `create_tools` workflow and resume-turn case land in WFC-07 and WFC-08. |
-| A2 | `test_canonical_workflow_approval_removes_marker_and_reloads` and `test_skill_discovery_hides_provisional_set_without_recording_python_trust`. The workflow-driven TUI and headless cases land with WFC-01, WFC-06 and WFC-09. |
+| A1 | `test_create_tools_publishes_and_dispatches_on_the_first_parent_request` exercises the real authoring workflow, publication, and subsequent invocation. |
+| A2 | `test_new_workflow_is_published_and_called_in_the_same_session`, `test_new_skills_are_discovered_and_used_on_the_first_parent_turn`, `test_authored_return_loads_skill_before_the_parent_request`, and `test_headless_publication_and_cli_approval`. |
 | A3 | `test_failed_runner_verdict_discards_entire_set` |
 | A4 | `test_moving_second_file_failure_restores_first_and_trust`, `test_load_failure_keeps_the_prior_surface_and_reverts_the_set`, `test_workflow_reload_failure_restores_the_pending_lease` |
 | A5 | `test_changed_staged_bytes_fail_closed`, `test_authored_trust_rechecks_bytes_and_records_the_set_digest` |
 | A6 | `test_two_publishers_allow_only_one_owner_of_the_same_name` |
 | A7 | `test_authored_picker_and_operator_commands_restore_previous_behavior`, `test_authored_cli_lists_approves_and_rejects_staged_runs` |
 | A8 | `test_model_tool_modules_do_not_reference_extension_trust_mutators` |
-| A9 | `test_extension_trust_writes_are_owned_by_runtime_and_explicit_operator_actions`. The legacy runner call remains until WFC-06. |
-| A10 | `test_reload_removes_the_only_tool_if_its_trusted_bytes_changed` |
+| A9 | `test_extension_trust_writes_are_owned_by_runtime_and_explicit_operator_actions` and `test_only_the_authored_store_finalizes_and_trusts_workflow_packages`. |
+| A10 | `test_reload_removes_the_only_tool_if_its_trusted_bytes_changed` and `test_edited_published_bytes_leave_the_provider_surface`. |
 | A11 | `test_authored_picker_and_operator_commands_restore_previous_behavior`, `test_rollback_refuses_changed_archive_content` |
 | A12 | `test_store_refuses_authoring_below_the_user_root`, `test_scoped_writer_cannot_author_under_the_user_root` |
 | A13 | `test_published_execute_tool_requires_a_safe_approval_for_each_call` |

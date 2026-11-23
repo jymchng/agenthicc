@@ -90,6 +90,9 @@ the sessions with `uv run nox --list`: `tests`, `tests_unit` and
 `typecheck`, `typecheck_contracts`, `type_audit`, `docs`, `build`,
 `build_check`, `llms_check`, `clean`.
 
+The integration matrix also runs workflow scenarios S2, S4, and S9 on
+each supported Python.
+
 `.github/workflows/ci.yml` runs every gate on pull requests to `main`/`dev` and
 on pushes to those branches, and ends in one aggregate **Required checks** job,
 the single status to wait on before merging. The owner has decided `main` stays

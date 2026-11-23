@@ -51,9 +51,16 @@ def tests_unit(session: nox.Session) -> None:
 
 @nox.session(python=SUPPORTED_PYTHONS, name="tests_integration")
 def tests_integration(session: nox.Session) -> None:
-    """Run the integration tests on one supported Python version."""
+    """Run integration and cross-version workflow composition scenarios."""
     _install_dev(session)
-    session.run("pytest", "tests/integration", *session.posargs)
+    session.run(
+        "pytest",
+        "tests/integration",
+        "tests/e2e/self_extension/test_s02_workflow_workers.py",
+        "tests/e2e/self_extension/test_s04_create_tools.py",
+        "tests/e2e/self_extension/test_s09_stack_guards.py",
+        *session.posargs,
+    )
 
 
 @nox.session(python=PRIMARY_PYTHON, name="tests_e2e")

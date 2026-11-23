@@ -1,6 +1,6 @@
 ---
 title: "WFC-10: Model-invocable skills — list and use skills mid-turn, against a live skill surface"
-status: Proposed
+status: Implemented
 version: 1.0.0
 date: 2026-11-22
 repository: jymchng/agenthicc
@@ -164,13 +164,11 @@ skills a turn (or a worker) may load.
 
 ## Implementation status
 
-The loader, model tools, provider request integration, and worker path are in
-place. WFC-09 adds the real `create_skills` producer and WFC-13 S5 exercises it
-through headless execution.
+S5 exercises the real `create_skills` producer through headless execution.
 
 | Criteria | Evidence |
 |---|---|
-| A1, A7, A8 | `test_model_uses_authored_skill_and_worker_inherits_remaining_tools` publishes with the runtime publisher on the first provider request and checks listing, rendering, provenance, and worker discovery. The `create_skills` entry point is pending WFC-09. |
+| A1, A7, A8 | `test_new_skills_are_discovered_and_used_on_the_first_parent_turn` calls the authoring workflow and uses its output. `test_model_uses_authored_skill_and_worker_inherits_remaining_tools` checks listing, rendering, provenance, and worker discovery. |
 | A2 | The same test checks `run_bash`, the repository’s shell tool, on the next provider request and in the worker’s first request. |
 | A3, A4 | `test_model_skill_permissions_and_frontmatter` checks role policy, model overrides, opt-out validation, and explicit model invocation when auto-matching is disabled. |
 | A5 | `test_bounded_body_digest_and_cumulative_narrowing` checks the full digest, UTF-8 truncation, repeated loads and cumulative limits. |
