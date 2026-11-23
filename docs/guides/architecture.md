@@ -435,3 +435,12 @@ exists and records recovered wakes for `/perf`. Worker results and pool
 lifecycle appends run off the event loop and are awaited before the pool
 publishes completion. The journal assigns sequence numbers under its write
 lock so worker and parent receipts retain their on-disk order.
+
+Interactive workflow runners enter a phase-scoped notice route at the shared
+provider turn boundary. The conversation, run, frame, and invocation identify
+each pool. A parked phase stays in the workflow task, which owns provider
+history and resumes on a notice or queued input. Shared parallel phase memory
+uses foreground spawning. A pre-tool gate blocks transitions while the
+invocation has uncollected pools or shares a batch with spawn or collection.
+The durable tool exchange commit records terminal collection, which the gate
+reads before a subsequent transition.

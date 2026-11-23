@@ -633,6 +633,7 @@ class WorkflowCheckpoint:
     frame_id: str
     parent_run_id: str | None
     origin: FrameOrigin
+    phase_invocation: str = ""
     revision: int = 0
     reason: str = ""
     browser: dict[str, object] = field(default_factory=dict)
@@ -734,6 +735,8 @@ class WorkflowCheckpoint:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
+        if self.phase_invocation:
+            payload["phase_invocation"] = self.phase_invocation
         canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         payload["content_hash"] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
         return payload
@@ -964,6 +967,9 @@ class WorkflowCheckpoint:
         phase = raw.get("current_phase")
         if phase is not None and not isinstance(phase, str):
             raise CheckpointValidationError("current_phase must be a string or null")
+        phase_invocation = raw.get("phase_invocation", "")
+        if not isinstance(phase_invocation, str):
+            raise CheckpointValidationError("phase_invocation must be a string")
         created_at = _checkpoint_timestamp(
             raw.get("created_at"), field_name="created_at", default=time.time()
         )
@@ -982,6 +988,7 @@ class WorkflowCheckpoint:
             current_phase=phase,
             phase_index=int(raw["phase_index"]),
             phase_iteration=int(raw["phase_iteration"]),
+            phase_invocation=phase_invocation,
             conversation_cursor=int(raw["conversation_cursor"]),
             context=dict(raw["context"]),
             plugin_fingerprint=str(raw["plugin_fingerprint"]),

@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from agenthicc.workflows.plugin import WorkflowParams
     from lauren_ai._memory import ShortTermMemory
     from agenthicc.runners.workflow_handle import WorkflowRunHandle
+    from agenthicc.runners.workflow_phase_subagents import PhaseSubagentHost
     from agenthicc.runners.usage_ledger import UsageLedger
     from agenthicc.tools.cloakbrowser import BrowserSessionManager
     from agenthicc.tools.workspace_access import WorkspaceScope, WorkspaceAccessPolicy
@@ -75,6 +76,7 @@ class WorkflowConfig:
     """Stable session conversation identifier passed to lauren-ai."""
     workflow_handle: "WorkflowRunHandle | None" = None
     """Active workflow lifecycle handle, when this config runs a workflow."""
+    phase_subagents: "PhaseSubagentHost | None" = None
     usage_ledger: "UsageLedger | None" = None
     """Session-scoped provider usage ledger (PRD-157)."""
     browser_manager: "BrowserSessionManager | None" = None

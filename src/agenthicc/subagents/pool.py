@@ -1684,6 +1684,7 @@ class SubagentWorker:
     async def run(self) -> SubagentResult:
         """Execute the task; return SubagentResult regardless of success/failure."""
         from agenthicc.runners.agent_turn_context import bind_turn_notices
+        from agenthicc.subagents.phase import bind_phase_pools
 
         self._registration_failures = ()
         token = None
@@ -1692,7 +1693,7 @@ class SubagentWorker:
 
             token = set_current_workspace_access(self._workspace_access)
         try:
-            with bind_turn_notices(None):
+            with bind_turn_notices(None), bind_phase_pools(None):
                 result = await self._run()
             if self._worker_workspace is not None:
                 result = await self._integrate(result)
@@ -2841,6 +2842,9 @@ class SubagentPool:
         self._approval_svc = approval_svc
         self._workspace_access = workspace_access
         self._journal = conversation_journal
+        from agenthicc.subagents.phase import current_phase_owner
+
+        self.phase_owner = current_phase_owner()
         self._task_fingerprint = task_fingerprint
         self._policy = policy
         self._communication = communication or (
@@ -3282,6 +3286,7 @@ class SubagentPool:
         if refusal:
             raise SubagentAdmissionError(refusal)
         _ACTIVE_POOLS[self.pool_id] = self
+        admitted = False
         try:
             await self._prepare_isolation()
             if self._journal is not None:
@@ -3290,11 +3295,13 @@ class SubagentPool:
                     pool_id=self.pool_id,
                     fingerprint=self._task_fingerprint,
                     parent_run_id=self._parent_run_id,
+                    phase_owner=self.phase_owner.record() if self.phase_owner else None,
                     tasks=[
                         {"task_id": task.task_id, "agent_type": task.agent_type}
                         for task in self._tasks
                     ],
                 )
+                admitted = True
             return await self._run_admitted(on_running)
         except asyncio.CancelledError:
             if self._journal is not None:
@@ -3306,6 +3313,12 @@ class SubagentPool:
                     log.exception(
                         "failed to persist cancellation for subagent pool %s", self.pool_id
                     )
+            raise
+        except Exception:
+            if admitted and self.phase_owner is not None and self._journal is not None:
+                await persist_journal_record(
+                    self._journal.subagent_pool_failed, pool_id=self.pool_id
+                )
             raise
         finally:
             await self._release_isolation()

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import re
 import time
+import uuid
 import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -300,6 +301,8 @@ class WorkflowRunHandle:
     current_phase: str | None = None
     phase_index: int = 0
     phase_iteration: int = 0
+    phase_invocation: str = ""
+    _resume_phase_invocation: bool = field(default=False, init=False, repr=False)
     checkpoint_revision: int = 0
     checkpoint_supported: bool = True
     pause_requested: bool = False
@@ -517,6 +520,9 @@ class WorkflowRunHandle:
         except Exception:  # noqa: BLE001 - presentation never breaks a workflow
             log.exception("workflow presentation listener failed")
 
+    def is_resuming_phase(self, phase: str | None) -> bool:
+        return self._resume_phase_invocation and self.current_phase == phase
+
     def update_phase(
         self,
         phase: str | None,
@@ -532,6 +538,17 @@ class WorkflowRunHandle:
         process that disappears inside the phase can resume that exact state
         instead of falling back to the first phase.
         """
+        same_phase = self.current_phase == phase
+        resume_same_phase = self.is_resuming_phase(phase)
+        self._resume_phase_invocation = False
+        if phase is None:
+            self.phase_invocation = ""
+        elif (
+            not self.phase_invocation
+            or not same_phase
+            or (self.phase_iteration != iteration and not resume_same_phase)
+        ):
+            self.phase_invocation = uuid.uuid4().hex
         self.current_phase = phase
         self.phase_index = index
         self.phase_iteration = iteration
@@ -608,6 +625,7 @@ class WorkflowRunHandle:
         """Move a paused run into active continuation."""
         if self.lifecycle not in {"paused", "pausing", "resuming"}:
             raise RuntimeError(f"workflow {self.run_id} is not paused")
+        self._resume_phase_invocation = True
         self.lifecycle = "resuming"
         self.pause_requested = False
         self._announce()
@@ -879,6 +897,7 @@ class WorkflowRunHandle:
             current_phase=self.current_phase,
             phase_index=self.phase_index,
             phase_iteration=self.phase_iteration,
+            phase_invocation=self.phase_invocation,
             conversation_cursor=self.conversation.cursor,
             context=context_payload,
             plugin_fingerprint=self.plugin_fingerprint,
@@ -1026,6 +1045,7 @@ class WorkflowRunHandle:
             current_phase=checkpoint.current_phase,
             phase_index=checkpoint.phase_index,
             phase_iteration=checkpoint.phase_iteration,
+            phase_invocation=checkpoint.phase_invocation,
             checkpoint_revision=checkpoint.revision,
             pause_requested=checkpoint.status in {"paused", "pausing"} or interrupted,
             last_error=(

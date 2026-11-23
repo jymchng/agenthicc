@@ -9,6 +9,7 @@ from functools import partial
 from typing import TYPE_CHECKING, Literal, Protocol
 
 from agenthicc.subagents.communication import journal_parent_updates
+from agenthicc.subagents.phase import phase_pool_matches
 
 if TYPE_CHECKING:
     from agenthicc.memory.journal import ConversationJournal
@@ -16,6 +17,7 @@ if TYPE_CHECKING:
     from agenthicc.runners.session_context import SessionContext
     from agenthicc.runners.session_conversation import SessionConversation
     from agenthicc.subagents.communication import PoolContinuationRegistry
+    from agenthicc.subagents.phase import PhaseOwner
     from agenthicc.tui.conversation_store import ConversationStore
 
 WAKE_TURN_PREFIX = "subagent-wake:"
@@ -94,12 +96,25 @@ def background_question_notice(pool_id: str, worker_id: str, question_id: str) -
     )
 
 
-def _completions(journal: ConversationJournal) -> tuple[PendingNotice, ...]:
+def _completions(
+    journal: ConversationJournal,
+    owner: PhaseOwner | None = None,
+    registry: PoolContinuationRegistry | None = None,
+) -> tuple[PendingNotice, ...]:
     notices: list[PendingNotice] = []
+    collected = journal.collected_phase_pools(owner.invocation) if owner is not None else ()
     for record in journal.completed_background_subagent_pools():
+        if not phase_pool_matches(record, owner) or record.get("pool_id") in collected:
+            continue
         pool_id = record.get("pool_id")
         if not isinstance(pool_id, str) or not pool_id:
             continue
+        if owner is not None and registry is not None:
+            handle = registry.get(pool_id)
+            if handle is not None and not handle.task.done():
+                # The journal can be terminal while the pool still cleans up its
+                # worktrees. Wait until collection can return its terminal result.
+                continue
         succeeded = _count(record, "succeeded")
         total = _count(record, "total")
         status = str(record.get("status", "interrupted"))
@@ -122,11 +137,17 @@ def _completions(journal: ConversationJournal) -> tuple[PendingNotice, ...]:
 
 
 def _questions(
-    registry: PoolContinuationRegistry, journal: ConversationJournal
+    registry: PoolContinuationRegistry,
+    journal: ConversationJournal,
+    owner: PhaseOwner | None = None,
 ) -> tuple[PendingNotice, ...]:
     notices: list[PendingNotice] = []
     for handle in registry.handles():
-        if not handle.backgrounded or handle.task.done():
+        if (
+            (not handle.backgrounded and owner is None)
+            or handle.task.done()
+            or handle.phase_owner != owner
+        ):
             continue
         for question in handle.broker.pending_questions(recipient="main"):
             question_id = question.get("question_id")
@@ -151,12 +172,15 @@ def _questions(
 
 
 def _messages(
-    journal: ConversationJournal, registry: PoolContinuationRegistry | None = None
+    journal: ConversationJournal,
+    registry: PoolContinuationRegistry | None = None,
+    owner: PhaseOwner | None = None,
 ) -> tuple[PendingNotice, ...]:
     eligible = frozenset(
         pool_id
         for record in journal.fold_subagent_pool_lifecycle()
-        if record.get("backgrounded") is True
+        if phase_pool_matches(record, owner)
+        and record.get("backgrounded") is True
         and record.get("notify_parent_updates") is True
         and isinstance(pool_id := record.get("pool_id"), str)
     )
@@ -189,18 +213,19 @@ def _messages(
 
 @dataclass(frozen=True, slots=True)
 class JournalNoticeSource:
-    """Combine root-pool results, questions, and durable worker updates."""
+    """Combine pool results, questions, and worker updates in the owning turn's scope."""
 
     journal: ConversationJournal
     registry: PoolContinuationRegistry
+    phase_owner: PhaseOwner | None = None
 
     def claim(self) -> tuple[PendingNotice, ...]:
         return tuple(
             sorted(
                 (
-                    *_completions(self.journal),
-                    *_questions(self.registry, self.journal),
-                    *_messages(self.journal, self.registry),
+                    *_completions(self.journal, self.phase_owner, self.registry),
+                    *_questions(self.registry, self.journal, self.phase_owner),
+                    *_messages(self.journal, self.registry, self.phase_owner),
                 ),
                 key=lambda notice: notice.recorded_at,
             )
@@ -235,8 +260,7 @@ def deliver_notices(
                 pool_id=notice.pool_id, message_id=notice.message_id
             )
     if notices and conversation is not None:
-        pending = memory.journal.completed_background_subagent_pools()
-        conversation.subagent_finished_pending.set(len(pending))
+        conversation.subagent_finished_pending.set(len(_completions(memory.journal)))
 
 
 def deliver_background_pool_notices(

@@ -973,47 +973,53 @@ class CodePlanRunner(BaseWorkflowRunner):
             record_contract = getattr(self._cfg.workflow_handle, "record_prompt_contract", None)
             if callable(record_contract):
                 record_contract(prompt_contract)
-            await _run_agent_turn(
-                text,
-                runner=self._cfg.agent_runner,
-                processor=self._cfg.processor,
-                session_memory=ctx.shared_memory,
-                conversation_id=self._cfg.conversation_id,
-                max_agent_turns=max_turns,
-                conv_store=self._cfg.conv_store,
-                app_state=self._cfg.app_state,
-                exec_cfg=exec_cfg,
-                skills=self._cfg.skills,
-                skill_permissions=self._cfg.cfg.agents.skill_permissions_for("auto"),
-                mention_cache=self._cfg.mention_cache,
-                extra_tools=tools,
-                tool_surface_generation=(
-                    self._phase_catalog[0].generation
-                    if self._phase_catalog is not None
-                    else self._cfg.tool_surface.current().generation
-                ),
-                mcp_registry=self._cfg.mcp_registry,
-                subagent_registry=self._cfg.subagent_registry,
-                agents_registry=self._cfg.agents_registry,
-                agent_config=self._cfg.cfg,
-                active_agent="auto",
-                completed_turns=self._cfg.completed_turns,
-                approval_svc=self._cfg.approval_svc,
-                workspace_access=self._cfg.workspace_access,
-                output_collector=[],
-                command_outcomes=ctx.command_outcomes,
-                system_prompt_suffix=(
-                    f"{system_prompt}\n\n"
-                    f"{_WORKFLOW_USER_QUESTION_REMINDER}\n\n"
-                    f"{phase_transition_instruction(tools, phase_name=phase_name)}"
-                ),
-                prompt_contract=prompt_contract,
-                memory_router=self._cfg.memory_router,
-                semantic_index=self._cfg.semantic_index,
-                next_queued_message=self._cfg.next_queued_message,
-                usage_ledger=self._cfg.usage_ledger,
-                browser_manager=self._cfg.browser_manager,
-            )
+            from agenthicc.runners.workflow_phase_subagents import run_phase_turn
+
+            async def run_turn(message: str, wake_key: str | None) -> None:
+                await _run_agent_turn(
+                    message,
+                    runner=self._cfg.agent_runner,
+                    processor=self._cfg.processor,
+                    session_memory=ctx.shared_memory,
+                    conversation_id=self._cfg.conversation_id,
+                    max_agent_turns=max_turns,
+                    conv_store=self._cfg.conv_store,
+                    app_state=self._cfg.app_state,
+                    exec_cfg=exec_cfg,
+                    skills=self._cfg.skills,
+                    skill_permissions=self._cfg.cfg.agents.skill_permissions_for("auto"),
+                    mention_cache=self._cfg.mention_cache,
+                    extra_tools=tools,
+                    tool_surface_generation=(
+                        self._phase_catalog[0].generation
+                        if self._phase_catalog is not None
+                        else self._cfg.tool_surface.current().generation
+                    ),
+                    mcp_registry=self._cfg.mcp_registry,
+                    subagent_registry=self._cfg.subagent_registry,
+                    agent_config=self._cfg.cfg,
+                    agents_registry=self._cfg.agents_registry,
+                    subagent_wake_key=wake_key,
+                    active_agent="auto",
+                    completed_turns=self._cfg.completed_turns,
+                    approval_svc=self._cfg.approval_svc,
+                    workspace_access=self._cfg.workspace_access,
+                    output_collector=[],
+                    command_outcomes=ctx.command_outcomes,
+                    system_prompt_suffix=(
+                        f"{system_prompt}\n\n"
+                        f"{_WORKFLOW_USER_QUESTION_REMINDER}\n\n"
+                        f"{phase_transition_instruction(tools, phase_name=phase_name)}"
+                    ),
+                    prompt_contract=prompt_contract,
+                    memory_router=self._cfg.memory_router,
+                    semantic_index=self._cfg.semantic_index,
+                    next_queued_message=self._cfg.next_queued_message,
+                    usage_ledger=self._cfg.usage_ledger,
+                    browser_manager=self._cfg.browser_manager,
+                )
+
+            await run_phase_turn(self._cfg, phase_name, ctx.shared_memory, tools, run_turn, text)
         finally:
             reset_current_terminal_wait_policy(policy_token)
             if mode is not None and self._mode_manager is not None:

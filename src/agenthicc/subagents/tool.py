@@ -767,10 +767,17 @@ def make_spawn_subagents_tool(
             current_session_interactive,
         )
 
+        from agenthicc.runners.workflow_execution_context import current_workflow_run_id
+        from agenthicc.subagents.phase import current_phase_pools
+
+        phase = current_phase_pools()
         task_owner = current_background_task_owner()
         mode = current_spawn_mode(_settings, conversation_journal)
         pool.detach_available = (
-            mode == "foreground" and task_owner is not None and conversation_journal is not None
+            mode == "foreground"
+            and task_owner is not None
+            and conversation_journal is not None
+            and (current_workflow_run_id() is None or (phase is not None and phase.available))
         )
         communication = pool.communication
         backgrounded = False
@@ -826,6 +833,7 @@ def make_spawn_subagents_tool(
                     task=cast(asyncio.Task[object], pool_task),
                     pool=pool,
                     lineage=owner_lineage,
+                    phase_owner=pool.phase_owner,
                 )
             )
         foreground = mode == "foreground"
@@ -953,7 +961,16 @@ def make_spawn_subagents_tool(
     metadata = cast("ToolMeta", vars(spawn_subagents)[TOOL_META])
     _augment_type_schema(metadata, _registry, allow_call_overrides=_allow_call_overrides)
     base_description = metadata.description
+    from agenthicc.runners.workflow_execution_context import current_workflow_run_id
+    from agenthicc.subagents.phase import current_phase_pools
+
     spawn_mode = current_spawn_mode(_settings, conversation_journal)
+    phase = current_phase_pools()
+    phase_fallback = (
+        _settings.spawn_mode == "background"
+        and current_workflow_run_id() is not None
+        and (phase is None or not phase.available)
+    )
     described: SubagentToolSelection | None = None
 
     def refresh_catalog() -> bool:
@@ -976,7 +993,9 @@ def make_spawn_subagents_tool(
             )
             text = spec.description or "No description provided."
             descriptions.append(f"- {name} [{tag}]: {text}")
-        description = _spawn_description(base_description, spawn_mode, descriptions)
+        description = _spawn_description(
+            base_description, spawn_mode, descriptions, phase_fallback=phase_fallback
+        )
         described = selection
         if description == metadata.description:
             return False
@@ -1283,13 +1302,17 @@ def _augment_type_schema(
         type_schema["enum"] = _known_type_names(registry)
 
 
-def _spawn_description(base_description: str, mode: SpawnMode, descriptions: list[str]) -> str:
+def _spawn_description(
+    base_description: str, mode: SpawnMode, descriptions: list[str], *, phase_fallback: bool
+) -> str:
     mode_text = (
         "Returns a receipt when the pool starts. Continue working or end the turn. "
         "Collect only after a notice; do not poll, sleep, redo work, or guess results."
         if mode == "background"
         else "Blocks until the pool finishes and returns the aggregated results."
     )
+    if phase_fallback:
+        mode_text += " Background delivery or collection is unavailable in this phase."
     description = f"{base_description}\n\n{mode_text}\n\n{_PARALLEL_GUIDANCE}"
     if descriptions:
         description += "\n\nAvailable subagent types:\n" + "\n".join(descriptions)

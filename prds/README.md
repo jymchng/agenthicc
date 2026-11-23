@@ -209,6 +209,7 @@ carries an implementation-status section with per-goal evidence.
 - [SUBAGENT-14 — Parent-verifiable worker evidence in the spawn digest (implemented)](SUBAGENT-14-parent-verifiable-worker-evidence.md)
 - [SUBAGENT-15 — Parallel implementation in isolated git worktrees (implemented)](SUBAGENT-15-worktree-isolated-parallel-implementation.md)
 - [SUBAGENT-16 — Non-blocking subagents by default (implemented)](subagents-nov/SUBAGENT-16-non-blocking-subagents-by-default.md)
+- [SUBAGENT-17 — Non-blocking subagents in workflow phases](subagents-nov/SUBAGENT-17-non-blocking-workflow-subagents.md)
 - [SUBAGENT-18 — Parent tool parity for all subagent types](subagents-nov/SUBAGENT-18-parent-tool-parity-for-all-subagent-types.md)
 - [SUBAGENT series — coverage and scope audit (historical)](SUBAGENT-series-audit.md)
 - [SUBAGENT series — closure audit, criterion by criterion (2026-11-04)](SUBAGENT-series-closure-audit.md)

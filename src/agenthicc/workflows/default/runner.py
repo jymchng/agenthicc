@@ -224,8 +224,10 @@ class WorkflowRunner(BaseWorkflowRunner):
                     phase_name = spec.next
                     continue
 
+                handle = self._cfg.workflow_handle
+                continuing = handle is not None and handle.is_resuming_phase(phase_name)
                 count = iteration_counts.get(phase_name, 0)
-                if spec.max_iterations != -1 and count >= spec.max_iterations:
+                if not continuing and spec.max_iterations != -1 and count >= spec.max_iterations:
                     log.warning(
                         "Workflow %s: phase %r hit max_iterations=%d",
                         self._plugin.name,
@@ -244,7 +246,7 @@ class WorkflowRunner(BaseWorkflowRunner):
                         },
                     )
                     return
-                iteration_counts[phase_name] = count + 1
+                iteration_counts[phase_name] = count if continuing else count + 1
 
                 # Opt-in global cap — only enforced when max_total_phase_runs > 0.
                 # Default is 0 (unlimited) so the execute↔review loop can iterate freely.
@@ -284,7 +286,6 @@ class WorkflowRunner(BaseWorkflowRunner):
                 context.phase_iteration = iteration_counts[phase_name]
                 context.phase_iterations[phase_name] = context.phase_iteration
                 context.next_phase = None
-                handle = self._cfg.workflow_handle
                 if handle is not None:
                     handle.attach_context(context)
                     handle.update_phase(phase_name, phase_idx, context.phase_iteration)
@@ -295,9 +296,14 @@ class WorkflowRunner(BaseWorkflowRunner):
                         peer_spec = self._plugin.get_phase(peer_name)
                         if peer_spec is not None:
                             peer_specs.append(peer_spec)
-                    outputs = await asyncio.gather(
-                        *[self._run_phase(ps, intent, context) for ps in peer_specs],
+                    from agenthicc.runners.workflow_phase_subagents import (
+                        bind_shared_parallel_memory,
                     )
+
+                    with bind_shared_parallel_memory():
+                        outputs = await asyncio.gather(
+                            *[self._run_phase(ps, intent, context) for ps in peer_specs],
+                        )
                     parallel_gate_error: str | None = None
                     for ps, output in zip(peer_specs, outputs, strict=True):
                         gate_error = self._command_gate_error(ps, output)
@@ -358,6 +364,11 @@ class WorkflowRunner(BaseWorkflowRunner):
                             "command_gate_error": command_gate_error,
                         },
                     )
+                if handle is not None and self._cfg.phase_subagents is not None:
+                    output = dataclasses.replace(
+                        output,
+                        metadata={**output.metadata, "phase_invocation": handle.phase_invocation},
+                    )
                 context.add_output(output)
 
                 record = PhaseRunRecord(
@@ -365,7 +376,7 @@ class WorkflowRunner(BaseWorkflowRunner):
                     role=spec.agent_type,
                     approved=output.approved,
                     output_summary=output.full_text[:200],
-                    iteration=count + 1,
+                    iteration=context.phase_iteration,
                     duration_s=output.duration_s,
                 )
                 wf_run = dataclasses.replace(
@@ -459,12 +470,19 @@ class WorkflowRunner(BaseWorkflowRunner):
         """Walk the phase-transition graph to find the first incomplete phase."""
         if context.next_phase is not None and self._plugin.get_phase(context.next_phase):
             return context.next_phase
-        if (
-            context.current_phase is not None
-            and context.current_phase not in context.phase_outputs
-            and self._plugin.get_phase(context.current_phase)
-        ):
-            return context.current_phase
+        if context.current_phase is not None and self._plugin.get_phase(context.current_phase):
+            output = context.phase_outputs.get(context.current_phase)
+            if output is None:
+                return context.current_phase
+            handle = self._cfg.workflow_handle
+            if (
+                self._cfg.phase_subagents is not None
+                and handle is not None
+                and handle.phase_invocation
+                and handle.is_resuming_phase(context.current_phase)
+                and output.metadata.get("phase_invocation") != handle.phase_invocation
+            ):
+                return context.current_phase
         completed = set(context.phase_outputs.keys())
         first_phase = self._plugin.first_phase()
         phase_name = first_phase.name if first_phase is not None else None
@@ -502,8 +520,19 @@ class WorkflowRunner(BaseWorkflowRunner):
         token = set_current_terminal_wait_policy(spec.terminal_wait_policy)
         try:
             from agenthicc.runners.agent_turn import _run_agent_turn
+            from agenthicc.runners.workflow_phase_subagents import run_phase_turn
 
-            await _run_agent_turn(text, **options)
+            async def run_turn(message: str, wake_key: str | None) -> None:
+                await _run_agent_turn(message, **options, subagent_wake_key=wake_key)
+
+            await run_phase_turn(
+                self._cfg,
+                spec.name,
+                options["session_memory"],
+                options["extra_tools"] or (),
+                run_turn,
+                text,
+            )
         finally:
             reset_current_terminal_wait_policy(token)
 
@@ -678,8 +707,8 @@ class WorkflowRunner(BaseWorkflowRunner):
             "usage_ledger": self._cfg.usage_ledger,
             "browser_manager": self._cfg.browser_manager,
             "subagent_registry": self._cfg.subagent_registry,
-            "agents_registry": self._cfg.agents_registry,
             "agent_config": self._cfg.cfg,
+            "agents_registry": self._cfg.agents_registry,
             "system_prompt_suffix": role_prompt,
             "prompt_contract": prompt_contract,
         }

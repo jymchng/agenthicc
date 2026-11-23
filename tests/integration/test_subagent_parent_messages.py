@@ -8,11 +8,21 @@ from pathlib import Path
 import pytest
 from lauren_ai._transport import Completion
 
+from agenthicc.runners.tui_session import TUISession
 from agenthicc.subagents.communication import AgentMessageBroker
 from agenthicc.subagents.delivery import deliver_session_background_notices
 from agenthicc.tui.runtime.session_log import user_message_history_from_events
 from tests.e2e.self_extension.harness import ModelRequest, reply, tool_call
-from tests.subagent_sessions import ScenarioTransport, attach, send, spawn_call, tui, until
+from tests.subagent_sessions import (
+    WORKER_RESULT,
+    ScenarioTransport,
+    attach,
+    send,
+    spawn_call,
+    tui,
+    until,
+)
+from tests.subagent_sessions import session as session
 
 pytestmark = pytest.mark.integration
 _UPDATE = "Unsolicited worker status: checked chapter notes."
@@ -139,3 +149,67 @@ async def test_resumed_noninteractive_turn_gets_saved_direct_worker_update(
         assert journal.has_message_id(f"subagent-message:{sent.message_id}")
         events = ctx.app_state.conversation._events_by_id.values()
         assert sum(event.payload.get("source") == "subagent_message" for event in events) == 1
+
+
+async def test_workflow_parent_update_wakes_only_the_owning_phase(session: TUISession) -> None:
+    from tests.integration.test_workflow_phase_subagents import (
+        attach_phase,
+        pool_id,
+        select_generate,
+        source_for,
+    )
+
+    send_update = asyncio.Event()
+    release = asyncio.Event()
+    received = asyncio.Event()
+
+    async def worker(request: ModelRequest) -> Completion:
+        if not request.contains("tool_result"):
+            await send_update.wait()
+            return tool_call(
+                "send_parent_message",
+                {"kind": "status", "message": "Workflow worker located the source."},
+                use_id="phase-update",
+            )
+        await release.wait()
+        return reply(WORKER_RESULT)
+
+    async def parent(request: ModelRequest, sequence: int) -> Completion:
+        if sequence == 1:
+            return spawn_call()
+        if sequence == 2:
+            assert request.contains('"status": "running"')
+            return reply("I can wait for an update.")
+        if sequence == 3:
+            assert request.contains("Workflow worker located the source.")
+            assert request.contains("untrusted worker data")
+            assert not request.contains(WORKER_RESULT)
+            assert session._ctx.app_state.conversation.phase_subagent_wait() == ""
+            received.set()
+            return reply("I received the worker's update.")
+        if sequence == 4:
+            assert request.contains(f"Background subagent pool {pool_id(session)} completed")
+            return tool_call("collect_subagent_results", {"pool_id": pool_id(session)})
+        if sequence == 5:
+            assert request.contains(WORKER_RESULT)
+            return tool_call("mark_execute_complete", {"summary": "Collected the pool."})
+        assert sequence == 6
+        return reply("Complete.")
+
+    script = ScenarioTransport(parent, worker)
+    attach_phase(session, script)
+    select_generate(session)
+    task = await send(session, "Delegate within the workflow.")
+    conv = session._ctx.app_state.conversation
+    await until(lambda: conv.phase_subagent_wait() == "waiting for phase subagents")
+    handle = session._workflow_handle
+    assert handle is not None
+    send_update.set()
+    await until(received.is_set)
+    assert session._agent_task is task
+    assert not source_for(session).has_pending()
+    release.set()
+    async with asyncio.timeout(8):
+        await task
+    assert handle.lifecycle == "complete"
+    assert len(script.main_requests) == 6

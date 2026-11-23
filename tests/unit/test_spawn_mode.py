@@ -34,7 +34,12 @@ from tests.e2e.self_extension.harness import reply
     [
         ("background", "direct", True, True, True, "background"),
         ("foreground", "direct", True, True, True, "foreground"),
-        ("background", "phase", True, True, True, "foreground"),
+        ("background", "unsupported-phase", True, True, True, "foreground"),
+        ("background", "eligible-phase", True, True, True, "background"),
+        ("foreground", "eligible-phase", True, True, True, "foreground"),
+        ("background", "eligible-phase", False, True, True, "foreground"),
+        ("background", "eligible-phase", True, False, True, "foreground"),
+        ("background", "eligible-phase", True, True, False, "foreground"),
         ("background", "headless", False, True, False, "foreground"),
         ("background", "service", False, True, False, "foreground"),
         ("background", "direct", False, True, True, "foreground"),
@@ -62,7 +67,8 @@ def test_a12_mode_requires_all_delivery_dependencies(
                 notices=JournalNoticeSource(journal, PoolContinuationRegistry())
                 if notice_bound
                 else None,
-                in_workflow_phase=side == "phase",
+                in_workflow_phase=side.endswith("-phase"),
+                phase_delivery=side == "eligible-phase",
             )
             == expected
         )

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from io import StringIO
@@ -103,6 +104,7 @@ class ScenarioTransport(MockTransport):
         self.main = main
         self.worker = worker
         self.main_requests: list[ModelRequest] = []
+        self.main_tool_schemas: list[str] = []
         self.worker_requests: list[ModelRequest] = []
 
     async def complete(
@@ -122,6 +124,7 @@ class ScenarioTransport(MockTransport):
             response = await self.worker(request)
         else:
             self.main_requests.append(request)
+            self.main_tool_schemas.append(json.dumps(data, default=str, sort_keys=True))
             response = await self.main(request, len(self.main_requests))
         self.queue_response(response)
         return await super().complete(messages, **kwargs)

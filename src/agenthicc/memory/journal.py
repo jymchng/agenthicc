@@ -323,9 +323,14 @@ RECORD_DURABILITY: Final[Mapping[str, Durability]] = {
 }
 
 
-def _projected(kind: str) -> bool:
+def _projected(entry: Mapping[str, object]) -> bool:
     """Whether a record kind belongs to the in-memory subagent projection."""
-    return kind.startswith("subagent_") or kind == "agent_message_event"
+    kind = str(entry.get("kind", ""))
+    return (
+        kind.startswith("subagent_")
+        or kind == "agent_message_event"
+        or (kind == "tool_exchange_committed" and "phase_pool_receipts" in entry)
+    )
 
 
 class ConversationJournal:
@@ -409,7 +414,7 @@ class ConversationJournal:
                     )
                 raise
             self._seq += 1
-            if _projected(kind) and self._subagent_records is not None:
+            if _projected(entry) and self._subagent_records is not None:
                 self._subagent_records.append(json.loads(payload))
 
     def _write_pending_locked(self, descriptor: int) -> None:
@@ -476,7 +481,7 @@ class ConversationJournal:
                                 entry = json.loads(line)
                             except json.JSONDecodeError:
                                 break
-                            if isinstance(entry, dict) and _projected(str(entry.get("kind", ""))):
+                            if isinstance(entry, dict) and _projected(entry):
                                 records.append(entry)
                 self._subagent_records = records
             return self._subagent_records
@@ -926,6 +931,7 @@ class ConversationJournal:
         call_count: int,
         completed_count: int,
         synthetic_count: int,
+        phase_pool_receipts: Mapping[str, str] | None = None,
     ) -> None:
         """Persist a successful or synthesized exchange commit."""
         self._write(
@@ -936,6 +942,11 @@ class ConversationJournal:
                 "call_count": call_count,
                 "completed_count": completed_count,
                 "synthetic_count": synthetic_count,
+                **(
+                    {"phase_pool_receipts": dict(phase_pool_receipts)}
+                    if phase_pool_receipts
+                    else {}
+                ),
             }
         )
 
@@ -1194,6 +1205,7 @@ class ConversationJournal:
         fingerprint: str,
         parent_run_id: str,
         tasks: list[dict[str, str]],
+        phase_owner: Mapping[str, str] | None = None,
     ) -> None:
         """Persist a pool's identity before any worker can produce side effects."""
         self._write(
@@ -1206,6 +1218,7 @@ class ConversationJournal:
                 "fingerprint": str(fingerprint)[:128],
                 "parent_run_id": str(parent_run_id)[:128],
                 "tasks": [dict(task) for task in tasks],
+                **({"phase_owner": dict(phase_owner)} if phase_owner is not None else {}),
             }
         )
 
@@ -1257,6 +1270,25 @@ class ConversationJournal:
         if workflow_returns:
             entry["workflow_returns"] = list(workflow_returns)
         self._write(entry)
+
+    def subagent_pool_failed(self, *, pool_id: str) -> None:
+        """Preserve any worker evidence when a pool fails after admission."""
+        lifecycle = next(
+            (
+                record
+                for record in self.fold_subagent_pool_lifecycle()
+                if record.get("pool_id") == pool_id
+            ),
+            None,
+        )
+        if lifecycle is None or lifecycle.get("status") not in {"running", "backgrounded"}:
+            return
+        total, succeeded, text = self._record_unfinished_subagent_workers(
+            lifecycle, "pool execution failed"
+        )
+        self.subagent_pool_finished(
+            pool_id=pool_id, total=total, succeeded=succeeded, failed=total - succeeded, text=text
+        )
 
     def subagent_pool_cancelled(self, *, pool_id: str, reason: str = "session closed") -> None:
         """Persist a graceful session cancellation and terminalize unfinished workers."""
@@ -1465,6 +1497,16 @@ class ConversationJournal:
             recovered.append(pool_id)
         return recovered
 
+    def collected_phase_pools(self, invocation: str) -> frozenset[str]:
+        """Project collected pool IDs from complete provider exchanges."""
+        return frozenset(
+            pool_id
+            for record in self._subagent_view()
+            if isinstance(receipts := record.get("phase_pool_receipts"), dict)
+            for pool_id, owner in receipts.items()
+            if isinstance(pool_id, str) and owner == invocation
+        )
+
     def completed_background_subagent_pools(self) -> list[dict[str, object]]:
         """Return backgrounded pools with a terminal outcome not yet delivered."""
         delivered = self.delivered_subagent_pool_notifications()
@@ -1472,7 +1514,7 @@ class ConversationJournal:
             record
             for record in self.fold_subagent_pool_lifecycle()
             if record.get("pool_id") not in delivered
-            and record.get("backgrounded") is True
+            and (record.get("backgrounded") is True or "phase_owner" in record)
             and record.get("status") in {"completed", "interrupted", "cancelled"}
         ]
 
