@@ -223,7 +223,7 @@ class SlashCommandTrigger(TriggerHandlerBase):
         return self._registry.get(name) if self._registry is not None else None
 
     def argument_need(self, name: str) -> Literal["", "completions", "required"]:
-        """What running *name* bare needs: nothing, a completed argument, or a typed one."""
+        """How the command palette continues after selecting *name*."""
         command = self.registry_command(name)
         if command is None:
             return ""
@@ -251,26 +251,26 @@ class SlashCommandTrigger(TriggerHandlerBase):
         fragment: str,
         buf: list[str],
     ) -> TriggerResult:
-        """Enter places the highlighted command in the prompt; it does not run it.
+        """Submit an exact invocation or place the highlighted completion.
 
-        The user reviews or extends the text and sends it with a second Enter.
-        Three cases differ (operator request, amending TUX-04 §2.5):
-
-        * a command with a required argument, or with argument completions,
-          is completed with a trailing space and the picker stays open on its
-          arguments;
-        * a command typed out in full has nothing to pick, so Enter sends it;
-        * with no match, Enter sends the text as typed.
+        An exact command name or alias can be submitted as typed when its
+        arguments are optional. An incomplete selection can continue into
+        argument entry, as can a bare command with a required argument.
         """
-        if item is None:
-            return TriggerResult(buffer=buf + [self.char] + list(fragment), submit=True)
+        typed = self.char + fragment
+        command = self.registry_command(typed)
+        if item is None or (
+            command is not None
+            and command.name == item.value
+            and not _requires_argument(command.argument_hint)
+        ):
+            return TriggerResult(buffer=buf + list(typed), submit=True)
         if " " not in item.value and self.needs_argument(item):
             return TriggerResult(buffer=buf + list(item.value + " "), keep_open=True)
-        typed_in_full = item.value == self.char + fragment
-        return TriggerResult(buffer=buf + list(item.value), submit=typed_in_full)
+        return TriggerResult(buffer=buf + list(item.value), submit=item.value == typed)
 
     def needs_argument(self, item: MatchItem) -> bool:
-        """Whether Enter on *item* must ask for an argument instead of running it."""
+        """Whether accepting *item* can continue into argument entry."""
         if self._registry is None:
             return False
         command = self._registry.get(item.value)

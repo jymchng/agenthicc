@@ -61,6 +61,22 @@ def test_the_title_wraps_under_itself_and_the_body_follows() -> None:
     ]
 
 
+def test_flush_left_notice_aligns_wrapped_title_and_body() -> None:
+    notice = Notice(
+        "info",
+        "create_tools entered by agent",
+        "Activate the workflow so the user can author tools for this project.",
+        flush_left=True,
+    )
+    assert _text(notice, width=25).splitlines() == [
+        "● create_tools entered by",
+        "agent",
+        "Activate the workflow so",
+        "the user can author tools",
+        "for this project.",
+    ]
+
+
 def test_actions_follow_the_title() -> None:
     notice = Notice("warning", 'MCP server "github" is unavailable.', actions=("/mcp",))
     assert _text(notice).splitlines() == [' ! MCP server "github" is unavailable.   /mcp']
@@ -74,6 +90,11 @@ def test_screen_readers_get_words_and_ascii_glyphs_stay_ascii() -> None:
     rendered = _text(Notice("error", "Boom", "body"))
     assert rendered.isascii()
     assert rendered.splitlines() == [" x Boom", "   body"]
+    assert _text(Notice("info", "Entered", "Intent", flush_left=True)) == "* Entered\nIntent\n"
+    assert (
+        _text(Notice("success", "Published", "Receipt", flush_left=True, words=True))
+        == "Done: Published\nReceipt\n"
+    )
 
 
 def test_a_literal_notice_prints_its_text_exactly() -> None:

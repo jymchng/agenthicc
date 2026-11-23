@@ -191,6 +191,12 @@ identical text when the available entries are unchanged. The footer uses
 the active terminal theme for its breadcrumb and staged indicator. The
 operator can reopen diagnostic details with `/reload report`.
 
+## Amendment — 2026-11-23
+
+Workflow entry, return, abandonment, and publication notices use the terminal
+theme's standard bullet. Their headings and details start at the left edge of
+the transcript. The renderer snapshots cover each event at all detail levels.
+
 
 ## Implementation status
 

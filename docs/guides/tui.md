@@ -655,14 +655,15 @@ only navigation and choice (the `picker` context: ↑/↓, Ctrl+P/N, PageUp/Page
 Tab, Enter, Esc); every other key edits the prompt and the picker follows it.
 Ctrl+U, Ctrl+W, Ctrl+A/E, ←/→, paste and undo therefore work with a picker
 open; when the cursor leaves the trigger, or the trigger character is
-deleted, the picker closes. In the `/` picker Enter places the highlighted
-command in the prompt without running it; a second Enter sends it. A command
-with a required `<argument>` or with argument completions (`/workflow`) is
-placed with a space and the picker lists its arguments, and a command you typed
-out in full (`/help`) is sent by the first Enter, since there is nothing left
-to pick. Tab only completes. In the `@` picker Enter inserts the path; a second
-Enter sends. Enter with no match sends the prompt as typed. The Ctrl+P palette
-is different: Enter runs the item.
+deleted, the picker closes. In the `/` picker, press Enter on a fully typed
+command like `/tools` to run it with its default arguments. Type a space after
+the name to browse arguments, or type a prefix such as `/tools r` to see
+matching completions like `/tools reload`. If the command requires an
+argument, Enter adds a space and leaves the picker open. Choosing a suggestion
+for an incomplete command places it in the prompt for review or continues into
+argument completion when available. Tab only completes. In the `@` picker,
+Enter inserts the path and a second Enter sends the prompt. Enter with no match
+sends the prompt as typed. In the Ctrl+P palette, Enter runs the item.
 
 **History search.** Ctrl+R shows a search row above the prompt
 (`(search) git rebas▌   3 of 41 · Ctrl+R older · Enter use · Esc cancel`). It

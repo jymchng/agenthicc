@@ -308,13 +308,16 @@ async def test_enter_places_a_picked_command_and_a_second_enter_runs_it(tmp_path
     assert session._buf.text == ""
 
 
-async def test_enter_sends_a_command_that_was_typed_in_full(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "command", ["/help", "/tools", "/skills", "/commands", "/workflow", "/workflows", "/authored"]
+)
+async def test_enter_sends_a_command_that_was_typed_in_full(tmp_path: Path, command: str) -> None:
     session, sent = _command_session(tmp_path)
-    await _press(session, _chars("/help"))
+    await _press(session, _chars(command))
     assert session.picker is not None
 
     await session._dispatch(Key.ENTER, "")
-    assert sent == ["/help"]
+    assert sent == [command]
     assert session.picker is None
     assert session._buf.text == ""
 
@@ -340,6 +343,22 @@ async def test_enter_on_a_command_that_needs_an_argument_lists_its_arguments(
     assert sent == ["/workflow docs"]
 
 
+async def test_tools_reload_is_suggested_for_a_typed_argument_prefix(tmp_path: Path) -> None:
+    session, sent = _command_session(tmp_path)
+    await _press(session, _chars("/tools r"))
+
+    picker = session.picker
+    assert picker is not None
+    assert [item.value for item in picker.matches] == ["/tools reload"]
+    assert session._buf.text == "/tools r"
+
+    await session._dispatch(Key.ENTER, "")
+    assert session._buf.text == "/tools reload"
+    assert sent == []
+    await session._dispatch(Key.ENTER, "")
+    assert sent == ["/tools reload"]
+
+
 async def test_tab_only_completes(tmp_path: Path) -> None:
     session, sent = _command_session(tmp_path)
     await _press(session, _chars("/help"))
@@ -349,17 +368,21 @@ async def test_tab_only_completes(tmp_path: Path) -> None:
     assert session.picker is None
 
 
-async def test_one_enter_opens_help_through_the_session(tmp_path: Path) -> None:
-    """Picker visibility and execution end to end: /help, Enter, the help overlay."""
+@pytest.mark.parametrize("command", ["/help", "/tools"])
+async def test_one_enter_opens_command_overlay_through_the_session(
+    tmp_path: Path, command: str
+) -> None:
+    """Submit a typed command through the picker, composer and session dispatcher."""
     from agenthicc.commands import build_builtin_registry
     from agenthicc.tui.workspace.overlays.help import HelpOverlay
+    from agenthicc.tui.workspace.overlays.registry_list import ToolListOverlay
 
     from tests.unit.test_tui_session_coverage import _make_session
 
     tui, ctx, workspace, _input = _make_session()
-    help_command = build_builtin_registry().get("/help")
-    assert help_command is not None
-    ctx.cmd_registry.register(help_command)
+    builtin = build_builtin_registry().get(command)
+    assert builtin is not None
+    ctx.cmd_registry.register(builtin)
     ctx.command_bus.register(SendMessageCommand, tui.handle_send)
     triggers = TriggerManager()
     triggers.register(SlashCommandTrigger(ctx.cmd_registry))
@@ -370,11 +393,12 @@ async def test_one_enter_opens_help_through_the_session(tmp_path: Path) -> None:
         overlay_host=workspace.overlays,
         cwd=tmp_path,
     )
-    await _press(composer, _chars("/help"))
+    await _press(composer, _chars(command))
     assert composer.picker is workspace.overlays.widget
 
     await composer._dispatch(Key.ENTER, "")
-    assert isinstance(workspace.overlays.widget, HelpOverlay)
+    overlay_type = HelpOverlay if command == "/help" else ToolListOverlay
+    assert isinstance(workspace.overlays.widget, overlay_type)
 
 
 # ── 4. Ctrl+R ────────────────────────────────────────────────────────────────
