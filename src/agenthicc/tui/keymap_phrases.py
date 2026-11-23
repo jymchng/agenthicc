@@ -21,7 +21,7 @@ CONDITION_PHRASES: Mapping[str, str] = {
     "paste": "when a paste is condensed",
     "paste_at_cursor": "right after a condensed paste",
     "subagents": "while the subagent panel is shown",
-    "subagents_running": "while subagents run",
+    "subagents_foreground": "while a foreground pool runs",
     "empty": "when the prompt is empty",
     "queued": "when messages are queued",
     "suggestion": "when the empty prompt suggests a command",

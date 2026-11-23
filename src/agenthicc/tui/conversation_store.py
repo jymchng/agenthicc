@@ -362,6 +362,18 @@ class ConversationStore:
         """
         self.subagent_rows: Signal[int] = Signal(0, name="subagent_rows")
         """How many worker rows the subagent panel lists now (finished rows expire)."""
+        self.subagent_foreground: Signal[frozenset[str]] = Signal(
+            frozenset(), name="subagent_foreground"
+        )
+        self.subagent_background_running: Signal[int] = Signal(
+            0, name="subagent_background_running"
+        )
+        self.subagent_finished_pending: Signal[int] = Signal(0, name="subagent_finished_pending")
+        self.subagent_wake_paused: Signal[bool] = Signal(False, name="subagent_wake_paused")
+        self.subagent_last_activity: dict[str, float] = {}
+        self.subagent_activity_ages: Signal[tuple[tuple[str, int], ...]] = Signal(
+            (), name="subagent_activity_ages"
+        )
         # PRD-149: owned background-terminal wait projection.  These are
         # separate signals so a live wait can refresh its elapsed/count line
         # without changing the conversation event stream.
@@ -592,6 +604,14 @@ class ConversationStore:
         now = time.monotonic()
         self._advance_display_clock(now)
         self._advance_retry(now)
+        if self.subagent_last_activity or self.subagent_activity_ages():
+            wall = time.time()
+            self.subagent_activity_ages.set(
+                tuple(
+                    (pool_id, int(max(0, wall - at)))
+                    for pool_id, at in self.subagent_last_activity.items()
+                )
+            )
         pool = self.subagent_pool_state()
         if pool is not None:
             wall = time.time()
@@ -989,7 +1009,10 @@ class ConversationStore:
 
     def _title_from(self, event: ConversationEvent) -> None:
         """Title the session after its first prompt, once (TUX-02)."""
-        if self.session_title():
+        if self.session_title() or event.payload.get("source") in (
+            "subagent_completion",
+            "subagent_question",
+        ):
             return
         text = event.payload.get("text")
         if isinstance(text, str):

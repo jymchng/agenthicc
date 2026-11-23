@@ -156,7 +156,6 @@ spawn_subagents(
     timeout_s: float = 3600.0,
     model: str | None = None,  # operator-gated
     effort: str | None = None,  # operator-gated
-    background: bool = False,  # return "running" at once; see Background pools
 ) -> dict[str, object]
 ```
 
@@ -848,69 +847,50 @@ rerun interrupted work. A graceful session shutdown records `cancelled` instead.
 
 ### Background pools
 
-While a pool is running, Ctrl+B in the composer backgrounds it. The parent
-receives a durable `backgrounded` tool receipt immediately; workers continue
-under the session's `SupervisedTasks` owner, not as detached process tasks. A
-background request is refused with `background_unavailable` — and the pool is
-stopped rather than left running unowned — when the session has no durable
-conversation journal or no supervised task owner. The
-session cancels them during shutdown. Ctrl+B is offered only while the parent
-turn is streaming and at least one subagent worker is active.
+In a direct terminal turn, `spawn_subagents` returns a durable `running` receipt
+after the pool starts. The agent can keep working or finish its reply while
+workers run under the session's task supervisor. The receipt includes a
+`pool_id` and each worker's ID and label. The agent collects the results after
+the completion notice arrives.
 
-A completed, cancelled, or crash-interrupted background pool is
-announced at the next logical-turn boundary with a short notice. It is not
-inserted into an already-running provider loop. Stable message IDs make the
-notice idempotent across resume and compaction, so it is not delivered twice.
-The TUI, background sessions and headless workflow runs deliver it through the
-same function (`agenthicc.subagents.delivery.deliver_background_pool_notices`;
-runners without a `TUISession` call it through
-`deliver_session_background_notices(session)`). A pool left `running` by a
-crash is marked `interrupted` by the shared session builder before the first
-turn, then announced at that turn's boundary.
+A completion reaches the agent at its next tool boundary if a turn is active.
+If the session is idle, the notice starts an automatic turn. A queued user
+message takes priority and the next turn receives the notice with it. The
+journal records each completion and its delivery, so a dropped wake can be
+recovered. Reopening a session leaves saved notices for the first user turn.
 
-The notice is written entirely by the runtime and contains **no worker
-output**: worker text is untrusted, and the notice is added in the user role.
-It states the outcome and the real worker counts, then tells the model to
-collect the results:
+The status line shows running pools and completions awaiting delivery. The
+panel shows how long each live pool has gone without a worker event. Completion
+and question notices appear as automated events in the live view and
+transcript. Esc during an automatic turn pauses further wakes until the next
+user submission. Starting or interrupting a wake preserves the draft.
+`/usage` reports automatic-turn costs separately and `/perf` counts recovered
+wakes.
 
-| Journal status | Notice says |
-|---|---|
-| `completed` | `completed (2/2 succeeded, 0 failed)` |
-| `cancelled` | `was cancelled when the session closed (…)` |
-| `interrupted` | `was interrupted when the session stopped (…)` |
+The notice contains the pool ID, status and worker counts. Worker output
+reaches the model in the result of `collect_subagent_results(pool_id)`. Approval
+requests surface in the main session with the worker's name.
 
-…followed by `Its results are not included here: call
-collect_subagent_results(pool_id="…") to read them.` `cancelled` is reserved for
-a session close. A turn that is re-driven after a finished pool replays the same
-counts and text from the journal.
+### Foreground pools
 
-### The model backgrounds a pool
+Set `subagents.spawn_mode = "foreground"` to have the spawn wait for its
+aggregate. Workflow phases and runners that lack a supervised notice path
+also wait. In the terminal, Ctrl+B detaches an active foreground pool and
+returns a `backgrounded` receipt. Esc cancels a foreground pool.
 
-`spawn_subagents(..., background=True)` asks for the background from the
-start. The call waits only until the pool has journaled its start, then returns
-`status: "running"` with the `pool_id` and one `{worker_id, label}` row per
-worker, and tells the model not to sleep, poll or duplicate the work. The
-pool then behaves exactly like one backgrounded with Ctrl+B (whose receipt says
-`backgrounded`): the same supervised owner, journal records and completion
-notice. The request is refused, before any worker starts, when
-`subagents.background_enabled = false` or the session has no durable journal
-or supervised task owner.
+### Worker questions
 
-A backgrounded worker that calls `ask_parent` follows
-`subagents.on_clarification`. Unset, it follows the session: `queue` in an
-interactive (TUI) session, where a person can answer at the next turn, and
-`fail` in a headless, background or detached one.
-
-- `queue`: the question stays open. At the next turn boundary the
-  parent receives a runtime-authored notice naming only the pool, worker and
-  question ids — once per question — and reads the question itself through
-  `collect_subagent_results` before answering with `answer_subagent`.
-- `fail`: every open and later parent question of that pool ends at once with
-  `unanswerable_in_background`, and the worker is told to continue with its
-  best judgement and state its assumptions.
+A background worker's `ask_parent` follows `subagents.on_clarification`.
+`queue` keeps the question open and sends a notice through the same delivery
+paths as completion. The parent reads the question via
+`collect_subagent_results` and resumes the worker with `answer_subagent`.
+`fail` ends the wait immediately and asks the worker to state its assumptions.
+The default is `queue` in the terminal and `fail` in other runners.
 
 ### Controlling pools from the model
 
+- A bounded `collect_subagent_results(wait=True)` ends early when a user
+  message or notice is waiting. Check `interrupted` in the running snapshot.
 - `list_subagent_pools()` lists the pools of this conversation: live handles
   and, for the root conversation, every pool folded from the journal (including
   pools from earlier turns), each with `status`, `background`, `total`,

@@ -834,6 +834,8 @@ def user_message_history_from_events(events: Collection[ConversationEvent]) -> l
     for event in events:
         if event.kind != "user_message":
             continue
+        if event.payload.get("source") in ("subagent_completion", "subagent_question"):
+            continue
         text = event.payload.get("text")
         if isinstance(text, str) and text.strip():
             history.append(text.strip())

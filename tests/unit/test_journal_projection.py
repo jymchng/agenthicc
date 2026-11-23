@@ -161,3 +161,76 @@ def test_every_record_kind_declares_its_durability() -> None:
     assert {kind for kind, mode in RECORD_DURABILITY.items() if mode == "advisory"} == {
         "usage_record"
     }
+
+
+async def test_off_loop_pool_receipts_keep_sequence_and_terminal_state(tmp_path: Path) -> None:
+    from agenthicc.memory.journal import persist_journal_record
+
+    path = tmp_path / "journal.jsonl"
+    journal = ConversationJournal(path)
+    try:
+        assert not journal.fold_subagent_pool_lifecycle()
+        await asyncio.gather(
+            *(
+                persist_journal_record(
+                    journal.subagent_pool_started,
+                    pool_id=f"pool-{index}",
+                    fingerprint=str(index),
+                    parent_run_id="turn",
+                    tasks=[],
+                )
+                for index in range(8)
+            )
+        )
+        await persist_journal_record(
+            journal.subagent_pool_finished,
+            pool_id="pool-7",
+            total=0,
+            succeeded=0,
+            failed=0,
+            text="finished",
+        )
+        receipt = {"status": "backgrounded"}
+        await persist_journal_record(
+            journal.subagent_pool_backgrounded,
+            pool_id="pool-7",
+            tool_result=receipt,
+        )
+        (terminal,) = journal.completed_background_subagent_pools()
+        assert terminal["status"] == "completed" and terminal["text"] == "finished"
+        assert terminal["tool_result"] == receipt
+        sequences = [json.loads(line)["seq"] for line in path.read_text().splitlines()]
+        assert sequences == list(range(10))
+    finally:
+        journal.close()
+
+
+async def test_cancelling_off_loop_append_waits_for_durable_write(tmp_path: Path) -> None:
+    import threading
+
+    from agenthicc.memory.journal import persist_journal_record
+
+    journal = ConversationJournal(tmp_path / "journal.jsonl")
+    written = asyncio.Event()
+    release = threading.Event()
+    loop = asyncio.get_running_loop()
+
+    def append() -> None:
+        loop.call_soon_threadsafe(written.set)
+        assert release.wait(timeout=5)
+        journal.append_message({"role": "user", "content": "durable"})
+
+    pending = asyncio.create_task(persist_journal_record(append))
+    try:
+        await asyncio.wait_for(written.wait(), timeout=5)
+        pending.cancel()
+        await asyncio.sleep(0)
+        assert not pending.done()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await pending
+        assert journal.fold()[0] == [{"role": "user", "content": "durable"}]
+    finally:
+        release.set()
+        await asyncio.gather(pending, return_exceptions=True)
+        journal.close()

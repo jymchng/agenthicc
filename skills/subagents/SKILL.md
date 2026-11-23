@@ -118,6 +118,12 @@ dict with `type` and `task`, and that `max_concurrent` is an integer but not a
 `bool` (`subagents/tool.py:201-239`). An empty list returns an error rather than an empty
 aggregate.
 
+In a direct terminal turn, the pool receipt means workers are still running.
+Continue with unrelated work or end the turn. When the runtime delivers a
+completion notice, call `collect_subagent_results(pool_id)`. Avoid polling,
+sleeping, or duplicating a worker's task. If asked about pending work, report
+that it is still running. Foreground turns receive their aggregate directly.
+
 ---
 
 A task can include `workflow` and optional string-valued `params`.

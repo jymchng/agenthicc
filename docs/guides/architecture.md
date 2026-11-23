@@ -417,3 +417,16 @@ waits at its declared dependency boundary. A failed *optional* phase is reported
 as degraded without blocking unrelated local work; a failed *required* resource
 keeps its fail-closed behavior. See the [startup guide](startup.md) for the
 readiness states and the `/startup` report.
+
+### Subagent completion delivery
+
+The conversation journal folds terminal pools and delivery receipts into the
+pending notice source. The TUI scheduler checks workflow returns and user
+input before starting an eligible wake. A running direct turn commits its
+tool exchange before appending notices and queued input. Stable message IDs
+make the journal append idempotent across interruption and resume. A
+session-owned reconciler scans while a background pool or pending notice
+exists and records recovered wakes for `/perf`. Worker results and pool
+lifecycle appends run off the event loop and are awaited before the pool
+publishes completion. The journal assigns sequence numbers under its write
+lock so worker and parent receipts retain their on-disk order.

@@ -36,6 +36,7 @@ legacy lifecycle marker.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import hashlib
 import logging
@@ -43,10 +44,10 @@ import os
 import threading
 import time
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Final, Literal
+from typing import Final, Literal, ParamSpec
 
 __all__ = [
     "ConversationJournal",
@@ -59,6 +60,21 @@ __all__ = [
 
 _SESSIONS_DIR = Path.home() / ".agenthicc" / "sessions"
 logger = logging.getLogger(__name__)
+
+
+_P = ParamSpec("_P")
+
+
+async def persist_journal_record(
+    write: Callable[_P, None], *args: _P.args, **kwargs: _P.kwargs
+) -> None:
+    """Await an off-loop durable append even if the owning task is cancelled."""
+    task = asyncio.create_task(asyncio.to_thread(write, *args, **kwargs))
+    try:
+        await asyncio.shield(task)
+    except asyncio.CancelledError:
+        await asyncio.shield(task)
+        raise
 
 
 def tool_exchange_recovery_event_id(exchange_id: str, event: str = "repaired") -> str:
@@ -352,18 +368,20 @@ class ConversationJournal:
             return sum(1 for line in fh if line.strip())
 
     def _write(self, entry: dict[str, object]) -> None:
-        payload = (json.dumps(entry, default=str) + "\n").encode("utf-8")
         kind = str(entry.get("kind", ""))
-        if RECORD_DURABILITY.get(kind, "durable") == "advisory":
-            with self._condition:
-                if self._closed:
-                    raise OSError("conversation journal is closed")
+        with self._condition:
+            if self._closed:
+                raise OSError("conversation journal is closed")
+            # Synchronous parent writes and off-loop worker writes share the
+            # same cursor. Assign it in the same critical section as append.
+            entry["seq"] = self._seq
+            payload = (json.dumps(entry, default=str) + "\n").encode("utf-8")
+            if RECORD_DURABILITY.get(kind, "durable") == "advisory":
                 self._pending.append(payload)
                 self._seq += 1
                 self._start_writer()
                 self._condition.notify()
-            return
-        with self._condition:
+                return
             self._fh.flush()
             descriptor = self._fh.fileno()
             # Queued advisory records go first, so the file keeps seq order.
@@ -391,8 +409,8 @@ class ConversationJournal:
                     )
                 raise
             self._seq += 1
-        if _projected(kind) and self._subagent_records is not None:
-            self._subagent_records.append(json.loads(payload))
+            if _projected(kind) and self._subagent_records is not None:
+                self._subagent_records.append(json.loads(payload))
 
     def _write_pending_locked(self, descriptor: int) -> None:
         """Write queued advisory records (caller holds the condition)."""
@@ -442,23 +460,26 @@ class ConversationJournal:
 
     def _subagent_view(self) -> list[dict[str, object]]:
         """Every subagent record, in order: one pass over the file, then incremental."""
-        if self._subagent_records is None:
-            self._drain()
-            records: list[dict[str, object]] = []
-            if self._path.exists():
-                with self._path.open("r", encoding="utf-8") as fh:
-                    for raw in fh:
-                        line = raw.strip()
-                        if not line:
-                            continue
-                        try:
-                            entry = json.loads(line)
-                        except json.JSONDecodeError:
-                            break
-                        if isinstance(entry, dict) and _projected(str(entry.get("kind", ""))):
-                            records.append(entry)
-            self._subagent_records = records
-        return self._subagent_records
+        if self._subagent_records is not None:
+            return self._subagent_records
+        with self._condition:
+            if self._subagent_records is None:
+                self._drain()
+                records: list[dict[str, object]] = []
+                if self._path.exists():
+                    with self._path.open("r", encoding="utf-8") as fh:
+                        for raw in fh:
+                            line = raw.strip()
+                            if not line:
+                                continue
+                            try:
+                                entry = json.loads(line)
+                            except json.JSONDecodeError:
+                                break
+                            if isinstance(entry, dict) and _projected(str(entry.get("kind", ""))):
+                                records.append(entry)
+                self._subagent_records = records
+            return self._subagent_records
 
     def replace_state(self, messages: list[object], summary: str | None) -> None:
         """Atomically journal a full projection replacement for compaction.
@@ -1362,7 +1383,7 @@ class ConversationJournal:
             "subagent_pool_interrupted",
             "subagent_pool_cancelled",
         }
-        records = [record for kind in kinds for record in self._subagent_kind(kind)]
+        records = [record for record in self._subagent_view() if record.get("kind") in kinds]
 
         def sequence(record: Mapping[str, object]) -> int:
             value = record.get("seq")
@@ -1385,6 +1406,15 @@ class ConversationJournal:
                 continue
             value = latest.get(pool_id)
             if value is None:
+                continue
+            if kind == "subagent_pool_backgrounded" and value["status"] not in {
+                "running",
+                "backgrounded",
+            }:
+                # A foreground pool can finish while its detach receipt is
+                # being persisted. Keep its terminal state and exact receipt.
+                value["backgrounded"] = True
+                value["tool_result"] = record.get("tool_result")
                 continue
             value.update(record)
             if kind == "subagent_pool_backgrounded":

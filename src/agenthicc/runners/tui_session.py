@@ -10,6 +10,7 @@ import os
 import sys
 import threading
 import uuid
+from asyncio import sleep as _sleep_for_subagent_reconciliation
 from collections.abc import Awaitable, Callable, Iterable, Iterator, MutableMapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC
@@ -20,6 +21,7 @@ from typing import TYPE_CHECKING, Literal, NoReturn, TextIO, cast
 from agenthicc.supervised_tasks import SupervisedTasks
 
 log = logging.getLogger(__name__)
+_SUBAGENT_RECONCILE_INTERVAL_S = 30.0
 
 
 def _optional_field(value: object, name: str, default: object = None) -> object:
@@ -93,6 +95,7 @@ if TYPE_CHECKING:
     from agenthicc.plugins.discovery import PluginToolSet
     from agenthicc.runners.first_run import FirstRun
     from agenthicc.runners.preflight import PreflightIssue
+    from agenthicc.runners.agent_turn_context import TurnInputReason
     from agenthicc.runners.session_context import SessionContext
     from agenthicc.runners.startup import StartupCoordinator
     from agenthicc.runners.workflow_handle import WorkflowRunHandle
@@ -104,6 +107,7 @@ if TYPE_CHECKING:
     from agenthicc.skills.loader import SkillDef
     from agenthicc.runners.reload import ReloadReport, ReloadSurface
     from agenthicc.subagents.pool import SubagentPool
+    from agenthicc.subagents.delivery import JournalNoticeSource, PendingNotice
     from agenthicc.tools.approval import ApprovalRequest, ApprovalRequester
     from agenthicc.tui.conversation_store import MessageQueue
     from agenthicc.tui.input.unified_session import TerminalHooks
@@ -1620,9 +1624,16 @@ async def _build_session_context_impl(
 
         _incomplete = RunCoordinator.detect_incomplete_turn(session_conversation.journal)
         if _incomplete is not None:
-            pending_resume = RunCoordinator.build_resume_plan(
-                session_conversation.journal, _incomplete
-            )
+            from agenthicc.subagents.delivery import WAKE_TURN_PREFIX
+
+            if _incomplete.turn_id.startswith(WAKE_TURN_PREFIX):
+                session_conversation.journal.turn_aborted(
+                    _incomplete.turn_id, reason="interrupted_subagent_wake"
+                )
+            else:
+                pending_resume = RunCoordinator.build_resume_plan(
+                    session_conversation.journal, _incomplete
+                )
     startup.finish("selected_restore")
 
     return SessionContext(
@@ -2036,6 +2047,15 @@ class TUISession:
         self._suspended_workflow_handles: dict[str, WorkflowRunHandle] = {}
         # Commands that run in the background (for example /compact).
         self._tasks = SupervisedTasks("tui session")
+        self._subagent_notices: JournalNoticeSource | None = None
+        self._subagent_reconciler: asyncio.Task[None] | None = None
+        self._subagent_input_listeners: set[Callable[[TurnInputReason], None]] = set()
+        self._msg_queue.items.subscribe(self._notify_subagent_turn_input)
+        self._subagent_scheduler_context = contextvars.copy_context()
+        self._subagent_hint_ids: set[str] = set()
+        self._subagent_wake_recoveries = 0
+        self._subagent_wake_active = False
+        self._subagent_resume_pending = ctx.resumed
         from agenthicc.runners.workflow_recovery import WorkflowRecoveryCoordinator
 
         self._workflow_recovery = WorkflowRecoveryCoordinator(ctx.session_id)
@@ -2286,16 +2306,26 @@ class TUISession:
             stack.set_base(name)
         self._project_workflow_stack()
 
-    def _schedule_workflow_turn(self, text: str, client_id: str, *, key: str | None = None) -> None:
+    def _schedule_workflow_turn(
+        self,
+        text: str,
+        client_id: str,
+        *,
+        key: str | None = None,
+        wake_ids: frozenset[str] = frozenset(),
+    ) -> None:
         turn_id = key or f"turn_{uuid.uuid4().hex}"
         payload: dict[str, object] = {"text": text, "client_id": client_id}
         if key is not None:
             payload["idempotency_key"] = key
         self._publish_session_event("turn_queued", payload, turn_id=turn_id)
         self._activate_streaming_input()
-        self._agent_task = asyncio.create_task(
-            self.agent_task_body(text, turn_id=turn_id), name=client_id
+        turn = (
+            self.agent_task_body("", turn_id=turn_id, wake_ids=wake_ids)
+            if wake_ids
+            else self.agent_task_body(text, turn_id=turn_id)
         )
+        self._agent_task = asyncio.create_task(turn, name=client_id)
 
     def _start_workflow_call(self, name: str, intent: str) -> None:
         from agenthicc.runners.workflow_stack import WorkflowCall
@@ -3424,7 +3454,7 @@ class TUISession:
             failure = exc
         finally:
             self._runtime_pending = False
-        if self._msg_queue and (self._agent_task is None or self._agent_task.done()):
+        if self._msg_queue:
             self.advance()
         if failure is not None:
             raise failure
@@ -3473,6 +3503,12 @@ class TUISession:
             )
             raise
         self._restore_paused_workflow()
+        self._install_subagent_notices()
+        if self._ctx.resumed and (pending := self._pending_subagent_notices()):
+            self._ensure_subagent_reconciliation()
+            self._ctx.app_state.conversation.notify_transient(
+                f"◆ {len(pending)} background pool(s) ended while you were away — Ctrl+O"
+            )
         self._publish_session_readiness()
         self._notify_tool_history_recovery()
         # A previous session's in-progress workflow is announced, never
@@ -4263,17 +4299,18 @@ class TUISession:
         from agenthicc.subagents.pool import active_pool
 
         conversation = self._ctx.app_state.conversation
+        foreground = conversation.subagent_foreground()
         state = conversation.subagent_pool_state()
-        if state is None:
-            conversation.notify_transient("No active subagent pool to background")
-            return
-        pool = active_pool(state.pool_id)
+        pool_id = (
+            state.pool_id
+            if state is not None and state.pool_id in foreground
+            else min(foreground, default="")
+        )
+        pool = active_pool(pool_id) if pool_id else None
         if pool is None or not pool.request_background():
             conversation.notify_transient("No active subagent pool to background")
             return
-        conversation.notify_transient(
-            f"◈ Backgrounding {state.total} subagent worker(s); the result will arrive next turn"
-        )
+        conversation.notify_transient(f"◈ Backgrounding {pool.state.total} subagent worker(s)")
 
     def open_subagents(self) -> None:
         """Ctrl+O, ``/subagents``: the subagent panel with focus (AGX-08 §5.2)."""
@@ -4456,6 +4493,7 @@ class TUISession:
             startup=ctx.startup,
             frame_stats=self._workspace.frame_stats,
             loop_lag=lambda: vars(self).get("_loop_lag"),
+            wake_recoveries=lambda: self._subagent_wake_recoveries,
             keymap_service=vars(self).get("_keymap_service"),
             mode_manager=ctx.mode_manager,
             terminal_manager=ctx.terminal_manager,
@@ -4524,12 +4562,15 @@ class TUISession:
     def _usage_snapshot(self) -> UsageSnapshot:
         """Read one local usage snapshot without touching the active runner."""
         from agenthicc.commands.command import UsageSnapshot
+        from agenthicc.runners.usage_ledger import UsageCategory
 
         conversation = self._ctx.app_state.conversation
         task = self._agent_task
         ledger = self._ctx.usage_ledger
         if ledger is not None:
             ledger_snapshot = ledger.snapshot()
+            wake_usage = ledger.snapshot(category=UsageCategory.WAKE)
+            agent_usage = ledger.snapshot(category=UsageCategory.AGENT)
             return UsageSnapshot(
                 input_tokens=ledger_snapshot.input_tokens,
                 output_tokens=ledger_snapshot.output_tokens,
@@ -4543,6 +4584,9 @@ class TUISession:
                 unavailable_calls=ledger_snapshot.unavailable_calls,
                 provisional_calls=ledger_snapshot.provisional_calls,
                 durability_status=ledger_snapshot.durability_status,
+                agent_tokens=agent_usage.total_tokens,
+                wake_tokens=wake_usage.total_tokens,
+                wake_calls=wake_usage.calls,
             )
         return UsageSnapshot(
             input_tokens=int(conversation.tokens_in()),
@@ -4568,6 +4612,9 @@ class TUISession:
         # turn, then cancels the agent task.  The process group therefore does
         # not outlive a cancelled foreground wait.
         terminal_manager = self._ctx.terminal_manager
+        if self._subagent_wake_active:
+            self._ctx.app_state.conversation.subagent_wake_paused.set(True)
+            self._subagent_wake_active = False
         try:
             if terminal_manager is not None:
                 terminal_manager.request_stop_current()
@@ -5444,8 +5491,15 @@ class TUISession:
         )
         return True
 
-    def advance(self) -> None:
-        """Drain _msg_queue: dispatch slash commands, start next agent task."""
+    def advance(self, subagent_hint: bool = False, *, allow_subagent_wake: bool = True) -> None:
+        """Schedule workflow returns, queued input, then a subagent wake."""
+        if self._tasks.closed:
+            return
+        notices = self._pending_subagent_notices() if subagent_hint else ()
+        if subagent_hint:
+            self._subagent_hint_ids = {notice.message_id for notice in notices}
+        if self._agent_task is not None and not self._agent_task.done():
+            return
         self._flush_backgrounded()
         if self._agent_task is None or self._agent_task.done():
             self._apply_pending_model()
@@ -5508,37 +5562,184 @@ class TUISession:
                 self.agent_task_body(msg, turn_id=turn_id), name="agent-turn"
             )
             return
+        if allow_subagent_wake and self._schedule_subagent_wake(notices):
+            return
         if not notice_kept:
             self._ctx.app_state.conversation.notification.set(None)
 
-    # ── agent turn plumbing ───────────────────────────────────────────────────
+    # ── subagent notices and wake scheduling ──────────────────────────────────
 
-    def _deliver_completed_background_subagents(self) -> None:
-        """Notify the parent of finished background pools at a turn boundary."""
+    def _install_subagent_notices(self) -> JournalNoticeSource | None:
         from agenthicc.memory.journaled import JournaledShortTermMemory
         from agenthicc.subagents.communication import registry_for_session
-        from agenthicc.subagents.delivery import (
-            deliver_background_pool_notices,
-            deliver_background_question_notices,
+        from agenthicc.subagents.delivery import JournalNoticeSource
+
+        conversation = self._ctx.session_conversation
+        if conversation is None or not isinstance(conversation.memory, JournaledShortTermMemory):
+            return None
+        if (
+            self._subagent_notices is not None
+            and self._subagent_notices.journal is conversation.journal
+        ):
+            return self._subagent_notices
+        registry = registry_for_session(self._ctx.session_id, self._ctx.app_state.conversation)
+        registry.on_terminal(self._hint_subagent_activity)
+        registry.on_activity(self._hint_subagent_activity)
+        self._subagent_notices = JournalNoticeSource(conversation.journal, registry)
+        return self._subagent_notices
+
+    def _pending_subagent_notices(self) -> tuple[PendingNotice, ...]:
+        source = self._subagent_notices
+        if source is None:
+            return ()
+        notices = source.claim()
+        running = sum(
+            handle.backgrounded and not handle.task.done() for handle in source.registry.handles()
+        )
+        conv = self._ctx.app_state.conversation
+        conv.subagent_background_running.set(running)
+        conv.subagent_finished_pending.set(sum(notice.kind == "completion" for notice in notices))
+        timer = self._subagent_reconciler
+        if (
+            not running
+            and not notices
+            and timer is not None
+            and timer is not asyncio.current_task()
+        ):
+            timer.cancel()
+        return notices
+
+    def _hint_subagent_activity(self) -> None:
+        if self._tasks.closed:
+            return
+        self._notify_subagent_turn_input()
+        context = self._subagent_scheduler_context
+        asyncio.get_running_loop().call_soon(self.advance, True, context=context.copy())
+        self._ensure_subagent_reconciliation()
+
+    def _ensure_subagent_reconciliation(self) -> None:
+        if not self._tasks.closed and (
+            self._subagent_reconciler is None or self._subagent_reconciler.done()
+        ):
+            self._subagent_reconciler = self._subagent_scheduler_context.run(
+                self._tasks.start, self._watch_subagent_wakes(), name="subagent-wake-reconcile"
+            )
+
+    def _stop_subagent_wakes(self) -> None:
+        if self._subagent_notices is not None:
+            self._subagent_notices.registry.on_terminal(None)
+            self._subagent_notices.registry.on_activity(None)
+        if self._subagent_reconciler is not None:
+            self._subagent_reconciler.cancel()
+
+    async def _watch_subagent_wakes(self) -> None:
+        while self._subagent_notices is not None:
+            source = self._subagent_notices
+            if not source.has_pending() and not any(
+                handle.backgrounded and not handle.task.done()
+                for handle in source.registry.handles()
+            ):
+                return
+            await _sleep_for_subagent_reconciliation(_SUBAGENT_RECONCILE_INTERVAL_S)
+            self.reconcile_subagent_wakes()
+
+    def reconcile_subagent_wakes(self) -> None:
+        """Rescan the durable notices after an idle or timed transition."""
+        self._notify_subagent_turn_input()
+        self.advance()
+
+    def _subagent_boundary_ready(self) -> bool:
+        return (
+            not self._handoff_pending and not self._handed_off and not self._tool_history_blocked()
         )
 
-        session_conversation = self._ctx.session_conversation
-        if session_conversation is None or self._tool_history_blocked():
-            return
-        memory = session_conversation.memory
+    def _pending_subagent_turn_input(self) -> TurnInputReason | None:
+        if any(item.joins_turn for item in self._msg_queue.items()):
+            return "user_input"
+        source = self._subagent_notices
+        if source is not None and self._subagent_boundary_ready() and source.has_pending():
+            return "notice"
+        return None
+
+    def _notify_subagent_turn_input(self) -> None:
+        if self._subagent_input_listeners and (reason := self._pending_subagent_turn_input()):
+            for listener in tuple(self._subagent_input_listeners):
+                listener(reason)
+
+    def _subscribe_subagent_turn_input(
+        self, listener: Callable[[TurnInputReason], None]
+    ) -> Callable[[], None]:
+        if reason := self._pending_subagent_turn_input():
+            listener(reason)
+        self._subagent_input_listeners.add(listener)
+        return lambda: self._subagent_input_listeners.discard(listener)
+
+    def _schedule_subagent_wake(self, notices: tuple[PendingNotice, ...]) -> bool:
+        from hashlib import sha256
+        from time import time
+
+        from agenthicc.subagents.delivery import WAKE_TURN_PREFIX
+
+        notices = notices or self._pending_subagent_notices()
+        conv = self._ctx.app_state.conversation
+        handle = self._workflow_handle
+        if (
+            not notices
+            or self._subagent_resume_pending
+            or conv.subagent_wake_paused()
+            or not self._loop_is_idle()
+            or not self._subagent_boundary_ready()
+            or self._ctx.workflow_stack.top.status != "running"
+            or (handle is not None and handle.lifecycle in {"paused", "pausing"})
+            or bool(self._workflow_recovery_records)
+        ):
+            return False
+        for notice in notices:
+            if notice.message_id not in self._subagent_hint_ids:
+                self._subagent_wake_recoveries += 1
+                log.info(
+                    "subagent_wake_recovered pool=%s age_s=%.3f",
+                    notice.pool_id,
+                    max(0.0, time() - notice.recorded_at),
+                )
+        ids = "\n".join(sorted(notice.message_id for notice in notices))
+        key = WAKE_TURN_PREFIX + sha256(ids.encode()).hexdigest()
+        self._subagent_wake_active = True
+        self._schedule_workflow_turn(
+            notices[0].text,
+            "subagent-completion",
+            key=key,
+            wake_ids=frozenset(notice.message_id for notice in notices),
+        )
+        return True
+
+    def _deliver_completed_background_subagents(
+        self, wake_ids: frozenset[str] = frozenset()
+    ) -> int:
+        """Append and acknowledge pending notices while this turn owns memory."""
+        from agenthicc.memory.journaled import JournaledShortTermMemory
+        from agenthicc.subagents.delivery import deliver_notices
+
+        source = self._install_subagent_notices()
+        conversation = self._ctx.session_conversation
+        if source is None or conversation is None or self._tool_history_blocked():
+            return 0
+        memory = conversation.memory
         if not isinstance(memory, JournaledShortTermMemory):
-            return
-        conversation = self._ctx.app_state.conversation
-        deliver_background_pool_notices(session_conversation.journal, memory, conversation)
-        # Questions from still-running background pools (on_clarification =
-        # "queue"); the same registry the spawn tool registers pools in.
-        deliver_background_question_notices(
-            registry_for_session(str(self._ctx.session_id), conversation),
-            memory,
-            conversation,
-        )
+            return 0
+        notices = self._pending_subagent_notices()
+        if wake_ids:
+            notices = tuple(notice for notice in notices if notice.message_id in wake_ids)
+        deliver_notices(notices, memory, self._ctx.app_state.conversation)
+        self._subagent_hint_ids.difference_update(notice.message_id for notice in notices)
+        self._pending_subagent_notices()
+        return len(notices)
 
-    async def run_turn(self, text: str, resume: object | None = None) -> None:
+    # ── agent turn plumbing ───────────────────────────────────────────────────
+
+    async def run_turn(
+        self, text: str, resume: object | None = None, *, wake_key: str | None = None
+    ) -> None:
         """Dispatch one user message: workflow or direct agent turn.
 
         *resume* (a PRD-129 ``ResumePlan``) re-drives an interrupted direct turn
@@ -5564,7 +5765,7 @@ class TUISession:
         self._input_session.set_mode(InputMode.STREAMING)
         ctx.approval_svc.reset_turn_memory()
 
-        if self._pending_skill_body:
+        if self._pending_skill_body and wake_key is None:
             text = self._pending_skill_body.pop() + "\n\n" + text
 
         base_name = stack.base_dispatch_name
@@ -5574,6 +5775,8 @@ class TUISession:
             else (ctx.workflow_registry.get(base_name) if base_name else None)
         )
 
+        if wake_key is not None:
+            _plugin_cls = None
         _timeout = ctx.cfg.execution.turn_timeout_s
         # PRD-126 gap 11: a turn-timeout deadline so retries are not scheduled
         # when there is no meaningful budget left before asyncio.wait_for fires.
@@ -5734,19 +5937,22 @@ class TUISession:
                 )
                 # Plugin owns runner construction — no name-based branching.
                 _wf_runner = _plugin_cls.build_runner(_wf_config, ctx.mode_manager)
-                if self._workflow_handle is not None:
-                    from agenthicc.runners.workflow_execution_context import (
-                        bind_workflow_execution,
-                    )
+                from agenthicc.runners.agent_turn_context import bind_turn_notices
 
-                    with bind_workflow_execution(
-                        self._workflow_handle.run_id,
-                        policy=frame.policy if frame.depth else None,
-                        model_request=frame.model_request(),
-                    ):
+                with bind_turn_notices(None, self._subscribe_subagent_turn_input):
+                    if self._workflow_handle is not None:
+                        from agenthicc.runners.workflow_execution_context import (
+                            bind_workflow_execution,
+                        )
+
+                        with bind_workflow_execution(
+                            self._workflow_handle.run_id,
+                            policy=frame.policy if frame.depth else None,
+                            model_request=frame.model_request(),
+                        ):
+                            _runner_result = await _wf_runner.run(text)
+                    else:
                         _runner_result = await _wf_runner.run(text)
-                else:
-                    _runner_result = await _wf_runner.run(text)
                 self._record_returned_workflow_result(_runner_result)
                 self._finalize_returned_workflow(_runner_result)
                 await self._finish_workflow_frame(_runner_result, _plugin_cls)
@@ -5814,6 +6020,7 @@ class TUISession:
                     next_queued_message=self._next_queued_message,
                     usage_ledger=ctx.usage_ledger,
                     browser_manager=ctx.browser_manager,
+                    subagent_wake_key=wake_key,
                 )
 
         try:
@@ -5851,6 +6058,8 @@ class TUISession:
         text: str,
         resume: object | None = None,
         turn_id: str | None = None,
+        *,
+        wake_ids: frozenset[str] = frozenset(),
     ) -> None:
         """Wrap run_turn with error handling; advance queue on completion."""
         from agenthicc.tui.input.unified_session import InputMode
@@ -5918,14 +6127,27 @@ class TUISession:
                 await conversation.acquire(owner_id)
                 acquired = True
             if resume is None:
-                self._deliver_completed_background_subagents()
-            from agenthicc.runners.agent_turn_context import bind_background_task_owner
+                delivered = self._deliver_completed_background_subagents(wake_ids)
+                if wake_ids and not delivered:
+                    return
+            from agenthicc.runners.agent_turn_context import (
+                bind_background_task_owner,
+                bind_turn_notices,
+            )
 
             with (
                 bind_background_task_owner(self._tasks, interactive=True),
+                bind_turn_notices(
+                    self._subagent_notices,
+                    self._subscribe_subagent_turn_input,
+                    can_deliver=self._subagent_boundary_ready,
+                ),
                 bind_workflow_tools(workflow_tools),
             ):
-                await self.run_turn(text, resume=resume)
+                if wake_ids:
+                    await self.run_turn(text, wake_key=turn_id)
+                else:
+                    await self.run_turn(text, resume=resume)
         except WorkflowHandoff:
             try:
                 self._suspend_workflow_for_child()
@@ -5985,6 +6207,8 @@ class TUISession:
                     turn_id=turn_id,
                 )
             self._agent_task = None
+            if wake_ids:
+                self._subagent_wake_active = False
             pending = workflow_tools.take_pending()
             if pending is not None and (turn_cancelled or turn_failed or workflow_paused):
                 conv.append_event(
@@ -5992,7 +6216,11 @@ class TUISession:
                 )
                 pending = None
             if pending is None or not self._launch_workflow_call(pending):
-                self.advance()
+                if wake_ids and turn_failed:
+                    self._ensure_subagent_reconciliation()
+                    self.advance(allow_subagent_wake=False)
+                else:
+                    self.advance()
 
     async def _finalize_workflow_pause(self, handle: WorkflowRunHandle) -> None:
         """Persist a paused workflow only after the runner has unwound."""
@@ -6076,6 +6304,9 @@ class TUISession:
         source = source_value if isinstance(source_value, str) and source_value else "user"
         if not text:
             return
+        if source == "user":
+            self._subagent_resume_pending = False
+            self._ctx.app_state.conversation.subagent_wake_paused.set(False)
         if text.startswith("/") and text.split(maxsplit=1)[0] in _BACKGROUND_HANDOFF_COMMANDS:
             # A handoff must run even while a turn is active.
             self.dispatch_slash(text)
@@ -6448,31 +6679,40 @@ class TUISession:
             resume_context = (
                 handle.context if handle is not None and handle.context is not None else context
             )
-            if handle is not None:
-                from agenthicc.runners.workflow_execution_context import (
-                    bind_workflow_execution,
-                )
+            from agenthicc.runners.agent_turn_context import (
+                bind_background_task_owner,
+                bind_turn_notices,
+            )
 
-                pending_resume = ctx.pending_resume
-                resume_plan = (
-                    pending_resume
-                    if pending_resume is not None
-                    and pending_resume.workflow_run_id == handle.run_id
-                    else None
-                )
-                frame = ctx.workflow_stack.top
-                with (
-                    bind_workflow_execution(
-                        handle.run_id,
-                        resume_plan=resume_plan,
-                        policy=frame.policy if frame.depth else None,
-                        model_request=frame.model_request(),
-                    ),
-                    bind_workflow_tools(workflow_tools),
-                ):
+            with (
+                bind_background_task_owner(self._tasks, interactive=True),
+                bind_turn_notices(None, self._subscribe_subagent_turn_input),
+            ):
+                if handle is not None:
+                    from agenthicc.runners.workflow_execution_context import (
+                        bind_workflow_execution,
+                    )
+
+                    pending_resume = ctx.pending_resume
+                    resume_plan = (
+                        pending_resume
+                        if pending_resume is not None
+                        and pending_resume.workflow_run_id == handle.run_id
+                        else None
+                    )
+                    frame = ctx.workflow_stack.top
+                    with (
+                        bind_workflow_execution(
+                            handle.run_id,
+                            resume_plan=resume_plan,
+                            policy=frame.policy if frame.depth else None,
+                            model_request=frame.model_request(),
+                        ),
+                        bind_workflow_tools(workflow_tools),
+                    ):
+                        runner_result = await runner.resume(resume_context)
+                else:
                     runner_result = await runner.resume(resume_context)
-            else:
-                runner_result = await runner.resume(resume_context)
             if handle is not None and runner_result is not None:
                 handle.attach_context(runner_result)
             self._record_returned_workflow_result(runner_result)
@@ -6795,6 +7035,7 @@ class TUISession:
             # session; otherwise Windows may leave its executor/terminal wait
             # alive during asyncio shutdown.
             self._msg_queue.clear()
+            self._stop_subagent_wakes()
             await self._tasks.aclose()
             monitor = vars(self).get("_loop_lag")
             if monitor is not None:

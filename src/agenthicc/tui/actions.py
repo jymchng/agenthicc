@@ -33,7 +33,7 @@ turns), ``expandable`` (the selected item has more to show), ``rewind`` (it
 selects turns only) and ``hits`` (a search found something).
 
 The composer also reports ``subagents`` while the subagent panel is shown
-(AGX-08), and ``subagents_running`` while a pool still has live workers. Ctrl+B
+(AGX-08), and ``subagents_foreground`` while a pool still has live workers. Ctrl+B
 backgrounds that active pool. The panel and a worker's transcript report ``worker`` (the selected
 worker has a transcript), ``running_worker`` (it has not finished) and
 ``failed_worker`` (it failed and its row has not been dismissed).
@@ -359,7 +359,7 @@ _COMPOSER_ACTIONS: tuple[Action, ...] = (
         "background pool",
         hint_priority=46,
         description="Let the active subagent pool continue in the background",
-        when=frozenset({"running", "subagents_running"}),
+        when=frozenset({"running", "subagents_foreground"}),
     ),
     Action(
         "subagents.focus",

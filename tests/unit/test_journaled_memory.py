@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from lauren_ai import IdempotencyLedger, ToolResult
@@ -67,6 +69,30 @@ class TestJournalsEveryTransition:
         assert not resumed.add_user_once("worker result", message_id=receipt_id)
         assert resumed._messages == [{"role": "user", "content": "compacted"}]
         resumed_journal.close()
+
+    def test_failed_synthetic_append_can_retry_without_duplicate_memory(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        journal, memory = _make(tmp_path)
+
+        def fail(self: ConversationJournal, message: object, *, message_id: str = "") -> None:
+            raise OSError("journal unavailable")
+
+        try:
+            with monkeypatch.context() as scoped:
+                scoped.setattr(ConversationJournal, "append_message", fail)
+                with pytest.raises(OSError, match="journal unavailable"):
+                    memory.add_user_once("completion", message_id="pool")
+            assert memory._messages == []
+            assert not journal.has_message_id("pool")
+            assert memory.add_user_once("completion", message_id="pool")
+            assert (
+                memory._messages == journal.fold()[0] == [{"role": "user", "content": "completion"}]
+            )
+        finally:
+            journal.close()
 
 
 class TestResume:

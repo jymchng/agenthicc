@@ -14,6 +14,7 @@ import gc
 import time
 from collections.abc import Iterator
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import pytest
 
@@ -203,3 +204,107 @@ async def test_six_subagents_searching_keep_the_loop_responsive(
     )
     assert worst < MAX_STALL_S, f"worst stall {worst * 1000:.0f} ms: {culprits}"
     assert p95 < P95_STALL_S, f"p95 stall {p95 * 1000:.0f} ms"
+
+
+async def test_a16_eight_background_workers_and_a_wake_keep_the_tui_responsive(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from lauren_ai._transport import Completion
+
+    from agenthicc.tui.loop_lag import LoopLagMonitor
+    from tests.e2e.self_extension.harness import ModelRequest, reply, tool_call
+    from tests.integration.test_subagent_wake import notices
+    from tests.subagent_sessions import ScenarioTransport, attach, send, spawn_call, tui, until
+
+    release = asyncio.Event()
+    entered = 0
+    woke = asyncio.Event()
+
+    read_steps = 4
+
+    async def worker(request: ModelRequest) -> Completion:
+        nonlocal entered
+        reads = sum("tool_result" in str(message["content"]) for message in request.messages)
+        if reads == read_steps:
+            await release.wait()
+            return reply("Checked.")
+        if reads == 0:
+            entered += 1
+            # Stagger the scripted provider responses while the workers issue
+            # real reads over several provider round trips.
+            await asyncio.sleep(0.16 * entered)
+        else:
+            await asyncio.sleep(1.0)
+        return tool_call("read_file", {"path": "sample.txt"}, use_id=f"worker-read-{reads}")
+
+    async def main(request: ModelRequest, sequence: int) -> Completion:
+        if sequence == 1:
+            return spawn_call(8)
+        if sequence == 2:
+            assert request.contains('"status": "running"')
+            return reply("Delegated.")
+        assert sequence == 3
+        finished = [notice for notice in notices(request) if "8/8 succeeded" in notice]
+        assert len(finished) == 1
+        woke.set()
+        return reply("All eight workers completed.")
+
+    # Keep durable syscalls and the real projections in the benchmark. Use
+    # tmpfs when available so unrelated disk writeback cannot mask loop stalls.
+    ram = Path("/dev/shm")
+    with (
+        TemporaryDirectory(prefix="agenthicc-lag-", dir=ram if ram.is_dir() else tmp_path) as root,
+        monkeypatch.context() as scoped,
+    ):
+        async with tui(Path(root), scoped) as session:
+            # The budget covers a working session. Resolve first-use imports and
+            # start the real journal and transcript writers before sampling.
+            async def warm_parent(_request: ModelRequest, sequence: int) -> Completion:
+                return spawn_call() if sequence == 1 else reply("Warm-up complete.")
+
+            async def warm_worker(_request: ModelRequest) -> Completion:
+                return reply("Warm-up checks passed.")
+
+            warmup = ScenarioTransport(warm_parent, warm_worker)
+            attach(session, warmup)
+            await (await send(session, "Warm the scripted worker path."))
+            await until(
+                lambda: (
+                    any(notices(request) for request in warmup.main_requests)
+                    and session._agent_task is None
+                )
+            )
+
+            Path("sample.txt").write_text("x = 1\n", encoding="utf-8")
+            script = ScenarioTransport(main, worker)
+            attach(session, script)
+            gc.collect()
+            gc.freeze()
+            sampler = _Sampler()
+            monitor = LoopLagMonitor(threshold_s=0.025)
+            task = asyncio.create_task(sampler.run())
+            monitor.start()
+            try:
+                await (await send(session, "Start eight background checks."))
+                await until(lambda: len(script.worker_requests) == 8 * (read_steps + 1))
+                assert session._agent_task is None
+                assert session._ctx.app_state.conversation.subagent_background_running() == 1
+                release.set()
+                await until(woke.is_set)
+                await until(lambda: session._agent_task is None)
+            finally:
+                release.set()
+                sampler.stop()
+                await task
+                await monitor.stop()
+            ordered = sorted(sampler.lags)
+            worst = ordered[-1]
+            p95 = ordered[int(0.95 * (len(ordered) - 1))]
+            culprits = "; ".join(
+                f"{stall.duration_s * 1000:.0f} ms at {' <- '.join(reversed(stall.frames[-12:]))}"
+                for stall in monitor.stalls()
+            )
+            assert worst < 0.250, f"worst stall {worst * 1000:.1f} ms: {culprits}"
+            assert p95 < 0.025, f"p95 stall {p95 * 1000:.1f} ms: {culprits}"
+            print(f"Eight workers plus wake: max {worst * 1000:.1f} ms, p95 {p95 * 1000:.1f} ms.")

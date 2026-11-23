@@ -11,7 +11,7 @@ from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, NotRequired, TypedDict
+from typing import TYPE_CHECKING, Literal, NotRequired, TypedDict
 
 from agenthicc.supervised_tasks import SupervisedTasks
 
@@ -36,6 +36,45 @@ _background_task_owner: ContextVar[SupervisedTasks | None] = ContextVar(
     "agenthicc_background_task_owner", default=None
 )
 _interactive_session: ContextVar[bool] = ContextVar("agenthicc_interactive_session", default=False)
+_notice_source: ContextVar[NoticeSource | None] = ContextVar(
+    "agenthicc_notice_source", default=None
+)
+_notice_guard: ContextVar[Callable[[], bool] | None] = ContextVar(
+    "agenthicc_notice_guard", default=None
+)
+TurnInputReason = Literal["user_input", "notice"]
+TurnInputSubscriber = Callable[[Callable[[TurnInputReason], None]], Callable[[], None]]
+_turn_input_subscriber: ContextVar[TurnInputSubscriber | None] = ContextVar(
+    "agenthicc_turn_input_subscriber", default=None
+)
+
+
+@contextmanager
+def bind_turn_notices(
+    source: NoticeSource | None,
+    subscribe_input: TurnInputSubscriber | None = None,
+    *,
+    can_deliver: Callable[[], bool] | None = None,
+) -> Iterator[None]:
+    """Bind the notice source and input interruption for the current turn."""
+    source_token = _notice_source.set(source)
+    subscriber_token = _turn_input_subscriber.set(subscribe_input)
+    guard_token = _notice_guard.set(can_deliver)
+    try:
+        yield
+    finally:
+        _notice_guard.reset(guard_token)
+        _turn_input_subscriber.reset(subscriber_token)
+        _notice_source.reset(source_token)
+
+
+def current_notice_source() -> NoticeSource | None:
+    guard = _notice_guard.get()
+    return _notice_source.get() if guard is None or guard() else None
+
+
+def current_turn_input_subscriber() -> TurnInputSubscriber | None:
+    return _turn_input_subscriber.get()
 
 
 @contextmanager
@@ -104,6 +143,7 @@ def current_provider_diagnostic_context() -> dict[str, str | int] | None:
 
 
 if TYPE_CHECKING:
+    from agenthicc.subagents.delivery import NoticeSource
     from lauren_ai import IdempotencyLedger
     from lauren_ai._agents._runner import AgentRunnerBase
     from lauren_ai._memory import ShortTermMemory
@@ -189,6 +229,7 @@ class AgentTurnContext:
     session_memory: "ShortTermMemory | None" = None
     conversation_id: str = ""
     max_agent_turns: int = 200
+    subagent_wake_key: str | None = None
 
     # ── observability ─────────────────────────────────────────────────────────
     conv_store: "ConversationStore | None" = None

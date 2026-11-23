@@ -6,7 +6,6 @@ import asyncio
 import gc
 import io
 import time
-from types import SimpleNamespace
 
 import pytest
 from rich.console import Console
@@ -80,6 +79,8 @@ async def test_an_idle_loop_records_no_stall_and_little_lag() -> None:
 
 async def test_perf_lists_loop_lag_and_stalls() -> None:
     from agenthicc.commands.builtins import _cmd_perf
+    from agenthicc.commands.command import CommandContext
+    from agenthicc.config import AgenthiccConfig
     from agenthicc.tui.workspace.frames import FrameStats
 
     monitor = LoopLagMonitor(interval_s=0.01, threshold_s=0.1)
@@ -91,13 +92,17 @@ async def test_perf_lists_loop_lag_and_stalls() -> None:
     finally:
         await monitor.stop()
     output = io.StringIO()
-    context = SimpleNamespace(
+    context = CommandContext(
+        text="/perf",
+        args="",
+        model="offline",
         console=Console(file=output, width=200),
+        config=AgenthiccConfig(),
         frame_stats=lambda: FrameStats(),
         loop_lag=lambda: monitor,
     )
 
-    assert _cmd_perf(context) is True  # type: ignore[arg-type]
+    assert _cmd_perf(context) is True
 
     text = output.getvalue()
     assert "Event-loop lag:" in text

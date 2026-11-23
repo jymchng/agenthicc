@@ -208,6 +208,7 @@ carries an implementation-status section with per-goal evidence.
 - [SUBAGENT-13 — Tool surfaces that match the role, and a capability-aware type catalog (implemented)](SUBAGENT-13-role-complete-tool-surfaces.md)
 - [SUBAGENT-14 — Parent-verifiable worker evidence in the spawn digest (implemented)](SUBAGENT-14-parent-verifiable-worker-evidence.md)
 - [SUBAGENT-15 — Parallel implementation in isolated git worktrees (implemented)](SUBAGENT-15-worktree-isolated-parallel-implementation.md)
+- [SUBAGENT-16 — Non-blocking subagents by default (implemented)](subagents-nov/SUBAGENT-16-non-blocking-subagents-by-default.md)
 - [SUBAGENT series — coverage and scope audit (historical)](SUBAGENT-series-audit.md)
 - [SUBAGENT series — closure audit, criterion by criterion (2026-11-04)](SUBAGENT-series-closure-audit.md)
 

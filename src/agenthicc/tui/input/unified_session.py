@@ -348,8 +348,8 @@ class UnifiedInputSession:
         pool_state = self._state.conversation.subagent_pool_state()
         if pool_state is not None:
             flags.add("subagents")
-            if pool_state.active:
-                flags.add("subagents_running")
+        if self._state.conversation.subagent_foreground():
+            flags.add("subagents_foreground")
         if self._paste.condensed:
             flags.add("paste")
             if self._buf.cursor == self._paste.end:

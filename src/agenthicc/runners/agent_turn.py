@@ -934,7 +934,10 @@ class _TurnRecoveryEventSink:
         elif name == "AgentStepCommitted":
             record = _optional_attribute(self._journal, "step_committed", None)
             if callable(record):
-                record(
+                from agenthicc.memory.journal import persist_journal_record
+
+                await persist_journal_record(
+                    record,
                     turn_id,
                     step_id,
                     step_index=int(_optional_attribute(signal, "step_index", 0) or 0),
@@ -1218,7 +1221,12 @@ class AgentTurnRunner:
         self._workflow_return_key = consume_workflow_return_key()
         if resumed is not None and resumed.startswith("return:"):
             self._workflow_return_key = resumed
-        self._intent_id = self._ctx.resume_turn_id or self._workflow_return_key or uuid.uuid4().hex
+        self._intent_id = (
+            self._ctx.resume_turn_id
+            or self._workflow_return_key
+            or self._ctx.subagent_wake_key
+            or uuid.uuid4().hex
+        )
         self._agent_id = f"agent-{self._intent_id[:8]}"
         await self._ctx.processor.emit(
             Event.create(
@@ -1227,6 +1235,8 @@ class AgentTurnRunner:
                     "intent_id": self._intent_id,
                     "raw_text": "[Workflow return]"
                     if self._workflow_return_key
+                    else "[Subagent wake]"
+                    if self._ctx.subagent_wake_key
                     else self._ctx.text,
                 },
             )
@@ -1758,9 +1768,16 @@ class AgentTurnRunner:
             or ctx.tool_surface_generation is not None
             else _RunnerBase
         )
+        from agenthicc.memory.journaled import JournaledShortTermMemory
+        from agenthicc.runners.agent_turn_context import current_notice_source
+        from agenthicc.subagents.delivery import deliver_notices
+        from agenthicc.subagents.spawn_mode import BACKGROUND_PROMPT, current_spawn_mode
+
+        background_prompt = ""
         next_queued_message = ctx.next_queued_message
-        if next_queued_message is not None:
-            claim_queued_message = next_queued_message
+        notice_source = current_notice_source()
+        self_conv = ctx.conv_store
+        if next_queued_message is not None or notice_source is not None:
 
             class _QueuedInputRunner(SkillAwareRunner):
                 """Commit tool results before injecting the next queued input.
@@ -1790,8 +1807,18 @@ class AgentTurnRunner:
                     )
                     if not results or ctx.turn >= ctx.config.max_turns - 1:
                         return results
-                    queued = claim_queued_message()
-                    if queued is None:
+                    source = current_notice_source()
+                    notices = (
+                        source.claim()
+                        if source is not None and isinstance(ctx.memory, JournaledShortTermMemory)
+                        else ()
+                    )
+                    queued = (
+                        next_queued_message()
+                        if next_queued_message is not None and not notices
+                        else None
+                    )
+                    if queued is None and not notices:
                         return results
                     exchange = getattr(ctx.memory, "active_tool_exchange", None)
                     if exchange is not None and callable(
@@ -1810,7 +1837,12 @@ class AgentTurnRunner:
 
                         complete_results = _complete_tool_results(tool_calls, results)
                         ctx.memory.add_tool_results(complete_results)
-                    ctx.memory.add_user(queued)
+                    if notices and isinstance(ctx.memory, JournaledShortTermMemory):
+                        deliver_notices(notices, ctx.memory, self_conv)
+                        if next_queued_message is not None:
+                            queued = next_queued_message()
+                    if queued is not None:
+                        ctx.memory.add_user(queued)
                     return []
 
             runner_class = _QueuedInputRunner
@@ -1901,6 +1933,7 @@ class AgentTurnRunner:
                                 _resolved = ""
                             resolved_models.add(_resolved or _model_reference)
                         _allowed_models = frozenset(resolved_models)
+            subagent_journal = getattr(ctx.session_memory, "journal", None)
             spawn_tool = make_spawn_subagents_tool(
                 parent_runner=ctx.runner,
                 parent_model=self._model_id,
@@ -1911,7 +1944,7 @@ class AgentTurnRunner:
                 usage_ledger=ctx.usage_ledger,
                 conversation_id=ctx.conversation_id,
                 parent_run_id=self._intent_id,
-                conversation_journal=getattr(ctx.session_memory, "journal", None),
+                conversation_journal=subagent_journal,
                 registry=definition_registry,
                 retry_config=_subagent_retry,
                 provider_options={
@@ -1951,6 +1984,17 @@ class AgentTurnRunner:
                         visible_tools.append(communication_tool)
                 populate_agent_tools(agent_instance, visible_tools)
 
+                from agenthicc.config import SubagentSettings
+
+                if (
+                    current_spawn_mode(
+                        _subagent_settings or SubagentSettings(),
+                        subagent_journal,
+                    )
+                    == "background"
+                ):
+                    background_prompt = f"\n\n{BACKGROUND_PROMPT}"
+
                 # The non-contract path embeds the available-tool catalogue
                 # directly in the system prompt.  That prompt was assembled
                 # before this session-bound tool was registered, so the model
@@ -1965,6 +2009,7 @@ class AgentTurnRunner:
                     description = registry.describe(excluded_names=excluded_names)
                     meta.system = (
                         effective_base
+                        + background_prompt
                         + (f"\n\n{ctx.system_prompt_suffix}" if ctx.system_prompt_suffix else "")
                         + (self._skill_suffix or "")
                         + (f"\n\n{description}" if description else "")
@@ -1976,6 +2021,10 @@ class AgentTurnRunner:
                             "run_bash, run_command, or any other omitted tool. When calling write_file, "
                             "provide both required arguments: path and complete content."
                         )
+
+        if prompt_contract is not None and background_prompt:
+            meta = cast("AgentMeta", vars(type(agent_instance))[AGENT_META])
+            meta.system = (meta.system or "") + background_prompt
 
         # The registry description is intentionally captured after all
         # session-bound tools (including spawn_subagents) have been registered.
@@ -2046,6 +2095,7 @@ class AgentTurnRunner:
                 populate_agent_tools(agent_instance, visible)
                 meta.system = (
                     effective_base
+                    + (background_prompt if "spawn_subagents" in visible_names else "")
                     + (f"\n\n{agent_section}" if agent_section else "")
                     + (f"\n\n{ctx.system_prompt_suffix}" if ctx.system_prompt_suffix else "")
                     + (self._skill_suffix or "")
@@ -2863,7 +2913,7 @@ class AgentTurnRunner:
 
         usage_tracker = None
         if ctx.usage_ledger is not None:
-            from agenthicc.runners.usage_ledger import UsageRunTracker
+            from agenthicc.runners.usage_ledger import UsageCategory, UsageRunTracker
 
             usage_tracker = UsageRunTracker(
                 ctx.usage_ledger,
@@ -2872,6 +2922,7 @@ class AgentTurnRunner:
                 model=self._model_id,
                 agent_id=self._agent_id,
                 agent_name=ctx.active_agent or "default",
+                category=UsageCategory.WAKE if ctx.subagent_wake_key else UsageCategory.AGENT,
             )
             self._usage_tracker = usage_tracker
 
@@ -3041,7 +3092,11 @@ class AgentTurnRunner:
         _attempt_number = [0]
         _partial_stream_text: list[str] = []
         _stream_seeded_user = [False]
-        _resume_existing_turn = [ctx.resume_turn_id is not None or seeded_workflow_return]
+        _resume_existing_turn = [
+            ctx.resume_turn_id is not None
+            or seeded_workflow_return
+            or ctx.subagent_wake_key is not None
+        ]
         _safe_snapshot_includes_user = [False]
         _partial_fragment_recorded = [False]
         _output_attempt_start = [
@@ -3718,6 +3773,7 @@ async def _run_agent_turn(
     provider_diagnostic_context: dict[str, str | int] | None = None,
     tool_surface: ToolSurfaceHolder | None = None,
     tool_surface_generation: int | None = None,
+    subagent_wake_key: str | None = None,
 ) -> None:
     """Thin shim — constructs AgentTurnContext and delegates to AgentTurnRunner.
 
@@ -3785,6 +3841,7 @@ async def _run_agent_turn(
         usage_ledger=usage_ledger,
         browser_manager=browser_manager,
         provider_diagnostic_context=provider_diagnostic_context,
+        subagent_wake_key=subagent_wake_key,
     )
     await AgentTurnRunner(ctx).run()
 

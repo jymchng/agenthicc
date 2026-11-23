@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — non-blocking subagents (SUBAGENT-16)
+
+- **Breaking.** Direct terminal turns spawn in the background by default.
+  Set `subagents.spawn_mode = "foreground"` to wait for results. The new setting
+  replaces `subagents.background_enabled` and the tool schema drops its
+  `background` argument.
+- An idle terminal turn can wake on a completion or question. Active turns
+  receive notices at a tool boundary. The journal and reconciler recover
+  missed wakes, and Esc pauses automatic wakes until the next submission.
+
 ### Added — workflow composition
 
 - Agents can call an eligible workflow and receive its result in the calling

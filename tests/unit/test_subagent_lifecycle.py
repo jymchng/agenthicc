@@ -594,7 +594,9 @@ async def test_the_parent_model_stops_one_worker_of_a_running_pool(tmp_path: Pat
     from lauren_ai._transport import Completion, TokenUsage, ToolCall
 
     from agenthicc.memory.journal import ConversationJournal
-    from agenthicc.runners.agent_turn_context import bind_background_task_owner
+    from agenthicc.runners.agent_turn_context import bind_background_task_owner, bind_turn_notices
+    from agenthicc.subagents.communication import registry_for_session
+    from agenthicc.subagents.delivery import JournalNoticeSource
     from agenthicc.subagents.tool import make_spawn_subagents_tool
     from agenthicc.supervised_tasks import SupervisedTasks
 
@@ -651,8 +653,9 @@ async def test_the_parent_model_stops_one_worker_of_a_running_pool(tmp_path: Pat
         conv_store=store,
     )
     tools = _control_tools(spawn)
+    source = JournalNoticeSource(journal, registry_for_session("conv", store))
     try:
-        with bind_background_task_owner(supervisor, interactive=True):
+        with bind_turn_notices(source), bind_background_task_owner(supervisor, interactive=True):
             receipt = await spawn(  # type: ignore[operator]
                 tasks=[
                     {"type": "researcher", "task": "first"},
@@ -660,7 +663,6 @@ async def test_the_parent_model_stops_one_worker_of_a_running_pool(tmp_path: Pat
                 ],
                 max_concurrent=2,
                 timeout_s=30,
-                background=True,
             )
         pool_id = receipt["pool_id"]
         await asyncio.sleep(0.05)
@@ -679,8 +681,6 @@ async def test_the_parent_model_stops_one_worker_of_a_running_pool(tmp_path: Pat
 
         release.set()
         assert await supervisor.wait(timeout=5)
-        from agenthicc.subagents.communication import registry_for_session
-
         handle = registry_for_session("conv", store).get(pool_id)
         assert handle is not None and handle.pool is not None
         pool = handle.pool
