@@ -212,38 +212,36 @@ prompts, integrations, and tests.
 
 ## Built-in worker roles
 
-A role is a prompt plus a tool rule. The working roles (`implementer`,
-`executor`, `tester`, `documenter`) behave like the main agent: they **inherit
-every tool the parent session exposes** and run under the session's agent turn
-limit (`execution.max_agent_turns`). The investigative roles (`explorer`,
-`planner`, `reviewer`, `verifier`, `researcher`) keep a static read-only
-allow-list, because "this role cannot write" must not rest on a prompt. "Every
-tool" excludes the parent's session control plane — workflow phase transitions,
-`spawn_worker_agents` and `ask_user` (the `control` capability) and the parent's
-own `spawn_subagents`: a worker reaches the parent through `ask_parent` and
-`send_parent_message`, and gets a nested `spawn_subagents` only when
-`subagents.max_depth` allows one. In both
-cases the parent session's actual visible tools, mode and capability policy are
-the ceiling, so a role never gains a tool the current phase or mode removed.
+The role describes the assignment and the expected result. Every built-in
+role inherits the parent's available tools, including all 56 built-ins when
+the parent has the full catalog. If Outlook is unavailable, the other 47
+built-ins are available subject to the parent turn's policy. Plugin and MCP
+tools follow the same rules. Modes, phases, skills, and explicit worker
+permissions can limit the inherited set.
 
-| Role | Intended work | Mutation / execution |
-|---|---|---|
-| `explorer` | Read files, search, inspect git history, report evidence | Read-only |
-| `planner` | Produce a numbered implementation plan from repository facts | Read-only |
-| `implementer` | Make one focused file change and verify it | Every parent tool |
-| `executor` | Carry out an implementation/build/compile task end to end | Every parent tool |
-| `tester` | Write and run focused tests | Every parent tool |
-| `reviewer` | Inspect a change for correctness, security, and regressions | Read-only, including git read |
-| `documenter` | Update scoped documentation and report changed files | Every parent tool |
-| `verifier` | Adversarially check an invariant or acceptance criterion | Read and test tools; no writes |
-| `researcher` | Answer a technical question from local source and docs | Read/search-oriented |
+| Role | Intended work |
+|---|---|
+| `explorer` | Investigate the codebase and report evidence |
+| `planner` | Produce a numbered implementation plan from repository facts |
+| `implementer` | Make one focused file change and verify it |
+| `executor` | Carry out an implementation or build task end to end |
+| `tester` | Write and run focused tests |
+| `reviewer` | Inspect a change for correctness, security, and regressions |
+| `documenter` | Update scoped documentation and report changed files |
+| `verifier` | Check an invariant or acceptance criterion against evidence |
+| `researcher` | Investigate a question and return findings or write requested notes |
+
+The parent owns session controls such as phase transitions and `ask_user`.
+Workers reach it through `ask_parent` and `send_parent_message`. The runtime
+builds each nested spawn tool for its owning worker when depth and policy
+allow it.
 
 The provider schema's enum contains the registered type names, and the tool
 description lists each name with a capability tag and its description:
 
 ```text
-- explorer [read-only]: Read-only codebase exploration and evidence gathering.
-- reviewer [runs commands]: Review code for correctness, clarity, security issues, and bugs.
+- explorer [edits files, runs commands]: Explore the codebase and gather evidence.
+- reviewer [edits files, runs commands]: Review code for correctness, clarity, security issues, and bugs.
 - implementer [edits files, runs commands]: Implement a narrowly scoped code change and verify it.
 - implementer [unavailable in this session: implementer needs a file-changing tool but the Plan policy blocks it]: …
 ```
@@ -312,7 +310,7 @@ gets a `## LONG OUTPUT` section in its system prompt naming its reply limit
 large file, a full rewrite, a long report — must be written to a file in the
 workspace, checked, and referred to by path in the final response, even when the
 task asks for full or verbatim content. Content that fits in one reply is still
-returned in the final response. Read-only types have no write tool and do not get
+returned in the final response. Workers without a permitted write tool do not get
 the section; for them the saved partial reply is the safety net.
 
 **An empty answer is not a result.** If a worker returns no final prose, it gets
@@ -414,7 +412,7 @@ filters. Each worker's transcript records `tool_surface_generation`.
 There are independent tool, capability, and workspace filters:
 
 ```text
-worker tools = parent-visible tools ∩ role.allowed_tools − type.permissions.deny_tools
+worker tools = parent delegable tools ∩ explicit type and depth limits − tool denials
 worker capabilities = parent mode restrictions ∪ type.permissions.deny_capabilities
 worker workspace = inherited workspace roots ∩ type.permissions.workspace_paths
 ```
@@ -436,6 +434,9 @@ narrows the inherited policy:
   definition registry is built and again when a worker is constructed. A
   missing inherited workspace scope or out-of-scope path fails closed; an empty
   declared list gives the worker no workspace roots.
+  Explicit workspace paths are enforced in every mode. These workers use
+  tools that can enforce the filesystem scope. Arbitrary commands and
+  repository-wide Git operations require a scope that can support them.
 
 The parent-visible list has already been restricted by the active workflow
 phase and runtime mode. Each worker then installs `ToolCapabilityGate` from an
@@ -482,9 +483,8 @@ can change files and the workspace is inside a git repository, each runs in its
 2. Each working worker gets a worktree of that snapshot under
    `~/.agenthicc/worktrees/<repository>/`. Every tool derives its root from the
    task-local workspace policy, so the worker's file tools, commands and git all
-   act inside its worktree; nothing about the tools changes. Investigative
-   workers (`explorer`, `planner`, `reviewer`, `verifier`, `researcher`) never get
-   one.
+   act inside its worktree. Workers with a read-only effective surface stay
+   in the original workspace.
 3. As each worker finishes, git records what it changed — whichever tool
    changed it, so a file made by `run_bash` counts as evidence and appears in
    `changed_paths` — and the worker's patch is applied to your workspace with
@@ -517,7 +517,8 @@ Limits to know about:
 - Isolation binds the *workspace policy*, not a sandbox. A worker in Yolo mode
   that is given an absolute path inside your repository can still write there;
   tell workers to use relative paths. Safe mode asks first, and Plan mode denies.
-- A type whose `permissions.workspace_paths` narrows the scope runs shared.
+- A type with `permissions.workspace_paths` retains its scoped roots in a
+  worktree. Repository-relative roots point into the worker's checkout.
 - A retry of a worker (see [Controlling pools](#controlling-pools-from-the-model))
   runs in your workspace, not in a fresh worktree.
 - After a crash, `git worktree list` and `git worktree prune` find and clear
@@ -1184,7 +1185,7 @@ refused when the session has no usable tool that could do so — for example
 `implementer needs a file-changing tool but the Plan policy blocks it`. The
 refusal happens at admission, before any worker or provider call, and the type
 is tagged `unavailable in this session` in the tool description. Choose a
-read-only role for investigation, or run the implementation phase with the
+mode or policy that permits investigation, or run the implementation phase with the
 intended mode and tools exposed.
 
 ### Safe mode does not show an approval

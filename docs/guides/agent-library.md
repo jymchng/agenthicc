@@ -89,7 +89,9 @@ definition with `permissions` is rejected:
   the inherited mode does not already block them.
 - `workspace_paths` narrows filesystem access to roots within the inherited
   workspace scope. An empty list denies all workspace paths; a path outside the
-  inherited scope makes the definition unavailable rather than widening access.
+  inherited scope makes the definition unavailable. This ceiling applies in
+  every mode. Arbitrary commands and repository-wide Git tools require an
+  unrestricted type workspace.
 
 Lists may use `[item, item]` or one `- item` per indented line, including under
 `permissions`. The parser intentionally supports a small YAML subset; YAML

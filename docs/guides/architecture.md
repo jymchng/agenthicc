@@ -116,6 +116,11 @@ pin it at spawn. `TurnToolSurfaceSelected` records the exact provider tool
 names and generation for an intent, including changes between requests, so
 replay can recover the effective list after role and skill filtering.
 
+Subagent types inherit the pinned parent bindings by default. The same
+surface calculation applies explicit type and depth limits for catalog
+descriptions, admission, worktree selection, and worker registration.
+Worker-local workspace and approval policies apply when those tools run.
+
 ## State boundary
 
 The TUI has a second `AppState` in `tui/conversation_store.py`. It is a reactive

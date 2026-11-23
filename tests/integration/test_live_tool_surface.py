@@ -16,7 +16,6 @@ from agenthicc.kernel import AppState, Event, root_reducer
 from agenthicc.plugins.trust import current_extension_trust
 from agenthicc.subagents.tool import SubagentToolSelection, make_spawn_subagents_tool
 from agenthicc.subagents.transcripts import list_pools
-from agenthicc.subagents.types import SubagentTypeSpec
 from agenthicc.tools.base import tool_name
 from agenthicc.tools.surface import ToolSurface
 from agenthicc.workflows.code_plan.runner import CodePlanRunner
@@ -113,9 +112,6 @@ async def test_workers_hold_the_tool_generation_selected_at_spawn(
     old_generation = context.reload.tools.current().generation
     read = next(tool for tool in AGENT_TOOLS if tool_name(tool) == "read_file")
     Path("fixture.txt").write_text("Pinned tools fixture.", encoding="utf-8")
-    context.subagent_registry.register(
-        SubagentTypeSpec("catalog_reader", None, "Read the fixture.")
-    )
     requests: list[set[str]] = []
     first_worker = asyncio.Event()
     resume_first = asyncio.Event()
@@ -158,7 +154,7 @@ async def test_workers_hold_the_tool_generation_selected_at_spawn(
 
     async def work(task: str) -> dict[str, object]:
         return await cast(
-            "Awaitable[dict[str, object]]", spawn(tasks=[{"type": "catalog_reader", "task": task}])
+            "Awaitable[dict[str, object]]", spawn(tasks=[{"type": "researcher", "task": task}])
         )
 
     async with asyncio.TaskGroup() as group:

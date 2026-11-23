@@ -53,7 +53,7 @@ from agenthicc.result_contracts import (
 )
 from agenthicc.security import AgentCapabilityScope
 from agenthicc.subagents.communication import AgentMessageBroker, make_child_communication_tools
-from agenthicc.subagents.governance import resolve_depth_tier
+from agenthicc.subagents.governance import expand_tool_allowlist, resolve_depth_tier
 from agenthicc.subagents.policy import (
     SubagentExecutionPolicy,
     child_app_state,
@@ -94,6 +94,7 @@ if TYPE_CHECKING:
     from agenthicc.memory.journal import ConversationJournal
     from agenthicc.plugins.registry import ToolRegistry
     from agenthicc.runners.retry import RetryConfig
+    from agenthicc.subagents.governance import ResolvedDepthTier
     from agenthicc.subagents.isolation import PoolIsolation, WorkerWorkspace
     from agenthicc.runners.usage_ledger import UsageLedger
     from agenthicc.tools.approval import (
@@ -792,6 +793,7 @@ def _make_child_workspace_access(
     approval_service: "ApprovalBroker | None" = None,
     *,
     scope: "WorkspaceScope | None" = None,
+    strict_scope: bool = False,
 ) -> "WorkspaceAccessPolicy | None":
     """Bind the selected workspace scope to the isolated child policy."""
     return child_workspace_access(
@@ -799,6 +801,7 @@ def _make_child_workspace_access(
         child_app_state,
         approval_service,
         scope=scope,
+        strict_scope=strict_scope,
     )
 
 
@@ -941,32 +944,56 @@ def unusable_reason(
     return f"{spec.name} needs {wanted} but {blocker}"
 
 
+def _worker_tool_scope(
+    spec: SubagentTypeSpec,
+    registry: ToolRegistry | None,
+    policies: Sequence[SubagentExecutionPolicy | None],
+    depth_tier: ResolvedDepthTier | None,
+) -> AgentCapabilityScope:
+    scope = AgentCapabilityScope(
+        allowed_tools=expand_tool_allowlist(spec.allowed_tools, registry),
+        denied_tools=spec.permissions.deny_tools if spec.permissions is not None else frozenset(),
+    )
+    if depth_tier is not None:
+        scope = scope.restrict(AgentCapabilityScope(allowed_tools=depth_tier.allowed_tools))
+    for policy in policies:
+        if policy is not None:
+            scope = scope.restrict(policy.capability_scope)
+    return scope
+
+
 def type_surface(
     spec: SubagentTypeSpec,
-    all_tools: Sequence[object],
+    all_tools: Sequence[ToolLike],
     tool_registry: ToolRegistry | None,
     policies: Sequence[SubagentExecutionPolicy | None],
-) -> tuple[list[object], frozenset[str]]:
-    """The tools a worker of *spec* would receive, and the capabilities blocked for it.
-
-    This is the same intersection the worker computes (the type's declared
-    tools, its ``deny_tools``, and every policy's capability scope), evaluated
-    before a worker exists so the parent can be told what each type can do and
-    a type that cannot do its job can be refused (SUBAGENT-13).
-    """
-    allowed = _expand_allowed(spec.allowed_tools, tool_registry)
-    denied = spec.permissions.deny_tools if spec.permissions is not None else frozenset()
-    active = [policy for policy in policies if policy is not None]
+    depth_tier: ResolvedDepthTier | None = None,
+) -> tuple[list[ToolLike], frozenset[str]]:
+    """Project the inherited tool bindings and the worker's hard capability blocks."""
+    scope = _worker_tool_scope(spec, tool_registry, policies, depth_tier)
+    permissions = spec.permissions
+    # Commands and repository-wide Git operations can access paths beyond
+    # their starting directory. An explicit workspace ceiling requires tools
+    # whose file operations can be checked by the workspace policy.
+    unscoped = (
+        frozenset({"execute", "git_read", "git_write"})
+        if permissions is not None and permissions.workspace_paths is not None
+        else frozenset()
+    )
     tools = [
         tool
         for tool in all_tools
-        if (allowed is None or tool_name(tool) in allowed)
-        and not (allowed is None and _is_control_tool(tool))
-        and tool_name(tool) != "spawn_subagents"
-        and tool_name(tool) not in denied
-        and all(policy.capability_scope.is_tool_allowed(tool_name(tool)) for policy in active)
+        if scope.is_tool_allowed(tool_name(tool))
+        and tool_name(tool) not in {"spawn_subagents", "enter_workflow", "reload_tools"}
+        and not _is_control_tool(tool)
+        and not (_tool_capability_values(tool) & unscoped)
+        and (spec.capabilities is None or _tool_capability_values(tool) <= spec.capabilities)
     ]
-    blocked: frozenset[str] = frozenset().union(*(policy.blocked_capabilities for policy in active))
+    blocked = frozenset().union(
+        *(policy.blocked_capabilities for policy in policies if policy is not None)
+    )
+    if spec.permissions is not None:
+        blocked |= spec.permissions.deny_capabilities
     return tools, blocked
 
 
@@ -981,7 +1008,12 @@ def tool_tags(
         tags.append("edits files")
     if any(_is_executing_tool(tool) for tool in usable):
         tags.append("runs commands")
-    return tuple(tags) if tags else ("read-only",)
+    if not tags:
+        if any("git_write" in _tool_capability_values(tool) for tool in usable):
+            tags.append("changes git")
+        if any({"network", "write"} <= _tool_capability_values(tool) for tool in usable):
+            tags.append("writes to external services")
+    return tuple(tags) if tags else ("read-only" if usable else "no tools",)
 
 
 def _limit_stop_reason(stop_reason: str) -> str:
@@ -1326,36 +1358,6 @@ def _completion_text(completion: object) -> str:
 # ── worker ────────────────────────────────────────────────────────────────────
 
 
-def _expand_allowed(
-    allowed_tools: frozenset[str] | None,
-    registry: ToolRegistry | None,
-) -> frozenset[str] | None:
-    """Expand glob patterns in *allowed_tools* using *registry*.
-
-    ``None`` means the type inherits every tool its parent exposes and is
-    returned unchanged. Patterns ending in ``".*"`` (e.g. ``"fs.*"``) are
-    expanded to all tool names registered under that group.  Literal names pass
-    through unchanged.  When no registry is provided, all patterns are treated
-    as literal names (backward-compatible behaviour).
-
-    :param allowed_tools: ``SubagentTypeSpec.allowed_tools``.
-    :param registry: ``ToolRegistry`` used for group-name lookups.
-    :return: Expanded frozenset of concrete provider tool names, or ``None``
-        for "inherit everything".
-    """
-    if allowed_tools is None or registry is None:
-        return allowed_tools
-    result: frozenset[str] = frozenset()
-    for pattern in allowed_tools:
-        result |= registry.glob_expand(pattern)
-    return result
-
-
-def _declares(allowed: frozenset[str] | None, name: str) -> bool:
-    """Whether an expanded allow-list admits *name* (``None`` admits everything)."""
-    return allowed is None or name in allowed
-
-
 class SubagentWorker:
     """Executes one SubagentTask using an isolated AgentRunnerBase instance."""
 
@@ -1545,52 +1547,12 @@ class SubagentWorker:
         if approval_svc is not None and progress is not None:
             approvals = _RequesterApprovals(approval_svc, progress)
         self._approval_svc = approvals
-        inherited_names = frozenset(tool_name(item) for item in tool_surface.tools)
-        inherited_scope = (
-            self._policy.capability_scope
-            if self._policy is not None
-            else AgentCapabilityScope(
-                allowed_tools=(
-                    inherited_names | frozenset({"spawn_subagents"})
-                    if depth < max_depth
-                    and _declares(_expand_allowed(spec.allowed_tools, registry), "spawn_subagents")
-                    else inherited_names
-                )
-            )
-        )
-        inherited_names = frozenset(tool_name(item) for item in tool_surface.tools)
-        nested_spawn_allowed = (
-            depth < max_depth
-            and _declares(_expand_allowed(spec.allowed_tools, registry), "spawn_subagents")
-            and inherited_scope.is_tool_allowed("spawn_subagents")
-        )
-        visible_names = inherited_names | (
-            frozenset({"spawn_subagents"}) if nested_spawn_allowed else frozenset()
-        )
-        inherited_scope = inherited_scope.restrict(
-            AgentCapabilityScope(allowed_tools=visible_names)
-        )
-        if self._policy is not None and self._policy.visible_tool_names:
-            inherited_scope = inherited_scope.restrict(
-                AgentCapabilityScope(allowed_tools=self._policy.visible_tool_names)
-            )
-        declared_allowed = _expand_allowed(spec.allowed_tools, registry)
-        if self._depth_tier is not None and self._depth_tier.allowed_tools is not None:
-            declared_allowed = (
-                self._depth_tier.allowed_tools
-                if declared_allowed is None
-                else declared_allowed & self._depth_tier.allowed_tools
-            )
-        declared_scope = AgentCapabilityScope(
-            allowed_tools=declared_allowed,
-            denied_tools=permissions.deny_tools if permissions is not None else frozenset(),
-        )
-        self._capability_scope = inherited_scope.restrict(declared_scope)
         self._workspace_access = _make_child_workspace_access(
             workspace_access,
             self._app_state,
             approvals,
             scope=self._workspace_scope,
+            strict_scope=workspace_paths is not None,
         )
         self._communication = communication
         self.label = f"{spec.name} #{index}"
@@ -1621,8 +1583,6 @@ class SubagentWorker:
         self._last_completed_text = ""
         #: The tool a model still wrote as text after one correction, if any.
         self._unexecuted_tool_call = ""
-        # Expand glob patterns once at construction time.
-        self._effective_allowed = declared_allowed
 
     async def _undelivered_message_count(self) -> int:
         if self._communication is None:
@@ -1648,11 +1608,22 @@ class SubagentWorker:
             for root in parent.scope.allowed_roots
             if root != parent.scope.primary_root and not root.is_relative_to(repository)
         ]
-        scope = WorkspaceScope.create(workspace.path, extra)
+        scoped_access = self._workspace_access
+        strict = scoped_access is not None and scoped_access.strict_scope
+        if scoped_access is not None and strict:
+            roots = (
+                workspace.root / root.relative_to(repository)
+                if root.is_relative_to(repository)
+                else root
+                for root in scoped_access.scope.allowed_roots
+            )
+            scope = WorkspaceScope.create(workspace.root, extra).restrict(roots)
+        else:
+            scope = WorkspaceScope.create(workspace.path, extra)
         self._pool_isolation = isolation
         self._worker_workspace = workspace
         self._workspace_access = _make_child_workspace_access(
-            parent, self._app_state, self._approval_svc, scope=scope
+            parent, self._app_state, self._approval_svc, scope=scope, strict_scope=strict
         )
 
     async def _harvest(self) -> None:
@@ -1716,7 +1687,7 @@ class SubagentWorker:
 
         self._registration_failures = ()
         token = None
-        if self._worker_workspace is not None and self._workspace_access is not None:
+        if self._workspace_access is not None:
             from agenthicc.tools.workspace_access import set_current_workspace_access
 
             token = set_current_workspace_access(self._workspace_access)
@@ -1999,28 +1970,19 @@ class SubagentWorker:
             )
 
     def _filtered_tools(self) -> list[ToolLike]:
-        """Return the concrete tools allowed by this worker's effective scope.
-
-        A worker that inherits every parent tool (``allowed_tools=None``) never
-        inherits the parent's session control plane, and never the parent's own
-        ``spawn_subagents``: a nested spawn tool, when depth allows one, is built
-        fresh for this worker in :meth:`_execute`.
-        """
-        inherits_all = self._effective_allowed is None
-        return [
-            tool
-            for tool in self._tool_surface.tools
-            if self._capability_scope.is_tool_allowed(tool_name(tool))
-            and tool_name(tool) not in {"spawn_subagents", "enter_workflow", "reload_tools"}
-            and not (inherits_all and _is_control_tool(tool))
-        ]
+        """Return parent tool bindings shared by admission and worker dispatch."""
+        tools, _ = type_surface(
+            self._spec, self._tool_surface.tools, self._registry, (self._policy,), self._depth_tier
+        )
+        return tools
 
     def _nested_spawn_tools(self, inherited_tools: Sequence[ToolLike]) -> tuple[ToolLike, ...]:
-        """Create the same depth-limited controls for either kind of worker."""
+        """Create fresh depth-limited controls scoped to this worker's lineage."""
+        scope = _worker_tool_scope(self._spec, self._registry, (self._policy,), self._depth_tier)
         if (
             self._depth < self._max_depth
-            and _declares(self._effective_allowed, "spawn_subagents")
-            and self._capability_scope.is_tool_allowed("spawn_subagents")
+            and scope.is_tool_allowed("spawn_subagents")
+            and (self._spec.capabilities is None or "read" in self._spec.capabilities)
         ):
             from agenthicc.subagents.tool import SubagentToolSelection, make_spawn_subagents_tool
 
@@ -2204,7 +2166,11 @@ class SubagentWorker:
             )
         if self._spec.output_schema is None:
             system += _FINAL_RESPONSE_CONTRACT
-            if mutating_tools:
+            blocked = self._policy.blocked_capabilities if self._policy is not None else frozenset()
+            if any(
+                tool_name(tool) in mutating_tools and not _policy_blocks(tool, blocked)
+                for tool in filtered
+            ):
                 system += _long_output_section(_worker_output_tokens(self._execution_settings))
         else:
             system += (
@@ -3350,22 +3316,31 @@ class SubagentPool:
                 store.subagent_last_activity.pop(self.pool_id, None)
 
     def _can_change_workspace(self, task: SubagentTask) -> bool:
-        """Whether *task*'s worker holds a usable file-changing tool in this session.
-
-        Command-only roles (a reviewer or verifier running ``run_tests``) are not
-        isolated: they check the parent's real tree, and a worktree lacks the
-        git-ignored files (``.venv``, build output) their checks depend on.
-        """
+        """Whether the worker can change workspace state under its effective policy."""
         spec = self._registry.get(task.agent_type)
         if spec is None:
             return False
         permissions = spec.permissions
-        if permissions is not None and permissions.workspace_paths is not None:
-            return False  # a narrowed path scope is not reproducible in a worktree
+        if permissions is not None and permissions.workspace_paths == ():
+            return False
         tools, blocked = type_surface(
-            spec, self._tool_surface.tools, self._tool_registry, (self._policy, spec.policy)
+            spec,
+            self._tool_surface.tools,
+            self._tool_registry,
+            (self._policy, spec.policy),
+            resolve_depth_tier(self._subagent_settings, self._depth, spec.name)
+            if self._subagent_settings is not None
+            else None,
         )
-        return any(_is_mutating_tool(tool) and not _policy_blocks(tool, blocked) for tool in tools)
+        return any(
+            (
+                _is_mutating_tool(tool)
+                or "git_write" in _tool_capability_values(tool)
+                or (_is_executing_tool(tool) and tool_name(tool) != "stop_terminal")
+            )
+            and not _policy_blocks(tool, blocked)
+            for tool in tools
+        )
 
     async def _prepare_isolation(self, selected: Sequence[SubagentTask] | None = None) -> None:
         """Give each file-changing worker its own git worktree (SUBAGENT-15).

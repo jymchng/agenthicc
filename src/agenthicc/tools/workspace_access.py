@@ -402,8 +402,10 @@ class WorkspaceAccessPolicy:
         *,
         mode_provider: Callable[[], object] | None = None,
         approval_service: "ApprovalBroker | None" = None,
+        strict_scope: bool = False,
     ) -> None:
         self.scope = scope
+        self.strict_scope = strict_scope
         self._mode_provider = mode_provider
         self._approval_service = approval_service
         self._turn_grants: set[tuple[str, str]] = set()
@@ -552,6 +554,10 @@ class WorkspaceAccessPolicy:
                 )
             resolved.append(item)
         outside = [item for item in resolved if not item.in_scope]
+        if outside and self.strict_scope:
+            return self._denied(
+                resolved, "outside_workspace", "Path is outside the worker's workspace scope"
+            )
         protected = [item for item in resolved if protect_extensions and self._runs_as_code(item)]
         if not outside and not protected:
             return WorkspaceAccessResult(allowed=True, decisions=tuple(resolved))
@@ -804,10 +810,12 @@ class WorkspaceAccessPolicy:
             ):
                 self.clear_current_grant(tool_name)
                 raise PermissionError("protected_code: Plan mode cannot edit executable extensions")
-            if not revalidated.in_scope and self.mode_name.casefold() == "plan":
+            if not revalidated.in_scope and (
+                self.strict_scope or self.mode_name.casefold() == "plan"
+            ):
                 self.clear_current_grant(tool_name)
                 raise PermissionError(
-                    "outside_workspace: Plan mode cannot access outside the workspace"
+                    "outside_workspace: Path is outside the authorized workspace scope"
                 )
             return revalidated.absolute
 
@@ -842,10 +850,10 @@ class WorkspaceAccessPolicy:
         if revalidated.status is WorkspacePathStatus.TARGET_CHANGED:
             self.clear_current_grant(tool_name)
             raise PermissionError("target_changed: canonical target changed after approval")
-        if not revalidated.in_scope and self.mode_name.casefold() == "plan":
+        if not revalidated.in_scope and (self.strict_scope or self.mode_name.casefold() == "plan"):
             self.clear_current_grant(tool_name)
             raise PermissionError(
-                "outside_workspace: Plan mode cannot access the outside workspace"
+                "outside_workspace: Path is outside the authorized workspace scope"
             )
         if (
             not revalidated.in_scope

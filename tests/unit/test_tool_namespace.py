@@ -16,7 +16,7 @@ from agenthicc.agent_tools import (
     GIT_AGENT_TOOLS,
     INTROSPECT_AGENT_TOOLS,
 )
-from agenthicc.subagents.pool import _expand_allowed
+from agenthicc.subagents.governance import expand_tool_allowlist
 
 pytestmark = pytest.mark.unit
 
@@ -281,41 +281,41 @@ class TestBuildRegistry:
         assert len(reg.tools) == 56
 
 
-# ── _expand_allowed glob helper ───────────────────────────────────────────────
+# ── Tool allowlist expansion ───────────────────────────────────────────────
 
 
 class TestExpandAllowed:
     def test_expand_glob_with_registry(self) -> None:
         reg = build_registry()
-        result = _expand_allowed(frozenset({"fs.*"}), reg)
+        result = expand_tool_allowlist(frozenset({"fs.*"}), reg)
         assert "read_file" in result
         assert "write_file" in result
         assert "git_status" not in result
 
     def test_expand_literal_with_registry(self) -> None:
         reg = build_registry()
-        result = _expand_allowed(frozenset({"git_status", "run_bash"}), reg)
+        result = expand_tool_allowlist(frozenset({"git_status", "run_bash"}), reg)
         assert result == frozenset({"git_status", "run_bash"})
 
     def test_expand_mixed_glob_and_literal(self) -> None:
         reg = build_registry()
-        result = _expand_allowed(frozenset({"fs.*", "git_status"}), reg)
+        result = expand_tool_allowlist(frozenset({"fs.*", "git_status"}), reg)
         assert "read_file" in result
         assert "git_status" in result
         assert "git_diff" not in result
 
     def test_expand_without_registry_passes_through(self) -> None:
-        result = _expand_allowed(frozenset({"fs.*", "git_status"}), None)
+        result = expand_tool_allowlist(frozenset({"fs.*", "git_status"}), None)
         assert result == frozenset({"fs.*", "git_status"})
 
     def test_expand_multiple_globs(self) -> None:
         reg = build_registry()
-        result = _expand_allowed(frozenset({"fs.*", "git.*"}), reg)
+        result = expand_tool_allowlist(frozenset({"fs.*", "git.*"}), reg)
         assert "read_file" in result
         assert "git_status" in result
         assert len(result) == len(FS_AGENT_TOOLS) + len(GIT_AGENT_TOOLS)
 
     def test_expand_unknown_glob_returns_empty_for_that_pattern(self) -> None:
         reg = build_registry()
-        result = _expand_allowed(frozenset({"nonexistent.*"}), reg)
+        result = expand_tool_allowlist(frozenset({"nonexistent.*"}), reg)
         assert result == frozenset()

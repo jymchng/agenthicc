@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from agenthicc.config import SubagentSettings
 from agenthicc.subagents.types import SubagentTypeRegistry
+
+if TYPE_CHECKING:
+    from agenthicc.plugins.registry import ToolRegistry
 
 
 @dataclass(frozen=True)
@@ -35,10 +39,24 @@ def resolve_depth_tier(
     return ResolvedDepthTier(allowed_tools, allowed_models)
 
 
+def expand_tool_allowlist(
+    declared: frozenset[str] | None, registry: ToolRegistry | None
+) -> frozenset[str] | None:
+    """Expand group patterns against the current tool registry."""
+    if declared is None or registry is None:
+        return declared
+    return frozenset(
+        name
+        for pattern in declared
+        for name in (registry.glob_expand(pattern) if pattern.endswith(".*") else (pattern,))
+    )
+
+
 def validate_depth_tiers(
     settings: SubagentSettings,
     registry: SubagentTypeRegistry,
     allowed_models: frozenset[str] | None,
+    tool_registry: ToolRegistry | None = None,
 ) -> None:
     """Reject depth profiles that widen a type or its inherited model ceiling."""
     configured_types = {type_name for tiers in settings.depth_tiers.values() for type_name in tiers}
@@ -53,9 +71,8 @@ def validate_depth_tiers(
             type_models = set(allowed_models)
         else:
             type_models = None
-        prior_tools: set[str] | None = (
-            None if spec.allowed_tools is None else set(spec.allowed_tools)
-        )
+        declared_tools = expand_tool_allowlist(spec.allowed_tools, tool_registry)
+        prior_tools = set(declared_tools) if declared_tools is not None else None
         prior_models = type_models
         for depth in sorted(settings.depth_tiers):
             tier = settings.depth_tiers[depth].get(type_name)

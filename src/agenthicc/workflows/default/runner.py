@@ -678,6 +678,8 @@ class WorkflowRunner(BaseWorkflowRunner):
             "usage_ledger": self._cfg.usage_ledger,
             "browser_manager": self._cfg.browser_manager,
             "subagent_registry": self._cfg.subagent_registry,
+            "agents_registry": self._cfg.agents_registry,
+            "agent_config": self._cfg.cfg,
             "system_prompt_suffix": role_prompt,
             "prompt_contract": prompt_contract,
         }

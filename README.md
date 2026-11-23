@@ -789,6 +789,10 @@ by resume. Each call accepts `timeout_s` in seconds (default `3600`). See the
 communication protocol, security boundaries, cache semantics, and
 troubleshooting steps.
 
+All built-in worker roles inherit the parent turn's available tools. That
+includes all 56 built-ins when available to the parent. Mode, phase, skill,
+and explicitly configured worker permissions still apply.
+
 An eligible workflow can also run as a subagent task. The parent session
 handles publication of the worker's staged artifacts.
 

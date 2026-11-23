@@ -1,4 +1,4 @@
-"""SUBAGENT-13: tool surfaces that match the role and a capability-aware type catalog."""
+"""SUBAGENT-18: shared tool inheritance and a capability-aware type catalog."""
 
 from __future__ import annotations
 
@@ -12,11 +12,12 @@ from lauren_ai._transport._mock import MockTransport
 from agenthicc.subagents.tool import SubagentToolSelection
 from agenthicc.tools.surface import ToolSurface
 from agenthicc.agent_tools import AGENT_TOOLS
-from agenthicc.subagents.pool import _is_mutating_tool
+from agenthicc.config import SubagentDepthTier, SubagentSettings
+from agenthicc.plugins.registry import build_registry
+from agenthicc.subagents.pool import _is_mutating_tool, tool_tags
 from agenthicc.subagents.tool import make_spawn_subagents_tool
-from agenthicc.subagents.types import DEFAULT_REGISTRY
+from agenthicc.subagents.types import DEFAULT_REGISTRY, _BUILTIN_REGISTRY
 from agenthicc.tools.base import tool_name
-from agenthicc.tools.capabilities import get_tool_capabilities
 from agenthicc.tools.workspace_access import (
     WorkspaceAccessPolicy,
     WorkspaceScope,
@@ -29,55 +30,14 @@ from agenthicc.tui.runtime.mode_manager import build_default_registry
 pytestmark = pytest.mark.unit
 
 _TOOLS = {tool_name(tool): tool for tool in AGENT_TOOLS}
-_INVESTIGATIVE = ("explorer", "planner", "reviewer", "verifier", "researcher")
-_WORKING = ("implementer", "executor", "tester", "documenter")
-
-#: SUBAGENT-13 §5.1: what each investigative role gained.
-_ADDITIONS = {
-    "explorer": {"batch_read", "git_diff", "git_status"},
-    "planner": {"batch_read", "get_file_info", "git_log", "git_status"},
-    "reviewer": {"batch_read", "get_file_info", "git_show", "git_blame", "git_status"},
-    "verifier": {"batch_read", "get_file_info", "git_show", "git_status"},
-    "researcher": {"batch_read", "get_file_info"},
-}
-
-#: The only execute-capability tools a read-only role may hold (they run checks).
-_CHECK_TOOLS = {"run_python_expr", "run_tests"}
 
 
-def _allowed(agent_type: str) -> frozenset[str]:
-    spec = DEFAULT_REGISTRY.get(agent_type)
-    assert spec is not None and spec.allowed_tools is not None
-    return spec.allowed_tools
-
-
-@pytest.mark.parametrize("agent_type", _INVESTIGATIVE)
-def test_an_investigative_list_names_only_registered_tools(agent_type: str) -> None:
-    assert _allowed(agent_type) <= set(_TOOLS)
-
-
-@pytest.mark.parametrize("agent_type", _INVESTIGATIVE)
-def test_an_investigative_role_holds_no_write_tool(agent_type: str) -> None:
-    for name in _allowed(agent_type):
-        capabilities = {capability.value for capability in get_tool_capabilities(_TOOLS[name])}
-        assert not capabilities & {"write", "git_write", "network"}, name
-        assert not _is_mutating_tool(_TOOLS[name]), name
-        if "execute" in capabilities:
-            assert name in _CHECK_TOOLS, name
-
-
-@pytest.mark.parametrize(("agent_type", "added"), sorted(_ADDITIONS.items()))
-def test_investigative_roles_gained_the_read_tools_their_prompts_need(
-    agent_type: str, added: set[str]
-) -> None:
-    assert added <= _allowed(agent_type)
-
-
-@pytest.mark.parametrize("agent_type", _WORKING)
-def test_working_roles_declare_no_list(agent_type: str) -> None:
+@pytest.mark.parametrize("agent_type", _BUILTIN_REGISTRY.names())
+def test_builtin_types_declare_no_default_tool_ceiling(agent_type: str) -> None:
     spec = DEFAULT_REGISTRY.get(agent_type)
     assert spec is not None
     assert spec.allowed_tools is None
+    assert spec.capabilities is None
 
 
 def test_a_network_write_tool_is_not_a_workspace_mutation() -> None:
@@ -128,14 +88,8 @@ def test_the_catalog_tells_the_parent_what_each_type_can_do(tmp_path: Path) -> N
 
     catalog = _catalog(spawn)
 
-    for name in ("explorer", "planner", "researcher"):
-        assert f"{name} [read-only]:" in catalog[name]
-    # reviewer and verifier run checks (run_python_expr / run_tests) but cannot edit files
-    for name in ("reviewer", "verifier"):
-        assert f"{name} [runs commands]:" in catalog[name]
-        assert "edits files" not in catalog[name]
-    assert "[edits files, runs commands]" in catalog["implementer"]
-    assert "[edits files, runs commands]" in catalog["executor"]
+    for name in _BUILTIN_REGISTRY.names():
+        assert f"{name} [edits files, runs commands]:" in catalog[name]
 
 
 def test_the_catalog_marks_a_type_unavailable_when_the_policy_blocks_it(tmp_path: Path) -> None:
@@ -176,7 +130,7 @@ async def test_a_type_that_cannot_work_is_refused_before_any_provider_call(
     assert "pool_id" not in result
 
 
-async def test_a_read_only_type_still_runs_in_plan_mode(tmp_path: Path) -> None:
+async def test_a_report_only_role_still_runs_in_plan_mode(tmp_path: Path) -> None:
     transport = MockTransport()
     transport.queue_response(_final("No issues found."))
     spawn, policy = _spawn_tool("Plan", transport, tmp_path)
@@ -191,3 +145,49 @@ async def test_a_read_only_type_still_runs_in_plan_mode(tmp_path: Path) -> None:
 
     assert result["ok"] is True
     assert "No issues found." in str(result["results"])
+
+
+async def test_a6_depth_ceiling_is_used_for_catalog_admission_and_dispatch(tmp_path: Path) -> None:
+    transport = MockTransport()
+    transport.queue_response(_final("Reviewed the file."))
+    spawn = make_spawn_subagents_tool(
+        AgentRunnerBase(transport=transport),
+        "mock-model",
+        SubagentToolSelection(ToolSurface(0, tuple(AGENT_TOOLS)), build_registry()),
+        parent_depth=1,
+        subagent_settings=SubagentSettings(
+            max_depth=2,
+            depth_tiers={
+                2: {
+                    role: SubagentDepthTier(allowed_tools=("read_file",))
+                    for role in ("researcher", "implementer")
+                }
+            },
+        ),
+    )
+    assert "researcher [read-only]" in _catalog(spawn)["researcher"]
+    assert "implementer [unavailable in this session" in _catalog(spawn)["implementer"]
+
+    refusal = await spawn(tasks=[{"type": "implementer", "task": "Write the file."}])
+    assert refusal["unavailable_types"] == ["implementer"]
+    assert not transport.calls
+    result = await spawn(tasks=[{"type": "researcher", "task": "Read the file."}])
+    assert result["ok"] is True
+    builtin_names = {tool_name(tool) for tool in AGENT_TOOLS}
+    worker_schemas = {item["name"] for item in transport.calls[0].tools}
+    assert worker_schemas & builtin_names == {"read_file"}
+
+
+@pytest.mark.parametrize(
+    ("names", "expected"),
+    [
+        ([], "no tools"),
+        (["read_file"], "read-only"),
+        (["git_add"], "changes git"),
+        (["send_email"], "writes to external services"),
+    ],
+)
+def test_a6_catalog_reports_narrow_workspace_or_remote_capabilities(
+    names: list[str], expected: str
+) -> None:
+    assert tool_tags([_TOOLS[name] for name in names]) == (expected,)

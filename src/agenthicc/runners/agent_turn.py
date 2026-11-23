@@ -1896,11 +1896,7 @@ class AgentTurnRunner:
                 )
                 return SubagentToolSelection(surface, selected_registry, policy)
 
-            definition_registry = self._build_definition_subagent_registry(
-                registry,
-                visible_tools,
-                gate_state,
-            )
+            definition_registry = self._build_definition_subagent_registry(gate_state)
             _agent_config = ctx.agent_config
             _subagent_settings = _agent_config.subagents if _agent_config is not None else None
             _provider = _ec.provider
@@ -2144,13 +2140,9 @@ class AgentTurnRunner:
         return agent_instance, active_runner
 
     def _build_definition_subagent_registry(
-        self,
-        tool_registry: ToolRegistry,
-        visible_tools: Sequence[object],
-        parent_state: AppState | None,
+        self, parent_state: AppState | None
     ) -> SubagentTypeRegistry:
         """Merge Markdown agent definitions into the built-in spawn registry."""
-        from agenthicc.security import AgentCapabilityScope
         from agenthicc.subagents.policy import (
             SubagentExecutionPolicy,
             restrict_workspace_scope,
@@ -2159,7 +2151,6 @@ class AgentTurnRunner:
             SubagentTypeSpec,
             _BUILTIN_REGISTRY,
         )
-        from agenthicc.tools.capabilities import ToolCapability, get_tool_capabilities
 
         ctx = self._ctx
         result = ctx.subagent_registry.copy()
@@ -2198,9 +2189,11 @@ class AgentTurnRunner:
             self._definition_agent_errors[entry.name] = message
             logger.warning("Subagent definition %r refused: %s", entry.name, message)
 
-        tools_by_name = {tool_name(tool): tool for tool in visible_tools}
-        visible_names = frozenset(tools_by_name)
         for definition in ctx.agents_registry.subagents(include_hidden=True):
+            # Built-in Markdown prompts also serve primary agents and workflow
+            # phases. The pool's built-in specs own delegation for these names.
+            if definition.source == "builtin" and definition.name in builtin_subagent_names:
+                continue
             if definition.name in refused_names:
                 continue
             if (
@@ -2229,39 +2222,6 @@ class AgentTurnRunner:
                     self._definition_agent_errors[definition.name] = f"{source}{exc}"
                     continue
 
-            declared_tools: frozenset[str] | None = None
-            if definition.tools is not None:
-                expanded: set[str] = set()
-                for pattern in definition.tools:
-                    matches = tool_registry.glob_expand(pattern)
-                    expanded.update(matches if matches else {pattern})
-                declared_tools = frozenset(expanded)
-            inherited_scope = AgentCapabilityScope(allowed_tools=visible_names)
-            declared_scope = AgentCapabilityScope(allowed_tools=declared_tools)
-            permission_scope = AgentCapabilityScope(
-                denied_tools=permissions.deny_tools if permissions is not None else frozenset()
-            )
-            effective_scope = inherited_scope.restrict(declared_scope).restrict(permission_scope)
-            allowed_names = frozenset(
-                name for name in visible_names if effective_scope.is_tool_allowed(name)
-            )
-            if definition.capabilities is not None:
-                allowed_capabilities = frozenset(
-                    ToolCapability(name) for name in definition.capabilities
-                )
-                allowed_names = frozenset(
-                    name
-                    for name in allowed_names
-                    if (
-                        get_tool_capabilities(tools_by_name[name])
-                        or frozenset({ToolCapability.UNDECLARED})
-                    )
-                    <= allowed_capabilities
-                )
-                effective_scope = effective_scope.restrict(
-                    AgentCapabilityScope(allowed_tools=allowed_names)
-                )
-
             gate_state = parent_state
             prompt = (
                 f"## AGENT: {definition.name}\n{definition.prompt}" if definition.prompt else ""
@@ -2284,8 +2244,6 @@ class AgentTurnRunner:
 
             subagent_policy = SubagentExecutionPolicy.from_app_state(
                 gate_state,
-                visible_tool_names=allowed_names,
-                capability_scope=effective_scope,
                 type_permissions=permissions,
                 type_name=definition.name if permissions is not None else "",
                 workspace_scope_identity=(
@@ -2331,7 +2289,14 @@ class AgentTurnRunner:
                     completion_evidence=(
                         overridden.completion_evidence if overridden is not None else "none"
                     ),
-                    allowed_tools=allowed_names,
+                    allowed_tools=(
+                        frozenset(definition.tools) if definition.tools is not None else None
+                    ),
+                    capabilities=(
+                        frozenset(definition.capabilities)
+                        if definition.capabilities is not None
+                        else None
+                    ),
                     system_prompt=prompt or definition.description,
                     description=definition.description,
                     model=model,

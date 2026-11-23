@@ -13,6 +13,7 @@ from lauren_ai._memory import ShortTermMemory
 from lauren_ai._transport import Completion, CompletionChunk, TokenUsage
 from lauren_ai._transport._mock import MockTransport
 
+from agenthicc.agent_tools import AGENT_TOOLS
 from agenthicc.commands.builtins import build_builtin_registry
 from agenthicc.config import AgenthiccConfig
 from agenthicc.kernel.processor import EventProcessor
@@ -27,8 +28,10 @@ from agenthicc.runners.agent_turn import _run_agent_turn
 from agenthicc.runners.authored import AuthoredPublisher
 from agenthicc.runners.reload import ReloadService
 from agenthicc.skills.tools import SkillUseState
-from agenthicc.subagents.types import DEFAULT_REGISTRY, SubagentTypeSpec
+from agenthicc.subagents.types import DEFAULT_REGISTRY
 from agenthicc.testing.recording_transport import RecordingTransport
+from agenthicc.tools.base import tool_name
+from agenthicc.tools.capabilities import get_tool_capabilities
 from agenthicc.workflows.authoring.verdict import ValidationReport
 from agenthicc.workflows.registry import WorkflowRegistry
 
@@ -83,9 +86,15 @@ async def test_model_uses_authored_skill_and_worker_inherits_remaining_tools(
     publisher = AuthoredPublisher(workspace, reload_service, running_processor, policy="auto")
     stage = publisher.store().stage_directory("release-skill", "skill") / "release-notes"
     stage.mkdir()
+    disabled = sorted(
+        tool_name(tool)
+        for tool in AGENT_TOOLS
+        if get_tool_capabilities(tool) & {"write", "execute", "git_write"}
+    )
     markdown = (
         b"---\nname: Release Notes\ndescription: Prepare a release summary\nsuggestedTopics: [release]\n"
-        b"disabledTools: [run_bash]\nmaxTurnDepth: 1\n---\n"
+        + f"disabledTools: [{', '.join(disabled)}]\n".encode()
+        + b"maxTurnDepth: 1\n---\n"
         b"Summarize release {0}. See {reference}"
     )
     template = b"Use the changes section."
@@ -105,6 +114,8 @@ async def test_model_uses_authored_skill_and_worker_inherits_remaining_tools(
         (StagedArtifact(artifact, ValidationReport(digest, ())),),
     )
 
+    spawn_descriptions: list[str] = []
+
     class PublishOnFirstRequest(MockTransport):
         async def complete(
             self, *args: object, **kwargs: object
@@ -113,24 +124,25 @@ async def test_model_uses_authored_skill_and_worker_inherits_remaining_tools(
                 assert not reload_service.skills.current().value
                 published = await publisher.publish(run)
                 assert published.error_code is None, published
+            tools = kwargs.get("tools")
+            if isinstance(tools, list):
+                spawn_descriptions.extend(
+                    str(tool["description"])
+                    for tool in tools
+                    if isinstance(tool, dict) and tool["name"] == "spawn_subagents"
+                )
             return await super().complete(*args, **kwargs)
 
     transport = PublishOnFirstRequest()
     transport.queue_tool_use("list_skills", {"query": "release"})
     transport.queue_tool_use("use_skill", {"name": "release-notes", "args": ["v2"]})
     transport.queue_tool_use(
-        "spawn_subagents", {"tasks": [{"type": "skill-worker", "task": "Read the skill."}]}
+        "spawn_subagents", {"tasks": [{"type": "researcher", "task": "Read the skill."}]}
     )
     transport.queue_tool_use("list_skills", {})
     transport.queue_tool_use("use_skill", {"name": "release-notes", "args": ["worker"]})
     transport.queue_response(_text("worker-finished"))
     transport.queue_response(_text("agent-finished"))
-    registry = DEFAULT_REGISTRY.copy()
-    registry.register(
-        SubagentTypeSpec(
-            name="skill-worker", allowed_tools=None, system_prompt="Read skill guidance."
-        )
-    )
     events = running_processor.subscribe_events()
     cassette = workspace.parent / "requests.jsonl"
     config = AgenthiccConfig()
@@ -142,7 +154,6 @@ async def test_model_uses_authored_skill_and_worker_inherits_remaining_tools(
         max_agent_turns=8,
         exec_cfg=config.execution,
         skills=reload_service.skills,
-        subagent_registry=registry,
         active_agent="auto",
     )
     await running_processor.drain()
@@ -153,7 +164,11 @@ async def test_model_uses_authored_skill_and_worker_inherits_remaining_tools(
     assert "run_bash" in schemas[0]
     assert "run_bash" in schemas[1]
     assert all("run_bash" not in names for names in schemas[2:])
+    builtins = set(map(tool_name, AGENT_TOOLS))
+    assert set(schemas[2]) & builtins == set(schemas[3]) & builtins
     assert all({"list_skills", "use_skill"} <= set(names) for names in schemas)
+    assert "researcher [edits files, runs commands]" in spawn_descriptions[0]
+    assert "researcher [read-only]" in spawn_descriptions[2]
     listing = transport.calls[1].messages[-1]["content"]
     assert listing[-1]["content"][0]["slug"] == "release-notes"
     parent_results = transport.calls[2].messages[-1]["content"]

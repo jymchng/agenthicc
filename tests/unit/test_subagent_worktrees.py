@@ -3,21 +3,29 @@
 from __future__ import annotations
 
 import subprocess
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 import pytest
 from lauren_ai._agents._runner import AgentRunnerBase
-from lauren_ai._transport import Completion, TokenUsage
+from lauren_ai._transport import Completion, CompletionChunk, TokenUsage
 from lauren_ai._transport._mock import MockTransport
 
 from agenthicc.subagents.tool import SubagentToolSelection
 from agenthicc.tools.surface import ToolSurface
+from agenthicc.tools.base import tool_name
 from agenthicc.agent_tools import AGENT_TOOLS
 from agenthicc.config import SubagentSettings
+from agenthicc.subagents.types import (
+    SubagentPermissionConstraints,
+    SubagentTypeRegistry,
+    SubagentTypeSpec,
+)
 from agenthicc.subagents.tool import make_spawn_subagents_tool
 from agenthicc.tools.workspace_access import (
     WorkspaceAccessPolicy,
     WorkspaceScope,
+    current_workspace_access,
     reset_current_workspace_access,
     set_current_workspace_access,
 )
@@ -75,6 +83,8 @@ async def _spawn(
     tasks: list[dict[str, str]],
     *,
     isolation: str = "auto",
+    tool_names: frozenset[str] | None = None,
+    registry: SubagentTypeRegistry | None = None,
 ) -> dict[str, object]:
     state = AppState.create()
     state.active_mode.set(build_default_registry().get("Yolo"))
@@ -82,10 +92,20 @@ async def _spawn(
     spawn = make_spawn_subagents_tool(
         AgentRunnerBase(transport=transport),
         "mock-model",
-        SubagentToolSelection(ToolSurface(0, tuple(list(AGENT_TOOLS)))),
+        SubagentToolSelection(
+            ToolSurface(
+                0,
+                tuple(
+                    tool
+                    for tool in AGENT_TOOLS
+                    if tool_names is None or tool_name(tool) in tool_names
+                ),
+            )
+        ),
         app_state=state,
         workspace_access=policy,
         subagent_settings=SubagentSettings(isolation=isolation),
+        registry=registry,
     )
     token = set_current_workspace_access(policy)
     try:
@@ -116,8 +136,22 @@ def _branches(repo: Path) -> list[str]:
 # ── parallel workers on different files ──────────────────────────────────────
 
 
-async def test_parallel_implementers_on_different_files_both_land(repo: Path) -> None:
-    transport = MockTransport()
+@pytest.mark.parametrize("second_role", ["reviewer", "implementer"])
+async def test_a5_parallel_researcher_and_peer_apply_disjoint_changes(
+    repo: Path, second_role: str
+) -> None:
+    roots: set[Path] = set()
+
+    class RecordWorkspace(MockTransport):
+        async def complete(
+            self, *args: object, **kwargs: object
+        ) -> Completion | AsyncIterator[CompletionChunk]:
+            policy = current_workspace_access()
+            assert policy is not None
+            roots.add(policy.scope.primary_root)
+            return await super().complete(*args, **kwargs)
+
+    transport = RecordWorkspace()
     transport.queue_tool_use(
         "write_file", {"path": "alpha.py", "content": "ALPHA\n"}, tool_use_id="a"
     )
@@ -127,13 +161,21 @@ async def test_parallel_implementers_on_different_files_both_land(repo: Path) ->
     transport.queue_response(_final("Wrote one file."))
     transport.queue_response(_final("Wrote the other file."))
 
-    result = await _spawn(repo, transport, _two_implementers())
+    result = await _spawn(
+        repo,
+        transport,
+        [
+            {"type": "researcher", "task": "Write the first file."},
+            {"type": second_role, "task": "Write the second file."},
+        ],
+    )
 
     assert result["ok"] is True and result["succeeded"] == 2
     assert (repo / "alpha.py").read_text() == "ALPHA\n"
     assert (repo / "beta.py").read_text() == "BETA\n"
     assert str(result["results"]).count("applied to your workspace") == 2
-    assert _worktrees(repo) == [str(repo)]  # nothing left behind
+    assert len(roots) == 2 and repo not in roots
+    assert _worktrees(repo) == [str(repo)]
     assert _branches(repo) == ["main"]
 
 
@@ -171,7 +213,14 @@ async def test_overlapping_workers_apply_one_and_report_the_other(repo: Path) ->
     transport.queue_response(_final("Edited shared.py."))
     transport.queue_response(_final("Edited shared.py."))
 
-    result = await _spawn(repo, transport, _two_implementers())
+    result = await _spawn(
+        repo,
+        transport,
+        [
+            {"type": "researcher", "task": "Edit shared.py."},
+            {"type": "reviewer", "task": "Edit shared.py."},
+        ],
+    )
 
     text = str(result["results"])
     assert result["ok"] is False and result["succeeded"] == 1 and result["failed"] == 1
@@ -243,30 +292,9 @@ async def test_a_worker_runs_inside_its_worktree_not_the_parent_directory(repo: 
 # ── when isolation applies ───────────────────────────────────────────────────
 
 
-async def test_auto_runs_shared_when_only_one_worker_can_change_files(
+async def test_read_only_parent_surface_needs_no_worker_worktrees(
     repo: Path, tmp_path: Path
 ) -> None:
-    transport = MockTransport()
-    transport.queue_tool_use("write_file", {"path": "alpha.py", "content": "A\n"}, tool_use_id="a")
-    transport.queue_response(_final("Wrote alpha.py."))
-    transport.queue_response(_final("Nothing found."))
-
-    result = await _spawn(
-        repo,
-        transport,
-        [
-            {"type": "implementer", "task": "Write alpha.py."},
-            {"type": "explorer", "task": "Look around."},
-        ],
-    )
-
-    assert result["ok"] is True
-    assert (repo / "alpha.py").read_text() == "A\n"
-    assert "applied to your workspace" not in str(result["results"])  # never isolated
-    assert not (tmp_path / "home" / ".agenthicc" / "worktrees").exists()
-
-
-async def test_investigative_workers_never_get_a_worktree(repo: Path, tmp_path: Path) -> None:
     transport = MockTransport()
     transport.queue_response(_final("Found nothing."))
     transport.queue_response(_final("Found nothing either."))
@@ -276,6 +304,7 @@ async def test_investigative_workers_never_get_a_worktree(repo: Path, tmp_path: 
         transport,
         [{"type": "explorer", "task": "Look."}, {"type": "reviewer", "task": "Review."}],
         isolation="worktree",
+        tool_names=frozenset({"read_file"}),
     )
 
     assert result["ok"] is True
@@ -390,3 +419,68 @@ async def test_the_worker_event_carries_the_integration_outcome(repo: Path) -> N
     assert len(done) == 2
     assert {payload["integration"] for payload in done} == {"applied"}
     assert sorted(payload["changed_paths"][0] for payload in done) == ["alpha.py", "beta.py"]
+
+
+async def test_a3_required_worktree_preserves_the_explicit_type_scope(repo: Path) -> None:
+    (repo / "docs").mkdir()
+    (repo / "docs" / "allowed.md").write_text("allowed evidence", encoding="utf-8")
+    transport = MockTransport()
+    transport.queue_tool_use("read_file", {"path": "../notes.md"})
+    transport.queue_tool_use("read_file", {"path": "allowed.md"})
+    transport.queue_tool_use("write_file", {"path": "result.md", "content": "checked"})
+    transport.queue_response(_final("Read the scoped evidence and wrote the result."))
+    registry = SubagentTypeRegistry()
+    registry.register(
+        SubagentTypeSpec(
+            "scoped-researcher",
+            None,
+            "Research carefully.",
+            permissions=SubagentPermissionConstraints(workspace_paths=("docs",)),
+        )
+    )
+
+    result = await _spawn(
+        repo,
+        transport,
+        [{"type": "scoped-researcher", "task": "Read the scoped evidence and write results."}],
+        isolation="worktree",
+        registry=registry,
+    )
+
+    assert result["ok"] is True
+    assert "applied to your workspace" in str(result["results"])
+    assert "outside_workspace" in str(transport.calls[1].messages[-1])
+    assert "allowed evidence" in str(transport.calls[2].messages[-1])
+    assert (repo / "docs" / "result.md").read_text() == "checked"
+    assert not (repo / "result.md").exists()
+
+
+@pytest.mark.parametrize("tool", ["git_add", "run_bash"])
+async def test_a5_parallel_workers_with_only_command_or_git_write_tools_are_isolated(
+    repo: Path, tool: str
+) -> None:
+    roots: set[Path] = set()
+
+    class WorkspaceTransport(MockTransport):
+        async def complete(
+            self, *args: object, **kwargs: object
+        ) -> Completion | AsyncIterator[CompletionChunk]:
+            policy = current_workspace_access()
+            assert policy is not None
+            roots.add(policy.scope.primary_root)
+            return await super().complete(*args, **kwargs)
+
+    transport = WorkspaceTransport()
+    transport.queue_response(_final("First report."))
+    transport.queue_response(_final("Second report."))
+    result = await _spawn(
+        repo,
+        transport,
+        [
+            {"type": "researcher", "task": "Report on the first area."},
+            {"type": "reviewer", "task": "Report on the second area."},
+        ],
+        tool_names=frozenset({tool}),
+    )
+    assert result["ok"] is True
+    assert len(roots) == 2 and repo not in roots

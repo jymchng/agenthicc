@@ -16,6 +16,7 @@ from agenthicc.agent_tools import AGENT_TOOLS
 from agenthicc.subagents.tool import make_spawn_subagents_tool
 from agenthicc.subagents.types import (
     DEFAULT_REGISTRY,
+    SubagentPermissionConstraints,
     SubagentTypeRegistry,
     SubagentTypeSpec,
 )
@@ -49,9 +50,11 @@ class _Broker:
     def __init__(self, allow: bool) -> None:
         self.allow = allow
         self.asked: list[str] = []
+        self.requests: list[ApprovalRequest] = []
 
     async def request_approval(self, req: ApprovalRequest) -> ApprovalResponse:
         self.asked.append(req.tool_name)
+        self.requests.append(req)
         return ApprovalResponse(allowed=self.allow, outcome="answered")
 
     def reset_turn_memory(self) -> None:
@@ -163,6 +166,125 @@ async def test_an_allowed_write_in_safe_mode_still_succeeds(tmp_path: Path) -> N
 
     assert result["ok"] is True
     assert (tmp_path / "out.txt").exists()
+
+
+@pytest.mark.parametrize("allow", [True, False])
+async def test_a3_researcher_safe_mode_attributed_write_approval(
+    tmp_path: Path, allow: bool
+) -> None:
+    transport = MockTransport()
+    _write_then("Completed the assigned write.")(transport)
+    broker = _Broker(allow)
+
+    await _spawn("researcher", transport, tmp_path, mode="Safe", broker=broker)
+
+    assert (tmp_path / "out.txt").exists() is allow
+    assert broker.asked == ["write_file"]
+    assert "researcher" in str(broker.requests[0].requester)
+
+
+@pytest.mark.parametrize("allow", [True, False])
+async def test_a3_researcher_outlook_uses_inherited_approval(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, allow: bool
+) -> None:
+    from agenthicc.tools.outlook import agent_tools
+
+    calls: list[str] = []
+
+    class Outlook:
+        async def list_emails(self, *, folder: str, n: int, unread_only: bool) -> list[object]:
+            calls.append("read")
+            return [{"subject": "Fixture subject"}]
+
+        async def send_email(
+            self,
+            *,
+            to: list[str],
+            subject: str,
+            body: str,
+            cc: list[str] | None,
+            attachments: list[str] | None,
+        ) -> dict[str, object]:
+            calls.append("write")
+            return {"ok": True}
+
+    monkeypatch.setattr(agent_tools, "_backend", Outlook)
+    transport = MockTransport()
+    transport.queue_tool_use("list_emails", {})
+    transport.queue_tool_use(
+        "send_email", {"to": ["recipient@example.test"], "subject": "Fixture", "body": "Hello"}
+    )
+    transport.queue_response(_final("Completed the Outlook fixture."))
+
+    class OutlookApprovals(_Broker):
+        async def request_approval(self, req: ApprovalRequest) -> ApprovalResponse:
+            if req.tool_name == "list_emails":
+                self.asked.append(req.tool_name)
+                return ApprovalResponse(allowed=True, outcome="answered")
+            return await super().request_approval(req)
+
+    broker = OutlookApprovals(allow)
+
+    await _spawn("researcher", transport, tmp_path, mode="Safe", broker=broker)
+
+    assert "Fixture subject" in str(transport.calls[1].messages[-1])
+    assert calls == (["read", "write"] if allow else ["read"])
+    assert broker.asked == ["list_emails", "send_email"]
+
+
+async def test_a3_scoped_outlook_worker_cannot_attach_an_outside_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agenthicc.tools.outlook import agent_tools
+
+    scope = tmp_path / "docs"
+    scope.mkdir()
+    (scope / "allowed.txt").write_text("allowed", encoding="utf-8")
+    (tmp_path / "outside.txt").write_text("outside", encoding="utf-8")
+    attachments_seen: list[list[str] | None] = []
+
+    class Outlook:
+        async def send_email(
+            self,
+            *,
+            to: list[str],
+            subject: str,
+            body: str,
+            cc: list[str] | None,
+            attachments: list[str] | None,
+        ) -> dict[str, object]:
+            attachments_seen.append(attachments)
+            return {"ok": True}
+
+    monkeypatch.setattr(agent_tools, "_backend", Outlook)
+    transport = MockTransport()
+    for attachment in ("../outside.txt", "allowed.txt"):
+        transport.queue_tool_use(
+            "send_email",
+            {
+                "to": ["recipient@example.test"],
+                "subject": "Fixture",
+                "body": "Hello",
+                "attachments": [attachment],
+            },
+        )
+    transport.queue_response(_final("Completed the fixture."))
+    registry = SubagentTypeRegistry()
+    registry.register(
+        SubagentTypeSpec(
+            "scoped-researcher",
+            None,
+            "Report the fixture.",
+            permissions=SubagentPermissionConstraints(workspace_paths=("docs",)),
+        )
+    )
+
+    await _spawn("scoped-researcher", transport, tmp_path, registry=registry)
+
+    assert attachments_seen == [[str(scope / "allowed.txt")]]
+    assert "outside_workspace" in str(transport.calls[1].messages[-1])
+    worker_names = {tool["name"] for tool in transport.calls[0].tools}
+    assert not worker_names & {"run_command", "run_python_expr", "git_status", "git_add"}
 
 
 # ── criteria 4 and 5: no turn limit; an output cut-off is a failure ──────────
@@ -285,7 +407,9 @@ async def test_a_read_only_worker_is_not_told_to_write_a_file(tmp_path: Path) ->
     transport = MockTransport()
     transport.queue_response(_final("It is 42.", "answer"))
 
-    result = await _spawn("researcher", transport, tmp_path, task="What is the answer?")
+    result = await _spawn(
+        "researcher", transport, tmp_path, mode="Plan", task="What is the answer?"
+    )
 
     assert result["ok"] is True
     assert "## LONG OUTPUT" not in str(transport.calls[0].system)
@@ -381,7 +505,7 @@ def test_working_roles_inherit_every_tool(agent_type: str) -> None:
     assert spec.allowed_tools is None
 
 
-async def test_a_working_role_receives_every_tool_the_parent_exposes(tmp_path: Path) -> None:
+async def test_all_roles_inherit_project_tools(tmp_path: Path) -> None:
     from lauren_ai._tools import tool
 
     from agenthicc.tools.capabilities import tool_read
@@ -429,9 +553,7 @@ async def test_a_working_role_receives_every_tool_the_parent_exposes(tmp_path: P
     inherited = surface(transport.calls[0])
     assert "project_probe" in inherited  # not on any built-in list
     assert {"write_file", "run_bash", "apply_diff", "git_status"} <= inherited
-    restricted = surface(explorer.calls[0])
-    assert "project_probe" not in restricted
-    assert not restricted & {"write_file", "patch_file", "run_bash"}  # read-only by definition
+    assert surface(explorer.calls[0]) == inherited
 
 
 async def test_a_working_role_does_not_inherit_the_parents_control_plane(

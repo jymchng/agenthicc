@@ -59,10 +59,12 @@ from agenthicc.tools.base import tool_name
 
 if TYPE_CHECKING:
     from lauren_ai._agents._runner import AgentRunnerBase
+    from lauren_ai._tools import ToolMeta
     from agenthicc.config import ExecutionSettings
     from agenthicc.kernel.processor import EventProcessor
     from agenthicc.memory.journal import ConversationJournal
     from agenthicc.plugins.registry import ToolRegistry
+    from agenthicc.tools.base import ToolLike
     from agenthicc.runners.retry import RetryConfig
     from agenthicc.runners.usage_ledger import UsageLedger
     from agenthicc.tools.approval import ApprovalBroker
@@ -175,7 +177,7 @@ def make_spawn_subagents_tool(
         Default semaphore bound.  May be overridden per call via the
         ``max_concurrent`` tool parameter.
     app_state:
-        ``AppState`` used to derive each worker's isolated Yolo policy state.
+        ``AppState`` used to derive each worker's isolated policy state.
         The parent state is never mutated; ``None`` in headless / test
         contexts leaves capability hooks disabled.
     processor:
@@ -196,10 +198,8 @@ def make_spawn_subagents_tool(
         Wall-clock timeout in seconds for each worker in one invocation.
         Defaults to one hour and may be overridden by the parent model.
     approval_svc:
-        The parent session's approval service.  It is retained for hook
-        compatibility, but child workers run with an isolated Yolo policy, so
-        they do not request foreground Safe-mode approval.  The parent TUI
-        mode is never changed by spawning workers.
+        The parent session's approval service. Worker approvals use the
+        inherited mode and are attributed to the requesting worker.
     workspace_access:
         The parent session's workspace policy, passed to child approval hooks
         for consistent path authorization.
@@ -209,7 +209,7 @@ def make_spawn_subagents_tool(
         results are used as the resume cache even when the reactive TUI store
         was not restored.
     """
-    from lauren_ai._tools import tool as _tool
+    from lauren_ai._tools import TOOL_META, tool as _tool
 
     from agenthicc.subagents.pool import (
         SubagentAdmissionError,
@@ -223,7 +223,7 @@ def make_spawn_subagents_tool(
     from agenthicc.config import SubagentSettings
     from agenthicc.subagents.governance import resolve_depth_tier, validate_depth_tiers
     from agenthicc.subagents.types import DEFAULT_REGISTRY, DEFAULT_SUBAGENT_TIMEOUT_S
-    from agenthicc.tools.capabilities import tool_read
+    from agenthicc.tools.capabilities import get_tool_capabilities, tool_read
 
     _registry = registry if registry is not None else DEFAULT_REGISTRY
     _settings = subagent_settings or SubagentSettings()
@@ -234,7 +234,6 @@ def make_spawn_subagents_tool(
         if _settings.allowed_models is not None
         else None
     )
-    validate_depth_tiers(_settings, _registry, _allowed_models)
     _allow_call_overrides = _settings.allow_call_overrides
     requested_default_concurrency = (
         _settings.max_concurrent if max_concurrent is None else max_concurrent
@@ -254,17 +253,39 @@ def make_spawn_subagents_tool(
         )
         return SubagentToolSelection(selection.surface, selection.registry, policy)
 
+    pool_depth = parent_depth + 1
     initial = select_tools()
+    validate_depth_tiers(_settings, _registry, _allowed_models, initial.registry)
     continuation_registry = registry_for_session(conversation_id, conv_store)
+
+    def scoped_selection() -> SubagentToolSelection:
+        selection = select_tools()
+        skill_use = current_skill_use()
+        if skill_use is None:
+            return selection
+        surface = replace(
+            selection.surface,
+            tools=tuple(
+                item for item in selection.surface.tools if skill_use.permitted(tool_name(item))
+            ),
+        )
+        policy = selection.policy
+        if policy is not None:
+            policy = policy.restrict_by(None, allowed_tools=skill_use.visible_names)
+        return SubagentToolSelection(surface, selection.registry, policy)
 
     def _surface(
         agent_type: str, selection: SubagentToolSelection
-    ) -> tuple[list[object], frozenset[str], str] | None:
+    ) -> tuple[list["ToolLike"], frozenset[str], str] | None:
         spec = _registry.get(agent_type)
         if spec is None:
             return None
         tools, blocked = type_surface(
-            spec, selection.surface.tools, selection.registry, (selection.policy, spec.policy)
+            spec,
+            selection.surface.tools,
+            selection.registry,
+            (selection.policy, spec.policy),
+            resolve_depth_tier(_settings, pool_depth, agent_type),
         )
         mode = spec.policy if spec.policy is not None else selection.policy
         return tools, blocked, mode.mode_name if mode is not None else ""
@@ -277,20 +298,6 @@ def make_spawn_subagents_tool(
             return ""
         tools, blocked, mode_name = surface
         return unusable_reason(spec, tools, blocked, mode_name=mode_name)
-
-    type_tags: dict[str, str] = {}
-    for _type_name in _registry.names():
-        _surface_info = _surface(_type_name, initial)
-        _spec = _registry.get(_type_name)
-        if _surface_info is None or _spec is None:
-            continue
-        _tools, _blocked, _mode = _surface_info
-        _reason = unusable_reason(_spec, _tools, _blocked, mode_name=_mode)
-        type_tags[_type_name] = (
-            f"unavailable in this session: {_reason}"
-            if _reason
-            else ", ".join(tool_tags(_tools, _blocked))
-        )
 
     @tool_read
     @_tool()
@@ -318,7 +325,6 @@ def make_spawn_subagents_tool(
             model: Optional model override; available only when the operator enables it.
             effort: Optional reasoning-effort override; available only when enabled.
         """
-        pool_depth = parent_depth + 1
         if pool_depth > _settings.max_depth:
             return {
                 "ok": False,
@@ -485,19 +491,9 @@ def make_spawn_subagents_tool(
 
         # SUBAGENT-13: refuse a type that cannot do its job in this session
         # before any worker, panel row, ledger entry or provider call exists.
-        selection = select_tools()
-        spawn_surface = selection.surface
-        spawn_policy = selection.policy
-        skill_use = current_skill_use()
-        if skill_use is not None:
-            spawn_surface = ToolSurface(
-                spawn_surface.generation,
-                tuple(item for item in spawn_surface.tools if skill_use.permitted(tool_name(item))),
-                spawn_surface.sources,
-            )
-            if spawn_policy is not None:
-                spawn_policy = spawn_policy.restrict_by(None, allowed_tools=skill_use.visible_names)
-        spawn_selection = SubagentToolSelection(spawn_surface, selection.registry, spawn_policy)
+        spawn_selection = scoped_selection()
+        spawn_surface = spawn_selection.surface
+        spawn_policy = spawn_selection.policy
         if requested_workflows:
             from agenthicc.workflows.stack_tools import current_workflow_tools
 
@@ -509,9 +505,9 @@ def make_spawn_subagents_tool(
                 workflow_name, arguments = request
                 spec = _registry.get(task.agent_type)
                 assert spec is not None
-                tools, blocked = type_surface(
-                    spec, spawn_surface.tools, selection.registry, (spawn_policy, spec.policy)
-                )
+                surface = _surface(task.agent_type, spawn_selection)
+                assert surface is not None
+                tools, blocked, _ = surface
                 picked: WorkflowTaskAdmission
                 if scope is None or scope.worker_runtime is None:
                     picked = WorkflowTaskRefusal(
@@ -526,7 +522,10 @@ def make_spawn_subagents_tool(
                         scope.registry,
                         scope.worker_runtime.config.cfg,
                         blocked,
-                        can_write=any(_is_mutating_tool(tool) for tool in tools),
+                        can_write=any(
+                            _is_mutating_tool(tool) and not (get_tool_capabilities(tool) & blocked)
+                            for tool in tools
+                        ),
                     )
                 if isinstance(picked, WorkflowTaskSelection):
                     subagent_tasks[index] = replace(task, workflow=picked)
@@ -590,9 +589,9 @@ def make_spawn_subagents_tool(
                 else 8_000
             )
             tier = resolve_depth_tier(_settings, pool_depth, agent_type)
-            declared_tools = (
-                tier.allowed_tools if tier.allowed_tools is not None else spec.allowed_tools
-            )
+            surface = _surface(agent_type, spawn_selection)
+            assert surface is not None
+            tools, blocked, _ = surface
             effective_routing[agent_type] = {
                 "model": worker_model,
                 "effort": _worker_effort(
@@ -604,8 +603,8 @@ def make_spawn_subagents_tool(
                 "context": min(max(1, requested_context), context_window),
                 "context_window": context_window,
                 "output_schema": spec.output_schema,
-                # ``None`` is "inherit every tool the parent exposes".
-                "allowed_tools": sorted(declared_tools) if declared_tools is not None else None,
+                "tools": sorted(map(tool_name, tools)),
+                "blocked_capabilities": sorted(blocked),
                 "allowed_models": sorted(tier.allowed_models or _allowed_models or ()),
             }
         routing_policy: dict[str, object] = {
@@ -625,10 +624,7 @@ def make_spawn_subagents_tool(
             "ancestry": ancestry,
             "types": effective_routing,
         }
-        if spawn_surface is not selection.surface:
-            routing_policy["visible_tools"] = list(map(tool_name, spawn_surface.tools))
-        if spawn_surface.generation:
-            routing_policy["tool_surface_generation"] = spawn_surface.generation
+        routing_policy["tool_surface_generation"] = spawn_surface.generation
         fp = _tasks_fingerprint(
             subagent_tasks,
             policy_revision=(spawn_policy.policy_revision if spawn_policy else ""),
@@ -724,7 +720,7 @@ def make_spawn_subagents_tool(
             processor=processor,
             conv_store=conv_store,
             registry=_registry,
-            tool_registry=selection.registry,
+            tool_registry=spawn_selection.registry,
             retry_config=retry_config,
             usage_ledger=usage_ledger,
             conversation_id=conversation_id,
@@ -942,13 +938,42 @@ def make_spawn_subagents_tool(
             **pool_metadata,
         }
 
-    _augment_type_schema(
-        spawn_subagents,
-        _registry,
-        allow_call_overrides=_allow_call_overrides,
-        type_tags=type_tags,
-        mode=current_spawn_mode(_settings, conversation_journal),
-    )
+    metadata = cast("ToolMeta", vars(spawn_subagents)[TOOL_META])
+    _augment_type_schema(metadata, _registry, allow_call_overrides=_allow_call_overrides)
+    base_description = metadata.description
+    spawn_mode = current_spawn_mode(_settings, conversation_journal)
+    described: SubagentToolSelection | None = None
+
+    def refresh_catalog() -> bool:
+        nonlocal described
+        selection = scoped_selection()
+        if selection == described:
+            return False
+        descriptions = []
+        for name in _registry.names():
+            spec = _registry.get(name)
+            surface = _surface(name, selection)
+            if spec is None or surface is None:
+                continue
+            tools, blocked, mode = surface
+            refusal = unusable_reason(spec, tools, blocked, mode_name=mode)
+            tag = (
+                f"unavailable in this session: {refusal}"
+                if refusal
+                else ", ".join(tool_tags(tools, blocked))
+            )
+            text = spec.description or "No description provided."
+            descriptions.append(f"- {name} [{tag}]: {text}")
+        description = _spawn_description(base_description, spawn_mode, descriptions)
+        described = selection
+        if description == metadata.description:
+            return False
+        metadata.description = description
+        metadata.parameters = {**metadata.parameters, "description": description}
+        return True
+
+    refresh_catalog()
+    spawn_subagents.__dict__["__agenthicc_refresh_catalog__"] = refresh_catalog
     # The turn runner registers these alongside spawn_subagents.  Attaching
     # them keeps this factory backwards compatible for lightweight callers that
     # only need the original callable.
@@ -1194,30 +1219,13 @@ def _known_type_names(registry: SubagentTypeRegistry) -> list[str]:
 
 
 def _augment_type_schema(
-    tool: object,
+    metadata: "ToolMeta",
     registry: SubagentTypeRegistry,
     *,
-    allow_call_overrides: bool = False,
-    type_tags: Mapping[str, str] | None = None,
-    mode: SpawnMode,
+    allow_call_overrides: bool,
 ) -> None:
-    """Add this session's types and operator-enabled routing inputs to metadata.
-
-    *type_tags* maps a type name to what it can do in this session
-    (``edits files, runs commands``, ``read-only`` or ``unavailable …``); the
-    parent model sees it in front of each type's description.
-    """
-
-    try:
-        metadata = object.__getattribute__(tool, "__lauren_ai_tool__")
-    except AttributeError:
-        return
-    try:
-        parameters = object.__getattribute__(metadata, "parameters")
-    except AttributeError:
-        return
-    if not isinstance(parameters, dict):
-        return
+    """Add the session's type enum and operator-enabled routing inputs."""
+    parameters = metadata.parameters
     input_schema = parameters.get("input_schema")
     if not isinstance(input_schema, dict):
         return
@@ -1262,18 +1270,8 @@ def _augment_type_schema(
     if isinstance(type_schema, dict):
         type_schema["enum"] = _known_type_names(registry)
 
-    descriptions = []
-    for name in registry.names():
-        spec = registry.get(name)
-        if spec is not None:
-            text = spec.description or "No description provided."
-            tag = (type_tags or {}).get(name)
-            descriptions.append(f"- {name} [{tag}]: {text}" if tag else f"- {name}: {text}")
-    try:
-        raw_description = object.__getattribute__(metadata, "description")
-    except AttributeError:
-        raw_description = ""
-    base_description = raw_description if isinstance(raw_description, str) else ""
+
+def _spawn_description(base_description: str, mode: SpawnMode, descriptions: list[str]) -> str:
     mode_text = (
         "Returns a receipt when the pool starts. Continue working or end the turn. "
         "Collect only after a notice; do not poll, sleep, redo work, or guess results."
@@ -1283,5 +1281,4 @@ def _augment_type_schema(
     description = f"{base_description}\n\n{mode_text}\n\n{_PARALLEL_GUIDANCE}"
     if descriptions:
         description += "\n\nAvailable subagent types:\n" + "\n".join(descriptions)
-    metadata.description = description
-    parameters["description"] = description
+    return description

@@ -994,6 +994,8 @@ class CodePlanRunner(BaseWorkflowRunner):
                 ),
                 mcp_registry=self._cfg.mcp_registry,
                 subagent_registry=self._cfg.subagent_registry,
+                agents_registry=self._cfg.agents_registry,
+                agent_config=self._cfg.cfg,
                 active_agent="auto",
                 completed_turns=self._cfg.completed_turns,
                 approval_svc=self._cfg.approval_svc,
