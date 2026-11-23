@@ -370,6 +370,7 @@ class ConversationStore:
         )
         self.subagent_finished_pending: Signal[int] = Signal(0, name="subagent_finished_pending")
         self.subagent_wake_paused: Signal[bool] = Signal(False, name="subagent_wake_paused")
+        self.phase_subagent_wait: Signal[str] = Signal("", name="phase_subagent_wait")
         self.subagent_last_activity: dict[str, float] = {}
         self.subagent_activity_ages: Signal[tuple[tuple[str, int], ...]] = Signal(
             (), name="subagent_activity_ages"

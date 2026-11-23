@@ -51,6 +51,15 @@ _WORKFLOW_USER_QUESTION_REMINDER = (
 )
 
 
+def is_phase_transition_tool(tool: object) -> bool:
+    name = tool_name(tool)
+    return (
+        name != "ask_user"
+        and name not in _NON_TRANSITION_CONTROL_TOOL_NAMES
+        and ToolCapability.CONTROL in get_tool_capabilities(tool)
+    )
+
+
 def phase_transition_instruction(
     tools: Iterable[object],
     *,
@@ -72,15 +81,12 @@ def phase_transition_instruction(
         name = tool_name(tool)
         # ``ask_user`` is marked CONTROL for safe capability handling, but it
         # clarifies requirements and does not transition the workflow.
-        is_control_tool = name != "ask_user" and ToolCapability.CONTROL in get_tool_capabilities(
-            tool
-        )
         if name in _NON_TRANSITION_CONTROL_TOOL_NAMES:
             if expected is None or name in expected:
                 if name not in mutations:
                     mutations.append(name)
             continue
-        if is_control_tool and (expected is None or name in expected):
+        if is_phase_transition_tool(tool) and (expected is None or name in expected):
             if name not in available:
                 available.append(name)
 

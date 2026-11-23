@@ -291,6 +291,13 @@ result boundary is instead recorded in the same
   the parent. This closes the interval in which a parent cancellation could
   otherwise lose output before lauren-ai committed the parent tool result.
 
+A workflow pool's `subagent_pool_started` record includes its conversation,
+run, frame, phase, and invocation under `phase_owner`. Workflow checkpoints
+preserve `phase_invocation` across resume. A committed exchange associates each
+terminal result with its invocation in `phase_pool_receipts`. The phase reads
+these receipts to determine which pools it still needs to collect. The existing
+stable notice IDs and delivery acknowledgements survive interruption and replay.
+
 Every record kind declares its durability in
 `agenthicc.memory.journal.RECORD_DURABILITY`. All kinds except `usage_record`
 are durable: written and fsync'd before the append returns. `usage_record` is

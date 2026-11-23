@@ -27,6 +27,7 @@ def resolve_spawn_mode(
     journal: ConversationJournal | None,
     notices: NoticeSource | None,
     in_workflow_phase: bool,
+    phase_delivery: bool = False,
 ) -> SpawnMode:
     """Resolve the operator setting against delivery capabilities of the turn."""
     if (
@@ -34,7 +35,7 @@ def resolve_spawn_mode(
         and owner is not None
         and journal is not None
         and notices is not None
-        and not in_workflow_phase
+        and (not in_workflow_phase or phase_delivery)
     ):
         return "background"
     return "foreground"
@@ -48,13 +49,16 @@ def current_spawn_mode(
         current_notice_source,
     )
     from agenthicc.runners.workflow_execution_context import current_workflow_run_id
+    from agenthicc.subagents.phase import current_phase_pools
 
+    phase = current_phase_pools()
     return resolve_spawn_mode(
         settings,
         owner=current_background_task_owner(),
         journal=journal,
         notices=current_notice_source(),
         in_workflow_phase=current_workflow_run_id() is not None,
+        phase_delivery=phase is not None and phase.available,
     )
 
 

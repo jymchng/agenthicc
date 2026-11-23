@@ -762,10 +762,17 @@ def make_spawn_subagents_tool(
             current_session_interactive,
         )
 
+        from agenthicc.runners.workflow_execution_context import current_workflow_run_id
+        from agenthicc.subagents.phase import current_phase_pools
+
+        phase = current_phase_pools()
         task_owner = current_background_task_owner()
         mode = current_spawn_mode(_settings, conversation_journal)
         pool.detach_available = (
-            mode == "foreground" and task_owner is not None and conversation_journal is not None
+            mode == "foreground"
+            and task_owner is not None
+            and conversation_journal is not None
+            and (current_workflow_run_id() is None or (phase is not None and phase.available))
         )
         communication = pool.communication
         backgrounded = False
@@ -820,6 +827,7 @@ def make_spawn_subagents_tool(
                     task=cast(asyncio.Task[object], pool_task),
                     pool=pool,
                     lineage=owner_lineage,
+                    phase_owner=pool.phase_owner,
                 )
             )
         foreground = mode == "foreground"
@@ -942,12 +950,22 @@ def make_spawn_subagents_tool(
             **pool_metadata,
         }
 
+    from agenthicc.runners.workflow_execution_context import current_workflow_run_id
+    from agenthicc.subagents.phase import current_phase_pools
+
+    phase = current_phase_pools()
+    phase_fallback = (
+        _settings.spawn_mode == "background"
+        and current_workflow_run_id() is not None
+        and (phase is None or not phase.available)
+    )
     _augment_type_schema(
         spawn_subagents,
         _registry,
         allow_call_overrides=_allow_call_overrides,
         type_tags=type_tags,
         mode=current_spawn_mode(_settings, conversation_journal),
+        phase_fallback=phase_fallback,
     )
     # The turn runner registers these alongside spawn_subagents.  Attaching
     # them keeps this factory backwards compatible for lightweight callers that
@@ -1200,6 +1218,7 @@ def _augment_type_schema(
     allow_call_overrides: bool = False,
     type_tags: Mapping[str, str] | None = None,
     mode: SpawnMode,
+    phase_fallback: bool = False,
 ) -> None:
     """Add this session's types and operator-enabled routing inputs to metadata.
 
@@ -1280,6 +1299,8 @@ def _augment_type_schema(
         if mode == "background"
         else "Blocks until the pool finishes and returns the aggregated results."
     )
+    if phase_fallback:
+        mode_text += " Background delivery or collection is unavailable in this phase."
     description = f"{base_description}\n\n{mode_text}\n\n{_PARALLEL_GUIDANCE}"
     if descriptions:
         description += "\n\nAvailable subagent types:\n" + "\n".join(descriptions)

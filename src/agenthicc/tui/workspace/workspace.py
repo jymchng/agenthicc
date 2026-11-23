@@ -200,6 +200,7 @@ class Workspace:
             conv.subagent_background_running,
             conv.subagent_finished_pending,
             conv.subagent_wake_paused,
+            conv.phase_subagent_wait,
             conv.subagent_activity_ages,
             conv.terminal_waiting,  # PRD-149: owned terminal wait
             conv.terminal_wait_label,

@@ -27,6 +27,7 @@ from agenthicc.tools.capabilities import tool_control
 if TYPE_CHECKING:
     from agenthicc.memory.journal import ConversationJournal
     from agenthicc.runners.agent_turn_context import TurnInputReason
+    from agenthicc.subagents.phase import PhaseOwner
     from agenthicc.subagents.pool import SubagentPool
 
 MessageKind = Literal[
@@ -155,6 +156,7 @@ class PoolHandle:
     lineage: tuple[str, ...] = ()
     #: Whether the pool was moved to the background (user or model request).
     backgrounded: bool = False
+    phase_owner: "PhaseOwner | None" = None
 
 
 class AgentMessageBroker:
@@ -1061,8 +1063,14 @@ def make_parent_communication_tools(
     """
     from lauren_ai._tools import tool
 
+    from agenthicc.subagents.phase import current_phase_owner, phase_pool_matches
+
     def _in_scope(handle: PoolHandle) -> bool:
-        return handle.conversation_id == conversation_id and (not owner or owner in handle.lineage)
+        return (
+            handle.conversation_id == conversation_id
+            and (not owner or owner in handle.lineage)
+            and handle.phase_owner == current_phase_owner()
+        )
 
     def _handle(pool_id: str) -> PoolHandle:
         handle = registry.get(pool_id)
@@ -1161,7 +1169,7 @@ def make_parent_communication_tools(
             # read a pool it no longer holds.
             if owner:
                 raise CommunicationError("unknown subagent pool for this session")
-            return _journaled_pool_payload(journal, pool_id)
+            return _journaled_pool_payload(journal, pool_id, phase_owner=current_phase_owner())
         if wait and not handle.task.done() and bound > 0:
             from agenthicc.runners.agent_turn_context import current_turn_input_subscriber
 
@@ -1215,6 +1223,8 @@ def make_parent_communication_tools(
                 for record in journal.completed_background_subagent_pools()
             }
             for record in journal.fold_subagent_pool_lifecycle():
+                if not phase_pool_matches(record, current_phase_owner()):
+                    continue
                 pool_id = record.get("pool_id")
                 if not isinstance(pool_id, str) or not pool_id:
                     continue
@@ -1437,15 +1447,17 @@ _TERMINAL_POOL_STATUSES = frozenset({"completed", "interrupted", "cancelled"})
 
 
 def _journaled_pool_payload(
-    journal: "ConversationJournal | None", pool_id: str
+    journal: "ConversationJournal | None", pool_id: str, *, phase_owner: "PhaseOwner | None" = None
 ) -> dict[str, object]:
     """Read a pool that has no live handle from this conversation's journal."""
+    from agenthicc.subagents.phase import phase_pool_matches
+
     record = (
         next(
             (
                 item
                 for item in journal.fold_subagent_pool_lifecycle()
-                if item.get("pool_id") == pool_id
+                if item.get("pool_id") == pool_id and phase_pool_matches(item, phase_owner)
             ),
             None,
         )

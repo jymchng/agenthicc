@@ -1,11 +1,11 @@
 # Subagents and `spawn_subagents`
 
 `spawn_subagents` is the session-wide delegation tool. It lets the current
-agent explicitly fan out independent pieces of work to typed workers, wait for
-all of them, and receive one complete text digest. It is normally synchronous
-from the parent agent's point of view. If a worker needs a decision, the pool
-returns a structured clarification request; the parent answers it through a
-continuation tool and then collects the still-running pool.
+agent fan out independent pieces of work to typed workers. Eligible terminal
+turns receive a durable running-pool receipt and continue while workers run.
+They collect a text digest and structured findings once the pool finishes. A
+worker can request clarification, which the parent handles through the pool's
+communication tools.
 The TUI and kernel projections still use bounded previews so a long chapter or
 source file does not make the screen unusable.
 
@@ -871,12 +871,28 @@ The notice contains the pool ID, status and worker counts. Worker output
 reaches the model in the result of `collect_subagent_results(pool_id)`. Approval
 requests surface in the main session with the worker's name.
 
+### Workflow phase pools
+
+Interactive phases using the declarative runner or the shared CodePlan phase
+turn can continue after admission. The phase needs journal-backed memory,
+collection access, and either permission to answer worker questions or the
+`fail` clarification setting. When the phase yields, the status line shows
+that it is waiting. A question or completion resumes the same phase so it can
+respond or collect. Each terminal collection must commit before a later
+batch can advance the phase.
+
+Esc pauses the phase while admitted background workers continue. Use
+`/workflow resume` to resume delivery and process queued input. Reset or
+abandon settles the phase's live pools before releasing it. Session handoff
+requires collection first.
+
 ### Foreground pools
 
 Set `subagents.spawn_mode = "foreground"` to have the spawn wait for its
-aggregate. Workflow phases and runners that lack a supervised notice path
-also wait. In the terminal, Ctrl+B detaches an active foreground pool and
-returns a `backgrounded` receipt. Esc cancels a foreground pool.
+aggregate. Headless runs, session-service runs, and phases without a supervised
+delivery path also wait. In the terminal, Ctrl+B detaches an active foreground
+pool when its turn supports delivery and returns a `backgrounded` receipt.
+Esc cancels a foreground pool.
 
 ### Worker questions
 
