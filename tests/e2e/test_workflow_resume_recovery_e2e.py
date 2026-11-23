@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import json
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from agenthicc.runners.session_conversation import SessionConversation
 from agenthicc.runners.workflow_checkpoint_store import WorkflowCheckpointStore
@@ -20,6 +23,7 @@ from agenthicc.workflows.create_workflow.state import (
 )
 from agenthicc.workflows.plugin import PhaseSpec, WorkflowPlugin
 from agenthicc.workflows.registry import WorkflowRegistry
+from tests.workflow_checkpoints import schema_one_payload
 
 
 @dataclasses.dataclass
@@ -87,7 +91,10 @@ class E2EWorkflow(WorkflowPlugin):
         return None
 
 
-def test_process_restart_resume_calls_typed_runner_resume_once(tmp_path: Path) -> None:
+@pytest.mark.parametrize("schema_version", [1, 2])
+def test_process_restart_resume_calls_typed_runner_resume_once(
+    tmp_path: Path, schema_version: int
+) -> None:
     E2ERunner.resumed.clear()
     session_id = "e2e-recovery"
     conversation = SessionConversation.open(
@@ -116,6 +123,12 @@ def test_process_restart_resume_calls_typed_runner_resume_once(tmp_path: Path) -
         )
         handle.attach_context(context)
         handle.update_phase("second", 1, 2)
+        if schema_version == 1:
+            checkpoint = store.load(handle.run_id)
+            assert checkpoint is not None
+            store.path_for(handle.run_id).write_text(
+                json.dumps(schema_one_payload(checkpoint)), encoding="utf-8"
+            )
     finally:
         conversation.close()
 

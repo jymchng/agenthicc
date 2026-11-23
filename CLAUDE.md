@@ -95,12 +95,14 @@ are base-package code with no separate extras, and the documentation and
 release toolchain (MkDocs, MkDocs Material, pymdown-extensions, twine) is part
 of `dev`. Enumerate them with `uv run nox --list`: `tests`, `tests_unit` and
 `tests_integration` (each on 3.11, 3.12 and 3.13), `tests_e2e`,
-`tests_windows`, `coverage`, `lint`, `format`, `typecheck`,
+`tests_windows`, `workflow_recovery`, `coverage`, `lint`, `format`, `typecheck`,
 `typecheck_contracts`, `type_audit`, `docs`, `build`, `build_check`,
 `llms_check`, and `clean`.
 
 The integration matrix exercises workflow scenarios S2, S4, and S9 across
 the three supported Python versions.
+`uv run nox -s workflow_recovery` runs the required checkpoint compatibility
+gate, including resumed execution from a pre-stack checkpoint.
 
 `.github/workflows/ci.yml` runs every gate and ends in one aggregate
 **Required checks** job, the single status to wait on before merging. CI runs

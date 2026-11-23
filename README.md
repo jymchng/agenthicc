@@ -275,6 +275,7 @@ to rehydrate and resume it through the same validation and live-owner claim
 path as `/workflow resume <run-id>`. `/workflow resume` without an ID selects
 the latest eligible durable checkpoint; provide an ID when you deliberately
 want to resume an older run.
+Compatible runs saved before workflow stacks resume as a single base workflow.
 
 Large bracketed pastes stay condensed in the composer. Backspace removes the whole paste when the cursor is immediately after its closing `]`; elsewhere it keeps normal character-wise editing. Home and End navigate the visible, single-line placeholder, so typing at either side keeps the original pasted content intact.
 

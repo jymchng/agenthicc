@@ -371,10 +371,13 @@ independent fail-closed guards.
 ### Workflow stack checkpoint links
 
 Schema version 2 requires `frame_id`, `parent_run_id` (nullable), and
-`origin`. A checkpoint that predates these fields is rejected with a
-message to start a new run. The kernel event log reconstructs the stack
-projection and delivered markers. The conversation journal provides the
-durable start receipt for each keyed parent turn.
+`origin`. For a checksum-verified schema-1 checkpoint without those fields,
+the reader uses the existing run ID as the base frame, a null parent, and
+`selection` as the origin. The normal resume validation and claim still
+apply. Discovery leaves the saved file intact. The next checkpoint save at
+a higher revision writes schema 2 atomically. The kernel event log
+reconstructs the stack projection and delivered markers. The conversation
+journal provides the durable start receipt for each keyed parent turn.
 
 ### Active workflow checkpoint topology
 

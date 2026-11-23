@@ -1,5 +1,6 @@
 """Parent-link validation and schema migration for foreground recovery."""
 
+import json
 from dataclasses import replace
 from pathlib import Path
 
@@ -12,6 +13,7 @@ from agenthicc.runners.workflow_recovery import (
     workflow_recovery_leaves,
 )
 from agenthicc.workflows.checkpoint import CheckpointValidationError, WorkflowCheckpoint
+from tests.workflow_checkpoints import schema_one_payload
 
 
 def _checkpoint(run_id: str, parent_run_id: str | None) -> WorkflowCheckpoint:
@@ -69,12 +71,44 @@ def test_orphan_is_offered_and_link_cycles_and_excess_depth_are_diagnostic(tmp_p
         coordinator.select_latest_for_resume()
 
 
-@pytest.mark.parametrize("field", ["schema_version", "frame_id", "parent_run_id", "origin"])
-def test_checkpoint_predating_stack_is_rejected_before_recovery(field: str) -> None:
+def test_valid_flat_checkpoint_is_discovered_as_one_base_frame_without_writing(
+    tmp_path: Path,
+) -> None:
+    store = WorkflowCheckpointStore("session", root=tmp_path)
+    checkpoint = _checkpoint("run", None)
+    store.save(checkpoint)
+    raw = schema_one_payload(checkpoint)
+    path = store.path_for("run")
+    original = json.dumps(raw).encode()
+    path.write_bytes(original)
+
+    coordinator = WorkflowRecoveryCoordinator("session", checkpoint_store=store)
+    selected = coordinator.select_latest_for_resume()
+    assert selected is not None
+    assert selected.checkpoint == replace(checkpoint, frame_id="run")
+    assert store.load("run") == selected.checkpoint
+    assert path.read_bytes() == original
+    assert not store.claim_path_for("run").exists()
+
+    raw["intent"] = "edited after the checksum was written"
+    tampered = json.dumps(raw).encode()
+    path.write_bytes(tampered)
+    (invalid,) = coordinator.inspect()
+    assert invalid.error_code == "checkpoint_corrupt"
+    assert "content hash mismatch" in invalid.display_error
+    assert path.read_bytes() == tampered
+
+
+def test_schema_one_cannot_supply_workflow_stack_fields() -> None:
     payload = _checkpoint("run", None).to_dict()
-    if field == "schema_version":
-        payload[field] = 1
-    else:
-        del payload[field]
-    with pytest.raises(CheckpointValidationError, match="predates workflow stacks"):
+    payload["schema_version"] = 1
+    with pytest.raises(CheckpointValidationError, match="unexpected workflow stack fields"):
+        WorkflowCheckpoint.from_dict(payload)
+
+
+@pytest.mark.parametrize("field", ["frame_id", "parent_run_id", "origin"])
+def test_current_schema_requires_all_stack_fields(field: str) -> None:
+    payload = _checkpoint("run", None).to_dict()
+    del payload[field]
+    with pytest.raises(CheckpointValidationError, match=f"missing workflow stack fields: {field}"):
         WorkflowCheckpoint.from_dict(payload)

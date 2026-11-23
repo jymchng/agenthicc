@@ -169,6 +169,15 @@ metadata. When a return is accepted, the conversation journal uses the same
 key for the turn and its synthetic input. This covers a stop after the turn
 start is durable and before the input reaches the provider.
 
+## Amendment — 2026-11-23
+
+An interrupted schema-1 run reached `/workflow resume` with a valid checksum
+and matching workflow topology but was classified as corrupt. The decoder
+now verifies the stored payload's checksum and projects flat schema-1 records
+as selected base frames. The regular claimed resume transition saves schema
+2. Schema-2 checkpoints must provide their stack fields, and the existing
+workflow compatibility checks still apply.
+
 ## Implementation status
 
 | Criterion | Evidence |
@@ -176,6 +185,6 @@ start is durable and before the input reaches the provider.
 | A1 | `test_workflow_frame_reducer_replays_nested_returns_without_side_effects` compares a nested projection before and after replay. `test_restart_delivers_one_parent_turn_after_durable_return` replays the persisted kernel log in the reopened process. |
 | A2 | `test_restart_delivers_one_parent_turn_after_durable_return` terminates the process at the packet, event, and journal-start boundaries. Each reopened session sends one provider request and keeps one journal start marker. |
 | A3 | `test_restart_restores_a_paused_child_and_resumes_its_suspended_caller` reopens the session, checks both frames in the TUI projection, and submits the child's resume command before observing the caller request. |
-| A4 | `test_checkpoint_predating_stack_is_rejected_before_recovery` checks schema 1 and each missing stack field. |
+| A4 | `test_valid_flat_checkpoint_is_discovered_as_one_base_frame_without_writing` checks schema-1 integrity and read-only discovery. `test_current_schema_requires_all_stack_fields` checks strict schema-2 decoding. `test_latest_checkpoint_resume_rehydrates_selection_before_dispatch` exercises the command and continuation paths through the new CI gate. |
 | A5 | `test_orphan_is_offered_and_link_cycles_and_excess_depth_are_diagnostic` checks missing links, cycles, and the configured depth. |
 | A6 | `test_workflow_frame_reducer_replays_nested_returns_without_side_effects` checks the original state and payloads and confirms that the reducers return no effects. |

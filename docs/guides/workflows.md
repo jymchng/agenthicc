@@ -64,7 +64,9 @@ After a restart, `/workflow resume` offers the deepest recoverable child in
 each saved chain. The caller stays suspended until the child returns. A
 missing caller is reported and the child is offered as a base workflow.
 Cycles and chains deeper than the configured limit are reported as recovery
-errors. Checkpoints written before workflow stacks require a new run.
+errors. A compatible checkpoint from before workflow stacks resumes at its
+saved phase as a single base workflow. Resume still checks the checksum,
+workflow definition, phase topology, and session identity.
 
 If the session stops after recording a return, reopening the session
 continues the parent turn using the same return key. A journal entry

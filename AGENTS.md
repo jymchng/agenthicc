@@ -121,6 +121,7 @@ pymdown-extensions, twine) is part of `dev`. List the real sessions with
 | `tests_unit` (3.11, 3.12, 3.13) | `pytest tests/unit` |
 | `tests_integration` (3.11, 3.12, 3.13) | Integration and cassette replay tests plus workflow scenarios S2, S4, and S9 |
 | `tests_e2e` | `pytest tests/e2e` |
+| `workflow_recovery` | Checkpoint compatibility, stack links, and guarded resume through the TUI |
 | `tests_windows` | The lock, Windows filesystem and Windows terminal tests |
 | `coverage` | Full suite with branch and subprocess coverage; floor in `[tool.coverage.report] fail_under` |
 | `lint` | `ruff check` and `ruff format --check` |
