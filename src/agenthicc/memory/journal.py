@@ -1214,6 +1214,7 @@ class ConversationJournal:
         *,
         pool_id: str,
         tool_result: Mapping[str, object],
+        notify_parent_updates: bool = False,
     ) -> None:
         """Persist the exact provider receipt before returning control to the composer."""
         self._write(
@@ -1224,6 +1225,7 @@ class ConversationJournal:
                 "schema_version": 1,
                 "pool_id": str(pool_id)[:128],
                 "tool_result": dict(tool_result),
+                "notify_parent_updates": notify_parent_updates,
             }
         )
 
@@ -1415,6 +1417,7 @@ class ConversationJournal:
                 # being persisted. Keep its terminal state and exact receipt.
                 value["backgrounded"] = True
                 value["tool_result"] = record.get("tool_result")
+                value["notify_parent_updates"] = record.get("notify_parent_updates", False)
                 continue
             value.update(record)
             if kind == "subagent_pool_backgrounded":

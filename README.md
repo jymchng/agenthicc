@@ -789,6 +789,8 @@ by resume. Each call accepts `timeout_s` in seconds (default `3600`). See the
 communication protocol, security boundaries, cache semantics, and
 troubleshooting steps.
 
+Workers can also send status updates to the parent during a background run.
+
 An eligible workflow can also run as a subagent task. The parent session
 handles publication of the worker's staged artifacts.
 

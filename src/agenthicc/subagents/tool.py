@@ -34,6 +34,7 @@ from agenthicc.result_contracts import project_result_value, validate_result_val
 from agenthicc.skills.tools import current_skill_use
 from agenthicc.subagents.communication import (
     PoolHandle,
+    journal_parent_updates,
     make_parent_communication_tools,
     registry_for_session,
 )
@@ -655,10 +656,17 @@ def make_spawn_subagents_tool(
                     text = previous.get("text", "")
                     values = _validated_cached_values(previous.get("values"), _registry)
                     if status != "completed" or failed != 0 or len(values) == expected_values:
+                        pool_id = str(previous.get("pool_id", ""))
                         return {
                             "ok": status == "completed" and failed == 0,
                             "status": str(status),
-                            "pool_id": str(previous.get("pool_id", "")),
+                            "pool_id": pool_id,
+                            "parent_messages": [
+                                update.as_tool_data()
+                                for update in journal_parent_updates(
+                                    conversation_journal, frozenset({pool_id})
+                                )
+                            ],
                             "total": total,
                             "succeeded": succeeded,
                             "failed": failed,
@@ -759,6 +767,7 @@ def make_spawn_subagents_tool(
         from agenthicc.memory.journal import persist_journal_record
         from agenthicc.runners.agent_turn_context import (
             current_background_task_owner,
+            current_notice_source,
             current_session_interactive,
         )
 
@@ -793,6 +802,7 @@ def make_spawn_subagents_tool(
                 conversation_journal.subagent_pool_backgrounded,
                 pool_id=pool.pool_id,
                 tool_result=background_receipt,
+                notify_parent_updates=current_notice_source() is not None and not owner_lineage,
             )
             backgrounded = True
             pool.disable_detach()
@@ -854,6 +864,7 @@ def make_spawn_subagents_tool(
                     "status": "awaiting_clarification",
                     "pool_id": pool.pool_id,
                     "pending_questions": questions,
+                    "parent_messages": communication.parent_updates(),
                     "total": len(subagent_tasks),
                     "succeeded": 0,
                     "failed": 0,
@@ -932,6 +943,7 @@ def make_spawn_subagents_tool(
             "failed": result.failed,
             "error": "" if result.failed == 0 else f"{result.failed} subagent(s) failed",
             "results": result.text,
+            "parent_messages": communication.parent_updates() if communication is not None else [],
             "values": structured_values,
             "usage": result.usage.to_dict(),
             **(

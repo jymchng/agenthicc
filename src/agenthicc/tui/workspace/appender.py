@@ -1070,9 +1070,11 @@ def _render_user_message(self: ScrollBufferAppender, ev: ConversationEvent) -> N
     from rich.table import Table
     from rich.text import Text
 
+    from agenthicc.subagents.delivery import SUBAGENT_NOTICE_SOURCES
+
     p, g = palette(), glyphs()
     source = ev.payload.get("source")
-    if source in ("subagent_completion", "subagent_question"):
+    if source in SUBAGENT_NOTICE_SOURCES:
         summary = _text(ev.payload, "summary") or _text(ev.payload, "text")
         self._open_block("notice")
         self._print(Text(f"↩ {summary}", style=p.muted), highlight=False)
