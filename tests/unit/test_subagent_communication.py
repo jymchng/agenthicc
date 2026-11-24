@@ -12,7 +12,9 @@ from agenthicc.memory.journal import ConversationJournal
 from agenthicc.subagents.communication import (
     AgentMessageBroker,
     CommunicationError,
+    PoolContinuationRegistry,
     make_child_communication_tools,
+    make_parent_communication_tools,
 )
 from agenthicc.subagents.policy import SubagentExecutionPolicy
 from agenthicc.tui.conversation_store import AppState
@@ -582,3 +584,100 @@ async def test_a_consumed_message_is_acknowledged_and_an_unconsumed_one_is_count
     assert len(calls) == 2 and "note 1" in calls[1]  # delivered at the second turn
     worker_result = pool._results["task-0"]
     assert worker_result.undelivered_messages == 1  # "note 2" was never consumed
+
+
+async def test_parent_update_replays_from_journal_without_a_live_pool(tmp_path: Path) -> None:
+    from agenthicc.memory.journaled import JournaledShortTermMemory
+    from agenthicc.subagents.delivery import JournalNoticeSource, deliver_notices
+
+    path = tmp_path / "messages.jsonl"
+    journal = ConversationJournal(path)
+    eligible = AgentMessageBroker(
+        conversation_id="session",
+        parent_run_id="direct-turn",
+        pool_id="direct-pool",
+        journal=journal,
+    )
+    hidden = AgentMessageBroker(
+        conversation_id="session",
+        parent_run_id="workflow-phase",
+        pool_id="phase-pool",
+        journal=journal,
+    )
+    for broker, notify in ((eligible, True), (hidden, False)):
+        journal.subagent_pool_started(
+            pool_id=broker.pool_id,
+            fingerprint="tasks",
+            parent_run_id=broker.parent_run_id,
+            tasks=[],
+        )
+        if notify:
+            # The pool finished while the detach receipt was being persisted.
+            journal.subagent_pool_finished(
+                pool_id=broker.pool_id, total=1, succeeded=1, failed=0, text="done"
+            )
+        journal.subagent_pool_backgrounded(
+            pool_id=broker.pool_id, tool_result={}, notify_parent_updates=notify
+        )
+        broker.register_worker("worker")
+        await broker.send(
+            sender="worker", recipient="main", kind="status", payload={"text": broker.pool_id}
+        )
+    journal.agent_message_event(
+        pool_id=eligible.pool_id,
+        conversation_id=eligible.conversation_id,
+        parent_run_id=eligible.parent_run_id,
+        policy_revision="",
+        event_kind="agent_message_sent",
+        payload={"pool_id": eligible.pool_id, "recipient": "main", "payload": {}},
+    )
+    journal.close()
+
+    journal = ConversationJournal(path)
+    try:
+        registry = PoolContinuationRegistry()
+        source = JournalNoticeSource(journal, registry)
+        notices = source.claim()
+        (notice,) = [notice for notice in notices if notice.kind == "message"]
+        assert notice.kind == "message" and notice.pool_id == "direct-pool"
+        assert "phase-pool" not in notice.text
+        assert "untrusted_text" in notice.text
+        memory = JournaledShortTermMemory(journal)
+        deliver_notices(notices, memory, None)
+        assert journal.has_message_id(notice.message_id)
+        assert not source.has_pending()
+        collect = next(
+            tool
+            for tool in make_parent_communication_tools(registry, "session", journal)
+            if tool.__name__ == "collect_subagent_results"
+        )
+        outcome = await collect("direct-pool")
+        assert outcome["status"] == "completed"
+        assert len(outcome["parent_messages"]) == 1
+        assert outcome["parent_messages"][0]["untrusted_text"] == "direct-pool"
+    finally:
+        journal.close()
+
+
+async def test_parent_update_delivery_frees_mailbox_for_the_next_status() -> None:
+    broker = AgentMessageBroker(
+        conversation_id="session", parent_run_id="turn", pool_id="pool", max_mailbox_messages=1
+    )
+    broker.register_worker("worker")
+    first = await broker.send(
+        sender="worker", recipient="main", kind="status", payload={"text": "First status"}
+    )
+    with pytest.raises(CommunicationError, match="unknown message_id"):
+        await broker.acknowledge("main", "absent")
+    with pytest.raises(CommunicationError, match="does not own"):
+        await broker.acknowledge("worker", first.message_id)
+    broker.mark_parent_update_delivered(first.message_id)
+    broker.mark_parent_update_delivered(first.message_id)
+    assert await broker.undelivered_count("main") == 0
+    second = await broker.send(
+        sender="worker", recipient="main", kind="status", payload={"text": "Second status"}
+    )
+    assert [item["message_id"] for item in broker.parent_updates()] == [
+        first.message_id,
+        second.message_id,
+    ]

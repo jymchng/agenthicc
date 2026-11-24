@@ -136,6 +136,17 @@ async def send_email(
         cc: Optional list of CC email addresses.
         attachments: Optional list of file paths to attach.
     """
+    from agenthicc.tools.workspace_access import current_workspace_access
+
+    policy = current_workspace_access()
+    if attachments and policy is not None and policy.strict_scope:
+        try:
+            attachments = [
+                str(await policy.authorize(path, operation="read", tool_name="send_email"))
+                for path in attachments
+            ]
+        except PermissionError as exc:
+            return {"ok": False, "error": str(exc)}
     return await _safe_call(
         _backend().send_email(to=to, subject=subject, body=body, cc=cc, attachments=attachments)
     )

@@ -156,13 +156,6 @@ class TestSubagentTypeRegistry:
 
 
 class TestSubagentTypeSpec:
-    def test_explorer_no_write_tools(self) -> None:
-        spec = DEFAULT_REGISTRY.get("explorer")
-        assert spec is not None
-        assert spec.allowed_tools is not None
-        write_tools = {"write_file", "patch_file", "append_file", "delete_file"}
-        assert not (spec.allowed_tools & write_tools), "explorer must not have write tools"
-
     def test_implementer_inherits_every_parent_tool(self) -> None:
         spec = DEFAULT_REGISTRY.get("implementer")
         assert spec is not None
@@ -181,27 +174,6 @@ class TestSubagentTypeSpec:
         assert spec is not None
         assert spec.allowed_tools is None
         assert spec.completion_evidence == "action"
-
-    def test_planner_no_write_or_execute(self) -> None:
-        spec = DEFAULT_REGISTRY.get("planner")
-        assert spec is not None and spec.allowed_tools is not None
-        prohibited = {"write_file", "patch_file", "run_bash", "run_tests"}
-        assert not (spec.allowed_tools & prohibited)
-
-    def test_reviewer_no_write(self) -> None:
-        spec = DEFAULT_REGISTRY.get("reviewer")
-        assert spec is not None and spec.allowed_tools is not None
-        assert "write_file" not in spec.allowed_tools
-        assert "patch_file" not in spec.allowed_tools
-
-    def test_all_types_have_read_file(self) -> None:
-        for name in DEFAULT_REGISTRY.names():
-            spec = DEFAULT_REGISTRY.get(name)
-            assert spec is not None
-            # ``None`` inherits every parent tool, which includes read_file.
-            assert spec.allowed_tools is None or "read_file" in spec.allowed_tools, (
-                f"{name} must have read_file"
-            )
 
     def test_output_schema_is_normalized_on_type_registration(self) -> None:
         schema: dict[str, object] = {
@@ -1107,7 +1079,7 @@ class TestSpawnSubagentsTool:
 
         assert type_schema["enum"] == ["focused_reviewer"]
         # The parent also sees what the type can do in this session.
-        line = "focused_reviewer [read-only]: Reviews API compatibility risks."
+        line = "focused_reviewer [no tools]: Reviews API compatibility risks."
         assert line in meta.description
         assert line in meta.parameters["description"]
 
@@ -1322,7 +1294,7 @@ class TestSpawnSubagentsTool:
         ]
         assert type_schema["enum"] == ["security_researcher"]
         assert (
-            "security_researcher [read-only]: Review security-sensitive changes and report evidence."
+            "security_researcher [no tools]: Review security-sensitive changes and report evidence."
             in (meta.description)
         )
         assert "security_researcher" in meta.parameters["description"]

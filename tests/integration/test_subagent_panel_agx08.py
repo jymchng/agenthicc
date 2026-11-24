@@ -7,6 +7,7 @@ tool calls, signals, approvals and memory are the production ones.
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from pathlib import Path
 
@@ -273,7 +274,11 @@ async def _fan_out(
         transcript_root=transcripts,
     )
     result = await pool.run()
-    return _projection(transport), result.text
+    # Transcript I/O can change displayed elapsed time under coverage.
+    comparable = re.sub(
+        r"^(=== explorer #\d+ \(✓) [\d.]+s\) ===$", r"\1) ===", result.text, flags=re.M
+    )
+    return _projection(transport), comparable
 
 
 async def test_provider_requests_and_the_result_are_the_same_without_the_panel(

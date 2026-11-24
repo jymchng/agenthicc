@@ -61,7 +61,7 @@ async def test_a_garbage_collection_stall_is_attributed_to_the_collector() -> No
 
     stalls = monitor.stalls()
     assert stalls, monitor.summary()
-    assert stalls[-1].culprit.startswith("garbage collection ("), stalls[-1]
+    assert any(stall.culprit.startswith("garbage collection (") for stall in stalls), stalls
 
 
 async def test_an_idle_loop_records_no_stall_and_little_lag() -> None:

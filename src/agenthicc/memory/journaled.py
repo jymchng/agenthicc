@@ -80,6 +80,7 @@ class JournaledShortTermMemory(ShortTermMemory):
     def __init__(self, journal: ConversationJournal, max_tokens: int = 40_000) -> None:
         super().__init__(max_tokens=max_tokens)
         self._journal = journal
+        self._phase_pool_receipts: tuple[str, dict[str, str]] | None = None
         self._tool_history_recovery = ToolHistoryRecoveryState()
         # Resume: fold any existing journal content into memory *without*
         # re-journaling it (these entries are already durable on disk).
@@ -151,6 +152,18 @@ class JournaledShortTermMemory(ShortTermMemory):
         self._journal_new(before)
 
     def add_tool_results(self, results: list[object]) -> None:
+        from lauren_ai._tools import ToolResult
+
+        from agenthicc.subagents.phase import current_phase_pools
+
+        scope = current_phase_pools()
+        exchange = self.active_tool_exchange
+        if scope is not None and exchange is not None:
+            receipts = scope.receipts(
+                exchange, [result for result in results if isinstance(result, ToolResult)]
+            )
+            if receipts:
+                self._phase_pool_receipts = (exchange.exchange_id, receipts)
         if len(results) == 1:
             self.add_tool_result(results[0])
             return
@@ -589,11 +602,13 @@ class JournaledShortTermMemory(ShortTermMemory):
     def on_tool_exchange_committed(self, exchange: ToolExchange) -> None:
         """Persist the exchange commit after its message projection is durable."""
         synthetic_count = sum(1 for outcome in exchange.outcomes if outcome.synthetic)
+        staged, self._phase_pool_receipts = self._phase_pool_receipts, None
         self._journal.tool_exchange_committed(
             exchange.exchange_id,
             call_count=len(exchange.call_ids),
             completed_count=len(exchange.outcomes),
             synthetic_count=synthetic_count,
+            phase_pool_receipts=staged[1] if staged and staged[0] == exchange.exchange_id else None,
         )
 
     def on_tool_exchange_result_recorded(

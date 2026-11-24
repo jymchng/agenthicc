@@ -830,11 +830,13 @@ def load_user_message_history(
 def user_message_history_from_events(events: Collection[ConversationEvent]) -> list[str]:
     """Project accepted user submissions from an already-loaded event page."""
 
+    from agenthicc.subagents.delivery import SUBAGENT_NOTICE_SOURCES
+
     history: list[str] = []
     for event in events:
         if event.kind != "user_message":
             continue
-        if event.payload.get("source") in ("subagent_completion", "subagent_question"):
+        if event.payload.get("source") in SUBAGENT_NOTICE_SOURCES:
             continue
         text = event.payload.get("text")
         if isinstance(text, str) and text.strip():

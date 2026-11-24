@@ -5566,6 +5566,11 @@ runtime observes it, the model's prose never satisfies it.
 token budget, `output_schema` is a bounded JSON Schema contract required from
 workers of that type, and `permissions` narrows the inherited execution policy.
 
+Every built-in role inherits the delegable tools of the parent turn.
+`allowed_tools=None` inherits the tool names. The optional `capabilities`
+field narrows inherited tools by capability. Explicit permissions and depth
+tiers can further restrict a worker's access.
+
 ### SubagentAggregator
 
 ```python

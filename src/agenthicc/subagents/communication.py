@@ -27,6 +27,7 @@ from agenthicc.tools.capabilities import tool_control
 if TYPE_CHECKING:
     from agenthicc.memory.journal import ConversationJournal
     from agenthicc.runners.agent_turn_context import TurnInputReason
+    from agenthicc.subagents.phase import PhaseOwner
     from agenthicc.subagents.pool import SubagentPool
 
 MessageKind = Literal[
@@ -140,6 +141,75 @@ class _QuestionRecord:
     delivered: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class ParentUpdate:
+    """A worker's one-way status or finding, scoped to its owning pool."""
+
+    message_id: str
+    pool_id: str
+    worker_id: str
+    kind: str
+    text: str
+    created_at: float
+
+    @classmethod
+    def from_message(cls, envelope: Mapping[str, object]) -> "ParentUpdate | None":
+        if envelope.get("recipient") != "main" or envelope.get("requires_response") is True:
+            return None
+        message_id = envelope.get("message_id")
+        pool_id = envelope.get("pool_id")
+        worker_id = envelope.get("sender")
+        kind = envelope.get("kind")
+        payload = envelope.get("payload")
+        text = payload.get("text") if isinstance(payload, Mapping) else None
+        created_at = envelope.get("created_at")
+        if (
+            not isinstance(message_id, str)
+            or not message_id
+            or not isinstance(pool_id, str)
+            or not pool_id
+            or not isinstance(worker_id, str)
+            or not worker_id
+            or worker_id == "main"
+            or not isinstance(kind, str)
+            or not isinstance(text, str)
+            or not isinstance(created_at, (int, float))
+        ):
+            return None
+        return cls(message_id, pool_id, worker_id, kind, text, float(created_at))
+
+    def as_tool_data(self) -> dict[str, str]:
+        return {
+            "message_id": self.message_id,
+            "worker_id": self.worker_id,
+            "kind": self.kind,
+            "untrusted_text": self.text,
+        }
+
+
+def journal_parent_updates(
+    journal: "ConversationJournal", pool_ids: frozenset[str]
+) -> list[ParentUpdate]:
+    """Read sent updates for the pool IDs already authorized by the caller."""
+    if not pool_ids:
+        return []
+    result: list[ParentUpdate] = []
+    for record in journal.fold_agent_message_events():
+        pool_id = record.get("pool_id")
+        envelope = record.get("payload")
+        if (
+            isinstance(pool_id, str)
+            and pool_id in pool_ids
+            and record.get("event_kind") == "agent_message_sent"
+            and isinstance(envelope, Mapping)
+            and envelope.get("pool_id") == pool_id
+        ):
+            update = ParentUpdate.from_message(envelope)
+            if update is not None:
+                result.append(update)
+    return result
+
+
 @dataclass
 class PoolHandle:
     """A pool owned by one session, reachable by the parent's control tools."""
@@ -155,6 +225,7 @@ class PoolHandle:
     lineage: tuple[str, ...] = ()
     #: Whether the pool was moved to the background (user or model request).
     backgrounded: bool = False
+    phase_owner: "PhaseOwner | None" = None
 
 
 class AgentMessageBroker:
@@ -204,7 +275,7 @@ class AgentMessageBroker:
         self._lock = asyncio.Lock()
         self._message_event = asyncio.Event()
         self._pending_event = asyncio.Event()
-        self.on_parent_question: Callable[[], None] | None = None
+        self.on_parent_activity: Callable[[], None] | None = None
         self._closed = False
         #: When set, questions to the parent are refused with this status.
         self._parent_refusal = ""
@@ -312,7 +383,7 @@ class AgentMessageBroker:
     ) -> AgentMessageEnvelope:
         """Send one validated message and return its immutable envelope."""
         async with self._lock:
-            return self._send_locked(
+            envelope = self._send_locked(
                 sender=sender,
                 recipient=recipient,
                 kind=kind,
@@ -322,6 +393,9 @@ class AgentMessageBroker:
                 requires_response=requires_response,
                 ttl_s=ttl_s,
             )
+            if recipient == "main" and sender != "main" and self.on_parent_activity is not None:
+                self.on_parent_activity()
+            return envelope
 
     async def open_question(
         self,
@@ -365,8 +439,8 @@ class AgentMessageBroker:
             self._questions[envelope.message_id] = record
             self._pending_event.set()
             self._record("question_wait_started", self._question_projection(record))
-            if recipient == "main" and self.on_parent_question is not None:
-                self.on_parent_question()
+            if recipient == "main" and self.on_parent_activity is not None:
+                self.on_parent_activity()
             return self._question_projection(record)
 
     async def answer_question(
@@ -480,25 +554,26 @@ class AgentMessageBroker:
     async def acknowledge(self, recipient: str, message_id: str) -> dict[str, object]:
         """Acknowledge a message exactly once."""
         async with self._lock:
-            record = self._messages.get(message_id)
-            if record is None:
-                raise CommunicationError("unknown message_id")
-            if record.envelope.recipient not in {recipient, "pool"}:
-                raise CommunicationError("recipient does not own this message")
-            record.acknowledged_by.add(recipient)
-            recipients = (
-                self._members
-                if record.envelope.recipient == "pool"
-                else {record.envelope.recipient}
-            )
-            record.acknowledged = recipients.issubset(record.acknowledged_by)
-            if record.state not in {"expired", "rejected"}:
-                record.state = "acknowledged" if record.acknowledged else "delivered"
-            self._record(
-                "agent_message_acknowledged",
-                {"message_id": message_id, "recipient": recipient},
-            )
-            return {"ok": True, "message_id": message_id, "state": record.state}
+            return self._acknowledge(recipient, message_id)
+
+    def _acknowledge(self, recipient: str, message_id: str) -> dict[str, object]:
+        record = self._messages.get(message_id)
+        if record is None:
+            raise CommunicationError("unknown message_id")
+        if record.envelope.recipient not in {recipient, "pool"}:
+            raise CommunicationError("recipient does not own this message")
+        record.acknowledged_by.add(recipient)
+        recipients = (
+            self._members if record.envelope.recipient == "pool" else {record.envelope.recipient}
+        )
+        record.acknowledged = recipients.issubset(record.acknowledged_by)
+        if record.state not in {"expired", "rejected"}:
+            record.state = "acknowledged" if record.acknowledged else "delivered"
+        self._record(
+            "agent_message_acknowledged",
+            {"message_id": message_id, "recipient": recipient},
+        )
+        return {"ok": True, "message_id": message_id, "state": record.state}
 
     async def undelivered_count(self, recipient: str) -> int:
         """Count live messages this member has not acknowledged."""
@@ -574,6 +649,29 @@ class AgentMessageBroker:
                     self._record("question_cancelled", self._question_projection(record))
             self._pending_event.set()
             self._message_event.set()
+
+    def parent_updates(self) -> list[dict[str, str]]:
+        """Project messages as untrusted context in the owning parent's tool result."""
+        return [
+            update.as_tool_data()
+            for record in self._messages.values()
+            if (update := ParentUpdate.from_message(record.envelope.to_dict())) is not None
+        ]
+
+    def mark_parent_update_delivered(self, message_id: str) -> None:
+        """Release mailbox capacity after the runtime persists the provider notice."""
+        record = self._messages.get(message_id)
+        if (
+            record is None
+            or record.envelope.recipient != "main"
+            or record.envelope.requires_response
+            or "main" in record.acknowledged_by
+        ):
+            return
+        mailbox = self._mailboxes["main"]
+        if message_id in mailbox:
+            mailbox.remove(message_id)
+        self._acknowledge("main", message_id)
 
     def message(self, message_id: str) -> AgentMessageEnvelope | None:
         """Return an envelope for diagnostics/tests without exposing mutable state."""
@@ -848,7 +946,7 @@ class PoolContinuationRegistry:
         self._terminal_callback = callback
 
     def on_activity(self, callback: Callable[[], None] | None) -> None:
-        """Bind the hint for background pool starts and worker questions."""
+        """Bind the hint for background pool starts and parent-directed messages."""
         self._activity_callback = callback
 
     def _notify_activity(self) -> None:
@@ -858,7 +956,7 @@ class PoolContinuationRegistry:
     def mark_backgrounded(self, pool_id: str) -> None:
         handle = self._handles[pool_id]
         handle.backgrounded = True
-        handle.broker.on_parent_question = self._notify_activity
+        handle.broker.on_parent_activity = self._notify_activity
         self._notify_activity()
 
     def register(self, handle: PoolHandle) -> None:
@@ -1061,8 +1159,14 @@ def make_parent_communication_tools(
     """
     from lauren_ai._tools import tool
 
+    from agenthicc.subagents.phase import current_phase_owner, phase_pool_matches
+
     def _in_scope(handle: PoolHandle) -> bool:
-        return handle.conversation_id == conversation_id and (not owner or owner in handle.lineage)
+        return (
+            handle.conversation_id == conversation_id
+            and (not owner or owner in handle.lineage)
+            and handle.phase_owner == current_phase_owner()
+        )
 
     def _handle(pool_id: str) -> PoolHandle:
         handle = registry.get(pool_id)
@@ -1161,7 +1265,7 @@ def make_parent_communication_tools(
             # read a pool it no longer holds.
             if owner:
                 raise CommunicationError("unknown subagent pool for this session")
-            return _journaled_pool_payload(journal, pool_id)
+            return _journaled_pool_payload(journal, pool_id, phase_owner=current_phase_owner())
         if wait and not handle.task.done() and bound > 0:
             from agenthicc.runners.agent_turn_context import current_turn_input_subscriber
 
@@ -1192,11 +1296,14 @@ def make_parent_communication_tools(
                 if reason is not None and not handle.task.done():
                     return {
                         **_running_pool_payload(handle, timed_out=False),
+                        "parent_messages": handle.broker.parent_updates(),
                         "interrupted": reason,
                     }
         if not handle.task.done():
-            return _running_pool_payload(handle, timed_out=wait)
-        return _finished_pool_payload(handle)
+            payload = _running_pool_payload(handle, timed_out=wait)
+        else:
+            payload = _finished_pool_payload(handle)
+        return {**payload, "parent_messages": handle.broker.parent_updates()}
 
     @tool_control
     @tool()
@@ -1215,6 +1322,8 @@ def make_parent_communication_tools(
                 for record in journal.completed_background_subagent_pools()
             }
             for record in journal.fold_subagent_pool_lifecycle():
+                if not phase_pool_matches(record, current_phase_owner()):
+                    continue
                 pool_id = record.get("pool_id")
                 if not isinstance(pool_id, str) or not pool_id:
                     continue
@@ -1437,20 +1546,20 @@ _TERMINAL_POOL_STATUSES = frozenset({"completed", "interrupted", "cancelled"})
 
 
 def _journaled_pool_payload(
-    journal: "ConversationJournal | None", pool_id: str
+    journal: "ConversationJournal | None", pool_id: str, *, phase_owner: "PhaseOwner | None" = None
 ) -> dict[str, object]:
     """Read a pool that has no live handle from this conversation's journal."""
-    record = (
-        next(
-            (
-                item
-                for item in journal.fold_subagent_pool_lifecycle()
-                if item.get("pool_id") == pool_id
-            ),
-            None,
-        )
-        if journal is not None
-        else None
+    from agenthicc.subagents.phase import phase_pool_matches
+
+    if journal is None:
+        raise CommunicationError("unknown subagent pool for this session")
+    record = next(
+        (
+            item
+            for item in journal.fold_subagent_pool_lifecycle()
+            if item.get("pool_id") == pool_id and phase_pool_matches(item, phase_owner)
+        ),
+        None,
     )
     if record is None:
         raise CommunicationError("unknown subagent pool for this session")
@@ -1483,6 +1592,10 @@ def _journaled_pool_payload(
         "succeeded": count("succeeded"),
         "failed": failed,
         "results": text if isinstance(text, str) else "",
+        "parent_messages": [
+            update.as_tool_data()
+            for update in journal_parent_updates(journal, frozenset({pool_id}))
+        ],
         "values": [dict(value) for value in values if isinstance(value, Mapping)]
         if isinstance(values, list)
         else [],

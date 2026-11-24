@@ -401,6 +401,7 @@ def child_workspace_access(
     approval_service: "ApprovalBroker | None" = None,
     *,
     scope: "WorkspaceScope | None" = None,
+    strict_scope: bool = False,
 ) -> "WorkspaceAccessPolicy | None":
     """Copy the narrowed workspace scope while binding child policy and approval."""
     if parent is None:
@@ -411,4 +412,5 @@ def child_workspace_access(
         scope if scope is not None else parent.scope,
         mode_provider=child_state.active_mode if child_state is not None else None,
         approval_service=approval_service,
+        strict_scope=parent.strict_scope or strict_scope,
     )

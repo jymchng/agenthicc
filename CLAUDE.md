@@ -242,12 +242,9 @@ registered workflow, saved provider profile, and Safe/Plan/Yolo ceiling. See
 Subagents exist to hasten work by parallelising it, and they must behave like
 the main agent. See SUBAGENT-12 to SUBAGENT-15.
 
-1. Working roles (implementer, executor, tester, documenter) inherit every
-   parent tool (`allowed_tools=None`) and the session's `max_agent_turns`, not
-   a hand-kept list or a small per-role turn cap. Investigative roles keep
-   explicit read-only lists. No worker inherits the parent's
-   `control`-capability tools (phase transitions, `ask_user`,
-   `spawn_worker_agents`) or its own `spawn_subagents`.
+1. All built-in subagent roles inherit the parent turn's delegable tools.
+   Mode, phase, skill, and explicit type and depth restrictions apply. The
+   existing runtime owns session controls and binds nested spawns to workers.
 2. No hidden corrective "nudge" turn and no retry that papers over a weak
    worker. A worker that only narrates fails at once with `missing_mutation`
    or `missing_action`.

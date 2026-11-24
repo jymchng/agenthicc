@@ -291,6 +291,13 @@ result boundary is instead recorded in the same
   the parent. This closes the interval in which a parent cancellation could
   otherwise lose output before lauren-ai committed the parent tool result.
 
+A workflow pool's `subagent_pool_started` record includes its conversation,
+run, frame, phase, and invocation under `phase_owner`. Workflow checkpoints
+preserve `phase_invocation` across resume. A committed exchange associates each
+terminal result with its invocation in `phase_pool_receipts`. The phase reads
+these receipts to determine which pools it still needs to collect. The existing
+stable notice IDs and delivery acknowledgements survive interruption and replay.
+
 Every record kind declares its durability in
 `agenthicc.memory.journal.RECORD_DURABILITY`. All kinds except `usage_record`
 are durable: written and fsync'd before the append returns. `usage_record` is
@@ -306,6 +313,10 @@ Subagent communication uses the same journal without entering provider memory:
 
 - `agent_message_event` records bounded sent, delivered, acknowledged,
   rejected, and question lifecycle transitions for one authenticated pool;
+- A background pool records whether its worker updates can wake the owning
+  direct session. Each delivered update uses its message ID in the provider
+  journal so a resumed session can recover undelivered updates and skip ones
+  already inserted.
 - pending `ask_parent`/`ask_peer` requests can be rehydrated by
   `AgentMessageBroker.rehydrate(active_workers=...)`; workers not present in
   that live set receive an explicit `orphaned` outcome instead of leaving a

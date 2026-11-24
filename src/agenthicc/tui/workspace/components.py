@@ -616,6 +616,8 @@ class StatusLine:
             subagent_status.append("subagent wakes paused")
         elif count := conv.subagent_finished_pending():
             subagent_status.append(f"{count} finished, resuming…")
+        if phase_wait := conv.phase_subagent_wait():
+            subagent_status.append(phase_wait)
         return _Inputs(
             reader=reader,
             needs_you=_signal_int(conv, "background_needs_you"),

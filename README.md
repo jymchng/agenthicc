@@ -772,22 +772,28 @@ You can set the provider, model, base URL, and execution options in `.agenthicc/
 ## Subagents
 
 The built-in `spawn_subagents` tool delegates independent tasks to typed,
-concurrent workers. Direct terminal turns keep working while a pool runs. A
-completion reaches the next tool boundary or starts an idle turn so the model
-can collect the results. Set `subagents.spawn_mode = "foreground"` to wait for
-the pool. Workers inherit an immutable snapshot of the parent turn's
+concurrent workers. Direct terminal turns and supported workflow phases keep
+working while a pool runs. A completion reaches the owning turn or resumes
+its parked phase for collection. Workflow phases collect their terminal pools
+before advancing. Set `subagents.spawn_mode = "foreground"` to wait for the
+pool. Workers inherit an immutable snapshot of the parent turn's
 effective mode, tool ceiling, capability gate, approval service, workspace
 policy, provider options, and usage accounting; each still has isolated
 short-term memory. Workers can exchange bounded messages with the main agent
 and same-pool peers, including clarification requests that resume through
-`answer_subagent` and `collect_subagent_results`. The `executor` role supports
-build and compile tasks, while `explorer`, `planner`, `implementer`, `tester`,
-`reviewer`, `documenter`, `verifier`, and `researcher` provide narrower roles.
+`answer_subagent` and `collect_subagent_results`. Role prompts and completion
+contracts guide workers through tasks such as research, implementation, and
+verification.
 Timeouts and partial failures are reported in the aggregate and are not reused
 by resume. Each call accepts `timeout_s` in seconds (default `3600`). See the
 [subagents guide](./docs/guides/subagents.md) for the exact schema, lifecycle,
 communication protocol, security boundaries, cache semantics, and
 troubleshooting steps.
+
+All built-in worker roles inherit the parent turn's available tools. That
+includes all 56 built-ins when available to the parent. Mode, phase, skill,
+and explicitly configured worker permissions still apply. Workers can send
+status updates to the parent during a background run.
 
 An eligible workflow can also run as a subagent task. The parent session
 handles publication of the worker's staged artifacts.

@@ -370,6 +370,7 @@ class ConversationStore:
         )
         self.subagent_finished_pending: Signal[int] = Signal(0, name="subagent_finished_pending")
         self.subagent_wake_paused: Signal[bool] = Signal(False, name="subagent_wake_paused")
+        self.phase_subagent_wait: Signal[str] = Signal("", name="phase_subagent_wait")
         self.subagent_last_activity: dict[str, float] = {}
         self.subagent_activity_ages: Signal[tuple[tuple[str, int], ...]] = Signal(
             (), name="subagent_activity_ages"
@@ -1009,10 +1010,9 @@ class ConversationStore:
 
     def _title_from(self, event: ConversationEvent) -> None:
         """Title the session after its first prompt, once (TUX-02)."""
-        if self.session_title() or event.payload.get("source") in (
-            "subagent_completion",
-            "subagent_question",
-        ):
+        from agenthicc.subagents.delivery import SUBAGENT_NOTICE_SOURCES
+
+        if self.session_title() or event.payload.get("source") in SUBAGENT_NOTICE_SOURCES:
             return
         text = event.payload.get("text")
         if isinstance(text, str):

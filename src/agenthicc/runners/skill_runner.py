@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import FunctionType
 from typing import TYPE_CHECKING
 
 from lauren_ai._agents._runner import AgentRunnerBase
@@ -23,21 +24,30 @@ class SkillAwareRunner(AgentRunnerBase):
     observe_tool_meta: Callable[[AgentMeta], None] | None = None
 
     @staticmethod
-    def _narrow_skill_tools(meta: AgentMeta) -> bool:
+    def _refresh_scoped_tools(meta: AgentMeta) -> bool:
         skill_use = current_skill_use()
-        if skill_use is None:
-            return False
-        filtered = {name: item for name, item in meta.tools.items() if skill_use.permitted(name)}
-        if len(filtered) == len(meta.tools):
-            return False
-        meta.tools = filtered
-        return True
+        narrowed = False
+        if skill_use is not None:
+            filtered = {
+                name: item for name, item in meta.tools.items() if skill_use.permitted(name)
+            }
+            narrowed = len(filtered) != len(meta.tools)
+            if narrowed:
+                meta.tools = filtered
+        spawn = meta.tools.get("spawn_subagents")
+        refresh = (
+            vars(spawn[0]).get("__agenthicc_refresh_catalog__")
+            if spawn and isinstance(spawn[0], FunctionType)
+            else None
+        )
+        changed = callable(refresh) and bool(refresh())
+        return narrowed or changed
 
     def _get_tool_schemas(self, meta: AgentMeta) -> list[dict[str, object]]:
         refresh = self.refresh_tool_meta
         if refresh is not None:
             refresh(meta)
-        self._narrow_skill_tools(meta)
+        self._refresh_scoped_tools(meta)
         schemas: list[dict[str, object]] = super()._get_tool_schemas(meta)
         self._skill_tool_schemas = schemas
         self._skill_agent_meta = meta
@@ -62,7 +72,7 @@ class SkillAwareRunner(AgentRunnerBase):
         if meta is not None and schemas is not None:
             refresh = self.refresh_tool_meta
             changed = refresh(meta) if refresh is not None else False
-            if self._narrow_skill_tools(meta) or changed:
+            if self._refresh_scoped_tools(meta) or changed:
                 # Lauren holds this list for the remainder of its provider loop.
                 schemas[:] = super()._get_tool_schemas(meta)
                 if self.observe_tool_meta is not None:

@@ -116,6 +116,11 @@ pin it at spawn. `TurnToolSurfaceSelected` records the exact provider tool
 names and generation for an intent, including changes between requests, so
 replay can recover the effective list after role and skill filtering.
 
+Subagent types inherit the pinned parent bindings by default. The same
+surface calculation applies explicit type and depth limits for catalog
+descriptions, admission, worktree selection, and worker registration.
+Worker-local workspace and approval policies apply when those tools run.
+
 ## State boundary
 
 The TUI has a second `AppState` in `tui/conversation_store.py`. It is a reactive
@@ -430,3 +435,12 @@ exists and records recovered wakes for `/perf`. Worker results and pool
 lifecycle appends run off the event loop and are awaited before the pool
 publishes completion. The journal assigns sequence numbers under its write
 lock so worker and parent receipts retain their on-disk order.
+
+Interactive workflow runners enter a phase-scoped notice route at the shared
+provider turn boundary. The conversation, run, frame, and invocation identify
+each pool. A parked phase stays in the workflow task, which owns provider
+history and resumes on a notice or queued input. Shared parallel phase memory
+uses foreground spawning. A pre-tool gate blocks transitions while the
+invocation has uncollected pools or shares a batch with spawn or collection.
+The durable tool exchange commit records terminal collection, which the gate
+reads before a subsequent transition.

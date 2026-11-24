@@ -147,3 +147,94 @@ async def test_a18_foreground_turn_has_no_background_prompt(
         await (await send(session, "Delegate in foreground."))
         assert len(script.main_requests) == 2 and len(script.worker_requests) == 1
         assert all(not notices(request) for request in script.main_requests)
+
+
+async def test_a6_workflow_footer_and_scroll_survive_a_parked_phase(
+    session: TUISession,
+    tmp_path: Path,
+) -> None:
+    from dataclasses import replace
+
+    from rich.text import Text
+
+    from agenthicc.tui.runtime.commands import InterruptAgentCommand
+    from tests.integration.test_workflow_phase_subagents import pool_id, select_generate, source_for
+
+    release = asyncio.Event()
+    provider_resumed = asyncio.Event()
+    finish = asyncio.Event()
+
+    async def worker(_: ModelRequest) -> Completion:
+        await release.wait()
+        return reply(WORKER_RESULT)
+
+    async def main(request: ModelRequest, sequence: int) -> Completion:
+        if sequence == 1:
+            return spawn_call()
+        if sequence == 2:
+            assert request.contains('"status": "running"')
+            return reply("The spawn returned. Waiting for phase results.")
+        if sequence == 3:
+            assert not notices(request)
+            return reply("The worker is still running after resume.")
+        if sequence == 4:
+            provider_resumed.set()
+            await finish.wait()
+            assert len(notices(request)) == 1
+            return tool_call("collect_subagent_results", {"pool_id": pool_id(session)})
+        if sequence == 5:
+            return tool_call("mark_execute_complete", {"summary": "Results accounted for."})
+        assert sequence == 6
+        return reply("The phase finished.")
+
+    cassette = tmp_path / "phase.jsonl"
+    script = ScenarioTransport(main, worker)
+    attach(session, RecordingTransport(script, cassette))
+    session._wf_config_base = replace(
+        session._wf_config_base, agent_runner=session._ctx.agent_runner
+    )
+    select_generate(session)
+
+    def status() -> str:
+        return Text.from_markup(session._workspace.status.markup(160)).plain
+
+    scroll = session._workspace.scroll
+    scroll.mount()
+    try:
+        task = await send(session, "Delegate inside a workflow.")
+        await until(lambda: "waiting for phase subagents" in status())
+        assert "1 running" in status()
+        assert not session._ctx.app_state.conversation.running_tools()
+        assert "The spawn returned." in session._ctx.console.export_text(clear=False)
+        session.handle_interrupt(InterruptAgentCommand(source="escape", disposition="pause"))
+        await task
+        assert "phase subagent delivery paused" in status()
+        assert session.route("/workflow resume")
+        task = session._agent_task
+        assert task is not None
+        (pool,) = source_for(session).registry.handles()
+        await until(lambda: "waiting for phase subagents" in status())
+        release.set()
+        await pool.task
+        session.reconcile_subagent_wakes()
+        session.reconcile_subagent_wakes()
+        await until(provider_resumed.is_set)
+        assert "phase subagent results ready" in status()
+        finish.set()
+        async with asyncio.timeout(8):
+            await task
+        scroll.flush()
+    finally:
+        scroll.unmount()
+    rendered = session._ctx.console.export_text(clear=False)
+    assert rendered.count("↩ Subagents finished") == 1
+    assert "The phase finished." in rendered
+    assert [
+        name
+        for entry in SessionCassette.from_path(cassette).entries
+        for name in entry.called_tool_names
+    ] == [
+        "spawn_subagents",
+        "collect_subagent_results",
+        "mark_execute_complete",
+    ]

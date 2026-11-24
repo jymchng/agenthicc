@@ -36,7 +36,7 @@ def _build_definition_registry(
         workspace_access=None,
     )
     runner._definition_agent_errors = {}
-    registry = runner._build_definition_subagent_registry(SimpleNamespace(), [], None)
+    registry = runner._build_definition_subagent_registry(None)
     return registry, runner._definition_agent_errors
 
 
@@ -519,7 +519,7 @@ def test_definition_description_reaches_spawn_tool_description_and_enum() -> Non
     metadata = object.__getattribute__(tool, "__lauren_ai_tool__")
     description = metadata.description
     assert (
-        "- release_auditor [read-only]: Audit release notes against the merged changes."
+        "- release_auditor [no tools]: Audit release notes against the merged changes."
         in description
     )
     assert "release_auditor: No description provided." not in description

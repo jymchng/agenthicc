@@ -200,10 +200,9 @@ class PaneView(TranscriptView):
         return max(1, self.height)
 
     def _compose(self, item: int, index: int, body: Text) -> Text:
-        row = body.copy()
-        row.no_wrap = True
-        row.overflow = "crop"
-        return row
+        # to_lines crops the segments to the workspace width. The indicator
+        # copies its own row before changing it.
+        return body
 
     @property
     def unseen(self) -> int:

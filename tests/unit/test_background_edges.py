@@ -1375,6 +1375,7 @@ async def test_tui_session_routes_background_aliases(monkeypatch: pytest.MonkeyP
     # With no running tool the alias hands off at once (it waits for a tool).
     fake._request_background_handoff = lambda: TUISession._request_background_handoff(fake)
     fake._run_background_handoff = lambda: TUISession._run_background_handoff(fake)
+    fake._allow_phase_pool_handoff = lambda: True
     fake._handoff_pending = False
     fake._agent_task = None
     fake._ctx = SimpleNamespace(app_state=AppState.create())

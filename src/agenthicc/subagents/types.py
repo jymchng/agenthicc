@@ -91,9 +91,8 @@ class SubagentTypeSpec:
     allowed_tools:
         Provider tool names this type may call.  The pool filters the session's
         visible tools down to this set before building the subagent.  ``None``
-        means the worker inherits **every** tool the parent session exposes,
-        exactly as the main agent has them; the parent's mode, phase and
-        capability policy still apply.
+        means the worker inherits the parent turn's delegable tools under
+        its mode, phase, and capability policy.
     system_prompt:
         Full system prompt injected as the ``@agent(system=...)`` argument.
         Must be a self-contained instruction — the task description is appended
@@ -130,6 +129,8 @@ class SubagentTypeSpec:
     permissions: SubagentPermissionConstraints | None = None
     #: Observed work a worker needs before it may report success.
     completion_evidence: CompletionEvidence = "none"
+    #: Optional capability allowlist for tools inherited by this type.
+    capabilities: frozenset[str] | None = None
 
     def __post_init__(self) -> None:
         if self.output_schema is not None:
@@ -139,10 +140,9 @@ class SubagentTypeSpec:
 # ── system prompts ────────────────────────────────────────────────────────────
 
 _EXPLORER_PROMPT = (
-    "You are a read-only codebase explorer. "
+    "You are a codebase explorer. "
     "Your job is to investigate the repository and gather facts. "
-    "You may read files, list directories, search, grep, and inspect git history. "
-    "You must NOT write, edit, or delete any files. "
+    "Use the available tools to gather evidence and produce any requested artifacts. "
     "When you have gathered enough information, write a clear Markdown summary of your findings "
     "with specific file paths and line numbers where relevant. "
     "End your response with a concise one-paragraph synthesis."
@@ -152,7 +152,7 @@ _PLANNER_PROMPT = (
     "You are an implementation planner. "
     "Your job is to read the codebase and produce a clear, numbered implementation plan "
     "for the task you are given. "
-    "You may read files and search the codebase. You must NOT modify any files. "
+    "Use repository evidence and save the plan when the task requests a file. "
     "End your response with a numbered list of concrete implementation steps, "
     "each scoped to a specific file or function."
 )
@@ -189,7 +189,7 @@ _REVIEWER_PROMPT = (
     "You are a code reviewer. "
     "Your job is to review the code or change described in your task for correctness, "
     "clarity, security issues, and potential bugs. "
-    "Read the relevant files. Do not modify anything. "
+    "Read the relevant files and keep any requested changes scoped to the review task. "
     "End your response with a clear verdict — APPROVED or NEEDS CHANGES — "
     "followed by a bulleted list of issues found (or 'No issues found')."
 )
@@ -224,98 +224,17 @@ _RESEARCHER_PROMPT = (
 
 # ── default type definitions ──────────────────────────────────────────────────
 
-_EXPLORER_TOOLS = frozenset(
-    {
-        "read_file",
-        "list_directory",
-        "search_files",
-        "grep_files",
-        "git_log",
-        "git_show",
-        "git_blame",
-        "git_grep",
-        "get_file_info",
-        "batch_read",
-        "git_diff",
-        "git_status",
-    }
-)
-
-_PLANNER_TOOLS = frozenset(
-    {
-        "read_file",
-        "list_directory",
-        "search_files",
-        "grep_files",
-        "batch_read",
-        "get_file_info",
-        "git_log",
-        "git_status",
-    }
-)
-
-# The working roles (``implementer``, ``executor``, ``tester``, ``documenter``)
-# declare no tool list and no turn limit: like the main agent they inherit every
-# tool the parent session exposes and the session's agent turn limit. The
-# parent's mode, phase and capability policy are still the ceiling, so naming
-# nothing here cannot widen what the session allows. The read-only roles keep
-# explicit lists because their read-only guarantee must not rest on a prompt.
-
-_REVIEWER_TOOLS = frozenset(
-    {
-        "read_file",
-        "list_directory",
-        "search_files",
-        "grep_files",
-        "git_diff",
-        "git_log",
-        "run_python_expr",
-        "batch_read",
-        "get_file_info",
-        "git_show",
-        "git_blame",
-        "git_status",
-    }
-)
-
-_VERIFIER_TOOLS = frozenset(
-    {
-        "read_file",
-        "search_files",
-        "grep_files",
-        "run_tests",
-        "run_python_expr",
-        "git_diff",
-        "git_log",
-        "batch_read",
-        "get_file_info",
-        "git_show",
-        "git_status",
-    }
-)
-
-_RESEARCHER_TOOLS = frozenset(
-    {
-        "read_file",
-        "search_files",
-        "grep_files",
-        "list_directory",
-        "batch_read",
-        "get_file_info",
-    }
-)
-
 _BUILTIN_SPECS: list[SubagentTypeSpec] = [
     SubagentTypeSpec(
         name="explorer",
-        description="Read-only codebase exploration and evidence gathering.",
-        allowed_tools=_EXPLORER_TOOLS,
+        description="Explore the codebase and gather evidence.",
+        allowed_tools=None,
         system_prompt=_EXPLORER_PROMPT,
     ),
     SubagentTypeSpec(
         name="planner",
         description="Analyze the request and produce a file-scoped implementation plan.",
-        allowed_tools=_PLANNER_TOOLS,
+        allowed_tools=None,
         system_prompt=_PLANNER_PROMPT,
     ),
     SubagentTypeSpec(
@@ -345,7 +264,7 @@ _BUILTIN_SPECS: list[SubagentTypeSpec] = [
     SubagentTypeSpec(
         name="reviewer",
         description="Review code for correctness, clarity, security issues, and bugs.",
-        allowed_tools=_REVIEWER_TOOLS,
+        allowed_tools=None,
         system_prompt=_REVIEWER_PROMPT,
     ),
     SubagentTypeSpec(
@@ -358,14 +277,14 @@ _BUILTIN_SPECS: list[SubagentTypeSpec] = [
     SubagentTypeSpec(
         name="verifier",
         description="Adversarially verify a requirement using source evidence and tests.",
-        allowed_tools=_VERIFIER_TOOLS,
+        allowed_tools=None,
         system_prompt=_VERIFIER_PROMPT,
         max_turn_time_s=150.0,
     ),
     SubagentTypeSpec(
         name="researcher",
         description="Research a technical question and return a concise answer with sources.",
-        allowed_tools=_RESEARCHER_TOOLS,
+        allowed_tools=None,
         system_prompt=_RESEARCHER_PROMPT,
     ),
 ]

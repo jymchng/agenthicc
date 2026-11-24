@@ -15,7 +15,6 @@ from agenthicc.agents.definitions import (
     render_definition,
 )
 from agenthicc.agents.registry import AgentsRegistry
-from agenthicc.plugins.registry import ToolRegistry
 from agenthicc.runners.agent_turn import AgentTurnRunner
 from agenthicc.runners.agent_turn_context import AgentTurnContext
 from agenthicc.security import AgentCapabilityScope
@@ -274,7 +273,7 @@ Review carefully.
     )
     runner = AgentTurnRunner(context)
 
-    registry = runner._build_definition_subagent_registry(ToolRegistry(), [], context.app_state)
+    registry = runner._build_definition_subagent_registry(context.app_state)
 
     assert registry.get("workspace-checker") is None
     error = runner._definition_agent_errors["workspace-checker"]

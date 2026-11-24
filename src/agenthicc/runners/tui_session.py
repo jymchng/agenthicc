@@ -107,6 +107,7 @@ if TYPE_CHECKING:
     from agenthicc.skills.loader import SkillDef
     from agenthicc.runners.reload import ReloadReport, ReloadSurface
     from agenthicc.subagents.pool import SubagentPool
+    from agenthicc.runners.workflow_phase_subagents import PhaseSubagentHost
     from agenthicc.subagents.delivery import JournalNoticeSource, PendingNotice
     from agenthicc.tools.approval import ApprovalRequest, ApprovalRequester
     from agenthicc.tui.conversation_store import MessageQueue
@@ -2048,6 +2049,7 @@ class TUISession:
         # Commands that run in the background (for example /compact).
         self._tasks = SupervisedTasks("tui session")
         self._subagent_notices: JournalNoticeSource | None = None
+        self._phase_subagents: PhaseSubagentHost | None = None
         self._subagent_reconciler: asyncio.Task[None] | None = None
         self._subagent_input_listeners: set[Callable[[TurnInputReason], None]] = set()
         self._msg_queue.items.subscribe(self._notify_subagent_turn_input)
@@ -2467,6 +2469,39 @@ class TUISession:
                 "/workflow return --abandon."
             )
 
+    def _live_workflow_pools(self, handle: WorkflowRunHandle) -> tuple[asyncio.Task[object], ...]:
+        source = self._subagent_notices
+        if source is None:
+            return ()
+        return tuple(
+            pool.task
+            for pool in source.registry.handles()
+            if pool.phase_owner is not None
+            and pool.phase_owner.run_id == handle.run_id
+            and not pool.task.done()
+        )
+
+    def _after_workflow_pools_settle(
+        self, handle: WorkflowRunHandle, action: Callable[[], None]
+    ) -> None:
+        tasks = self._live_workflow_pools(handle)
+        if not tasks:
+            action()
+            return
+
+        async def settle() -> None:
+            try:
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+            finally:
+                self._agent_task = None
+            action()
+            if self._agent_task is None:
+                self.advance()
+
+        self._agent_task = asyncio.create_task(settle(), name="settle-workflow-subagents")
+
     def _discard_paused_workflow(self, handle: WorkflowRunHandle) -> str | None:
         conv = self._ctx.app_state.conversation
         authoring_disposition: str | None = None
@@ -2533,14 +2568,21 @@ class TUISession:
             conv.notify_transient("Pause a called workflow before abandoning it.")
             return
         handle = self._workflow_handle
-        if handle is not None and self._discard_paused_workflow(handle) is None:
-            return
-        result = stack.abandon(child.frame_id)
-        delivery = WorkflowDelivery(stack.top.frame_id, child.run_id, result)
-        self._ctx.workflow_bridge.record_return(delivery)
-        self._agent_task = asyncio.create_task(
-            self._finish_workflow_abandonment(delivery), name="workflow-abandonment"
-        )
+
+        def abandon() -> None:
+            if handle is not None and self._discard_paused_workflow(handle) is None:
+                return
+            result = stack.abandon(child.frame_id)
+            delivery = WorkflowDelivery(stack.top.frame_id, child.run_id, result)
+            self._ctx.workflow_bridge.record_return(delivery)
+            self._agent_task = asyncio.create_task(
+                self._finish_workflow_abandonment(delivery), name="workflow-abandonment"
+            )
+
+        if handle is None:
+            abandon()
+        else:
+            self._after_workflow_pools_settle(handle, abandon)
 
     async def _finish_workflow_abandonment(self, delivery: WorkflowDelivery) -> None:
         try:
@@ -4630,6 +4672,47 @@ class TUISession:
 
         return classify_busy_command(text, self._ctx.cmd_registry)
 
+    def _phase_pools_block_handoff(self) -> bool:
+        host = self._phase_subagents
+        scope = host.scope if host is not None else None
+        if scope is not None and (scope.batch_has_pool_call or scope.outstanding()):
+            return True
+        run_ids = set(self._workflow_recovery_records)
+        if self._workflow_handle is not None:
+            run_ids.add(self._workflow_handle.run_id)
+        return self._has_outstanding_phase_pools(run_ids)
+
+    def _phase_delivery_paused(self) -> bool:
+        handle = self._workflow_handle
+        return (
+            handle is not None
+            and handle.lifecycle in {"paused", "pausing"}
+            and self._has_outstanding_phase_pools({handle.run_id})
+        )
+
+    def _has_outstanding_phase_pools(self, run_ids: set[str]) -> bool:
+        source = self._subagent_notices
+        if source is None or not run_ids:
+            return False
+        for record in source.journal.fold_subagent_pool_lifecycle():
+            owner = record.get("phase_owner")
+            if not isinstance(owner, dict) or owner.get("run_id") not in run_ids:
+                continue
+            invocation = owner.get("invocation")
+            if isinstance(invocation, str) and record.get("pool_id") not in (
+                source.journal.collected_phase_pools(invocation)
+            ):
+                return True
+        return False
+
+    def _allow_phase_pool_handoff(self) -> bool:
+        if not self._phase_pools_block_handoff():
+            return True
+        self._ctx.app_state.conversation.notify_transient(
+            "Collect the workflow phase's subagents before handing this session off."
+        )
+        return False
+
     def _request_background_handoff(self) -> bool:
         """``/bg``, ``/background``, ``/detach``: hand the session over.
 
@@ -4639,6 +4722,8 @@ class TUISession:
         exchange instead of an interrupted one (operator request). Otherwise
         the background service takes over at once (PRD-141).
         """
+        if not self._allow_phase_pool_handoff():
+            return False
         conversation = self._ctx.app_state.conversation
         task = self._agent_task
         running = conversation.running_tools()
@@ -4656,7 +4741,7 @@ class TUISession:
         if self._handoff_pending:
             self._handoff_pending = False
             self._ctx.app_state.conversation.handoff_pending.set(False)
-        return integration._handoff(self)
+        return self._allow_phase_pool_handoff() and integration._handoff(self)
 
     @property
     def _handed_off(self) -> bool:
@@ -4937,12 +5022,16 @@ class TUISession:
                 )
                 return True
             if handle is not None and handle.lifecycle in {"paused", "pausing"}:
-                discard_notice = self._discard_paused_workflow(handle)
-                if discard_notice is not None:
-                    conv.notify_transient(
-                        f"↩ Paused workflow discarded{discard_notice}; workflow reset to mode default"
-                    )
-                    self._select_base_workflow(None)
+
+                def reset() -> None:
+                    discard_notice = self._discard_paused_workflow(handle)
+                    if discard_notice is not None:
+                        conv.notify_transient(
+                            f"↩ Paused workflow discarded{discard_notice}; workflow reset to mode default"
+                        )
+                        self._select_base_workflow(None)
+
+                self._after_workflow_pools_settle(handle, reset)
                 return True
             self._select_base_workflow(None)
             conv.notify_transient("↩ Workflow reset to mode default")
@@ -5521,6 +5610,9 @@ class TUISession:
             # The turn ended before another tool boundary: hand off now.
             self._run_background_handoff()
             return
+        if self._phase_delivery_paused():
+            self._pending_subagent_notices()
+            return
         notice_kept = False
         while self._msg_queue:
             msg = self._msg_queue.pop(0).strip()
@@ -5588,6 +5680,18 @@ class TUISession:
         self._subagent_notices = JournalNoticeSource(conversation.journal, registry)
         return self._subagent_notices
 
+    def _install_phase_subagents(self) -> PhaseSubagentHost | None:
+        from agenthicc.runners.workflow_phase_subagents import PhaseSubagentHost
+
+        source = self._install_subagent_notices()
+        if source is None:
+            return None
+        if self._phase_subagents is None or self._phase_subagents.notices is not source:
+            self._phase_subagents = PhaseSubagentHost(
+                source, self._ctx.app_state.conversation, self._subagent_boundary_ready
+            )
+        return self._phase_subagents
+
     def _pending_subagent_notices(self) -> tuple[PendingNotice, ...]:
         source = self._subagent_notices
         if source is None:
@@ -5599,6 +5703,15 @@ class TUISession:
         conv = self._ctx.app_state.conversation
         conv.subagent_background_running.set(running)
         conv.subagent_finished_pending.set(sum(notice.kind == "completion" for notice in notices))
+        handle = self._workflow_handle
+        if (
+            handle is not None
+            and handle.lifecycle == "paused"
+            and self._has_outstanding_phase_pools({handle.run_id})
+        ):
+            conv.phase_subagent_wait.set("phase subagent delivery paused")
+        elif conv.phase_subagent_wait() == "phase subagent delivery paused":
+            conv.phase_subagent_wait.set("")
         timer = self._subagent_reconciler
         if (
             not running
@@ -5656,12 +5769,16 @@ class TUISession:
     def _pending_subagent_turn_input(self) -> TurnInputReason | None:
         if any(item.joins_turn for item in self._msg_queue.items()):
             return "user_input"
-        source = self._subagent_notices
+        default_source = self._subagent_notices
+        host = self._phase_subagents
+        source = host.active_source if host is not None and host.active_source else default_source
         if source is not None and self._subagent_boundary_ready() and source.has_pending():
             return "notice"
         return None
 
     def _notify_subagent_turn_input(self) -> None:
+        if self._phase_subagents is not None:
+            self._phase_subagents.hint()
         if self._subagent_input_listeners and (reason := self._pending_subagent_turn_input()):
             for listener in tuple(self._subagent_input_listeners):
                 listener(reason)
@@ -5926,6 +6043,7 @@ class TUISession:
                     completed_turns=self._turn_count,
                     params=_wf_params,
                     workflow_handle=self._workflow_handle,
+                    phase_subagents=self._install_phase_subagents(),
                     session_memory=ctx.session_memory,
                     terminal_wait_policies={
                         phase.name: phase.terminal_wait_policy
@@ -6264,9 +6382,14 @@ class TUISession:
                     "revision": checkpoint.revision,
                 },
             )
+            continuation_hint = (
+                "Use /workflow resume to continue."
+                if self._phase_delivery_paused()
+                else "Send a message or use /workflow resume to continue."
+            )
             conv.notify_transient(
                 f"⏸ Workflow '{handle.workflow_name}' paused at {handle.current_phase or 'current phase'}. "
-                "Send a message or use /workflow resume to continue."
+                f"{continuation_hint}"
             )
             # Keep the picker/explicit-ID index aligned with the checkpoint
             # just written.  The index is intentionally best-effort; the next
@@ -6351,6 +6474,14 @@ class TUISession:
                     duration=4.0,
                 )
             return
+
+        if isinstance(self, TUISession) and not text.startswith(("/", "$")):
+            if self._phase_delivery_paused():
+                self._msg_queue.append(text)
+                self._ctx.app_state.conversation.notify_transient(
+                    "Queued for the paused phase. Use /workflow resume to continue."
+                )
+                return
 
         if (
             isinstance(self, TUISession)
@@ -6661,6 +6792,7 @@ class TUISession:
                 cfg=selected_config,
                 params=_wf_params,
                 workflow_handle=handle,
+                phase_subagents=self._install_phase_subagents(),
                 session_memory=ctx.session_memory,
                 conversation_id=ctx.session_id,
                 terminal_wait_policies={
@@ -6684,35 +6816,37 @@ class TUISession:
                 bind_turn_notices,
             )
 
-            with (
-                bind_background_task_owner(self._tasks, interactive=True),
-                bind_turn_notices(None, self._subscribe_subagent_turn_input),
-            ):
-                if handle is not None:
-                    from agenthicc.runners.workflow_execution_context import (
-                        bind_workflow_execution,
-                    )
+            timeout = selected_config.execution.turn_timeout_s
+            async with asyncio.timeout(timeout if timeout and timeout > 0 else None):
+                with (
+                    bind_background_task_owner(self._tasks, interactive=True),
+                    bind_turn_notices(None, self._subscribe_subagent_turn_input),
+                ):
+                    if handle is not None:
+                        from agenthicc.runners.workflow_execution_context import (
+                            bind_workflow_execution,
+                        )
 
-                    pending_resume = ctx.pending_resume
-                    resume_plan = (
-                        pending_resume
-                        if pending_resume is not None
-                        and pending_resume.workflow_run_id == handle.run_id
-                        else None
-                    )
-                    frame = ctx.workflow_stack.top
-                    with (
-                        bind_workflow_execution(
-                            handle.run_id,
-                            resume_plan=resume_plan,
-                            policy=frame.policy if frame.depth else None,
-                            model_request=frame.model_request(),
-                        ),
-                        bind_workflow_tools(workflow_tools),
-                    ):
+                        pending_resume = ctx.pending_resume
+                        resume_plan = (
+                            pending_resume
+                            if pending_resume is not None
+                            and pending_resume.workflow_run_id == handle.run_id
+                            else None
+                        )
+                        frame = ctx.workflow_stack.top
+                        with (
+                            bind_workflow_execution(
+                                handle.run_id,
+                                resume_plan=resume_plan,
+                                policy=frame.policy if frame.depth else None,
+                                model_request=frame.model_request(),
+                            ),
+                            bind_workflow_tools(workflow_tools),
+                        ):
+                            runner_result = await runner.resume(resume_context)
+                    else:
                         runner_result = await runner.resume(resume_context)
-                else:
-                    runner_result = await runner.resume(resume_context)
             if handle is not None and runner_result is not None:
                 handle.attach_context(runner_result)
             self._record_returned_workflow_result(runner_result)
@@ -6755,6 +6889,9 @@ class TUISession:
                     "cancelled", kind="user_cancelled", announce=not self._handed_off
                 )
             ctx.app_state.conversation.close_turn(interrupted=not self._handed_off)
+            self._input_session.set_mode(InputMode.IDLE)
+        except TimeoutError:
+            self._fail_workflow_run("TimeoutError: Workflow turn timed out", kind="timeout")
             self._input_session.set_mode(InputMode.IDLE)
         except Exception as exc:  # noqa: BLE001 - route unexpected workflow failures to the UI
             conv = ctx.app_state.conversation

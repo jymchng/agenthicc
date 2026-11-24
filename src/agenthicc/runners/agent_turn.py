@@ -1524,6 +1524,7 @@ class AgentTurnRunner:
             use_skill,
         )
         from agenthicc.tools.capabilities import (
+            ToolCapability,
             get_tool_capabilities,
             is_exploratory_tool,
         )
@@ -1585,8 +1586,6 @@ class AgentTurnRunner:
             excluded_capabilities |= workflow_policy.blocked_capabilities
         allowed_tool_names = ctx.allowed_tool_names
         if workflow_worker and workflow_policy is not None:
-            from agenthicc.tools.capabilities import ToolCapability
-
             phase_controls = {
                 tool_name(tool)
                 for tool in ctx.extra_tools or ()
@@ -1771,13 +1770,34 @@ class AgentTurnRunner:
         from agenthicc.memory.journaled import JournaledShortTermMemory
         from agenthicc.runners.agent_turn_context import current_notice_source
         from agenthicc.subagents.delivery import deliver_notices
+        from agenthicc.subagents.phase import POOL_TOOLS, PhasePoolGate, current_phase_pools
+        from agenthicc.config import SubagentSettings
         from agenthicc.subagents.spawn_mode import BACKGROUND_PROMPT, current_spawn_mode
 
         background_prompt = ""
         next_queued_message = ctx.next_queued_message
         notice_source = current_notice_source()
+        phase_pools = current_phase_pools()
+        if phase_pools is not None:
+            settings = ctx.agent_config.subagents if ctx.agent_config else SubagentSettings()
+            required_tools = POOL_TOOLS
+            if settings.on_clarification_for(interactive=True) != "fail":
+                required_tools |= {"answer_subagent"}
+            active_mode = gate_state.active_mode() if gate_state is not None else None
+            blocked = active_mode.blocked_capabilities if active_mode is not None else frozenset()
+            phase_pools.available = (
+                not workflow_worker
+                and (allowed_tool_names is None or required_tools <= allowed_tool_names)
+                and ToolCapability.CONTROL not in (excluded_capabilities | blocked)
+            )
+            if not phase_pools.available and phase_pools.outstanding():
+                raise RuntimeError(
+                    "Restore access to the phase's subagent collection and clarification "
+                    "tools, then resume the workflow."
+                )
+            hooks = order_global_hooks([PhasePoolGate(phase_pools), *hooks])
         self_conv = ctx.conv_store
-        if next_queued_message is not None or notice_source is not None:
+        if next_queued_message is not None or notice_source is not None or phase_pools is not None:
 
             class _QueuedInputRunner(SkillAwareRunner):
                 """Commit tool results before injecting the next queued input.
@@ -1798,13 +1818,22 @@ class AgentTurnRunner:
                     model: str,
                     run_sinks: tuple[object, ...] = (),
                 ) -> list[ToolResult]:
-                    results = await super()._execute_tools(
-                        tool_calls,
-                        ctx=ctx,
-                        agent=agent,
-                        model=model,
-                        run_sinks=run_sinks,
-                    )
+                    exchange = ctx.memory.active_tool_exchange
+                    if phase_pools is not None and exchange is not None:
+                        phase_pools.batch_has_pool_call = any(
+                            call.name in POOL_TOOLS for call in exchange.calls
+                        )
+                    try:
+                        results = await super()._execute_tools(
+                            tool_calls,
+                            ctx=ctx,
+                            agent=agent,
+                            model=model,
+                            run_sinks=run_sinks,
+                        )
+                    finally:
+                        if phase_pools is not None:
+                            phase_pools.batch_has_pool_call = False
                     if not results or ctx.turn >= ctx.config.max_turns - 1:
                         return results
                     source = current_notice_source()
@@ -1837,8 +1866,12 @@ class AgentTurnRunner:
 
                         complete_results = _complete_tool_results(tool_calls, results)
                         ctx.memory.add_tool_results(complete_results)
-                    if notices and isinstance(ctx.memory, JournaledShortTermMemory):
-                        deliver_notices(notices, ctx.memory, self_conv)
+                    if (
+                        notices
+                        and source is not None
+                        and isinstance(ctx.memory, JournaledShortTermMemory)
+                    ):
+                        deliver_notices(source.claim(), ctx.memory, self_conv)
                         if next_queued_message is not None:
                             queued = next_queued_message()
                     if queued is not None:
@@ -1896,11 +1929,7 @@ class AgentTurnRunner:
                 )
                 return SubagentToolSelection(surface, selected_registry, policy)
 
-            definition_registry = self._build_definition_subagent_registry(
-                registry,
-                visible_tools,
-                gate_state,
-            )
+            definition_registry = self._build_definition_subagent_registry(gate_state)
             _agent_config = ctx.agent_config
             _subagent_settings = _agent_config.subagents if _agent_config is not None else None
             _provider = _ec.provider
@@ -1984,8 +2013,6 @@ class AgentTurnRunner:
                         visible_tools.append(communication_tool)
                 populate_agent_tools(agent_instance, visible_tools)
 
-                from agenthicc.config import SubagentSettings
-
                 if (
                     current_spawn_mode(
                         _subagent_settings or SubagentSettings(),
@@ -1994,6 +2021,11 @@ class AgentTurnRunner:
                     == "background"
                 ):
                     background_prompt = f"\n\n{BACKGROUND_PROMPT}"
+                    if phase_pools is not None:
+                        background_prompt += (
+                            " The phase waits here when you yield. Collect every terminal "
+                            "pool before requesting a phase transition, in a separate batch."
+                        )
 
                 # The non-contract path embeds the available-tool catalogue
                 # directly in the system prompt.  That prompt was assembled
@@ -2023,8 +2055,13 @@ class AgentTurnRunner:
                         )
 
         if prompt_contract is not None and background_prompt:
-            meta = cast("AgentMeta", vars(type(agent_instance))[AGENT_META])
-            meta.system = (meta.system or "") + background_prompt
+            if phase_pools is not None:
+                self._runtime_dynamic_blocks.append(
+                    PromptBlock("PHASE SUBAGENTS", background_prompt.strip())
+                )
+            else:
+                meta = cast("AgentMeta", vars(type(agent_instance))[AGENT_META])
+                meta.system = (meta.system or "") + background_prompt
 
         # The registry description is intentionally captured after all
         # session-bound tools (including spawn_subagents) have been registered.
@@ -2144,13 +2181,9 @@ class AgentTurnRunner:
         return agent_instance, active_runner
 
     def _build_definition_subagent_registry(
-        self,
-        tool_registry: ToolRegistry,
-        visible_tools: Sequence[object],
-        parent_state: AppState | None,
+        self, parent_state: AppState | None
     ) -> SubagentTypeRegistry:
         """Merge Markdown agent definitions into the built-in spawn registry."""
-        from agenthicc.security import AgentCapabilityScope
         from agenthicc.subagents.policy import (
             SubagentExecutionPolicy,
             restrict_workspace_scope,
@@ -2159,7 +2192,6 @@ class AgentTurnRunner:
             SubagentTypeSpec,
             _BUILTIN_REGISTRY,
         )
-        from agenthicc.tools.capabilities import ToolCapability, get_tool_capabilities
 
         ctx = self._ctx
         result = ctx.subagent_registry.copy()
@@ -2198,9 +2230,11 @@ class AgentTurnRunner:
             self._definition_agent_errors[entry.name] = message
             logger.warning("Subagent definition %r refused: %s", entry.name, message)
 
-        tools_by_name = {tool_name(tool): tool for tool in visible_tools}
-        visible_names = frozenset(tools_by_name)
         for definition in ctx.agents_registry.subagents(include_hidden=True):
+            # Built-in Markdown prompts also serve primary agents and workflow
+            # phases. The pool's built-in specs own delegation for these names.
+            if definition.source == "builtin" and definition.name in builtin_subagent_names:
+                continue
             if definition.name in refused_names:
                 continue
             if (
@@ -2229,39 +2263,6 @@ class AgentTurnRunner:
                     self._definition_agent_errors[definition.name] = f"{source}{exc}"
                     continue
 
-            declared_tools: frozenset[str] | None = None
-            if definition.tools is not None:
-                expanded: set[str] = set()
-                for pattern in definition.tools:
-                    matches = tool_registry.glob_expand(pattern)
-                    expanded.update(matches if matches else {pattern})
-                declared_tools = frozenset(expanded)
-            inherited_scope = AgentCapabilityScope(allowed_tools=visible_names)
-            declared_scope = AgentCapabilityScope(allowed_tools=declared_tools)
-            permission_scope = AgentCapabilityScope(
-                denied_tools=permissions.deny_tools if permissions is not None else frozenset()
-            )
-            effective_scope = inherited_scope.restrict(declared_scope).restrict(permission_scope)
-            allowed_names = frozenset(
-                name for name in visible_names if effective_scope.is_tool_allowed(name)
-            )
-            if definition.capabilities is not None:
-                allowed_capabilities = frozenset(
-                    ToolCapability(name) for name in definition.capabilities
-                )
-                allowed_names = frozenset(
-                    name
-                    for name in allowed_names
-                    if (
-                        get_tool_capabilities(tools_by_name[name])
-                        or frozenset({ToolCapability.UNDECLARED})
-                    )
-                    <= allowed_capabilities
-                )
-                effective_scope = effective_scope.restrict(
-                    AgentCapabilityScope(allowed_tools=allowed_names)
-                )
-
             gate_state = parent_state
             prompt = (
                 f"## AGENT: {definition.name}\n{definition.prompt}" if definition.prompt else ""
@@ -2284,8 +2285,6 @@ class AgentTurnRunner:
 
             subagent_policy = SubagentExecutionPolicy.from_app_state(
                 gate_state,
-                visible_tool_names=allowed_names,
-                capability_scope=effective_scope,
                 type_permissions=permissions,
                 type_name=definition.name if permissions is not None else "",
                 workspace_scope_identity=(
@@ -2331,7 +2330,14 @@ class AgentTurnRunner:
                     completion_evidence=(
                         overridden.completion_evidence if overridden is not None else "none"
                     ),
-                    allowed_tools=allowed_names,
+                    allowed_tools=(
+                        frozenset(definition.tools) if definition.tools is not None else None
+                    ),
+                    capabilities=(
+                        frozenset(definition.capabilities)
+                        if definition.capabilities is not None
+                        else None
+                    ),
                     system_prompt=prompt or definition.description,
                     description=definition.description,
                     model=model,

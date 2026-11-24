@@ -226,9 +226,9 @@ Three details matter here:
 
 ### Changing subagent behaviour
 
-1. Working roles inherit every parent tool and the session's turn limit;
-   investigative roles keep explicit read-only lists; no worker inherits
-   `control`-capability tools or `spawn_subagents`.
+1. All built-in roles inherit the parent turn's delegable tools. Apply
+   mode, phase, skill, and explicit type and depth restrictions at admission
+   and dispatch. The runtime binds controls and nested spawns to their owner.
 2. No hidden nudge turns or retries: a worker that only narrates fails with
    `missing_mutation` or `missing_action`.
 3. Report runtime-observed evidence (`completion_evidence`), never prose.
