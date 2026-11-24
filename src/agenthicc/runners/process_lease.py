@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import socket
+import sys
 import tempfile
 from collections.abc import Callable, Mapping
 from contextlib import AbstractContextManager
@@ -140,11 +141,53 @@ class InterProcessLock(AbstractContextManager[None]):
         return None
 
 
+def _windows_process_identity(pid: int) -> tuple[str, str] | None:
+    if sys.platform != "win32":
+        return None
+    import ctypes
+    from ctypes import wintypes
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    query_limited_information = 0x1000
+    synchronize = 0x00100000
+    invalid_parameter = 87
+    wait_timeout = 258
+    kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel.OpenProcess.restype = wintypes.HANDLE
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.GetProcessTimes.argtypes = [
+        wintypes.HANDLE,
+        *[ctypes.POINTER(wintypes.FILETIME)] * 4,
+    ]
+    kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel.WaitForSingleObject.restype = wintypes.DWORD
+    process = kernel.OpenProcess(query_limited_information | synchronize, False, pid)
+    if not process:
+        return ("Z", "") if ctypes.get_last_error() == invalid_parameter else None
+    try:
+        created, exited, kernel_time, user = (wintypes.FILETIME() for _ in range(4))
+        if not kernel.GetProcessTimes(
+            process,
+            ctypes.byref(created),
+            ctypes.byref(exited),
+            ctypes.byref(kernel_time),
+            ctypes.byref(user),
+        ):
+            return None
+        state = kernel.WaitForSingleObject(process, 0)
+        if state not in (0, wait_timeout):
+            return None
+        token = str((created.dwHighDateTime << 32) | created.dwLowDateTime)
+        return ("Z" if state == 0 else "R"), token
+    finally:
+        kernel.CloseHandle(process)
+
+
 def process_identity(pid: int) -> tuple[str, str] | None:
     """Return ``(state, start-token)`` for a local process when available."""
 
     if os.name == "nt":
-        return None
+        return _windows_process_identity(pid)
     try:
         stat = Path(f"/proc/{pid}/stat").read_text(encoding="ascii")
         end_comm = stat.rfind(")")
@@ -184,16 +227,17 @@ def owner_alive(
         or pid <= 0
     ):
         return True
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError:
-        # An error other than a definitive "no such process" is ambiguous;
-        # never reclaim on an unclassified platform/permission result.
-        return True
+    if os.name != "nt":
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        except OSError:
+            # An error other than a definitive "no such process" is ambiguous;
+            # never reclaim on an unclassified platform/permission result.
+            return True
     try:
         identity = identity_resolver(pid)
     except Exception:  # noqa: BLE001

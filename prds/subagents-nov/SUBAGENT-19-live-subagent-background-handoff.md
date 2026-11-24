@@ -1,6 +1,6 @@
 ---
 title: "SUBAGENT-19: Background session handoff with live subagents"
-status: Proposed
+status: In verification
 version: 1.0.0
 date: 2026-11-24
 priority: P0
@@ -317,6 +317,26 @@ acceptance, precise refusal codes, duplicate/stale control rejection,
 time from prepare to acknowledgement, pool continuity, and recovery
 outcomes using bounded identifiers. Healthy handoff latency must remain
 independent of worker duration.
+
+## Automated evidence
+
+The hosted variants run the original workflow or turn and use the local
+controller protocol to transfer control. The PTY cases start the public CLI
+and observe the owner and provider trace from outside its process.
+
+| Criterion | Test coverage |
+| --- | --- |
+| A1 | [Real goal workflow and five gated Executors](../../tests/e2e/test_live_subagent_handoff.py) |
+| A2 | [Handoff aliases and live, parked, foreground and terminal pool states](../../tests/e2e/test_live_subagent_handoff.py), [admission and a sibling tool exchange](../../tests/integration/test_workflow_phase_subagents.py) |
+| A3 | [Generate batch ordering, pool limits, MakeBook notes, nested return and phase re-entry](../../tests/integration/test_workflow_phase_subagents.py) |
+| A4 | [CLI status, live reattachment and subsequent operator input](../../tests/e2e/test_live_subagent_handoff.py), [controller generation fencing](../../tests/integration/test_workflow_phase_subagents.py) |
+| A5 | [Pending question, ordered provider input and lost acknowledgement](../../tests/e2e/test_live_subagent_handoff.py), [approval and scoped worker questions](../../tests/integration/test_workflow_phase_subagents.py) |
+| A6 | [A single lease, duplicate requests, stale generations and concurrent capacity reservations](../../tests/unit/test_live_handoff_store.py) |
+| A7 | [Controller loss at the durable transitions and verified runtime death](../../tests/e2e/test_live_subagent_handoff.py) |
+| A8 | [Dirty worktree snapshots, isolated edits, mode capabilities, worker deadlines and transport retries](../../tests/integration/test_workflow_phase_subagents.py) |
+| A9 | [Live cancellation](../../tests/e2e/test_live_subagent_handoff.py), [pause, resume, reset, abandon and expiry](../../tests/integration/test_workflow_phase_subagents.py) |
+| A10 | [Capacity and transport failure](../../tests/e2e/test_live_subagent_handoff.py), [legacy phase refusal and terminal-bound operations](../../tests/integration/test_workflow_phase_subagents.py) |
+| A11 | [Shell return with provider gates held](../../tests/e2e/test_live_subagent_handoff.py), [bounded authenticated control and native process identity](../../tests/unit/test_hosted_transport.py) |
 
 ## Implementation sequence
 

@@ -27,7 +27,7 @@ pytestmark = [
 
 _PROBE = """
 import json, os, sys
-out = sys.argv[1]
+out = os.environ["AGENTHICC_FIRST_FRAME_PROBE"]
 from agenthicc.runners import startup
 original = startup.StartupCoordinator.finish
 snapshot = {}
@@ -43,9 +43,6 @@ def finish(self, name, *args, **kwargs):
         os._exit(0)
     return report
 startup.StartupCoordinator.finish = finish
-sys.argv = ["agenthicc"]
-import runpy
-runpy.run_module("agenthicc", run_name="__main__", alter_sys=True)
 """
 
 # Loaded only after the first frame: the agent runtime, provider HTTP stacks,
@@ -97,10 +94,12 @@ def _run_tui_probe(tmp_path: Path) -> dict[str, object]:
     project = tmp_path / "project"
     project.mkdir(parents=True)
     out = tmp_path / "first-frame.json"
+    (project / "sitecustomize.py").write_text(_PROBE, encoding="utf-8")
     environment = dict(os.environ)
     environment.update(
         HOME=str(home),
-        PYTHONPATH=str(Path(__file__).parents[2] / "src"),
+        PYTHONPATH=os.pathsep.join((str(project), str(Path(__file__).parents[2] / "src"))),
+        AGENTHICC_FIRST_FRAME_PROBE=str(out),
         TERM="xterm-256color",
     )
     # These probes measure normal interpreter imports, not coverage startup modules.
@@ -112,7 +111,7 @@ def _run_tui_probe(tmp_path: Path) -> dict[str, object]:
     pid, descriptor = pty.fork()
     if pid == 0:  # pragma: no cover - replaced by the probe interpreter
         os.chdir(project)
-        os.execve(sys.executable, [sys.executable, "-c", _PROBE, str(out)], environment)
+        os.execve(sys.executable, [sys.executable, "-m", "agenthicc"], environment)
     fcntl.ioctl(descriptor, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
     deadline = time.monotonic() + CLI_PROCESS_TIMEOUT_S
     status = 0

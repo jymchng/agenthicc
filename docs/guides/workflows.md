@@ -1009,6 +1009,11 @@ invocation that started the pool. When the phase yields, it waits without
 making provider calls. A phase can resume on a notice or queued input.
 After an operator pause, use `/workflow resume`.
 
+A hosted interactive session can detach while a phase runs or waits for its
+workers. The same phase invocation continues in the background. Its existing
+checkpoint, collection receipts, and transition rules still govern when the
+workflow can advance.
+
 Call `collect_subagent_results` for each terminal pool. If a transition shares
 a batch with spawn or collection, it returns `subagents_pending`. Submit the
 transition in a later batch after collection commits. The phase still checks

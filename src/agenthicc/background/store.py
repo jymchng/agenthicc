@@ -21,6 +21,7 @@ from .model import (
     ATTEMPT_HISTORY_LIMIT,
     BackgroundAttempt,
     BackgroundSession,
+    LiveHandoff,
     ModeApplicationStatus,
     PriorityChange,
     QueueDispatchState,
@@ -1067,6 +1068,142 @@ class BackgroundStore:
             self._append("created", session.to_dict())
         return session
 
+    def prepare_live_handoff(
+        self,
+        record: BackgroundSession,
+        handoff: LiveHandoff,
+        *,
+        expected: BackgroundSession | None,
+    ) -> BackgroundSession:
+        """Reserve a slot for an attached runtime, under the dispatch lock."""
+
+        with self._lock():
+            current = self._lookup(record.session_id)
+            if current is None and expected is None:
+                return self.create(
+                    record.evolve(
+                        status=SessionStatus.HANDOFF_PREPARED, live_handoff=handoff.to_dict()
+                    )
+                )
+            if (
+                current is None
+                or expected is None
+                or (
+                    current.status,
+                    current.attempt,
+                    current.dispatch_state,
+                    current.dispatch_token,
+                    current.lease_token,
+                    current.live_handoff,
+                )
+                != (
+                    expected.status,
+                    expected.attempt,
+                    expected.dispatch_state,
+                    expected.dispatch_token,
+                    expected.lease_token,
+                    expected.live_handoff,
+                )
+            ):
+                raise InvalidSessionTransition("Background lifecycle changed before preparation")
+            if current.status in ACTIVE_STATUSES or current.status is SessionStatus.DELETED:
+                raise InvalidSessionTransition("The session already has a background controller")
+            return self.update(
+                record.session_id,
+                status=SessionStatus.HANDOFF_PREPARED,
+                live_handoff=handoff.to_dict(),
+                worker_pid=record.worker_pid,
+                cwd=record.cwd,
+                run_id=record.run_id,
+                workflow_name=record.workflow_name,
+                intent=record.intent,
+                artifact_dir=record.artifact_dir,
+                requested_mode_name=record.requested_mode_name,
+                requested_profile_name=record.requested_profile_name,
+                latest_activity="Preparing live handoff",
+            )
+
+    def commit_live_handoff(
+        self, session_id: str, handoff: LiveHandoff, *, now: float
+    ) -> BackgroundSession:
+        """Transfer controller authority and claim the attempt in one event."""
+
+        committed = replace(handoff, generation=handoff.generation + 1, expires_at=0.0)
+        with self._lock():
+            current = self.get(session_id)
+            if current.live_handoff == committed and current.status in ACTIVE_STATUSES:
+                return current
+            if (
+                current.status is not SessionStatus.HANDOFF_PREPARED
+                or current.live_handoff != handoff
+                or handoff.expires_at <= now
+                or current.worker_pid is None
+            ):
+                raise InvalidSessionTransition("Live handoff preparation is stale")
+            return self.transition(
+                session_id,
+                SessionStatus.RUNNING,
+                lease_token=handoff.request_id,
+                worker_started_at=now,
+                worker_finished_at=None,
+                worker_exit_code=None,
+                worker_exit_reason="",
+                worker_finalization_attempts=0,
+                worker_cleanup_error="",
+                attempt=current.attempt + 1,
+                attempt_started_at=now,
+                started_at=current.started_at or now,
+                completed_at=None,
+                error=None,
+                failure_category="",
+                cancellation_reason="",
+                exit_reason="",
+                heartbeat_stale=False,
+                mode_name="",
+                mode_application_status=ModeApplicationStatus.PENDING,
+                mode_application_attempt=current.attempt + 1,
+                mode_application_error="",
+                dispatch_state=QueueDispatchState.STARTED,
+                dispatch_token=handoff.request_id,
+                dispatch_claimed_at=None,
+                latest_activity="Live session detached",
+                last_active=now,
+                live_handoff=committed.to_dict(),
+            )
+
+    def return_live_controller(
+        self, session_id: str, handoff: LiveHandoff, *, prepared: bool
+    ) -> BackgroundSession:
+        """Roll back a reservation or transfer a live attempt back to the TUI."""
+
+        with self._lock():
+            current = self.get(session_id)
+            statuses = (
+                {SessionStatus.HANDOFF_PREPARED}
+                if prepared
+                else {
+                    SessionStatus.RUNNING,
+                    SessionStatus.WAITING_INPUT,
+                    SessionStatus.WAITING_APPROVAL,
+                }
+            )
+            if current.status not in statuses or current.live_handoff != handoff:
+                raise InvalidSessionTransition("Live controller generation is stale")
+            attached = replace(
+                handoff,
+                generation=handoff.generation if prepared else handoff.generation + 1,
+                expires_at=0.0,
+            )
+            return self.transition(
+                session_id,
+                SessionStatus.ATTACHED,
+                live_handoff=attached.to_dict(),
+                lease_token="",
+                dispatch_state=QueueDispatchState.LEGACY,
+                dispatch_token="",
+                latest_activity="Live session attached",
+            )
+
     def update(
         self,
         session_id: str,
@@ -1079,12 +1216,15 @@ class BackgroundStore:
         # ``object`` keeps ``**changes`` compatible with older dynamic callers
         # while the deletion methods below always pass a string or ``None``.
         expected_delete_operation_id: object | None = None,
+        expected_live_handoff: LiveHandoff | None = None,
         **changes: object,
     ) -> BackgroundSession:
         notification_descriptor: Mapping[str, object] | None = None
         coordinator = self._notification_coordinator
         with self._lock():
             current = self.get(session_id, include_deleted=True)
+            if expected_live_handoff is not None and current.live_handoff != expected_live_handoff:
+                raise InvalidSessionTransition("Live controller generation is stale")
             if expected_status is not None and current.status != expected_status:
                 raise InvalidSessionTransition(
                     f"Expected {expected_status.value}, found {current.status.value}"
@@ -1303,6 +1443,7 @@ class BackgroundStore:
         expected_attempt: int | None = None,
         expected_last_active: float | None = None,
         expected_dispatch_state: QueueDispatchState | None = None,
+        expected_live_handoff: LiveHandoff | None = None,
         **changes: object,
     ) -> BackgroundSession:
         current = self.get(session_id, include_deleted=True)
@@ -1314,6 +1455,7 @@ class BackgroundStore:
                 expected_attempt=expected_attempt,
                 expected_last_active=expected_last_active,
                 expected_dispatch_state=expected_dispatch_state,
+                expected_live_handoff=expected_live_handoff,
                 **changes,
             )
         if current.status == SessionStatus.DELETED:
@@ -1368,6 +1510,7 @@ class BackgroundStore:
             expected_attempt=expected_attempt,
             expected_last_active=expected_last_active,
             expected_dispatch_state=expected_dispatch_state,
+            expected_live_handoff=expected_live_handoff,
             **changes,
         )
 

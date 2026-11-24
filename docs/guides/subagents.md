@@ -879,6 +879,12 @@ requests surface in the main session with the worker's name.
 
 ### Workflow phase pools
 
+When the operator detaches a hosted terminal, active workers keep their
+original task IDs, attempt counters, communication routes and deadlines.
+Reattaching restores the live view of the same pools. The phase still
+collects the results before it advances. See
+[Background sessions](background-sessions.md#detach-and-reattach-a-live-session).
+
 Interactive phases using the declarative runner or the shared CodePlan phase
 turn can continue after admission. The phase needs journal-backed memory,
 collection access, and either permission to answer worker questions or the

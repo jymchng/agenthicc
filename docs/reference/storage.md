@@ -813,6 +813,14 @@ name that arrives alone as a new, still-pending request. The provisional view
 shown during an index rebuild can rebuild a session created before its log
 window only from an older full-record `updated` event, not from a delta.
 
+A hosted session publishes its local controller endpoint in
+`~/.agenthicc/sessions/<id>/.controller` with private permissions. The file
+contains the authentication material for the local endpoint. Detach records
+the lease owner, controller generation, input sequence and handoff ID in
+the background lifecycle log. The existing session-owner record remains the
+writer authority. The background attempt and scheduler slot change at the
+commit event. Reattach keeps that writer and releases the background slot.
+
 The agents hub watches `events.jsonl`, `input-inbox/` and the open agent's
 journal for changes instead of polling them, and creates `input-inbox/` if it
 is missing so that watch starts armed.

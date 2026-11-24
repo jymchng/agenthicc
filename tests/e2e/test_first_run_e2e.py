@@ -98,7 +98,9 @@ _COLUMNS, _ROWS = 120, 40
 class _Terminal:
     """The CLI running in a pseudo-terminal, with its screen kept by pyte."""
 
-    def __init__(self, project: Path, home: Path, extra_env: dict[str, str]) -> None:
+    def __init__(
+        self, project: Path, home: Path, extra_env: dict[str, str], *arguments: str
+    ) -> None:
         import fcntl
         import pty
         import struct
@@ -123,12 +125,14 @@ class _Terminal:
         env.pop("COVERAGE_PROCESS_START", None)
         env.pop("COVERAGE_PROCESS_CONFIG", None)
         env.update(extra_env)
+        self._exit_code: int | None = None
+        self._closed = False
         self.screen = pyte.Screen(_COLUMNS, _ROWS)
         self._stream = pyte.ByteStream(self.screen)
         self.pid, self._fd = pty.fork()
         if self.pid == 0:  # pragma: no cover - replaced by the CLI
             os.chdir(project)
-            os.execve(sys.executable, [sys.executable, "-m", "agenthicc"], env)
+            os.execve(sys.executable, [sys.executable, "-m", "agenthicc", *arguments], env)
         fcntl.ioctl(self._fd, termios.TIOCSWINSZ, struct.pack("HHHH", _ROWS, _COLUMNS, 0, 0))
 
     def lines(self) -> list[str]:
@@ -171,19 +175,24 @@ class _Terminal:
     def send(self, data: str) -> None:
         os.write(self._fd, data.encode())
 
+    def poll(self) -> int | None:
+        if self._exit_code is None:
+            finished, status = os.waitpid(self.pid, os.WNOHANG)
+            if finished:
+                self._exit_code = os.waitstatus_to_exitcode(status)
+        return self._exit_code
+
     def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
         try:
-            os.kill(self.pid, 9)
-        except OSError:
-            pass
-        try:
-            os.waitpid(self.pid, 0)
-        except OSError:
-            pass
-        try:
+            if self.poll() is None:
+                os.kill(self.pid, 9)
+                _, status = os.waitpid(self.pid, 0)
+                self._exit_code = os.waitstatus_to_exitcode(status)
+        finally:
             os.close(self._fd)
-        except OSError:
-            pass
 
 
 def _repository(tmp_path: Path, name: str = "project") -> Path:

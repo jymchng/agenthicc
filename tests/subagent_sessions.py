@@ -8,6 +8,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from io import StringIO
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 from lauren_ai._agents._runner import AgentRunnerBase
@@ -26,6 +27,10 @@ from agenthicc.tui.runtime.commands import SendMessageCommand
 from agenthicc.tui.workspace import Workspace
 from tests.e2e.self_extension.harness import ModelRequest, _capture_message, tool_call
 
+if TYPE_CHECKING:
+    from agenthicc.runners.hosted_transport import ControllerStream
+    from agenthicc.runners.hosted_view import HostedView
+
 WORKER_PREFIX = "Subagent script:"
 WORKER_RESULT = "worker-only evidence"
 
@@ -38,6 +43,7 @@ async def tui(
     mode: str = "Yolo",
     config_text: str = "",
     resume_id: str | None = None,
+    host_controller: bool = False,
 ) -> AsyncIterator[TUISession]:
     project = tmp_path / "project"
     test_home = tmp_path / "home"
@@ -52,8 +58,20 @@ async def tui(
     monkeypatch.setattr(session_log, "_SESSION_INDEX", sessions / "index.json")
     config = project / "agenthicc.toml"
     config.write_text("[skills]\ninstall_default_skills = false\n" + config_text, encoding="utf-8")
+    owner = None
+    if host_controller:
+        from agenthicc.runners.session_lease import SessionOwnerStore
+
+        owner = SessionOwnerStore(sessions).acquire(
+            resume_id or session_log.create_session_id(), entrypoint="hosted-tui"
+        )
     context = await tui_session._build_session_context(
-        resume_id, [], config_path=str(config), headless=True, mode_name=mode
+        resume_id,
+        [],
+        config_path=str(config),
+        headless=True,
+        mode_name=mode,
+        owner_lease=owner,
     )
     context.console = Console(file=StringIO(), record=True, width=160)
     workspace = Workspace(context.app_state, context.console)
@@ -68,9 +86,67 @@ async def tui(
             session._agent_task.cancel()
             await asyncio.gather(session._agent_task, return_exceptions=True)
         await session._tasks.aclose()
+        if session._hosted_view is not None:
+            await session._hosted_view.stop()
         if context.startup is not None:
             await context.startup.close()
         await _close_headless_session(context, task, None)
+
+
+@asynccontextmanager
+async def hosted_controller(
+    session: TUISession, directory: Path
+) -> AsyncIterator[tuple[HostedView, ControllerStream, int]]:
+    """Open an authenticated controller for a real in-process session."""
+    from agenthicc.background.store import BackgroundStore
+    from agenthicc.background.supervisor import BackgroundSupervisor
+    from agenthicc.runners.hosted_transport import ControllerEndpoint, connect_controller
+    from agenthicc.runners.hosted_view import HostedView
+
+    supervisor = BackgroundSupervisor(BackgroundStore(directory / "background"))
+    view = HostedView(supervisor, 160, 40)
+    session._hosted_view = view
+    endpoint = directory / "controller"
+    lease = session._ctx.owner_lease
+    assert lease is not None
+    await view.publish(endpoint, lease.path.parent / ".controller")
+    session._tasks.start(view.run(session), name="test-hosted-view")
+    stream = await connect_controller(ControllerEndpoint.load(endpoint))
+    try:
+        await stream.send({"type": "open", "columns": 160, "rows": 40})
+        ready = await stream.receive()
+        generation = ready["generation"]
+        assert ready["type"] == "ready" and type(generation) is int
+        yield view, stream, generation
+    finally:
+        await stream.close()
+
+
+async def detach_controller(session: TUISession, directory: Path) -> None:
+    """Send a guarded detach over the real hosted controller transport."""
+    from agenthicc.background.store import BackgroundStore
+
+    async with hosted_controller(session, directory) as (_, stream, generation):
+        await stream.send({"type": "detach", "generation": generation})
+        while (response := await stream.receive())["type"] == "output":
+            pass
+        assert response["type"] == "detached", response
+        elapsed = response["elapsed_s"]
+        assert isinstance(elapsed, float) and 0 <= elapsed < 5.0
+        record = BackgroundStore(directory / "background").get(session._ctx.session_id)
+        assert record.worker_pid is not None
+        assert record.live_handoff is not None and record.live_handoff.generation == 1
+
+
+def send_detached_input(session: TUISession, directory: Path, message: str) -> None:
+    from agenthicc.background.input_inbox import BackgroundInputInbox
+    from agenthicc.background.store import BackgroundStore
+
+    store = BackgroundStore(directory / "background")
+    record = store.get(session._ctx.session_id)
+    BackgroundInputInbox(store).enqueue(
+        record.session_id, message, owner_attempt=record.attempt, lease_token=record.lease_token
+    )
 
 
 @pytest.fixture

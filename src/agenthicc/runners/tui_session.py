@@ -67,6 +67,7 @@ def _restore_create_workflow_authoring_from_checkpoint(checkpoint: object) -> st
 
 
 if TYPE_CHECKING:
+    from agenthicc.runners.hosted_view import HostedView
     from agenthicc.kernel.events import Event
     from lauren_ai._agents._runner import AgentRunnerBase
     from lauren_ai._config import LLMConfig
@@ -1932,6 +1933,7 @@ class TUISession:
     _tip_index: int = 0
     #: Opens the transcript view; built on first use (TUX-09).
     _transcript: TranscriptController | None = None
+    _hosted_view: HostedView | None = None
 
     @property
     def _workflow_handle(self) -> WorkflowRunHandle | None:
@@ -3704,12 +3706,18 @@ class TUISession:
                 async def run_editor() -> None:
                     self._workspace.suspend_for_external_process()
                     try:
-                        await asyncio.to_thread(
-                            open_definition_in_editor,
-                            path,
-                            scope=scope,
-                            project_root=Path.cwd(),
-                        )
+                        hosted = self._hosted_view
+                        if hosted is not None:
+                            code = await hosted.edit_file(path, scope=scope)
+                            if code:
+                                raise RuntimeError(f"the editor exited with status {code}")
+                        else:
+                            await asyncio.to_thread(
+                                open_definition_in_editor,
+                                path,
+                                scope=scope,
+                                project_root=Path.cwd(),
+                            )
                     finally:
                         self._workspace.resume_after_external_process()
 
@@ -4257,6 +4265,7 @@ class TUISession:
 
         ctx = self._ctx
         workspace = self._workspace
+        hosted = self._hosted_view
         controller = TranscriptController(
             session_id=ctx.session_id,
             console=ctx.console,
@@ -4270,7 +4279,7 @@ class TUISession:
             notify=ctx.app_state.conversation.notify,
             rewind=self._rewind_to,
             busy=lambda: self._agent_task is not None and not self._agent_task.done(),
-            backend=get_backend,
+            backend=(lambda: hosted.terminal) if hosted is not None else get_backend,
             log_path=lambda: diagnostics_log_path(ctx.session_id),
         )
         self._transcript = controller
@@ -4595,6 +4604,7 @@ class TUISession:
             repaint=main.repaint,
             runtime_dir=main.runtime_dir,
             handoff=self._input_session.run_terminal_handoff,
+            edit_prompt=main.edit_prompt,
         )
 
     def _set_input_text(self, text: str) -> None:
@@ -4706,10 +4716,20 @@ class TUISession:
         return False
 
     def _allow_phase_pool_handoff(self) -> bool:
-        if not self._phase_pools_block_handoff():
+        source = self._subagent_notices
+        live = (
+            tuple(item.pool_id for item in source.registry.handles() if not item.task.done())
+            if source is not None
+            else ()
+        )
+        if not live and not self._phase_pools_block_handoff():
             return True
+        detail = (
+            f"live subagent pools: {', '.join(live[:4])}" if live else "outstanding phase pools"
+        )
         self._ctx.app_state.conversation.notify_transient(
-            "Collect the workflow phase's subagents before handing this session off."
+            f"Legacy session cannot transfer {detail} (runtime_not_hosted). "
+            "Collect the outstanding pools before detaching."
         )
         return False
 
@@ -4722,6 +4742,8 @@ class TUISession:
         exchange instead of an interrupted one (operator request). Otherwise
         the background service takes over at once (PRD-141).
         """
+        if self._hosted_view is not None:
+            return self._hosted_view.request_detach(self)
         if not self._allow_phase_pool_handoff():
             return False
         conversation = self._ctx.app_state.conversation
@@ -7165,7 +7187,10 @@ class TUISession:
         )
         try:
             self._start_attention_routing()
-            await self._input_session.run()
+            if self._hosted_view is None:
+                await self._input_session.run()
+            else:
+                await self._hosted_view.run(self)
         finally:
             # Input can exit while an ESC-triggered cancellation is still
             # unwinding. Cancel and await the owned task before closing the
@@ -7246,6 +7271,7 @@ async def _run_tui_session(
     agent_name: str | None = None,
     owner_lease: SessionOwnerLease | None = None,
     config: AgenthiccConfig | None = None,
+    continue_session: bool = False,
 ) -> None:
     """Run the reactive TUI, optionally from a resumed session's project.
 
@@ -7274,6 +7300,7 @@ async def _run_tui_session(
             workflow_name=workflow_name if first else None,
             agent_name=agent_name if first else None,
             owner_lease=owner_lease if first else None,
+            continue_session=continue_session and first,
             # A new project directory has its own project configuration.
             config=None if reload_config else config,
         )
@@ -7409,26 +7436,72 @@ async def _run_tui_session_in(
     agent_name: str | None,
     owner_lease: SessionOwnerLease | None,
     config: AgenthiccConfig | None,
+    continue_session: bool = False,
 ) -> SessionSwitch | None:
     """Run one session, in *cwd* when given; return where to go next."""
-    if cwd is None:
-        return await _run_tui_session_impl(
-            resume_id=resume_id,
-            cli_overrides=cli_overrides,
-            record_cassette=record_cassette,
-            cli_flags=cli_flags,
-            config_path=config_path,
-            cli_secret_overrides=cli_secret_overrides,
-            mode_name=mode_name,
-            workflow_name=workflow_name,
-            agent_name=agent_name,
-            owner_lease=owner_lease,
-            config=config,
-        )
+    from agenthicc.background.settings import background_enabled, load_background_settings
+    from agenthicc.tui.terminal.backend import get_backend
 
     previous_cwd = os.getcwd()
-    os.chdir(await asyncio.to_thread(_resolved_directory, cwd))
+    if cwd is not None:
+        os.chdir(await asyncio.to_thread(_resolved_directory, cwd))
     try:
+        if owner_lease is None and get_backend().is_interactive():
+            from agenthicc.runners.process_lease import process_identity
+
+            identity = process_identity(os.getpid())
+            settings = load_background_settings(
+                config_path=config_path, overrides=tuple(cli_overrides or ())
+            )
+            if background_enabled(settings) and identity is not None and identity[1]:
+                from agenthicc.background.model import SessionStatus
+                from agenthicc.background.store import BackgroundStore, SessionNotFound
+                from agenthicc.cli.context import CLIContext, CLIFlags
+                from agenthicc.runners.hosted_session import (
+                    attach_hosted_terminal,
+                    run_hosted_terminal,
+                )
+                from agenthicc.runners.hosted_transport import LocalControllerUnavailable
+
+                if resume_id is not None:
+                    store = BackgroundStore(settings.store_root)
+                    try:
+                        existing = await asyncio.to_thread(store.get, resume_id)
+                    except SessionNotFound:
+                        existing = None
+                    if (
+                        existing is not None
+                        and existing.live_handoff is not None
+                        and existing.status
+                        in {
+                            SessionStatus.ATTACHED,
+                            SessionStatus.RUNNING,
+                            SessionStatus.WAITING_APPROVAL,
+                            SessionStatus.WAITING_INPUT,
+                        }
+                    ):
+                        return await attach_hosted_terminal(existing)
+                try:
+                    return await run_hosted_terminal(
+                        CLIContext(
+                            resume_id=resume_id,
+                            continue_session=continue_session,
+                            config_path=config_path,
+                            set_overrides=tuple(cli_overrides or ()),
+                            set_secret_overrides=tuple(cli_secret_overrides or ()),
+                            flags=cli_flags or CLIFlags(),
+                            record_cassette=record_cassette,
+                            mode_name=mode_name,
+                            workflow_name=workflow_name,
+                            agent_name=agent_name,
+                        )
+                    )
+                except LocalControllerUnavailable as exc:
+                    print(f"{exc}. Starting a terminal-owned session.", file=sys.stderr)
+        if continue_session and resume_id is None:
+            selected = _select_and_claim_latest_session()
+            if selected is not None:
+                resume_id, owner_lease = selected
         return await _run_tui_session_impl(
             resume_id=resume_id,
             cli_overrides=cli_overrides,
@@ -7443,7 +7516,8 @@ async def _run_tui_session_in(
             config=config,
         )
     finally:
-        os.chdir(previous_cwd)
+        if cwd is not None:
+            os.chdir(previous_cwd)
 
 
 async def _run_tui_session_impl(
@@ -7458,6 +7532,7 @@ async def _run_tui_session_impl(
     agent_name: str | None = None,
     owner_lease: SessionOwnerLease | None = None,
     config: AgenthiccConfig | None = None,
+    hosted_view: HostedView | None = None,
 ) -> SessionSwitch | None:
     """Reactive TUI session — single entry point, no legacy branches.
 
@@ -7489,6 +7564,8 @@ async def _run_tui_session_impl(
             ctx.app_state.cli_flags = cli_flags
         session_startup = ctx.startup
         assert session_startup is not None
+        if hosted_view is not None:
+            ctx.console.width, ctx.console.height = hosted_view.columns, hosted_view.rows
         workspace = Workspace(
             ctx.app_state,
             ctx.console,
@@ -7526,9 +7603,12 @@ async def _run_tui_session_impl(
                 resume=workspace.resume_after_external_process,
                 repaint=workspace.repaint,
                 runtime_dir=_SESSIONS_DIR / str(ctx.session_id),
+                handoff=hosted_view.run_terminal_operation if hosted_view is not None else None,
+                edit_prompt=hosted_view.edit_prompt if hosted_view is not None else None,
             ),
         )
         session = TUISession(ctx, workspace, input_session)
+        session._hosted_view = hosted_view
         ctx.startup.finish("tui_shell")
         from agenthicc.background.terminals import (
             set_current_terminal_manager,
@@ -7549,7 +7629,9 @@ async def _run_tui_session_impl(
     try:
         await session.run()
     finally:
-        await _close_tui_session_resources(ctx, session, terminal_context_token, cassette_base)
+        await _close_tui_session_resources(
+            ctx, session, terminal_context_token, cassette_base, release_owner=hosted_view is None
+        )
     return session.switch
 
 
@@ -7558,6 +7640,8 @@ async def _close_tui_session_resources(
     session: TUISession | None,
     terminal_context_token: contextvars.Token[TerminalManager | None] | None,
     cassette_base: Path | None,
+    *,
+    release_owner: bool = True,
 ) -> None:
     """Close TUI resources and release the outer session lease last."""
 
@@ -7609,7 +7693,7 @@ async def _close_tui_session_resources(
             _write_cassette_meta(cassette_base / ctx.session_id, ctx.session_id)
     finally:
         owner_lease = ctx.owner_lease
-        if owner_lease is not None:
+        if owner_lease is not None and release_owner:
             owner_lease.release()
 
 
@@ -7680,7 +7764,20 @@ def _run_tui(ctx: CLIContext) -> None:
 
     resume_id: str | None = ctx.resume_id
     owner_lease: SessionOwnerLease | None = None
+    hosted_continue = False
     if resume_id is None and ctx.continue_session:
+        from agenthicc.background.settings import background_enabled, load_background_settings
+        from agenthicc.runners.process_lease import process_identity
+        from agenthicc.tui.terminal.backend import get_backend
+
+        if get_backend().is_interactive():
+            settings = load_background_settings(
+                config_path=ctx.config_path, overrides=ctx.set_overrides
+            )
+            hosted_continue = (
+                background_enabled(settings) and process_identity(os.getpid()) is not None
+            )
+    if resume_id is None and ctx.continue_session and not hosted_continue:
         try:
             selected = _select_and_claim_latest_session()
         except SessionAlreadyActiveError as exc:
@@ -7707,6 +7804,7 @@ def _run_tui(ctx: CLIContext) -> None:
                 agent_name=ctx.agent_name,
                 owner_lease=owner_lease,
                 config=ctx.config,
+                continue_session=hosted_continue,
             )
         )
     except SessionAlreadyActiveError as exc:

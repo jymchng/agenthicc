@@ -133,6 +133,8 @@ def tests_windows(session: nox.Session) -> None:
         "tests/unit/test_interprocess_lock.py",
         "tests/unit/test_windows_backend.py",
         "tests/unit/test_windows_terminal_backend.py",
+        "tests/unit/test_hosted_transport.py",
+        "tests/unit/test_live_handoff_store.py",
         *session.posargs,
     )
 

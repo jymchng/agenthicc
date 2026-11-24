@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json as json_module
 from collections.abc import Coroutine
 from pathlib import Path
@@ -15,6 +16,7 @@ from agenthicc.background import (
     background_enabled,
     load_background_settings,
 )
+from agenthicc.background.model import SessionStatus
 from agenthicc.cli.context import CLIContext
 from agenthicc.cli.registry import optional_positionals
 
@@ -69,6 +71,7 @@ def _public_session(
         result = dict(raw)
         result.pop("intent", None)
         result.pop("lease_token", None)
+        result.pop("live_handoff", None)
         result.pop("dispatch_token", None)
         result.pop("dispatch_claimed_at", None)
         result.pop("idempotency_key", None)
@@ -235,6 +238,29 @@ async def attach_background_session(
         record = store.get(session_id, include_deleted=True)
         if record.status.value == "deleted":
             raise ValueError("deleted background sessions cannot be attached")
+        if record.live_handoff is not None and record.status in {
+            SessionStatus.ATTACHED,
+            SessionStatus.RUNNING,
+            SessionStatus.WAITING_INPUT,
+            SessionStatus.WAITING_APPROVAL,
+        }:
+            if json_output:
+                print(
+                    json_module.dumps(
+                        {
+                            "session_id": session_id,
+                            "status": "live_attachment_available",
+                            "background_status": record.status.value,
+                            "cwd": record.cwd,
+                        },
+                        sort_keys=True,
+                    )
+                )
+            else:
+                from agenthicc.runners.hosted_session import attach_hosted_terminal
+
+                await attach_hosted_terminal(record)
+            return True
         foreground = supervisor.attach_foreground(session_id)
     except (KeyError, OSError, RuntimeError, ValueError) as exc:
         message = f"Unable to attach background session {session_id}: {exc}"
@@ -492,12 +518,32 @@ def agents_status(ctx: CLIContext, session_id: str, json: bool = False) -> None:
 
     store, supervisor = _store_and_supervisor(ctx)
     try:
+        record = store.get(session_id, include_deleted=True)
         payload = _public_session(
-            store.get(session_id, include_deleted=True),
-            queue_position=_queue_positions(supervisor).get(session_id),
+            record, queue_position=_queue_positions(supervisor).get(session_id)
         )
+        if record.live_handoff is not None and record.status in {
+            SessionStatus.ATTACHED,
+            SessionStatus.RUNNING,
+            SessionStatus.WAITING_INPUT,
+            SessionStatus.WAITING_APPROVAL,
+        }:
+            from agenthicc.runners.hosted_session import hosted_terminal_status
+
+            try:
+                payload["runtime"] = asyncio.run(hosted_terminal_status(record))
+            except (OSError, ValueError, EOFError):
+                payload["runtime"] = {"status": "unavailable"}
     except KeyError:
+        from agenthicc.runners.hosted_session import discover_interactive_terminal
+
         payload = {"session_id": session_id, "status": "not_found"}
+        try:
+            runtime = asyncio.run(discover_interactive_terminal(session_id))
+        except (OSError, ValueError, EOFError):
+            runtime = None
+        if runtime is not None:
+            payload.update(status="attached", runtime=runtime)
     if json:
         print(json_module.dumps(payload, indent=2, sort_keys=True))
     else:
@@ -592,6 +638,19 @@ def _mutate(ctx: CLIContext, session_id: str, action: str) -> None:
 
 def agents_cancel(ctx: CLIContext, session_id: str) -> None:
     _mutate(ctx, session_id, "cancel")
+
+
+def agents_stop_worker(ctx: CLIContext, session_id: str, pool_id: str, worker_id: str) -> None:
+    """Stop one worker in a detached live session."""
+    from agenthicc.runners.hosted_session import stop_hosted_worker
+
+    store, _ = _store_and_supervisor(ctx)
+    try:
+        request = asyncio.run(stop_hosted_worker(store.get(session_id), pool_id, worker_id))
+    except (KeyError, ValueError, OSError, EOFError) as exc:
+        print(f"Unable to stop worker: {exc}")
+        raise SystemExit(1) from exc
+    print(f"Worker stop requested ({request})")
 
 
 def agents_resume(ctx: CLIContext, session_id: str) -> None:

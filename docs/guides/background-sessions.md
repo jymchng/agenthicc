@@ -16,16 +16,40 @@ uv run agenthicc run --background --workflow code_plan --intent "Plan the next r
 The command returns the stable session ID as soon as the request is durably
 accepted. With queueing enabled, acceptance may mean `queued`, not that a
 worker process has started.
-Inside an active TUI session, `/bg`, `/background`, and `/detach` are
-equivalent. They preserve the current session ID and durable journal, then
-return to the shell after starting a background worker. Both commands appear
-in the slash-command picker.
+Inside an active TUI, `/detach`, `/bg`, and `/background` are equivalent.
+A supported interactive session starts its runtime in an independent local
+process before the first turn. Detach changes which controller can send input
+to that process and returns the terminal to the shell once the change commits.
 
-### What `/detach` does end to end
+### Detach and reattach a live session
 
-The command hands the current session to a separate local worker process; it
-does not merely hide the TUI while the foreground model request continues.
-The path through the runtime is:
+Provider requests, tool calls, workflow invocations and subagent attempts
+continue in the same runtime. The background supervisor reserves capacity and
+records the controller generation before the terminal exits. If capacity is
+full, the session stays attached and its work continues.
+
+Run `agenthicc agents status SESSION_ID --json` to inspect the runtime PID,
+transcript cursor, pool IDs, phase ownership, and worker attempts. Use
+`agenthicc attach SESSION_ID` or the agents hub to reconnect to that runtime.
+The new controller gets the current transcript and work-in-progress view.
+To stop one worker while the session is detached, run
+`agenthicc agents stop-worker SESSION_ID POOL_ID WORKER_ID`.
+
+Pending approval and question requests appear in the background inbox with
+their original deadlines. Input accepted before the controller changes reaches
+the original runtime in order. An explicitly paused workflow stays paused
+while its workers finish. Use `/workflow resume` to resume the workflow.
+
+If the runtime dies, the supervisor verifies the process identity and marks
+lost pools interrupted. An operator can resume the saved work through the
+existing recovery controls.
+
+### Handoff from a terminal-owned session
+
+A terminal-owned session uses checkpoint handoff to a separate worker.
+Outstanding live pools block that handoff until their results are available
+and the owning phase collects them. The checkpoint handoff follows these
+steps.
 
 1. **The command is routed immediately.** CLI command discovery installs
    `/detach` and the `/bg`/`/background` aliases. They use an immediate-control
@@ -642,20 +666,18 @@ nothing.
 ### Attach, switch and delete
 
 Enter in the detail view attaches the agent in the foreground. The hub
-validates the exact session ID against the durable store first; a deleted or
-missing agent is rejected in place, and a validation read never stops or
-foregrounds a worker. Foregrounding is an ownership handoff, not a second
-observer: for an active agent the worker and its owned terminals are stopped,
-the worker lease is verified to have ended, and the normal TUI opens with the
-same `session_id`, project directory and durable journals. Completed, failed,
-cancelled and orphaned agents open directly through the same resume path.
+validates the exact session ID against the durable store first. For a hosted
+session, the view reconnects to the same live runtime with a new controller
+generation. For a background worker launched from a saved request, attachment
+stops the worker and its owned terminals, verifies that its lease ended, and
+opens the session by ID. Completed, failed, cancelled, and orphaned sessions
+open through the saved-session resume path.
 
 Inside a session the hub asks first — `Switch to … ? This session reopens when
 you leave it.` — then closes the current session, opens the chosen agent or
 saved session, and reopens the original session when that one ends. Switching
-waits for a running turn to finish or be stopped. After `/background` the
-session hands over to its worker and the hub opens with the new background
-agent selected.
+waits for a running turn to finish or be stopped. After a hosted session detaches, the terminal returns to the shell.
+The session is available in the hub.
 
 Delete is asynchronous and recoverable. `Ctrl+X` immediately captures the
 selected or marked agents and starts one durable operation; no confirmation is
