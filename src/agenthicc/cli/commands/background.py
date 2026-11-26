@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json as json_module
 from collections.abc import Coroutine
 from pathlib import Path
@@ -528,6 +527,8 @@ def agents_status(ctx: CLIContext, session_id: str, json: bool = False) -> None:
             SessionStatus.WAITING_INPUT,
             SessionStatus.WAITING_APPROVAL,
         }:
+            import asyncio
+
             from agenthicc.runners.hosted_session import hosted_terminal_status
 
             try:
@@ -535,6 +536,8 @@ def agents_status(ctx: CLIContext, session_id: str, json: bool = False) -> None:
             except (OSError, ValueError, EOFError):
                 payload["runtime"] = {"status": "unavailable"}
     except KeyError:
+        import asyncio
+
         from agenthicc.runners.hosted_session import discover_interactive_terminal
 
         payload = {"session_id": session_id, "status": "not_found"}
@@ -642,6 +645,8 @@ def agents_cancel(ctx: CLIContext, session_id: str) -> None:
 
 def agents_stop_worker(ctx: CLIContext, session_id: str, pool_id: str, worker_id: str) -> None:
     """Stop one worker in a detached live session."""
+    import asyncio
+
     from agenthicc.runners.hosted_session import stop_hosted_worker
 
     store, _ = _store_and_supervisor(ctx)

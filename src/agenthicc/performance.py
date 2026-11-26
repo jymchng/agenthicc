@@ -206,29 +206,43 @@ print(json.dumps({"cpu_s": time.process_time() - started, "modules": len(sys.mod
     return min(cpu_samples), float(modules)
 
 
-_TUI_PROBE = r"""\
-import json, os, runpy, sys, time
-out = sys.argv[1]
-started_cpu = time.process_time()
-started_wall = time.perf_counter()
-from agenthicc.runners import startup
-original = startup.StartupCoordinator.finish
-snapshot = {}
-def finish(self, name, *args, **kwargs):
-    report = original(self, name, *args, **kwargs)
-    if name == "first_frame":
-        snapshot["modules"] = len(sys.modules)
-        snapshot["first_frame_cpu_s"] = time.process_time() - started_cpu
-        snapshot["first_frame_wall_s"] = time.perf_counter() - started_wall
-    if name == "time_to_interactive_input":
-        snapshot["state"] = report.state.value
-        snapshot["prompt_cpu_s"] = time.process_time() - started_cpu
-        snapshot["prompt_wall_s"] = time.perf_counter() - started_wall
-        with open(out, "w", encoding="utf-8") as handle:
-            json.dump(snapshot, handle)
-        os._exit(0)
-    return report
-startup.StartupCoordinator.finish = finish
+# An interactive launch starts a session runtime in a second process, so the
+# readiness events fire there, not in the terminal client. This hook is loaded
+# by ``sitecustomize`` in every process of the probe's tree and acts only where
+# the first interactive prompt is reached. Wall time runs from the probe's
+# launch (``AGENTHICC_PERF_T0``), so it includes the client and the runtime's
+# startup; CPU and module counts are the runtime's own.
+_TUI_PROBE_HOOK = r"""\
+import json, os, time
+_out = os.environ.get("AGENTHICC_PERF_OUT")
+if _out:
+    from agenthicc.runners import startup
+
+    _original = startup.StartupCoordinator.finish
+    _snapshot = {}
+
+    def _finish(self, name, *args, **kwargs):
+        report = _original(self, name, *args, **kwargs)
+        if name == "first_frame":
+            import sys
+
+            _snapshot["modules"] = len(sys.modules)
+            _snapshot["first_frame_cpu_s"] = time.process_time()
+            _snapshot["first_frame_wall_s"] = time.time() - float(os.environ["AGENTHICC_PERF_T0"])
+        if name == "time_to_interactive_input":
+            _snapshot["state"] = report.state.value
+            _snapshot["prompt_cpu_s"] = time.process_time()
+            _snapshot["prompt_wall_s"] = time.time() - float(os.environ["AGENTHICC_PERF_T0"])
+            with open(_out, "w", encoding="utf-8") as handle:
+                json.dump(_snapshot, handle)
+            os._exit(0)
+        return report
+
+    startup.StartupCoordinator.finish = _finish
+"""
+
+_TUI_PROBE = """\
+import runpy, sys
 sys.argv = ["agenthicc"]
 runpy.run_module("agenthicc", run_name="__main__", alter_sys=True)
 """
@@ -249,14 +263,18 @@ def _run_tui_probe(timeout_s: float = 120.0) -> dict[str, float]:
         home.mkdir()
         project.mkdir()
         output_path = root / "first-prompt.json"
+        hook = root / "hook"
+        hook.mkdir()
+        (hook / "sitecustomize.py").write_text(_TUI_PROBE_HOOK, encoding="utf-8")
         environment = _project_environment(home)
+        environment["PYTHONPATH"] = str(hook) + os.pathsep + environment["PYTHONPATH"]
         environment["TERM"] = "xterm-256color"
+        environment["AGENTHICC_PERF_OUT"] = str(output_path)
+        environment["AGENTHICC_PERF_T0"] = repr(time.time())
         pid, descriptor = pty.fork()
         if pid == 0:  # pragma: no cover - child is replaced by exec
             os.chdir(project)
-            os.execve(
-                sys.executable, [sys.executable, "-c", _TUI_PROBE, str(output_path)], environment
-            )
+            os.execve(sys.executable, [sys.executable, "-c", _TUI_PROBE], environment)
         fcntl.ioctl(descriptor, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
         deadline = time.monotonic() + timeout_s
         status = 0

@@ -1766,3 +1766,32 @@ async def test_live_approval_preserves_the_request_under_background_control(
             response = await approval
         assert response.allowed and response.request_id == request.request_id
         await until(lambda: inbox.get(item.item_id).status == "delivered")
+
+
+@pytest.mark.parametrize(
+    "frame,message",
+    [
+        ({"type": "resize", "columns": "wide", "rows": 30}, "Invalid terminal size"),
+        ({"type": "resize", "columns": 10, "rows": 30}, "Terminal size outside supported limits"),
+        ({"type": "key", "key": "CHAR", "text": 0}, "Invalid terminal input text"),
+        ({"type": "key", "key": "BOGUS", "text": "x"}, "Unknown terminal key"),
+        ({"type": "editor_done", "exit_status": 0}, "Invalid editor result"),
+        ({"type": "invalid"}, "Invalid terminal input"),
+    ],
+)
+async def test_hosted_controller_validates_input_before_dispatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    frame: dict[str, object],
+    message: str,
+) -> None:
+    async with tui(tmp_path, monkeypatch, host_controller=True) as session:
+        async with hosted_controller(session, tmp_path) as (view, stream, generation):
+            await stream.send(
+                {"type": "resize", "columns": 100, "rows": 35, "generation": generation}
+            )
+            await stream.send({**frame, "generation": generation})
+            error = await stream.receive()
+            assert error["type"] == "error" and error["message"] == message
+            assert (view.columns, view.rows) == (100, 35)
+            assert session._agent_task is None

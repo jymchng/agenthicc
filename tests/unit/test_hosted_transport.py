@@ -161,7 +161,16 @@ async def test_native_runtime_process_answers_over_the_real_controller(
                 assert isinstance(session_id, str) and ready["type"] == "ready"
                 runtime = await discover_interactive_terminal(session_id)
                 assert runtime is not None
-                assert runtime["pid"] == process.pid
+                # The lease records the interpreter that owns the session. A
+                # Windows virtual-environment launcher is a different process
+                # from the interpreter it starts, so ``process.pid`` is not
+                # comparable there.
+                owner = (
+                    SessionOwnerStore(home / ".agenthicc" / "sessions").inspect(session_id).owner
+                )
+                assert owner is not None and runtime["pid"] == owner.pid
+                if sys.platform != "win32":
+                    assert owner.pid == process.pid
                 assert runtime["attached"] is True and runtime["generation"] == 0
             finally:
                 await stream.close()
@@ -174,3 +183,75 @@ async def test_native_runtime_process_answers_over_the_real_controller(
         if process.poll() is None:
             process.kill()
             await asyncio.to_thread(process.wait, 10)
+
+
+@pytest.mark.parametrize(
+    "frame,message",
+    [
+        ({"type": "finished", "switch": {"action": "bad"}}, "Invalid session switch"),
+        ({"type": "output", "text": 4}, "Invalid terminal output"),
+        (
+            {"type": "editor", "path": "/tmp/draft", "cwd": "/tmp", "scope": "bad"},
+            "Invalid terminal editor operation",
+        ),
+        ({"type": "detached", "session_id": 9}, "Invalid detach acknowledgement"),
+        ({"type": "error", "message": "fixture rejection"}, "fixture rejection"),
+        ({"type": "unknown"}, "Unknown terminal output"),
+    ],
+)
+async def test_terminal_display_rejects_invalid_controller_output(
+    frame: dict[str, object], message: str
+) -> None:
+    from agenthicc.runners.hosted_session import _display
+    from agenthicc.tui.terminal.backend import get_backend
+
+    async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        stream = ControllerStream(reader, writer)
+        try:
+            await stream.send({"type": "reporting", "focus": False, "mouse": False})
+            await stream.send({"type": "rejected", "code": "stale_controller"})
+            await stream.send(frame)
+        finally:
+            await stream.close()
+
+    server = await asyncio.start_server(handle, LOOPBACK, 0, limit=MAX_FRAME_BYTES)
+    async with server:
+        reader, writer = await asyncio.open_connection(LOOPBACK, server.sockets[0].getsockname()[1])
+        stream = ControllerStream(reader, writer)
+        try:
+            with pytest.raises(ControllerProtocolError, match=message):
+                await _display(stream, get_backend())
+        finally:
+            await stream.close()
+
+
+def test_terminal_switch_and_editor_targets_are_scoped_to_the_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agenthicc.runners.hosted_session import _EditRequest, _switch
+    from agenthicc.runners.session_lease import SessionOwnerStore
+    from agenthicc.runners.tui_session import SessionSwitch
+    from agenthicc.tui.input import unified_session
+
+    assert _switch(None) is None
+    command = _switch(
+        {"action": "attach", "target": "target", "origin": "source", "origin_cwd": "."}
+    )
+    assert command == SessionSwitch("attach", "target", "source", ".")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    session_dir = SessionOwnerStore().session_path("test-editor")
+    session_dir.mkdir(parents=True)
+    prompt = session_dir / "prompt-test.md"
+    calls: list[Path] = []
+
+    def editor(path: Path) -> int:
+        calls.append(path)
+        return 12
+
+    monkeypatch.setattr(unified_session, "_run_editor", editor)
+    assert _EditRequest(prompt, tmp_path, "prompt").run("test-editor") == 12
+    assert calls == [prompt]
+    with pytest.raises(ValueError, match="Invalid prompt editor path"):
+        _EditRequest(tmp_path / "prompt-test.md", tmp_path, "prompt").run("test-editor")
