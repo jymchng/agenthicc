@@ -20,7 +20,8 @@ from agenthicc.background.inbox import BackgroundInteractionInbox, InboxConflict
 from agenthicc.background.input_inbox import BackgroundInputInbox
 from agenthicc.background.model import SessionStatus
 from agenthicc.runners.session_lease import SessionOwnerStore
-from tests.cli_process import CLI_PROCESS_TIMEOUT_S
+from agenthicc.tui.workspace.agents_hub.detail import SUBAGENT_ROLE, read_transcript
+from tests.cli_process import CLI_PROCESS_TIMEOUT_S, cli_test_timeout
 from tests.e2e.self_extension.harness import ModelRequest, reply, tool_call
 from tests.e2e.test_first_run_e2e import _Terminal, _repository
 from tests.subagent_sessions import ScenarioTransport, spawn_call
@@ -38,11 +39,25 @@ def scripted_transport(project: Path) -> ScenarioTransport:
         with (project / "requests.jsonl").open("a", encoding="utf-8") as stream:
             stream.write(json.dumps({"lane": lane, "name": name, "pid": os.getpid()}) + "\n")
 
+    explorer_calls: dict[str, int] = {}
+
     async def worker(request: ModelRequest) -> Completion:
         first_message = str(request.messages[0]["content"])
         match = re.search(r"run marker ([0-4])", first_message)
         assert match is not None, first_message
         worker_id = match[1]
+        if (project / "direct-explorers").exists():
+            # A read-only Explorer: one real tool call, then a provider barrier.
+            explorer_calls[worker_id] = explorer_calls.get(worker_id, 0) + 1
+            if explorer_calls[worker_id] == 1:
+                record(worker_id, "action")
+                return tool_call("read_file", {"path": "AGENTS.md"}, use_id=f"read-{worker_id}")
+            record(worker_id, "gate")
+            async with asyncio.timeout(CLI_PROCESS_TIMEOUT_S * 2):
+                while not (project / "release-workers").exists():
+                    await asyncio.sleep(0.02)
+            record(worker_id, "released")
+            return reply(f"Explorer {worker_id} read the guide.")
         if not request.contains(f"marker-written-{worker_id}"):
             record(worker_id, "action")
             return tool_call(
@@ -51,21 +66,22 @@ def scripted_transport(project: Path) -> ScenarioTransport:
                 use_id=f"action-{worker_id}",
             )
         record(worker_id, "gate")
-        async with asyncio.timeout(40):
+        async with asyncio.timeout(CLI_PROCESS_TIMEOUT_S * 2):
             while not (project / "release-workers").exists():
                 await asyncio.sleep(0.02)
         record(worker_id, "released")
         return reply(f"Worker {worker_id} finished its real command.")
 
     spawned = False
+    notified = False
 
     async def wait_for_parent_release() -> None:
-        async with asyncio.timeout(40):
+        async with asyncio.timeout(CLI_PROCESS_TIMEOUT_S * 2):
             while not (project / "release-parent").exists():
                 await asyncio.sleep(0.02)
 
     async def main(request: ModelRequest, sequence: int) -> Completion:
-        nonlocal spawned
+        nonlocal spawned, notified
         record("parent", str(sequence))
         if request.contains("message from the reattached operator"):
             record("parent", "reattached-input-observed")
@@ -93,6 +109,45 @@ def scripted_transport(project: Path) -> ScenarioTransport:
                 },
                 use_id="operator-question",
             )
+        if (project / "direct-explorers").exists():
+            if not spawned:
+                spawned = True
+                return spawn_call(5, kind="explorer", task="run marker")
+            if not notified and (
+                request.contains("to read them.") or request.contains("Explorer 0 read the guide.")
+            ):
+                # The first request that carries the finished pool: the notice
+                # for a background spawn, the aggregate for a foreground one.
+                notified = True
+                record("parent", "explorers-notified")
+            if request.contains("Background subagent pool") and request.contains("to read them."):
+                if not request.contains("Explorer 0 read the guide."):
+                    journal = _journal_rows(
+                        next(
+                            (Path.home() / ".agenthicc" / "sessions").glob(
+                                "*/conversation-journal.jsonl"
+                            )
+                        )
+                    )
+                    pool = next(
+                        row["pool_id"]
+                        for row in journal
+                        if row.get("kind") == "subagent_pool_started"
+                    )
+                    return tool_call(
+                        "collect_subagent_results", {"pool_id": pool}, use_id="collect-explorers"
+                    )
+                record("parent", "explorers-collected")
+                return reply("Collected all five explorer reports.")
+            if request.contains("Explorer 0 read the guide."):
+                # An explicit foreground spawn returns the aggregate directly.
+                record("parent", "explorers-collected")
+                return reply("Collected all five explorer reports.")
+            if (project / "hold-parent").exists() and not (project / "release-parent").exists():
+                record("parent", "streaming-gate")
+                await wait_for_parent_release()
+            record("parent", "direct-yield")
+            return reply("Five explorers are reading in the background.")
         if (project / "direct-pool").exists():
             if not spawned:
                 spawned = True
@@ -272,11 +327,16 @@ def _scripted_project(tmp_path: Path) -> tuple[Path, Path, dict[str, str]]:
         ("/detach", "recovery"),
         ("/detach", "cancel"),
         ("/detach", "worker-stop"),
+        ("/detach", "streaming"),
+        ("/bg", "streaming"),
         ("/background", "streaming"),
+        ("/detach", "terminal"),
         ("/bg", "terminal"),
+        ("/background", "terminal"),
         ("/detach", "foreground"),
     ],
 )
+@cli_test_timeout(5)
 def test_goal_flow_detach_preserves_five_live_executor_attempts(
     tmp_path: Path, alias: str, next_controller: str
 ) -> None:
@@ -298,15 +358,23 @@ def test_goal_flow_detach_preserves_five_live_executor_attempts(
     def requests() -> list[dict[str, object]]:
         return _journal_rows(project / "requests.jsonl")
 
+    # Status and control commands never use the scripted provider. Keep their
+    # fresh interpreters free of the fixture imports, especially under coverage.
+    cli_environment = {
+        **os.environ,
+        "HOME": str(home),
+        "PYTHONPATH": str(Path(__file__).resolve().parents[2] / "src"),
+    }
+
     def status(session_id: str) -> dict[str, object]:
         result = subprocess.run(
             [sys.executable, "-m", "agenthicc", "agents", "status", session_id, "--json"],
             cwd=project,
-            env={**os.environ, **environment, "HOME": str(home)},
+            env=cli_environment,
             capture_output=True,
             text=True,
             check=True,
-            timeout=10,
+            timeout=CLI_PROCESS_TIMEOUT_S,
         )
         return json.loads(result.stdout)
 
@@ -400,11 +468,11 @@ def test_goal_flow_detach_preserves_five_live_executor_attempts(
                     stopped_worker,
                 ],
                 cwd=project,
-                env={**os.environ, **environment, "HOME": str(home)},
+                env=cli_environment,
                 capture_output=True,
                 text=True,
                 check=True,
-                timeout=15,
+                timeout=CLI_PROCESS_TIMEOUT_S,
             )
             assert "Worker stop requested" in result.stdout
             deadline = time.monotonic() + 5
@@ -485,7 +553,7 @@ def test_goal_flow_detach_preserves_five_live_executor_attempts(
 
         (project / "release-parent").touch()
         (project / "release-workers").touch()
-        deadline = time.monotonic() + min(CLI_PROCESS_TIMEOUT_S / 2, 10)
+        deadline = time.monotonic() + CLI_PROCESS_TIMEOUT_S / 2
         while time.monotonic() < deadline:
             if any(row["name"] == "verify-goal" for row in requests()):
                 break
@@ -525,7 +593,7 @@ def test_goal_flow_detach_preserves_five_live_executor_attempts(
                 "the original workflow finishing in the attached view",
             )
             attached.send("\x04")
-        completion_deadline = time.monotonic() + 10
+        completion_deadline = time.monotonic() + CLI_PROCESS_TIMEOUT_S / 2
         while time.monotonic() < completion_deadline:
             if store.get(session_id).status is SessionStatus.COMPLETED:
                 break
@@ -547,6 +615,141 @@ def test_goal_flow_detach_preserves_five_live_executor_attempts(
                 pass
 
 
+@pytest.mark.parametrize(
+    "alias,parent_state",
+    [
+        ("/detach", "yielded"),
+        ("/bg", "yielded"),
+        ("/background", "yielded"),
+        ("/bg", "streaming"),
+        ("/detach", "foreground"),
+    ],
+)
+@cli_test_timeout(3)
+def test_direct_session_explorers_keep_running_through_background_handoff(
+    tmp_path: Path, alias: str, parent_state: str
+) -> None:
+    """Five live Explorers in an ordinary session are never cancelled by ``/bg``.
+
+    The original report: after ``Successfully backgrounded`` every Explorer row
+    read ``parent_cancelled``. The same workers must instead stay at their
+    provider barrier across the cutover and finish under the service.
+    """
+    home, project, environment = _scripted_project(tmp_path)
+    (project / "direct-explorers").touch()
+    if parent_state == "streaming":
+        (project / "hold-parent").touch()
+    elif parent_state == "foreground":
+        with (project / "agenthicc.toml").open("a", encoding="utf-8") as configuration:
+            configuration.write('spawn_mode = "foreground"\n')
+    terminal = _Terminal(project, home, environment, "--mode", "Yolo")
+    sessions = home / ".agenthicc" / "sessions"
+    store = BackgroundStore(home / ".agenthicc" / "background")
+    lease_pid = None
+
+    def requests() -> list[dict[str, object]]:
+        return _journal_rows(project / "requests.jsonl")
+
+    try:
+        terminal.wait_for_input()
+        terminal.send("Explore the repository with five Explorers.\r")
+        terminal.wait_for(
+            lambda _: sum(row["name"] == "gate" for row in requests()) == 5,
+            "five Explorers holding at the provider barrier",
+        )
+        if parent_state != "foreground":
+            parent_row = "streaming-gate" if parent_state == "streaming" else "direct-yield"
+            terminal.wait_for(
+                lambda _: any(row["name"] == parent_row for row in requests()),
+                f"the parent {parent_state}",
+            )
+        (journal,) = sessions.glob("*/conversation-journal.jsonl")
+        session_id = journal.parent.name
+        owner = SessionOwnerStore(sessions).inspect(session_id).owner
+        assert owner is not None and owner.pid != terminal.pid
+        lease_pid = owner.pid
+        (started,) = [
+            row for row in _journal_rows(journal) if row["kind"] == "subagent_pool_started"
+        ]
+        assert "phase_owner" not in started and len(started["tasks"]) == 5
+        before = [row for row in requests() if row["lane"] != "parent"]
+        assert sum(row["name"] == "action" for row in before) == 5
+
+        terminal.send(f"{alias}\r")
+        terminal.wait_for(lambda text: "running in the background" in text, "handoff confirmation")
+        deadline = time.monotonic() + CLI_PROCESS_TIMEOUT_S / 2
+        while terminal.poll() is None and time.monotonic() < deadline:
+            terminal.pump(0.03)
+        assert terminal.poll() == 0, "the terminal client should have exited"
+        screen = terminal.text()
+        assert "parent_cancelled" not in screen and "cancelled" not in screen.lower()
+        assert "5 live workers across 1 pools" in screen
+
+        record = store.get(session_id)
+        assert record.status is SessionStatus.RUNNING and record.worker_pid == lease_pid
+        assert SessionOwnerStore(sessions).inspect(session_id).owner == owner
+        rows = _journal_rows(journal)
+        assert not [
+            row
+            for row in rows
+            if row["kind"] in {"subagent_worker_result", "subagent_pool_cancelled"}
+        ], "no worker may settle or be cancelled by the handoff"
+        assert [row for row in requests() if row["lane"] != "parent"] == before
+        assert "parent_cancelled" not in journal.read_text(encoding="utf-8")
+        # The agents hub reads the same session while it is detached and live.
+        hub = read_transcript(journal.parent / "conversation.jsonl", tail_bytes=2_000_000)
+        assert [line.text for line in hub if line.role == SUBAGENT_ROLE][:1] == [
+            "5 workers started · " + ", ".join(f"explorer #{number}" for number in range(1, 6))
+        ]
+
+        (project / "release-parent").touch()
+        (project / "release-workers").touch()
+        deadline = time.monotonic() + CLI_PROCESS_TIMEOUT_S
+        while time.monotonic() < deadline:
+            if store.get(session_id).status is SessionStatus.COMPLETED:
+                break
+            time.sleep(0.05)
+        else:
+            pytest.fail(f"the detached session did not finish: {store.get(session_id).status}")
+        rows = _journal_rows(journal)
+        results = [row for row in rows if row["kind"] == "subagent_worker_result"]
+        assert len(results) == 5 and all(row["ok"] is True for row in results)
+        assert all(row["pool_id"] == started["pool_id"] for row in results)
+        assert [row["name"] for row in requests() if row["name"] == "released"] == ["released"] * 5
+        assert any(row["name"] == "explorers-collected" for row in requests())
+        # The foreground agent is notified once, and only after the last Explorer.
+        names = [row["name"] for row in requests()]
+        assert names.count("explorers-notified") == 1
+        assert names.index("explorers-notified") > max(
+            index for index, name in enumerate(names) if name == "released"
+        )
+        assert sum(row["kind"] == "subagent_pool_started" for row in rows) == 1
+        assert "parent_cancelled" not in journal.read_text(encoding="utf-8")
+        assert {row["pid"] for row in requests()} == {lease_pid}
+        # ... and shows each Explorer finishing and the notice the parent received.
+        hub = read_transcript(journal.parent / "conversation.jsonl", tail_bytes=2_000_000)
+        shown = [(line.status, line.text) for line in hub if line.role == SUBAGENT_ROLE]
+        finished = [text for status, text in shown if status == "✓" and text.startswith("[")]
+        assert len(finished) == 5 and all("read the guide." in text for text in finished)
+        assert ("✓", "5/5 done") in shown
+        assert any(text.startswith("parent notified") for _, text in shown) == (
+            parent_state != "foreground"
+        )
+        assert not [
+            line for line in hub if line.role == "you" and "Background subagent" in line.text
+        ]
+    finally:
+        terminal.close()
+        (project / "release-parent").touch()
+        (project / "release-workers").touch()
+        if lease_pid is not None:
+            try:
+                os.kill(lease_pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+
+
+@cli_test_timeout(2)
 def test_pending_operator_question_and_fifo_input_cross_detach(tmp_path: Path) -> None:
     home, project, environment = _scripted_project(tmp_path)
     (project / "ask-at-clarify").touch()
@@ -647,6 +850,7 @@ def test_pending_operator_question_and_fifo_input_cross_detach(tmp_path: Path) -
                 pass
 
 
+@cli_test_timeout(2)
 def test_hosted_editor_receives_the_terminal_and_returns_to_the_composer(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
@@ -678,6 +882,7 @@ def test_hosted_editor_receives_the_terminal_and_returns_to_the_composer(tmp_pat
 
 
 @pytest.mark.parametrize("fault", ["before-prepare", "after-prepare", "after-commit"])
+@cli_test_timeout(2)
 def test_lost_client_reconciles_the_durable_handoff_without_replaying_pool(
     tmp_path: Path, fault: str
 ) -> None:
@@ -759,6 +964,7 @@ def test_lost_client_reconciles_the_durable_handoff_without_replaying_pool(
                 pass
 
 
+@cli_test_timeout(2)
 def test_unavailable_local_transport_starts_a_terminal_owned_session(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
@@ -787,6 +993,7 @@ def test_unavailable_local_transport_starts_a_terminal_owned_session(tmp_path: P
         terminal.close()
 
 
+@cli_test_timeout(2)
 def test_background_capacity_refusal_leaves_the_hosted_controller_and_worker_live(
     tmp_path: Path,
 ) -> None:
