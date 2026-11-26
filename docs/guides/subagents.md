@@ -885,6 +885,14 @@ Reattaching restores the live view of the same pools. The phase still
 collects the results before it advances. See
 [Background sessions](background-sessions.md#detach-and-reattach-a-live-session).
 
+The same is true of an ordinary session with no workflow: `/bg`, `/background`
+and `/detach` never cancel a live worker, and the parent agent is woken once,
+after the last worker of a pool finishes, with that pool's completion notice.
+In a terminal-owned session the command is refused with `runtime_not_hosted`
+instead, because cancelling the turn would abort the pools. The agents hub
+transcript shows the pool, each worker's result, any stop request and the
+notice the parent received, under the role `subagents`.
+
 Interactive phases using the declarative runner or the shared CodePlan phase
 turn can continue after admission. The phase needs journal-backed memory,
 collection access, and either permission to answer worker questions or the

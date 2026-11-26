@@ -1,7 +1,7 @@
 ---
 title: "SUBAGENT-19: Background session handoff with live subagents"
 status: In verification
-version: 1.0.0
+version: 1.1.0
 date: 2026-11-24
 priority: P0
 related_prds:
@@ -27,6 +27,17 @@ The parent had already delegated the work. The user wanted to leave the
 terminal while the parent and workers continued, then inspect or reattach
 to the same session. Waiting for collection defeats that use case.
 
+A second report showed the failure in an ordinary session with no workflow.
+Five Explorers were running, `/bg` printed
+`Successfully backgrounded · 504b8eec-a43 (queued)`, and every Explorer row
+then read `parent_cancelled`. The command had been accepted, and the work it
+was meant to preserve was destroyed. No guard stopped it, because only
+workflow-phase pools were checked. The invariant for every alias and every
+session kind is: **a handoff never cancels a live worker.** It either leaves
+those worker attempts running under the service, or it is refused with a typed
+reason before anything is cancelled, persisted or launched. It never reports
+success and then settles the workers as cancelled.
+
 An accepted `/detach`, `/bg`, or `/background` must return control to the
 terminal with those worker attempts still running. The service must manage the
 same session. The owning phase must receive the existing pools' updates,
@@ -34,6 +45,14 @@ questions, and outcomes, and collect them before advancing. The operation
 must preserve running worker identity and work already performed.
 
 ## Current behavior and diagnosis
+
+Cancellation origin for the second report: the legacy handoff cancels the
+foreground turn (`task.cancel()` in `background/integration.py`), and a
+cancelled `spawn_subagents` call makes `SubagentPool.run` request an abort of
+every worker with reason `parent_cancelled`. The TUI guard consulted only
+workflow-phase pools, so an ownerless direct-session pool passed it. The
+terminal row `Successfully backgrounded` is written after the foreground turn
+finishes unwinding, which is why it appeared above the cancelled rows.
 
 Source baseline is `e2cc244`, the merge of SUBAGENT-18. The reported screen is
 the user observation. The code and automated regression establish the guard
@@ -102,6 +121,18 @@ workflow phase exit behavior. [Handoff boundary tests](../../tests/unit/test_bac
   under the explicit foreground spawn setting. The terminal can leave during
   that wait. A pending approval or question is accessible through the
   background inbox without requiring the original terminal to remain open.
+- When the last worker of a pool finishes, the parent agent is notified once
+  with that pool's completion notice, whether or not a terminal is attached.
+  Per-worker completions never wake it. The parent collects the results and
+  replies. The notice and the reply are part of the session transcript.
+- The agents hub transcript shows the session's subagents: the pool and its
+  workers starting, each worker's result or error, any stop request with its
+  source and reason, the pool's outcome, and the notice the parent received.
+  The notice is never shown as an operator message.
+- A terminal-owned session (background agents disabled, or no local controller
+  transport) with live subagent pools refuses the command with the reason
+  `runtime_not_hosted`. Nothing is cancelled and no background record is
+  written. A finished pool that only awaits collection does not block it.
 - Inspecting the background session shows the same pool and worker IDs,
   attempt numbers, progress, and transcript available before handoff.
   Reattach through the normal session entry point to operate the live
@@ -306,6 +337,8 @@ execution continuity.
 | A9 | Pause, cancel, reset, abandon, and timeout remain distinct. | Through the service and after live reattach, cover explicit pause before detach, operator resume after workers finish, worker cancel, run abort, phase reset, and deadline expiry. Assert checkpoint and pool lifecycle evidence, scope-limited cleanup, and reason codes. |
 | A10 | Ineligible and ordinary sessions retain their documented behavior. | Regression cases for a live legacy terminal-owned pool, disabled service, exhausted capacity, unavailable local transport, a terminal-bound operation, old checkpoints, and an ordinary session without active pools. Assert typed refusal or supported handoff, single session identity, and the existing dead-worker recovery behavior. |
 | A11 | The CLI and TUI remain responsive at cutover. | Exercise a gated provider request and multiple live workers while the client confirms handoff. Assert causal completion with gates held, a single confirmation, accessible status, and no false cancelled or completed row. Measure warmed handoff time as time spent in local routing, persistence, and acknowledgement. Test on supported platforms using their real control transport and process identity adapters. |
+| A12 | A handoff never cancels a live worker in an ordinary session. | Subprocess PTY test: five gated Explorers in a session with no workflow, with the parent yielded, mid provider request, and inside an explicit foreground spawn. Issue each alias. Assert the same runtime, pool and worker IDs, no `subagent_worker_result` or cancellation record and no `parent_cancelled` anywhere before release, and five successful results after. In-process test: a terminal-owned session refuses with `runtime_not_hosted` and leaves the workers, the store and the handoff state untouched. |
+| A13 | The parent is notified once, after the last worker, and the operator can see it. | Release four of five Explorers and assert the parent stays parked and no notice is pending. Release the fifth and assert one parent request carrying the pool notice, one acknowledgement and no extra provider request. Assert the notice is in the transcript page a reattached terminal replays, and that the agents hub transcript of the detached session lists the pool, each worker result, and `parent notified`, with no operator row for the notice. |
 
 The rollout gate requires the applicable unit, integration, and E2E matrix,
 including the existing SUBAGENT-16 through SUBAGENT-18 and background recovery
@@ -337,6 +370,8 @@ and observe the owner and provider trace from outside its process.
 | A9 | [Live cancellation](../../tests/e2e/test_live_subagent_handoff.py), [pause, resume, reset, abandon and expiry](../../tests/integration/test_workflow_phase_subagents.py) |
 | A10 | [Capacity and transport failure](../../tests/e2e/test_live_subagent_handoff.py), [legacy phase refusal and terminal-bound operations](../../tests/integration/test_workflow_phase_subagents.py) |
 | A11 | [Shell return with provider gates held](../../tests/e2e/test_live_subagent_handoff.py), [bounded authenticated control and native process identity](../../tests/unit/test_hosted_transport.py) |
+| A12 | [Five Explorers survive every alias, parent state and foreground spawn](../../tests/e2e/test_live_subagent_handoff.py), [terminal-owned refusal and hosted detach, in process](../../tests/integration/test_direct_session_handoff.py) |
+| A13 | [Notified once after the last worker, with the terminal gone](../../tests/e2e/test_live_subagent_handoff.py), [staggered release and transcript replay](../../tests/integration/test_direct_session_handoff.py), [hub transcript rows](../../tests/unit/test_agents_hub_subagent_transcript.py) |
 
 ## Implementation sequence
 
@@ -358,6 +393,10 @@ and observe the owner and provider trace from outside its process.
    with the new owner, readiness states, and recovery contract. Publish the
    rollout from the earliest session entry point that can host the runtime
    with its complete tool and policy context.
+
+The first-prompt performance probe measures the hosted architecture: the
+readiness events fire in the runtime process, so the probe instruments every
+process of its tree and takes wall time from the probe's launch.
 
 The feature is complete when an operator can close the foreground client
 through any handoff alias while an eligible workflow pool is genuinely live,

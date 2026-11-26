@@ -28,6 +28,17 @@ continue in the same runtime. The background supervisor reserves capacity and
 records the controller generation before the terminal exits. If capacity is
 full, the session stays attached and its work continues.
 
+Detaching never cancels a subagent. This holds for a session with no workflow:
+five Explorers started by `spawn_subagents` are still running, with the same
+worker IDs and attempt numbers, after `Successfully backgrounded`, and none
+shows `parent_cancelled`. The same holds for a parent that has already yielded,
+a parent in the middle of a provider request, and an explicit foreground
+`spawn_subagents` call that is still waiting. When the last worker of a pool
+finishes, the runtime wakes the parent once with the pool's completion notice
+(not once per worker), whether or not a terminal is attached. The parent then
+collects the results and replies. The notice and the reply are in the session
+transcript, so a terminal that reattaches later replays them.
+
 Run `agenthicc agents status SESSION_ID --json` to inspect the runtime PID,
 transcript cursor, pool IDs, phase ownership, and worker attempts. Use
 `agenthicc attach SESSION_ID` or the agents hub to reconnect to that runtime.
@@ -46,10 +57,15 @@ existing recovery controls.
 
 ### Handoff from a terminal-owned session
 
-A terminal-owned session uses checkpoint handoff to a separate worker.
-Outstanding live pools block that handoff until their results are available
-and the owning phase collects them. The checkpoint handoff follows these
-steps.
+A terminal-owned session (background agents disabled, or the local controller
+transport unavailable at startup) uses checkpoint handoff to a separate worker.
+Checkpoint handoff cancels the foreground turn, and a cancelled turn aborts its
+live pools, so a terminal-owned session with live subagent pools refuses the
+command with the reason `runtime_not_hosted` before it cancels, persists or
+launches anything. Wait for the pools to finish or stop them, then detach. A
+direct-session pool that has finished and only awaits collection is not live
+and does not block the handoff; a workflow phase's uncollected pools still do.
+The checkpoint handoff follows these steps.
 
 1. **The command is routed immediately.** CLI command discovery installs
    `/detach` and the `/bg`/`/background` aliases. They use an immediate-control
@@ -458,7 +474,7 @@ sections answer four questions:
 |---|---|---|
 | Needs you | The agent waits or its worker was lost | The inbox request's canonical target — tool, input, workspace paths, mode — redacted; `y`/`n` resolve that exact item |
 | Now | The agent is active | Phase progress, queue position, the latest activity |
-| Transcript | Always | The last 50 journal events, redacted with the export redactor, each wrapped under its role: a reply keeps its paragraphs (up to 8,000 characters), a tool call its summary and first output line; an entry longer than 40 lines ends in `… N more lines`; `f` toggles following new events, `t` the whole transcript |
+| Transcript | Always | The last 50 journal events, redacted with the export redactor, each wrapped under its role: a reply keeps its paragraphs (up to 8,000 characters), a tool call its summary and first output line; an entry longer than 40 lines ends in `… N more lines`; `f` toggles following new events, `t` the whole transcript. A session's subagents appear under the role `subagents`: the pool starting with its workers, each worker finishing as `[done/total] label · first line of its result` (`✓`) or with its error (`✗`), a stop request with who asked and why, the pool's `N/M done`, and `parent notified · …` for the completion, question or message notice the parent agent received |
 | Changes | A worktree agent | `git diff --stat` from its base commit including uncommitted work; `d` shows the full diff |
 | Attempts | More than one attempt | Each attempt's outcome and error |
 | Details | Always | Only fields that have a value |
