@@ -1193,8 +1193,8 @@ class ComposerFrame:
         pool = _signal(conv, "subagent_pool_state")
         if pool is not None:
             conditions.add("subagents")
-        if _signal(conv, "subagent_foreground"):
-            conditions.add("subagents_foreground")
+        if _signal_bool(conv, "backgroundable"):
+            conditions.add("backgroundable")
         keymap = app.keymap()
         found = tuple(
             (hint.keys, hint.label)

@@ -48,8 +48,8 @@ class OpenAgentsHubCommand(Command):
 
 
 @dataclass(frozen=True)
-class BackgroundSubagentsCommand(Command):
-    """Detach the active subagent pool from its foreground tool call (Ctrl+B)."""
+class BackgroundWorkCommand(Command):
+    """Move the running foreground command and subagent pool to the background (Ctrl+B)."""
 
 
 @dataclass(frozen=True)

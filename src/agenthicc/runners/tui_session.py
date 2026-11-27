@@ -117,7 +117,7 @@ if TYPE_CHECKING:
     from agenthicc.tools.cloakbrowser.session import BrowserSessionManager
     from agenthicc.tui.input.unified_session import UnifiedInputSession
     from agenthicc.tui.runtime import (
-        BackgroundSubagentsCommand,
+        BackgroundWorkCommand,
         CycleAgentCommand,
         InterruptAgentCommand,
         OpenAgentsHubCommand,
@@ -3382,6 +3382,7 @@ class TUISession:
         snapshot = terminal_manager.wait_snapshot()
         conversation = self._ctx.app_state.conversation
         self._project_background_terminals(terminal_manager)
+        self._project_foreground_commands(terminal_manager)
         if snapshot is None:
             conversation.clear_terminal_wait()
             redraw = getattr(self._workspace, "_redraw", None)
@@ -4147,7 +4148,7 @@ class TUISession:
     def _run_palette_item(self, item: PaletteItem) -> None:
         """Run what the palette chose, the way its key or command would."""
         from agenthicc.tui.runtime import (
-            BackgroundSubagentsCommand,
+            BackgroundWorkCommand,
             CycleAgentCommand,
             SendMessageCommand,
         )
@@ -4172,9 +4173,9 @@ class TUISession:
                 self._ctx.app_state.conversation.notify_transient(f"Switched to {mode.name} mode")
             case "agents.cycle":
                 self._tasks.start(bus.dispatch_async(CycleAgentCommand()), name="palette-agent")
-            case "subagents.background":
+            case "work.background":
                 self._tasks.start(
-                    bus.dispatch_async(BackgroundSubagentsCommand()), name="palette-background"
+                    bus.dispatch_async(BackgroundWorkCommand()), name="palette-background"
                 )
 
     # ── model switching (TUX-05 §2.5) ────────────────────────────────────────
@@ -4342,11 +4343,8 @@ class TUISession:
     async def _open_subagents_command(self, _command: OpenSubagentsCommand) -> None:
         self.open_subagents()
 
-    async def _background_subagents_command(
-        self,
-        _command: BackgroundSubagentsCommand,
-    ) -> None:
-        """Detach the visible active pool when the user presses Ctrl+B."""
+    def _foreground_pool(self) -> SubagentPool | None:
+        """The visible subagent pool a running tool call still waits on, if any."""
         from agenthicc.subagents.pool import active_pool
 
         conversation = self._ctx.app_state.conversation
@@ -4357,11 +4355,47 @@ class TUISession:
             if state is not None and state.pool_id in foreground
             else min(foreground, default="")
         )
-        pool = active_pool(pool_id) if pool_id else None
-        if pool is None or not pool.request_background():
-            conversation.notify_transient("No active subagent pool to background")
-            return
-        conversation.notify_transient(f"◈ Backgrounding {pool.state.total} subagent worker(s)")
+        return active_pool(pool_id) if pool_id else None
+
+    async def _background_work_command(
+        self,
+        _command: BackgroundWorkCommand,
+    ) -> None:
+        """Ctrl+B: move every command and the subagent pool a turn waits on to the background."""
+        conversation = self._ctx.app_state.conversation
+        moved: list[str] = []
+        refused: list[str] = []
+
+        manager = self._ctx.terminal_manager
+        waiting = len(manager.foreground_commands()) if manager is not None else 0
+        if manager is not None and waiting:
+            blocker = manager.background_blocker()
+            requested = 0 if blocker is not None else manager.request_background_foreground()
+            if requested:
+                moved.append(f"{requested} command{'s' if requested != 1 else ''}")
+            elif blocker is not None:
+                refused.append(f"cannot background the command: {blocker}")
+            else:
+                refused.append("the command is already moving to the background")
+
+        pool = self._foreground_pool()
+        if pool is not None and pool.request_background():
+            moved.append(f"{pool.state.total} subagent worker(s)")
+
+        if moved:
+            notice = f"◈ Backgrounding {' and '.join(moved)}"
+            conversation.notify_transient("; ".join([notice, *refused]))
+        elif refused:
+            conversation.notify_transient(refused[0].capitalize())
+        else:
+            conversation.notify_transient("Nothing in the foreground to background")
+
+    def _project_foreground_commands(self, terminal_manager: TerminalManager) -> None:
+        """Tell the reactive state which commands a running tool call waits on."""
+        handles = frozenset(command.handle_id for command in terminal_manager.foreground_commands())
+        conversation = self._ctx.app_state.conversation
+        if handles != conversation.foreground_commands():
+            conversation.foreground_commands.set(handles)
 
     def open_subagents(self) -> None:
         """Ctrl+O, ``/subagents``: the subagent panel with focus (AGX-08 §5.2)."""
@@ -7005,7 +7039,7 @@ class TUISession:
     async def run(self) -> None:
         """Start tasks, run input session, tear down."""
         from agenthicc.tui.runtime import (
-            BackgroundSubagentsCommand,
+            BackgroundWorkCommand,
             CycleAgentCommand,
             InterruptAgentCommand,
             OpenAgentsHubCommand,
@@ -7026,7 +7060,7 @@ class TUISession:
         ctx.command_bus.register(InterruptAgentCommand, self.handle_interrupt)
         ctx.command_bus.register(OpenAgentsHubCommand, self._open_agents_hub_command)
         ctx.command_bus.register(OpenSubagentsCommand, self._open_subagents_command)
-        ctx.command_bus.register(BackgroundSubagentsCommand, self._background_subagents_command)
+        ctx.command_bus.register(BackgroundWorkCommand, self._background_work_command)
         ctx.command_bus.register(OpenPaletteCommand, self._open_palette_command)
         ctx.command_bus.register(OpenShortcutsCommand, self._open_shortcuts_command)
 

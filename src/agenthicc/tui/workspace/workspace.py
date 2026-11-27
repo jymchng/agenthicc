@@ -197,6 +197,7 @@ class Workspace:
             conv.subagent_pool_state,  # PRD-124: subagent pool progress
             conv.subagent_rows,  # AGX-08: finished panel rows expire
             conv.subagent_foreground,
+            conv.foreground_commands,  # a command Ctrl+B can move to the background
             conv.subagent_background_running,
             conv.subagent_finished_pending,
             conv.subagent_wake_paused,

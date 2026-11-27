@@ -917,8 +917,10 @@ requires collection first.
 Set `subagents.spawn_mode = "foreground"` to have the spawn wait for its
 aggregate. Headless runs, session-service runs, and phases without a supervised
 delivery path also wait. In the terminal, Ctrl+B detaches an active foreground
-pool when its turn supports delivery and returns a `backgrounded` receipt.
-Esc cancels a foreground pool.
+pool when its turn supports delivery and returns a `backgrounded` receipt. The
+same key moves a running foreground shell command to a terminal (see
+[Command execution](command-execution.md#moving-a-running-command-to-the-background));
+with both running, one press moves both. Esc cancels a foreground pool.
 
 ### Worker questions
 

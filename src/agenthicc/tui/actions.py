@@ -33,8 +33,8 @@ turns), ``expandable`` (the selected item has more to show), ``rewind`` (it
 selects turns only) and ``hits`` (a search found something).
 
 The composer also reports ``subagents`` while the subagent panel is shown
-(AGX-08), and ``subagents_foreground`` while a pool still has live workers. Ctrl+B
-backgrounds that active pool. The panel and a worker's transcript report ``worker`` (the selected
+(AGX-08), and ``backgroundable`` while a command or a subagent pool is in the
+foreground of a running turn. Ctrl+B moves that work to the background. The panel and a worker's transcript report ``worker`` (the selected
 worker has a transcript), ``running_worker`` (it has not finished) and
 ``failed_worker`` (it failed and its row has not been dismissed).
 """
@@ -353,13 +353,13 @@ _COMPOSER_ACTIONS: tuple[Action, ...] = (
         unless=frozenset({"suggestion"}),
     ),
     Action(
-        "subagents.background",
+        "work.background",
         "composer",
         ("ctrl+b",),
-        "background pool",
+        "background",
         hint_priority=46,
-        description="Let the active subagent pool continue in the background",
-        when=frozenset({"running", "subagents_foreground"}),
+        description="Let the running command or subagent pool continue in the background",
+        when=frozenset({"running", "backgroundable"}),
     ),
     Action(
         "subagents.focus",
@@ -1421,7 +1421,7 @@ PALETTE_ACTIONS: Mapping[str, str] = {
     "composer.mode_cycle": "Cycle mode",
     "agents.cycle": "Talk to the next primary agent",
     "subagents.focus": "Move to the subagent panel",
-    "subagents.background": "Background the subagent pool",
+    "work.background": "Background the running command or subagent pool",
 }
 
 DEFAULT_ACTIONS: tuple[Action, ...] = (

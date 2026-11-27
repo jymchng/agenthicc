@@ -222,6 +222,20 @@ before every sink (WP-1, a security fix), thread definition descriptions
 accounting (WP-7, completing SUBAGENT-06), then SUBAGENT-11, and SUBAGENT-09's
 event contract last.
 
+### COMM series — agent communication across boundaries
+
+An audit of where work and messages cannot cross a boundary: operator to a
+running tool, background work to the agent, the foreground agent and its
+subagents, subagents among themselves, and agenthicc sessions. Each row of the
+audit names the source that proves it.
+
+- [COMM-00 — Agent communication audit and programme](agent-comms-nov/COMM-00-agent-communication-audit-and-programme.md)
+- [COMM-01 — Move a running foreground command to the background (implemented, Ctrl+B)](agent-comms-nov/COMM-01-foreground-work-to-background.md)
+- [COMM-02 — Tell the agent when a background terminal finishes](agent-comms-nov/COMM-02-background-terminal-completion-notices.md)
+- [COMM-03 — Deliver parent and peer mail to a worker at a tool boundary](agent-comms-nov/COMM-03-tool-boundary-delivery-to-workers.md)
+- [COMM-04 — Address workers across pools and nesting levels](agent-comms-nov/COMM-04-cross-pool-and-nested-worker-addressing.md)
+- [COMM-05 — Let an agent message another agenthicc session](agent-comms-nov/COMM-05-model-facing-inter-session-messaging.md)
+
 ### TOOLR series — tool robustness and effectiveness
 
 A review of every tool agenthicc offers its agents (60 built-in tools and the

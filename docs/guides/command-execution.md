@@ -71,6 +71,40 @@ stops one exact process group, and `/stop all --confirm` stops all visible
 terminals. `Esc` remains the cancellation control for the terminal currently
 being awaited. Session shutdown cleans up owned descendants.
 
+## Moving a running command to the background
+
+A finite command the agent runs in the foreground, such as
+`bun probe.mjs | tail -80`, keeps the turn waiting until it ends. While it
+runs, the footer shows `Ctrl+B background`. Pressing it lets the command keep
+running without the turn:
+
+1. The tool call stops reading the process and hands it, with the output so
+   far, to the session's terminal manager.
+2. The tool call returns a receipt with `"backgrounded": true`, the new
+   `terminal_id`, and the output seen so far. The model is told the command is
+   still running and not to run it again.
+3. The process is never restarted or signalled. It is the same process, now
+   owned as a terminal: `/ps` lists it, `/stop <terminal-id>` stops it, and the
+   agent reads it with `inspect_terminal`, `wait_terminal` and `stop_terminal`.
+
+Backgrounding does not buy more time. The command keeps what was left of its
+own `timeout`, so a 2-hour command given `timeout: 600` is still stopped at 600
+seconds of running time, whether or not it is in the background.
+
+Ctrl+B moves everything a running turn waits on: every foreground command of
+the agent you are talking to and the foreground subagent pool, together. A
+subagent worker's own commands are never offered; the worker goes to the
+background with its pool, and its commands keep their own deadlines. When the
+session already owns its
+limit of terminals (`max_terminals`), the command stays in the foreground and a
+notice says why; press Ctrl+B again after a terminal ends.
+
+Only `run_bash` and `run_command` can be moved. `run_tests` and the
+`run_python` tools finish their own result handling after the process ends, so
+they always wait. The agent is not told when a backgrounded command ends; it
+learns that by calling `inspect_terminal` or `wait_terminal`. Inside tmux the
+default prefix is also Ctrl+B, so press it twice to reach agenthicc.
+
 ## Workflow phases
 
 Workflow authors can require command outcomes explicitly:

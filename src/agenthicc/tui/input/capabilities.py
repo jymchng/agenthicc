@@ -654,8 +654,8 @@ class SubagentsCapability:
         return _CONSUMED
 
 
-class BackgroundSubagentsCapability:
-    """Ctrl+B detaches a live subagent pool from its foreground tool call."""
+class BackgroundWorkCapability:
+    """Ctrl+B moves the running foreground command and subagent pool to the background."""
 
     async def handle(
         self,
@@ -663,13 +663,13 @@ class BackgroundSubagentsCapability:
         ch: str,
         session: UnifiedInputSession,
     ) -> CapabilityResult:
-        if session._action != "subagents.background":
+        if session._action != "work.background":
             return _PASS
-        from agenthicc.tui.runtime.commands import BackgroundSubagentsCommand
+        from agenthicc.tui.runtime.commands import BackgroundWorkCommand
 
-        if not session._bus.handles(BackgroundSubagentsCommand):
+        if not session._bus.handles(BackgroundWorkCommand):
             return _PASS
-        await session._bus.dispatch_async(BackgroundSubagentsCommand())
+        await session._bus.dispatch_async(BackgroundWorkCommand())
         return _CONSUMED
 
 
@@ -898,7 +898,7 @@ STREAMING_CAPABILITIES: list[Capability] = [
     ModeCycleCapability(),  # Shift+Tab — mode switch takes effect on next tool call
     AgentsHubCapability(),  # the hub opens over a running turn too
     SubagentsCapability(),  # workers run while their turn does
-    BackgroundSubagentsCapability(),
+    BackgroundWorkCapability(),
     AgentCycleCapability(),  # the choice applies from the next turn
     ShortcutsCapability(),  # the page of keys opens over a running turn too
     PaletteCapability(),  # the palette opens over a running turn too

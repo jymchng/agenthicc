@@ -236,7 +236,7 @@ def _answer_excluded() -> tuple[type[object], ...]:
         caps.CtrlDCapability,
         caps.AgentsHubCapability,
         caps.SubagentsCapability,
-        caps.BackgroundSubagentsCapability,
+        caps.BackgroundWorkCapability,
         caps.AgentCycleCapability,
         caps.InterruptCapability,
     )
