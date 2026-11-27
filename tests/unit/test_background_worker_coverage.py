@@ -415,8 +415,8 @@ async def test_detached_worker_retains_pid_and_writes_one_exit_event(
     assert sum(event.get("event_type") == "worker_exited" for event in store._read_events()) == 1
 
 
-def test_background_session_delivers_finished_pool_notices_like_the_tui(tmp_path) -> None:
-    """SUBAGENT-11 goal 9: a background session notifies its turn exactly once."""
+def test_background_session_delivers_each_finished_worker_notice_like_the_tui(tmp_path) -> None:
+    """SUBAGENT-11 goal 9: a background session notifies its turn once per finished worker."""
     from types import SimpleNamespace
 
     from agenthicc.subagents.delivery import deliver_session_background_notices
@@ -430,14 +430,32 @@ def test_background_session_delivers_finished_pool_notices_like_the_tui(tmp_path
         pool_id="pool-1",
         fingerprint="fp",
         parent_run_id="turn-1",
-        tasks=[{"task_id": "task-0", "agent_type": "explorer"}],
+        tasks=[
+            {"task_id": "task-0", "agent_type": "explorer"},
+            {"task_id": "task-1", "agent_type": "explorer"},
+        ],
     )
     journal.subagent_pool_backgrounded(
         pool_id="pool-1", tool_result={"status": "backgrounded", "pool_id": "pool-1"}
     )
-    journal.subagent_pool_finished(
-        pool_id="pool-1", total=1, succeeded=1, failed=0, text="worker text"
-    )
+
+    def finish(index: int) -> None:
+        journal.subagent_worker_result(
+            pool_id="pool-1",
+            fingerprint="fp",
+            task_id=f"task-{index}",
+            agent_type="explorer",
+            label=f"explorer #{index + 1}",
+            ok=True,
+            text="worker text",
+            error="",
+            duration_ms=1.0,
+            tool_calls=[],
+            changed_paths=[],
+            status="completed",
+        )
+
+    finish(0)
     readiness = SimpleNamespace(provider_ready=False)
     session = SimpleNamespace(
         session_conversation=SimpleNamespace(
@@ -453,11 +471,20 @@ def test_background_session_delivers_finished_pool_notices_like_the_tui(tmp_path
         readiness.provider_ready = True
         deliver_session_background_notices(session)  # type: ignore[arg-type]
         deliver_session_background_notices(session)  # type: ignore[arg-type]
-
         assert len(memory._messages) == 1
-        content = str(memory._messages[0]["content"])
-        assert "completed (1/1 succeeded, 0 failed)" in content
-        assert "worker text" not in content
+        first = str(memory._messages[0]["content"])
+        assert (
+            "explorer #1 of pool pool-1 completed (1/2 workers of this pool have finished)" in first
+        )
+
+        finish(1)
+        deliver_session_background_notices(session)  # type: ignore[arg-type]
+        deliver_session_background_notices(session)  # type: ignore[arg-type]
+        assert len(memory._messages) == 2
+        second = str(memory._messages[1]["content"])
+        assert "explorer #2 of pool pool-1 completed" in second
+        assert "(2/2 workers of this pool have finished; the pool is complete)" in second
+        assert all("worker text" not in str(message["content"]) for message in memory._messages)
     finally:
         journal.close()
 
