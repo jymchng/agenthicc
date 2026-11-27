@@ -26,20 +26,30 @@ from tests.integration.test_subagent_wake import record_terminal
 from tests.unit.test_tui_session_coverage import _make_session
 
 
-def test_a13_control_b_requires_an_active_foreground_pool() -> None:
+def test_a13_control_b_requires_foreground_work_in_a_running_turn() -> None:
     app = AppState.create()
     session = UnifiedInputSession(app, CommandBus())
     session.set_mode(InputMode.STREAMING)
+    # A pool already running in the background is not foreground work.
     app.conversation.subagent_background_running.set(1)
     keymap = app.keymap()
     assert keymap.resolve("composer", "ctrl+b", session.conditions()) is None
+
     app.conversation.subagent_foreground.set(frozenset({"foreground-pool"}))
     action = keymap.resolve("composer", "ctrl+b", session.conditions())
-    assert action is not None and action.name == "subagents.background"
+    assert action is not None and action.name == "work.background"
     session.set_mode(InputMode.IDLE)
     assert keymap.resolve("composer", "ctrl+b", session.conditions()) is None
+    session.set_mode(InputMode.STREAMING)
     app.conversation.subagent_foreground.set(frozenset())
-    assert "subagents_foreground" not in session.conditions()
+    assert "backgroundable" not in session.conditions()
+
+    # A command a tool call waits on is foreground work on its own, with no pool.
+    app.conversation.foreground_commands.set(frozenset({"fg-1"}))
+    action = keymap.resolve("composer", "ctrl+b", session.conditions())
+    assert action is not None and action.name == "work.background"
+    app.conversation.foreground_commands.set(frozenset())
+    assert keymap.resolve("composer", "ctrl+b", session.conditions()) is None
 
 
 @pytest.mark.parametrize("source", ["subagent_worker", "subagent_question"])

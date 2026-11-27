@@ -314,7 +314,7 @@ async def test_a1_a3_a4_a6_make_book_research_collects_then_validates_notes(
     import json
     import re
 
-    from agenthicc.tui.runtime.commands import BackgroundSubagentsCommand
+    from agenthicc.tui.runtime.commands import BackgroundWorkCommand
     from agenthicc.workflows.make_book.runner import MakeBookContext
 
     setting = "foreground" if manual_detach else "background"
@@ -437,7 +437,7 @@ async def test_a1_a3_a4_a6_make_book_research_collects_then_validates_notes(
         if manual_detach:
             conv = session._ctx.app_state.conversation
             assert len(script.main_requests) == 3 and conv.subagent_foreground()
-            await session._background_subagents_command(BackgroundSubagentsCommand())
+            await session._background_work_command(BackgroundWorkCommand())
         conv = session._ctx.app_state.conversation
         await until(lambda: bool(conv.phase_subagent_wait()) or task.done())
         assert not task.done() and len(script.main_requests) == 4

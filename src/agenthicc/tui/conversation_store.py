@@ -383,6 +383,10 @@ class ConversationStore:
         self.terminal_wait_label: Signal[str] = Signal("", name="terminal_wait_label")
         self.terminal_wait_elapsed_s: Signal[float] = Signal(0.0, name="terminal_wait_elapsed_s")
         self.terminal_running_count: Signal[int] = Signal(0, name="terminal_running_count")
+        self.foreground_commands: Signal[frozenset[str]] = Signal(
+            frozenset(), name="foreground_commands"
+        )
+        """Handles of the commands a running tool call waits on, which Ctrl+B can move."""
         # AGX-10: cross-session attention is presentation state, not kernel state.
         self.background_needs_you: Signal[int] = Signal(0, name="background_needs_you")
         self.background_running: Signal[int] = Signal(0, name="background_running")
@@ -693,6 +697,10 @@ class ConversationStore:
         self.terminal_wait_label.set(label)
         self.terminal_wait_elapsed_s.set(max(0.0, elapsed_s))
         self.terminal_running_count.set(max(0, running_count))
+
+    def backgroundable(self) -> bool:
+        """Whether Ctrl+B has foreground work to move: a command or a subagent pool."""
+        return bool(self.foreground_commands() or self.subagent_foreground())
 
     def clear_terminal_wait(self) -> None:
         """Clear terminal wait state after completion, cancellation, or close."""

@@ -18,7 +18,7 @@ import secrets
 import signal
 import time
 from contextlib import AbstractContextManager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from typing import Mapping
@@ -28,6 +28,7 @@ from agenthicc.runners.process_lease import InterProcessLock
 from agenthicc.tools.exec.outcome import bash_executable, resolve_deadline, validate_timeout
 
 __all__ = [
+    "ForegroundCommand",
     "TerminalManager",
     "TerminalRecord",
     "TerminalState",
@@ -71,6 +72,8 @@ _SECRET_ASSIGNMENT = re.compile(
 )
 _REDACTION = "<redacted>"
 _DEFAULT_MAX_OUTPUT = 64 * 1024
+#: How much of what a moved command printed its receipt hands the model.
+_RECEIPT_TAIL_CHARS = 4000
 
 
 def _is_loopback(host: str) -> bool:
@@ -129,6 +132,33 @@ def _bounded_append(current: str, addition: str, limit: int) -> tuple[str, bool]
     head = encoded[:keep].decode("utf-8", errors="replace")
     tail = encoded[-keep:].decode("utf-8", errors="replace")
     return head + marker + tail, True
+
+
+@dataclass(eq=False)
+class ForegroundCommand:
+    """A command a tool call is waiting on, which the user may move to the background.
+
+    The tool call registers it with :meth:`TerminalManager.begin_foreground`,
+    watches :attr:`requested`, and on a request hands the live process to
+    :meth:`TerminalManager.adopt`.  It is session state, never persisted.
+    """
+
+    handle_id: str
+    tool_call_id: str
+    label: str
+    started_at: float
+    requested: asyncio.Event = field(default_factory=asyncio.Event)
+
+    def request_background(self) -> bool:
+        """Ask the waiting tool call to let go of the process; ``False`` if already asked."""
+        if self.requested.is_set():
+            return False
+        self.requested.set()
+        return True
+
+    def withdraw_request(self) -> None:
+        """The request could not be met (no terminal slot); the user may ask again."""
+        self.requested.clear()
 
 
 @dataclass
@@ -528,6 +558,7 @@ class TerminalManager:
         self._entries: dict[str, _RuntimeEntry] = {}
         self._stop_tasks: dict[str, asyncio.Task[bool]] = {}
         self._wait_ids: list[str] = []
+        self._foreground: dict[str, ForegroundCommand] = {}
         self._closed = False
         self._recover_stale_records()
 
@@ -751,20 +782,7 @@ class TerminalManager:
             self._notify()
             return record.result()
 
-        record.state = TerminalState.RUNNING
-        record.started_at = time.time()
-        record.pid = process.pid
-        try:
-            record.pgid = os.getpgid(process.pid)
-        except (OSError, ProcessLookupError):
-            record.pgid = process.pid
-        completion = asyncio.create_task(self._monitor(terminal_id), name=f"terminal-{terminal_id}")
-        entry = _RuntimeEntry(record=record, process=process, completion=completion)
-        self._entries[terminal_id] = entry
-        entry.stdout_task = asyncio.create_task(self._pump(terminal_id, process.stdout, "stdout"))
-        entry.stderr_task = asyncio.create_task(self._pump(terminal_id, process.stderr, "stderr"))
-        self.store.upsert(record)
-        self._notify()
+        self._launch(record, process)
         result: dict[str, object] = {
             "ok": True,
             "background": True,
@@ -778,6 +796,134 @@ class TerminalManager:
         if readiness is not None:
             result.update(await self.wait_readiness(terminal_id, readiness))
         return result
+
+    def _launch(
+        self,
+        record: TerminalRecord,
+        process: asyncio.subprocess.Process,
+        *,
+        started_at: float | None = None,
+    ) -> None:
+        """Own *process*: mark *record* running and start its monitor and pumps.
+
+        ``started_at`` is when the process really began, for a process that ran
+        in the foreground before the manager took it over.  The caller must not
+        have another reader on the process's pipes.
+        """
+        terminal_id = record.terminal_id
+        record.state = TerminalState.RUNNING
+        record.started_at = time.time() if started_at is None else started_at
+        record.pid = process.pid
+        try:
+            record.pgid = os.getpgid(process.pid)
+        except (OSError, ProcessLookupError):
+            record.pgid = process.pid
+        completion = asyncio.create_task(self._monitor(terminal_id), name=f"terminal-{terminal_id}")
+        entry = _RuntimeEntry(record=record, process=process, completion=completion)
+        self._entries[terminal_id] = entry
+        entry.stdout_task = asyncio.create_task(self._pump(terminal_id, process.stdout, "stdout"))
+        entry.stderr_task = asyncio.create_task(self._pump(terminal_id, process.stderr, "stderr"))
+        self.store.upsert(record)
+        self._notify()
+
+    def begin_foreground(self, *, tool_call_id: str, label: str) -> ForegroundCommand:
+        """Register a command a tool call is waiting on, so the user can background it."""
+        command = ForegroundCommand(
+            handle_id=f"fg-{secrets.token_hex(4)}",
+            tool_call_id=tool_call_id,
+            label=redact_text(label),
+            started_at=time.time(),
+        )
+        self._foreground[command.handle_id] = command
+        self._notify()
+        return command
+
+    def end_foreground(self, command: ForegroundCommand) -> None:
+        """Forget *command*: it finished, was cancelled, or became a terminal."""
+        if self._foreground.pop(command.handle_id, None) is not None:
+            self._notify()
+
+    def foreground_commands(self) -> list[ForegroundCommand]:
+        """The commands a tool call is waiting on right now, oldest first."""
+        return list(self._foreground.values())
+
+    def background_blocker(self) -> str | None:
+        """Why a foreground command cannot become a terminal now, or ``None``."""
+        return self._check_limits()
+
+    def request_background_foreground(self) -> int:
+        """Ask every foreground command to continue as a terminal; return how many."""
+        return sum(command.request_background() for command in self._foreground.values())
+
+    def adopt(
+        self,
+        process: asyncio.subprocess.Process,
+        *,
+        command: str,
+        cwd: str,
+        shell: bool,
+        label: str,
+        tool_call_id: str,
+        timeout_s: float,
+        started_at: float,
+        stdout: str,
+        stderr: str,
+        output_bytes: int,
+        truncated: bool,
+    ) -> dict[str, object]:
+        """Take over a process a tool call started, and return its terminal receipt.
+
+        The tool call's own readers must be stopped first: the manager reads the
+        same pipes.  ``timeout_s`` is what is left of the command's deadline
+        (``0`` for none), ``stdout`` and ``stderr`` what it printed so far.
+        Nothing changes when the manager cannot own another terminal; the
+        returned mapping then has ``ok`` false and the caller keeps waiting.
+        """
+        reason = self._check_limits()
+        if reason:
+            return {"ok": False, "background": True, "error": reason, "state": "rejected"}
+        terminal_id = f"term-{secrets.token_hex(4)}"
+        record = TerminalRecord(
+            terminal_id=terminal_id,
+            session_id=self.session_id,
+            project_root=self.project_root,
+            cwd=cwd,
+            kind="shell" if shell else "exec",
+            command=redact_text(command),
+            command_digest=hashlib.sha256(command.encode()).hexdigest(),
+            label=redact_text(label or command),
+            state=TerminalState.STARTING,
+            created_at=started_at,
+            tool_call_id=tool_call_id,
+            parent_job_id=self.parent_job_id,
+            timeout_s=timeout_s,
+            output_bytes=output_bytes,
+            last_output_at=time.time() if output_bytes else None,
+        )
+        record.stdout, cut_out = _bounded_append("", _redact_output(stdout), self.max_output_bytes)
+        record.stderr, cut_err = _bounded_append("", _redact_output(stderr), self.max_output_bytes)
+        record.truncated = truncated or cut_out or cut_err
+        self._records[terminal_id] = record
+        self._launch(record, process, started_at=started_at)
+        return {
+            "ok": True,
+            "background": True,
+            "backgrounded": True,
+            "terminal_id": terminal_id,
+            "state": record.state.value,
+            "pid": record.pid,
+            "label": record.label,
+            "tool_call_id": tool_call_id,
+            "lifecycle": record.lifecycle,
+            "elapsed_s": round(record.elapsed_s, 1),
+            "stdout_so_far": record.stdout[-_RECEIPT_TAIL_CHARS:],
+            "stderr_so_far": record.stderr[-_RECEIPT_TAIL_CHARS:],
+            "message": (
+                "The user moved this command to the background; it is still running as "
+                f"{terminal_id}. Use wait_terminal, inspect_terminal or stop_terminal with "
+                "that terminal_id. Do not run the command again."
+            ),
+        }
 
     def _find_active_service(
         self,

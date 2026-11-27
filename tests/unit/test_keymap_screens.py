@@ -74,14 +74,14 @@ _KEYS: dict[str, tuple[Key, str]] = {
 
 
 def _session(state: AppState, action: Action) -> UnifiedInputSession:
-    if action.when & {"subagents", "subagents_foreground"}:
+    if "subagents" in action.when:
         from agenthicc.subagents.pool import SubagentPoolState, WorkerState
 
         state.conversation.subagent_pool_state.set(
             SubagentPoolState("pool", 1, (WorkerState("explorer #1", "explorer", worker_id="w"),))
         )
-    if "subagents_foreground" in action.when:
-        state.conversation.subagent_foreground.set(frozenset({"pool"}))
+    if "backgroundable" in action.when:
+        state.conversation.foreground_commands.set(frozenset({"fg-1"}))
     session = UnifiedInputSession(state, CommandBus())
     if "running" in action.when:
         session.set_mode(InputMode.STREAMING)

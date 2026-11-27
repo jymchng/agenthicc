@@ -10,6 +10,7 @@ import tempfile
 import time
 import re
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -107,7 +108,7 @@ _PROPAGATE_TOOL_CANCELLATION: ContextVar[bool] = ContextVar(
 )
 
 if TYPE_CHECKING:
-    from agenthicc.background.terminals import TerminalManager
+    from agenthicc.background.terminals import ForegroundCommand, TerminalManager
 
 __all__ = [
     "ExecToolKit",
@@ -193,6 +194,49 @@ async def _drain(
             return
 
 
+@dataclass(frozen=True)
+class _Backgrounding:
+    """What lets the user move one running foreground command to a terminal."""
+
+    manager: TerminalManager
+    command: ForegroundCommand
+
+
+async def _run_foreground(
+    cmd: list[str],
+    *,
+    cwd: str,
+    timeout: float,
+    env: dict[str, str] | None,
+    shell: bool,
+    context: Mapping[str, object],
+    label: str,
+) -> dict[str, object]:
+    """Run *cmd* and wait for it, unless the user moves it to the background.
+
+    The command is registered with the session's terminal manager while the
+    tool call waits, so the terminal UI can offer Ctrl+B for it.  Without a
+    manager (a bare tool context) it is a plain foreground run.
+    """
+    manager = cast("TerminalManager | None", context.get("terminal_manager"))
+    if manager is None or not manager.enabled:
+        return await _run_proc(cmd, cwd=cwd, timeout=timeout, env=env, shell=shell)
+    command = manager.begin_foreground(
+        tool_call_id=arg_str(context, "tool_call_id", ""), label=label
+    )
+    try:
+        return await _run_proc(
+            cmd,
+            cwd=cwd,
+            timeout=timeout,
+            env=env,
+            shell=shell,
+            backgrounding=_Backgrounding(manager, command),
+        )
+    finally:
+        manager.end_foreground(command)
+
+
 async def _run_proc(
     cmd: list[str],
     *,
@@ -200,6 +244,7 @@ async def _run_proc(
     timeout: float,
     env: dict[str, str] | None = None,
     shell: bool = False,
+    backgrounding: _Backgrounding | None = None,
 ) -> dict[str, object]:
     t0 = time.perf_counter()
     effective_env = child_env(env)
@@ -267,6 +312,42 @@ async def _run_proc(
             _drain(proc.stderr, stderr_capture, limit_reached),
         )
         await proc.wait()
+
+    async def hand_over(background: _Backgrounding) -> dict[str, object] | None:
+        """Give the live process to the terminal manager; ``None`` when it refused.
+
+        This call's readers stop first, because the manager reads the same pipes;
+        output already read seeds the terminal.  When the manager refuses, the
+        readers start again and the command stays in the foreground.
+        """
+        nonlocal communication
+        if process is None or communication is None:
+            return None
+        readers = communication
+        readers.cancel()
+        await asyncio.gather(readers, return_exceptions=True)
+        elapsed_s = time.perf_counter() - t0
+        receipt = background.manager.adopt(
+            process,
+            command=cmd[0] if shell else " ".join(cmd),
+            cwd=cwd,
+            shell=shell,
+            label=background.command.label,
+            tool_call_id=background.command.tool_call_id,
+            timeout_s=0.0
+            if deadline.effective_s is None
+            else max(0.001, deadline.effective_s - elapsed_s),
+            started_at=time.time() - elapsed_s,
+            stdout=stdout_capture.render(),
+            stderr=stderr_capture.render(),
+            output_bytes=stdout_capture.total + stderr_capture.total,
+            truncated=stdout_capture.omitted > 0 or stderr_capture.omitted > 0,
+        )
+        if receipt.get("ok") is True:
+            return receipt
+        communication = asyncio.create_task(collect(process), name="command-output")
+        background.command.withdraw_request()
+        return None
 
     async def output_after_cleanup() -> None:
         if communication is None:
@@ -343,11 +424,46 @@ async def _run_proc(
         else:
             limit_task = asyncio.create_task(limit_reached.wait(), name="command-output-limit")
             try:
-                done, _pending = await asyncio.wait(
-                    {communication, limit_task},
-                    timeout=deadline.effective_s,
-                    return_when=asyncio.FIRST_COMPLETED,
+                give_up_at = (
+                    None
+                    if deadline.effective_s is None
+                    else time.monotonic() + deadline.effective_s
                 )
+                while True:
+                    request_task: asyncio.Task[bool] | None = (
+                        asyncio.create_task(
+                            backgrounding.command.requested.wait(),
+                            name="command-background-request",
+                        )
+                        if backgrounding is not None
+                        else None
+                    )
+                    waiting: set[asyncio.Task[object]] = {communication, limit_task}
+                    if request_task is not None:
+                        waiting.add(request_task)
+                    try:
+                        done, _pending = await asyncio.wait(
+                            waiting,
+                            timeout=None
+                            if give_up_at is None
+                            else max(0.0, give_up_at - time.monotonic()),
+                            return_when=asyncio.FIRST_COMPLETED,
+                        )
+                    finally:
+                        if request_task is not None:
+                            request_task.cancel()
+                    if request_task is None or request_task not in done:
+                        break
+                    # The user asked to background the command.  It only can when
+                    # it is still running and has not hit the output limit.
+                    if backgrounding is not None and not (
+                        communication.done() or limit_reached.is_set()
+                    ):
+                        receipt = await hand_over(backgrounding)
+                        if receipt is not None:
+                            return receipt
+                    elif backgrounding is not None:
+                        backgrounding.command.withdraw_request()
                 if limit_task in done and not communication.done():
                     state = CommandState.FAILED
                     termination_reason = "output_limit"
@@ -578,12 +694,14 @@ class RunBashTool(Tool):
                 lifecycle=lifecycle,
                 readiness=readiness,
             )
-        return await _run_proc(
+        return await _run_foreground(
             [command],
             cwd=cwd,
             timeout=timeout or 0.0,
             env=env_overlay,
             shell=True,
+            context=context,
+            label=arg_str(args, "label", "") or command,
         )
 
 
@@ -657,12 +775,14 @@ class RunCommandTool(Tool):
                 lifecycle=lifecycle,
                 readiness=readiness,
             )
-        return await _run_proc(
+        return await _run_foreground(
             argv,
             cwd=cwd,
             timeout=timeout or 0.0,
             env=env_overlay,
             shell=False,
+            context=context,
+            label=arg_str(args, "label", "") or " ".join(argv),
         )
 
 

@@ -74,7 +74,7 @@ TIPS: tuple[Tip, ...] = (
     Tip("{key} adds a line break", "composer.newline"),
     Tip("{key} undoes your last edit", "composer.undo"),
     Tip("{key} pauses the running turn", "composer.interrupt"),
-    Tip("{key} sends the running subagents to the background", "subagents.background"),
+    Tip("{key} sends a running command or subagents to the background", "work.background"),
     Tip("/compact summarises the conversation to free up context", command="/compact"),
     Tip("/theme changes the colours without a restart", command="/theme"),
     Tip("/status shows the session, model and context use", command="/status"),

@@ -131,11 +131,11 @@ def test_hints_are_the_applicable_actions_by_priority() -> None:
         hint.label
         for hint in keymap.hints(
             "composer",
-            frozenset({"running", "subagents_foreground"}),
+            frozenset({"running", "backgroundable"}),
         )
     ]
-    assert "background pool" in background
-    assert "background pool" not in running
+    assert "background" in background
+    assert "background" not in running
     pasted = keymap.hints("composer", frozenset({"paste", "paste_at_cursor"}))
     assert [hint.label for hint in pasted][:2] == ["expand paste", "delete paste"]
     assert pasted[0].keys == "Ctrl+V"
