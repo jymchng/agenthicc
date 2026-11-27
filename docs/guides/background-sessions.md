@@ -33,11 +33,18 @@ five Explorers started by `spawn_subagents` are still running, with the same
 worker IDs and attempt numbers, after `Successfully backgrounded`, and none
 shows `parent_cancelled`. The same holds for a parent that has already yielded,
 a parent in the middle of a provider request, and an explicit foreground
-`spawn_subagents` call that is still waiting. When the last worker of a pool
-finishes, the runtime wakes the parent once with the pool's completion notice
-(not once per worker), whether or not a terminal is attached. The parent then
-collects the results and replies. The notice and the reply are in the session
-transcript, so a terminal that reattaches later replays them.
+`spawn_subagents` call that is still waiting. Every worker that finishes
+notifies the parent, whether or not a terminal is attached: the runtime wakes
+an idle parent, or appends the notice at the next tool boundary of a running
+turn, with a notice that names the worker and how many of its pool have
+finished (`explorer #2 … 2/5 workers of this pool have finished`). The worker
+that completes its pool says so. Workers that finish together share one wake.
+The notice never carries what the worker wrote. The parent reads it with
+`collect_subagent_results`, which returns the results of the workers that have
+finished even while the rest of the pool runs. Every notice and the parent's
+replies are in the session transcript, so a terminal that reattaches later
+replays them. A blocking `spawn_subagents` call is the exception: its parent
+is waiting for the aggregate, so its workers send no notices.
 
 Run `agenthicc agents status SESSION_ID --json` to inspect the runtime PID,
 transcript cursor, pool IDs, phase ownership, and worker attempts. Use
@@ -474,7 +481,7 @@ sections answer four questions:
 |---|---|---|
 | Needs you | The agent waits or its worker was lost | The inbox request's canonical target — tool, input, workspace paths, mode — redacted; `y`/`n` resolve that exact item |
 | Now | The agent is active | Phase progress, queue position, the latest activity |
-| Transcript | Always | The last 50 journal events, redacted with the export redactor, each wrapped under its role: a reply keeps its paragraphs (up to 8,000 characters), a tool call its summary and first output line; an entry longer than 40 lines ends in `… N more lines`; `f` toggles following new events, `t` the whole transcript. A session's subagents appear under the role `subagents`: the pool starting with its workers, each worker finishing as `[done/total] label · first line of its result` (`✓`) or with its error (`✗`), a stop request with who asked and why, the pool's `N/M done`, and `parent notified · …` for the completion, question or message notice the parent agent received |
+| Transcript | Always | The last 50 journal events, redacted with the export redactor, each wrapped under its role: a reply keeps its paragraphs (up to 8,000 characters), a tool call its summary and first output line; an entry longer than 40 lines ends in `… N more lines`; `f` toggles following new events, `t` the whole transcript. A session's subagents appear under the role `subagents`: the pool starting with its workers, each worker finishing as `[done/total] label · first line of its result` (`✓`) or with its error (`✗`), a stop request with who asked and why, the pool's `N/M done`, and `parent notified · …` for each worker-finished, question or message notice the parent agent received |
 | Changes | A worktree agent | `git diff --stat` from its base commit including uncommitted work; `d` shows the full diff |
 | Attempts | More than one attempt | Each attempt's outcome and error |
 | Details | Always | Only fields that have a value |

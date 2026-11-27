@@ -5906,17 +5906,21 @@ and durable journal exist, a notice source is bound, and the turn is direct.
 Defaults to `"background"`. Use `"foreground"` to wait for the worker pool.
 An owned foreground pool in the TUI can be detached with Ctrl+B.
 
-### Background completion notices — `agenthicc.subagents.delivery`
+### Background worker notices — `agenthicc.subagents.delivery`
 
-The runtime provides the pool ID, terminal status, and worker counts.
-Worker output reaches the parent through `collect_subagent_results(pool_id)`.
-A reopened session delivers pending notices on the first user turn.
-Runners without a TUI can deliver terminal notices through
-`deliver_session_background_notices(session)`.
+Every worker of a background or phase pool that finishes sends the parent a
+notice of its own (message ID `subagent-worker:{pool}:{task}:{attempt}`). The
+runtime provides the worker's label, how it ended, and how many workers of the
+pool have finished; the worker that completes the pool says so. Worker output
+reaches the parent through `collect_subagent_results(pool_id)`, which also
+returns the results of finished workers while the pool runs. A reopened session
+delivers pending notices on the first user turn. Runners without a TUI can
+deliver them through `deliver_session_background_notices(session)`.
 
-### background_pool_notice
+### background_worker_notice
 
-The notice for one folded journal lifecycle record; never reads its `text`.
+The notice for one worker's durable result record; never reads its `text` or
+`error`.
 
 ### SubagentEvent
 
@@ -5996,9 +6000,10 @@ A failed transcript write increments `TranscriptWriter.write_failures`, calls
 the writer's `on_failure` callback, and the pool emits one
 `subagent_transcript_degraded` scroll event per pool.
 
-### deliver_background_pool_notices
+### deliver_background_worker_notices
 
-Deliver each undelivered terminal background pool exactly once.
+Deliver each finished, undelivered background worker's notice exactly once and
+return their message IDs.
 
 ### collect_subagent_results
 

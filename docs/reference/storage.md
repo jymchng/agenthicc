@@ -282,6 +282,10 @@ result boundary is instead recorded in the same
 - `subagent_worker_result` is written after each worker finishes and contains
   its complete final text, status, error, tool names, changed-path hints, and
   pool/task identity;
+- `subagent_worker_notification_delivered` records, per worker attempt, that its
+  finish notice reached provider memory; a notice is appended by stable message
+  ID before this record is written, so a crash between the two redelivers
+  nothing twice;
 - `subagent_pool_result` is written only after every worker succeeds and
   contains the complete labelled aggregate plus its task fingerprint;
 - `fold()` ignores both record kinds because they are not provider messages;

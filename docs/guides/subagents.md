@@ -856,11 +856,16 @@ rerun interrupted work. A graceful session shutdown records `cancelled` instead.
 In a direct terminal turn, `spawn_subagents` returns a durable `running` receipt
 after the pool starts. The agent can keep working or finish its reply while
 workers run under the session's task supervisor. The receipt includes a
-`pool_id` and each worker's ID and label. The agent collects the results after
-the completion notice arrives.
+`pool_id` and each worker's ID and label. Every worker that finishes sends the
+agent its own notice, so the agent can read that worker's result without waiting
+for the rest of the pool. `collect_subagent_results` on a running pool returns
+the finished workers' results under `finished`; a pool is complete when the
+final worker's notice says so, and only a terminal collection counts toward a
+phase's gate.
 
-A completion reaches the agent at its next tool boundary if a turn is active.
-If the session is idle, the notice starts an automatic turn. A queued user
+A worker's notice reaches the agent at its next tool boundary if a turn is
+active. If the session is idle, the notice starts an automatic turn, and
+workers that finish together share it. A queued user
 message takes priority and the next turn receives the notice with it. The
 journal records each completion and its delivery, so a dropped wake can be
 recovered. Reopening a session leaves saved notices for the first user turn.
@@ -886,8 +891,8 @@ collects the results before it advances. See
 [Background sessions](background-sessions.md#detach-and-reattach-a-live-session).
 
 The same is true of an ordinary session with no workflow: `/bg`, `/background`
-and `/detach` never cancel a live worker, and the parent agent is woken once,
-after the last worker of a pool finishes, with that pool's completion notice.
+and `/detach` never cancel a live worker, and each worker that finishes
+notifies the parent agent, with the terminal attached or not.
 In a terminal-owned session the command is refused with `runtime_not_hosted`
 instead, because cancelling the turn would abort the pools. The agents hub
 transcript shows the pool, each worker's result, any stop request and the

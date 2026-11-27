@@ -1,7 +1,7 @@
 ---
 title: "SUBAGENT-19: Background session handoff with live subagents"
 status: In verification
-version: 1.1.0
+version: 1.2.0
 date: 2026-11-24
 priority: P0
 related_prds:
@@ -121,10 +121,18 @@ workflow phase exit behavior. [Handoff boundary tests](../../tests/unit/test_bac
   under the explicit foreground spawn setting. The terminal can leave during
   that wait. A pending approval or question is accessible through the
   background inbox without requiring the original terminal to remain open.
-- When the last worker of a pool finishes, the parent agent is notified once
-  with that pool's completion notice, whether or not a terminal is attached.
-  Per-worker completions never wake it. The parent collects the results and
-  replies. The notice and the reply are part of the session transcript.
+- Every worker that finishes notifies the parent agent, whether or not a
+  terminal is attached. The notice (`subagent-worker:{pool}:{task}:{attempt}`)
+  names the worker, how it ended and how many of its pool have finished, and
+  says so when the worker completes the pool. It never carries what the worker
+  wrote. An idle parent is woken by it, a running parent receives it at its
+  next tool boundary, and workers that finish together share one wake. The
+  parent reads a finished worker's result with `collect_subagent_results`,
+  which returns the finished workers' results while the rest of the pool
+  runs; only a terminal collection counts toward a phase's gate. A blocking
+  `spawn_subagents` call is the exception: its parent is waiting for the
+  aggregate and its workers send no notices. The notices and the parent's
+  replies are part of the session transcript.
 - The agents hub transcript shows the session's subagents: the pool and its
   workers starting, each worker's result or error, any stop request with its
   source and reason, the pool's outcome, and the notice the parent received.
@@ -257,9 +265,10 @@ provider-history readiness to control notice delivery. The TUI's pending
 handoff row is a projection of controller state. Keep notice scope, stable
 message IDs, append-before-acknowledge ordering, and lost-hint reconciliation.
 A parked runtime spends zero provider calls while awaiting workers and input.
-A question, progress update, or completion wakes only its owner. Results are
-available through terminal collection when the actual worker task is
-collectable, including after required worktree cleanup. Original phase gates,
+A question, progress update, or worker finish wakes only its owner. A finished
+worker's result is readable at once. The result of the worker that completes
+its pool is announced when the pool's task is collectable, including after
+required worktree cleanup. Original phase gates,
 artifact checks, and approval rules still control progression. A transition
 in the same batch as a spawn or collection still returns
 `subagents_pending`. Partial, cancelled, interrupted, or failed terminal
@@ -338,7 +347,7 @@ execution continuity.
 | A10 | Ineligible and ordinary sessions retain their documented behavior. | Regression cases for a live legacy terminal-owned pool, disabled service, exhausted capacity, unavailable local transport, a terminal-bound operation, old checkpoints, and an ordinary session without active pools. Assert typed refusal or supported handoff, single session identity, and the existing dead-worker recovery behavior. |
 | A11 | The CLI and TUI remain responsive at cutover. | Exercise a gated provider request and multiple live workers while the client confirms handoff. Assert causal completion with gates held, a single confirmation, accessible status, and no false cancelled or completed row. Measure warmed handoff time as time spent in local routing, persistence, and acknowledgement. Test on supported platforms using their real control transport and process identity adapters. |
 | A12 | A handoff never cancels a live worker in an ordinary session. | Subprocess PTY test: five gated Explorers in a session with no workflow, with the parent yielded, mid provider request, and inside an explicit foreground spawn. Issue each alias. Assert the same runtime, pool and worker IDs, no `subagent_worker_result` or cancellation record and no `parent_cancelled` anywhere before release, and five successful results after. In-process test: a terminal-owned session refuses with `runtime_not_hosted` and leaves the workers, the store and the handoff state untouched. |
-| A13 | The parent is notified once, after the last worker, and the operator can see it. | Release four of five Explorers and assert the parent stays parked and no notice is pending. Release the fifth and assert one parent request carrying the pool notice, one acknowledgement and no extra provider request. Assert the notice is in the transcript page a reattached terminal replays, and that the agents hub transcript of the detached session lists the pool, each worker result, and `parent notified`, with no operator row for the notice. |
+| A13 | Every subagent notifies the parent when it finishes, and the operator can see it. | Release five Explorers one at a time with the terminal gone. After each release assert one parent request whose last message is that worker's notice (label, `k/5`, and `the pool is complete` only on the fifth), no worker text in it, one acknowledgement, and no extra provider request. After the first notice assert that `collect_subagent_results` on the still-running pool returns that worker's result and not the others'. Assert every notice is in the transcript page a reattached terminal replays, and that the agents hub transcript lists the pool, each worker result and five `parent notified` rows, with no operator row for a notice. A foreground spawn sends no notices. A worker retry notifies again for its new attempt only, and a pool that ends without running a worker notifies for that worker. |
 
 The rollout gate requires the applicable unit, integration, and E2E matrix,
 including the existing SUBAGENT-16 through SUBAGENT-18 and background recovery
@@ -371,7 +380,7 @@ and observe the owner and provider trace from outside its process.
 | A10 | [Capacity and transport failure](../../tests/e2e/test_live_subagent_handoff.py), [legacy phase refusal and terminal-bound operations](../../tests/integration/test_workflow_phase_subagents.py) |
 | A11 | [Shell return with provider gates held](../../tests/e2e/test_live_subagent_handoff.py), [bounded authenticated control and native process identity](../../tests/unit/test_hosted_transport.py) |
 | A12 | [Five Explorers survive every alias, parent state and foreground spawn](../../tests/e2e/test_live_subagent_handoff.py), [terminal-owned refusal and hosted detach, in process](../../tests/integration/test_direct_session_handoff.py) |
-| A13 | [Notified once after the last worker, with the terminal gone](../../tests/e2e/test_live_subagent_handoff.py), [staggered release and transcript replay](../../tests/integration/test_direct_session_handoff.py), [hub transcript rows](../../tests/unit/test_agents_hub_subagent_transcript.py) |
+| A13 | [A notice per Explorer with the terminal gone, and a partial collect](../../tests/e2e/test_live_subagent_handoff.py), [one wake per worker and transcript replay](../../tests/integration/test_direct_session_handoff.py), [two workers, two wakes in a phase](../../tests/integration/test_workflow_phase_subagents.py), [per-attempt delivery](../../tests/unit/test_subagent_resume.py), [hub transcript rows](../../tests/unit/test_agents_hub_subagent_transcript.py) |
 
 ## Implementation sequence
 
