@@ -1,7 +1,7 @@
 ---
 title: "COMM-03: Deliver parent and peer mail to a worker at a tool boundary"
-status: Proposed
-version: 1.0.0
+status: Implemented
+version: 1.1.0
 date: 2026-11-27
 priority: P1
 related_prds:
@@ -100,11 +100,64 @@ provider that holds a tool call open on a flag file, sends the message meanwhile
 and asserts the next request's content and the acknowledgement order; the existing
 `poll_agent_messages` tests keep passing unchanged.
 
+## What shipped (1.1.0)
+
+| Piece | Where |
+|---|---|
+| `AgentMessageBroker.peek`: a non-destructive read of a member's pending mail | `subagents/communication.py` |
+| `MailBoundaryRunner`: a worker's runner that adds mail between tool calls; `mail_block`, the one framing of worker mail | `subagents/mail.py` |
+| `commit_tool_results`: the tool-batch commit the main turn used inline, now shared | `runners/tool_boundary.py`, `runners/agent_turn.py` |
+| Worker wiring: the per-attempt `injected` set, the claim, acknowledgement of boundary mail | `subagents/pool.py` |
+| The `message_delivered` lifecycle kind and transcript line | `subagents/events.py`, `subagents/transcripts.py`, `docs/guides/subagents.md` |
+| **What the operator reads.** A delivered message is recorded with its sender and the start of its text, for mail read at the start of a run and for mail added between tool calls, and the worker transcript view shows `mail from <sender>: <how it begins>`, then `mail acknowledged · <id>`. Before, a delivery line would have been a bare message id | `subagents/pool.py`, `subagents/mail.py` (`mail_excerpt`), `tui/workspace/overlays/subagents.py` |
+
+Decisions where the shipped code differs from the proposal above:
+
+1. **The mechanism is a runner, not a bound source.** The main turn does not poll
+   a bound `NoticeSource` in its loop. It subclasses lauren-ai's runner and
+   overrides `_execute_tools`: commit the batch's results, add the message,
+   return no results. A worker has no journal and no journaled memory, so the
+   source binding has nothing to attach to. `MailBoundaryRunner` is the same
+   override, and the commit it needs moved into one helper that the main turn now
+   calls too.
+2. **`peek`, not `poll`.** `poll` pops a message from the mailbox. Mail polled in
+   the middle of a run and then lost to a transport retry's memory rollback would
+   never be delivered. `peek` leaves the mail queued; the run's acknowledgement is
+   what retires it.
+3. **A retry delivers the mail again.** The worker keeps the ids it added in the
+   current provider attempt and resets them when an attempt starts, so after a
+   rollback the same unacknowledged mail is added again. Tested with a real
+   `TransientTransportError`.
+4. **Acknowledgement is at the end of the run**, not right after the request that
+   carried the mail. It is simpler, and it keeps the at-least-once guarantee: a
+   run that fails acknowledges nothing.
+5. **The start-of-run `poll` stays.** It carries the mail a worker has before its
+   first request, and it serves a worker that calls no tools. `peek` skips what
+   `poll` took, and a message the model fetched itself with `poll_agent_messages`
+   is likewise never added twice, so the proposal's "remove the duplicate path"
+   was not needed.
+6. **The framing is shared and was fixed.** The worker mail block was written with
+   a doubled backslash (`"\\n\\n## AGENT MESSAGES…"`), so the model read literal
+   backslash-n characters instead of line breaks. `mail_block` writes real line
+   breaks, in one place.
+7. **The per-request cap has no "count of the rest".** At most 16 messages (the
+   existing `poll` limit) are added at a boundary; the rest follow at the next.
+
+The limit that remains: a tool call is never interrupted. A worker inside a single
+ten-minute command still reads the message only when that command returns. The
+parent's way to end work sooner is `stop_subagents`.
+
+Tests: `tests/unit/test_worker_mail_boundary.py` and
+`tests/integration/test_worker_mail_boundary.py` (a real session, a scripted
+worker lane and a real tool). Mutations checked: no mail source, no
+already-added filter, no per-attempt reset and no acknowledgement of boundary
+mail each fail a test.
+
 ## Risks
 
 - A parent that sends many messages can crowd a worker's context. The existing
-  `max_mailbox_messages` and `max_message_bytes` limits apply, and a per-request
-  cap on delivered messages is added with a count of the rest.
+  `max_mailbox_messages` and `max_message_bytes` limits apply, and at most 16
+  messages are added at a boundary.
 - Mail delivered between tool calls can change what the worker does mid-plan.
   That is the point, and why it stays untrusted context and never a system
   instruction or permission change.

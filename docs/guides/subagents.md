@@ -621,6 +621,27 @@ provider turn successfully. A worker's outstanding message count is captured
 when it finishes; a failed or cancelled turn does not acknowledge mail it did
 not successfully consume.
 
+### When a worker reads its mail
+
+Mail reaches a worker at three moments: at the start of each provider run;
+between two of its tool calls, after the tool results are committed and before
+the model's next request; and whenever its model calls `poll_agent_messages`.
+So a parent's `send_subagent_message` no longer waits for the worker's next
+provider run. It reaches a worker that is partway through a long plan as soon as
+that worker finishes its current tool call.
+
+- **A tool call is never interrupted to deliver mail.** A worker inside a ten
+  minute command reads the message when the command returns. To end work sooner,
+  use `stop_subagents`.
+- Mail delivered between tool calls is framed as untrusted context, like all
+  worker mail, and shows in the worker's transcript as `message_delivered`; it
+  is acknowledged (`message_acknowledged`) once the run that carried it
+  succeeds.
+- A transport retry rolls the worker's memory back to the start of the attempt;
+  mail delivered during the failed attempt is delivered again in the retry.
+- A message the model fetched itself with `poll_agent_messages` is not delivered
+  a second time.
+
 ## Concurrency, timeout, and failure semantics
 
 `max_concurrent` controls an asyncio semaphore and defaults to the configured
@@ -1089,6 +1110,7 @@ state the table does not name:
 | `approval_requested` | — | — | `approval_requested` | waiting |
 | `approval_resolved` | — | — | `approval_resolved` | running |
 | `stop_requested` | — | `subagent_worker_stop_requested` | `stop_requested` | — |
+| `message_delivered` | — | — | `message_delivered` | — |
 | `message_acknowledged` | — | — | `message_acknowledged` | — |
 | `worker_finished` | `SubagentCompleted` | `subagent_worker_done` | `finished` | done |
 | `worker_failed` | `SubagentFailed` | `subagent_worker_failed` | `finished` | failed, stopped |

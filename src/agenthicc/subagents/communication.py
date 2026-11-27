@@ -556,6 +556,46 @@ class AgentMessageBroker:
                 self._message_event.clear()
             return result
 
+    async def peek(
+        self,
+        recipient: str,
+        *,
+        limit: int = 16,
+        exclude: frozenset[str] = frozenset(),
+    ) -> list[dict[str, object]]:
+        """Show *recipient*'s pending mail in delivery order without taking it.
+
+        :meth:`poll` pops a message from the mailbox, so mail polled in the middle
+        of a run and then lost to a transport retry's memory rollback would never
+        come back.  ``peek`` changes nothing: the mail stays queued until it is
+        acknowledged or polled.  *exclude* names the messages the caller already
+        has, so a second look at the same mailbox adds only what is new.
+        """
+        if limit < 1:
+            raise CommunicationError("limit must be positive")
+        async with self._lock:
+            self._validate_recipient(recipient)
+            now = self._clock()
+            result: list[dict[str, object]] = []
+            # The same order ``poll`` uses: direct mail first, then broadcast.
+            queues = (
+                self._mailboxes[recipient],
+                self._mailboxes["pool"] if recipient != "pool" else (),
+            )
+            for queue in queues:
+                for message_id in queue:
+                    if message_id in exclude:
+                        continue
+                    record = self._messages.get(message_id)
+                    if record is None or recipient in record.acknowledged_by:
+                        continue
+                    if record.envelope.expires_at is not None and record.envelope.expires_at <= now:
+                        continue
+                    result.append(record.envelope.to_dict())
+                    if len(result) >= min(limit, 64):
+                        return result
+            return result
+
     async def acknowledge(self, recipient: str, message_id: str) -> dict[str, object]:
         """Acknowledge a message exactly once."""
         async with self._lock:

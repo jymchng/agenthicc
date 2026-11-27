@@ -6230,10 +6230,14 @@ Bounded, correlated parent/child/peer message metadata for one pool.
 ```python
 class AgentMessageBroker:
     def for_retry(self, worker_id: str) -> AgentMessageBroker: ...
+    async def peek(self, recipient: str, *, limit: int = 16, exclude: frozenset[str] = frozenset()) -> list[dict[str, object]]: ...
 ```
 
 Session-scoped per-pool broker for ordered mailboxes, clarification futures,
 membership validation, bounded payloads, lifecycle journaling, and replay.
+`peek` shows a member's pending mail in delivery order without taking it (unlike
+`poll`, which pops it), so a worker can be handed mail between its tool calls and
+be handed it again after a transport retry rolls its memory back (COMM-03).
 `for_retry` creates a fresh broker for one new attempt, preserving its identity
 and limits but not replaying messages from peers that have already stopped.
 `open_questions(sender=...)` lists the questions a worker asked whose answer it

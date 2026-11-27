@@ -58,6 +58,7 @@ _KINDS = frozenset(
         "approval_resolved",
         "finished",
         "stop_requested",
+        "message_delivered",
         "message_acknowledged",
         "attempt_started",
         "truncated",
