@@ -67,6 +67,7 @@ the key was known and did nothing for a command.
 | `foreground_commands` signal and `backgroundable()` | `tui/conversation_store.py` |
 | `work.background`, `BackgroundWorkCommand`, `BackgroundWorkCapability`, the `backgroundable` condition | `tui/actions.py`, `tui/runtime/commands.py`, `tui/input/capabilities.py`, `tui/keymap_phrases.py` |
 | `_background_work_command`, `_project_foreground_commands` | `runners/tui_session.py` |
+| A receipt is shown as `moved to the background · <terminal id> · running` plus what the command had printed, not as the receipt's JSON (which began with a lone `{`), in the tool row and the agents hub transcript. A plain `background: true` start reads `started · <id> · running` | `tui/tool_summary.py` |
 
 ## Acceptance criteria
 

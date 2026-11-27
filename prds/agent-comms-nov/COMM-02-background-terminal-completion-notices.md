@@ -118,6 +118,7 @@ sees the notice without a tool call.
 | `wait_terminal`, `inspect_terminal`, `stop_terminal` mark what they return as read | `background/terminals.py`, `tools/exec/__init__.py` |
 | `_hint_finished_terminals`: one wake per terminal | `runners/tui_session.py` |
 | A headless turn boundary delivers them too | `subagents/delivery.py` (`deliver_session_background_notices`) |
+| **What the operator reads.** The notice event carries the terminal's final `state`. The agents hub transcript shows it as a `terminals` row, `agent notified · Terminal <how it ended> — <label> · <id>`, marked `✓` (exited), `✗` (failed, timed out, orphaned) or `●` (stopped, cancelled); the output tail stays in the model's notice. Before this, the hub's check was a `subagent_` prefix, so the notice would have read as the operator's own message (`you`) | `subagents/delivery.py`, `tui/workspace/agents_hub/detail.py`, `tui/workspace/agents_hub/render.py` |
 
 Decisions where the shipped code differs from the proposal above:
 

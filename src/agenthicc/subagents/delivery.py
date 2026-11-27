@@ -66,6 +66,9 @@ class PendingNotice:
     summary: str = ""
     recorded_at: float = 0.0
     on_persisted: Callable[[], None] | None = field(default=None, repr=False, compare=False)
+    #: A terminal notice's final state (``exited``, ``failed`` …), so a view can mark
+    #: the outcome without reading the sentence.  Empty for other notices.
+    state: str = ""
 
     @property
     def source(self) -> str:
@@ -343,6 +346,7 @@ def _terminal_results(
                 f"Terminal {outcome} — {record.label[:48]} · {record.terminal_id}",
                 record.finished_at or 0.0,
                 partial(manager.observe, record.terminal_id),
+                record.state.value,
             )
         )
         if len(notices) >= MAX_TERMINAL_NOTICES:
@@ -393,15 +397,14 @@ def deliver_notices(
     for notice in notices:
         memory.add_user_once(notice.text, message_id=notice.message_id)
         if conversation is not None:
-            conversation.append_event(
-                "user_message",
-                {
-                    "text": notice.text,
-                    "source": notice.source,
-                    "summary": notice.summary,
-                },
-                event_id=notice.message_id,
-            )
+            payload: dict[str, object] = {
+                "text": notice.text,
+                "source": notice.source,
+                "summary": notice.summary,
+            }
+            if notice.state:
+                payload["state"] = notice.state
+            conversation.append_event("user_message", payload, event_id=notice.message_id)
         if notice.on_persisted is not None:
             notice.on_persisted()
     if notices and conversation is not None:

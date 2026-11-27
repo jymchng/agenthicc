@@ -19,6 +19,7 @@ from agenthicc.background.vocabulary import report_sentence
 
 __all__ = [
     "SUBAGENT_ROLE",
+    "TERMINAL_ROLE",
     "TRANSCRIPT_EVENTS",
     "ChangeSummary",
     "DetailData",
@@ -145,6 +146,8 @@ _SUBAGENT_EVENTS = frozenset(
     }
 )
 SUBAGENT_ROLE = "subagents"
+#: The role of a background terminal's notice; it fits the transcript's role column.
+TERMINAL_ROLE = "terminals"
 
 
 def _count(payload: dict[str, object], key: str) -> int:
@@ -163,6 +166,24 @@ def _subagent_notice_line(source: str, payload: dict[str, object]) -> Transcript
         return None
     glyph = {"subagent_worker": "✓", "subagent_question": "◆"}.get(source, "●")
     return TranscriptLine(SUBAGENT_ROLE, f"parent notified · {text}", glyph)
+
+
+#: How a background terminal ended, as the status glyph of its notice.
+_TERMINAL_GLYPHS = {"exited": "✓", "failed": "✗", "timed_out": "✗", "orphaned": "✗"}
+
+
+def _terminal_notice_line(payload: dict[str, object]) -> TranscriptLine | None:
+    """The notice the agent received that a background terminal ended (COMM-02).
+
+    The summary says which terminal and how it ended; the text, with the process's
+    output tail, is the model-facing message and is not repeated here. The line
+    is not something the operator typed, so it is not a ``you`` row.
+    """
+    text = _message_text(_payload_text(payload, "summary") or _payload_text(payload, "text"))
+    if not text:
+        return None
+    glyph = _TERMINAL_GLYPHS.get(_payload_text(payload, "state"), "●")
+    return TranscriptLine(TERMINAL_ROLE, f"agent notified · {text.partition(chr(10))[0]}", glyph)
 
 
 def _subagent_line(kind: str, payload: dict[str, object]) -> TranscriptLine | None:
@@ -222,8 +243,12 @@ def transcript_line(kind: str, payload: dict[str, object]) -> TranscriptLine | N
 
     payload = migrate_event_payload(kind, payload)
     if kind == "user_message":
+        from agenthicc.subagents.delivery import RUNTIME_NOTICE_SOURCES
+
         source = _payload_text(payload, "source")
-        if source.startswith("subagent_"):
+        if source == "terminal_notice":
+            return _terminal_notice_line(payload)
+        if source in RUNTIME_NOTICE_SOURCES:
             return _subagent_notice_line(source, payload)
         text = _message_text(_payload_text(payload, "text"))
         return TranscriptLine("you", text) if text else None
