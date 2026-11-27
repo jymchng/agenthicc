@@ -1,7 +1,7 @@
 ---
 title: "SUBAGENT-19: Background session handoff with live subagents"
 status: In verification
-version: 1.2.0
+version: 1.3.0
 date: 2026-11-24
 priority: P0
 related_prds:
@@ -133,6 +133,10 @@ workflow phase exit behavior. [Handoff boundary tests](../../tests/unit/test_bac
   `spawn_subagents` call is the exception: its parent is waiting for the
   aggregate and its workers send no notices. The notices and the parent's
   replies are part of the session transcript.
+- A session open in a terminal is a live agent in the hub before any detach:
+  listed as `attached` in Running, with a transcript that follows the agent
+  while it idles for its subagents or works beside them, and no second saved-session
+  row. A runtime that died leaves nothing behind.
 - The agents hub transcript shows the session's subagents: the pool and its
   workers starting, each worker's result or error, any stop request with its
   source and reason, the pool's outcome, and the notice the parent received.
@@ -348,6 +352,7 @@ execution continuity.
 | A11 | The CLI and TUI remain responsive at cutover. | Exercise a gated provider request and multiple live workers while the client confirms handoff. Assert causal completion with gates held, a single confirmation, accessible status, and no false cancelled or completed row. Measure warmed handoff time as time spent in local routing, persistence, and acknowledgement. Test on supported platforms using their real control transport and process identity adapters. |
 | A12 | A handoff never cancels a live worker in an ordinary session. | Subprocess PTY test: five gated Explorers in a session with no workflow, with the parent yielded, mid provider request, and inside an explicit foreground spawn. Issue each alias. Assert the same runtime, pool and worker IDs, no `subagent_worker_result` or cancellation record and no `parent_cancelled` anywhere before release, and five successful results after. In-process test: a terminal-owned session refuses with `runtime_not_hosted` and leaves the workers, the store and the handoff state untouched. |
 | A13 | Every subagent notifies the parent when it finishes, and the operator can see it. | Release five Explorers one at a time with the terminal gone. After each release assert one parent request whose last message is that worker's notice (label, `k/5`, and `the pool is complete` only on the fifth), no worker text in it, one acknowledgement, and no extra provider request. After the first notice assert that `collect_subagent_results` on the still-running pool returns that worker's result and not the others'. Assert every notice is in the transcript page a reattached terminal replays, and that the agents hub transcript lists the pool, each worker result and five `parent notified` rows, with no operator row for a notice. A foreground spawn sends no notices. A worker retry notifies again for its new attempt only, and a pool that ends without running a worker notifies for that worker. |
+| A14 | The hub shows an attached session as live, with a transcript that progresses. | Real hosted runtime in a PTY: with five Explorers live and the parent idle, and no detach, assert the store holds no record yet and the runtime is found by its marker with its session directory; assert the marker is gone after exit. Hub tests: the session is a Running row labelled `attached` whose saved row is hidden, its transcript gains each worker result and notice as the journal grows, Enter refuses with a notice, stop and input are not offered, a reattached record is listed as running, and a session that also has a background record is listed once. A forged, foreign, damaged or dead marker is ignored and removed. |
 
 The rollout gate requires the applicable unit, integration, and E2E matrix,
 including the existing SUBAGENT-16 through SUBAGENT-18 and background recovery
@@ -381,6 +386,7 @@ and observe the owner and provider trace from outside its process.
 | A11 | [Shell return with provider gates held](../../tests/e2e/test_live_subagent_handoff.py), [bounded authenticated control and native process identity](../../tests/unit/test_hosted_transport.py) |
 | A12 | [Five Explorers survive every alias, parent state and foreground spawn](../../tests/e2e/test_live_subagent_handoff.py), [terminal-owned refusal and hosted detach, in process](../../tests/integration/test_direct_session_handoff.py) |
 | A13 | [A notice per Explorer with the terminal gone, and a partial collect](../../tests/e2e/test_live_subagent_handoff.py), [one wake per worker and transcript replay](../../tests/integration/test_direct_session_handoff.py), [two workers, two wakes in a phase](../../tests/integration/test_workflow_phase_subagents.py), [per-attempt delivery](../../tests/unit/test_subagent_resume.py), [hub transcript rows](../../tests/unit/test_agents_hub_subagent_transcript.py) |
+| A14 | [Marker lifecycle in a real runtime](../../tests/e2e/test_live_subagent_handoff.py), [registry and loader](../../tests/unit/test_interactive_runtime_markers.py), [hub rows, live transcript and attach guard](../../tests/unit/test_agents_hub_interactive.py) |
 
 ## Implementation sequence
 

@@ -19,7 +19,7 @@ from agenthicc.background import BackgroundStore, BackgroundSupervisor
 from agenthicc.background.inbox import BackgroundInteractionInbox, InboxConflict
 from agenthicc.background.input_inbox import BackgroundInputInbox
 from agenthicc.background.model import SessionStatus
-from agenthicc.runners.session_lease import SessionOwnerStore
+from agenthicc.runners.session_lease import SessionOwnerStore, discover_interactive_runtimes
 from agenthicc.tui.workspace.agents_hub.detail import SUBAGENT_ROLE, read_transcript
 from tests.cli_process import CLI_PROCESS_TIMEOUT_S, cli_test_timeout
 from tests.e2e.self_extension.harness import ModelRequest, reply, tool_call
@@ -687,6 +687,12 @@ def test_direct_session_explorers_keep_running_through_background_handoff(
         assert "phase_owner" not in started and len(started["tasks"]) == 5
         before = [row for row in requests() if row["lane"] != "parent"]
         assert sum(row["name"] == "action" for row in before) == 5
+        # Attached and never detached, the session has no background record. The
+        # hub must still list it as a live agent rather than as a saved session.
+        assert store.list() == []
+        (attached,) = discover_interactive_runtimes(sessions)
+        assert attached.session_id == session_id and attached.pid == lease_pid
+        assert attached.session_dir == journal.parent
 
         terminal.send(f"{alias}\r")
         terminal.wait_for(lambda text: "running in the background" in text, "handoff confirmation")
@@ -763,6 +769,8 @@ def test_direct_session_explorers_keep_running_through_background_handoff(
         assert sum(row["kind"] == "subagent_pool_started" for row in rows) == 1
         assert "parent_cancelled" not in journal.read_text(encoding="utf-8")
         assert {row["pid"] for row in requests()} == {lease_pid}
+        # The runtime has exited, so the hub no longer lists it as running.
+        assert discover_interactive_runtimes(sessions) == []
         # ... and shows each Explorer finishing and the notice the parent received.
         hub = read_transcript(journal.parent / "conversation.jsonl", tail_bytes=2_000_000)
         shown = [(line.status, line.text) for line in hub if line.role == SUBAGENT_ROLE]

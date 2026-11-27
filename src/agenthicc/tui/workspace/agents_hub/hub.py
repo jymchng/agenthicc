@@ -82,7 +82,7 @@ from agenthicc.tui.workspace.agents_hub.model import (
     spaced,
 )
 from agenthicc.tui.workspace.agents_hub.prefs import HubPrefs
-from agenthicc.tui.workspace.agents_hub.sources import HubSources
+from agenthicc.tui.workspace.agents_hub.sources import INTERACTIVE_SOURCE, HubSources
 from agenthicc.tui.workspace.agents_hub.wrapping import hanging
 from agenthicc.worktrees.environment import EnvironmentCommand, EnvironmentRunReceipt
 
@@ -325,6 +325,9 @@ class AgentsHub:
         self._history_want = HISTORY_CHUNK
         self._history_task: asyncio.Task[None] | None = None
         self._saved: list[SavedSession] = []
+        #: Sessions open in a terminal with no background record yet; listed as
+        #: agents, so their saved row is hidden.
+        self._interactive_ids: frozenset[str] = frozenset()
         self._saved_loaded = False
         self._library: list[LibraryEntry] = []
         self._library_loaded = False
@@ -843,6 +846,12 @@ class AgentsHub:
             running: dict[str, BackgroundSession] = {}
             for session in (*active, *pinned, *recent):
                 running.setdefault(session.session_id, session)
+            interactive_ids: frozenset[str] = frozenset()
+            if run_id is None:
+                interactive = await self._load_interactive(running)
+                for session in interactive:
+                    running.setdefault(session.session_id, session)
+                interactive_ids = frozenset(session.session_id for session in interactive)
             # AGI-02: an expired question can still be answered late while
             # its session runs on the same attempt.
             expired = await service.inbox_list_async(
@@ -881,6 +890,7 @@ class AgentsHub:
             if generation != self._load_generation:
                 return
             self._running = list(running.values())
+            self._interactive_ids = interactive_ids
             if run_id is not None:
                 items = tuple(item for item in items if item.session_id in running)
             self._inbox_items = items
@@ -923,6 +933,32 @@ class AgentsHub:
             if self._load_pending:
                 self._load_pending = False
                 self._request_load("coalesced")
+
+    async def _load_interactive(
+        self, running: dict[str, BackgroundSession]
+    ) -> list[BackgroundSession]:
+        """Hosted interactive sessions running now that have no background record.
+
+        A session that is detached or reattached already has one, and the record
+        is the authority, so it is never listed twice.
+        """
+        loaded = await self._service.run_blocking(self._sources.interactive)
+        found = (
+            [item for item in loaded if isinstance(item, BackgroundSession)]
+            if isinstance(loaded, list)
+            else []
+        )
+        if not found:
+            return []
+        known = await self._service.run_blocking(
+            self.store.known_ids, tuple(item.session_id for item in found)
+        )
+        recorded = known if isinstance(known, frozenset) else frozenset()
+        return [
+            item
+            for item in found
+            if item.session_id not in recorded and item.session_id not in running
+        ]
 
     async def _load_saved(self) -> None:
         """Saved foreground sessions, without those that are background agents."""
@@ -1016,7 +1052,11 @@ class AgentsHub:
         While more agents remain to be read, a saved session older than the
         last loaded agent is held back so the merged order stays correct.
         """
-        records = [record for record in self._saved if self._search.matches_saved(record)]
+        records = [
+            record
+            for record in self._saved
+            if record.session_id not in self._interactive_ids and self._search.matches_saved(record)
+        ]
         if self._search.has_tokens:
             return []
         if len(self._history) < self._history_total and self._history:
@@ -2836,6 +2876,12 @@ class AgentsHub:
         if session_id is None:
             return None
         session = self._sessions.get(session_id)
+        if session is not None and session.source == INTERACTIVE_SOURCE:
+            # Its terminal holds the session. Detach it there (/detach) and it
+            # becomes a background agent that can be attached from here.
+            self._notice = "Open in another terminal: detach it there with /detach to attach here."
+            self._mark_dirty("notice_changed")
+            return None
         if self.in_session:
             title = session.title if session is not None else ""
             return self._hand_off(HubResult("attach", session_id), title)

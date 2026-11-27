@@ -334,7 +334,11 @@ async def _serve(bootstrap: Path) -> None:
     from agenthicc.background.store import BackgroundStore
     from agenthicc.background.supervisor import BackgroundSupervisor
     from agenthicc.runners.hosted_view import HostedView
-    from agenthicc.runners.session_lease import SessionOpenCoordinator
+    from agenthicc.runners.session_lease import (
+        SessionOpenCoordinator,
+        register_interactive_runtime,
+        unregister_interactive_runtime,
+    )
     from agenthicc.runners.tui_session import _run_tui_session_impl
     from agenthicc.tui.runtime.session_log import create_session_id
 
@@ -394,6 +398,8 @@ async def _serve(bootstrap: Path) -> None:
             raise LocalControllerUnavailable(
                 "The local controller endpoint is unavailable"
             ) from exc
+        # The agents hub lists this runtime from now on, not only after a detach.
+        await asyncio.to_thread(register_interactive_runtime, lease, cwd=Path.cwd())
         switch = await _run_tui_session_impl(
             resume_id=resume_id,
             cli_overrides=overrides,
@@ -410,6 +416,7 @@ async def _serve(bootstrap: Path) -> None:
         await view.finish(switch)
     finally:
         sys.stdout = original_stdout
+        await asyncio.to_thread(unregister_interactive_runtime, lease.session_id)
         if not lease.released:
             endpoint.unlink(missing_ok=True)
             lease.release()

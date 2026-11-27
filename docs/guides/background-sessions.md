@@ -28,6 +28,18 @@ continue in the same runtime. The background supervisor reserves capacity and
 records the controller generation before the terminal exits. If capacity is
 full, the session stays attached and its work continues.
 
+A session open in a terminal is a live agent in the hub from its first turn, not
+only after a detach. It is listed in the Running tab as `attached`, its
+transcript follows the agent as it works, idles for its subagents, or is woken by
+their notices, and its saved-session row is hidden so there is no second,
+finished-looking copy of it. The hub finds it through a small marker the runtime
+keeps in `~/.agenthicc/interactive` while it runs. The marker is only a hint:
+each entry is checked against the session's lease, and a runtime that died
+without removing it is dropped and the marker deleted. Enter on such a row says
+that another terminal holds the session (detach it there with `/detach`), and
+stop, input and resume are not offered. Once the session is detached, its
+background record takes over and the row shows `running`.
+
 Detaching never cancels a subagent. This holds for a session with no workflow:
 five Explorers started by `spawn_subagents` are still running, with the same
 worker IDs and attempt numbers, after `Successfully backgrounded`, and none
@@ -429,7 +441,9 @@ cost from 120) and a shown column is never narrower than its minimum, so
 statuses stay readable at any width. The report line is the first sentence of
 the agent's latest message, redacted, which the worker records as it works; a
 completed agent keeps it as its summary, and a failed one shows its error.
-One vocabulary is used by the hub, `agenthicc agents list` and these docs:
+One vocabulary is used by the hub, `agenthicc agents list` and these docs.
+`attached` is a hosted session whose terminal is open: it is working, or idle
+while its subagents run, and the terminal holds its controller.
 
 | Status | Glyph | Label | Group |
 |---|---|---|---|
@@ -437,6 +451,7 @@ One vocabulary is used by the hub, `agenthicc agents list` and these docs:
 | `waiting_input` | `◆` | needs input | Needs you |
 | `orphaned` | `⚠` | worker lost | Needs you |
 | `running` | `●` | running | Running |
+| `attached` | `●` | attached | Running |
 | `starting` | `◐` | starting | Running |
 | `retrying` | `↻` | retrying | Running |
 | `cancelling` | `⊘` | stopping | Running |
