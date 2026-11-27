@@ -83,14 +83,23 @@ async def test_run_proc_reports_spawn_failures_and_redacts_output(tmp_path: Path
 
 
 async def test_run_proc_cancellation_performs_cleanup(tmp_path: Path) -> None:
+    # Cancel only once the child has proved it is running.  A fixed sleep can end
+    # before the thread-pool directory check at the top of ``_run_proc`` returns on
+    # a busy host, which cancels before any process exists and raises instead.
+    started = tmp_path / "started"
+    script = "import pathlib, sys, time; pathlib.Path(sys.argv[1]).touch(); time.sleep(10)"
     task = asyncio.create_task(
         _run_proc(
-            [sys.executable, "-c", "import time; time.sleep(10)"],
+            [sys.executable, "-c", script, str(started)],
             cwd=str(tmp_path),
             timeout=0.0,
         )
     )
-    await asyncio.sleep(0.05)
+    for _ in range(1500):
+        if started.exists():
+            break
+        await asyncio.sleep(0.01)
+    assert started.exists(), "the command never started"
     task.cancel()
     result = await task
     assert result["state"] == "cancelled"
