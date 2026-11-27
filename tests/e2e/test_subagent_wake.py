@@ -64,7 +64,8 @@ async def test_a2_a4_idle_wake_collects_in_a_full_recorded_tui_session(
         assert len(notices(request)) == 1
         assert (
             handle.pool_id in notices(request)[0]
-            and "1/1 succeeded, 0 failed" in notices(request)[0]
+            and "(1/1 workers of this pool have finished; the pool is complete)"
+            in notices(request)[0]
         )
         if sequence == 5:
             assert request.messages[-1]["content"] == notices(request)[0]
@@ -106,7 +107,7 @@ async def test_a2_a4_idle_wake_collects_in_a_full_recorded_tui_session(
         scroll.unmount()
     assert "".join(session._ctx.app_state.input.buf()) == "Unsubmitted text"
     rendered = session._ctx.console.export_text(clear=False)
-    assert rendered.count("↩ Subagents finished") == 1 and answered in rendered
+    assert rendered.count("↩ Subagent finished") == 1 and answered in rendered
     assert len(script.main_requests) == 6
     entries = SessionCassette.from_path(cassette).entries
     assert [name for entry in entries for name in entry.called_tool_names] == [
@@ -227,7 +228,7 @@ async def test_a6_workflow_footer_and_scroll_survive_a_parked_phase(
     finally:
         scroll.unmount()
     rendered = session._ctx.console.export_text(clear=False)
-    assert rendered.count("↩ Subagents finished") == 1
+    assert rendered.count("↩ Subagent finished") == 1
     assert "The phase finished." in rendered
     assert [
         name
