@@ -462,6 +462,7 @@ def test_background_session_delivers_each_finished_worker_notice_like_the_tui(tm
             journal=journal, memory=memory, tool_history_recovery=readiness
         ),
         app_state=SimpleNamespace(conversation=ConversationStore()),
+        terminal_manager=None,  # a session context always has the field; this one has no terminals
     )
     try:
         # History that is not provider-ready is left alone, as in the TUI.
