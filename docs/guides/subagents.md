@@ -589,8 +589,9 @@ available control-plane operations are:
 | `answer_subagent` | main → child | Resolve a correlated child question |
 | `send_subagent_message` | main → child | Send a bounded instruction at a safe turn boundary |
 | `poll_agent_messages` | child | Read ordered parent/peer mail |
-| `send_peer_message` | child → child | Coordinate within the same pool |
-| `ask_peer` / `answer_peer` | child ↔ child | Correlated peer clarification |
+| `send_peer_message` | child → child | Send to a worker of the same pool, or of a related pool by `<pool_id>/<worker_id>` |
+| `list_reachable_workers` | child | List the running workers it may message, with their addresses |
+| `ask_peer` / `answer_peer` | child ↔ child | Correlated clarification within the same pool |
 | `collect_subagent_results` | main → pool | Read a running pool's snapshot or a finished pool's results |
 | `list_subagent_pools` | main | List this conversation's pools with status and worker counts |
 | `stop_subagents` | main → pool | Stop one worker (abort) or a whole pool (drain) |
@@ -614,7 +615,8 @@ child ask_parent
 
 The parent provider is never invoked recursively while its tool call is on the
 stack. Messages are untrusted context and cannot switch modes, approve tools,
-change workspace scope, or route outside the current pool. Pending questions
+change workspace scope, or reach a pool that is not related to the sender's (see
+[Messaging across pools](#messaging-across-pools)). Pending questions
 have deadlines and explicit cancelled, expired, or orphaned outcomes. Parent and
 peer messages are acknowledged only after the receiving worker completes a
 provider turn successfully. A worker's outstanding message count is captured
@@ -641,6 +643,42 @@ that worker finishes its current tool call.
   mail delivered during the failed attempt is delivered again in the retry.
 - A message the model fetched itself with `poll_agent_messages` is not delivered
   a second time.
+
+### Messaging across pools
+
+A worker can write to a worker of another pool, so two pools running side by side,
+or a worker and the pool it started, no longer have to coordinate through the
+parent. A worker is addressed `<pool_id>/<worker_id>`; a bare worker id still means
+"in my pool". `list_reachable_workers` lists the running workers a worker may
+write to, nearest first, each with the `address` to use and its `relation`:
+
+| Relation | The recipient's pool is |
+|---|---|
+| `same_pool` | the sender's own |
+| `sibling_pool` | started by the same worker, or another top-level pool |
+| `descendant_pool` | started by a worker of the sender's pool, directly or not |
+| `ancestor_pool` | one that started the sender's pool, directly or not |
+
+Pools of another conversation or another workflow phase, and pools in a different
+tree, are never reachable. A refused message says which rule refused it:
+`unknown_pool`, `unrelated_pool`, `recipient_finished`, `unknown_worker`,
+`rate_limited` (at most 32 messages from one worker to another), or the
+recipient's own `mailbox is full`.
+
+- The message is delivered into the **recipient's** pool, which applies its own
+  limits, and it reaches the recipient between its tool calls like any other mail.
+  The recipient's transcript shows `mail from <pool_id>/<worker_id>: …`.
+- **Ask across pools with a message.** Send with `requires_response=true`; the
+  recipient replies with `send_peer_message(..., reply_to=<message_id>)`, and the
+  reply reaches the sender's mail the same way. `ask_peer` stays within one pool:
+  its question waits in the recipient's broker, which a worker in another pool
+  does not watch.
+- **Messages never carry authority.** They are untrusted context. Controlling a
+  pool (`collect_subagent_results`, `stop_subagents`, `retry_subagent`) is still
+  limited to the agent that started it.
+- A worker that started a pool is the `main` of that pool, and reads its updates
+  with `collect_subagent_results`; a worker of an ancestor pool can address it
+  directly by `<pool_id>/<worker_id>`.
 
 ## Concurrency, timeout, and failure semantics
 

@@ -780,7 +780,7 @@ pool. Workers inherit an immutable snapshot of the parent turn's
 effective mode, tool ceiling, capability gate, approval service, workspace
 policy, provider options, and usage accounting; each still has isolated
 short-term memory. Workers can exchange bounded messages with the main agent
-and same-pool peers, including clarification requests that resume through
+and with peers of the same or a related pool, including clarification requests that resume through
 `answer_subagent` and `collect_subagent_results`. Role prompts and completion
 contracts guide workers through tasks such as research, implementation, and
 verification.

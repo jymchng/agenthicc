@@ -1035,9 +1035,11 @@ while Plan remains hard-blocked for side effects.
 
 `AgentMessageBroker` provides the only cross-worker communication path. It is
 created per pool and session, validates sender/recipient membership, bounds
-payloads and mailbox depth, and journals lifecycle transitions. Workers can
-send bounded findings, ask the main agent or a same-pool peer for clarification,
-and poll parent instructions. The parent can answer a pending question,
+payloads and mailbox depth, and journals lifecycle transitions. A worker's message
+to a worker of a related pool is delivered into that pool's broker by the pool
+directory. Workers can send bounded findings, ask the main agent or a same-pool
+peer for clarification, message a peer of a related pool, and poll parent
+instructions. The parent can answer a pending question,
 deliver an instruction, and collect a pool that returned
 `status="awaiting_clarification"`. The parent provider is never recursively
 re-entered while a tool call is active: the answer and collection are later,
