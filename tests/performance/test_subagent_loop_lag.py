@@ -244,11 +244,16 @@ async def test_a16_eight_background_workers_and_a_wake_keep_the_tui_responsive(
         if sequence == 2:
             assert request.contains('"status": "running"')
             return reply("Delegated.")
-        assert sequence == 3
-        finished = [notice for notice in notices(request) if "8/8 succeeded" in notice]
-        assert len(finished) == 1
-        woke.set()
-        return reply("All eight workers completed.")
+        # Every worker that finishes notifies the parent. Workers that finish
+        # together share a wake, so eight of them may take anywhere from one to
+        # eight wakes; the parent has heard from all of them on the last one.
+        assert sequence >= 3
+        finished = notices(request)
+        assert 1 <= len(finished) <= 8
+        if len(finished) == 8:
+            assert sum("the pool is complete" in notice for notice in finished) == 1
+            woke.set()
+        return reply(f"{len(finished)} of eight workers have reported.")
 
     # Keep durable syscalls and the real projections in the benchmark. Use
     # tmpfs when available so unrelated disk writeback cannot mask loop stalls.
