@@ -102,7 +102,11 @@ class _TerminalManager:
 
     def __init__(self) -> None:
         self.started: dict[str, object] = {}
+        self.observed: list[str] = []
         self.record = SimpleNamespace(session_id="session-1", result=lambda: {"ok": True})
+
+    def observe(self, terminal_id: str) -> None:
+        self.observed.append(terminal_id)
 
     async def start(self, **kwargs: object) -> dict[str, object]:
         self.started = kwargs
@@ -181,6 +185,8 @@ async def test_execution_tools_reject_bad_inputs_and_delegate_terminal_lifecycle
             {"terminal_id": "term-1", "force": True}, {"terminal_manager": manager}
         )
     )["stop_requested"] is True
+    # Handing the agent a terminal's result marks it read, so it is not announced again.
+    assert manager.observed == ["term-1", "term-1"]  # inspect, then stop
 
 
 async def test_python_and_test_tools_validate_timeout_and_arguments(tmp_path: Path) -> None:
