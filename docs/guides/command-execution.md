@@ -101,9 +101,31 @@ notice says why; press Ctrl+B again after a terminal ends.
 
 Only `run_bash` and `run_command` can be moved. `run_tests` and the
 `run_python` tools finish their own result handling after the process ends, so
-they always wait. The agent is not told when a backgrounded command ends; it
-learns that by calling `inspect_terminal` or `wait_terminal`. Inside tmux the
-default prefix is also Ctrl+B, so press it twice to reach agenthicc.
+they always wait. Inside tmux the default prefix is also Ctrl+B, so press it
+twice to reach agenthicc.
+
+### Being told when a background terminal ends
+
+A terminal that ends, whether it was started with `background: true` or moved
+with Ctrl+B, is announced to the agent once, as a runtime notice. It names the
+terminal, how it ended (`exited successfully`, `failed with exit code N`, `was
+stopped when its time limit expired`, `was stopped`, `was cancelled`, or
+`was orphaned`), how long it ran, and the last part of its output. The output is
+labelled untrusted process data; call `inspect_terminal` for all of it.
+
+- The notice arrives at the next tool boundary of a running turn, or wakes an
+  idle session the way a finished subagent worker does, under the same
+  conditions (for example, a paused wake holds it back).
+- A terminal the agent already read, with `wait_terminal`, `inspect_terminal` or
+  `stop_terminal`, is not announced again, including one that ends while the
+  agent is blocked on it.
+- A start that was refused or could not spawn is not announced: the tool call
+  that asked for it was handed that outcome directly.
+- Terminals from an earlier run of the same session are history and are not
+  announced. A terminal that was still running when the previous process died is
+  announced once as `orphaned`, and its process may still be running.
+- At most 8 are announced at one boundary; the rest follow at the next.
+- Only the session's own turns see them, not a workflow phase's pool turns.
 
 ## Workflow phases
 

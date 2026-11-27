@@ -94,7 +94,8 @@ keymap and notice tests.
   post-processes the finished result (JUnit summary, interpreter metadata) and a
   receipt would flow into logic that expects a finished process. They need their
   own handling before they can be offered.
-- Completion is not pushed to the agent; it must poll. That is COMM-02.
+- Completion was not pushed to the agent when this shipped; it had to poll. COMM-02
+  adds the notice.
 - A session attached to a hosted runtime (SUBAGENT-19) runs its tool calls in
   the runtime process, and this change registers a command with *that*
   process's manager. Nothing carries the attached terminal's key press there, so

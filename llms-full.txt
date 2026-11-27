@@ -5395,7 +5395,11 @@ Own background terminal process groups for one agent session. Besides
 `start()`, it registers the commands tool calls wait on (`begin_foreground()`,
 `end_foreground()`, `foreground_commands()`), moves them on request
 (`request_background_foreground()`, `background_blocker()`) and takes over a
-running process with `adopt()`.
+running process with `adopt()`. `unannounced_finished()` lists the terminals
+that ended since the manager started and the agent has not read (a refused or
+unspawnable start excluded); `observe(terminal_id)` marks one as read, as
+`wait_terminal`, `inspect_terminal` and `stop_terminal` do. The session's notice
+source announces each one once (`terminal_notice`, COMM-02).
 
 ### TerminalRecord
 
