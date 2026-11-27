@@ -27,10 +27,11 @@ pytestmark = pytest.mark.unit
 
 POOL = "pool-0123456789abcdef"
 NOTICE = (
-    f"Background subagent pool {POOL} completed (5/5 succeeded, 0 failed). Its results are "
-    f'not included here: call collect_subagent_results(pool_id="{POOL}") to read them.'
+    f"Background subagent explorer #2 of pool {POOL} completed (2/5 workers of this pool have "
+    f'finished). Its result is not included here: call collect_subagent_results(pool_id="{POOL}") '
+    "to read the finished results."
 )
-SUMMARY = f"Subagents finished — pool {POOL[:8]} · 5/5 succeeded"
+SUMMARY = f"Subagent finished — explorer #2 · pool {POOL[:8]} · 2/5"
 
 
 def _record(kind: str, **payload: object) -> str:
@@ -105,7 +106,7 @@ def test_the_pool_result_summarises_the_outcome(
 
 def test_the_parent_notice_is_not_shown_as_the_operator() -> None:
     notice = transcript_line(
-        "user_message", {"text": NOTICE, "source": "subagent_completion", "summary": SUMMARY}
+        "user_message", {"text": NOTICE, "source": "subagent_worker", "summary": SUMMARY}
     )
     question = transcript_line(
         "user_message", {"text": "A worker is waiting.", "source": "subagent_question"}
@@ -130,7 +131,7 @@ def test_the_hub_reads_the_whole_subagent_story_in_order(tmp_path: Path) -> None
                 _record("subagent_worker_done", label="explorer #1", ok=True, done=1, total=2),
                 _record("subagent_worker_done", label="explorer #2", ok=True, done=2, total=2),
                 _record("subagent_pool_done", succeeded=2, total=2, failed=0),
-                _record("user_message", text=NOTICE, source="subagent_completion", summary=SUMMARY),
+                _record("user_message", text=NOTICE, source="subagent_worker", summary=SUMMARY),
                 _record("text", text="Both explorers reported."),
             ]
         )

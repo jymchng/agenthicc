@@ -5724,7 +5724,7 @@ class TUISession:
         )
         conv = self._ctx.app_state.conversation
         conv.subagent_background_running.set(running)
-        conv.subagent_finished_pending.set(sum(notice.kind == "completion" for notice in notices))
+        conv.subagent_finished_pending.set(sum(notice.kind == "worker" for notice in notices))
         handle = self._workflow_handle
         if (
             handle is not None
@@ -5846,7 +5846,7 @@ class TUISession:
         self._subagent_wake_active = True
         self._schedule_workflow_turn(
             notices[0].text,
-            "subagent-completion",
+            "subagent-worker",
             key=key,
             wake_ids=frozenset(notice.message_id for notice in notices),
         )

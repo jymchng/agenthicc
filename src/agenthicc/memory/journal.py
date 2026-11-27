@@ -303,9 +303,9 @@ RECORD_DURABILITY: Final[Mapping[str, Durability]] = {
     "subagent_pool_cancelled": "durable",
     "subagent_pool_finished": "durable",
     "subagent_pool_interrupted": "durable",
-    "subagent_pool_notification_delivered": "durable",
     "subagent_pool_result": "durable",
     "subagent_pool_started": "durable",
+    "subagent_worker_notification_delivered": "durable",
     "subagent_worker_result": "durable",
     "tool_exchange_aborted": "durable",
     "tool_exchange_committed": "durable",
@@ -1284,7 +1284,7 @@ class ConversationJournal:
         if lifecycle is None or lifecycle.get("status") not in {"running", "backgrounded"}:
             return
         total, succeeded, text = self._record_unfinished_subagent_workers(
-            lifecycle, "pool execution failed"
+            lifecycle, "pool execution failed", "failed"
         )
         self.subagent_pool_finished(
             pool_id=pool_id, total=total, succeeded=succeeded, failed=total - succeeded, text=text
@@ -1303,7 +1303,7 @@ class ConversationJournal:
         if lifecycle is None or lifecycle.get("status") not in {"running", "backgrounded"}:
             return
         total, succeeded, text = self._record_unfinished_subagent_workers(
-            lifecycle, f"cancelled: {reason}"
+            lifecycle, f"cancelled: {reason}", "cancelled"
         )
         self._write(
             {
@@ -1320,38 +1320,52 @@ class ConversationJournal:
             }
         )
 
-    def subagent_pool_notification_delivered(
+    @staticmethod
+    def subagent_worker_message_id(pool_id: str, task_id: str, attempt: int) -> str:
+        """The stable message ID of the notice for one worker attempt's outcome."""
+        return f"subagent-worker:{str(pool_id)[:128]}:{str(task_id)[:128]}:{max(1, int(attempt))}"
+
+    def subagent_worker_notification_delivered(
         self,
         *,
         pool_id: str,
+        task_id: str,
+        attempt: int,
         message_id: str,
     ) -> None:
-        """Record that a background result reached provider conversation memory."""
+        """Record that a worker's finish notice reached provider conversation memory."""
         self._write(
             {
                 "seq": self._seq,
-                "kind": "subagent_pool_notification_delivered",
+                "kind": "subagent_worker_notification_delivered",
                 "at": time.time(),
                 "schema_version": 1,
                 "pool_id": str(pool_id)[:128],
-                "message_id": str(message_id)[:160],
+                "task_id": str(task_id)[:128],
+                "attempt": max(1, int(attempt)),
+                "message_id": str(message_id)[:512],
             }
         )
 
-    def delivered_subagent_pool_notifications(self) -> frozenset[str]:
-        """Return pool IDs whose notification append has been acknowledged."""
+    def delivered_subagent_worker_notifications(self) -> frozenset[str]:
+        """Return the message IDs of worker notices whose append was acknowledged."""
         return frozenset(
-            str(record["pool_id"])
-            for record in self._subagent_kind("subagent_pool_notification_delivered")
-            if isinstance(record.get("pool_id"), str) and record.get("pool_id")
+            str(record["message_id"])
+            for record in self._subagent_kind("subagent_worker_notification_delivered")
+            if isinstance(record.get("message_id"), str) and record.get("message_id")
         )
 
     def _record_unfinished_subagent_workers(
         self,
         lifecycle: Mapping[str, object],
         reason: str,
+        worker_status: Literal["failed", "cancelled", "interrupted"],
     ) -> tuple[int, int, str]:
-        """Record missing task outcomes and return aggregate counts and text."""
+        """Record missing task outcomes and return aggregate counts and text.
+
+        Every task of a pool that ends has a durable result, so each worker's
+        finish is announced to the parent, whichever way the pool ended.
+        """
         pool_id = str(lifecycle.get("pool_id", ""))
         tasks_value = lifecycle.get("tasks", [])
         tasks = tasks_value if isinstance(tasks_value, list) else []
@@ -1382,7 +1396,7 @@ class ConversationJournal:
                 "task_id": task_id,
                 "agent_type": agent_type,
                 "label": label,
-                "status": "cancelled" if reason.startswith("cancelled:") else "interrupted",
+                "status": worker_status,
                 "ok": False,
                 "text": "",
                 "error": reason,
@@ -1479,7 +1493,7 @@ class ConversationJournal:
             if not isinstance(pool_id, str) or not pool_id:
                 continue
             total, succeeded, text = self._record_unfinished_subagent_workers(
-                lifecycle, "interrupted by process restart"
+                lifecycle, "interrupted by process restart", "interrupted"
             )
             self._write(
                 {
@@ -1507,16 +1521,60 @@ class ConversationJournal:
             if isinstance(pool_id, str) and owner == invocation
         )
 
-    def completed_background_subagent_pools(self) -> list[dict[str, object]]:
-        """Return backgrounded pools with a terminal outcome not yet delivered."""
-        delivered = self.delivered_subagent_pool_notifications()
-        return [
-            record
+    def undelivered_subagent_worker_results(self) -> list[dict[str, object]]:
+        """Worker outcomes of background or phase pools whose notice is not yet delivered.
+
+        Each row is the worker's durable result record plus the notice's
+        ``message_id``, the worker's position among the pool's finished workers
+        (``finished`` of ``total``), whether it completes the pool
+        (``pool_complete``) and the pool's ``phase_owner`` when it has one. A
+        worker attempt appears once, however many times its result was written.
+        """
+        delivered = self.delivered_subagent_worker_notifications()
+        pools = {
+            pool_id: record
             for record in self.fold_subagent_pool_lifecycle()
-            if record.get("pool_id") not in delivered
+            if isinstance(pool_id := record.get("pool_id"), str)
             and (record.get("backgrounded") is True or "phase_owner" in record)
-            and record.get("status") in {"completed", "interrupted", "cancelled"}
-        ]
+        }
+        first: dict[tuple[str, str, int], dict[str, object]] = {}
+        latest: dict[tuple[str, str, int], dict[str, object]] = {}
+        for record in self.fold_subagent_worker_results():
+            pool_id, task_id = record.get("pool_id"), record.get("task_id")
+            attempt = record.get("attempt", 1)
+            if (
+                not isinstance(pool_id, str)
+                or pool_id not in pools
+                or not isinstance(task_id, str)
+                or not isinstance(attempt, int)
+                or isinstance(attempt, bool)
+            ):
+                continue
+            key = (pool_id, task_id, attempt)
+            first.setdefault(key, record)
+            latest[key] = record
+        rows: list[dict[str, object]] = []
+        seen: dict[str, set[str]] = {}
+        for key in first:  # journal order: the order the workers finished in
+            pool_id, task_id, attempt = key
+            tasks = pools[pool_id].get("tasks")
+            total = len(tasks) if isinstance(tasks, list) else 0
+            finished_tasks = seen.setdefault(pool_id, set())
+            finished_tasks.add(task_id)
+            message_id = self.subagent_worker_message_id(pool_id, task_id, attempt)
+            if message_id in delivered:
+                continue
+            row: dict[str, object] = {
+                **latest[key],
+                "message_id": message_id,
+                "finished": len(finished_tasks),
+                "total": max(total, len(finished_tasks)),
+                "pool_complete": total > 0 and len(finished_tasks) >= total,
+            }
+            if "phase_owner" in pools[pool_id]:
+                row["phase_owner"] = pools[pool_id]["phase_owner"]
+            rows.append(row)
+        return rows
 
     def agent_message_event(
         self,

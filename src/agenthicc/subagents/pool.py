@@ -4109,6 +4109,16 @@ class SubagentPool:
             not_started=result.not_started,
             workflow=result.workflow_payload(),
         )
+        if self._communication is not None:
+            # The result is durable, so the parent can be told this worker finished.
+            self._communication.notify_parent()
+
+    def finished_aggregate(self) -> AggregatedResult | None:
+        """The workers that have finished so far, aggregated as the final result is."""
+        finished = [
+            self._results[item.task_id] for item in self._tasks if item.task_id in self._results
+        ]
+        return _aggregate(self.pool_id, finished, self._registry) if finished else None
 
     async def _persist_cancelled_workers(self) -> None:
         """Persist explicit cancellation outcomes for workers still in flight."""

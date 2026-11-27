@@ -42,7 +42,7 @@ def test_a13_control_b_requires_an_active_foreground_pool() -> None:
     assert "subagents_foreground" not in session.conditions()
 
 
-@pytest.mark.parametrize("source", ["subagent_completion", "subagent_question"])
+@pytest.mark.parametrize("source", ["subagent_worker", "subagent_question"])
 @pytest.mark.parametrize("verbose", [True, False], ids=["verbose-transcript", "live"])
 def test_a14_automated_notice_rendering_and_user_history(source: str, verbose: bool) -> None:
     app = AppState.create()

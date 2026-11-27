@@ -1,17 +1,19 @@
-"""A background handoff never cancels live Explorers in an ordinary session.
+"""A background handoff never cancels live Explorers, and each one notifies the parent.
 
 The reported failure: ``/bg`` printed ``Successfully backgrounded`` and every
 Explorer row then read ``parent_cancelled``. Cancelling the foreground turn
 makes ``SubagentPool.run`` abort its workers, and only workflow-phase pools
 were guarded. These cases pin the invariant for a direct (workflow-free)
-session: a hosted runtime hands over with the workers still running, and a
-terminal-owned runtime refuses before it cancels anything.
+session: a hosted runtime hands over with the workers still running, a
+terminal-owned runtime refuses before it cancels anything, and every Explorer
+that finishes wakes the parent with a notice of its own.
 """
 
 from __future__ import annotations
 
 import asyncio
 import re
+from functools import partial
 from pathlib import Path
 
 import pytest
@@ -19,6 +21,7 @@ from lauren_ai._transport import Completion
 
 from agenthicc.background.store import BackgroundStore
 from agenthicc.runners.tui_session import TUISession
+from agenthicc.subagents.communication import make_parent_communication_tools
 from agenthicc.subagents.delivery import JournalNoticeSource
 from agenthicc.tui.runtime.session_log import load_recent_transcript_page
 from tests.e2e.self_extension.harness import ModelRequest, reply
@@ -44,7 +47,6 @@ class _Explorers:
         self.gates = [asyncio.Event() for _ in range(EXPLORERS)]
         self.entered = 0
         self.parent_requests: list[ModelRequest] = []
-        self.wakes: list[int] = []
 
     def release(self, *indexes: int) -> None:
         for index in indexes:
@@ -55,14 +57,12 @@ class _Explorers:
         assert match is not None
         self.entered += 1
         await self.gates[int(match[1])].wait()
-        return reply("explorer evidence")
+        return reply(f"explorer evidence {match[1]}")
 
     async def main(self, request: ModelRequest, sequence: int) -> Completion:
         self.parent_requests.append(request)
         if sequence == 1:
             return spawn_call(EXPLORERS, kind="explorer")
-        if request.contains("Background subagent pool") and not self.wakes:
-            self.wakes.append(sequence)
         return reply("The explorers are reading in the background.")
 
 
@@ -114,21 +114,57 @@ async def _assert_all_finished_ok(source: JournalNoticeSource) -> None:
     assert "parent_cancelled" not in repr(results)
 
 
-async def _assert_parent_notified_once(
+def _has_requests(script: _Explorers, count: int) -> bool:
+    return len(script.parent_requests) == count
+
+
+async def _assert_partial_collect_reads_only_the_finished(
+    session: TUISession, source: JournalNoticeSource, pool: str, finished: int
+) -> None:
+    """A notice can be acted on at once: the finished Explorers' reports are readable."""
+    tools = make_parent_communication_tools(
+        source.registry, session._ctx.session_id, source.journal
+    )
+    collect = next(tool for tool in tools if tool.__name__ == "collect_subagent_results")
+    snapshot = await collect(pool)
+    assert snapshot["status"] == "running" and snapshot["pool_id"] == pool
+    report = snapshot["finished"]
+    assert isinstance(report, dict)
+    assert (report["count"], report["succeeded"], report["failed"]) == (finished, finished, 0)
+    text = str(report["results"])
+    for index in range(EXPLORERS):
+        assert (f"explorer evidence {index}" in text) == (index < finished)
+
+
+async def _finish_explorers_one_by_one(
     session: TUISession, script: _Explorers, source: JournalNoticeSource
 ) -> None:
-    """The parent is woken once, after the last worker, and the notice is in its transcript."""
-    await until(lambda: len(script.parent_requests) >= 3)
-    await asyncio.sleep(0.2)
-    task = session._agent_task
-    if task is not None:
-        async with asyncio.timeout(8):
-            await asyncio.gather(task, return_exceptions=True)
+    """Each Explorer that finishes wakes the parent with a notice of its own.
+
+    The notice names the worker and its progress and never carries what the
+    worker wrote: that is read with ``collect_subagent_results``.
+    """
     (pool,) = (handle.pool_id for handle in source.registry.handles())
-    assert len(script.parent_requests) == 3, "one wake for the pool, not one per Explorer"
-    assert script.wakes == [3]
-    assert script.parent_requests[2].contains(f"Background subagent pool {pool}")
-    assert not source.has_pending(), "the notice is acknowledged once it reaches the parent"
+    for finished in range(1, EXPLORERS + 1):
+        script.release(finished - 1)
+        expected = 2 + finished
+        await until(partial(_has_requests, script, expected))
+        task = session._agent_task
+        if task is not None:
+            async with asyncio.timeout(8):
+                await asyncio.gather(task, return_exceptions=True)
+        notice = str(script.parent_requests[1 + finished].messages[-1]["content"])
+        assert notice.startswith(f"Background subagent explorer #{finished} of pool {pool} ")
+        assert f"({finished}/{EXPLORERS} workers of this pool have finished" in notice
+        assert ("the pool is complete" in notice) == (finished == EXPLORERS)
+        assert "explorer evidence" not in repr(script.parent_requests[1 + finished].messages)
+        if finished < EXPLORERS:
+            await _assert_partial_collect_reads_only_the_finished(session, source, pool, finished)
+    await asyncio.sleep(0.2)
+    assert len(script.parent_requests) == 2 + EXPLORERS, "one wake per Explorer, no extra"
+    assert not source.has_pending(), "every notice is acknowledged once the parent has it"
+    assert len(source.journal.delivered_subagent_worker_notifications()) == EXPLORERS
+
     behaviour = session._ctx.cfg.behaviour
 
     def replayed() -> list[object]:
@@ -142,11 +178,11 @@ async def _assert_parent_notified_once(
         return [
             event
             for event in page.events
-            if event.kind == "user_message" and event.payload.get("source") == "subagent_completion"
+            if event.kind == "user_message" and event.payload.get("source") == "subagent_worker"
         ]
 
-    await until(lambda: len(replayed()) == 1)
-    assert len(replayed()) == 1, "a reattached terminal replays the notice the parent received"
+    await until(lambda: len(replayed()) == EXPLORERS)
+    assert len(replayed()) == EXPLORERS, "a reattached terminal replays every notice"
 
 
 async def test_terminal_owned_session_refuses_handoff_before_cancelling_explorers(
@@ -165,9 +201,8 @@ async def test_terminal_owned_session_refuses_handoff_before_cancelling_explorer
         assert BackgroundStore(tmp_path / "home" / ".agenthicc" / "background").list() == []
         assert session._background_handoff_state == "idle"
 
-        script.release(*range(EXPLORERS))
+        await _finish_explorers_one_by_one(session, script, source)
         await _assert_all_finished_ok(source)
-        await _assert_parent_notified_once(session, script, source)
 
 
 async def test_hosted_session_detaches_with_five_explorers_still_running(
@@ -185,13 +220,5 @@ async def test_hosted_session_detaches_with_five_explorers_still_running(
         assert handle.pool_id == pool
         assert session._agent_task is None or session._agent_task.done()
 
-        # Four of five finish: the parent stays parked, because the pool is not done.
-        for index in range(EXPLORERS - 1):
-            script.release(index)
-        await until(lambda: len(source.journal.fold_subagent_worker_results()) == EXPLORERS - 1)
-        await asyncio.sleep(0.2)
-        assert len(script.parent_requests) == 2 and not source.has_pending()
-
-        script.release(EXPLORERS - 1)
+        await _finish_explorers_one_by_one(session, script, source)
         await _assert_all_finished_ok(source)
-        await _assert_parent_notified_once(session, script, source)

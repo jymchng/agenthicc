@@ -161,7 +161,7 @@ def _subagent_notice_line(source: str, payload: dict[str, object]) -> Transcript
     text = _message_text(_payload_text(payload, "summary") or _payload_text(payload, "text"))
     if not text:
         return None
-    glyph = {"subagent_completion": "✓", "subagent_question": "◆"}.get(source, "●")
+    glyph = {"subagent_worker": "✓", "subagent_question": "◆"}.get(source, "●")
     return TranscriptLine(SUBAGENT_ROLE, f"parent notified · {text}", glyph)
 
 

@@ -125,7 +125,7 @@ async def test_a1_a2_a3_generate_releases_batch_then_collects_before_transition(
             continue_parent.set()
             return reply("Waiting for the workers.")
         if sequence == 3:
-            assert request.contains(f"Background subagent pool {pool_id(session)} completed")
+            assert request.contains(f"of pool {pool_id(session)} completed")
             assert not request.contains(WORKER_RESULT)
             collect = tool_call(
                 "collect_subagent_results", {"pool_id": pool_id(session)}, use_id="collect"
@@ -208,7 +208,7 @@ async def test_a5_a6_pause_defers_terminal_wake_and_resumes_same_phase(
             assert request.contains('"status": "running"'), request.messages
             return reply("Wait here.")
         if sequence == 3:
-            assert request.contains(f"Background subagent pool {pool_id(session)} completed")
+            assert request.contains(f"of pool {pool_id(session)} completed")
             return tool_call(
                 "collect_subagent_results", {"pool_id": pool_id(session)}, use_id="collected"
             )
@@ -266,7 +266,8 @@ async def test_a5_a6_pause_defers_terminal_wake_and_resumes_same_phase(
     assert handle.phase_invocation == invocation
     assert handle.lifecycle == "complete"
     assert len(script.main_requests) == 5
-    assert source_for(session).journal.delivered_subagent_pool_notifications() == {pool.pool_id}
+    (delivered,) = source_for(session).journal.delivered_subagent_worker_notifications()
+    assert delivered.startswith(f"subagent-worker:{pool.pool_id}:")
 
 
 async def test_a4_a7_operator_foreground_waits_in_shared_default_runner(
@@ -395,7 +396,7 @@ async def test_a1_a3_a4_a6_make_book_research_collects_then_validates_notes(
                 assert not release.is_set() and not request.contains(WORKER_RESULT)
                 return reply("Preserve the Research phase while workers finish.")
             if sequence == 5:
-                assert request.contains(f"Background subagent pool {pool_id(session)} completed")
+                assert request.contains(f"of pool {pool_id(session)} completed")
                 return tool_call("collect_subagent_results", {"pool_id": pool_id(session)})
             if sequence == 6:
                 assert request.contains(WORKER_RESULT)
@@ -502,10 +503,10 @@ async def test_a2_question_is_answered_and_same_phase_collects_even_if_hint_is_l
                     "answer": "use the supplied heading",
                 },
             )
-        if sequence == 5 and not request.contains(f"Background subagent pool {pool} completed"):
+        if sequence == 5 and not request.contains(f"of pool {pool} completed"):
             return reply("The heading was answered.")
         if not request.contains(WORKER_RESULT):
-            assert request.contains(f"Background subagent pool {pool} completed")
+            assert request.contains(f"of pool {pool} completed")
             return tool_call("collect_subagent_results", {"pool_id": pool}, use_id="terminal")
         if not request.contains("Implementation marked complete"):
             return tool_call("mark_execute_complete", {"summary": "done"})
@@ -572,7 +573,7 @@ async def test_a3_implicit_phase_edges_wait_for_all_pools(
             tried_limit.set()
             return reply("I yielded while both pools run.")
         if sequence == 5:
-            assert request.contains(f"Background subagent pool {first} completed")
+            assert request.contains(f"of pool {first} completed")
             live = tool_call("collect_subagent_results", {"pool_id": second}, use_id="live")
             terminal = tool_call("collect_subagent_results", {"pool_id": first}, use_id="first")
             return replace(live, tool_calls=[*live.tool_calls, *terminal.tool_calls])
@@ -587,7 +588,7 @@ async def test_a3_implicit_phase_edges_wait_for_all_pools(
             one_collected.set()
             return reply("I yielded while the second pool runs.")
         if sequence == 7:
-            assert request.contains(f"Background subagent pool {second} completed")
+            assert request.contains(f"of pool {second} completed")
             return tool_call("collect_subagent_results", {"pool_id": second}, use_id="second")
         if sequence == 8:
             assert request.contains("Second worker evidence.")
@@ -656,7 +657,7 @@ async def test_a2_busy_phase_delivers_committed_read_before_notice_and_input(
             return tool_call("read_file", {"path": "sibling.txt"}, use_id="sibling-active")
         if sequence == 3:
             ordered = repr(request.messages)
-            notice = f"Background subagent pool {pool_id(session)} completed"
+            notice = f"of pool {pool_id(session)} completed"
             assert ordered.index("Active phase sibling evidence") < ordered.index(notice)
             assert ordered.index(notice) < ordered.index("Use my queued update.")
             assert ordered.count("Use my queued update.") == 1 and WORKER_RESULT not in ordered
@@ -795,7 +796,7 @@ async def test_a3_a4_review_transition_and_reentry_preserve_invocation(
             rejected = True
             return reply("Review will wait.")
         if sequence == 5:
-            assert request.contains(f"Background subagent pool {review_pool} completed")
+            assert request.contains(f"of pool {review_pool} completed")
             return tool_call(
                 "collect_subagent_results", {"pool_id": review_pool}, use_id="review-collect"
             )
@@ -825,7 +826,7 @@ async def test_a3_a4_review_transition_and_reentry_preserve_invocation(
             return reply("Pause before the regenerated findings arrive.")
         if sequence == 11:
             assert handle.phase_invocation == generate_invocations[1]
-            assert request.contains(f"Background subagent pool {generate_pool} completed")
+            assert request.contains(f"of pool {generate_pool} completed")
             return tool_call(
                 "collect_subagent_results", {"pool_id": generate_pool}, use_id="redo-collect"
             )
@@ -928,7 +929,7 @@ import sys
 from pathlib import Path
 from agenthicc.memory.journal import ConversationJournal
 from agenthicc.memory.journaled import JournaledShortTermMemory
-from agenthicc.subagents.delivery import background_pool_notice
+from agenthicc.subagents.delivery import background_worker_notice
 from agenthicc.subagents.phase import PhaseOwner, PhasePools, bind_phase_pools
 from lauren_ai._tools import ToolResult
 from lauren_ai._transport import Completion, TokenUsage, ToolCall
@@ -942,18 +943,24 @@ journal.subagent_pool_started(
 )
 journal.subagent_pool_backgrounded(pool_id="restart-pool", tool_result={"status": "running"})
 if seam != "live":
+    journal.subagent_worker_result(
+        pool_id="restart-pool", fingerprint="fingerprint", task_id="task-0",
+        agent_type="explorer", label="explorer #1", ok=True, text="terminal evidence",
+        error="", duration_ms=1.0, tool_calls=[], changed_paths=[], status="completed",
+    )
     journal.subagent_pool_finished(
         pool_id="restart-pool", total=1, succeeded=1, failed=0, text="terminal evidence",
     )
 if seam in {"message", "ack", "before-commit", "collected"}:
-    record, = journal.completed_background_subagent_pools()
+    record, = journal.undelivered_subagent_worker_results()
     memory = JournaledShortTermMemory(journal)
     memory.add_user_once(
-        background_pool_notice(record), message_id="subagent-completion:restart-pool",
+        background_worker_notice(record), message_id="subagent-worker:restart-pool:task-0:1",
     )
 if seam in {"ack", "before-commit", "collected"}:
-    journal.subagent_pool_notification_delivered(
-        pool_id="restart-pool", message_id="subagent-completion:restart-pool",
+    journal.subagent_worker_notification_delivered(
+        pool_id="restart-pool", task_id="task-0", attempt=1,
+        message_id="subagent-worker:restart-pool:task-0:1",
     )
 if seam in {"before-commit", "collected"}:
     class CrashMemory(JournaledShortTermMemory):
@@ -1008,7 +1015,7 @@ os._exit(0)
                 handle.phase_invocation == identity.invocation
                 and handle.frame_id == identity.frame_id
             )
-            assert repr(request.messages).count("Background subagent pool restart-pool") == 1
+            assert repr(request.messages).count("of pool restart-pool") == 1
             if sequence == 1 and seam in {"before-commit", "collected"}:
                 assert request.contains("terminal evidence")
             if sequence == 1 and seam != "collected":
@@ -1039,7 +1046,9 @@ os._exit(0)
         assert len(script.main_requests) == (2 if seam == "collected" else 4)
         assert not script.worker_requests and not source.registry.handles()
         assert source.journal.collected_phase_pools(identity.invocation) == {"restart-pool"}
-        assert source.journal.delivered_subagent_pool_notifications() == {"restart-pool"}
+        assert source.journal.delivered_subagent_worker_notifications() == {
+            "subagent-worker:restart-pool:task-0:1"
+        }
 
 
 async def test_a3_a5_admitted_execution_failure_is_terminal_and_collectable(
@@ -1062,7 +1071,7 @@ async def test_a3_a5_admitted_execution_failure_is_terminal_and_collectable(
         if sequence == 2:
             (record,) = source_for(session).journal.fold_subagent_pool_lifecycle()
             assert record["status"] == "completed" and record["failed"] == 1
-            assert request.contains("0/1 succeeded, 1 failed")
+            assert request.contains(f"of pool {record['pool_id']} failed (1/1 workers")
             return tool_call("collect_subagent_results", {"pool_id": str(record["pool_id"])})
         if sequence == 3:
             assert request.contains("scripted settlement failure")
@@ -1189,7 +1198,7 @@ async def test_a3_a4_nested_frame_returns_only_after_its_pool_is_collected(
             child_yielded.set()
             return reply("Child is waiting.")
         if sequence == 3:
-            assert request.contains(f"Background subagent pool {pool_id(session)} completed")
+            assert request.contains(f"of pool {pool_id(session)} completed")
             return tool_call("collect_subagent_results", {"pool_id": pool_id(session)})
         if sequence == 4:
             assert request.contains(WORKER_RESULT)
@@ -1331,7 +1340,7 @@ async def test_a7_parallel_mutating_phase_workers_use_distinct_worktrees(
     _git(root, "commit", "-q", "-m", "initial")
     notes.write_text("Uncommitted parent notes.", encoding="utf-8")
     edited: set[str] = set()
-    release = asyncio.Event()
+    release = {"0": asyncio.Event(), "1": asyncio.Event()}
 
     async def worker(request: ModelRequest) -> Completion:
         description = str(request.messages[0]["content"])
@@ -1346,7 +1355,7 @@ async def test_a7_parallel_mutating_phase_workers_use_distinct_worktrees(
                 use_id=f"write-{index}",
             )
         edited.add(index)
-        await release.wait()
+        await release[index].wait()
         return reply(f"Chapter {index} saved.")
 
     async def main(request: ModelRequest, sequence: int) -> Completion:
@@ -1356,11 +1365,21 @@ async def test_a7_parallel_mutating_phase_workers_use_distinct_worktrees(
             assert request.contains('"status": "running"')
             return reply("Wait for the independent edits.")
         if sequence == 3:
-            return tool_call("collect_subagent_results", {"pool_id": pool_id(session)})
+            # The first worker finished: the parent hears about it at once, and
+            # the notice names the worker without carrying what it wrote.
+            assert request.contains(f"of pool {pool_id(session)} completed (1/2 workers")
+            assert not request.contains("the pool is complete")
+            assert not request.contains("Chapter 0 saved.")
+            return reply("One chapter is in. Waiting for the other.")
         if sequence == 4:
+            assert request.contains(
+                "(2/2 workers of this pool have finished; the pool is complete)"
+            )
+            return tool_call("collect_subagent_results", {"pool_id": pool_id(session)})
+        if sequence == 5:
             assert request.contains("Chapter 0 saved.") and request.contains("Chapter 1 saved.")
             return tool_call("mark_execute_complete", {"summary": "Applied both worker patches."})
-        assert sequence == 5
+        assert sequence == 6
         return reply("Done.")
 
     script = ScenarioTransport(main, worker)
@@ -1383,14 +1402,19 @@ async def test_a7_parallel_mutating_phase_workers_use_distinct_worktrees(
     if detached:
         await detach_controller(session, tmp_path)
         assert [Path(path) for path in _worktrees(root) if Path(path) != root] == worktrees
-    release.set()
+    conv = session._ctx.app_state.conversation
+    release["0"].set()
+    await until(lambda: len(script.main_requests) == 3)
+    await until(lambda: conv.phase_subagent_wait() == "waiting for phase subagents")
+    assert len(script.main_requests) == 3 and not task.done()
+    release["1"].set()
     async with asyncio.timeout(8):
         await task
     assert [path.read_text(encoding="utf-8") for path in sorted(root.glob("chapter-*.md"))] == [
         "Chapter 0",
         "Chapter 1",
     ]
-    assert len(script.main_requests) == 5
+    assert len(script.main_requests) == 6
     assert handle.lifecycle == "complete"
     assert source_for(session).journal.collected_phase_pools(handle.phase_invocation) == {
         pool_id(session)

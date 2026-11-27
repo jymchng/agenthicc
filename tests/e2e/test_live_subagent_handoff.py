@@ -54,7 +54,7 @@ def scripted_transport(project: Path) -> ScenarioTransport:
                 return tool_call("read_file", {"path": "AGENTS.md"}, use_id=f"read-{worker_id}")
             record(worker_id, "gate")
             async with asyncio.timeout(CLI_PROCESS_TIMEOUT_S * 2):
-                while not (project / "release-workers").exists():
+                while not (project / f"release-explorer-{worker_id}").exists():
                     await asyncio.sleep(0.02)
             record(worker_id, "released")
             return reply(f"Explorer {worker_id} read the guide.")
@@ -73,7 +73,7 @@ def scripted_transport(project: Path) -> ScenarioTransport:
         return reply(f"Worker {worker_id} finished its real command.")
 
     spawned = False
-    notified = False
+    awaiting_collect = ""
 
     async def wait_for_parent_release() -> None:
         async with asyncio.timeout(CLI_PROCESS_TIMEOUT_S * 2):
@@ -81,7 +81,7 @@ def scripted_transport(project: Path) -> ScenarioTransport:
                 await asyncio.sleep(0.02)
 
     async def main(request: ModelRequest, sequence: int) -> Completion:
-        nonlocal spawned, notified
+        nonlocal spawned, awaiting_collect
         record("parent", str(sequence))
         if request.contains("message from the reattached operator"):
             record("parent", "reattached-input-observed")
@@ -113,35 +113,47 @@ def scripted_transport(project: Path) -> ScenarioTransport:
             if not spawned:
                 spawned = True
                 return spawn_call(5, kind="explorer", task="run marker")
-            if not notified and (
-                request.contains("to read them.") or request.contains("Explorer 0 read the guide.")
-            ):
-                # The first request that carries the finished pool: the notice
-                # for a background spawn, the aggregate for a foreground one.
-                notified = True
-                record("parent", "explorers-notified")
-            if request.contains("Background subagent pool") and request.contains("to read them."):
-                if not request.contains("Explorer 0 read the guide."):
-                    journal = _journal_rows(
-                        next(
-                            (Path.home() / ".agenthicc" / "sessions").glob(
-                                "*/conversation-journal.jsonl"
-                            )
-                        )
-                    )
-                    pool = next(
-                        row["pool_id"]
-                        for row in journal
-                        if row.get("kind") == "subagent_pool_started"
-                    )
+            last = str(request.messages[-1]["content"])
+            notice = re.match(r"Background subagent (explorer #\d) of pool (\S+) ", last)
+            if notice is not None:
+                # One Explorer finished: the notice names it and nothing it wrote.
+                record("parent", f"notified:{notice[1]}")
+                assert "read the guide" not in last
+                if notice[1] == "explorer #1":
+                    awaiting_collect = "partial"
                     return tool_call(
-                        "collect_subagent_results", {"pool_id": pool}, use_id="collect-explorers"
+                        "collect_subagent_results",
+                        {"pool_id": notice[2]},
+                        use_id="collect-partial",
                     )
-                record("parent", "explorers-collected")
-                return reply("Collected all five explorer reports.")
-            if request.contains("Explorer 0 read the guide."):
-                # An explicit foreground spawn returns the aggregate directly.
-                record("parent", "explorers-collected")
+                if "the pool is complete" in last:
+                    awaiting_collect = "final"
+                    return tool_call(
+                        "collect_subagent_results",
+                        {"pool_id": notice[2]},
+                        use_id="collect-final",
+                    )
+                return reply(f"Noted {notice[1]}.")
+            if awaiting_collect == "partial":
+                awaiting_collect = ""
+                # The pool is still running, yet the finished Explorer is readable.
+                history = repr(request.messages)
+                record(
+                    "parent",
+                    "partial-collect-ok"
+                    if "Explorer 0 read the guide." in history
+                    and "Explorer 1 read the guide." not in history
+                    and "'status': 'running'" in history.replace('"', "'")
+                    else "partial-collect-bad",
+                )
+                return reply("Read the first Explorer's report.")
+            if awaiting_collect == "final" or request.contains("Explorer 0 read the guide."):
+                # The whole pool: collected after the last notice, or the
+                # aggregate of an explicit foreground spawn.
+                awaiting_collect = ""
+                history = repr(request.messages)
+                if all(f"Explorer {index} read the guide." in history for index in range(5)):
+                    record("parent", "explorers-collected")
                 return reply("Collected all five explorer reports.")
             if (project / "hold-parent").exists() and not (project / "release-parent").exists():
                 record("parent", "streaming-gate")
@@ -168,12 +180,12 @@ def scripted_transport(project: Path) -> ScenarioTransport:
                 return spawn_call(5, kind="executor", task="run marker")
             if (
                 (project / "gate-before-collect").exists()
-                and request.contains("Background subagent pool")
+                and request.contains("Its result is not included here")
                 and not (project / "release-parent").exists()
             ):
                 record("parent", "collect-gate")
                 await wait_for_parent_release()
-            if request.contains("Background subagent pool") and request.contains("to read them."):
+            if request.contains("the pool is complete"):
                 journal = _journal_rows(
                     next(
                         (Path.home() / ".agenthicc" / "sessions").glob(
@@ -633,7 +645,8 @@ def test_direct_session_explorers_keep_running_through_background_handoff(
 
     The original report: after ``Successfully backgrounded`` every Explorer row
     read ``parent_cancelled``. The same workers must instead stay at their
-    provider barrier across the cutover and finish under the service.
+    provider barrier across the cutover and finish under the service. Each one
+    that finishes then notifies the parent on its own, with the terminal gone.
     """
     home, project, environment = _scripted_project(tmp_path)
     (project / "direct-explorers").touch()
@@ -703,7 +716,17 @@ def test_direct_session_explorers_keep_running_through_background_handoff(
         ]
 
         (project / "release-parent").touch()
-        (project / "release-workers").touch()
+        notified_rows = [f"notified:explorer #{number}" for number in range(1, 6)]
+        for index in range(5):
+            (project / f"release-explorer-{index}").touch()
+            if parent_state == "foreground":
+                continue
+            # Explorer index finishes: the parent hears about that Explorer
+            # before the next one is released.
+            deadline = time.monotonic() + CLI_PROCESS_TIMEOUT_S
+            while not any(row["name"] == notified_rows[index] for row in requests()):
+                assert time.monotonic() < deadline, f"no notice for explorer #{index + 1}"
+                time.sleep(0.05)
         deadline = time.monotonic() + CLI_PROCESS_TIMEOUT_S
         while time.monotonic() < deadline:
             if store.get(session_id).status is SessionStatus.COMPLETED:
@@ -717,12 +740,26 @@ def test_direct_session_explorers_keep_running_through_background_handoff(
         assert all(row["pool_id"] == started["pool_id"] for row in results)
         assert [row["name"] for row in requests() if row["name"] == "released"] == ["released"] * 5
         assert any(row["name"] == "explorers-collected" for row in requests())
-        # The foreground agent is notified once, and only after the last Explorer.
         names = [row["name"] for row in requests()]
-        assert names.count("explorers-notified") == 1
-        assert names.index("explorers-notified") > max(
-            index for index, name in enumerate(names) if name == "released"
-        )
+        if parent_state == "foreground":
+            # A blocking spawn returns its aggregate to the waiting parent; its
+            # workers send no notices of their own.
+            assert not [name for name in names if name.startswith("notified:")]
+        else:
+            # Every Explorer notified the parent, each after that Explorer's
+            # own release, in the order they finished, and the parent read the
+            # first one's report while the pool was still running.
+            assert [name for name in names if name.startswith("notified:")] == notified_rows
+            released = [row["lane"] for row in requests() if row["name"] == "released"]
+            assert released == ["0", "1", "2", "3", "4"]
+            for index, notice in enumerate(notified_rows):
+                released_at = next(
+                    at
+                    for at, row in enumerate(requests())
+                    if row["lane"] == str(index) and row["name"] == "released"
+                )
+                assert names.index(notice) > released_at
+            assert "partial-collect-ok" in names and "partial-collect-bad" not in names
         assert sum(row["kind"] == "subagent_pool_started" for row in rows) == 1
         assert "parent_cancelled" not in journal.read_text(encoding="utf-8")
         assert {row["pid"] for row in requests()} == {lease_pid}
@@ -732,8 +769,10 @@ def test_direct_session_explorers_keep_running_through_background_handoff(
         finished = [text for status, text in shown if status == "✓" and text.startswith("[")]
         assert len(finished) == 5 and all("read the guide." in text for text in finished)
         assert ("✓", "5/5 done") in shown
-        assert any(text.startswith("parent notified") for _, text in shown) == (
-            parent_state != "foreground"
+        notified = [text for _, text in shown if text.startswith("parent notified")]
+        assert len(notified) == (0 if parent_state == "foreground" else 5)
+        assert [match[1] for text in notified if (match := re.search(r"(explorer #\d)", text))] == (
+            [] if parent_state == "foreground" else [f"explorer #{n}" for n in range(1, 6)]
         )
         assert not [
             line for line in hub if line.role == "you" and "Background subagent" in line.text
@@ -741,7 +780,8 @@ def test_direct_session_explorers_keep_running_through_background_handoff(
     finally:
         terminal.close()
         (project / "release-parent").touch()
-        (project / "release-workers").touch()
+        for index in range(5):
+            (project / f"release-explorer-{index}").touch()
         if lease_pid is not None:
             try:
                 os.kill(lease_pid, signal.SIGTERM)

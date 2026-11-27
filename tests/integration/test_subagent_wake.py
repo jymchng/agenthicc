@@ -45,6 +45,20 @@ def record_terminal(journal: ConversationJournal, pool_id: str) -> None:
         tasks=[{"task_id": "task-0", "agent_type": "explorer"}],
     )
     journal.subagent_pool_backgrounded(pool_id=pool_id, tool_result={"status": "running"})
+    journal.subagent_worker_result(
+        pool_id=pool_id,
+        fingerprint=pool_id,
+        task_id="task-0",
+        agent_type="explorer",
+        label="explorer #1",
+        ok=True,
+        text=WORKER_RESULT,
+        error="",
+        duration_ms=1.0,
+        tool_calls=[],
+        changed_paths=[],
+        status="completed",
+    )
     journal.subagent_pool_finished(
         pool_id=pool_id,
         total=1,
@@ -60,7 +74,8 @@ def notices(request: ModelRequest) -> list[str]:
         for message in request.messages
         if message["role"] == "user"
         and isinstance(message["content"], str)
-        and "Background subagent pool" in message["content"]
+        and "Background subagent " in message["content"]
+        and "Its result is not included here" in message["content"]
     ]
 
 
@@ -137,7 +152,8 @@ async def test_a3_a5_queued_input_and_completion_follow_the_tool_results(
         assert (
             script.main_requests[-1].messages[-1]["content"] == notices(script.main_requests[-1])[0]
         )
-        assert source.journal.delivered_subagent_pool_notifications() == {pool_id}
+        (delivered,) = source.journal.delivered_subagent_worker_notifications()
+        assert delivered.startswith(f"subagent-worker:{pool_id}:")
     else:
         assert session._agent_task is None
         assert not session._msg_queue
@@ -189,8 +205,8 @@ async def test_a4_repeated_idle_wakes_have_no_missed_or_duplicate_receipts(
             clock += 0.001
         assert len(seen) == index + 1
         assert schedule[-1] - terminal_at < 0.1
-        assert source.journal.delivered_subagent_pool_notifications() == {
-            f"repeat-{done}" for done in range(index + 1)
+        assert source.journal.delivered_subagent_worker_notifications() == {
+            f"subagent-worker:repeat-{done}:task-0:1" for done in range(index + 1)
         }
         assert session._agent_task is None
         clock += 1
@@ -243,7 +259,9 @@ async def test_a6_process_death_at_delivery_seams_reopens_without_waking(
         assert resumed._agent_task is None and not script.main_requests
         await (await send(resumed, "Continue from disk."))
         assert len(script.main_requests) == 1
-        assert source.journal.delivered_subagent_pool_notifications() == {"crash-pool"}
+        assert source.journal.delivered_subagent_worker_notifications() == {
+            "subagent-worker:crash-pool:task-0:1"
+        }
 
 
 async def test_a7_dropped_terminal_callback_reconciles_and_reports_perf(
@@ -509,7 +527,9 @@ async def test_a21_each_guard_defers_the_wake_until_it_clears(
     task = session._agent_task
     assert task is not None
     await task
-    assert source.journal.delivered_subagent_pool_notifications() == {"guarded"}
+    assert source.journal.delivered_subagent_worker_notifications() == {
+        "subagent-worker:guarded:task-0:1"
+    }
     session.reconcile_subagent_wakes()
     assert session._agent_task is None and len(script.main_requests) == 1
 
