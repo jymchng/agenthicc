@@ -5371,13 +5371,31 @@ def load_background_settings(*, config_path: 'str | None' = None, overrides: 'tu
 
 Load local/global ``[background]`` settings with CLI overrides.
 
+### ForegroundCommand
+
+```python
+@dataclass(eq=False)
+class ForegroundCommand
+```
+
+A command a tool call is waiting on, which the user may move to the background.
+Fields: `handle_id`, `tool_call_id`, `label`, `started_at`, `requested` (an
+`asyncio.Event`). `request_background()` sets the event and returns `False` if
+it was already set; `withdraw_request()` clears it when the manager had no free
+terminal. Registered with `TerminalManager.begin_foreground()` and handed to
+`TerminalManager.adopt()` on a request; never persisted.
+
 ### TerminalManager
 
 ```python
 class TerminalManager
 ```
 
-Own background terminal process groups for one agent session.
+Own background terminal process groups for one agent session. Besides
+`start()`, it registers the commands tool calls wait on (`begin_foreground()`,
+`end_foreground()`, `foreground_commands()`), moves them on request
+(`request_background_foreground()`, `background_blocker()`) and takes over a
+running process with `adopt()`.
 
 ### TerminalRecord
 
@@ -5406,6 +5424,24 @@ class TerminalStore
 ```
 
 Small fsync'd JSONL registry for terminal lifecycle records.
+
+### bind_foreground_offer
+
+```python
+def bind_foreground_offer(offered: 'bool') -> 'Iterator[None]'
+```
+
+Context manager that offers, or withholds, the commands run inside it for
+Ctrl+B. `SubagentWorker.run()` withholds them: a worker's commands are not what
+the user's turn waits on. Tasks created inside inherit the setting.
+
+### foreground_commands_offered
+
+```python
+def foreground_commands_offered() -> 'bool'
+```
+
+Whether commands run now may be moved to the background by the user.
 
 ### get_current_terminal_manager
 
