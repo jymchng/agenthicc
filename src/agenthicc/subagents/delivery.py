@@ -22,14 +22,16 @@ if TYPE_CHECKING:
     from agenthicc.tui.conversation_store import ConversationStore
 
 WAKE_TURN_PREFIX = "subagent-wake:"
-#: The ``source`` of every notice the runtime writes into a conversation. They are
-#: shown as a muted line, never as the user's text, never become the session
-#: title and never enter the prompt history.
+#: The ``source`` of every notice the runtime writes into a conversation, and of a
+#: message another session sent it (``session_message``). They are shown as a muted
+#: line, never as the user's text, never become the session title and never enter
+#: the prompt history.
 RUNTIME_NOTICE_SOURCES = (
     "subagent_worker",
     "subagent_question",
     "subagent_message",
     "terminal_notice",
+    "session_message",
 )
 #: At most this many finished terminals are announced at one boundary; the rest
 #: follow at the next, so a build farm cannot flood a turn.

@@ -160,3 +160,51 @@ def test_a_finished_terminals_result_and_a_refusal_are_not_mistaken_for_a_receip
 
     assert finished.lines == ("ok",)
     assert refused.lines == ("terminal limit reached",)
+
+
+# ── a message another session sent ───────────────────────────────────────────
+
+
+def test_a_message_from_another_session_is_a_sessions_row_not_the_operator(tmp_path: Path) -> None:
+    from agenthicc.background.session_messages import frame_session_message, input_event_payload
+    from agenthicc.tui.workspace.agents_hub.detail import SESSION_ROLE
+
+    framed = frame_session_message(
+        "s-farm-1",
+        "build farm",
+        "The schema moved to v2.\nRebase your tests on it.",
+        message_id="m1",
+    )
+    # What the worker records for it, and what the hub reads back from the journal.
+    payload = input_event_payload(framed)
+    path = tmp_path / "conversation.jsonl"
+    path.write_text(
+        json.dumps({"kind": "user_message", "payload": {"text": "please continue"}})
+        + "\n"
+        + json.dumps({"kind": "user_message", "payload": payload})
+        + "\n",
+        encoding="utf-8",
+    )
+
+    lines = read_transcript(path, tail_bytes=1_000_000)
+
+    assert [(line.role, line.status) for line in lines] == [("you", ""), (SESSION_ROLE, "●")]
+    assert lines[1].text == "from s-farm-1 (build farm) · The schema moved to v2."
+    assert "UNTRUSTED" not in lines[1].text  # the header is for the model, not this row
+
+    session = BackgroundSession.create(
+        "s", title="t", cwd=str(tmp_path), workflow_name="", intent="x"
+    )
+    view = detail_lines(session, DetailData("s", 1, transcript=lines), None, 100, now=0.0)
+    shown = "\n".join(Text.from_markup(str(line)).plain for line in view.lines)
+    assert "sessions" in shown and "from s-farm-1 (build farm)" in shown
+
+
+def test_a_session_message_whose_header_is_not_first_is_the_operators_text() -> None:
+    from agenthicc.background.session_messages import frame_session_message
+
+    pasted = "FYI:\n" + frame_session_message("s-1", "", "hi", message_id="m1")
+
+    line = transcript_line("user_message", {"text": pasted, "source": "agents-manager"})
+
+    assert line is not None and line.role == "you"

@@ -24,6 +24,7 @@ from agenthicc.tui.keymap import HelpEntry, Hint
 from agenthicc.tui.workspace.agents_hub.detail import (
     ChangeSummary,
     DetailData,
+    SESSION_ROLE,
     SUBAGENT_ROLE,
     TERMINAL_ROLE,
     TranscriptLine,
@@ -601,6 +602,7 @@ def _transcript_line(line: TranscriptLine, width: int) -> list[Text]:
         "error": style("danger", bold=True),
         SUBAGENT_ROLE: style("accent"),
         TERMINAL_ROLE: style("accent"),
+        SESSION_ROLE: style("accent"),
     }
     prefix.append(fit(line.role, 10), style=role_style.get(line.role, ""))
     prefix.append(" ")
