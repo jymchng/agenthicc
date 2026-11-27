@@ -218,8 +218,10 @@ async def _run_foreground(
     tool call waits, so the terminal UI can offer Ctrl+B for it.  Without a
     manager (a bare tool context) it is a plain foreground run.
     """
+    from agenthicc.background.terminals import foreground_commands_offered
+
     manager = cast("TerminalManager | None", context.get("terminal_manager"))
-    if manager is None or not manager.enabled:
+    if manager is None or not manager.enabled or not foreground_commands_offered():
         return await _run_proc(cmd, cwd=cwd, timeout=timeout, env=env, shell=shell)
     command = manager.begin_foreground(
         tool_call_id=arg_str(context, "tool_call_id", ""), label=label

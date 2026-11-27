@@ -9,6 +9,7 @@ operations resolve through the in-memory entry that created that group.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import contextvars
 import hashlib
 import json
@@ -17,6 +18,7 @@ import re
 import secrets
 import signal
 import time
+from collections.abc import Iterator
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -33,6 +35,8 @@ __all__ = [
     "TerminalRecord",
     "TerminalState",
     "TerminalStore",
+    "bind_foreground_offer",
+    "foreground_commands_offered",
     "get_current_terminal_manager",
     "reset_current_terminal_manager",
     "set_current_terminal_manager",
@@ -478,6 +482,36 @@ _manager_var: contextvars.ContextVar["TerminalManager | None"] = contextvars.Con
 _wait_policy_var: contextvars.ContextVar[str] = contextvars.ContextVar(
     "agenthicc_terminal_wait_policy", default="foreground"
 )
+
+
+_foreground_offer_var: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "agenthicc_foreground_offer", default=True
+)
+
+
+def foreground_commands_offered() -> bool:
+    """Whether commands run now may be moved to the background by the user (Ctrl+B).
+
+    True for the agent the user is talking to. A subagent worker's commands are
+    its own business: the worker is detached with its pool, so they are not
+    offered, and a detached pool's worker is never mistaken for the turn's.
+    """
+
+    return _foreground_offer_var.get()
+
+
+@contextlib.contextmanager
+def bind_foreground_offer(offered: bool) -> Iterator[None]:
+    """Offer, or withhold, the commands run inside the block for Ctrl+B.
+
+    Tasks created inside the block inherit the setting.
+    """
+
+    token = _foreground_offer_var.set(offered)
+    try:
+        yield
+    finally:
+        _foreground_offer_var.reset(token)
 
 
 def get_current_terminal_manager() -> "TerminalManager | None":

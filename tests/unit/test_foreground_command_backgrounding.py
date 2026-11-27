@@ -16,7 +16,13 @@ from typing import TYPE_CHECKING, cast
 
 import pytest
 
-from agenthicc.background.terminals import ForegroundCommand, TerminalManager, TerminalState
+from agenthicc.background.terminals import (
+    ForegroundCommand,
+    TerminalManager,
+    TerminalState,
+    bind_foreground_offer,
+    foreground_commands_offered,
+)
 from agenthicc.tools.exec import RunBashTool, RunCommandTool
 
 if TYPE_CHECKING:
@@ -287,6 +293,94 @@ async def test_ctrl_b_says_why_a_command_cannot_be_moved(tmp_path: Path) -> None
     flag.touch()
     assert (await asyncio.wait_for(call, timeout=10))["stdout"] == "before\nafter\n"
     await manager.close()
+
+
+async def test_a_command_run_where_commands_are_withheld_is_never_offered(tmp_path: Path) -> None:
+    manager = _manager(tmp_path)
+    flag, started = tmp_path / "go", tmp_path / "started"
+    script = (
+        "import pathlib, sys, time\n"
+        "pathlib.Path(sys.argv[2]).touch()\n"
+        "while not pathlib.Path(sys.argv[1]).exists():\n"
+        "    time.sleep(0.02)\n"
+        "print('ran')\n"
+    )
+    with bind_foreground_offer(False):
+        assert foreground_commands_offered() is False
+        # A task started inside the block inherits it, as a worker's tool calls do.
+        call = asyncio.create_task(
+            RunCommandTool().execute(
+                {"argv": [sys.executable, "-c", script, str(flag), str(started)]},
+                _context(tmp_path, manager),
+            )
+        )
+    assert foreground_commands_offered() is True
+    for _ in range(500):
+        if started.exists():
+            break
+        await asyncio.sleep(0.01)
+    assert started.exists(), "the command never started"
+
+    # It is running, yet nothing is registered, so Ctrl+B has nothing to move.
+    assert manager.foreground_commands() == []
+    assert manager.request_background_foreground() == 0
+
+    flag.touch()
+    assert (await asyncio.wait_for(call, timeout=10))["stdout"] == "ran\n"
+
+
+async def test_a_subagent_workers_commands_are_not_offered_for_ctrl_b(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A worker is detached with its pool; its commands are not the turn's to move."""
+    import agenthicc.subagents.pool as pool_module
+    from agenthicc.subagents.pool import SubagentTask
+    from agenthicc.subagents.types import SubagentTypeSpec
+    from agenthicc.tools.surface import ToolSurface
+
+    manager = _manager(tmp_path)
+    flag, started = tmp_path / "go", tmp_path / "started"
+    script = (
+        "import pathlib, sys, time\n"
+        "pathlib.Path(sys.argv[2]).touch()\n"
+        "while not pathlib.Path(sys.argv[1]).exists():\n"
+        "    time.sleep(0.02)\n"
+    )
+    seen: dict[str, object] = {}
+
+    async def execute(_worker: object) -> str:
+        seen["offered"] = foreground_commands_offered()
+        call = asyncio.create_task(
+            RunCommandTool().execute(
+                {"argv": [sys.executable, "-c", script, str(flag), str(started)]},
+                _context(tmp_path, manager),
+            )
+        )
+        for _ in range(500):
+            if started.exists():
+                break
+            await asyncio.sleep(0.01)
+        seen["registered"] = len(manager.foreground_commands())
+        flag.touch()
+        await call
+        return "done"
+
+    monkeypatch.setattr(pool_module.SubagentWorker, "_execute", execute)
+    worker = pool_module.SubagentWorker(
+        task=SubagentTask("t1", "short", "run a command"),
+        spec=SubagentTypeSpec(name="short", allowed_tools=frozenset(), system_prompt=""),
+        index=1,
+        parent_runner=object(),
+        parent_model="model",
+        tool_surface=ToolSurface(0, tuple([])),
+        timeout_s=30,
+    )
+
+    result = await worker.run()
+
+    assert result.ok is True
+    assert seen == {"offered": False, "registered": 0}
+    assert foreground_commands_offered() is True  # the worker's setting did not leak out
 
 
 async def test_without_a_manager_the_command_is_an_ordinary_foreground_run(

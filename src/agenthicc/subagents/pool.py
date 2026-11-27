@@ -1683,6 +1683,7 @@ class SubagentWorker:
 
     async def run(self) -> SubagentResult:
         """Execute the task; return SubagentResult regardless of success/failure."""
+        from agenthicc.background.terminals import bind_foreground_offer
         from agenthicc.runners.agent_turn_context import bind_turn_notices
         from agenthicc.subagents.phase import bind_phase_pools
 
@@ -1693,7 +1694,12 @@ class SubagentWorker:
 
             token = set_current_workspace_access(self._workspace_access)
         try:
-            with bind_turn_notices(None), bind_phase_pools(None):
+            # A worker's own commands are not what the user's turn waits on.
+            with (
+                bind_turn_notices(None),
+                bind_phase_pools(None),
+                bind_foreground_offer(False),
+            ):
                 result = await self._run()
             if self._worker_workspace is not None:
                 result = await self._integrate(result)
