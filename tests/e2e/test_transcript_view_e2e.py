@@ -220,6 +220,9 @@ async def test_ctrl_t_shows_the_failed_commands_full_output_and_q_returns_with_t
         # The view opens on the failed command, selected and expanded: every stored
         # line is on the screen, and the call's arguments after them.
         await rig.show("Transcript")
+        # The collapsed row already ends with "stored line 30", so wait for the
+        # expanded marker; otherwise a busy host reads the screen one render early.
+        await rig.show("[expanded]")
         await rig.show("stored line 30")
         screen = rig.screen()
         assert all(f"stored line {i}" in screen for i in range(1, 31)), screen
